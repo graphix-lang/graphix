@@ -732,7 +732,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         self.args.retain(|_, arg| {
             if arg.is_default {
-                ctx.rt.cached_mut().remove(&arg.id);
+                ctx.rt.cached_remove(&arg.id);
                 if let Some(mut n) = arg.node.take() {
                     n.delete(ctx);
                 }
@@ -1225,7 +1225,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     let tv = node.update(ctx, event);
                     if !tv.is_absent() {
                         let v = tv.value_cloned();
-                        ctx.rt.cached_mut().insert(arg.id, v.clone());
+                        ctx.rt.cached_insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::fired(v));
                         set.push(arg.id);
                     }
@@ -1521,7 +1521,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     } else {
                         let v = tv.value_cloned();
                         arg_fired |= tag.triggers();
-                        ctx.rt.cached_mut().insert(arg.id, v.clone());
+                        ctx.rt.cached_insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
                     set.push(arg.id);
@@ -1765,7 +1765,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     );
                 }
                 let mut prime_map = event.variables.clone();
-                mem::swap(&mut event.variables, &mut prime_map);
+                event.enter_frame(&mut prime_map);
                 let init = mem::replace(&mut event.init, true);
                 let refs_span = crate::perfdbg::span(&crate::perfdbg::REFS_NS);
                 let mut refs = Refs::default();
@@ -1790,7 +1790,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ctx.transient_prime = prev_prime;
                 drop(prime_span);
                 event.init = init;
-                mem::swap(&mut event.variables, &mut prime_map);
+                event.exit_frame(&mut prime_map);
                 for id in &set[prime_start..] {
                     event.variables.remove(id);
                 }
@@ -1937,7 +1937,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         self.fnode.delete(ctx);
         for arg in self.args.values_mut() {
-            ctx.rt.cached_mut().remove(&arg.id);
+            ctx.rt.cached_remove(&arg.id);
             if let Some(ref mut n) = arg.node {
                 n.delete(ctx);
             }
@@ -1982,7 +1982,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         self.fnode.reset_replay(ctx);
         for arg in self.args.values_mut() {
             if !arg.is_invariant() {
-                ctx.rt.cached_mut().remove(&arg.id);
+                ctx.rt.cached_remove(&arg.id);
             }
             if let Some(ref mut n) = arg.node {
                 n.reset_replay(ctx);

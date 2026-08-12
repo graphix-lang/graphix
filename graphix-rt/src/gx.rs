@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope, compile,
+    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Rt, Scope, compile,
     expr::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, Source, parse_modpath, read_to_arcstr,
@@ -235,9 +235,6 @@ pub(super) struct GX<X: GXExt> {
     /// watched expr emits, or `None` when the runtime next goes idle. See
     /// `GXHandle::wait_result_or_idle`.
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
-    /// Index of the currently-running (or next) `do_cycle`. Absolute
-    /// values are not comparable across runs — see [`TraceEvent`].
-    cycle: u64,
     /// Active trace recording, if any. See [`GXHandle::trace_start`].
     trace: Option<TraceState>,
     /// The SESSION scope for statement-at-a-time compiles (REPL inputs
@@ -279,7 +276,6 @@ impl<X: GXExt> GX<X> {
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
             result_watch: None,
-            cycle: 0,
             trace: None,
             scope: Scope::root(),
         };
@@ -325,7 +321,8 @@ impl<X: GXExt> GX<X> {
             ($id:expr, $v:expr) => {
                 match self.event.variables.entry($id) {
                     Entry::Vacant(e) => {
-                        self.ctx.rt.cached.insert($id, $v.clone());
+                        // advances cached AND its P3 shadow store
+                        self.ctx.rt.cached_insert($id, $v.clone());
                         // an ordinary runtime delivery is a FIRED event
                         e.insert(graphix_compiler::TagValue::fired($v));
                         if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
@@ -408,7 +405,7 @@ impl<X: GXExt> GX<X> {
                             }
                         }
                         if let Some(tr) = self.trace.as_mut() {
-                            tr.record(self.cycle, *id, &v);
+                            tr.record(self.ctx.rt.cycle, *id, &v);
                         }
                         batch.push(GXEvent::Updated(*id, v))
                     }
@@ -446,9 +443,10 @@ impl<X: GXExt> GX<X> {
             batch.push(GXEvent::Diagnostic(None, d));
         }
         if let Some(tr) = self.trace.as_mut() {
-            tr.cycle_end(self.cycle, worked);
+            tr.cycle_end(self.ctx.rt.cycle, worked);
         }
-        self.cycle += 1;
+        self.ctx.rt.store_assert();
+        self.ctx.rt.cycle += 1;
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
@@ -579,7 +577,7 @@ impl<X: GXExt> GX<X> {
                     // An already-capped trace resolves here; otherwise
                     // the waiter resolves at the top-of-loop idle check
                     // or when a cap trips at the end of a cycle.
-                    Some(tr) => tr.wait(res, self.cycle),
+                    Some(tr) => tr.wait(res, self.ctx.rt.cycle),
                 },
             }
         }
@@ -587,11 +585,11 @@ impl<X: GXExt> GX<X> {
 
     /// Record a [`TraceEvent::Compiled`] anchor for each expression of a
     /// successful `compile`/`load`, at the moment the nodes are
-    /// registered (their init cycle is `self.cycle`, the next to run).
+    /// registered (their init cycle is `self.ctx.rt.cycle`, the next to run).
     fn record_compiled(&mut self, r: &Result<CompRes<X>>) {
         if let (Ok(cr), Some(tr)) = (r, self.trace.as_mut()) {
             for e in cr.exprs.iter() {
-                tr.record_compiled(self.cycle, e.id);
+                tr.record_compiled(self.ctx.rt.cycle, e.id);
             }
         }
     }
@@ -1086,7 +1084,7 @@ impl<X: GXExt> GX<X> {
                         let _ = tx.send(None);
                     }
                     if let Some(tr) = self.trace.as_mut() {
-                        tr.resolve(self.cycle);
+                        tr.resolve(self.ctx.rt.cycle);
                     }
                     idle_passes = 0;
                 }

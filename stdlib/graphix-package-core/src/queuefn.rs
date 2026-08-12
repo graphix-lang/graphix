@@ -90,7 +90,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     s.pop_count -= 1;
                     drop(s);
                     for (bid, v) in delta.drain(..) {
-                        ctx.rt.cached_mut().insert(bid, v.clone());
+                        ctx.rt.cached_insert(bid, v.clone());
                         event.variables.insert(bid, TagValue::fired(v));
                     }
                     None
@@ -333,7 +333,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                     self.ftyp = Some(Arc::new(def.typ.reset_tvars()));
                 }
             }
-            ctx.rt.cached_mut().insert(self.fid, v.clone());
+            ctx.rt.cached_insert(self.fid, v.clone());
             event.variables.insert(self.fid, TagValue::fired(v));
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {

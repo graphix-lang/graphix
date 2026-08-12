@@ -202,7 +202,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
                     event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    ctx.rt.cached_mut().insert(id, v);
+                    ctx.rt.cached_insert(id, v);
                     ctx.rt.notify_set(id);
                 })
             }
@@ -462,7 +462,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                     // (soak finding corpus-fuzz/divergence_000027; Eric's
                     // ruling 2026-07-04: the echo was the wart, the JIT's
                     // single delivery is correct).
-                    ctx.rt.cached_mut().insert(self.id, v);
+                    ctx.rt.cached_insert(self.id, v);
                 } else {
                     ctx.rt.set_var(self.id, v);
                 }

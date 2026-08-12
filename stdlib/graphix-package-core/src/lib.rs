@@ -1452,12 +1452,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         event: &mut Event<E>,
     ) -> &TagValue {
         if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
-            ctx.rt.cached_mut().insert(self.fid, v.clone());
+            ctx.rt.cached_insert(self.fid, v.clone());
             event.variables.insert(self.fid, TagValue::fired(v));
         }
         if let Some(v) = from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
             self.pending = Some(v.clone());
-            ctx.rt.cached_mut().insert(self.x, v.clone());
+            ctx.rt.cached_insert(self.x, v.clone());
             event.variables.insert(self.x, TagValue::fired(v));
         }
         let res =
@@ -1485,8 +1485,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.cached_remove(&self.fid);
+        ctx.rt.cached_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
     }
@@ -1499,8 +1499,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // `pending` (the held candidate value) and the published
         // pred-fn/element values are all per-invocation replay memory.
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.cached_remove(&self.fid);
+        ctx.rt.cached_remove(&self.x);
         self.pending = None;
         self.pred.reset_replay(ctx);
     }

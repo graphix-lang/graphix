@@ -475,6 +475,26 @@ impl<E: UserEvent> Event<E> {
         custom.clear();
         user.clear();
     }
+
+    /// Enter an evaluation-frame OVERLAY: `frame` (the pass's private
+    /// variables map — externals seeded, formals rebound) replaces
+    /// `variables` for the framed pass. Opaque — the pass sees ONLY
+    /// the frame, exactly the whole-map-swap semantics this wraps.
+    /// The 5b flip rewrites these two methods to a read-through
+    /// overlay on the persistent store (design/dense_delivery.md R3);
+    /// naming the seam here is what makes that a two-method change.
+    pub fn enter_frame(&mut self, frame: &mut IntMap<BindId, TagValue>) {
+        std::mem::swap(&mut self.variables, frame);
+    }
+
+    /// Leave the frame entered by [`Self::enter_frame`]: the outer
+    /// map returns to `variables`, the frame's final state lands back
+    /// in `frame` (the tail loop reads it as the previous pass's
+    /// rebinds; everything else discards it — only
+    /// `ExecCtx::frame_outbox` outlives a frame).
+    pub fn exit_frame(&mut self, frame: &mut IntMap<BindId, TagValue>) {
+        std::mem::swap(&mut self.variables, frame);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1248,13 +1268,19 @@ pub trait Rt: Debug + Any {
     /// a variable set N times in one cycle showed its LAST value while
     /// the deliveries still had N-1 cycles to run. Same-cycle
     /// publishers (`Bind`'s direct `event.variables` insert, `ByRef`'s
-    /// init seed) update it through [`Rt::cached_mut`] at their insert
-    /// — those ARE deliveries.
+    /// init seed) update it through [`Rt::cached_insert`] — those ARE
+    /// deliveries.
     fn cached(&self) -> &IntMap<BindId, Value>;
 
-    /// Mutable access to [`Rt::cached`] for the same-cycle publishers
-    /// and delete/unbind cleanup.
-    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value>;
+    /// Insert into [`Rt::cached`] — the same-cycle publishers' seam.
+    /// Narrow (no map access) so the runtime can shadow every write
+    /// into its persistent tagged store (dense-delivery P3,
+    /// design/dense_delivery.md R3).
+    fn cached_insert(&mut self, id: BindId, v: Value);
+
+    /// Remove from [`Rt::cached`] — delete/unbind/replay cleanup.
+    /// Mirrored into the shadow store like [`Rt::cached_insert`].
+    fn cached_remove(&mut self, id: &BindId);
 
     /// Notify the RT that a top level variable has been set internally
     ///

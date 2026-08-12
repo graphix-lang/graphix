@@ -1,7 +1,7 @@
 use crate::GXExt;
 use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
-use graphix_compiler::{BindId, CustomBuiltinType, Rt, expr::ExprId};
+use graphix_compiler::{BindId, CustomBuiltinType, Rt, TagValue, expr::ExprId};
 use netidx_value::Value;
 use nohash::IntMap;
 use poolshark::global::GPooled;
@@ -30,8 +30,19 @@ pub struct GXRt<X: GXExt> {
     /// The last DELIVERED value of every bound variable — see
     /// [`Rt::cached`]. Written by the cycle loop as each variable
     /// event lands in `event.variables`, and by the same-cycle
-    /// publishers through [`Rt::cached_mut`].
+    /// publishers through [`Rt::cached_insert`].
     pub(super) cached: IntMap<BindId, Value>,
+    /// Dense-delivery P3 SHADOW: the persistent tagged store that
+    /// replaces BOTH `cached` and the per-cycle event map at the 5b
+    /// flip (design/dense_delivery.md R3). Dual-written beside every
+    /// `cached` write, stamped with [`Self::cycle`]; never read except
+    /// by the gated agreement assert (`GRAPHIX_STORE_ASSERT=1` in
+    /// `do_cycle`). Tags are placeholder FIRED until the flip —
+    /// producers write their genuine tags at 5b.
+    pub(super) store: IntMap<BindId, (TagValue, u64)>,
+    /// The store's clock — bumped once at the top of each `do_cycle`.
+    /// Also the trace recorder's cycle number (one clock).
+    pub(super) cycle: u64,
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
     pub(super) var_updates: VecDeque<(BindId, Value)>,
     pub(super) custom_updates: VecDeque<(BindId, Box<dyn CustomBuiltinType>)>,
@@ -67,6 +78,8 @@ impl<X: GXExt> GXRt<X> {
         var_watches.push(dummy_rx);
         Self {
             cached: IntMap::default(),
+            store: IntMap::default(),
+            cycle: 0,
             by_ref: IntMap::default(),
             var_updates: VecDeque::new(),
             custom_updates: VecDeque::new(),
@@ -78,6 +91,39 @@ impl<X: GXExt> GXRt<X> {
             var_watches,
             dummy_watch_tx,
             var_dummy_watch_tx,
+        }
+    }
+}
+
+impl<X: GXExt> GXRt<X> {
+    /// The P3 shadow-store agreement gate (`GRAPHIX_STORE_ASSERT=1`):
+    /// the store is dual-written beside every `cached` write, so at
+    /// every cycle end the two must agree exactly — equal key sets,
+    /// equal values (tags/stamps are store-only). Called by `do_cycle`;
+    /// a divergence here means a `cached` write path bypassed
+    /// [`Rt::cached_insert`]/[`Rt::cached_remove`].
+    pub(super) fn store_assert(&self) {
+        static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+            std::env::var_os("GRAPHIX_STORE_ASSERT").is_some()
+        });
+        if !*ON {
+            return;
+        }
+        assert_eq!(
+            self.store.len(),
+            self.cached.len(),
+            "shadow store/cached len divergence"
+        );
+        for (id, v) in self.cached.iter() {
+            match self.store.get(id) {
+                Some((tv, _)) => tv.with_value(|sv| {
+                    assert!(
+                        sv == v,
+                        "shadow store/cached divergence at {id:?}: store {sv} cached {v}"
+                    )
+                }),
+                None => panic!("shadow store missing {id:?} present in cached"),
+            }
         }
     }
 }
@@ -95,13 +141,21 @@ impl<X: GXExt> Rt for GXRt<X> {
         &self.cached
     }
 
-    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value> {
-        &mut self.cached
+    fn cached_insert(&mut self, id: BindId, v: Value) {
+        self.store.insert(id, (TagValue::fired(v.clone()), self.cycle));
+        self.cached.insert(id, v);
+    }
+
+    fn cached_remove(&mut self, id: &BindId) {
+        self.store.remove(id);
+        self.cached.remove(id);
     }
 
     fn clear(&mut self) {
         let Self {
             cached,
+            store,
+            cycle,
             by_ref,
             var_updates,
             custom_updates,
@@ -117,6 +171,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         ext.clear();
         updated.clear();
         cached.clear();
+        store.clear();
+        *cycle = 0;
         by_ref.clear();
         var_updates.clear();
         custom_updates.clear();

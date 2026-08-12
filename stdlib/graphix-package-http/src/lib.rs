@@ -757,7 +757,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // update handler function reference
         if changed[4] {
             if let Some(v) = self.args.0[4].clone() {
-                ctx.rt.cached_mut().insert(self.pid, v.clone());
+                ctx.rt.cached_insert(self.pid, v.clone());
                 event.variables.insert(self.pid, TagValue::fired(v));
             }
         }
@@ -855,7 +855,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if self.ready && !self.queue.is_empty() {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
-                ctx.rt.cached_mut().insert(self.x, req.clone());
+                ctx.rt.cached_insert(self.x, req.clone());
                 event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
@@ -873,7 +873,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     match self.queue.front() {
                         Some((req, _)) => {
                             self.ready = false;
-                            ctx.rt.cached_mut().insert(self.x, req.clone());
+                            ctx.rt.cached_insert(self.x, req.clone());
                             event.variables.insert(self.x, TagValue::fired(req.clone()));
                         }
                         None => break,
@@ -905,9 +905,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.cached_remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.cached_remove(&self.pid);
         self.handler.delete(ctx);
     }
 
@@ -926,8 +926,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.args.clear();
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.cached_remove(&self.pid);
+        ctx.rt.cached_remove(&self.x);
         self.handler.reset_replay(ctx);
     }
 }

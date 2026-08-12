@@ -191,7 +191,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // `arg_up` gates the BIND, not the tick — `pat.update`
             // below is unconditional, so the guard runs every cycle
             // regardless. Binding only on a production is correct and
-            // deliberate: `bind_event` writes `ctx.rt.cached_mut()` as
+            // deliberate: `bind_event` writes `ctx.rt.cached_insert` as
             // well as the transient event entry, and the guard's own
             // `Cached` operands hold the bound leaves, so on a quiet
             // cycle the guard still evaluates against the arg it saw

@@ -436,9 +436,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.ready = false;
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
-                ctx.rt.cached_mut().insert(self.nid, len.clone());
+                ctx.rt.cached_insert(self.nid, len.clone());
                 event.variables.insert(self.nid, TagValue::fired(len));
-                ctx.rt.cached_mut().insert(self.xid, $v.clone());
+                ctx.rt.cached_insert(self.xid, $v.clone());
                 event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
@@ -447,7 +447,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         }
         if let Some(v) = from[1].update(ctx, event).to_option() {
             let v = v.value();
-            ctx.rt.cached_mut().insert(self.pid, v.clone());
+            ctx.rt.cached_insert(self.pid, v.clone());
             event.variables.insert(self.pid, TagValue::fired(v));
         }
         if self.ready && self.queue.len() > 0 {
@@ -497,9 +497,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.nid);
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.xid);
+        ctx.rt.cached_remove(&self.nid);
+        ctx.rt.cached_remove(&self.pid);
+        ctx.rt.cached_remove(&self.xid);
         self.pred.delete(ctx);
     }
 
@@ -513,9 +513,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         // removes); the queue, the group buffer, and the ready flag
         // are the grouping contract — they aggregate across events
         // and survive.
-        ctx.rt.cached_mut().remove(&self.nid);
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.xid);
+        ctx.rt.cached_remove(&self.nid);
+        ctx.rt.cached_remove(&self.pid);
+        ctx.rt.cached_remove(&self.xid);
         self.pred.reset_replay(ctx);
     }
 }

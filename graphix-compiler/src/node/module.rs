@@ -511,7 +511,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 // the entry's tag flows through the proxy; the clean
                 // cache never holds a taint placeholder
                 if !tv.is_tainted() {
-                    ctx.rt.cached_mut().insert(*inner_id, tv.value_cloned());
+                    ctx.rt.cached_insert(*inner_id, tv.value_cloned());
                 }
                 event.variables.insert(*inner_id, tv);
             }
@@ -536,7 +536,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         for (inner_id, proxy_id) in &self.proxy {
             if let Some(tv) = event.variables.remove(inner_id) {
                 if !tv.is_tainted() {
-                    ctx.rt.cached_mut().insert(*proxy_id, tv.value_cloned());
+                    ctx.rt.cached_insert(*proxy_id, tv.value_cloned());
                 }
                 event.variables.insert(*proxy_id, tv);
             }

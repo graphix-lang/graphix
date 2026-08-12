@@ -366,7 +366,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 } else {
                     let v = tv.value_cloned();
                     pat.bind(&v, &mut |id, v| {
-                        ctx.rt.cached_mut().insert(id, v.clone());
+                        ctx.rt.cached_insert(id, v.clone());
                         event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     })
                 }
@@ -540,7 +540,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 let res = if !reentered && !framed {
                     self.body.update(ctx, event).to_option()
                 } else {
-                    mem::swap(&mut event.variables, &mut *frame);
+                    event.enter_frame(&mut *frame);
                     let prev = mem::replace(&mut event.init, true);
                     // The dispatch's REAL init rides beside the forced
                     // one: literal nodes inside frames produce FIRED
@@ -558,7 +558,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     ctx.frame_depth -= 1;
                     ctx.frame_init = prev_fi;
                     event.init = prev;
-                    mem::swap(&mut event.variables, &mut *frame);
+                    event.exit_frame(&mut *frame);
                     // Deliver anything the pass raised that must escape
                     // the frame (a `catch` handler's error — see
                     // `ExecCtx::frame_outbox`). `event.variables` is
@@ -620,7 +620,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                         Some(tv) => {
                             let (v, tag) = tv.clone().into_parts();
                             pat.bind(&v, &mut |id, v| {
-                                ctx.rt.cached_mut().insert(id, v.clone());
+                                ctx.rt.cached_insert(id, v.clone());
                                 frame.insert(id, TagValue::tagged(v, tag));
                             })
                         }
@@ -645,10 +645,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 for (id, v) in saved.drain(..) {
                     match v {
                         Some(v) => {
-                            ctx.rt.cached_mut().insert(id, v);
+                            ctx.rt.cached_insert(id, v);
                         }
                         None => {
-                            ctx.rt.cached_mut().remove(&id);
+                            ctx.rt.cached_remove(&id);
                         }
                     }
                 }
@@ -850,7 +850,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // this instance's body.
         for pat in self.args.iter() {
             pat.ids(&mut |id| {
-                ctx.rt.cached_mut().remove(&id);
+                ctx.rt.cached_remove(&id);
             });
         }
         self.body.reset_replay(ctx);
