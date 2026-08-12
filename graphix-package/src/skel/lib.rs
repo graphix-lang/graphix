@@ -1,6 +1,6 @@
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, TagView, UserEvent,
     effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use graphix_derive::defpackage;
@@ -41,14 +41,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        match from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
-            Value::Error(_) => Value::Bool(true),
-            _ => Value::Bool(false),
-        }) {
-            // Produced: store in the result slot and lend the borrow.
-            Some(v) => self.out.set(TagValue::fired(v)),
-            // No production this cycle.
-            None => TagValue::absent(),
+        // DENSE delivery: every awake arg produces every cycle. Match
+        // the production's view exhaustively — this is the whole
+        // builtin-authoring contract (design/dense_delivery.md).
+        match from[0].update(ctx, event).view() {
+            // An event carrying a value: compute, store in the result
+            // slot, lend the borrow.
+            TagView::Fired(tv) => {
+                let v = tv.with_value(|v| match v {
+                    Value::Error(_) => Value::Bool(true),
+                    _ => Value::Bool(false),
+                });
+                self.out.set(TagValue::fired(v))
+            }
+            // The value channel — nothing new: re-surface the result
+            // slot on the stale channel.
+            TagView::Stale(_) => self.out.ride(),
+            // A consumed bottom bottoms the invocation (Q1 — bottom
+            // propagates); the shared statics leave the result slot's
+            // history intact for later stale re-surfacing.
+            TagView::FreshBottom => TagValue::bottom_null(true),
+            TagView::StaleBottom => TagValue::bottom_null(false),
         }
     }
 
