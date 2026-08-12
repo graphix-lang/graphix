@@ -7,7 +7,7 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
@@ -140,8 +140,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(Value::Map(m)) =
-            from[0].update(ctx, event).to_option().map(|tv| tv.value())
+        if let Some(Value::Map(m)) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned())
         {
             for (k, v) in m.into_iter() {
                 let pair = Value::Array(ValArray::from_iter_exact(
@@ -212,11 +212,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if !from[0].update(ctx, event).is_absent() {
+        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
             self.triggered += 1;
         }
-        if let Some(Value::Map(m)) =
-            from[1].update(ctx, event).to_option().map(|tv| tv.value())
+        if let Some(Value::Map(m)) = seam_tick(from[1].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned())
         {
             let pairs: LPooled<Vec<(Value, Value)>> =
                 m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();

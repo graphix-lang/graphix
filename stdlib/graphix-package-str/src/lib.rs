@@ -12,7 +12,9 @@ use graphix_compiler::{
     expr::ExprId,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, extract_cast_type};
+use graphix_package_core::{
+    CachedArgs, CachedVals, EvalCached, extract_cast_type, seam_value,
+};
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
@@ -425,7 +427,6 @@ macro_rules! escape_fn {
         #[derive(Debug)]
         struct $name {
             escape: Option<Escape>,
-            args: CachedVals,
             out: TagValue,
         }
 
@@ -439,14 +440,10 @@ macro_rules! escape_fn {
                 _typ: &'a FnType,
                 _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
-                from: &'c [Node<R, E>],
+                _from: &'c [Node<R, E>],
                 _top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self {
-                    escape: None,
-                    args: CachedVals::new(from),
-                    out: TagValue::phantom(),
-                }))
+                Ok(Box::new(Self { escape: None, out: TagValue::phantom() }))
             }
         }
 
@@ -458,42 +455,43 @@ macro_rules! escape_fn {
                 event: &mut Event<E>,
             ) -> &TagValue {
                 static TAG: ArcStr = literal!("StringError");
-                let mut up = [false; 2];
-                self.args.update_diff(&mut up, ctx, from, event);
-                if up[0] {
-                    match &self.args.0[0] {
-                        Some(esc) => match build_escape(esc.clone()) {
-                            Err(e) => {
-                                let v = errf!(TAG, "escape: invalid argument {e:?}");
-                                return self.out.set(TagValue::fired(v));
-                            }
-                            Ok(esc) => self.escape = Some(esc),
-                        },
-                        _ => return TagValue::absent(),
-                    };
-                }
-                let res = match (up, &self.escape, &self.args.0[1]) {
-                    ([_, true], Some(esc), Some(Value::String(s))) => {
-                        Some(Value::String(ArcStr::from(esc.$escape(&s))))
-                    }
-                    (_, _, _) => None,
+                // both args update up front (the old update_diff
+                // order): the config error path below must not skip
+                // the data arg's update. Both old up flags were
+                // triggers()-derived (stale-quiet), so is_fired with
+                // no dense_seam gate.
+                let esc = match seam_value(from[0].update(ctx, event)) {
+                    Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
+                    _ => None,
                 };
-                match res {
-                    Some(v) => self.out.set(TagValue::fired(v)),
-                    None => TagValue::absent(),
+                let data = match seam_value(from[1].update(ctx, event)) {
+                    Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
+                    _ => None,
+                };
+                if let Some(esc) = esc {
+                    match build_escape(esc) {
+                        Err(e) => {
+                            let v = errf!(TAG, "escape: invalid argument {e:?}");
+                            return self.out.set(TagValue::fired(v));
+                        }
+                        Ok(esc) => self.escape = Some(esc),
+                    }
+                }
+                match (&self.escape, data) {
+                    (Some(esc), Some(Value::String(s))) => self.out.set(TagValue::fired(
+                        Value::String(ArcStr::from(esc.$escape(&s))),
+                    )),
+                    (_, _) => TagValue::absent(),
                 }
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
                 self.escape = None;
-                self.args.clear();
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                // The cached args are replay memory; the compiled
-                // escape is a pure memo derived from them and
-                // survives.
-                self.args.clear()
+                // The compiled escape is a pure memo of the config
+                // arg and survives replay.
             }
         }
     };

@@ -279,3 +279,32 @@ divergence to this list — anything off-list stops the line):
   per param (identical to today's marshal). Prototype-first on select /
   the tail stash / FoldQ before any mass conversion.
 - `event.init`'s residual role is decided narrowly at the flip.
+
+## As-built: the P4 builtin seam (2026-08-11)
+
+The author-facing seam is `TagValue::view()` plus three TRANSITIONAL
+helpers in graphix-package-core (they die with the P6 adapter
+deletion), and the family gate is one field, `ExecCtx::dense_seam`
+(default `false`; the 5b flip turns it `true`):
+
+- `seam_tick(tv, ctx.dense_seam)` — the EVENT decision. Closed: fired
+  or stale ticks (the sparse `to_option()` consumption, bit-exact).
+  Open: fired only. Bottoms never tick in either mode — they cannot
+  reach a builtin seam pre-flip (the CallSite taint gate), so the
+  bottom arms are unreachable backstops, quiet per the `CachedArgs`
+  precedent rather than replaying sparse tick-with-placeholder.
+- `seam_value(tv)` — the value-plane read (config/latch args): fired
+  or stale, ungated (dense and sparse agree).
+- `seam_publish_tag(tv, ctx.dense_seam)` — the HOF republish tag.
+  Closed: FIRED (the sparse laundering). Open: the honest arrival tag.
+
+One finding from the conversion: every `update_diff`/`triggers()`-gated
+decision (throttle, timer, the escape template) was ALREADY stale-quiet
+— `triggers()` excludes STALE — so those sites take `tv.is_fired()`
+with NO gate; the tag-blind hazard lives only in the `to_option()`/
+`is_absent()` seams. Migrated behind the gate: once/take/skip/count/
+uniq/queue/hold ticks, print/println/dbg/log effects, now/rand/exit,
+array::group (the jul10h-000007 protection moved in-builtin) and the
+iter/iterq families, filter/opt-HOF/queuefn laundering. Own-field
+refactors (ungated, pure): throttle's `last_v` emission source (its
+`CachedVals` deleted), the timer family per the same rule.

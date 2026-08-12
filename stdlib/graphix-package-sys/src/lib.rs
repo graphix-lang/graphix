@@ -10,6 +10,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
+    seam_tick,
 };
 use graphix_rt::GXRt;
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -519,8 +520,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
     ) -> &TagValue {
         if let Some(Value::I64(code)) = from
             .get_mut(0)
-            .and_then(|n| n.update(ctx, event).to_option())
-            .map(|tv| tv.value())
+            .and_then(|n| seam_tick(n.update(ctx, event), ctx.dense_seam))
+            .map(|tv| tv.value_cloned())
         {
             use std::io::Write;
             let _ = std::io::stdout().flush();

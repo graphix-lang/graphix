@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
-    UserEvent,
+    TagView, UserEvent,
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
@@ -249,6 +249,50 @@ pub fn is_struct(arr: &ValArray) -> bool {
 }
 
 // ── Shared traits and structs ──────────────────────────────────────
+
+/// P4 TRANSITIONAL (design/dense_delivery.md; simplifies at the 5b
+/// flip): the TICK view of a production at a builtin's arg seam —
+/// `Some` iff this delivery is a consumable EVENT (one that advances
+/// the builtin's state machine: burns `once`'s shot, counts in
+/// `count`, consumes a `take`, emits a print). Gate closed
+/// (`dense == false`, the default until 5b): tag-blind — any
+/// value-bearing production ticks, reproducing the sparse
+/// `to_option()` consumption these seams had. Gate open: only
+/// `Fired` ticks — a stale delivery is the value channel, not an
+/// event. The bottom arms never tick in either mode: a bottom cannot
+/// reach a builtin seam today (the CallSite taint gate silences it
+/// upstream), so they are unreachable backstops — quiet here, per the
+/// `CachedArgs` backstop precedent, rather than replaying the sparse
+/// code's tick-with-placeholder. Callers pass `ctx.dense_seam`.
+pub fn seam_tick<'a>(tv: &'a TagValue, dense: bool) -> Option<&'a TagValue> {
+    match tv.view() {
+        TagView::Fired(tv) => Some(tv),
+        TagView::Stale(tv) if !dense => Some(tv),
+        TagView::Stale(_) | TagView::FreshBottom | TagView::StaleBottom => None,
+    }
+}
+
+/// The VALUE view of a production at a builtin's arg seam — `Some` for
+/// any value-bearing delivery (fired or stale), `None` for bottoms.
+/// For config/label args (`throttle`'s duration, `take`'s `#n`, a
+/// print destination) whose consumption is value-plane tracking rather
+/// than event counting: dense and sparse agree, so it takes no gate.
+pub fn seam_value<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
+    match tv.view() {
+        TagView::Fired(tv) | TagView::Stale(tv) => Some(tv),
+        TagView::FreshBottom | TagView::StaleBottom => None,
+    }
+}
+
+/// P4 TRANSITIONAL: the tag under which an HOF builtin republishes a
+/// consumed arg production into its callback subgraph (`filter`'s
+/// element/pred binds, the opt HOFs, `queuefn`'s wrapper args). Gate
+/// closed: the sparse LAUNDERING — the delivery is re-minted FIRED
+/// regardless of the arrival tag, so a stale arrival fires the whole
+/// subgraph. Gate open: the honest arrival tag rides through.
+pub fn seam_publish_tag(tv: &TagValue, dense: bool) -> Tag {
+    if dense { tv.tag() } else { Tag::FIRED }
+}
 
 #[derive(Debug)]
 pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
@@ -839,12 +883,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         event: &mut Event<E>,
     ) -> &TagValue {
         let res = match from {
-            [s] => s.update(ctx, event).to_option().and_then(|v| {
+            [s] => seam_tick(s.update(ctx, event), ctx.dense_seam).and_then(|tv| {
                 if self.val {
                     None
                 } else {
                     self.val = true;
-                    Some(v.value())
+                    Some(tv.value_cloned())
                 }
             }),
             _ => None,
@@ -903,24 +947,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(n) = from[0]
-            .update(ctx, event)
-            .to_option()
-            .and_then(|v| v.value().cast_to::<usize>().ok())
+        if let Some(n) = seam_value(from[0].update(ctx, event))
+            .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        let res = match from[1].update(ctx, event).to_option() {
-            None => None,
-            Some(v) => match &mut self.n {
+        let res = seam_tick(from[1].update(ctx, event), ctx.dense_seam).and_then(|tv| {
+            match &mut self.n {
                 None => None,
                 Some(n) if *n > 0 => {
                     *n -= 1;
-                    Some(v.value())
+                    Some(tv.value_cloned())
                 }
                 Some(_) => None,
-            },
-        };
+            }
+        });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => TagValue::absent(),
@@ -974,24 +1015,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(n) = from[0]
-            .update(ctx, event)
-            .to_option()
-            .and_then(|v| v.value().cast_to::<usize>().ok())
+        if let Some(n) = seam_value(from[0].update(ctx, event))
+            .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        let res = match from[1].update(ctx, event).to_option() {
-            None => None,
-            Some(v) => match &mut self.n {
-                None => Some(v.value()),
+        let res = seam_tick(from[1].update(ctx, event), ctx.dense_seam).and_then(|tv| {
+            match &mut self.n {
+                None => Some(tv.value_cloned()),
                 Some(n) if *n > 0 => {
                     *n -= 1;
                     None
                 }
-                Some(_) => Some(v.value()),
-            },
-        };
+                Some(_) => Some(tv.value_cloned()),
+            }
+        });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => TagValue::absent(),
@@ -1451,17 +1489,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let v = tv.value_cloned();
             ctx.rt.cached_insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        if let Some(v) = from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(tv) = seam_value(from[0].update(ctx, event)) {
+            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let v = tv.value_cloned();
             self.pending = Some(v.clone());
             ctx.rt.cached_insert(self.x, v.clone());
-            event.variables.insert(self.x, TagValue::fired(v));
+            event.variables.insert(self.x, TagValue::tagged(v, tag));
         }
         let res =
-            self.pred.update(ctx, event).to_option().and_then(|b| match b.value() {
+            seam_tick(self.pred.update(ctx, event), ctx.dense_seam).and_then(|b| match b
+                .value_cloned()
+            {
                 Value::Bool(true) => self.pending.clone(),
                 _ => None,
             });
@@ -1550,11 +1594,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if !from[0].update(ctx, event).is_absent() {
+        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
             self.triggered += 1;
         }
-        if let Some(v) = from[1].update(ctx, event).to_option() {
-            self.queue.push_back(v.value());
+        if let Some(tv) = seam_tick(from[1].update(ctx, event), ctx.dense_seam) {
+            self.queue.push_back(tv.value_cloned());
         }
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
@@ -1630,11 +1674,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if !from[0].update(ctx, event).is_absent() {
+        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
             self.triggered += 1;
         }
-        if let Some(v) = from[1].update(ctx, event).to_option() {
-            self.current = Some(v.value());
+        if let Some(tv) = seam_tick(from[1].update(ctx, event), ctx.dense_seam) {
+            self.current = Some(tv.value_cloned());
         }
         if self.triggered > 0
             && let Some(v) = self.current.take()
@@ -1752,7 +1796,12 @@ struct Throttle {
     last: Option<Instant>,
     tid: Option<BindId>,
     top_id: ExprId,
-    args: CachedVals,
+    /// The latest value of the throttled arg — the emission source
+    /// when the timer fires (async, after the arg's delivery is long
+    /// gone). An explicit OWN field, not an arg-cache slot: the value
+    /// a throttle emits is its designated semantic memory
+    /// (design/dense_delivery.md, the throttle/timer P4 item).
+    last_v: Option<Value>,
     out: TagValue,
 }
 
@@ -1764,16 +1813,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let args = CachedVals::new(from);
         Ok(Box::new(Self {
             wait: Duration::ZERO,
             last: None,
             tid: None,
             top_id,
-            args,
+            last_v: None,
             out: TagValue::phantom(),
         }))
     }
@@ -1788,7 +1836,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     ) -> &TagValue {
         macro_rules! emit_cached {
             () => {{
-                match self.args.0[1].clone() {
+                match self.last_v.clone() {
                     Some(v) => return self.out.set(TagValue::fired(v)),
                     None => return TagValue::absent(),
                 }
@@ -1809,12 +1857,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 }
             }};
         }
-        let mut up = [false; 2];
-        self.args.update_diff(&mut up, ctx, from, event);
-        if up[0]
-            && let Some(Value::Duration(d)) = &self.args.0[0]
-        {
-            self.wait = **d;
+        // both args update up front (the old update_diff order): a
+        // fired duration retunes the wait; the throttled arg's value
+        // lands in `last_v` on ANY value-bearing delivery (the value
+        // channel), while only a FIRED delivery counts as an event to
+        // throttle — `triggers()` already excluded stale, so no
+        // dense_seam gate is needed here.
+        let new_wait = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) if tv.is_fired() => tv.with_value(|v| match v {
+                Value::Duration(d) => Some(**d),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let mut up1 = false;
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            up1 = tv.is_fired();
+            self.last_v = Some(tv.value_cloned());
+        }
+        if let Some(d) = new_wait {
+            self.wait = d;
             if let Some(id) = self.tid.take()
                 && let Some(last) = &mut self.last
             {
@@ -1822,7 +1884,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 maybe_schedule!(last)
             }
         }
-        if up[1] && self.tid.is_none() {
+        if up1 && self.tid.is_none() {
             match &mut self.last {
                 Some(last) => maybe_schedule!(last),
                 None => {
@@ -1852,13 +1914,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.delete(ctx);
         self.last = None;
         self.wait = Duration::ZERO;
-        self.args.clear();
+        self.last_v = None;
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Timing state is semantic, and the cached args feed the
-        // in-flight timer's emission (async — never inside a sync
-        // frame).
+        // Timing state is semantic, and `last_v` feeds the in-flight
+        // timer's emission (async — never inside a sync frame).
     }
 }
 
@@ -1899,7 +1960,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if from.into_iter().fold(false, |u, n| u || !n.update(ctx, event).is_absent()) {
+        if from.into_iter().fold(false, |u, n| {
+            u || seam_tick(n.update(ctx, event), ctx.dense_seam).is_some()
+        }) {
             self.count += 1;
             self.out.set(TagValue::fired(Value::I64(self.count)))
         } else {
@@ -1986,8 +2049,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = from[0].update(ctx, event).to_option().and_then(|tv| {
-            let v = tv.value();
+        let res = seam_tick(from[0].update(ctx, event), ctx.dense_seam).and_then(|tv| {
+            let v = tv.value_cloned();
             if Some(&v) != self.0.as_ref() {
                 self.0 = Some(v.clone());
                 Some(v)
@@ -2133,13 +2196,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(v) = from[0].update(ctx, event).to_option()
-            && let Ok(d) = v.value().cast_to::<LogDest>()
+        if let Some(v) =
+            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            && let Ok(d) = v.cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        let res = from[1].update(ctx, event).to_option().map(|v| {
-            let v = v.value();
+        let ticked = seam_tick(from[1].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned());
+        let res = ticked.map(|v| {
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
                     ctx.libstate.get::<PrintSink>().cloned()
@@ -2229,12 +2294,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(v) = from[0].update(ctx, event).to_option()
-            && let Ok(d) = v.value().cast_to::<LogDest>()
+        if let Some(v) =
+            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            && let Ok(d) = v.cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(v) = seam_tick(from[1].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned())
+        {
             let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
@@ -2300,13 +2368,14 @@ macro_rules! printfn {
                 event: &mut Event<E>,
             ) -> &TagValue {
                 use std::fmt::Write;
-                if let Some(v) = from[0].update(ctx, event).to_option()
-                    && let Ok(d) = v.value().cast_to::<LogDest>()
+                if let Some(v) =
+                    seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+                    && let Ok(d) = v.cast_to::<LogDest>()
                 {
                     self.dest = d;
                 }
-                if let Some(v) =
-                    from[1].update(ctx, event).to_option().map(|tv| tv.value())
+                if let Some(v) = seam_tick(from[1].update(ctx, event), ctx.dense_seam)
+                    .map(|tv| tv.value_cloned())
                 {
                     self.buf.clear();
                     match v {

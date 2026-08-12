@@ -1720,6 +1720,20 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// frames unwind. Nested frames bubble: the drain only runs at
     /// `frame_depth == 0`.
     pub(crate) frame_outbox: Vec<(BindId, Value)>,
+    /// P4 TRANSITIONAL — the dense-migration family gate
+    /// (design/dense_delivery.md). `false` (the default until the 5b
+    /// flip): builtins keep their sparse-compatible consumption —
+    /// tag-blind ticks (a stale delivery counts as an event to
+    /// `once`/`count`/`take`/...), effects on any production
+    /// (`print` re-prints a stale refresh), and HOF builtins
+    /// re-publishing consumed args into callback subgraphs as FIRED
+    /// regardless of the arrival tag. `true`: the dense rules — ticks,
+    /// effects, and samples gate on `TagView::Fired`; laundering sites
+    /// republish with the honest tag. The migrated families carry both
+    /// paths in one exhaustive `view()` match, selected here; 5b flips
+    /// this default to `true` and the P6 adapter deletion removes the
+    /// flag (and with it the sparse arms).
+    pub dense_seam: bool,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
@@ -1768,6 +1782,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_init: false,
             tail_scrut_fired: false,
             frame_outbox: Vec::new(),
+            dense_seam: false,
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

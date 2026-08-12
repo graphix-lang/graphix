@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
+    UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
@@ -8,7 +9,9 @@ use graphix_compiler::{
 };
 use netidx_value::{ValArray, Value};
 
-use crate::{CachedArgs, CachedVals, EvalCached};
+use crate::{
+    CachedArgs, CachedVals, EvalCached, seam_publish_tag, seam_tick, seam_value,
+};
 
 // ── Predicates ─────────────────────────────────────────────────────
 
@@ -296,15 +299,17 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) {
-        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let v = tv.value_cloned();
             ctx.rt.cached_insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
     }
 
-    fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value) {
+    fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value, tag: Tag) {
         ctx.rt.cached_insert(self.x, v.clone());
-        event.variables.insert(self.x, TagValue::fired(v));
+        event.variables.insert(self.x, TagValue::tagged(v, tag));
     }
 
     /// Standard fire-and-forget tick used by map/flat_map/is_some_and/
@@ -322,15 +327,27 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         on_null: Value,
     ) -> Option<Value> {
         self.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
-            Some(Value::Null) => Some(on_null),
-            Some(v) => {
-                self.feed_x(ctx, event, v);
-                None
+        let direct = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) => {
+                let tag = seam_publish_tag(tv, ctx.dense_seam);
+                // the null branch DRIVES an emission, so under the
+                // open gate it must be an event — a stale null is
+                // quiet (the republish branch is value-plane and rides
+                // the honest tag instead)
+                let drives = !ctx.dense_seam || tv.is_fired();
+                match tv.value_cloned() {
+                    Value::Null if drives => Some(on_null),
+                    Value::Null => None,
+                    v => {
+                        self.feed_x(ctx, event, v, tag);
+                        None
+                    }
+                }
             }
             None => None,
         };
-        let inner_out = self.inner.update(ctx, event).to_option().map(|tv| tv.value());
+        let inner_out = seam_tick(self.inner.update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned());
         direct.or(inner_out)
     }
 
@@ -546,22 +563,35 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         event: &mut Event<E>,
     ) -> &TagValue {
         self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
-            Some(Value::Null) => {
-                self.pending = None;
-                Some(Value::Null)
-            }
-            Some(v) => {
-                self.pending = Some(v.clone());
-                self.s.feed_x(ctx, event, v);
-                None
+        let direct = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) => {
+                let tag = seam_publish_tag(tv, ctx.dense_seam);
+                // as in tick_unary: the null branch drives an
+                // emission, so under the open gate it requires an
+                // event — a stale null neither emits nor clears the
+                // pending latch
+                let drives = !ctx.dense_seam || tv.is_fired();
+                match tv.value_cloned() {
+                    Value::Null if drives => {
+                        self.pending = None;
+                        Some(Value::Null)
+                    }
+                    Value::Null => None,
+                    v => {
+                        self.pending = Some(v.clone());
+                        self.s.feed_x(ctx, event, v, tag);
+                        None
+                    }
+                }
             }
             None => None,
         };
         let inner_out =
-            self.s.inner.update(ctx, event).to_option().map(|b| match b.value() {
-                Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
-                _ => Value::Null,
+            seam_tick(self.s.inner.update(ctx, event), ctx.dense_seam).map(|b| {
+                match b.value_cloned() {
+                    Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
+                    _ => Value::Null,
+                }
             });
         match direct.or(inner_out) {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -778,19 +808,24 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> (bool, bool) {
-        if let Some(v) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let v = tv.value_cloned();
             ctx.rt.cached_insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        let a_updated = if let Some(a) = from[0].update(ctx, event).to_option() {
-            self.last_a = Some(a.value());
-            true
+        // the latches are value-plane (a stale delivery refreshes
+        // them); the returned flags DRIVE emission, so under the open
+        // gate they require an event
+        let a_updated = if let Some(a) = seam_value(from[0].update(ctx, event)) {
+            self.last_a = Some(a.value_cloned());
+            !ctx.dense_seam || a.is_fired()
         } else {
             false
         };
-        let f_updated = if let Some(v) = self.inner.update(ctx, event).to_option() {
-            self.last_f = Some(v.value());
-            true
+        let f_updated = if let Some(v) = seam_value(self.inner.update(ctx, event)) {
+            self.last_f = Some(v.value_cloned());
+            !ctx.dense_seam || v.is_fired()
         } else {
             false
         };

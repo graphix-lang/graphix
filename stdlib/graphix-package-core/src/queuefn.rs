@@ -15,6 +15,8 @@ use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug, marker::PhantomData, sync::Arc as SArc};
 use triomphe::Arc;
 
+use crate::{seam_publish_tag, seam_tick, seam_value};
+
 #[derive(Debug)]
 struct QueueEntry {
     /// The (BindId, Value) pairs for the args that fired in the originating
@@ -77,9 +79,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     ) -> &TagValue {
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
-            if let Some(v) = n.update(ctx, event).to_option() {
+            if let Some(v) = seam_tick(n.update(ctx, event), ctx.dense_seam) {
                 if let Some(bid) = self.arg_bids.get(i) {
-                    delta.push((*bid, v.value()));
+                    delta.push((*bid, v.value_cloned()));
                 }
             }
         }
@@ -113,7 +115,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        match self.pred.update(ctx, event).to_option().map(|tv| tv.value()) {
+        match seam_tick(self.pred.update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned())
+        {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => TagValue::absent(),
         }
@@ -305,7 +309,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
-        if let Some(v) = from[0].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(v) =
+            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+        {
             let new_ref = match &v {
                 Value::U64(b) => {
                     let outer = BindId::from(*b);
@@ -318,7 +324,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             s.last_written_depth = s.depth();
         }
         let mut new_lambda: Option<Value> = None;
-        if let Some(v) = from[2].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(tv) = seam_value(from[2].update(ctx, event)) {
+            let tag = seam_publish_tag(tv, ctx.dense_seam);
+            let v = tv.value_cloned();
             // `resolved` is a typecheck-time artifact; a lazily-built
             // instance (an analysis-pred per-slot clone whose swallowed
             // typecheck died upstream) never had one. The runtime `f`
@@ -334,7 +342,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
             ctx.rt.cached_insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {
                     Ok(lv) => {
@@ -350,7 +358,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
         }
-        let trigger_fired = !from[1].update(ctx, event).is_absent();
+        let trigger_fired =
+            seam_tick(from[1].update(ctx, event), ctx.dense_seam).is_some();
         if trigger_fired {
             let popped = {
                 let mut s = self.state.lock();

@@ -13,7 +13,7 @@ use graphix_compiler::{
     },
     typ::FnType,
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
 use smallvec::SmallVec;
@@ -511,8 +511,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(list) = from[0].update(ctx, event).to_option() {
-            for v in ListIter::new(list.value()) {
+        if let Some(list) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned())
+        {
+            for v in ListIter::new(list) {
                 ctx.rt.set_var(self.0, v);
             }
         }
@@ -578,10 +580,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if !from[0].update(ctx, event).is_absent() {
+        if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
             self.triggered += 1;
         }
-        if let Some(list) = from[1].update(ctx, event).to_option().map(|tv| tv.value()) {
+        if let Some(list) = seam_tick(from[1].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned())
+        {
             if is_list(&list) {
                 let elems: Vec<Value> = ListIter::new(list).collect();
                 if !elems.is_empty() {

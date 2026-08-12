@@ -7,7 +7,7 @@ use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::CachedVals;
+use graphix_package_core::{CachedVals, seam_tick};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use rand::{RngExt, rng, seq::SliceRandom};
@@ -110,11 +110,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = from[0].update(ctx, event).to_option().and_then(|a| match a.value() {
-            Value::Array(a) if a.len() > 0 => {
-                Some(a[rng().random_range(0..a.len())].clone())
+        let res = seam_tick(from[0].update(ctx, event), ctx.dense_seam).and_then(|a| {
+            match a.value_cloned() {
+                Value::Array(a) if a.len() > 0 => {
+                    Some(a[rng().random_range(0..a.len())].clone())
+                }
+                _ => None,
             }
-            _ => None,
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -156,13 +158,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = from[0].update(ctx, event).to_option().and_then(|a| match a.value() {
-            Value::Array(a) => {
-                self.buf.extend(a.iter().cloned());
-                self.buf.shuffle(&mut rng());
-                Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
+        let res = seam_tick(from[0].update(ctx, event), ctx.dense_seam).and_then(|a| {
+            match a.value_cloned() {
+                Value::Array(a) => {
+                    self.buf.extend(a.iter().cloned());
+                    self.buf.shuffle(&mut rng());
+                    Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
+                }
+                _ => None,
             }
-            _ => None,
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
