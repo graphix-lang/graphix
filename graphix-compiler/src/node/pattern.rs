@@ -859,7 +859,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> bool {
         match &mut self.guard {
             None => false,
-            Some(g) => g.update(ctx, event).is_some(),
+            Some(g) => g.update_triggers(ctx, event),
         }
     }
 

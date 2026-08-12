@@ -138,7 +138,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
             },
         }
-        TagValue::absent()
+        self.out.ride()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -226,7 +226,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
                 if let Some((_, dv)) = self.cur.take() {
                     NetState::get(ctx).unsubscribe(dv, self.id)
                 }
-                return TagValue::absent();
+                return self.out.ride();
             }
             (Some(Value::String(path)), true)
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
@@ -272,7 +272,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -403,7 +403,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -526,7 +526,7 @@ macro_rules! list {
                 });
                 match res {
                     Some(v) => self.out.set(TagValue::fired(v)),
-                    None => TagValue::absent(),
+                    None => self.out.ride(),
                 }
             }
 
@@ -703,12 +703,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }
         }
-        if let Some(v) = self.on_write.update(ctx, event).to_option() {
+        if let Some(v) = graphix_package_core::seam_tick(
+            self.on_write.update(ctx, event),
+            ctx.dense_seam,
+        )
+        .map(|tv| tv.clone())
+        {
             if let Some(reply) = reply {
                 reply.send(v.value())
             }
         }
-        TagValue::absent()
+        self.out.ride()
     }
 
     fn typecheck0(
@@ -755,8 +760,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.args.clear();
-        ctx.rt.cached_remove(&self.pid);
-        ctx.rt.cached_remove(&self.x);
         self.on_write.reset_replay(ctx);
     }
 }
@@ -1065,8 +1068,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
         }
         loop {
-            match self.f.update(ctx, event).to_option() {
-                None => break TagValue::absent(),
+            match graphix_package_core::seam_tick(
+                self.f.update(ctx, event),
+                ctx.dense_seam,
+            )
+            .map(|tv| tv.clone())
+            {
+                None => break self.out.ride(),
                 Some(v) => {
                     self.ready = true;
                     if let Some(mut call) = self.queue.pop_front() {
@@ -1085,7 +1093,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                             }
                             set!(c)
                         }
-                        None => break TagValue::absent(),
+                        None => break self.out.ride(),
                     }
                 }
             }
@@ -1141,8 +1149,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.args.clear();
-        ctx.rt.cached_remove(&self.pid);
-        ctx.rt.cached_remove(&self.x);
         self.f.reset_replay(ctx);
     }
 }

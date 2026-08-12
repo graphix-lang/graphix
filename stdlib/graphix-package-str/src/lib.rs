@@ -481,7 +481,7 @@ macro_rules! escape_fn {
                     (Some(esc), Some(Value::String(s))) => self.out.set(TagValue::fired(
                         Value::String(ArcStr::from(esc.$escape(&s))),
                     )),
-                    (_, _) => TagValue::absent(),
+                    (_, _) => self.out.ride(),
                 }
             }
 

@@ -69,21 +69,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
                     .resident
                     .set(TagValue::fired(Value::Array(ValArray::from([]))));
             }
-            return TagValue::absent();
+            return self.resident.ride();
         }
         let mut produced = false;
         let mut fired = false;
         let mut determined = true;
         for c in self.n.iter_mut() {
             if let Some(t) = c.update(ctx, event) {
-                produced = true;
+                produced |= t.triggers();
                 fired |= t.is_fired();
             }
             determined &= c.cached.is_some();
         }
         if produced && determined {
             if self.n.iter().any(|c| c.tag.is_tainted()) {
-                return self.resident.set(TagValue::tainted(Value::Null));
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.names.iter().zip(self.n.iter()).map(|(name, n)| {
@@ -93,8 +95,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
             });
             let v = Value::Array(ValArray::from_iter_exact(iter));
             self.resident.set(TagValue::tagged(v, tag))
+        } else if produced {
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 
@@ -219,22 +223,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         let mut produced = false;
         let mut fired = false;
         let tv = self.source.update(ctx, event);
-        if !tv.is_absent() {
-            let tag = tv.tag();
-            if tag.is_tainted() {
-                self.current_tag = tag;
-                produced = true;
-            } else if let Value::Array(a) = tv.value_cloned() {
+        let stag = tv.tag();
+        if !stag.is_bottom() {
+            if let Value::Array(a) = tv.value_cloned() {
                 self.current = Some(a);
-                self.current_tag = tag;
-                produced = true;
-                fired |= tag.is_fired();
+                self.current_tag = stag;
+                produced |= stag.triggers();
+                fired |= stag.is_fired();
             }
+        } else if stag.triggers() {
+            self.current_tag = stag;
+            produced = true;
         }
         let mut determined = self.current.is_some();
         for r in self.replace.iter_mut() {
             if let Some(t) = r.n.update(ctx, event) {
-                produced = true;
+                produced |= t.triggers();
                 fired |= t.is_fired();
             }
             determined &= r.n.cached.is_some();
@@ -243,7 +247,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             && (self.current_tag.is_tainted()
                 || self.replace.iter().any(|r| r.n.tag.is_tainted()))
         {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         if produced && determined {
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
@@ -278,8 +282,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                 });
             let v = Value::Array(ValArray::from_iter_exact(iter));
             self.resident.set(TagValue::tagged(v, tag))
+        } else if produced {
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 
@@ -422,13 +428,14 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.source.update(ctx, event);
-        if tv.is_absent() {
-            return TagValue::absent();
-        }
-        if tv.is_tainted() {
-            return self.resident.set(TagValue::tainted(Value::Null));
-        }
         let tag = tv.tag();
+        if tag.is_bottom() {
+            return if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
+        }
         let v = tv.value_cloned();
         let res = match v {
             Value::Array(a) => match self.field {
@@ -459,7 +466,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         };
         match res {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
-            None => TagValue::absent(),
+            None => self.resident.ride(),
         }
     }
 
@@ -574,28 +581,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
                     .resident
                     .set(TagValue::fired(Value::Array(ValArray::from([]))));
             }
-            return TagValue::absent();
+            return self.resident.ride();
         }
         let mut produced = false;
         let mut fired = false;
         let mut determined = true;
         for c in self.n.iter_mut() {
             if let Some(t) = c.update(ctx, event) {
-                produced = true;
+                produced |= t.triggers();
                 fired |= t.is_fired();
             }
             determined &= c.cached.is_some();
         }
         if produced && determined {
             if self.n.iter().any(|c| c.tag.is_tainted()) {
-                return self.resident.set(TagValue::tainted(Value::Null));
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.n.iter().map(|n| n.cached.clone().unwrap());
             let v = Value::Array(ValArray::from_iter_exact(iter));
             self.resident.set(TagValue::tagged(v, tag))
+        } else if produced {
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 
@@ -693,7 +704,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
             if event.init {
                 self.resident.set(TagValue::fired(Value::String(self.tag.clone())))
             } else {
-                TagValue::absent()
+                self.resident.ride()
             }
         } else {
             let mut produced = false;
@@ -701,22 +712,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
             let mut determined = true;
             for c in self.n.iter_mut() {
                 if let Some(t) = c.update(ctx, event) {
-                    produced = true;
+                    produced |= t.triggers();
                     fired |= t.is_fired();
                 }
                 determined &= c.cached.is_some();
             }
             if produced && determined {
                 if self.n.iter().any(|c| c.tag.is_tainted()) {
-                    return self.resident.set(TagValue::tainted(Value::Null));
+                    return self
+                        .resident
+                        .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
                 }
                 let tag = if fired { Tag::FIRED } else { Tag::STALE };
                 let a = iter::once(Value::String(self.tag.clone()))
                     .chain(self.n.iter().map(|n| n.cached.clone().unwrap()));
                 let v = Value::Array(ValArray::from_iter(a));
                 self.resident.set(TagValue::tagged(v, tag))
+            } else if produced {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             } else {
-                TagValue::absent()
+                self.resident.ride()
             }
         }
     }
@@ -817,13 +832,14 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.source.update(ctx, event);
-        if tv.is_absent() {
-            return TagValue::absent();
-        }
-        if tv.is_tainted() {
-            return self.resident.set(TagValue::tainted(Value::Null));
-        }
         let tag = tv.tag();
+        if tag.is_bottom() {
+            return if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
+        }
         let v = tv.value_cloned();
         let res = match v {
             Value::Array(a) => a.get(self.field).map(|v| v.clone()),
@@ -832,7 +848,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         };
         match res {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
-            None => TagValue::absent(),
+            None => self.resident.ride(),
         }
     }
 

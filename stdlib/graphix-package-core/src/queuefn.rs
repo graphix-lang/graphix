@@ -119,7 +119,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
             .map(|tv| tv.value_cloned())
         {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -381,7 +381,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         let res = if event.init { self.lambda.clone() } else { new_lambda };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

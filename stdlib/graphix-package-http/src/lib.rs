@@ -861,7 +861,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         }
         // process handler responses
         loop {
-            match self.handler.update(ctx, event).to_option() {
+            match graphix_package_core::seam_tick(
+                self.handler.update(ctx, event),
+                ctx.dense_seam,
+            )
+            .map(|tv| tv.clone())
+            {
                 None => break,
                 Some(v) => {
                     self.ready = true;
@@ -926,8 +931,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.args.clear();
-        ctx.rt.cached_remove(&self.pid);
-        ctx.rt.cached_remove(&self.x);
         self.handler.reset_replay(ctx);
     }
 }

@@ -11,7 +11,7 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
     Scope, TagValue, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::CachedVals;
+use graphix_package_core::{CachedVals, seam_tick, seam_value};
 use netidx_value::{
     Abstract, FromValue, ValArray, Value, abstract_type::AbstractWrapper,
 };
@@ -280,15 +280,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let poll_interval = from[0]
-            .update(ctx, event)
-            .to_option()
-            .and_then(|v| v.value().cast_to::<Option<Duration>>().ok().flatten());
-        let batch_size = from[1]
-            .update(ctx, event)
-            .to_option()
-            .and_then(|v| v.value().cast_to::<Option<i64>>().ok().flatten());
-        let trigger = from[2].update(ctx, event).to_option();
+        let poll_interval = seam_value(from[0].update(ctx, event))
+            .and_then(|v| v.value_cloned().cast_to::<Option<Duration>>().ok().flatten());
+        let batch_size = seam_value(from[1].update(ctx, event))
+            .and_then(|v| v.value_cloned().cast_to::<Option<i64>>().ok().flatten());
+        let trigger =
+            seam_tick(from[2].update(ctx, event), ctx.dense_seam).is_some();
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
                 return self.out.set(TagValue::fired(errf!(
@@ -309,7 +306,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
             Some(batch_size) => self.batch_size = Some(batch_size),
             None => (),
         }
-        if trigger.is_some() {
+        if trigger {
             let idmap = Arc::new(Mutex::new(AHashMap::default()));
             let (notify_tx, notify_rx) = mpsc::channel(10);
             let notify_tx = NotifyChan { tx: notify_tx, idmap: idmap.clone() };
@@ -338,7 +335,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
                 ))),
             }
         } else {
-            TagValue::absent()
+            self.out.ride()
         }
     }
 
@@ -386,10 +383,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         event: &mut Event<E>,
     ) -> &TagValue {
         let mut up = false;
-        if let Some(Ok(mut int)) = from[0]
-            .update(ctx, event)
-            .to_option()
-            .map(|v| v.value().cast_to::<LPooled<Vec<WInterest>>>())
+        if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
+            .map(|v| v.value_cloned().cast_to::<LPooled<Vec<WInterest>>>())
         {
             let int = int.drain(..).fold(BitFlags::empty(), |mut acc, fl| {
                 acc.insert(fl.0);
@@ -398,12 +393,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
             up = true;
             self.interest = Some(int);
         }
-        if let Some(watcher_val) = from[1].update(ctx, event).to_option() {
+        if let Some(watcher_val) =
+            seam_tick(from[1].update(ctx, event), ctx.dense_seam)
+        {
             up = true;
-            self.watcher_val = Some(watcher_val.value());
+            self.watcher_val = Some(watcher_val.value_cloned());
         }
-        if let Some(Ok(path)) =
-            from[2].update(ctx, event).to_option().map(|v| v.value().cast_to::<ArcStr>())
+        if let Some(Ok(path)) = seam_tick(from[2].update(ctx, event), ctx.dense_seam)
+            .map(|tv| tv.value_cloned().cast_to::<ArcStr>())
         {
             up = true;
             self.path = Some(path);
@@ -432,7 +429,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
                 }
             }
         }
-        TagValue::absent()
+        self.out.ride()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -563,7 +560,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         }
         match scan_watch_events(&self.bind_ids, event, convert_path) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -638,7 +635,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
         }
         match scan_watch_events(&self.bind_ids, event, convert_events) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

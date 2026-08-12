@@ -1,7 +1,7 @@
 use super::{Cached, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent,
+    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
+    Update, UserEvent,
     expr::{Expr, ExprId, Pattern},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -14,8 +14,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use netidx_value::Value;
-use poolshark::local::LPooled;
-use std::{collections::hash_map::Entry, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 atomic_id!(SelectId);
 
@@ -143,8 +142,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let Self { selected, arg, arms, typ: _, spec: _, tail_position, resident } = self;
         let mut pat_up = false;
         let arg_prod = arg.update(ctx, event);
-        let tainted = arg.tag.is_tainted();
-        let arg_up = arg_prod.is_some();
+        let bottomed = arg.tag.is_tainted();
+        // THE SCRUTINEE RIDE (Eric's ruling 2026-08-07, aug06ghz0):
+        // a bottomed scrutinee WITH history rides — the standing
+        // selection lives on against the CACHED value (pattern binds
+        // ride it stale; a guard-dep fire re-matches against it; a
+        // flip re-selects and fires becoming-selected). Only a
+        // no-history bottom (the aug04b phantom rule) bottoms the
+        // whole select — the early return after the guard tick below.
+        let ride = bottomed && arg.cached.is_some();
+        // "The scrutinee has a bindable value view this cycle": a
+        // value-bearing production, or the ride.
+        let arg_up = (arg_prod.is_some() && !bottomed) || ride;
         let arg_fired = arg_prod.is_some_and(|t| t.is_fired());
         // Fold a tail-spine scrutinee's firing into the dispatch-wide
         // accumulator (the kernel's `tail_scrut_stale`, folded by
@@ -168,7 +177,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // re-selection) binds the value channel. Firing comes from the
         // selection/emission rules, never from the binds themselves
         // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing).
-        let bind_tag = arg_prod.unwrap_or(Tag::STALE);
+        let bind_tag = if ride { Tag::STALE } else { arg_prod.unwrap_or(Tag::STALE) };
         macro_rules! bind {
             ($i:expr) => {
                 bind!($i, bind_tag)
@@ -199,7 +208,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // starvation. Re-binding every cycle instead would be a
             // phantom event to anything that reads presence as firing;
             // it is safe today only because `bind_tag` is STALE.
-            let bind_guard = arg_up && !tainted && pat.guard.is_some();
+            let bind_guard = arg_up && pat.guard.is_some();
             if bind_guard {
                 if let Some(arg) = arg.cached.as_ref() {
                     pat.bind_event(ctx, event, arg, bind_tag);
@@ -210,14 +219,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 pat.unbind_event(event);
             }
         }
-        // Destructuring-consumer force (the kernel's is_tainted gate at
-        // dispatch): a tainted scrutinee production can't be matched —
-        // the whole select produces the taint placeholder.
-        if tainted {
-            return if arg_up {
-                resident.set(TagValue::tainted(Value::Null))
+        // A NO-HISTORY bottomed scrutinee can't be matched (nothing to
+        // ride — the aug04b phantom rule): the whole select bottoms. A
+        // triggering delivery is a fresh bottom; a standing one rides
+        // the resident.
+        if bottomed && !ride {
+            return if arg_prod.is_some_and(|t| t.triggers()) {
+                resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             } else {
-                TagValue::absent()
+                resident.ride()
             };
         }
         if crate::dbgenv::graphix_dbg_select() {
@@ -253,7 +263,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             ($i:expr, $prod:expr) => {{
                 let i = $i;
                 if arms[i].1.tag.is_tainted() {
-                    Some(TagValue::tainted(Value::Null))
+                    Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 } else {
                     let fired = $prod.is_some_and(|t: Tag| t.is_fired());
                     let tag = if fired { Tag::FIRED } else { Tag::STALE };
@@ -261,7 +271,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }};
         }
-        let out = if !arg_up && !pat_up {
+        // THE FLOW DRIVER (the strict select rule): a re-match runs on
+        // a TRIGGERING scrutinee delivery or a guard-dep fire — a
+        // merely-stale ride is the value channel and stays on the fast
+        // path (a framed descent's leaked SelCell selection must not
+        // be "discovered" by a quiet poll's re-match and fire a
+        // phantom becoming-selected — the once_tainted re-descent).
+        // The scrutinee RIDE re-matches only via pat_up, per the
+        // aug06ghz0 ruling ("a guard-dep fire re-matches against the
+        // cached value").
+        let arg_trig = !bottomed && arg_prod.is_some_and(|t| t.triggers());
+        let out = if !arg_trig && !pat_up {
             selected.get().and_then(|i| match arms[i].1.update(ctx, event) {
                 None => None,
                 prod => emit!(i, prod),
@@ -298,52 +318,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                             event.init
                         );
                     }
-                    let mut set: LPooled<Vec<BindId>> = LPooled::take();
                     if let Some(j) = selected.get() {
                         arms[j].1.node.sleep(ctx);
                     }
                     selected.set(Some(i));
-                    // The wake bind is part of the arm's INIT VIEW,
-                    // exactly like the FIRED external seeding below: on
+                    // The wake bind is part of the arm's INIT VIEW: on
                     // a guard-flip re-selection the scrutinee produced
                     // nothing, but a STALE pattern bind leaves interior
                     // builtin CallSites undispatched (any-arg-fired
                     // gate) and the woken body can't evaluate — the
                     // select then emits nothing where the kernel's
                     // selection-memory fire produces the arm value
-                    // (aug03 reactive/000000: str::len("[v0]") in the
-                    // woken arm). The observable firing still comes
-                    // from the emission rules alone. The in-frame tail
-                    // spine keeps the scrutinee's honest tag — its
-                    // per-jump re-selections are loop plumbing, not
-                    // wakes (replay-frames v3).
-                    let wake_tag =
-                        if tail { bind_tag } else { arg_prod.unwrap_or(Tag::FIRED) };
+                    // (aug03 reactive/000000). The observable firing
+                    // still comes from the emission rules alone. The
+                    // in-frame tail spine keeps the scrutinee's honest
+                    // tag (per-jump re-selections are loop plumbing),
+                    // and a RIDE wake binds the value channel. The old
+                    // FIRED external seeding is gone: the arm's refs
+                    // read the store under the forced init view (R2) —
+                    // wake WITHOUT refill.
+                    let wake_tag = if tail || ride {
+                        bind_tag
+                    } else {
+                        arg_prod.unwrap_or(Tag::FIRED)
+                    };
                     bind!(i, wake_tag);
-                    // Seed the woken arm's quiet externals from the
-                    // runtime cache so it can evaluate (the arm's init
-                    // view); already-delivered ids keep their honest
-                    // event entries.
-                    let mut refs = Refs::default();
-                    arms[i].1.node.refs(&mut refs);
-                    refs.with_external_refs(|id| {
-                        if let Entry::Vacant(e) = event.variables.entry(id) {
-                            if let Some(v) = ctx.rt.cached().get(&id) {
-                                // FIRED: an arm wake is the arm's init view
-                                e.insert(TagValue::fired(v.clone()));
-                                set.push(id);
-                            }
-                        }
-                    });
                     let init = event.init;
                     event.init = true;
                     let prod = arms[i].1.update(ctx, event);
                     event.init = init;
-                    for id in set.drain(..) {
-                        event.variables.remove(&id);
-                    }
                     if arms[i].1.tag.is_tainted() {
-                        Some(TagValue::tainted(Value::Null))
+                        Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else if tail {
                         // A selection change on the in-frame tail
                         // spine is loop mechanics (the dispatch arm
@@ -390,7 +395,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         };
         match out {
             Some(tv) => resident.set(tv),
-            None => TagValue::absent(),
+            // quiet / deselected-to-nothing: the select's value
+            // channel re-surfaces its last emission
+            None => resident.ride(),
         }
     }
 

@@ -1,7 +1,7 @@
 use super::{collection::CollectionIntrinsic, pattern::StructPatternNode};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, TagValue, Update, UserEvent, bailat,
+    Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -187,15 +187,24 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.node.update(ctx, event);
-        if !tv.is_absent() {
-            let tag = tv.tag();
-            if tag.is_tainted() {
-                // Never destructure a taint placeholder (the kernel's
-                // destructuring-consumer force): poison each bound name
-                // instead, and keep the placeholder OUT of the
-                // cross-cycle store.
+        let tag = tv.tag();
+        // Publish TRIGGERING productions only — a stale RHS is the
+        // value channel, already served by the bound names' store
+        // entries. A fresh bottom poisons each bound name AND persists
+        // in the store (ruled delta 7: a fresh reader must see the
+        // standing bottom, not resurrect the pre-bottom value; the
+        // store keeps at-rest bottoms, `cached` never sees the
+        // placeholder).
+        if tag.triggers() {
+            if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
-                    event.variables.insert(id, TagValue::tainted(Value::Null));
+                    event
+                        .variables
+                        .insert(id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                    ctx.rt.store_insert(
+                        id,
+                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                    );
                     ctx.rt.notify_set(id);
                 });
             } else {
@@ -207,7 +216,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 })
             }
         }
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -355,14 +364,26 @@ impl Ref {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
-    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // The entry's tag flows through: an ordinary delivery is
-        // fired, a frame re-delivery/seed is stale, a poisoned bind
-        // is tainted. The clone into the resident is the genuine
-        // store point (the entry belongs to the event, not to self).
-        match event.variables.get(&self.id) {
-            Some(tv) => self.resident.set(tv.clone()),
-            None => TagValue::absent(),
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        // THE dense read (R2/R3): overlays first (a delivery's own tag
+        // flows through), then the store — a standing entry is the
+        // value channel, viewed Stale, or Fired under the reader's
+        // REAL init view (frames force `event.init` for re-derivation,
+        // so the framed read consults `frame_init`, the
+        // const_stale_gate convention — a capture must not re-fire on
+        // every framed pass). This read IS what every init backfill
+        // used to synthesize. A store miss rides the resident (the
+        // phantom until the first delivery ever).
+        match super::read_var(ctx, event, &self.id) {
+            Some(super::VarRead::Delivered(tv)) => self.resident.set(tv.clone()),
+            Some(super::VarRead::Standing(tv)) => {
+                let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+                let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
+                let mut tv = tv.clone();
+                tv.retag(tag);
+                self.resident.set(tv)
+            }
+            None => self.resident.ride(),
         }
     }
 
@@ -450,28 +471,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         // referent, and a taint placeholder must never enter the
         // cross-cycle store.
         let tv = self.child.update(ctx, event);
-        if !tv.is_absent() {
-            if tv.is_fired() {
-                let v = tv.value_cloned();
-                if event.init {
-                    // Seed the cache WITHOUT queuing a delivery: `Deref`'s
-                    // init fallback reads the cache THIS cycle, so the
-                    // queued write would arrive next cycle as a duplicate —
-                    // every deref (and anything downstream, e.g. an HOF
-                    // slot's predicate) re-fired once with the same value
-                    // (soak finding corpus-fuzz/divergence_000027; Eric's
-                    // ruling 2026-07-04: the echo was the wart, the JIT's
-                    // single delivery is correct).
-                    ctx.rt.cached_insert(self.id, v);
-                } else {
-                    ctx.rt.set_var(self.id, v);
-                }
+        if tv.is_fired() {
+            let v = tv.value_cloned();
+            if event.init {
+                // Seed the store WITHOUT a delivery (a STANDING write):
+                // `Deref`'s init read serves it THIS cycle via the R2
+                // store view; a queued write would arrive next cycle as
+                // a duplicate (corpus-fuzz/divergence_000027; Eric's
+                // ruling 2026-07-04: the JIT's single delivery is
+                // correct).
+                ctx.rt.store_insert_standing(self.id, TagValue::fired(v));
+            } else {
+                ctx.rt.set_var(self.id, v);
             }
         }
         if event.init {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 
@@ -582,13 +599,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 }
             }
         }
-        let res = self.id.and_then(|id| match event.variables.get(&id).cloned() {
-            None if event.init => ctx.rt.cached().get(&id).cloned().map(TagValue::fired),
-            v => v,
+        let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
+            Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
+            Some(super::VarRead::Standing(tv)) => {
+                let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+                let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
+                let mut c = tv.clone();
+                c.retag(tag);
+                Some(c)
+            }
+            None => None,
         });
         match res {
             Some(tv) => self.resident.set(tv),
-            None => TagValue::absent(),
+            None => self.resident.ride(),
         }
     }
 

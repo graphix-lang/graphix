@@ -67,7 +67,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -120,7 +120,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -170,7 +170,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

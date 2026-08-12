@@ -37,6 +37,43 @@ pub(crate) mod op;
 pub(crate) mod pattern;
 pub(crate) mod select;
 
+/// A variable read's provenance under dense delivery — see [`read_var`].
+pub(crate) enum VarRead<'a> {
+    /// Found in an overlay (this cycle's transient deliveries, or a
+    /// frame's private writes) or store-stamped THIS cycle: the
+    /// entry's own tag applies.
+    Delivered(&'a TagValue),
+    /// A standing store entry from an earlier cycle: the value
+    /// channel. Readers view it Stale — or Fired under an init view
+    /// (R2), which is the whole of init backfilling.
+    Standing(&'a TagValue),
+}
+
+/// THE variable read seam (design/dense_delivery.md R2/R3): innermost
+/// overlay, then the enclosing frame stack (an inner dispatch's
+/// captures live in its caller's frame), then the persistent store
+/// with the cycle-stamp rule. `None` is the phantom — the bind has
+/// never delivered.
+pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
+    ctx: &'a ExecCtx<R, E>,
+    event: &'a Event<E>,
+    id: &BindId,
+) -> Option<VarRead<'a>> {
+    if let Some(tv) = event.variables.get(id) {
+        return Some(VarRead::Delivered(tv));
+    }
+    for f in event.frames.iter().rev() {
+        if let Some(tv) = f.get(id) {
+            return Some(VarRead::Delivered(tv));
+        }
+    }
+    match ctx.rt.store().get(id) {
+        Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
+        Some((tv, _)) => Some(VarRead::Standing(tv)),
+        None => None,
+    }
+}
+
 #[macro_export]
 macro_rules! wrap {
     ($n:expr, $e:expr) => {
@@ -148,7 +185,7 @@ impl Nop {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
     fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -283,8 +320,12 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
     }
 
     /// Update the node, returning the production's tag if it produced
-    /// (`None` = no production). The produced value (and its taint)
-    /// lands in `cached`/`tag`; a merely-STALE production refreshes
+    /// (`None` = no production). A value-bearing production lands in
+    /// `cached`/`tag`; a BOTTOM production poisons the tag but never
+    /// overwrites the value — `cached` holds the operand's genuine
+    /// history (the ride memory: `Some` = there was once a real value;
+    /// a placeholder must never masquerade as one), exactly the
+    /// CachedVals slot discipline. A merely-STALE production refreshes
     /// the cache without counting as a firing — use
     /// [`Self::update_triggers`] where the caller only needs the
     /// fire-trigger bool.
@@ -298,7 +339,9 @@ impl<R: Rt, E: UserEvent> Cached<R, E> {
             None
         } else {
             let tag = tv.tag();
-            self.cached = Some(tv.value_cloned());
+            if !tag.is_bottom() {
+                self.cached = Some(tv.value_cloned());
+            }
             self.tag = tag;
             Some(tag)
         }
@@ -387,7 +430,7 @@ impl Use {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -456,7 +499,7 @@ impl TypeDef {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
     fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -503,12 +546,11 @@ impl Constant {
     /// generated code uses this after it has already chosen the
     /// value, type, and spec at code-generation time.
     pub fn new<R: Rt, E: UserEvent>(value: Value, typ: Type, spec: Expr) -> Node<R, E> {
-        Node::new(Self {
-            spec: Arc::new(spec),
-            value,
-            typ,
-            resident: TagValue::phantom(),
-        })
+        // a constant IS its value from birth: the resident starts on
+        // the value channel (Stale), so a fresh instance bound without
+        // an init view still computes — firing stays init-gated
+        let resident = TagValue::stale(value.clone());
+        Node::new(Self { spec: Arc::new(spec), value, typ, resident })
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
@@ -518,7 +560,8 @@ impl Constant {
         let spec = Arc::new(spec);
         let value = value.clone();
         let typ = Type::Primitive(Typ::get(&value).into());
-        Ok(Node::new(Self { spec, value, typ, resident: TagValue::phantom() }))
+        let resident = TagValue::stale(value.clone());
+        Ok(Node::new(Self { spec, value, typ, resident }))
     }
 }
 
@@ -550,7 +593,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         } else if event.init {
             self.resident.set(TagValue::fired(self.value.clone()))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 
@@ -698,8 +741,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             let res = self
                 .children
                 .iter_mut()
-                .fold(TagValue::absent(), |_, n| n.update(ctx, event));
-            return if self.module { TagValue::absent() } else { res };
+                .fold(TagValue::phantom_ref(), |_, n| n.update(ctx, event));
+            return if self.module { TagValue::phantom_ref() } else { res };
         }
         // Two-phase order (see `catches`): covered children first —
         // the block's value is the last SYNTACTIC child's production
@@ -723,7 +766,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         }
         match res {
             Some(tv) if !self.module => self.resident.set(tv),
-            _ => TagValue::absent(),
+            _ if self.module => TagValue::phantom_ref(),
+            _ => self.resident.ride(),
         }
     }
 
@@ -890,7 +934,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
         if produced && determined {
             if self.args.iter().any(|c| c.tag.is_tainted()) {
-                return self.resident.set(TagValue::tainted(Value::Null));
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut buf: LPooled<String> = LPooled::take();
@@ -903,7 +949,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
             }
             self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 
@@ -1020,7 +1066,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         // the kernel's `set_var_typed` gate (a stale or tainted RHS
         // must not become a cross-cycle event).
         let tv = self.node.update(ctx, event);
-        if !tv.is_absent() && tv.is_fired() {
+        if tv.is_fired() {
             let v = tv.value_cloned();
             ctx.rt.set_var(self.id, v)
         }
@@ -1150,7 +1196,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 }
             }
         }
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn spec(&self) -> &Expr {
@@ -1232,12 +1278,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         if tv.is_absent() {
-            return TagValue::absent();
+            return self.resident.ride();
         }
         let tag = tv.tag();
         if tag.is_tainted() {
             // never cast a taint placeholder — pass the taint on
-            self.resident.set(TagValue::tainted(Value::Null))
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
             let v = tv.value_cloned();
             self.resident.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), tag))
@@ -1291,6 +1337,7 @@ pub struct Any<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Any<R, E> {
@@ -1306,29 +1353,45 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
             .iter()
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
-        Ok(Node::new(Self { spec, typ: Type::empty_tvar(), n }))
+        Ok(Node::new(Self {
+            spec,
+            typ: Type::empty_tvar(),
+            n,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // First production wins, except a triggering (fired/tainted)
-        // production beats an earlier merely-stale refresh.
-        let mut winner: Option<&TagValue> = None;
+        // Dense restatement: the first triggering VALUE-BEARING
+        // production wins — a stale delivery is every child's value
+        // channel and never beats it, and a triggering BOTTOM never
+        // beats a value-bearing alternative (`any(risky?, default)` is
+        // the fallback idiom: the handled error's fresh bottom must
+        // not eat the default). A cycle whose only events are bottoms
+        // produces a fresh bottom; a quiet cycle rides Any's OWN last
+        // winner.
+        let mut winner: Option<TagValue> = None;
+        let mut bottomed = false;
         for s in self.n.iter_mut() {
             let tv = s.update(ctx, event);
-            if tv.is_absent() {
-                continue;
-            }
-            match winner {
-                None => winner = Some(tv),
-                Some(prev) if !prev.tag().triggers() && tv.tag().triggers() => {
-                    winner = Some(tv)
+            let tag = tv.tag();
+            if tag.triggers() {
+                if tag.is_bottom() {
+                    bottomed = true;
+                } else if winner.is_none() {
+                    winner = Some(tv.clone());
                 }
-                Some(_) => (),
             }
         }
-        winner.unwrap_or_else(|| TagValue::absent())
+        match winner {
+            Some(tv) => self.resident.set(tv),
+            None if bottomed => self
+                .resident
+                .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)),
+            None => self.resident.ride(),
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -1423,16 +1486,21 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Only a FIRED or TAINTED trigger production counts as a
-        // trigger; a stale refresh of the LHS must not sample.
+        // Debt on FIRED only (ruled delta 8, the jul23e protection
+        // relocated from the dispatch-exit seam): a stale refresh must
+        // not sample, and neither may a bottoming trigger — a `~` fed
+        // by a bottoming recursive callee holds its debt until the
+        // trigger recovers, exactly the kernel.
         let t = self.trigger.update(ctx, event);
-        if !t.is_absent() && t.tag().triggers() {
+        if t.tag().is_fired() {
             self.triggered += 1;
         }
         self.arg.update(ctx, event);
         let var = event.variables.get(&self.id).cloned();
         let held = || match &self.arg.cached {
-            Some(_) if self.arg.tag.is_tainted() => TagValue::tainted(Value::Null),
+            Some(_) if self.arg.tag.is_tainted() => {
+                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
+            }
             Some(v) => TagValue::fired(v.clone()),
             None => unreachable!(),
         };
@@ -1450,7 +1518,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
         match res {
             Some(tv) => self.resident.set(tv),
-            None => TagValue::absent(),
+            None => self.resident.ride(),
         }
     }
 

@@ -239,12 +239,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let Some(tv) = from[0].update(ctx, event).to_option() else {
-            return TagValue::absent();
+        let Some(tv) = graphix_package_core::seam_tick(
+            from[0].update(ctx, event),
+            ctx.dense_seam,
+        ) else {
+            return self.out.ride();
         };
-        let spec = tv.value();
+        let spec = tv.value_cloned();
         if self.fired {
-            return TagValue::absent();
+            return self.out.ride();
         }
         self.fired = true;
 

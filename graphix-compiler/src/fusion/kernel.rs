@@ -831,13 +831,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let Some(src) = from.get_mut(0) else { return TagValue::absent() };
+        let Some(src) = from.get_mut(0) else { return TagValue::phantom_ref() };
         let tv = src.update(ctx, event);
-        if tv.is_absent() {
-            return TagValue::absent();
+        let tag = tv.tag();
+        if tag.is_bottom() {
+            return if tag.triggers() {
+                self.out.set(TagValue::tagged(Value::Null, crate::Tag::FRESH_BOTTOM))
+            } else {
+                self.out.ride()
+            };
         }
-        let v = tv.value_cloned();
-        self.out.set(TagValue::fired(self.target.cast_value(&ctx.env, v)))
+        // recompute on triggering productions (or the first stale fill
+        // of a bottom resident); quiet rides re-surface the last cast
+        if tag.triggers() || self.out.tag().is_bottom() {
+            let t = if tag.is_fired() { crate::Tag::FIRED } else { crate::Tag::STALE };
+            let v = tv.value_cloned();
+            self.out.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), t))
+        } else {
+            self.out.ride()
+        }
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -1339,13 +1351,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                 any_produced = true;
                 let tag = tv.tag();
                 if tag.is_tainted() {
-                    // A tainted feeder event: drop the retained value so
-                    // the pack below feeds the TAINT placeholder — the
-                    // kernel runs and bottoms only if the taken path
-                    // consumes it (#219).
-                    self.args[i] = None;
-                    fired_this_cycle[i] = true;
-                    any_updated = true;
+                    // The 5b→5c INPUT ADAPTER: only a TRIGGERING (fresh)
+                    // bottom is a poison event — drop the retained value
+                    // so the pack feeds the TAINT placeholder (#219). A
+                    // STANDING bottom is the flipped interp's ride
+                    // channel (delivered every cycle): nothing new — the
+                    // slot keeps its history and the kernel must not
+                    // re-fire (pre-adapter it re-ran every quiet cycle
+                    // of a bottomed feeder, churning staging — the
+                    // masked_outer_call_cache_ride SEGV).
+                    if tag.triggers() {
+                        self.args[i] = None;
+                        fired_this_cycle[i] = true;
+                        any_updated = true;
+                    }
                 } else {
                     // A merely-STALE production refreshes the slot (the
                     // value channel) without firing the kernel; a fired

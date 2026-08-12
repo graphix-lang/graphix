@@ -153,7 +153,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -240,7 +240,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

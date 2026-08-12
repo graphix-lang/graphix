@@ -1,7 +1,7 @@
 use super::{NOP, Nop, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, LambdaId,
-    LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope,
+    LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent, deref_typ,
     expr::{ErrorContext, Expr, ExprId, ExprKind},
     fusion::{
@@ -1223,19 +1223,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if arg.is_default {
                 if let Some(ref mut node) = arg.node {
                     let tv = node.update(ctx, event);
-                    if !tv.is_absent() {
+                    if tv.tag().triggers() && !tv.tag().is_bottom() {
                         let v = tv.value_cloned();
                         ctx.rt.cached_insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::fired(v));
                         set.push(arg.id);
                     }
                 }
-            } else if let Entry::Vacant(e) = event.variables.entry(arg.id) {
-                if let Some(v) = ctx.rt.cached().get(&arg.id) {
-                    e.insert(TagValue::fired(v.clone()));
-                    set.push(arg.id);
-                }
             }
+            // non-default args need no backfill: the fresh body's
+            // formal refs read the store under the init view (R2)
         }
         event.init = prev_init;
         if restored_def {
@@ -1498,54 +1495,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // -call signal (a stale production is a value-channel refresh,
         // not an event).
         let mut arg_fired = false;
-        // Update all arg nodes every cycle, publishing values via bind IDs
+        // Update all arg nodes every cycle, publishing TRIGGERING
+        // productions via bind IDs. A stale production is the value
+        // channel — the formal's store read already serves it (a
+        // standing entry reads Stale), so nothing is published. A
+        // fresh bottom is a genuine delivery: the formal is poisoned
+        // (the placeholder never enters the store) and the callee's
+        // seam decides — a builtin's wrapper bottoms the invocation
+        // (the P5a Q1 arms), a lambda keeps the poisoned formal. The
+        // old `gate_tainted_args` builtin silencing is gone with it.
+        // The old FRAME-ONLY stale backfill is gone too: the overlay
+        // stack's read-through IS that delivery.
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
                 let tv = node.update(ctx, event);
-                if !tv.is_absent() {
-                    let tag = tv.tag();
-                    if tag.is_tainted() {
-                        // taint == bottom == no input to a builtin
-                        // (see `gate_tainted_args`): a builtin's arg
-                        // seam converts the poisoned production to
-                        // silence — the slot rides its previous
-                        // state and eval decides, exactly as the
-                        // fused DynCall's taint-masked delivery.
-                        if self.gate_tainted_args {
-                            continue;
-                        }
-                        arg_fired |= tag.triggers();
-                        // poison the formal delivery; keep the
-                        // placeholder out of the cross-cycle store
-                        event.variables.insert(arg.id, TagValue::tainted(Value::Null));
+                let tag = tv.tag();
+                if tag.triggers() {
+                    arg_fired = true;
+                    if tag.is_bottom() {
+                        event.variables.insert(
+                            arg.id,
+                            TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                        );
                     } else {
                         let v = tv.value_cloned();
-                        arg_fired |= tag.triggers();
                         ctx.rt.cached_insert(arg.id, v.clone());
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
-                    set.push(arg.id);
-                }
-            }
-        }
-        // FRAME-ONLY: deliver quiet args on the STALE channel when the
-        // frame's private variables map lacks them and the runtime
-        // cache still holds their value (invariant args survive
-        // `reset_replay`; a closed arg fires exactly once ever and
-        // can't re-produce inside a frame). The kernel twin: DynCall
-        // marshals every arg slot on every call, quiet ones with STALE
-        // discs. The stale tag is what keeps this from re-FIRING
-        // anything — a const-arg callee stays quiet (the reactive-land
-        // effectful-callee hazard that forced the old fired
-        // re-delivery to be gated is structurally gone), and the tag
-        // rides into the callee's formals so its body computes on the
-        // value channel.
-        if ctx.frame_depth > 0 {
-            for arg in self.args.values() {
-                if !event.variables.contains_key(&arg.id)
-                    && let Some(v) = ctx.rt.cached().get(&arg.id)
-                {
-                    event.variables.insert(arg.id, TagValue::stale(v.clone()));
                     set.push(arg.id);
                 }
             }
@@ -1578,7 +1554,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     for id in set.drain(..) {
                         event.variables.remove(&id);
                     }
-                    return TagValue::absent();
+                    // a quiet tail self-call contributes nothing this
+                    // cycle: ride without dispatching (dispatching
+                    // would consume the callee's first-dispatch
+                    // init-forcing and re-create the jul04 wedge)
+                    return self.resident.ride();
                 }
                 // A `None` arg (bottomed this jump, never cached) makes
                 // the formal RIDE its previous value — the kernel's
@@ -1601,12 +1581,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // fired.
                 let args: SmallVec<[Option<TagValue>; 4]> = order
                     .iter()
-                    .map(|id| match event.variables.get(id) {
-                        Some(tv) if !tv.tag().is_tainted() => Some(tv.clone()),
-                        Some(_) => None,
-                        None => {
-                            ctx.rt.cached().get(id).map(|v| TagValue::stale(v.clone()))
+                    .map(|id| match super::read_var(ctx, event, id) {
+                        Some(super::VarRead::Delivered(tv)) if !tv.tag().is_bottom() => {
+                            Some(tv.clone())
                         }
+                        // a bottomed jump arg (delivered or standing)
+                        // makes the formal RIDE — the kernel's
+                        // taint-gated rebind
+                        Some(super::VarRead::Delivered(_)) => None,
+                        Some(super::VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
+                            // the value channel — the kernel's
+                            // marshaled quiet slot
+                            let mut c = tv.clone();
+                            let t = c.tag().quiet();
+                            c.retag(t);
+                            Some(c)
+                        }
+                        Some(super::VarRead::Standing(_)) | None => None,
                     })
                     .collect();
                 debug_assert!(ctx.pending_tail_call.is_none());
@@ -1614,7 +1605,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 for id in set.drain(..) {
                     event.variables.remove(&id);
                 }
-                return TagValue::absent();
+                // the stash is consumed by the enclosing loop; this
+                // site's own production rides
+                return self.resident.ride();
             }
         }
         // Statically resolved fast path. The `try_static_resolve` step
@@ -1637,7 +1630,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // its value (mirrors the old tuple scrutinee's eager evaluation).
         let fv_new = {
             let tv = self.fnode.update(ctx, event);
-            if tv.is_absent() { None } else { Some(tv.value_cloned()) }
+            if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
         };
         let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
             let first = *first_update;
@@ -1733,132 +1726,51 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // The tag rides in the borrowed production; own it here —
             // the park/filter pipeline below reworks `self.callee`, so
             // the callee's borrow can't be forwarded through.
-            Some(f) if !bound => f.update(ctx, &mut self.arg_refs, event).to_option(),
+            Some(f) if !bound => Some(f.update(ctx, &mut self.arg_refs, event).clone()),
             Some(f) if rebound_parked.is_some() && !event.init => {
-                // PRIME-then-REPLAY for a parked transient rebind on a
-                // non-init view. The fresh instance needs its
-                // first-dispatch init view (constants fire, formals and
-                // externals delivered from the cache), but that view's
-                // production is FIRED regardless of derivation — a
-                // capture wake whose consumption dead-ends in a
-                // const-valued body re-emitted where the retained twin
-                // it replaces stays quiet (soak-jul13b
-                // generate_000001). So: PRIME the instance against a
-                // PRIVATE variables map (the tail loop's frame
-                // discipline — interior deliveries like select arm
-                // binds contaminate the map, so the whole map is
-                // discarded) and throw the result away —
-                // `transient_body_ok` guarantees the body is pure, so
-                // the extra evaluation is unobservable and its cached
-                // writes reconstruct the twin's steady state. Then
-                // REPLAY against the REAL event with bind's priming
-                // deliveries withdrawn (`set[prime_start..]`): firedness
-                // derives only from what actually fired this cycle,
-                // exactly as it would have through the retained twin.
-                let prime_start = rebound_parked.unwrap();
-                if crate::perfdbg::enabled() {
-                    crate::perfdbg::PRIME_CALLS
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    crate::perfdbg::CLONE_ENTRIES.fetch_add(
-                        event.variables.len() as u64,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                }
-                let mut prime_map = event.variables.clone();
-                event.enter_frame(&mut prime_map);
-                let init = mem::replace(&mut event.init, true);
-                let refs_span = crate::perfdbg::span(&crate::perfdbg::REFS_NS);
-                let mut refs = Refs::default();
-                f.refs(&mut refs);
-                drop(refs_span);
-                refs.with_external_refs(|id| {
-                    if let Entry::Vacant(e) = event.variables.entry(id) {
-                        if let Some(v) = ctx.rt.cached().get(&id) {
-                            e.insert(TagValue::fired(v.clone()));
-                        }
-                    }
-                });
-                let prime_span = crate::perfdbg::span(&crate::perfdbg::PRIME_NS);
-                // Instances bound during the prime must survive it: the
-                // replay descends into them as live callees. Without
-                // this the prime's unwind parked (deleted) the entire
-                // chain it had just built and the replay re-primed one
-                // level down — O(depth²) compiles per re-fire epoch.
-                // See `ExecCtx::transient_prime`.
-                let prev_prime = mem::replace(&mut ctx.transient_prime, true);
-                f.update(ctx, &mut self.arg_refs, event);
-                ctx.transient_prime = prev_prime;
-                drop(prime_span);
-                event.init = init;
-                event.exit_frame(&mut prime_map);
-                for id in &set[prime_start..] {
-                    event.variables.remove(id);
-                }
-                // Seed the parked twin's SELECTIONS over the primed
-                // chain (see [`SelSnap`]): the prime re-derived every
-                // selection from current values on the discarded
-                // clone, eating the becoming-selected transitions the
-                // strict select rule fires on. With the previous
-                // epoch's selections restored, the replay's re-match
-                // fires exactly where the retained twin would have.
+                // A parked transient rebind on a NON-init view: seed
+                // the parked twin's selections (see [`SelSnap`] — the
+                // strict select rule fires becoming-selected off the
+                // previous epoch's selections) and run ONE ordinary
+                // pass. The old PRIME-then-REPLAY machinery is gone:
+                // its whole job was filling the fresh instance's
+                // consumer caches without minting FIRED views, and
+                // under dense delivery there are no caches to fill —
+                // the fresh body's refs read the store's standing
+                // value channel (Stale) directly, so firedness derives
+                // only from what actually fired this cycle, which was
+                // the replay's entire point (soak-jul13b
+                // generate_000001).
                 if let Some(sels) = parked_sels.as_ref() {
                     if let ApplyView::Lambda(l) = f.view() {
                         seed_selects(l.body(), sels);
                     }
                 }
-                let replay_span = crate::perfdbg::span(&crate::perfdbg::REPLAY_NS);
-                let res = f.update(ctx, &mut self.arg_refs, event).to_option();
-                drop(replay_span);
-                res
+                Some(f.update(ctx, &mut self.arg_refs, event).clone())
             }
             Some(f) => {
-                // A parked rebind reached on a REAL init view (no
-                // prime needed — the init view is the semantics): seed
-                // the parked twin's selections before the dispatch so
-                // selection transitions derive from the previous
-                // epoch, same as the prime-then-replay path.
+                // A fresh bind (or parked rebind) on a REAL init view:
+                // seed the parked twin's selections if any, then
+                // dispatch under the init view — the callee's refs
+                // read standing store entries as Fired (R2), which IS
+                // the old explicit FIRED backfill.
                 if let Some(sels) = parked_sels.as_ref() {
                     if let ApplyView::Lambda(l) = f.view() {
                         seed_selects(l.body(), sels);
                     }
                 }
                 let init = mem::replace(&mut event.init, true);
-                let mut refs = Refs::default();
-                f.refs(&mut refs);
-                refs.with_external_refs(|id| {
-                    if let Entry::Vacant(e) = event.variables.entry(id) {
-                        if let Some(v) = ctx.rt.cached().get(&id) {
-                            // FIRED: a fresh bind's first dispatch is an
-                            // init view — everything it sees is new to it
-                            e.insert(TagValue::fired(v.clone()));
-                            set.push(id);
-                        }
-                    }
-                });
-                let res = f.update(ctx, &mut self.arg_refs, event).to_option();
+                let res = f.update(ctx, &mut self.arg_refs, event).clone();
                 event.init = init;
-                res
+                Some(res)
             }
         };
-        // STALE and TAINTED productions are intra-frame currency (the
-        // value channel / the representable bottom). At frame depth 0
-        // neither escapes as a production: reactive land is v1 — quiet
-        // OR bottomed = None, consumers hold their own caches — and an
-        // escape reads as an EVENT to any async consumer (`group`
-        // counted a quiet fold's value-channel refresh, jul10h 000007).
-        // The kernel twin is the return seam's `is_not_fresh` gate.
-        // EXEMPT init views: a select arm wake binds the scrutinee
-        // STALE (honest tags per the 2026-07-18 ruling) and relies on
-        // the value channel to fill the arm's caches before the
-        // becoming-selected fire at the select's emit — filtering here
-        // starved a capture-only collection callback and the woken arm
-        // never fired (jul18d divergence). The jul10h class runs on
-        // QUIET cycles (init=false), so it stays filtered.
-        let res = if ctx.frame_depth == 0 && !event.init {
-            res.filter(|tv| tv.tag().is_fired())
-        } else {
-            res
-        };
+        // Under dense delivery stale and bottom productions are
+        // first-class currency at every depth — the old depth-0
+        // fired-only escape filter (replay_frames Ruling A.2, the
+        // jul10h-000007 protection) is repealed: tag-aware consumers
+        // (P4's seam_tick families — array::group among them) gate on
+        // firedness themselves.
         if crate::dbgenv::gxdbg_cs() {
             // Result-tag companion to the pre-dispatch CS line above —
             // localized the tail-loop tag derivation and the fd0 stale
@@ -1926,7 +1838,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         match res {
             Some(tv) => self.resident.set(tv),
-            None => TagValue::absent(),
+            // no callee bound (unresolvable/parked-quiet): the site
+            // rides its last result on the value channel
+            None => self.resident.ride(),
         }
     }
 
@@ -1981,9 +1895,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         self.fnode.reset_replay(ctx);
         for arg in self.args.values_mut() {
-            if !arg.is_invariant() {
-                ctx.rt.cached_remove(&arg.id);
-            }
+            // arg STORE entries survive (the dense value channel — see
+            // GXLambda::reset_replay)
             if let Some(ref mut n) = arg.node {
                 n.reset_replay(ctx);
             }

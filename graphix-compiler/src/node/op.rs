@@ -1,6 +1,6 @@
 use super::{CFlag, Cached, compiler::compile};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     defetyp,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
@@ -104,7 +104,7 @@ macro_rules! compare_op {
                 let r = self.rhs.update(ctx, event);
                 if l.is_some() || r.is_some() {
                     if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
-                        return self.resident.set(TagValue::tainted(Value::Null));
+                        return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
                     }
                     let fired = l.is_some_and(|t| t.is_fired())
                         || r.is_some_and(|t| t.is_fired());
@@ -116,7 +116,7 @@ macro_rules! compare_op {
                         return self.resident.set(TagValue::tagged(v, tag));
                     }
                 }
-                TagValue::absent()
+                self.resident.ride()
             }
 
             fn spec(&self) -> &Expr {
@@ -273,7 +273,7 @@ macro_rules! bool_op {
                 let r = self.rhs.update(ctx, event);
                 if l.is_some() || r.is_some() {
                     if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
-                        return self.resident.set(TagValue::tainted(Value::Null));
+                        return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
                     }
                     let fired = l.is_some_and(|t| t.is_fired())
                         || r.is_some_and(|t| t.is_fired());
@@ -292,7 +292,7 @@ macro_rules! bool_op {
                         return self.resident.set(TagValue::tagged(v, tag));
                     }
                 }
-                TagValue::absent()
+                self.resident.ride()
             }
 
             fn spec(&self) -> &Expr {
@@ -392,11 +392,8 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.is_absent() {
-            return TagValue::absent();
-        }
         if tv.is_tainted() {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         let tag = tv.tag();
         match tv.with_value(|v| match v {
@@ -404,7 +401,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
             _ => None,
         }) {
             Some(b) => self.resident.set(TagValue::tagged(Value::Bool(b), tag)),
-            None => TagValue::absent(),
+            None => self.resident.ride(),
         }
     }
 
@@ -496,11 +493,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         // collapses Z32/I32 and Z64/I64, so producing the operand's own
         // variant agrees with the JIT's I32/I64-discriminated result.
         let tv = self.n.update(ctx, event);
-        if tv.is_absent() {
-            return TagValue::absent();
-        }
         if tv.is_tainted() {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         let tag = tv.tag();
         let neg = tv.with_value(|v| match v {
@@ -517,7 +511,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         });
         match neg {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
-            None => TagValue::absent(),
+            None => self.resident.ride(),
         }
     }
 
@@ -849,17 +843,24 @@ macro_rules! arith_op {
                     // the taint toward its force point (and don't log a
                     // synthetic error off it)
                     return if produced {
-                        self.resident.set(TagValue::tainted(Value::Null))
+                        self.resident
+                            .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else {
-                        TagValue::absent()
+                        self.resident.ride()
                     };
                 }
                 let (lhs, rhs) =
                     match (self.lhs.cached.as_ref(), self.rhs.cached.as_ref()) {
                         (Some(lhs), Some(rhs)) => (lhs, rhs),
-                        _ => return TagValue::absent(),
+                        _ => return self.resident.ride(),
                     };
-                if produced {
+                // R1: recompute on TRIGGERING productions (a stale
+                // ride carries an unchanged value); a bottom resident
+                // still computes so a stale-filled first evaluation
+                // produces (the value channel fills through ops).
+                let trig = l.is_some_and(|t| t.triggers())
+                    || r.is_some_and(|t| t.triggers());
+                if trig || (produced && self.resident.tag().is_bottom()) {
                     let fired = l.is_some_and(|t| t.is_fired())
                         || r.is_some_and(|t| t.is_fired());
                     let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
@@ -874,32 +875,34 @@ macro_rules! arith_op {
                     } else {
                         match result {
                             Value::Error(e) => {
-                                if ctx.frame_depth > 0 {
-                                    // In an inline callback frame this is a
-                                    // GENUINE bottom — the kernel's taint
-                                    // channel, and like the kernel it is
-                                    // SILENT (the log is a reactive-mode
-                                    // debugging aid, not value semantics).
-                                    return self
-                                        .resident
-                                        .set(TagValue::tainted(Value::Null));
+                                // a FRESH evaluation failure logs at
+                                // every depth (dense Q2); a standing
+                                // bottom re-derived from stale rides
+                                // never re-logs
+                                if trig {
+                                    log::error!(
+                                        "arith error in {} at {} {e}",
+                                        self.spec.ori,
+                                        self.spec.pos
+                                    );
+                                    eprintln!(
+                                        "arith error in {} at {} {e}",
+                                        self.spec.ori, self.spec.pos
+                                    );
                                 }
-                                log::error!(
-                                    "arith error in {} at {} {e}",
-                                    self.spec.ori,
-                                    self.spec.pos
-                                );
-                                eprintln!(
-                                    "arith error in {} at {} {e}",
-                                    self.spec.ori, self.spec.pos
-                                );
-                                TagValue::absent()
+                                let btag = if trig {
+                                    $crate::Tag::FRESH_BOTTOM
+                                } else {
+                                    $crate::Tag::TAINT
+                                };
+                                self.resident
+                                    .set(TagValue::tagged(Value::Null, btag))
                             }
                             v => self.resident.set(TagValue::tagged(v, tag)),
                         }
                     }
                 } else {
-                    TagValue::absent()
+                    self.resident.ride()
                 }
             }
 

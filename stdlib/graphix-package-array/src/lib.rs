@@ -484,7 +484,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -518,9 +518,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         // removes); the queue, the group buffer, and the ready flag
         // are the grouping contract — they aggregate across events
         // and survive.
-        ctx.rt.cached_remove(&self.nid);
-        ctx.rt.cached_remove(&self.pid);
-        ctx.rt.cached_remove(&self.xid);
         self.pred.reset_replay(ctx);
     }
 }
@@ -560,7 +557,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 // Cooperative interrupt: abort a wedged iter over a huge
                 // array (partial emit is accepted for a deliberate kill).
                 if ctx.interrupted() {
-                    return TagValue::absent();
+                    return self.2.ride();
                 }
                 ctx.rt.set_var(self.0, v.clone());
             }
@@ -568,7 +565,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         let res = event.variables.get(&self.0).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.2.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.2.ride(),
         }
     }
 
@@ -642,7 +639,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
             let (i, a) = self.queue.front_mut().unwrap();
             while self.triggered > 0 && *i < a.len() {
                 if ctx.interrupted() {
-                    return TagValue::absent();
+                    return self.out.ride();
                 }
                 ctx.rt.set_var(self.id, a[*i].clone());
                 *i += 1;
@@ -655,7 +652,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

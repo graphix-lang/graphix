@@ -521,7 +521,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         let res = event.variables.get(&self.0).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.2.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.2.ride(),
         }
     }
 
@@ -607,7 +607,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

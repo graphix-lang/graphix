@@ -358,8 +358,6 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // The published callback/element values are per-invocation
         // replay memory (same ids `delete` removes).
-        ctx.rt.cached_remove(&self.fid);
-        ctx.rt.cached_remove(&self.x);
         self.inner.reset_replay(ctx);
     }
 
@@ -419,7 +417,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
     ) -> &TagValue {
         match self.s.tick_unary(ctx, from, event, Value::Null) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -488,7 +486,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
     ) -> &TagValue {
         match self.s.tick_unary(ctx, from, event, Value::Null) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -595,7 +593,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
             });
         match direct.or(inner_out) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -666,7 +664,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
     ) -> &TagValue {
         match self.s.tick_unary(ctx, from, event, Value::Bool(false)) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -735,7 +733,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
     ) -> &TagValue {
         match self.s.tick_unary(ctx, from, event, Value::Bool(true)) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -841,7 +839,6 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.last_a = None;
         self.last_f = None;
-        ctx.rt.cached_remove(&self.fid);
         self.inner.reset_replay(ctx);
     }
 
@@ -914,7 +911,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -995,7 +992,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

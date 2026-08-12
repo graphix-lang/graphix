@@ -96,12 +96,13 @@ impl<X: GXExt> GXRt<X> {
 }
 
 impl<X: GXExt> GXRt<X> {
-    /// The P3 shadow-store agreement gate (`GRAPHIX_STORE_ASSERT=1`):
-    /// the store is dual-written beside every `cached` write, so at
-    /// every cycle end the two must agree exactly — equal key sets,
-    /// equal values (tags/stamps are store-only). Called by `do_cycle`;
-    /// a divergence here means a `cached` write path bypassed
-    /// [`Rt::cached_insert`]/[`Rt::cached_remove`].
+    /// The store agreement gate (`GRAPHIX_STORE_ASSERT=1`): since the
+    /// 5b flip the store is AUTHORITATIVE and `cached` is its
+    /// value-half mirror (bottom entries are store-only), so the check
+    /// is store ⊇ cached with equal values. Called by `do_cycle`; a
+    /// divergence means a `cached` write path bypassed
+    /// [`Rt::cached_insert`]/[`Rt::store_insert`]. Dies at 5b' with
+    /// `cached` itself.
     pub(super) fn store_assert(&self) {
         static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
             std::env::var_os("GRAPHIX_STORE_ASSERT").is_some()
@@ -109,20 +110,16 @@ impl<X: GXExt> GXRt<X> {
         if !*ON {
             return;
         }
-        assert_eq!(
-            self.store.len(),
-            self.cached.len(),
-            "shadow store/cached len divergence"
-        );
         for (id, v) in self.cached.iter() {
             match self.store.get(id) {
+                Some((tv, _)) if tv.tag().is_bottom() => (),
                 Some((tv, _)) => tv.with_value(|sv| {
                     assert!(
                         sv == v,
-                        "shadow store/cached divergence at {id:?}: store {sv} cached {v}"
+                        "store/cached divergence at {id:?}: store {sv} cached {v}"
                     )
                 }),
-                None => panic!("shadow store missing {id:?} present in cached"),
+                None => panic!("store missing {id:?} present in cached"),
             }
         }
     }
@@ -149,6 +146,32 @@ impl<X: GXExt> Rt for GXRt<X> {
     fn cached_remove(&mut self, id: &BindId) {
         self.store.remove(id);
         self.cached.remove(id);
+    }
+
+    fn store(&self) -> &IntMap<BindId, (TagValue, u64)> {
+        &self.store
+    }
+
+    fn store_insert(&mut self, id: BindId, tv: TagValue) {
+        // keep `cached` mirrored (clean value, no placeholders) until
+        // the sparse map dies — bottoms don't overwrite the value half,
+        // matching the "placeholders structurally excluded" contract
+        if !tv.tag().is_bottom() {
+            self.cached.insert(id, tv.value_cloned());
+        }
+        self.store.insert(id, (tv, self.cycle));
+    }
+
+    fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
+        if !tv.tag().is_bottom() {
+            self.cached.insert(id, tv.value_cloned());
+        }
+        // stamped one cycle back: Standing to every same-cycle reader
+        self.store.insert(id, (tv, self.cycle.wrapping_sub(1)));
+    }
+
+    fn cycle(&self) -> u64 {
+        self.cycle
     }
 
     fn clear(&mut self) {

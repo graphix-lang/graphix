@@ -95,15 +95,20 @@ impl Tag {
     /// [`Self::STALE_BOTTOM`]; dies with the P2 consumer sweep.
     pub const TAINT: Tag = Self::STALE_BOTTOM;
 
-    /// Wrap a raw tag byte from the JIT boundary.
-    ///
-    /// P1 ADAPTER: clamps a bare TAINT byte to TAINT|STALE — the
-    /// sparse world's TAINT⟹STALE invariant, which keeps
-    /// `FreshBottom` unobservable and every bottom single-flavored.
-    /// The 5b flip deletes the clamp; kernel discs then carry the
-    /// honest four states.
+    /// Wrap a raw tag byte. HONEST since the 5b flip: the four states
+    /// read as minted (`FreshBottom` is observable). The kernel
+    /// OUTPUT seam still clamps locally (`Tag::clamp_sparse`, the 5c
+    /// adapter) — compiled kernels' result discs keep their sparse
+    /// interpretation until the kernel flip.
     pub fn from_raw(bits: u8) -> Self {
-        if bits & Self::TAINT_BIT != 0 { Self::TAINT } else { Tag(bits) }
+        Tag(bits)
+    }
+
+    /// The 5c BOUNDARY ADAPTER: the sparse world's TAINT⟹STALE
+    /// invariant, applied at the kernel output decode only. Deleted
+    /// when the kernel flips to honest discs.
+    pub fn clamp_sparse(self) -> Tag {
+        if self.0 & Self::TAINT_BIT != 0 { Self::TAINT } else { self }
     }
 
     pub fn bits(self) -> u8 {
@@ -125,15 +130,11 @@ impl Tag {
         self.is_bottom()
     }
 
-    /// Should this production trigger the consumer's evaluation?
-    ///
-    /// P1 ADAPTER — the sparse definition: fired OR bottom (taint must
-    /// ride toward its force point). The dense definition is the
-    /// fired bit alone (`self.0 & STALE_BIT == 0`: `Fired` and
-    /// `FreshBottom` are events, the stale states are not); it
-    /// replaces this at the 5b flip.
+    /// Should this production trigger the consumer's evaluation? The
+    /// DENSE definition (the 5b flip): the fired bit alone — `Fired`
+    /// and `FreshBottom` are events, the stale states are not.
     pub fn triggers(self) -> bool {
-        self.is_fired() || self.is_tainted()
+        self.0 & Self::STALE_BIT == 0
     }
 
     /// The orthogonal OR-join: bottom ORs (any consumed bottom bottoms
@@ -154,6 +155,21 @@ impl Tag {
     /// `STALE_BOTTOM` regardless of self's firing.)
     pub fn with_taint_of(self, other: Tag) -> Tag {
         if other.is_tainted() { Self::TAINT } else { self }
+    }
+
+    /// The quiet-cycle downgrade: set the STALE bit, keep bottomness —
+    /// the tag a resident re-surfaces under when nothing triggered
+    /// this cycle. (`STALE` alone would mint a usable value out of a
+    /// phantom's placeholder; quiet preserves the TAINT bit.)
+    pub fn quiet(self) -> Tag {
+        Tag(self.0 | Self::STALE_BIT)
+    }
+
+    /// The init-view upgrade (R2): clear the STALE bit, keep
+    /// bottomness — a fresh reader sees a standing value as new (a
+    /// standing bottom as a fresh bottom).
+    pub fn fresh(self) -> Tag {
+        Tag(self.0 & !Self::STALE_BIT)
     }
 }
 
@@ -256,6 +272,24 @@ impl TagValue {
     pub fn retag(&mut self, tag: Tag) -> &TagValue {
         self.disc = (self.disc & !TAG_MASK) | ((tag.bits() as u64) << 56);
         self
+    }
+
+    /// The quiet-cycle production (the dense model's "nothing new"):
+    /// downgrade the resident's tag in place — STALE set, bottomness
+    /// kept — and hand back the borrow. A never-set resident stays the
+    /// phantom; a genuine result re-surfaces on the value channel.
+    #[inline]
+    pub fn ride(&mut self) -> &TagValue {
+        let t = self.tag().quiet();
+        self.retag(t)
+    }
+
+    /// The shared production of a node that NEVER produces (`never()`,
+    /// an effect-only builtin): the permanent phantom.
+    pub fn phantom_ref() -> &'static TagValue {
+        static PHANTOM: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(TagValue::phantom);
+        &PHANTOM
     }
 
     /// The shared tainted-placeholder production — for a return path
@@ -467,12 +501,16 @@ mod tests {
         // stale AND-reduces: any fired operand fires the result
         assert_eq!(T::FIRED.join(T::STALE), T::FIRED);
         assert_eq!(T::STALE.join(T::STALE), T::STALE);
-        // taint ORs and implies stale
-        assert_eq!(T::FIRED.join(T::TAINT), T::TAINT);
-        assert_eq!(T::STALE.join(T::TAINT), T::TAINT);
+        // taint ORs; firedness is independent (the orthogonal algebra
+        // — a standing bottom joined with a fired operand is a FRESH
+        // bottom: the result is an event with no usable value)
+        assert_eq!(T::FIRED.join(T::TAINT), T::FRESH_BOTTOM);
+        assert_eq!(T::STALE.join(T::TAINT), T::STALE_BOTTOM);
         assert!(T::TAINT.is_tainted() && !T::TAINT.is_fired());
-        // a raw taint-only byte is invariant-restored
-        assert_eq!(T::from_raw(T::TAINT_BIT), T::TAINT);
+        // raw bytes are honest since the 5b flip; the kernel-output
+        // seam clamps locally
+        assert_eq!(T::from_raw(T::TAINT_BIT), T::FRESH_BOTTOM);
+        assert_eq!(T::from_raw(T::TAINT_BIT).clamp_sparse(), T::TAINT);
     }
 
     #[test]
@@ -499,13 +537,13 @@ mod tests {
     }
 
     #[test]
-    fn p1_adapter_clamps_fresh_bottom() {
-        // The P1 from_raw clamp makes FreshBottom unobservable: a
-        // bare-TAINT construction reads back StaleBottom through
-        // tag()/view(). This test INVERTS at the 5b flip — when the
-        // clamp is deleted, assert TagView::FreshBottom here instead.
+    fn fresh_bottom_is_observable() {
+        // The 5b flip: raw tags read honest — a bare-TAINT
+        // construction IS a FreshBottom through tag()/view() (this
+        // test asserted the inverse under the P1 clamp).
         let tv = TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM);
-        assert_eq!(tv.tag(), Tag::STALE_BOTTOM);
-        assert!(matches!(tv.view(), TagView::StaleBottom));
+        assert_eq!(tv.tag(), Tag::FRESH_BOTTOM);
+        assert!(matches!(tv.view(), TagView::FreshBottom));
+        assert!(tv.tag().triggers() && tv.tag().is_bottom());
     }
 }

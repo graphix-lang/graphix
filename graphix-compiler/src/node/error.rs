@@ -1,6 +1,6 @@
 use crate::{
     Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
-    TagValue, Update, UserEvent,
+    Tag, TagValue, Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
@@ -81,10 +81,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let Some(src) = from.get_mut(0) else { return TagValue::absent() };
+        let Some(src) = from.get_mut(0) else { return TagValue::phantom_ref() };
         let tv = src.update(ctx, event);
-        if tv.is_absent() {
-            return TagValue::absent();
+        if !tv.tag().is_fired() {
+            // deliver once per fired error event; the stale/bottom
+            // channels ride
+            return self.out.ride();
         }
         let v = tv.value_cloned();
         if let Value::Error(e) = v {
@@ -188,7 +190,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         // from a covered `?` — or from an inner handler's rethrow — is
         // seen this cycle (the try-era handler-after-body order).
         let _ = self.handler.update(ctx, event);
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -310,17 +312,23 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.is_absent() || tv.is_tainted() {
-            // absence forwards; a taint placeholder is not an error
-            // VALUE — pass it on
+        if tv.tag().is_bottom() {
+            // a bottom (incl. the phantom) is not an error VALUE —
+            // pass it on
             return tv;
         }
         let err = tv.with_value(|v| match v {
             Value::Error(e) => Some(e.clone()),
             _ => None,
         });
+        // Handler dispatch and logging key on the error arriving as an
+        // EVENT: a stale error re-delivery is the value channel and
+        // rides (no re-dispatch, no log spam — Q2's standing-bottoms-
+        // never-log rule).
+        let fired = tv.tag().is_fired();
         match err {
             None => tv,
+            Some(_) if !fired => self.resident.ride(),
             Some(e) => match self.id {
                 Some((id, handler_top)) => {
                     let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
@@ -344,14 +352,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                             Entry::Occupied(_) => ctx.rt.set_var(id, v),
                         }
                     }
-                    TagValue::absent()
+                    // the consumed error event produces an event with
+                    // no value
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
                 None => {
-                    if ctx.frame_depth > 0 {
-                        // in-frame swallowed error: the taint channel,
-                        // silent (the log is a reactive debugging aid)
-                        return self.resident.set(TagValue::tainted(Value::Null));
-                    }
+                    // LOG EVERYWHERE (Q2): a fresh unhandled error
+                    // logs at every depth; standing bottoms never log.
                     log::error!(
                         "unhandled error in {} at {} {e}",
                         self.spec.ori,
@@ -361,7 +368,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                         "unhandled error in {} at {} {e}",
                         self.spec.ori, self.spec.pos
                     );
-                    TagValue::absent()
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
             },
         }
@@ -510,7 +517,7 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.is_absent() || tv.is_tainted() {
+        if tv.tag().is_bottom() {
             return tv;
         }
         let err = tv.with_value(|v| match v {
@@ -520,12 +527,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         match err {
             None => tv,
             Some(e) => {
-                if ctx.frame_depth > 0 {
-                    // in-frame swallowed error: silent taint
-                    return self.resident.set(TagValue::tainted(Value::Null));
+                // LOG EVERYWHERE (Q2): a fresh ignored error logs at
+                // every depth; a stale error re-delivery rides.
+                if tv.tag().is_fired() {
+                    log::warn!(
+                        "ignored error in {} at {} {e}",
+                        self.spec.ori,
+                        self.spec.pos
+                    );
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                } else {
+                    self.resident.ride()
                 }
-                log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos);
-                TagValue::absent()
             }
         }
     }

@@ -52,7 +52,7 @@ macro_rules! dirs_builtin {
                     };
                     self.out.set(TagValue::fired(v))
                 } else {
-                    TagValue::absent()
+                    self.out.ride()
                 }
             }
 

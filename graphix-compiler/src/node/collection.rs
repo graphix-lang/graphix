@@ -698,7 +698,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         let mut production = None;
         let mut resized = false;
         let mut forced_taint = false;
+        let mut src_trig = false;
         if let Some(tag) = self.base.source.update(ctx, event) {
+            src_trig = tag.triggers();
             // A tainted source is a placeholder, and an unselectable
             // value (init's over-limit count) is bottom — neither
             // carries elements to deliver, but the slot walk below must
@@ -715,7 +717,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 while self.slots.len() > source.len() {
                     match self.slots.last_mut() {
                         Some(slot) => slot.delete(ctx),
-                        None => return TagValue::absent(),
+                        None => return self.resident.ride(),
                     }
                     self.slots.pop();
                     resized = true;
@@ -737,7 +739,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                         Some(value) => {
                             return self.resident.set(TagValue::tagged(value, tag));
                         }
-                        None => return TagValue::absent(),
+                        None => return self.resident.ride(),
                     }
                 }
             } else {
@@ -756,46 +758,66 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
-                return TagValue::absent();
+                return self.resident.ride();
             }
+            // A fresh slot's first dispatch runs under a forced init
+            // view: its callback ref reads the store's standing entry
+            // as Fired (R2) — the old explicit backfill is gone.
             if i >= old_len {
                 event.init = true;
-                if !event.variables.contains_key(&self.callback)
-                    && let Some(value) = ctx.rt.cached().get(&self.callback)
-                {
-                    event.variables.insert(self.callback, TagValue::fired(value.clone()));
-                }
             }
-            if let Some(tv) = self.slots[i].call.update(ctx, event).to_option() {
-                let tag = tv.tag();
-                production = merge_tag(production, tag);
-                if tag.is_tainted() {
-                    self.slots[i].tag = Tag::TAINT;
+            let tv = self.slots[i].call.update(ctx, event).clone();
+            let tag = tv.tag();
+            // Only TRIGGERING slot productions fold into the firing
+            // decision; a stale ride is the slot's value channel and
+            // by the R1 law carries an unchanged value. A bottomed
+            // slot WITH history rides its previous value (slot values
+            // are designated ride memory — fork 7 / the jul30a
+            // sleep-preserves-caches rule; the kernel's slot words
+            // agree); only a valueless bottom poisons the slot.
+            if tag.triggers() {
+                if tag.is_bottom() {
+                    if self.slots[i].value.is_none() {
+                        production = merge_tag(production, tag);
+                        self.slots[i].tag = Tag::TAINT;
+                    }
                 } else {
+                    production = merge_tag(production, tag);
                     self.slots[i].value = Some(tv.value());
                     self.slots[i].tag = Tag::STALE;
                 }
+            } else if !tag.is_bottom() {
+                // the value channel flows through slots: a stale
+                // production refreshes the slot silently (an arm-wake's
+                // capture-only callback produces stale — the slot must
+                // still FILL, or the collection can never build)
+                self.slots[i].value = Some(tv.value());
             }
         }
         event.init = saved_init;
 
         if forced_taint {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return if src_trig {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
         }
         let tag = match production {
             Some(tag) => tag,
-            None => return TagValue::absent(),
+            None => return self.resident.ride(),
         };
         if tag.is_tainted() || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
             match self.operation.finish(&self.slots, &self.current) {
                 Some(value) => self.resident.set(TagValue::tagged(value, tag)),
-                None => TagValue::absent(),
+                None => self.resident.ride(),
             }
         } else {
-            TagValue::absent()
+            // an element has never produced: the collection is bottom
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         }
     }
 
@@ -851,7 +873,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         self.base.source.reset_replay(ctx);
         self.current = T::Collection::default();
         for slot in self.slots.iter_mut() {
-            ctx.rt.cached_remove(&slot.id);
             slot.value = None;
             slot.tag = Tag::STALE;
             slot.call.reset_replay(ctx);
@@ -1104,7 +1125,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         let mut resized = false;
         let mut forced_taint = false;
         let mut source_tag = None;
+        let mut src_trig = false;
         if let Some(tag) = self.base.source.update(ctx, event) {
+            src_trig = tag.triggers();
             // A tainted SOURCE is a placeholder with no elements to
             // deliver (a genuine destructuring consumer — forced), and
             // an unselectable source value is bottom; the slot walk
@@ -1125,7 +1148,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 while self.slots.len() > source.len() {
                     match self.slots.last_mut() {
                         Some(slot) => slot.delete(ctx),
-                        None => return TagValue::absent(),
+                        None => return self.resident.ride(),
                     }
                     self.slots.pop();
                     resized = true;
@@ -1162,7 +1185,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // the init bind). The placeholder stays out of the
                 // cross-cycle store, like Bind's tainted arm.
                 if let Some(slot) = self.slots.first() {
-                    event.variables.insert(slot.acc_id, TagValue::tainted(Value::Null));
+                    event.variables.insert(
+                        slot.acc_id,
+                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                    );
                 }
             } else {
                 self.init = self.base.init.cached.clone();
@@ -1176,32 +1202,37 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
 
         if self.slots.is_empty() && self.source_present && !forced_taint {
             let tag = match (source_tag, init_tag) {
-                (None, None) => return TagValue::absent(),
+                (None, None) => return self.resident.ride(),
                 (Some(a), Some(b)) => match merge_tag(Some(a), b) {
                     Some(tag) => tag,
-                    None => return TagValue::absent(),
+                    None => return self.resident.ride(),
                 },
                 (Some(tag), None) | (None, Some(tag)) => tag,
             };
             return match self.init.clone() {
                 Some(value) => self.resident.set(TagValue::tagged(value, tag)),
-                None => TagValue::absent(),
+                None if tag.triggers() => {
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                }
+                None => self.resident.ride(),
             };
         }
 
+        let mut any_trig = source_tag.is_some_and(|t| t.triggers())
+            || init_tag.is_some_and(|t| t.triggers())
+            || forced_taint && src_trig;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
-                return TagValue::absent();
+                return self.resident.ride();
             }
+            // A fresh slot's first dispatch runs under a forced init
+            // view (R2 serves the callback ref from the store); the
+            // acc SEED below is FoldQ's own semantic chain, not a
+            // cache backfill, and stays.
             if i >= old_len {
                 event.init = true;
-                if !event.variables.contains_key(&self.callback)
-                    && let Some(value) = ctx.rt.cached().get(&self.callback)
-                {
-                    event.variables.insert(self.callback, TagValue::fired(value.clone()));
-                }
                 let seed = if i == 0 {
                     self.init.clone()
                 } else {
@@ -1213,17 +1244,36 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     event.variables.insert(acc_id, TagValue::fired(value));
                 }
             }
-            if let Some(tv) = self.slots[i].call.update(ctx, event).to_option() {
-                let tag = tv.tag();
-                self.slots[i].tag = tag;
-                if tag.is_tainted() {
-                    self.slots[i].cycle = None;
-                    if i + 1 < self.slots.len() {
-                        let next = self.slots[i + 1].acc_id;
-                        ctx.rt.cached_remove(&next);
-                        event.variables.remove(&next);
+            let tv = self.slots[i].call.update(ctx, event).clone();
+            let tag = tv.tag();
+            // Only TRIGGERING slot productions advance the fold; a
+            // stale ride is the value channel (unchanged by the R1
+            // law) and the acc chain's standing store entries serve
+            // the next slot — the old absence-as-signal next-acc
+            // REMOVAL is gone (honest propagation: a bottomed slot
+            // delivers a poisoned acc instead of withdrawing it).
+            if tag.triggers() {
+                any_trig = true;
+                if tag.is_bottom() {
+                    // a bottomed slot WITH held history rides (fork 7:
+                    // the acc carry is designated slot memory, like
+                    // the kernel's loop words); only a valueless
+                    // bottom poisons the chain
+                    if self.slots[i].held.is_none() {
+                        self.slots[i].tag = tag;
+                        self.slots[i].cycle = None;
+                        if i + 1 < self.slots.len() {
+                            let next = self.slots[i + 1].acc_id;
+                            event.variables.insert(
+                                next,
+                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                            );
+                        }
+                    } else {
+                        self.slots[i].cycle = None;
                     }
                 } else {
+                    self.slots[i].tag = tag;
                     let value = tv.value();
                     self.slots[i].cycle = Some(value.clone());
                     self.slots[i].held = Some(value.clone());
@@ -1233,23 +1283,44 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                         event.variables.insert(next, TagValue::tagged(value, tag));
                     }
                 }
-            } else {
-                self.slots[i].cycle = None;
+            } else if !tag.is_bottom() {
+                // the value channel advances the acc chain silently
+                // (stale result, no any_trig — see MapQ's twin)
+                self.slots[i].tag = Tag::STALE;
+                let value = tv.value();
+                self.slots[i].cycle = Some(value.clone());
+                self.slots[i].held = Some(value.clone());
                 if i + 1 < self.slots.len() {
                     let next = self.slots[i + 1].acc_id;
-                    ctx.rt.cached_remove(&next);
-                    event.variables.remove(&next);
+                    ctx.rt.cached_insert(next, value.clone());
+                    event.variables.insert(next, TagValue::stale(value));
                 }
+            } else {
+                self.slots[i].cycle = None;
             }
         }
         event.init = saved_init;
 
-        if forced_taint || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return self.resident.set(TagValue::tainted(Value::Null));
+        // CONSUMPTION decides (the kernel's FoldAcc sticky-flags rule):
+        // an interior slot's poison travels the acc chain and bottoms
+        // the fold only if a downstream callback CONSUMES it — an
+        // acc-ignoring callback recovers. Only the LAST slot's chain
+        // state is the result.
+        if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_tainted()) {
+            return if any_trig {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
         }
         if let Some(last) = self.slots.last() {
             if let Some(value) = last.cycle.clone() {
-                let tag = last.tag;
+                // the firing rule: a fold fires iff it RESIZED, a slot
+                // fired, or the source fired empty — a resize's fresh
+                // chain result is an event even when the surviving
+                // slots' callbacks rode (an acc-only callback is
+                // organically stale, but the shape change isn't)
+                let tag = if resized || any_trig { Tag::FIRED } else { Tag::STALE };
                 return self.resident.set(TagValue::tagged(value, tag));
             }
             if resized && let Some(value) = last.held.clone() {
@@ -1257,7 +1328,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 return self.resident.set(TagValue::tagged(value, tag));
             }
         }
-        TagValue::absent()
+        self.resident.ride()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1321,7 +1392,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         self.source_present = false;
         for slot in self.slots.iter_mut() {
             for id in [slot.acc_id, slot.element_id] {
-                ctx.rt.cached_remove(&id);
             }
             slot.cycle = None;
             slot.held = None;

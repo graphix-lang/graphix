@@ -155,14 +155,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         event: &mut Event<E>,
     ) -> &TagValue {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        let prefix_val = from[0].update(ctx, event).to_option().map(|tv| tv.value());
-        let tree_changed = from[1].update(ctx, event).to_option().map(|tv| tv.value());
+        let prefix_val = graphix_package_core::seam_tick(
+            from[0].update(ctx, event),
+            ctx.dense_seam,
+        )
+        .map(|tv| tv.value_cloned());
+        let tree_changed = graphix_package_core::seam_tick(
+            from[1].update(ctx, event),
+            ctx.dense_seam,
+        )
+        .map(|tv| tv.value_cloned());
         let tree_is_new = tree_changed.is_some();
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);
         }
         if self.tree_val.is_none() || (prefix_val.is_none() && !tree_is_new) {
-            return TagValue::absent();
+            return self.out.ride();
         }
         if let Some(Value::Abstract(ref a)) = self.tree_val
             && let Some(tv) = a.downcast_ref::<TreeValue>()
@@ -207,7 +215,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                 SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }),
             ));
         }
-        TagValue::absent()
+        self.out.ride()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -296,7 +304,7 @@ macro_rules! db_event_accessor {
                     }
                     let first = match self.cached.0.first() {
                         Some(Some(v)) => v,
-                        Some(None) | None => return TagValue::absent(),
+                        Some(None) | None => return self.out.ride(),
                     };
                     let bid = extract_sub_bind_id(first);
                     if let Some(bid) = bid {
@@ -306,7 +314,7 @@ macro_rules! db_event_accessor {
                 }
                 match scan_db_events(self.bind_id, event, $convert) {
                     Some(v) => self.out.set(TagValue::fired(v)),
-                    None => TagValue::absent(),
+                    None => self.out.ride(),
                 }
             }
 

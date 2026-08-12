@@ -453,7 +453,19 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
     pub init: bool,
+    /// The INNERMOST overlay: same-cycle transient deliveries (select
+    /// arm binds, QopDeliver, DynCall side channels, call-site formal
+    /// publishes) at depth 0, or the current evaluation frame's
+    /// private writes inside a framed pass. Under dense delivery
+    /// (design/dense_delivery.md R3) this is NOT the value store —
+    /// reads fall through the frame stack to [`Rt::store`] via
+    /// `node::read_var`.
     pub variables: IntMap<BindId, TagValue>,
+    /// The enclosing overlays of the current frame stack (innermost
+    /// last). Empty at depth 0. A framed pass reads through to
+    /// enclosing frames (an inner dispatch's captures live in its
+    /// caller's frame) and then to the store.
+    pub(crate) frames: Vec<IntMap<BindId, TagValue>>,
     pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
     pub user: E,
 }
@@ -463,37 +475,39 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: false,
             variables: IntMap::default(),
+            frames: Vec::new(),
             custom: IntMap::default(),
             user,
         }
     }
 
     pub fn clear(&mut self) {
-        let Self { init, variables, custom, user } = self;
+        let Self { init, variables, frames, custom, user } = self;
         *init = false;
         variables.clear();
+        debug_assert!(frames.is_empty(), "unbalanced enter_frame at cycle end");
+        frames.clear();
         custom.clear();
         user.clear();
     }
 
-    /// Enter an evaluation-frame OVERLAY: `frame` (the pass's private
-    /// variables map — externals seeded, formals rebound) replaces
-    /// `variables` for the framed pass. Opaque — the pass sees ONLY
-    /// the frame, exactly the whole-map-swap semantics this wraps.
-    /// The 5b flip rewrites these two methods to a read-through
-    /// overlay on the persistent store (design/dense_delivery.md R3);
-    /// naming the seam here is what makes that a two-method change.
-    pub fn enter_frame(&mut self, frame: &mut IntMap<BindId, TagValue>) {
-        std::mem::swap(&mut self.variables, frame);
+    /// Enter an evaluation-frame OVERLAY: the current `variables` map
+    /// is pushed onto the frame stack and `frame` (the pass's private
+    /// writes — usually empty, or the tail loop's rebound formals)
+    /// becomes the innermost overlay. Reads fall through the stack to
+    /// the persistent store, so no seeding is required.
+    pub fn enter_frame(&mut self, frame: IntMap<BindId, TagValue>) {
+        self.frames.push(std::mem::replace(&mut self.variables, frame));
     }
 
-    /// Leave the frame entered by [`Self::enter_frame`]: the outer
-    /// map returns to `variables`, the frame's final state lands back
-    /// in `frame` (the tail loop reads it as the previous pass's
+    /// Leave the frame entered by [`Self::enter_frame`]: the enclosing
+    /// overlay returns to `variables`; the frame's final map is
+    /// handed back (the tail loop reads it as the previous pass's
     /// rebinds; everything else discards it — only
     /// `ExecCtx::frame_outbox` outlives a frame).
-    pub fn exit_frame(&mut self, frame: &mut IntMap<BindId, TagValue>) {
-        std::mem::swap(&mut self.variables, frame);
+    pub fn exit_frame(&mut self) -> IntMap<BindId, TagValue> {
+        let outer = self.frames.pop().expect("exit_frame without enter_frame");
+        std::mem::replace(&mut self.variables, outer)
     }
 }
 
@@ -1282,6 +1296,30 @@ pub trait Rt: Debug + Any {
     /// Mirrored into the shadow store like [`Rt::cached_insert`].
     fn cached_remove(&mut self, id: &BindId);
 
+    /// The persistent tagged store (design/dense_delivery.md R3): the
+    /// (production, cycle-stamp) of every bound variable's last
+    /// delivery. THE cross-cycle read under dense delivery: a reader
+    /// interprets `stamp == cycle()` as delivered-this-cycle (the
+    /// entry's own tag), an older stamp as the standing value channel
+    /// (Stale — Fired under an init view, R2), and absence as the
+    /// phantom.
+    fn store(&self) -> &IntMap<BindId, (TagValue, u64)>;
+
+    /// Insert a full tagged production into the store, stamped with
+    /// the current cycle. The honest-tag twin of
+    /// [`Rt::cached_insert`]; the value half still mirrors into
+    /// [`Rt::cached`] until the sparse map dies.
+    fn store_insert(&mut self, id: BindId, tv: TagValue);
+
+    /// Insert a STANDING entry — value-channel maintenance that is
+    /// deliberately NOT a delivery (`ByRef`'s init seed): stamped as
+    /// an earlier cycle, so a same-cycle reader sees it Standing
+    /// (stale / init-fired), never Delivered.
+    fn store_insert_standing(&mut self, id: BindId, tv: TagValue);
+
+    /// The current cycle number — the store's stamp clock.
+    fn cycle(&self) -> u64;
+
     /// Notify the RT that a top level variable has been set internally
     ///
     /// This is called when the compiler has determined that it's safe to set a
@@ -1730,9 +1768,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// regardless of the arrival tag. `true`: the dense rules — ticks,
     /// effects, and samples gate on `TagView::Fired`; laundering sites
     /// republish with the honest tag. The migrated families carry both
-    /// paths in one exhaustive `view()` match, selected here; 5b flips
-    /// this default to `true` and the P6 adapter deletion removes the
-    /// flag (and with it the sparse arms).
+    /// paths in one exhaustive `view()` match, selected here; the 5b
+    /// flip turned the default `true` (the P6 adapter deletion removes
+    /// the flag and with it the sparse arms).
     pub dense_seam: bool,
 }
 
@@ -1782,7 +1820,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_init: false,
             tail_scrut_fired: false,
             frame_outbox: Vec::new(),
-            dense_seam: false,
+            dense_seam: true,
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a

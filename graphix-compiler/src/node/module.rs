@@ -443,15 +443,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         let mut src_tag = Tag::FIRED;
         let src = if self.dynamic_sig_env.is_some() {
             let tv = self.source.update(ctx, event);
-            if tv.is_absent() {
+            let tag = tv.tag();
+            if !tag.triggers() {
+                // a quiet source production (the value channel) never
+                // recompiles the running module
                 None
-            } else {
+            } else if tag.is_bottom() {
                 // never compile from a taint placeholder (and don't tear
                 // down the running module on one) — pass the taint on
-                if tv.is_tainted() {
-                    return self.resident.set(TagValue::tainted(Value::Null));
-                }
-                let tag = tv.tag();
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+            } else {
                 Some((tv.value_cloned(), tag))
             }
         } else {
@@ -544,7 +547,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 

@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Rt, Scope, compile,
+    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope, compile,
     expr::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, Source, parse_modpath, read_to_arcstr,
@@ -370,30 +370,16 @@ impl<X: GXExt> GX<X> {
         let mut run_nodes = || {
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
-                    let mut clear: LPooled<Vec<BindId>> = LPooled::take();
+                    // No init backfill: under dense delivery a Ref's
+                    // store read serves the init view itself (R2 — a
+                    // standing entry reads Fired when `event.init`).
                     self.event.init = *init;
-                    if self.event.init {
-                        let mut refs = Refs::default();
-                        n.refs(&mut refs);
-                        refs.with_external_refs(|id| {
-                            if let Some(v) = self.ctx.rt.cached.get(&id) {
-                                if let Entry::Vacant(e) = self.event.variables.entry(id) {
-                                    // FIRED: an init view — the fresh
-                                    // top sees everything as new
-                                    e.insert(graphix_compiler::TagValue::fired(
-                                        v.clone(),
-                                    ));
-                                    clear.push(id);
-                                }
-                            }
-                        });
-                    }
                     // The runtime delivery boundary is a firing FORCE
                     // point (the kernel-output twin): only a FIRED
                     // production becomes an event; a stale or tainted
                     // one is dropped here.
                     let tv = n.update(&mut self.ctx, &mut self.event);
-                    if !tv.is_absent() && tv.is_fired() {
+                    if tv.is_fired() {
                         let v = tv.value_cloned();
                         let watched = matches!(
                             self.result_watch.as_ref(),
@@ -414,9 +400,6 @@ impl<X: GXExt> GX<X> {
                     // attributed to this top-level expression.
                     for d in self.ctx.diagnostics.drain(..) {
                         batch.push(GXEvent::Diagnostic(Some(*id), d));
-                    }
-                    for id in clear.drain(..) {
-                        self.event.variables.remove(&id);
                     }
                 }
             }

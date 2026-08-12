@@ -77,7 +77,7 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
         event: &mut ::graphix_compiler::Event<E>,
     ) -> &::graphix_compiler::TagValue {
         if !self.args.update(ctx, from, event) {
-            return ::graphix_compiler::TagValue::absent();
+            return self.out.ride();
         }
         let __res = match &self.args.0[..] {
             [
@@ -96,7 +96,7 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
             ::std::option::Option::Some(__v) => {
                 self.out.set(::graphix_compiler::TagValue::fired(__v))
             }
-            ::std::option::Option::None => ::graphix_compiler::TagValue::absent(),
+            ::std::option::Option::None => self.out.ride(),
         }
     }
 

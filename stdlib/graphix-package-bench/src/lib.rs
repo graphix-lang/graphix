@@ -43,7 +43,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
         event: &mut Event<E>,
     ) -> &TagValue {
         if !self.args.update(ctx, from, event) {
-            return TagValue::absent();
+            return self.out.ride();
         }
         let res = match &self.args.0[..] {
             [
@@ -77,7 +77,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 

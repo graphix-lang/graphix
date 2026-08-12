@@ -72,11 +72,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
                     self.id = Some(id);
                     ctx.rt.ref_var(id, self.eid);
                     ctx.rt.set_timer(id, dur);
-                    return TagValue::absent();
+                    return self.out.ride();
                 }
                 Err(_) => {
                     self.id = None;
-                    return TagValue::absent();
+                    return self.out.ride();
                 }
             }
         }
@@ -91,7 +91,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -269,7 +269,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
             });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -325,7 +325,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
         if seam_tick(from[0].update(ctx, event), ctx.dense_seam).is_some() {
             self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {
-            TagValue::absent()
+            self.out.ride()
         }
     }
 

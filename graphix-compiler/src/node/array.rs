@@ -159,10 +159,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         let s = self.source.update(ctx, event);
         let ip = self.i.update(ctx, event);
         if s.is_none() && ip.is_none() {
-            return TagValue::absent();
+            return self.resident.ride();
         }
         if self.source.tag.is_tainted() || self.i.tag.is_tainted() {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         let fired = s.is_some_and(|t| t.is_fired()) || ip.is_some_and(|t| t.is_fired());
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
@@ -177,12 +177,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
                     ));
                 }
             },
-            None => return TagValue::absent(),
+            None => return self.resident.ride(),
         };
         let v = match &self.source.cached {
             Some(Value::Array(elts)) => array_index(elts, i),
             Some(Value::Bytes(b)) => bytes_index(b, i),
-            None => return TagValue::absent(),
+            None => return self.resident.ride(),
             _ => err!(ERR_TAG, "expected an array"),
         };
         self.resident.set(TagValue::tagged(v, tag))
@@ -296,13 +296,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         let st = self.start.as_mut().and_then(|c| c.update(ctx, event));
         let en = self.end.as_mut().and_then(|c| c.update(ctx, event));
         if s.is_none() && st.is_none() && en.is_none() {
-            return TagValue::absent();
+            return self.resident.ride();
         }
         if self.source.tag.is_tainted()
             || self.start.as_ref().is_some_and(|c| c.tag.is_tainted())
             || self.end.as_ref().is_some_and(|c| c.tag.is_tainted())
         {
-            return self.resident.set(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         let fired = s.is_some_and(|t| t.is_fired())
             || st.is_some_and(|t| t.is_fired())
@@ -324,7 +324,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         macro_rules! bound {
             ($bound:expr) => {{
                 match $bound.cached.as_ref() {
-                    None => return TagValue::absent(),
+                    None => return self.resident.ride(),
                     Some(Value::U64(i) | Value::V64(i)) => Some(*i as usize),
                     Some(v) => Some(number!(v)),
                 }
@@ -338,7 +338,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         };
         let v = match &self.source.cached {
             Some(src) => array_slice(src, start, end),
-            None => return TagValue::absent(),
+            None => return self.resident.ride(),
         };
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -483,28 +483,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
                     .resident
                     .set(TagValue::fired(Value::Array(ValArray::from([]))));
             }
-            return TagValue::absent();
+            return self.resident.ride();
         }
         let mut produced = false;
         let mut fired = false;
         let mut determined = true;
         for c in self.n.iter_mut() {
             if let Some(t) = c.update(ctx, event) {
-                produced = true;
+                produced |= t.triggers();
                 fired |= t.is_fired();
             }
             determined &= c.cached.is_some();
         }
         if produced && determined {
             if self.n.iter().any(|c| c.tag.is_tainted()) {
-                return self.resident.set(TagValue::tainted(Value::Null));
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
             }
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let iter = self.n.iter().map(|n| n.cached.clone().unwrap());
             let v = Value::Array(ValArray::from_iter_exact(iter));
             self.resident.set(TagValue::tagged(v, tag))
+        } else if produced {
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
-            TagValue::absent()
+            self.resident.ride()
         }
     }
 

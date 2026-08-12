@@ -492,7 +492,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
-            resident: TagValue::absent().clone(),
+            resident: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -507,7 +507,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         event: &mut Event<E>,
     ) -> &TagValue {
         match self.cached.update_full(ctx, from, event) {
-            None => TagValue::absent(),
+            None => self.resident.ride(),
             Some(t) if ctx.dense_seam && self.cached.any_bottom() => {
                 // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
                 // arg is bottom — standing poison or the
@@ -533,12 +533,11 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
             }
             Some(t) if t.is_fired() => match self.t.eval(ctx, &self.cached) {
                 Some(v) => self.resident.set(TagValue::fired(v)),
-                // eval produced nothing: the resident keeps the
-                // previous result for a later stale refresh, exactly
-                // as the sparse result slot did.
-                None => TagValue::absent(),
+                // eval produced nothing: ride the resident — the
+                // previous result re-surfaces stale, a never-set
+                // resident stays the phantom.
+                None => self.resident.ride(),
             },
-            Some(_) if self.resident.is_absent() => TagValue::absent(),
             Some(_) => {
                 // stale refresh: surface the result slot on the value
                 // channel — eval does NOT re-run
@@ -701,7 +700,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None if bottomed => TagValue::bottom_null(true),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -774,12 +773,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        match from[0].update(ctx, event).to_option().map(|tv| match tv.value() {
-            Value::Error(_) => Value::Bool(true),
-            _ => Value::Bool(false),
+        match seam_tick(from[0].update(ctx, event), ctx.dense_seam).map(|tv| {
+            tv.with_value(|v| match v {
+                Value::Error(_) => Value::Bool(true),
+                _ => Value::Bool(false),
+            })
         }) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -817,12 +818,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        match from[0].update(ctx, event).to_option().and_then(|tv| match tv.value() {
-            v @ Value::Error(_) => Some(v),
-            _ => None,
-        }) {
+        match seam_tick(from[0].update(ctx, event), ctx.dense_seam)
+            .and_then(|tv| match tv.value_cloned() {
+                v @ Value::Error(_) => Some(v),
+                _ => None,
+            }) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -859,13 +861,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        match from[0]
-            .update(ctx, event)
-            .to_option()
-            .map(|e| Value::Error(e.value().into()))
+        match seam_tick(from[0].update(ctx, event), ctx.dense_seam)
+            .map(|e| Value::Error(e.value_cloned().into()))
         {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -924,7 +924,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -976,7 +976,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(n) = seam_value(from[0].update(ctx, event))
+        // seed the countdown on a TICK only: a stale ride of #n is
+        // the value channel and must not clobber the running count (a
+        // fired re-delivery is a genuine re-seed)
+        if let Some(n) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
             .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
@@ -993,7 +996,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -1044,7 +1047,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(n) = seam_value(from[0].update(ctx, event))
+        // seed the countdown on a TICK only: a stale ride of #n is
+        // the value channel and must not clobber the running count (a
+        // fired re-delivery is a genuine re-seed)
+        if let Some(n) = seam_tick(from[0].update(ctx, event), ctx.dense_seam)
             .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
@@ -1061,7 +1067,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -1540,7 +1546,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
             });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -1572,8 +1578,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // `pending` (the held candidate value) and the published
         // pred-fn/element values are all per-invocation replay memory.
-        ctx.rt.cached_remove(&self.fid);
-        ctx.rt.cached_remove(&self.x);
         self.pending = None;
         self.pred.reset_replay(ctx);
     }
@@ -1635,7 +1639,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         }
         match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -1715,7 +1719,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
             self.triggered -= 1;
             self.out.set(TagValue::fired(v))
         } else {
-            TagValue::absent()
+            self.out.ride()
         }
     }
 
@@ -1802,7 +1806,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         }
         match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -1867,7 +1871,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             () => {{
                 match self.last_v.clone() {
                     Some(v) => return self.out.set(TagValue::fired(v)),
-                    None => return TagValue::absent(),
+                    None => return self.out.ride(),
                 }
             }};
         }
@@ -1882,7 +1886,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                     ctx.rt.ref_var(id, self.top_id);
                     ctx.rt.set_timer(id, self.wait - (now - *$last));
                     self.tid = Some(id);
-                    return TagValue::absent();
+                    return self.out.ride();
                 }
             }};
         }
@@ -1930,7 +1934,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             self.last = Some(Instant::now());
             emit_cached!()
         }
-        TagValue::absent()
+        self.out.ride()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1995,7 +1999,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
             self.count += 1;
             self.out.set(TagValue::fired(Value::I64(self.count)))
         } else {
-            TagValue::absent()
+            self.out.ride()
         }
     }
 
@@ -2089,7 +2093,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         });
         match res {
             Some(v) => self.1.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.1.ride(),
         }
     }
 
@@ -2142,7 +2146,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
         for n in from {
             n.update(ctx, event);
         }
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2276,7 +2280,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            None => TagValue::absent(),
+            None => self.out.ride(),
         }
     }
 
@@ -2357,7 +2361,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
                 },
             }
         }
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2442,7 +2446,7 @@ macro_rules! printfn {
                         },
                     }
                 }
-                TagValue::absent()
+                TagValue::phantom_ref()
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

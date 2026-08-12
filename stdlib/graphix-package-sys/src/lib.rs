@@ -475,7 +475,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
                 pargs.0.iter().map(|s| Value::String(s.clone())).collect();
             self.out.set(TagValue::fired(Value::Array(arr)))
         } else {
-            TagValue::absent()
+            self.out.ride()
         }
     }
 
@@ -528,7 +528,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             let _ = std::io::stderr().flush();
             std::process::exit(code as i32);
         }
-        TagValue::absent()
+        TagValue::phantom_ref()
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
