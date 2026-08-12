@@ -642,3 +642,69 @@ modes — every diff in the documented noise set (self-timed/
 timestamp-seeded bench, rand/now nondeterminism, netidx pacing, the
 two free-running soak counters prefix-identical at differing lengths).
 P5b′ is CLOSED.
+
+## As-built: P6 — the stdlib long tail (2026-08-12, 4c8e9b44)
+
+**The update_diff seam is gone.** `seam_arg` (package-core) is the
+per-arg dense read for raw-Apply builtins with designated own state:
+update the node, return `(value, fired)` — the value channel is `None`
+for bottoms, and bottoms never tick (Q1 applied at raw seams). The
+seven `update_diff` users read productions directly: net::write,
+net::subscribe, net::call, net::list/list_table, net::publish,
+net::publish_rpc, http::serve. `CachedVals::update_diff`, the
+`arity1!/arity2!` extractors, and every migrated builtin's
+`args: CachedVals` mirror are deleted; `sleep`/`reset_replay` keep
+only designated state. http::serve's quiet path returns the honest
+`out.ride()` (the deferred 5b item — its phantom_ref placeholder dies).
+
+**Q1-normalization deltas** (bottom cases that were UNREACHABLE
+pre-flip — the CallSite taint gate silenced them — and went live at 5b
+with sparse-era arm semantics; all normalized to "a bottom delivery is
+no event, designated state rides"):
+- net::subscribe's `(None, true)` arm UNSUBSCRIBED on a FreshBottom
+  path with no history — dead code pre-flip, live-and-unruled after.
+  Now: no event; the standing subscription rides (the language way to
+  stop a subscription remains arm deselection/sleep).
+- net::call re-CALLED the rpc with held args on a FreshBottom
+  delivery; net::write re-wrote the previous value; net::publish
+  re-published/updated; publish_rpc and http::serve tore down and
+  republished proc/listener from held values. All now fired-gated.
+- net::write's resubscribe re-write reads the value production's
+  stale channel: a value bottomed at rest is NOT re-written to a new
+  path (delta-7-consistent — no resurrection of pre-bottom values).
+
+**The adapter is deleted; the sparse view is unrepresentable.**
+`ExecCtx::dense_seam` (constant `true` since the flip) is gone;
+`seam_tick(tv)` is Fired-only with no gate parameter;
+`seam_publish_tag` is deleted (the honest republish tag is
+`tv.tag()`); the `CachedArgs`/`CachedArgsAsync` Q1 bottom arms are
+ungated. `seam_tick`/`seam_value`/`seam_arg` remain as the durable
+authoring vocabulary — no sparse arm survives to select.
+
+**buffer::decode verified verbatim:** the wrapper runs `eval` only on
+the fired join (stale → retag STALE without eval; bottom → the Q1 arm
+without eval), so its `set_var` effects cannot re-run on stale
+refreshes or bottoms. Residual audit: every raw production read in
+stdlib flows through `seam_arg`/`seam_tick`/`seam_value` or the
+`CachedVals` staging buffer; the one bare pump (`Never`) discards by
+design.
+
+**Flagged pre-existing (NOT changed — for Eric):** net::write drops
+its old `Dval` on a path SWITCH (and on the invalid-path teardown)
+without calling `NetState::unsubscribe`, unlike `delete`/`sleep` which
+do — the old path's wake registration for the write's BindId appears
+to linger until delete. Pre-dates dense; preserved verbatim.
+
+**P6 gates (2026-08-12, all GREEN):** workspace suite 2433/0 across
+66 binaries; regress 303 programs 0 regressions; paired stdout
+captures vs the blessed 5c baseline ∅ modulo the documented noise set
+in both modes. Three off-list capture diffs surfaced and were
+adjudicated, none behavioral: audit__03 and
+empty-scaffold-depth-charge__01 had EMPTY blessed nofusion files (the
+4-way-parallel blessing run's contention flake — the pinned 5c binary
+run solo prints exactly what P6 prints; blessed files repaired with
+the verified content), and select-guard-shortcircuit__02 is inherent
+stdout ORDER nondeterminism (two tops' prints interleave; the same
+binary produces different orders run-to-run, line MULTISETS identical
+in both modes; added to the noise record). P6 is CLOSED. Remaining
+after P6: P7 Sync flips, P8 corpus re-adjudication + docs, P9 soak.
