@@ -355,10 +355,10 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // firing per same-value call where `|n| {let x = select n {...};
     // x}` does not — the refactor asymmetry, Eric 2026-08-06). band
     // keeps a cleared (fired) bit cleared across loop iterations.
+    let scrut_stale_bit = cx.b.ins().band_imm(scrut.disc(), STALE);
     if sel.tail_position.load(std::sync::atomic::Ordering::Relaxed) {
         let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
-        let ss = cx.b.ins().band_imm(scrut.disc(), STALE);
-        let n = cx.b.ins().band(cur, ss);
+        let n = cx.b.ins().band(cur, scrut_stale_bit);
         cx.b.def_var(cx.ctx.tail.scrut_stale, n);
     }
     // EVERY tail-emitter select needs SELECTION MEMORY (the strict
@@ -428,7 +428,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             // never returns, leaving the word untouched by loop
             // mechanics.
             if let Some(w) = sel_word {
-                cx.ctx.tail.sel_path.borrow_mut().push((w, idx));
+                cx.ctx.tail.sel_path.borrow_mut().push((w, idx, scrut_stale_bit));
             }
             emit_body_tail(cx, body, ret)?;
             if sel_word.is_some() {

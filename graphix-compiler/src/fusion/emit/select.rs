@@ -1736,11 +1736,18 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     let sel_changed = match word {
         SelWord::Sure(addr) => record(cx, addr, idx),
         // A site-block word: 0 base = a recursive back-edge's interior
-        // activation — QUIET (no becoming-selected fire, no forced arm
-        // init). The node-walk's parked twins keep their selections
-        // across the park (the SelSnap snapshot), so no-memory must
-        // not read as a selection change; see the matching nomem rule
-        // (and its residual-gap note) in `emit_kernel_return`.
+        // activation — a FRESH TRANSIENT activation (Eric's ruling
+        // 2026-08-13, interior-activation class; the tail twin's nomem
+        // rule in `emit_kernel_return`). The interp gives every
+        // re-derived interior activation fresh selection state AND
+        // dispatches it under a fresh-instance init view, so an arm
+        // match on a TRIGGERING scrutinee delivery is
+        // becoming-selected: it fires and forces the arm's init view
+        // (consts re-deliver — the x=[1,2,2] probe). A stale
+        // scrutinee never re-matches (the capture-wake pin stays
+        // quiet). Unlike the tail twin, a tainted scrutinee reaches
+        // the arm structurally here, so the woke bit requires
+        // untainted as well as fired.
         SelWord::Guarded { base, addr } => {
             let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
             let mem_bl = cx.b.create_block();
@@ -1755,8 +1762,13 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             cx.b.ins().jump(merge, &[BlockArg::Value(woke), BlockArg::Value(eff_init)]);
             cx.b.switch_to_block(nomem_bl);
             cx.b.seal_block(nomem_bl);
-            let f = cx.b.ins().iconst(types::I8, 0);
-            cx.b.ins().jump(merge, &[BlockArg::Value(f), BlockArg::Value(base_init)]);
+            let ss = cx.b.ins().band_imm(scrut_disc, STALE);
+            let fired = cx.b.ins().icmp_imm(IntCC::Equal, ss, 0);
+            let valid = is_untainted(cx.b, scrut_disc);
+            let woke = cx.b.ins().band(fired, valid);
+            let woke64 = cx.b.ins().uextend(types::I64, woke);
+            let eff_init = cx.b.ins().bor(base_init, woke64);
+            cx.b.ins().jump(merge, &[BlockArg::Value(woke), BlockArg::Value(eff_init)]);
             cx.b.switch_to_block(merge);
             cx.b.seal_block(merge);
             let params = cx.b.block_params(merge);

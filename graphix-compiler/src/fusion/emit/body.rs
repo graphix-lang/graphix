@@ -1250,9 +1250,9 @@ pub(super) fn emit_kernel_return(
     // the record is unconditional here (the node-walk updates
     // `selected` before the arm body too).
     {
-        let path: smallvec::SmallVec<[(SelWord, usize); 4]> =
+        let path: smallvec::SmallVec<[(SelWord, usize, ClifValue); 4]> =
             cx.ctx.tail.sel_path.borrow().iter().copied().collect();
-        for (word, idx) in path {
+        for (word, idx, scrut_stale_bit) in path {
             let record = |cx: &mut BodyCx, addr: ClifValue| -> ClifValue {
                 let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
                 let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
@@ -1266,21 +1266,23 @@ pub(super) fn emit_kernel_return(
             };
             let mask = match word {
                 SelWord::Sure(addr) => record(cx, addr),
-                // Null site block (recursive back-edge): QUIET (the
-                // STALE fold identity). Interior activations have no
-                // per-activation selection memory, and the node-walk's
-                // parked twins now KEEP theirs across the park (the
-                // SelSnap snapshot), so treating no-memory as
-                // becoming-selected over-fired every re-executed
-                // interior activation (regressed
-                // transient-rebind-init-jul2026/00). Value-driven
-                // selection changes still fire organically (a changed
-                // scrutinee value means its chain fired and the taken
-                // arm consumes it); the residual gap — an interior
-                // activation flipping onto a CONST arm misses its
-                // becoming-selected fire here — needs per-activation
-                // memory (a design item; the interp's snapshot tree
-                // has no static-kernel twin yet).
+                // Null site block (recursive back-edge): a FRESH
+                // TRANSIENT activation. The interp gives every
+                // re-derived interior activation fresh selection state,
+                // so ANY arm match on a TRIGGERING scrutinee delivery
+                // is becoming-selected and fires (Eric's ruling
+                // 2026-08-13, interior-activation class — pinned by the
+                // x=[1,2,2] same-value re-fire probe); a stale
+                // scrutinee never re-matches and stays quiet (the
+                // capture-wake pin, transient-rebind-init-jul2026/00).
+                // The mask is therefore the scrutinee's own STALE bit,
+                // threaded from the select head: 0 (fired) forces the
+                // becoming-selected fire through the fold, STALE is
+                // the quiet identity. The early taint return above the
+                // arms guarantees the scrutinee is untainted here. The
+                // round-2 init-force failure is instructive: the
+                // trigger must be the scrutinee's own delivery tag,
+                // never the invocation itself.
                 SelWord::Guarded { base, addr } => {
                     let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
                     let mem_bl = cx.b.create_block();
@@ -1294,8 +1296,7 @@ pub(super) fn emit_kernel_return(
                     cx.b.ins().jump(merge, &[BlockArg::Value(mask)]);
                     cx.b.switch_to_block(nomem_bl);
                     cx.b.seal_block(nomem_bl);
-                    let stale = cx.b.ins().iconst(types::I64, STALE);
-                    cx.b.ins().jump(merge, &[BlockArg::Value(stale)]);
+                    cx.b.ins().jump(merge, &[BlockArg::Value(scrut_stale_bit)]);
                     cx.b.switch_to_block(merge);
                     cx.b.seal_block(merge);
                     cx.b.block_params(merge)[0]

@@ -537,7 +537,13 @@ pub(super) struct TailCtx<'a> {
     /// -arm pass (jul17c capture-dispatch pin: a guard reading a
     /// CAPTURE flips selection while the entry stays quiet — the old
     /// entry-derived seam tag could never fire it).
-    pub(super) sel_path: std::cell::RefCell<Vec<(SelWord, usize)>>,
+    /// (word, taken-arm index, the scrutinee's STALE bit at the select
+    /// head — 0 when the delivery fired). The stale bit is the
+    /// no-memory record's mask: a fresh transient activation
+    /// (recursive back-edge, site base 0) IS becoming-selected on any
+    /// triggering scrutinee delivery (the interp's fresh-instance
+    /// rule, Eric's ruling 2026-08-13 — interior-activation class).
+    pub(super) sel_path: std::cell::RefCell<Vec<(SelWord, usize, ClifValue)>>,
 }
 
 pub(crate) struct LowerCtx<'a> {
