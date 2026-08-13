@@ -21,7 +21,7 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use super::{
     abi::{
         CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
-        emit_scalar_taint_cache, emit_untainted_i64, emit_value_taint_cache, is_tainted,
+        emit_untainted_i64, is_tainted,
         scalar_disc, taint_if, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
@@ -500,33 +500,10 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.seal_block(dmerge);
     let params = cx.b.block_params(dmerge);
     let merged = CompiledExpr::new(params[0], params[1]);
-    // 5c: BOTTOM PROPAGATES (Q1) at statement/merge positions — the
-    // pre-dense blanket "prior success degrades to STALE + the cached
-    // value" is scoped to the VALUE-DRIVEN ride contexts the dense
-    // interp retains (`in_ride_scope`: loop bodies' per-slot values,
-    // guard-interior reads); everywhere else the bottom flows. The
-    // select scrutinee ride is the other designated rider
-    // (emit/select.rs, untouched).
-    if super::abi::in_ride_scope(cx) {
-        match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
-            Some(AbiKind::Scalar(p)) => {
-                return Ok(emit_scalar_taint_cache(cx, p, merged));
-            }
-            Some(
-                AbiKind::String
-                | AbiKind::Array
-                | AbiKind::Tuple
-                | AbiKind::Struct
-                | AbiKind::Variant
-                | AbiKind::Nullable
-                | AbiKind::Value,
-            ) => {
-                let tail = cx.ctx.tail_leaves.borrow().contains(&_spec_id.inner());
-                return emit_value_taint_cache(cx, merged, tail);
-            }
-            _ => {}
-        }
-    }
+    // STRICT (Eric's ruling 2026-08-13): BOTTOM PROPAGATES at the
+    // call's merge, everywhere — the ride scopes are retired with
+    // `in_ride_scope`. The select scrutinee and final-value guard
+    // rides are the designated riders (emit/select.rs, untouched).
     Ok(merged)
 }
 

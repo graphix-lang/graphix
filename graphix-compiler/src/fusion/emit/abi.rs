@@ -595,16 +595,6 @@ pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue 
     b.ins().band_imm(disc, !(TAINT | STALE))
 }
 
-/// True iff the current emission point is a VALUE-DRIVEN ride scope
-/// under the dense model — inside a scaffold-loop body (per-slot
-/// values are designated ride memory, fork 7) or inside a select
-/// guard expression (guard truth tests read cached VALUES, which the
-/// dense interp retains under a poisoned tag). Interior-bottom taint
-/// caches apply only here; everywhere else BOTTOM PROPAGATES (Q1) —
-/// the 5c scoping of the pre-dense blanket caches.
-pub(super) fn in_ride_scope(cx: &super::body::BodyCx) -> bool {
-    cx.ctx.loop_depth.get() > 0 || cx.ctx.guard_depth.get() > 0
-}
 
 // ─── Env: name → Variable lookup ─────────────────────────────────
 

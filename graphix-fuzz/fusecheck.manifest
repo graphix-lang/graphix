@@ -76,7 +76,7 @@
 1	dyncall-valueshape-firing-jul2026/01_buffer_const_extrafire.gx
 1	dyncall-valueshape-firing-jul2026/02_cast_connect_selfwake.gx
 1	dynmod-ref-priming-jul2026/01_module_level_builtin_call.gx
-1	empty-literal-firing-jul2026/01_empty_array_fires_every_invocation.gx
+2	empty-literal-firing-jul2026/01_empty_array_fires_every_invocation.gx
 1	empty-scaffold-depth-charge-aug2026/01_empty_inner_fold_at_limit.gx
 2	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
 1	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
@@ -88,7 +88,7 @@
 1	flip-jun2026/01_dead_bottom_stmt.gx
 1	flip-jun2026/02_dead_bottom_stmt.gx
 1	flip-jun2026/03_dead_bottom_stmt.gx
-0	fold-acc-taint-jul2026/01_fold_select_acc_taint_launder.gx
+1	fold-acc-taint-jul2026/01_fold_select_acc_taint_launder.gx
 0	fold-bottom-body-acc-aug2026/01_connect_body_tuple_acc.gx
 1	fold-bottom-body-acc-aug2026/02_connect_body_string_acc.gx
 2	fold-tainted-init-aug2026/00_acc_chain_poisons.gx
@@ -134,9 +134,9 @@
 1	lambda-instantiation-binding-jul2026/01_error_arm_lambda_return.gx
 1	lambda-jun2026/01_shadowed_name_self_call.gx
 1	leaf-stale-mask-jul2026/00_minimal_connect_refire.gx
-3	leaf-stale-mask-jul2026/01_tail_dup_findmap.gx
+1	leaf-stale-mask-jul2026/01_tail_dup_findmap.gx
 1	leaf-stale-mask-jul2026/02_connect_infinite_refire.gx
-1	leaf-stale-mask-jul2026/03_nested_findmap_in_callback.gx
+2	leaf-stale-mask-jul2026/03_nested_findmap_in_callback.gx
 5	leaf-stale-mask-jul2026/04_reactive_fold_destructure.gx
 3	leaf-stale-mask-jul2026/05_ref_connect_fold.gx
 1	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx
@@ -265,6 +265,8 @@
 1	source-e-jun2026/10_let_words_alpha_beta_first_words_0.gx
 1	sprintf-error-return-shape-aug2026/00_sprintf_missing_arg_dropped.gx
 3	stale-error-deliver-jul2026/01_stale_arith_redeliver.gx
+5	strict-bottom-collections-aug2026/00_loop_op_poison.gx
+6	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
 2	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
 1	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
@@ -294,7 +296,7 @@
 6	twochannel-jul2026/late_init_priming.gx
 1	twochannel-jul2026/p10_const_callee_body.gx
 0	twochannel-jul2026/p11_letrec_group.gx
-1	twochannel-jul2026/p12_async_arm_capture.gx
+2	twochannel-jul2026/p12_async_arm_capture.gx
 1	twochannel-jul2026/p13_map_div0_frame_taint.gx
 1	twochannel-jul2026/p14_dead_arm_select_frame.gx
 0	twochannel-jul2026/p15_const_kernel_frame_channel.gx

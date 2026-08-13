@@ -469,25 +469,12 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         }
         cx.env.truncate(mark);
     }
-    // 5c Q1: a bottoming taken arm IS a fresh bottom at the select's
-    // output — propagate (the dense interp's consumers poison on it;
-    // the aug01b-era merge ride matched the pre-dense consumer
-    // `Cached`, which no longer rides), except in ride scopes
-    // (`in_ride_scope`: an in-loop or guard-interior select's merge
-    // keeps the per-slot/guard ride). The SCRUTINEE ride
-    // (emit_scrut_ride above) is the select's designated memory and
-    // is untouched.
-    let result = CompiledExpr::new(rdisc, rpayload);
-    if super::abi::in_ride_scope(cx) {
-        return match merge_shape {
-            SelectMerge::Scalar(p) => Ok(emit_scalar_taint_cache(cx, p, result)),
-            SelectMerge::Value | SelectMerge::Composite | SelectMerge::String => {
-                let tail = cx.ctx.tail_leaves.borrow().contains(&sel.spec.id.inner());
-                emit_value_taint_cache(cx, result, tail)
-            }
-        };
-    }
-    Ok(result)
+    // STRICT (Eric's ruling 2026-08-13): a bottoming taken arm IS a
+    // fresh bottom at the select's output — propagate, everywhere.
+    // The ride scopes are retired with `in_ride_scope`; the SCRUTINEE
+    // ride (emit_scrut_ride above) and the FINAL-value guard ride are
+    // the select's designated memory and are untouched.
+    Ok(CompiledExpr::new(rdisc, rpayload))
 }
 
 /// The final-arm fail block of a VALUE-position select: reached only
@@ -1058,12 +1045,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             }
         };
         install_arm_binds(cx, &binds, scrut, pcond)?;
-        // Guard scope: interior bottom origins ride their cached
-        // values (see `in_ride_scope`).
-        cx.ctx.guard_depth.set(cx.ctx.guard_depth.get() + 1);
-        let gcv = g.node.emit_clif(cx);
-        cx.ctx.guard_depth.set(cx.ctx.guard_depth.get() - 1);
-        let gcv = gcv?;
+        let gcv = g.node.emit_clif(cx)?;
         // THE GUARD RIDE (aug13b divergence_000000): a bottomed guard
         // re-matches against its last good value — the interp's
         // `Held` keeps the value on a bottom production and `is_match`

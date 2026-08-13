@@ -422,7 +422,7 @@ const FOLD_ARRAY_ACC: &str = r#"
 run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(4)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ASPIRE: Jit — the callback takes the STRING acc as a formal, and
 // the For loop's cross-kernel call can't marshal string args yet
@@ -457,24 +457,24 @@ run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// An in-loop interior-bottom: the filter predicate `10/x` bottoms on
-// the div0 cycle (x=0 from the array::iter slot). The interp's
-// per-slot node caches ride the previous verdict, so the output
-// re-emits `[1,2,0]` under the stale-true verdict; the kernel now
-// matches via per-slot (value, ok) cache pairs in a reset-registered
-// slot chain (`claim_slot_cache_words` — jul17c katana divergence
-// 000002, previously the documented stateless-in-loop degrade which
-// bottomed the whole output on that cycle).
+// STRICT bottom in a loop (Eric's ruling 2026-08-13, superseding the
+// jul17c slot-cache ride this fixture used to pin): the filter
+// predicate `10/x` bottoms on the div0 cycle (x=0 from the iter
+// slot) and the WHOLE collection poisons that cycle — no emission,
+// no internally mixed-freshness value, `map`/`filter` agree with the
+// hand-written literal. Downstream sees THREE honest deliveries, not
+// the old ride's four (the ridden `[1,2,0]` re-emission is gone), so
+// the group closes at n == 3. Recovery on the x=4 cycle is fresh.
 const FILTER_DIV0_SLOT_CACHE: &str = r#"
 {
   let a = [1, 2, array::iter([1, 2, 0, 4]), 4, 5, 6, 7, 8];
   let out = array::filter(a, |x| 10 / x > 2);
-  array::group(out, |n, _| n == 4)
+  array::group(out, |n, _| n == 3)
 }
 "#;
 
 run!(filter_div0_slot_cache, FILTER_DIV0_SLOT_CACHE, |v: Result<&Value>| {
-    let expect: Vec<Vec<i64>> = vec![vec![1, 2, 1], vec![1, 2, 2], vec![1, 2, 0], vec![1, 2]];
+    let expect: Vec<Vec<i64>> = vec![vec![1, 2, 1], vec![1, 2, 2], vec![1, 2]];
     match v {
         Ok(Value::Array(gs)) => {
             gs.len() == expect.len()

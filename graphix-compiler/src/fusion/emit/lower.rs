@@ -242,7 +242,6 @@ pub(super) fn compile_into_function(
         callee_layouts,
         lazy_site_leaves,
         loop_depth: std::cell::Cell::new(0),
-        guard_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -615,16 +614,6 @@ pub(crate) struct LowerCtx<'a> {
     /// word can't hold per-slot memory (the node-walk gives each slot
     /// its own state, but an inline loop body is one function).
     pub(super) loop_depth: std::cell::Cell<u32>,
-    /// Depth of enclosing select GUARD expressions at the current
-    /// emission point. Guards are VALUE-DRIVEN consumers in the dense
-    /// interp: a guard's truth test reads its interior nodes' CACHED
-    /// VALUES, which survive under a poisoned tag ("bottom
-    /// productions poison the tag, never overwrite the value"), so
-    /// guard-interior bottom origins ride where statement/merge
-    /// positions propagate (Q1). Together with `loop_depth` (per-slot
-    /// rides, fork 7) this scopes the interior-bottom taint caches —
-    /// see `in_ride_scope`.
-    pub(super) guard_depth: std::cell::Cell<u32>,
     /// Cross-kernel call sites resolve their callee's kernel IDENTITY
     /// (`kernel_key` of the site's `info.kernel` Arc) through this map
     /// to a CLIF `FuncRef` — never by name (names shadow, and

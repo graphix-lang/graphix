@@ -792,7 +792,7 @@ run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])
@@ -1101,7 +1101,7 @@ const HOF_STR_MAP_UPPER: &str = r#"array::map(["hi", "yo"], |s| str::to_upper(s)
 run!(hof_str_map_upper, HOF_STR_MAP_UPPER, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "HI" && &*b == "YO")
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // filter MOVES the kept string element into the output; drops the rest.
 const HOF_STR_FILTER: &str = r#"array::filter(["a", "bb", "ccc"], |s| str::len(s) > 1)"#;
@@ -1299,7 +1299,7 @@ array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false 
 run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
     Ok(Ok([20]))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // COMPOSITE-returning callbacks through the per-slot template kernel
 // (soak jul05 items 5/10/13). The callback's declared rtype

@@ -19,7 +19,7 @@ use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        emit_scalar_taint_cache, emit_value_taint_cache, is_fresh, is_tainted,
+        is_fresh, is_tainted,
         is_untainted, propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
@@ -996,14 +996,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             let disc = taint_if(cx.b, disc, is_err);
-            // 5c Q1: a `$`/`?`-dropped error IS a fresh bottom —
-            // propagate, except in ride scopes (`in_ride_scope`).
-            let cv = CompiledExpr::new(disc, value);
-            if super::abi::in_ride_scope(cx) {
-                Ok(emit_scalar_taint_cache(cx, p, cv))
-            } else {
-                Ok(cv)
-            }
+            // STRICT (2026-08-13): a `$`/`?`-dropped error IS a
+            // fresh bottom — propagate, everywhere (the ride scopes
+            // are retired).
+            Ok(CompiledExpr::new(disc, value))
         }
         // String / composite success — branch: the bad path (error OR
         // tainted) produces a tainted shape-safe PLACEHOLDER and
@@ -1106,18 +1102,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            // 5c Q1: the dropped error is a fresh bottom — propagate,
-            // except in ride scopes (both qmerge paths owned).
-            let cv = CompiledExpr::new(params[0], params[1]);
-            if super::abi::in_ride_scope(cx) {
-                emit_value_taint_cache(
-                    cx,
-                    cv,
-                    cx.ctx.tail_leaves.borrow().contains(&_spec_id.inner()),
-                )
-            } else {
-                Ok(cv)
-            }
+            // STRICT (2026-08-13): the dropped error is a fresh
+            // bottom — propagate, everywhere (the ride scopes are
+            // retired).
+            Ok(CompiledExpr::new(params[0], params[1]))
         }
         // Value-shape success. The bad path (error) produces a tainted
         // Value::Null placeholder and CONTINUES (interior-bottom v2);
@@ -1176,18 +1164,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            // 5c Q1: the dropped error is a fresh bottom — propagate,
-            // except in ride scopes (both qmerge paths owned).
-            let cv = CompiledExpr::new(params[0], params[1]);
-            if super::abi::in_ride_scope(cx) {
-                emit_value_taint_cache(
-                    cx,
-                    cv,
-                    cx.ctx.tail_leaves.borrow().contains(&_spec_id.inner()),
-                )
-            } else {
-                Ok(cv)
-            }
+            // STRICT (2026-08-13): the dropped error is a fresh
+            // bottom — propagate, everywhere (the ride scopes are
+            // retired).
+            Ok(CompiledExpr::new(params[0], params[1]))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {
             Err(anyhow!("emit_clif: `?` with unsupported success type {:?}", success_typ))

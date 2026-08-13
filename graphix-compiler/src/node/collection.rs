@@ -768,17 +768,19 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             let tag = tv.tag();
             // Only TRIGGERING slot productions fold into the firing
             // decision; a stale ride is the slot's value channel and
-            // by the R1 law carries an unchanged value. A bottomed
-            // slot WITH history rides its previous value (slot values
-            // are designated ride memory — fork 7 / the jul30a
-            // sleep-preserves-caches rule; the kernel's slot words
-            // agree); only a valueless bottom poisons the slot.
+            // by the R1 law carries an unchanged value. STRICT
+            // (Eric's ruling 2026-08-13, completing option A): ANY
+            // triggering bottom taints its slot and the collection
+            // poisons — a produced value is never internally
+            // mixed-freshness, and `map` agrees with the hand-written
+            // array literal (constructors propagate bottom, Q1). The
+            // old bottomed-slot-with-history ride was an undesignated
+            // data ride; downstream holding is the STORE's job.
+            // `value` survives as sleep/frame memory only.
             if tag.triggers() {
                 if tag.is_bottom() {
-                    if self.slots[i].value.is_none() {
-                        production = merge_tag(production, tag);
-                        self.slots[i].tag = Tag::TAINT;
-                    }
+                    production = merge_tag(production, tag);
+                    self.slots[i].tag = Tag::TAINT;
                 } else {
                     production = merge_tag(production, tag);
                     self.slots[i].value = Some(tv.value());
@@ -1204,6 +1206,22 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         }
 
         if self.slots.is_empty() && self.source_present && !forced_taint {
+            // STRICT (Eric's ruling 2026-08-13): a BOTTOMED init
+            // delivery poisons the empty fold THIS cycle — reading the
+            // retained `self.init` here rode the last good init value
+            // out FIRED (aug13f reactive/000061; the kernel poisons).
+            // The retained init still serves genuinely QUIET cycles
+            // below (no init delivery at all — the value channel).
+            if let Some(t) = init_tag {
+                if t.is_bottom() {
+                    return if t.triggers() {
+                        self.resident
+                            .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                    } else {
+                        self.resident.ride()
+                    };
+                }
+            }
             let tag = match (source_tag, init_tag) {
                 (None, None) => return self.resident.ride(),
                 (Some(a), Some(b)) => match merge_tag(Some(a), b) {

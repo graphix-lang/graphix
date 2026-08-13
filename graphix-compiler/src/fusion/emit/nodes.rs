@@ -21,7 +21,7 @@ use netidx_value::Value;
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, TAINT, const_stale_gate, emit_scalar_taint_cache,
+        CompiledExpr, LocalKind, TAINT, const_stale_gate,
         is_tainted, prim_to_value_disc, propagate_flags, scalar_disc, value_disc,
     },
     body::{
@@ -269,14 +269,14 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         let zero = cx.b.ins().iconst(types::I64, 0);
         let bad_taint = cx.b.ins().select(bad, taint_word, zero);
         let disc = cx.b.ins().bor(disc, bad_taint);
-        // 5c Q1: a div0 / MIN÷-1 is a fresh bottom — propagate,
-        // EXCEPT in the value-driven ride scopes the dense interp
-        // retains (`in_ride_scope`: loop slots, guard interiors).
-        let cv = CompiledExpr::new(disc, value);
-        if super::abi::in_ride_scope(cx) {
-            return Ok(emit_scalar_taint_cache(cx, prim, cv));
-        }
-        return Ok(cv);
+        // STRICT (Eric's ruling 2026-08-13): a div0 / MIN÷-1 is a
+        // fresh bottom — propagate, everywhere. The loop/guard ride
+        // scopes are retired with `in_ride_scope`: guard interiors
+        // poison (the FINAL-value guard ride is the designated form),
+        // and loop bodies poison (any bottomed element production
+        // taints the collection — `map` agrees with the hand-written
+        // array literal; downstream holding is the STORE's job).
+        return Ok(CompiledExpr::new(disc, value));
     }
     let value = compile_bin(cx.b, op, prim, l, r)?;
     let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);

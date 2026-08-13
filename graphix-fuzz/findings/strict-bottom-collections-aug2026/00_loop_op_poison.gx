@@ -1,0 +1,24 @@
+// THE STRICT RULING (Eric, 2026-08-13, completing the day's clean-
+// dataflow arc): if any element computation generates bottom, the
+// collection result is bottom — everywhere, both engines. A produced
+// value is never internally mixed-freshness; `map` agrees with the
+// hand-written array literal (constructors propagate bottom); the
+// downstream last-good holding users actually want is the STORE's
+// job (a bottom never overwrites a standing value, so consumers
+// pause rather than blank). Per-element failure that is EXPECTED
+// should be a value (`/?`, `$`, error variants) — the language's
+// standing error philosophy.
+//
+// Retired with it: the kernel's in_ride_scope op-site taint caches
+// (loop bodies + guard interiors — the 2026-07-04 interior-bottom
+// cache contract's last remnants) and the interp MapQ slot
+// bottom-ride. The designated rides are now exactly: select
+// scrutinee, guard FINAL value, `~`'s held arg, tail-rebind formals.
+//
+// This witness: the fold callback's `v0 / in0` div0s at in0=0; the
+// kernel's loop-scoped op cache rode the previous quotient and
+// completed the fold with a value ([1:6]) where the interp's op
+// poisoned per dense — first exposed by the aug13f first-hour
+// generate lanes (the aug05i lesson, again).
+// schedule-v1: cap=160 events=1280; in0=i64:-1; in0=i64:0; in0=i64:1; in0=i64:12; in0=i64:5; in0=i64:3
+{let v0: i64 = array::fold([i64:7], (i64:-1 / in0), |v0, in0| (v0 / in0)); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); ((v2 - v0) + v2)}

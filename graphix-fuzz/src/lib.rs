@@ -2271,12 +2271,23 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
             // allocation failure (an honest per-subject verdict) long
             // before the box's OOM killer starts shooting lanes.
             // GRAPHIX_FUZZ_MEM_LIMIT (bytes) overrides; 0 disables.
+            //
+            // 48GB, NOT 8GB (the aug13f/g 1100-crash flood): RLIMIT_AS
+            // counts VIRTUAL reservations — glibc's per-thread malloc
+            // arenas (64MB VA x 8 x cores) plus ~8MB per thread stack
+            // put a healthy batch child past 8GB of address space at a
+            // fraction of it in RSS, and the first thread spawn to
+            // lose died with EAGAIN ("spawn intern GC thread"). The
+            // real memory guard is the subject TIMEOUT (allocation is
+            // bind-rate-bound, ~100MB/s — a wall-clock kill fires
+            // first); the rlimit is only the backstop against an
+            // allocation-rate surprise.
             #[cfg(unix)]
             {
                 let limit: u64 = std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
                     .ok()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(8 << 30);
+                    .unwrap_or(48 << 30);
                 if limit > 0 {
                     unsafe {
                         cmd.pre_exec(move || {
