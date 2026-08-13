@@ -823,3 +823,46 @@ to the dense truth (in-band tags, Q1 at wrappers, seam vocabulary),
 the sleep-is-pause bullet names the surviving structures (Held/
 CachedVals staging), the design-doc index entry reflects BUILT
 P0–P8, and the awaiting-Eric list reflects this re-adjudication.
+
+
+## The aug13a fleet-gate find: undef-padding poison (2026-08-13)
+
+The FIRST release build of the branch (the hz boxes' soak.sh startup
+gate — every local gate through P8 ran debug) failed with 11
+deterministic interp≠jit corpus regressions, identical on both
+machines. Root cause, established by probe bisection (staging ✓ →
+dispatch masks ✓ → delivery loop's own branch test ✓ → yet the map
+entry read back as the WRONG branch's value) and confirmed by the
+fix clearing all 11:
+
+**Typed reads of undefined padding.** `TagValue::tagged`/`clone` and
+the kernel staging's `bits()` transmuted a `Value` to `[u64; 2]`. For
+`Value::Null` and every narrow variant (`Bool`, `u8`…`f32`) the
+payload lane is PADDING — undef typed as `u64`, which LLVM treats as
+poison. The DynCall delivery mints `tagged(Value::Null,
+FRESH_BOTTOM)` on exactly the bottom paths; at opt-level 3 + fat LTO
+the partially-undef branch merge folded to the wrong lane and a
+FreshBottom delivery materialized as a clean-FIRED placeholder (a
+fused `hold` ticked on its masked clock at init and consumed its
+latch — `[0:42]` vs the interp's `[1:42]`). Debug-invisible; wild
+writes excluded by address probes (`site_word` exactly in bounds);
+`tval` unit tests pass in release (the fold needs the inlined
+context).
+
+**The fix:** `tval::value_words` — the ONE sanctioned `Value` → words
+read, every byte defined: dataless → 0, narrow scalars widened with
+`pack_value_to_u64`'s conventions (signed sign-extend, unsigned
+zero-extend, f32 bit pattern — so kernel call sites narrow back
+exactly), pointer payloads read through `MaybeUninit` (an undef lane
+is never typed out). Used by `tagged`, `clone`, and the staging
+`bits()`. The class predates dense (main's TagValue has the same
+transmutes since replay-frames v2; dense built the hot
+partially-undef merge that weaponized it) — the fix retires it for
+main too at the merge.
+
+**Cadence ruling (Eric):** release-mode gating runs ONCE at the end
+of a long arc (pre-deploy/pre-merge), not per session — the soak.sh
+startup gate is the standing backstop, and it is what caught this.
+
+Post-fix gates: release regress 315/0 (all 11 clear), release hold
+witness AGREEs, debug suite re-run green.

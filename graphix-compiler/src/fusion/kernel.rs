@@ -659,6 +659,13 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             let tv = apply.update(ctx, &mut self.arg_refs, event);
             Some(tv.clone())
         };
+        if crate::dbgenv::gxdbg_dync() {
+            let words = result.as_ref().map(|tv| {
+                let tv = std::mem::ManuallyDrop::new(tv.clone());
+                unsafe { std::mem::transmute_copy::<crate::TagValue, [u64; 2]>(&*tv) }
+            });
+            eprintln!("DYNC-RET first={first} prod={words:x?}");
+        }
         event.init = saved_init;
         // Cleanup: remove the side-channel entries so a downstream
         // dispatcher (or the outer event loop) doesn't see them.
@@ -941,13 +948,11 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     // located the masked_outer_call_cache_ride garbage-ArcStr in one
     // run where the SEGV backtrace only named the victim).
     if crate::dbgenv::gxdbg_dync() {
-        let words: Vec<[u64; 2]> = args_vec
-            .iter()
-            .map(|v| unsafe { std::mem::transmute_copy::<Value, [u64; 2]>(v) })
-            .collect();
+        let words: Vec<[u64; 2]> =
+            args_vec.iter().map(crate::tval::value_words).collect();
         eprintln!(
-            "DYNC fn={} site={} taint={:b} stale={:b} args={:x?}",
-            fn_index, site_id, taint_mask, stale_mask, words
+            "DYNC fn={} site={} taint={:b} stale={:b} site_word={:x} args={:x?}",
+            fn_index, site_id, taint_mask, stale_mask, site_word as u64, words
         );
     }
     match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id)
@@ -1542,9 +1547,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let stale = STALE as u64;
         // (disc, payload) words of a `repr(u64)` Value (16 bytes,
         // layout pinned by the const_assert in `emit_helpers`).
+        // Routed through `value_words` — a raw two-word read types out
+        // the UNDEF payload lane of dataless/narrow variants (a
+        // value-shaped param can stage `Value::Null` or a `Bool`),
+        // the release-only poison class the aug13a fleet gate caught.
         let bits = |v: &Value| -> (u64, u64) {
-            let p = v as *const Value as *const u64;
-            unsafe { (*p, *p.add(1)) }
+            let [d, p] = crate::tval::value_words(v);
+            (d, p)
         };
         // STAGE `(disc, payload word, keepalive Value)` per param, in
         // params (= ABI) order, in ONE pass: the present value

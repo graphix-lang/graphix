@@ -161,6 +161,52 @@ pub enum TagView<'a> {
     StaleBottom,
 }
 
+/// The `(disc, payload)` words of a `Value` with EVERY BYTE DEFINED —
+/// the only sanctioned `Value` → words read. A raw transmute reads the
+/// payload lane of the dataless (`Null`) and narrow
+/// (`Bool`/`u8`/…/`f32`) variants as PADDING: undefined bytes typed as
+/// `u64`, which LLVM treats as poison — at opt-level 3 + fat LTO it
+/// folded a partially-undef branch merge in the DynCall delivery to
+/// the WRONG lane, turning a FreshBottom delivery into a fired
+/// placeholder (the aug13a release-only fleet-gate class: 11 corpus
+/// regressions, debug-invisible). Narrow scalars widen with
+/// `pack_value_to_u64`'s conventions (signed sign-extend, unsigned
+/// zero-extend, `f32` bit pattern) so a word a kernel call site
+/// narrows back reads exactly; pointer payloads read their fully
+/// initialized word through `MaybeUninit` (never typing out a
+/// possibly-undef lane).
+pub fn value_words(v: &Value) -> [u64; 2] {
+    use std::mem::MaybeUninit;
+    let w: [MaybeUninit<u64>; 2] = unsafe { std::mem::transmute_copy(v) };
+    let disc = unsafe { w[0].assume_init() };
+    let payload = match v {
+        Value::Null => 0,
+        Value::Bool(x) => *x as u64,
+        Value::U8(x) => *x as u64,
+        Value::I8(x) => *x as i64 as u64,
+        Value::U16(x) => *x as u64,
+        Value::I16(x) => *x as i64 as u64,
+        Value::U32(x) | Value::V32(x) => *x as u64,
+        Value::I32(x) | Value::Z32(x) => *x as i64 as u64,
+        Value::F32(x) => x.to_bits() as u64,
+        Value::U64(_)
+        | Value::V64(_)
+        | Value::I64(_)
+        | Value::Z64(_)
+        | Value::F64(_)
+        | Value::String(_)
+        | Value::Bytes(_)
+        | Value::Error(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Decimal(_)
+        | Value::DateTime(_)
+        | Value::Duration(_)
+        | Value::Abstract(_) => unsafe { w[1].assume_init() },
+    };
+    [disc, payload]
+}
+
 #[repr(C)]
 pub struct TagValue {
     disc: u64,
@@ -192,7 +238,8 @@ impl TagValue {
     /// Stuff `tag` into the upper 8 bits of `v`'s discriminant.
     #[inline]
     pub fn tagged(v: Value, tag: Tag) -> Self {
-        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(v) };
+        let [disc, payload] = value_words(&v);
+        std::mem::forget(v);
         debug_assert_eq!(disc & TAG_MASK, 0, "Value discriminant overlaps the tag byte");
         TagValue { disc: disc | ((tag.bits() as u64) << 56), payload }
     }
@@ -386,7 +433,8 @@ impl Clone for TagValue {
             std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
         });
         let dup: Value = (*view).clone();
-        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(dup) };
+        let [disc, payload] = value_words(&dup);
+        std::mem::forget(dup);
         TagValue { disc: disc | (self.disc & TAG_MASK), payload }
     }
 }
