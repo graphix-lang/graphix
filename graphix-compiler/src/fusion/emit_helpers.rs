@@ -1700,6 +1700,12 @@ safe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
 #[cfg(debug_assertions)]
 jit_helpers! { registry = debug_helpers;
 
+/// Emission-gated disc probe (GXDBG_CALLRET at COMPILE time): prints
+/// a tagged disc word from inside JIT'd code. Debug builds only.
+safe fn graphix_dbg_disc(tag: u64, disc: u64) {
+    eprintln!("CLIF-DISC tag={tag} disc={disc:x}");
+}
+
 /// JIT-emitted code calls this at the start of every wrapper
 /// function to bump the per-thread `JIT_INVOCATIONS` counter.
 /// `cfg(debug_assertions)`-gated; in release builds the helper

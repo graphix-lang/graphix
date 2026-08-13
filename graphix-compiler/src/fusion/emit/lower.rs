@@ -69,6 +69,13 @@ pub(super) fn compile_into_function(
     // [`BodyCx::claim_state_word`]).
     let init_flag = initial_vals[0];
     let state_ptr = initial_vals[1];
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GXDBG_CALLRET").is_some() {
+        if let Some(f) = helper_refs.get("graphix_dbg_disc") {
+            let t = b.ins().iconst(types::I64, 4);
+            b.ins().call(f, &[t, init_flag]);
+        }
+    }
     // Slot 2: the per-call-site state block base — a CALLEE body's
     // instance memory, supplied by each caller; 0 for parents and on
     // recursive back-edges (see [`kernel_abi::CTX_WIRE_SLOTS`]), so

@@ -2378,7 +2378,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // lower) de-fuses and the subtree node-walks.
             if matches!(f.view(), ApplyView::Lambda(_)) {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
-                    return emit_lambda_call_node(cx, self, &info);
+                    return emit_lambda_call_node(cx, self, &info, false);
                 }
                 return Err(fusion::blocker(
                     &self.spec,
@@ -2405,7 +2405,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             );
             if is_self {
                 let info = info.clone();
-                return emit_lambda_call_node(cx, self, &info);
+                return emit_lambda_call_node(cx, self, &info, true);
             }
         }
         if self.is_recursive_edge() {
