@@ -49,6 +49,7 @@
 1	depth-guard-jul2026/06_trip_local_bottom_recovery.gx
 1	depth-guard-jul2026/07_tail_select_trip_escalation.gx
 1	depth-guard-marshal-jul2026/01_nested_arg_selfcall_double_charge.gx
+2	depth-trip-delivered-bottom-aug2026/00_missing_fire_epoch3.gx
 2	depth-trip-settle-aug2026/01_growing_arg_respin.gx
 2	dyncall-apply-unwired-aug2026/00_dbg_spec_lost.gx
 2	dyncall-apply-unwired-aug2026/01_dbg_type_lost_naked_render.gx
@@ -70,6 +71,8 @@
 3	dyncall-stale-arg-fired-aug2026/01_escape_per_arg_gating.gx
 4	dyncall-stale-arg-fired-aug2026/02_rand_rerandomizes.gx
 4	dyncall-stale-arg-fired-aug2026/03_now_resamples_clock.gx
+2	dyncall-tagblind-print-aug2026/00_const_arg_effect_refires.gx
+4	dyncall-tagblind-print-aug2026/04_hof_callback_effect_per_invocation.gx
 1	dyncall-valueshape-firing-jul2026/01_buffer_const_extrafire.gx
 1	dyncall-valueshape-firing-jul2026/02_cast_connect_selfwake.gx
 1	dynmod-ref-priming-jul2026/01_module_level_builtin_call.gx
@@ -137,6 +140,8 @@
 1	missing-arg-firing-jul2026/01_str_sub_dropped_len.gx
 2	modstmt-fused-no-publish-aug2026/00_trailing_expr_module_exports_die.gx
 1	modstmt-fused-no-publish-aug2026/01_control_trailing_let_publishes.gx
+2	module-state-callee-reactivity-aug2026/00_becoming_selected_stale_callee.gx
+2	module-state-callee-reactivity-aug2026/01_steady_state_callee_quiet.gx
 0	mu-type-opaque-launder-jul2026/01_rec_fn_as_list.gx
 1	narrow-index-operand-verifier-aug2026/00_u8_slice_bound_verifier_error.gx
 1	narrow-int-abi-jul2026/01_float_cmp_false_in_struct.gx
@@ -155,6 +160,7 @@
 3	qop-tailloop-frame-swallow-aug2026/00_qop_raise_inside_tail_loop.gx
 2	quiesce-verdict-jul2026/01_ref_echo_const_result.gx
 2	rebind-recompile-jul2026/01_trycatch_recompile_name_capture.gx
+3	rec-prev-looped-arming-aug2026/00_quiet_poll_disarms_framed_rerun.gx
 0	rec-rtype-unchecked-jul2026/01_rec_rtype_error_arm.gx
 0	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
 0	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx

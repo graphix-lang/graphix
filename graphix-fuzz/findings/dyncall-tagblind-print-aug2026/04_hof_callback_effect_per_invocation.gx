@@ -1,3 +1,6 @@
+// PROMOTED from pending under dense (P8, 2026-08-13): AGREE on the
+// dense engines — the class below is resolved by the dense-delivery
+// rulings (design/dense_delivery.md); kept as a regression pin.
 // 00's class inside a collection loop, where it multiplies: a callback's
 // effect runs PER ELEMENT PER KERNEL INVOCATION while the loop's value
 // channel correctly stays quiet.

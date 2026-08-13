@@ -784,3 +784,42 @@ stream_stats 2.70s→2.56s (count fuses at root now — a small real
 gain), fold/tail benches untouched by the flip. P7 is CLOSED.
 Remaining: P8 corpus re-adjudication + docs, P9 rebase + fleet soak
 + merge.
+
+## As-built: P8 — corpus re-adjudication + docs (2026-08-13)
+
+**The pending corpus under dense.** Seven of the eight parked
+programs AGREE on the dense engines and five are PROMOTED to
+`findings/` as regression pins (corpus 307 → 313; manifest
+re-blessed; regress 313/0):
+
+- `dyncall-tagblind-print-aug2026` (2) — the tag-blind builtin gate
+  ruling is CLOSED BY CONSTRUCTION: the dense authoring contract
+  (TagView exhaustive match; seam ticks are Fired-only) makes
+  tag-blindness unwritable.
+- `module-state-callee-reactivity-aug2026` (2) — resolved by Q3
+  (fresh-at-instantiation, the store's natural R2 answer).
+- `rec-prev-looped-arming-aug2026` (1) — the framed-rerun disarm
+  class agrees under the dense frame rules.
+- `missing_fire_epoch3_aug08e` →
+  `findings/depth-trip-delivered-bottom-aug2026/00` — fixed by 5c's
+  depth-trip split (a trip is a delivered FreshBottom, not an abort).
+
+**Still parked:** `pending-ruling/tail-zero-iteration-fire-aug2026`
+— the one genuine survivor (interp drops a re-delivered loop bound's
+fire on a ZERO-ITERATION tail dispatch; kernel fires per the written
+tail-spine rule). The witness header carries the narrow interp fix
+and explicitly requests Eric's confirmation against the alternative
+reading ("no iterations = no control dependence"), so it stays.
+`pending-triage/parse_concrete_settle_flap.gx` stays as the latent
+typechecker-determinism note (its acceptance bug is already pinned in
+cast-bottom-composite-aug2026; 5/5 AGREE on behavior).
+
+**Docs:** `replay_frames.md` carries the SUPERSEDED banner (delivery
+model gone; reset_replay classification + frame mechanism remain);
+`Apply::sleep`'s doc states pause-not-reset + the SLEEP_RESTARTS
+exception (it said "any cached values should be cleared" — the
+pre-jul30a contract); CLAUDE.md's bottom/taint-gate bullets rewritten
+to the dense truth (in-band tags, Q1 at wrappers, seam vocabulary),
+the sleep-is-pause bullet names the surviving structures (Held/
+CachedVals staging), the design-doc index entry reflects BUILT
+P0–P8, and the awaiting-Eric list reflects this re-adjudication.

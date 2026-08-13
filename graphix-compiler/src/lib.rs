@@ -806,8 +806,15 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// nodes, such as call sites.
     fn refs<'a>(&self, _refs: &mut Refs) {}
 
-    /// put the node to sleep, used in conditions like select for branches that
-    /// are not selected. Any cached values should be cleared on sleep.
+    /// Put the builtin to sleep — used by constructs like select for
+    /// unselected branches. Sleep is PAUSE, not reset (Eric's ruling
+    /// 2026-07-31): value-channel state (arg slots, the result
+    /// resident) SURVIVES so a re-woken arm rides its history. Only
+    /// the documented arm-rewake RESTART builtins clear their
+    /// semantic latches here (once/take/skip/hold/uniq/count — such a
+    /// builtin must declare `SLEEP_RESTARTS = true` so the fusion
+    /// interior-sleep gate keeps kernels honest), and async builtins
+    /// may tear down watches/subscriptions to re-arm on wake.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
     /// Clear REPLAY caches, preserve SEMANTIC state — the `Apply`-side

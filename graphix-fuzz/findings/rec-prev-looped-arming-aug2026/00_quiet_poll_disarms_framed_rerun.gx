@@ -1,3 +1,6 @@
+// PROMOTED from pending under dense (P8, 2026-08-13): AGREE on the
+// dense engines — the class below is resolved by the dense-delivery
+// rulings (design/dense_delivery.md); kept as a regression pin.
 // The residual leg of frame-state-cross-cycle-jul2026/01: a QUIET POLL
 // between two dispatches disarms the interp's framed re-derivation, so a
 // later capture fire never re-runs the recursive body.

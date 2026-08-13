@@ -1,3 +1,6 @@
+// PROMOTED from pending under dense (P8, 2026-08-13): AGREE on the
+// dense engines — the class below is resolved by the dense-delivery
+// rulings (design/dense_delivery.md); kept as a regression pin.
 // PRE-EXISTING wrong value, surfaced by the aug08e soak (hz1 generate,
 // on 59f887ac). Deterministic 3/3, and DEEP: it diverges identically on
 // every archived campaign binary reachable on hz1 — aug08c (fb622f09),
