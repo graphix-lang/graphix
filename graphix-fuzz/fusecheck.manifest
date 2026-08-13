@@ -149,6 +149,8 @@
 1	narrow-int-abi-jul2026/01_float_cmp_false_in_struct.gx
 2	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
 1	narrow-int-abi-jul2026/03_bool_in_string_interp.gx
+1	neg-standing-bottom-aug2026/00_byref_write_stomped.gx
+5	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
 1	nested-value-jul2026/01_selfref_connect_growth.gx
 0	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 0	parse-bottom-member-jul2026/01_nested_bottom_member.gx

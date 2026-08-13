@@ -1,3 +1,13 @@
+// RESOLVED (Eric's ruling 2026-08-13 + root cause): a reference to a
+// bottomed binding is NOT itself bottom — and the ByRef machinery
+// never said it was. The real bug was interp-side in the unary ops:
+// Neg (and Not) re-minted FRESH_BOTTOM unconditionally from any
+// bottomed operand, turning a quiet STANDING bottom into a phantom
+// triggering event every cycle; the enclosing Bind's triggering-only
+// publish then stomped the externally written value each cycle, so
+// the write could never surface. Fixed to the binop join idiom
+// (fresh iff the delivery triggered, else ride). The bare
+// ByRef-of-bottom shape (no neg) always agreed.
 // aug13c hz0 generate/000006: ByRef of a BOTTOMED bind — the write
 // never lands in the interp, lands in the kernel.
 // v2's producer is -(0/0) (bottom); v5 = &v2 while v2 is bottom; the

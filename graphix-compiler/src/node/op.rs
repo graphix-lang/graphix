@@ -404,10 +404,17 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.is_tainted() {
-            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-        }
         let tag = tv.tag();
+        if tag.is_bottom() {
+            // the join rule (the binop twin, see Neg): fresh iff the
+            // delivery triggered, else ride — never re-mint a
+            // standing bottom as a phantom event.
+            return if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
+        }
         match tv.with_value(|v| match v {
             Value::Bool(b) => Some(!*b),
             _ => None,
@@ -505,10 +512,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         // collapses Z32/I32 and Z64/I64, so producing the operand's own
         // variant agrees with the JIT's I32/I64-discriminated result.
         let tv = self.n.update(ctx, event);
-        if tv.is_tainted() {
-            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-        }
         let tag = tv.tag();
+        if tag.is_bottom() {
+            // the join rule (the binop twin): fresh iff the delivery
+            // triggered, else ride. The unconditional FRESH_BOTTOM
+            // re-mint this replaced turned a quiet STANDING bottom
+            // into a phantom event every cycle, and the enclosing
+            // Bind's triggering-only publish stomped externally
+            // written values with it (aug13c byref_bottom_write_lost
+            // — the ByRef machinery was innocent).
+            return if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
+        }
         let neg = tv.with_value(|v| match v {
             Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
             Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
