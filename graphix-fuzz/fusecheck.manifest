@@ -170,6 +170,8 @@
 0	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
 0	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx
 0	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
+1	recursion-fires-like-chain-aug2026/00_same_args_quiet.gx
+1	recursion-fires-like-chain-aug2026/01_capture_fires_through_chain.gx
 21	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 3	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx

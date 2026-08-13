@@ -1,0 +1,17 @@
+// THE RULING (Eric, 2026-08-13): whether a callee is recursive is not
+// observable in firing — recursion fires like the hand-inlined chain
+// of distinct functions, and a pure function re-applied to unchanged
+// inputs is not an event. Ground truth: the non-recursive retained
+// twin (h2->h1->h0, rt_ia) is quiet on the same-value re-delivery in
+// BOTH engines, shipped and unsurprising.
+//
+// x delivers 1, 2, 2. Cycles 1-2 fire (selection flips + fresh deeper
+// levels); cycle 3 re-delivers the same 2 — every selection unchanged,
+// the const base arm consumes nothing — QUIET: [1:7 2:7], no [3:7].
+// Interp: unconditional transient retention (instances never park;
+// the retained chain's same-arm re-matches are organically quiet).
+// Kernel: the derivation-changed bit (wire slot 3) — the region-root
+// call site's args memo reads unchanged scalar formals and the nomem
+// selection paths dampen their becoming-selected fires to quiet.
+// The pre-ruling kernel (round-6 fire-on-triggering) emitted [3:7].
+{let x = array::iter([i64:1, i64:2, i64:2]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:7, _ => i64:0 + f(n - i64:1)}; f(x)}

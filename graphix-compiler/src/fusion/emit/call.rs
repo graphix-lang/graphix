@@ -971,43 +971,14 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // ever, then never again (the word is call-site-shared across
     // loop iterations, exactly like the shared instance). No word
     // available (a callee body) → the plain kernel init flag.
-    // NOTE (aug13b round 2, reverted same night): forcing the callee
-    // init view for interior recursive activations (is_self) fixed
-    // the interior-const staleness (interior-activation witnesses in
-    // fuzz/pending-triage) but BROKE the ruled capture-wake pin
-    // (transient-rebind-init-jul2026: a quiet re-derivation must not
-    // fire consts — the retained twin is the semantics). The correct
-    // model: interior activations fire via PER-ACTIVATION SELECTION
-    // CHANGES (the retained twin's shared select flips arms per
-    // depth), which is exactly the documented "no per-activation
-    // selection memory in kernels" design item — not an init view.
-    // Until that lands, interior calls keep the parent's flag and the
-    // interior-const class stays a known divergence.
-    let _ = is_self;
-    let callee_init = match cx.claim_state_word_loop_invariant() {
-        Some(off) => {
-            let sp = cx.state_ptr();
-            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
-            let one = cx.b.ins().iconst(types::I64, 1);
-            cx.b.ins().store(MemFlags::trusted(), one, sp, off);
-            let init = cx.init_flag();
-            let first_i = cx.b.ins().uextend(types::I64, first);
-            cx.b.ins().bor(init, first_i)
-        }
-        None => cx.init_flag(),
-    };
-    clif_args.push(callee_init);
-    clif_args.push(cx.state_ptr());
-    // Wire slot 2: the callee's per-call-site state block, from THIS
-    // caller's storage (see `emit_site_block`).
-    let site_block = emit_site_block(cx, info)?;
-    clif_args.push(site_block);
-    // Marshal in `abi_params` order — which IS the callee signature's
-    // SOURCE order (formals in ftype order, then captures — exactly
-    // how `build_lambda_kernel` constructed `sig.params`), two words
-    // (disc, payload) each. An Owned composite/string/value Arg is
-    // dropped after the call (the callee refcount-bumps on entry).
+    // Emit every argument slot FIRST — the derivation-changed memo
+    // below needs the marshaled scalar pairs — then push the leading
+    // context words, then the (disc, payload) pairs. Drops record
+    // exactly as before; only the push order moved.
+    let mut slot_cvs: smallvec::SmallVec<[CompiledExpr; 12]> = smallvec::SmallVec::new();
+    let mut formal_memo: smallvec::SmallVec<[(kernel_abi::PrimType, CompiledExpr); 8]> =
+        smallvec::SmallVec::new();
+    let mut formal_nonscalar = false;
     for s in slots.iter() {
         // Under the unified Value ABI a composite/string arg's pair IS
         // a genuine Value, so a value-shaped slot (typed from the
@@ -1069,6 +1040,91 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                 _ => {}
             }
         }
+        if let LambdaCallSlot::Arg(..) = s {
+            match kernel_abi::abi_kind(reg, s.typ()) {
+                Some(AbiKind::Scalar(p)) => formal_memo.push((p, cv)),
+                _ => formal_nonscalar = true,
+            }
+        }
+        slot_cvs.push(cv);
+    }
+    let callee_init = match cx.claim_state_word_loop_invariant() {
+        Some(off) => {
+            let sp = cx.state_ptr();
+            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+            let one = cx.b.ins().iconst(types::I64, 1);
+            cx.b.ins().store(MemFlags::trusted(), one, sp, off);
+            let init = cx.init_flag();
+            let first_i = cx.b.ins().uextend(types::I64, first);
+            cx.b.ins().bor(init, first_i)
+        }
+        None => cx.init_flag(),
+    };
+    // Wire slot 3: the DERIVATION-CHANGED bit (Eric's ruling
+    // 2026-08-13 — recursion fires like the hand-inlined chain; a
+    // pure function re-applied to unchanged inputs is not an event).
+    // A self-call back-edge FORWARDS the bit (invocation-invariant by
+    // purity). A root call to a recursive callee computes it from a
+    // per-site args memo over the marshaled scalar FORMALS: unchanged
+    // (all (disc, payload) pairs bit-equal to the previous
+    // invocation's) => 0, the nomem selection paths stay quiet;
+    // anything else — a changed arg, a non-scalar formal, no claimable
+    // memo words, the first call — => 1, the conservative
+    // fire-on-triggering view. Captures are deliberately NOT in the
+    // memo key: a fired capture's effect flows organically through
+    // its in-band disc (the pin's const-body callee stays quiet, the
+    // capture-consuming arm body fires).
+    let derivation_bit = if is_self {
+        cx.ctx.saw_self_call.set(true);
+        cx.derivation_changed()
+    } else if info.kernel.has_self_call.load(std::sync::atomic::Ordering::Relaxed) {
+        let claim_all = || -> Option<smallvec::SmallVec<[i32; 8]>> {
+            let mut offs = smallvec::SmallVec::new();
+            for _ in 0..(1 + 2 * formal_memo.len()) {
+                offs.push(cx.claim_state_word_loop_invariant()?);
+            }
+            Some(offs)
+        };
+        match (formal_nonscalar, claim_all()) {
+            (false, Some(offs)) => {
+                let sp = cx.state_ptr();
+                let valid = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, offs[0]);
+                let mut all_eq = cx.b.ins().icmp_imm(IntCC::NotEqual, valid, 0);
+                let mut stores: smallvec::SmallVec<[(ClifValue, i32); 16]> =
+                    smallvec::SmallVec::new();
+                for (i, (prim, cv)) in formal_memo.iter().enumerate() {
+                    let bits = scalar_to_payload_i64(cx.b, *prim, cv.payload);
+                    let o_d = offs[1 + 2 * i];
+                    let o_p = offs[2 + 2 * i];
+                    let sd = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, o_d);
+                    let sv = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, o_p);
+                    let eq_d = cx.b.ins().icmp(IntCC::Equal, sd, cv.disc);
+                    let eq_p = cx.b.ins().icmp(IntCC::Equal, sv, bits);
+                    let eq = cx.b.ins().band(eq_d, eq_p);
+                    all_eq = cx.b.ins().band(all_eq, eq);
+                    stores.push((cv.disc, o_d));
+                    stores.push((bits, o_p));
+                }
+                for (v, o) in stores {
+                    cx.b.ins().store(MemFlags::trusted(), v, sp, o);
+                }
+                let one = cx.b.ins().iconst(types::I64, 1);
+                cx.b.ins().store(MemFlags::trusted(), one, sp, offs[0]);
+                let zero = cx.b.ins().iconst(types::I64, 0);
+                cx.b.ins().select(all_eq, zero, one)
+            }
+            _ => cx.b.ins().iconst(types::I64, 1),
+        }
+    } else {
+        cx.b.ins().iconst(types::I64, 1)
+    };
+    clif_args.push(callee_init);
+    clif_args.push(cx.state_ptr());
+    let site_block = emit_site_block(cx, info)?;
+    clif_args.push(site_block);
+    clif_args.push(derivation_bit);
+    for cv in slot_cvs.iter() {
         clif_args.push(cv.disc);
         clif_args.push(cv.payload);
     }

@@ -516,6 +516,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.state.ptr
     }
 
+    /// The derivation-changed bit (`I64` 0/1) from wire slot 3 — see
+    /// [`kernel_abi::CTX_WIRE_SLOTS`]. 1 in every non-recursive
+    /// context; in a recursive callee body, whether the root args of
+    /// this whole derivation changed vs the previous invocation.
+    pub fn derivation_changed(&self) -> ClifValue {
+        self.ctx.derivation_changed
+    }
+
     /// Claim one `u64` of per-kernel-INSTANCE cross-invocation memory,
     /// returning its byte offset from [`state_ptr`](Self::state_ptr) —
     /// or `None` when state is unavailable here: inside a scaffold
@@ -1296,7 +1304,20 @@ pub(super) fn emit_kernel_return(
                     cx.b.ins().jump(merge, &[BlockArg::Value(mask)]);
                     cx.b.switch_to_block(nomem_bl);
                     cx.b.seal_block(nomem_bl);
-                    cx.b.ins().jump(merge, &[BlockArg::Value(scrut_stale_bit)]);
+                    // Dampened by the derivation-changed bit (wire
+                    // slot 3, Eric's ruling 2026-08-13): an UNCHANGED
+                    // derivation's interior re-match is quiet (STALE
+                    // identity — recursion fires like the hand-inlined
+                    // chain, whose retained per-site words read
+                    // same-arm); a changed one fires becoming-selected
+                    // on its triggering scrutinee (the fresh view —
+                    // the interp's selection flips and fresh deeper
+                    // levels land in the same observable).
+                    let dc = cx.derivation_changed();
+                    let changed = cx.b.ins().icmp_imm(IntCC::NotEqual, dc, 0);
+                    let stale_c = cx.b.ins().iconst(types::I64, STALE);
+                    let nomask = cx.b.ins().select(changed, scrut_stale_bit, stale_c);
+                    cx.b.ins().jump(merge, &[BlockArg::Value(nomask)]);
                     cx.b.switch_to_block(merge);
                     cx.b.seal_block(merge);
                     cx.b.block_params(merge)[0]

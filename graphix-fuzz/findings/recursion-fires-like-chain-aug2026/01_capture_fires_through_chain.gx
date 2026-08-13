@@ -1,0 +1,11 @@
+// The organic complement of 00 (same ruling): a fired CAPTURE
+// consumed by an arm body fires the whole chain — per delivery, even
+// with identical values (x delivers 1 then 1; the retained twin rt_a
+// fires twice). The derivation-changed memo deliberately excludes
+// captures from its key: their effect flows in-band through each
+// param's disc, so the capture-consuming base arm fires while the
+// capture-IGNORING const-body callee of the transient-rebind-init
+// pin stays quiet. Under the pre-retention park/rebuild machinery the
+// interp lost this fire entirely (the chain died at reconstruction
+// holes — the aug13b rec-survivor class).
+{let x = array::iter([i64:1, i64:1]); let rec f = |n: i64| -> i64 select n {v if v <= i64:0 => x, v => f(v - i64:1) + i64:1}; f(i64:2)}

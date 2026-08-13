@@ -81,6 +81,11 @@ pub(super) fn compile_into_function(
     // recursive back-edges (see [`kernel_abi::CTX_WIRE_SLOTS`]), so
     // every consumer null-guards ([`BodyCx::site_word`]).
     let site_ptr = initial_vals[2];
+    // Slot 3: the derivation-changed bit (see
+    // [`kernel_abi::CTX_WIRE_SLOTS`]) — consulted by the nomem
+    // selection paths in recursive callee bodies; forwarded verbatim
+    // on self-call back-edges.
+    let derivation_changed = initial_vals[3];
     // Bind every kernel param into the env in ABI (= source) order
     // (see `KernelSig::abi_params`), reading entry-block params from
     // `initial_vals[d.wire_slot..]`. Composite (array/tuple/struct) and
@@ -198,6 +203,8 @@ pub(super) fn compile_into_function(
         arm_depth: std::cell::Cell::new(0),
         saw_restart_reach: std::cell::Cell::new(false),
         self_backedge_in_arm: std::cell::Cell::new(false),
+        saw_self_call: std::cell::Cell::new(false),
+        derivation_changed,
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
@@ -297,6 +304,9 @@ pub(super) fn compile_into_function(
     kernel
         .has_sleep_restart
         .store(lower.saw_restart_reach.get(), std::sync::atomic::Ordering::Relaxed);
+    kernel
+        .has_self_call
+        .store(lower.saw_self_call.get(), std::sync::atomic::Ordering::Relaxed);
     let replay_words = lower.state.replay.borrow().clone();
     let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
@@ -654,6 +664,14 @@ pub(crate) struct LowerCtx<'a> {
     /// CALLERS can consult it at their own call sites (callees
     /// define before callers).
     pub(super) saw_restart_reach: std::cell::Cell<bool>,
+    /// The body being emitted contains a SELF-CALL — stored to the
+    /// kernel's `has_self_call` at end-of-define (the
+    /// `saw_restart_reach` pattern); callers consult it for the
+    /// derivation-changed args memo.
+    pub(super) saw_self_call: std::cell::Cell<bool>,
+    /// Wire slot 3: the derivation-changed bit (`I64` 0/1) — see
+    /// [`kernel_abi::CTX_WIRE_SLOTS`].
+    pub(super) derivation_changed: ClifValue,
     /// A self- or back-edge lambda call was emitted at `arm_depth >
     /// 0` — its callee's fact wasn't final mid-emission, so the
     /// interior-sleep check is deferred to the end of

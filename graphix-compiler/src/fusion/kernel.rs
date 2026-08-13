@@ -1690,6 +1690,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // Slot 2: the per-call-site state block — a CALLEE-only channel
         // (`CTX_WIRE_SLOTS`); a region parent has none.
         slots.push(0);
+        // Slot 3: the derivation-changed bit — read only by RECURSIVE
+        // callee bodies; a region parent's own body never consults it.
+        // 1 = the conservative fire-on-triggering view.
+        slots.push(1);
         for (disc, payload, _keepalive) in staged.iter() {
             slots.push(*disc);
             slots.push(*payload);

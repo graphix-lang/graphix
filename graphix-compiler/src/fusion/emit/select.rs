@@ -1765,7 +1765,12 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             let ss = cx.b.ins().band_imm(scrut_disc, STALE);
             let fired = cx.b.ins().icmp_imm(IntCC::Equal, ss, 0);
             let valid = is_untainted(cx.b, scrut_disc);
+            // Dampened by the derivation-changed bit (wire slot 3):
+            // see the tail twin's nomem rule in `emit_kernel_return`.
+            let dc = cx.derivation_changed();
+            let changed = cx.b.ins().icmp_imm(IntCC::NotEqual, dc, 0);
             let woke = cx.b.ins().band(fired, valid);
+            let woke = cx.b.ins().band(woke, changed);
             let woke64 = cx.b.ins().uextend(types::I64, woke);
             let eff_init = cx.b.ins().bor(base_init, woke64);
             cx.b.ins().jump(merge, &[BlockArg::Value(woke), BlockArg::Value(eff_init)]);
