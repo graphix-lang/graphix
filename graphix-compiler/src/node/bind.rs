@@ -374,17 +374,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         // every framed pass). This read IS what every init backfill
         // used to synthesize. A store miss rides the resident (the
         // phantom until the first delivery ever).
-        match super::read_var(ctx, event, &self.id) {
-            Some(super::VarRead::Delivered(tv)) => self.resident.set(tv.clone()),
+        let dbg = crate::dbgenv::gxdbg_dync();
+        let r = match super::read_var(ctx, event, &self.id) {
+            Some(super::VarRead::Delivered(tv)) => {
+                if dbg {
+                    eprintln!("REF {:?} DELIVERED tag={:?}", self.id, tv.tag());
+                }
+                self.resident.set(tv.clone())
+            }
             Some(super::VarRead::Standing(tv)) => {
                 let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
                 let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
                 let mut tv = tv.clone();
                 tv.retag(tag);
+                if dbg {
+                    eprintln!("REF {:?} STANDING init={init} tag={:?}", self.id, tag);
+                }
                 self.resident.set(tv)
             }
-            None => self.resident.ride(),
-        }
+            None => {
+                if dbg {
+                    eprintln!(
+                        "REF {:?} MISS ride tag={:?}",
+                        self.id,
+                        self.resident.tag()
+                    );
+                }
+                self.resident.ride()
+            }
+        };
+        r
     }
 
     fn refs(&self, refs: &mut Refs) {

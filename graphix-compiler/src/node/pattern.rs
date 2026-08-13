@@ -842,7 +842,19 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
             event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-            ctx.rt.store_insert(id, TagValue::fired(v));
+            // The store twin carries the SAME honest tag as the overlay
+            // entry, and only at depth 0 (R3: frames never write the
+            // store). An unconditional `fired` here was the aug13b
+            // free-run class: the guard tick's bind/unbind window left
+            // a this-cycle-stamped FIRED store entry behind, the taken
+            // arm's body read it back Delivered(FIRED) on an otherwise
+            // quiet poll, the select emitted per the strict rule, and
+            // any result-observing writer (a ByRef's write-through)
+            // converted the phantom fire into a next-cycle wake — an
+            // unquiesceable interp livelock the trace oracle capped.
+            if ctx.frame_depth == 0 {
+                ctx.rt.store_insert(id, TagValue::tagged(v, tag));
+            }
         })
     }
 

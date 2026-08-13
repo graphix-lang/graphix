@@ -104,6 +104,7 @@
 7	frame-taint-exit-jul2026/02_original.gx
 0	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
 0	fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx
+1	guard-bind-store-tag-aug2026/00_refwrite_guard_livelock.gx
 1	hof-composite-return-jul2026/01_findmap_captured_array.gx
 1	hof-composite-return-jul2026/02_filtermap_fresh_array.gx
 1	hof-composite-return-jul2026/03_list_findmap_tuple.gx

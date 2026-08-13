@@ -1,0 +1,11 @@
+// aug13b soak find (the FIRST dense generative soak — the wave's
+// dominant class, 41 of 52 findings were its echoes): bind_event's
+// store twin wrote TagValue::fired regardless of the delivery tag
+// (pattern.rs) — the guard tick's bind/unbind window left a
+// this-cycle-stamped FIRED store entry, the taken arm's body read
+// it back Delivered(FIRED) on a quiet poll, the select emitted per
+// the strict rule, and the ByRef's write-through converted the
+// phantom fire into a next-cycle wake — an unquiesceable interp
+// livelock (trace capped). Fixed: the store twin carries the
+// honest tag, depth-0 only (R3).
+{let rec v1 = |v2: i64, v4: i64| -> i64 select v2 {v3 if v3 <= i64:0 => v3, v3 => v1(i64:0, v4)}; let v5 = v1(i64:1, i64:0); let v0 = &v5; *v0 <- i64:2; *v0}
