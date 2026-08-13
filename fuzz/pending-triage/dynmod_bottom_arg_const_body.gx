@@ -1,0 +1,16 @@
+// aug13d hz1 reactive/000008: dynamic-module callee, permanently
+// bottomed arg (v1 = -(100/0)+1; v1 % v1), CONST body (|x| 42 — never
+// reads the formal). Epoch 0 both engines emit -42 (the const body
+// produces 42 without consuming the bottom). Later in0 re-deliveries
+// (same value): the JIT re-fires -42 per tick ((v0*in0) consumed a
+// FIRED input and v5 rides 42); the interp goes QUIET — v5 appears to
+// re-bottom through the dyn-module dispatch (Q1 wrapper bottoms the
+// re-invocation on the standing-bottom arg?) and poisons the minus.
+// By the organic-tag rules the JIT's re-fire looks RIGHT (a fired
+// input reached the result), which would make this an INTERP
+// missing-fire at the dynmod proxy seam — but node-walk-is-canonical
+// demands the derivation be checked against the module proxy event
+// identity machinery (50178b03) before touching either engine.
+// Un-adjudicated; keep with the morning list.
+// schedule-v1: cap=96 events=768; in0=i64:1
+{let v0 = i64:0; let v1: i64 = {let v2: i64 = -((i64:100 / v0)); v2 + i64:1}; let v3 = ["let f = |v3: i64| -> i64 i64:42", "let f = |v4: i64| -> i64 (v4 + v4)"]; let v4 = mod dr0 dynamic { sandbox whitelist [ core ]; sig { val f: fn(x: i64) -> i64 }; source v3[in0 % i64:2]$ }; let v5 = dr0::f((v1 % v1)); (v0 * in0) - v5}
