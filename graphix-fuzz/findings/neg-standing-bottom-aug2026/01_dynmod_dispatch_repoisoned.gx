@@ -1,3 +1,10 @@
+// RESOLVED (2026-08-13, same fix as 00): the interp's per-tick
+// re-bottoming of the dynmod dispatch was Neg's phantom FRESH_BOTTOM
+// re-mint from the standing bottom upstream — each phantom event
+// re-bottomed the callee invocation (Q1) and poisoned the result
+// chain. With the standing bottom riding, v5 rides the const body's
+// 42 and the result fires per input tick — the JIT's behavior, as
+// the organic-tag reading predicted.
 // aug13d hz1 reactive/000008: dynamic-module callee, permanently
 // bottomed arg (v1 = -(100/0)+1; v1 % v1), CONST body (|x| 42 — never
 // reads the formal). Epoch 0 both engines emit -42 (the const body
