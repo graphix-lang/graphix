@@ -761,6 +761,26 @@ for per-call-site BLOCK anchors (zeroing an anchor word orphans its
 chain until kernel drop — a flapping selection would leak
 unboundedly), so the refusal ships instead.
 
-Test-vocabulary churn: `queue` replaces `once` as the canonical
+Test-vocabulary churn: `throttle` replaces `once` as the canonical
 async/unfusable exemplar (native_on_unfusable_is_error,
-native_blocker_list_is_filtered, env_accounting_grow_shrink).
+native_blocker_list_is_filtered, env_accounting_grow_shrink; `queue`
+was tried first but takes a required `#clock`).
+
+**P7 gates (2026-08-12/13, all GREEN, commit 91655093):**
+graphix-tests 1935/0 (churn: exactly 4 fixtures — the three
+vocabulary tests plus error_arm_lambda_return::jit, which caught the
+first gate predicate's collateral and drove the SLEEP_RESTARTS
+refinement); FUSE_AUDIT 13043 lines 0 MISMATCH; fusecheck re-blessed
+at 307 — 9 gains + 4 region MERGES (the six sat at region ROOT in
+top-level lets; the former Async boundary split those programs into
+more, smaller regions — count 3→2 with equal-or-larger coverage,
+verified per-program) + the 4 new witnesses; regress 307/0 solo (one
+het_list_fn_fold jit-timeout under parallel load, 3/3 solo green —
+the known asymmetric-timeout flake class); workspace suite 2433/0
+across 66 binaries; paired captures ∅ vs the blessed 5c baseline in
+both modes (only the documented noise set + the 4 expected witness
+additions); detcheck 507 programs 0 flaps; bench spot-check:
+stream_stats 2.70s→2.56s (count fuses at root now — a small real
+gain), fold/tail benches untouched by the flip. P7 is CLOSED.
+Remaining: P8 corpus re-adjudication + docs, P9 rebase + fleet soak
++ merge.
