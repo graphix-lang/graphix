@@ -2262,6 +2262,34 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
     match tempfile::tempdir() {
         Ok(d) => {
             cmd.current_dir(d.path()).env("GRAPHIX_FUZZ_SANDBOXED", "1");
+            // ADDRESS-SPACE RLIMIT per child (2026-08-13): under
+            // unconditional transient retention a fib-tree subject
+            // materializes its whole call tree of retained instances —
+            // by design ("let the user run out of memory") — but at
+            // 64-85 workers per box an unbounded child is an OOM
+            // recipe. The limit converts a runaway into a child
+            // allocation failure (an honest per-subject verdict) long
+            // before the box's OOM killer starts shooting lanes.
+            // GRAPHIX_FUZZ_MEM_LIMIT (bytes) overrides; 0 disables.
+            #[cfg(unix)]
+            {
+                let limit: u64 = std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(8 << 30);
+                if limit > 0 {
+                    unsafe {
+                        cmd.pre_exec(move || {
+                            let rl = libc::rlimit {
+                                rlim_cur: limit,
+                                rlim_max: limit,
+                            };
+                            libc::setrlimit(libc::RLIMIT_AS, &rl);
+                            Ok(())
+                        });
+                    }
+                }
+            }
             d
         }
         Err(e) => {
