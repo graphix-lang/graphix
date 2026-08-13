@@ -1266,22 +1266,25 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             if tag.triggers() {
                 any_trig = true;
                 if tag.is_bottom() {
-                    // a bottomed slot WITH held history rides (fork 7:
-                    // the acc carry is designated slot memory, like
-                    // the kernel's loop words); only a valueless
-                    // bottom poisons the chain
-                    if self.slots[i].held.is_none() {
-                        self.slots[i].tag = tag;
-                        self.slots[i].cycle = None;
-                        if i + 1 < self.slots.len() {
-                            let next = self.slots[i + 1].acc_id;
-                            event.variables.insert(
-                                next,
-                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-                            );
-                        }
-                    } else {
-                        self.slots[i].cycle = None;
+                    // Eric's ruling 2026-08-13 (fold-tainted-init,
+                    // option A): a consuming callback's bottom taints
+                    // the slot and travels the acc chain — bottom in,
+                    // bottom out, like every op. `held` (the last
+                    // good carry) survives as sleep/frame memory but
+                    // never substitutes for a poisoned production;
+                    // the old held-history ride here was a pre-dense
+                    // fork-7 residual the kernel never had, and it
+                    // made the fold an undesignated ride site. An
+                    // acc-IGNORING callback recovers organically (its
+                    // production never consumes the poison).
+                    self.slots[i].tag = tag;
+                    self.slots[i].cycle = None;
+                    if i + 1 < self.slots.len() {
+                        let next = self.slots[i + 1].acc_id;
+                        event.variables.insert(
+                            next,
+                            TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                        );
                     }
                 } else {
                     self.slots[i].tag = tag;

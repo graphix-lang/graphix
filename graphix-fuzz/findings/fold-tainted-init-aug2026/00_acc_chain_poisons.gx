@@ -1,3 +1,17 @@
+// RESOLVED (Eric's ruling 2026-08-13, option A): the fold is a
+// function of (source, init, callback) — bottom in, bottom out. A
+// consuming callback's bottom taints its slot and travels the acc
+// chain (FreshBottom on the triggering delivery, quiet ride on the
+// standing one); an acc-ignoring callback recovers organically.
+// `held` survives as sleep/frame memory but never substitutes for a
+// poisoned production. The interp's ride-Stale behavior was the
+// FoldQ slot walk's held-history ride branch — a pre-dense fork-7
+// residual contradicting the intent comment beside it; the kernel
+// was right all along. The accumulator now advances only on good
+// cycles in BOTH engines (0,100,200 at alternate epochs). MapQ's
+// twin branch STAYS: map slots are op-sites where the kernel's
+// in-loop taint-cache words genuinely ride — probed AGREE.
+//
 // aug13b reactive class (hz0-re 000005/000013/000014 + shape-family
 // 000002/000003/000006, hz1-re 000001): a fold whose INIT arg bottoms
 // on alternate cycles (100 / (x % 3) at x=0).
@@ -25,4 +39,10 @@
 // If the comment is ruled right, the interp's gate must except
 // FoldQ's own acc chain. Either way one engine changes; parked for
 // the ruling.
-{let x = array::iter([i64:1, i64:0, i64:1, i64:0]); let v1 = i64:0; let v3: i64 = array::fold([false], i64:100 / (x % i64:3), |v4, v5| v4); v1 <- x ~ v1 + v3; v1}
+{
+    let x = array::iter([i64:1, i64:0, i64:1, i64:0]);
+    let v1 = i64:0;
+    let v3: i64 = array::fold([false], i64:100 / (x % i64:3), |v4, v5| v4);
+    v1 <- x ~ v1 + v3;
+    v1
+}

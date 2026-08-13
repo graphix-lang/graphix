@@ -91,6 +91,7 @@
 0	fold-acc-taint-jul2026/01_fold_select_acc_taint_launder.gx
 0	fold-bottom-body-acc-aug2026/01_connect_body_tuple_acc.gx
 1	fold-bottom-body-acc-aug2026/02_connect_body_string_acc.gx
+2	fold-tainted-init-aug2026/00_acc_chain_poisons.gx
 2	fold-tainted-init-jul2026/00_tail_loop_bottom_init.gx
 1	fold-tainted-init-jul2026/01_select_over_fold.gx
 3	fold-tainted-init-jul2026/02_consuming_callback_bottoms.gx
