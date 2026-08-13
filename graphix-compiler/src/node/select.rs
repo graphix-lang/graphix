@@ -22,11 +22,9 @@ atomic_id!(SelectId);
 /// stored as an `AtomicUsize` (`usize::MAX` = none) so it can be
 /// written through `&self` (the `Sync` bound on `Update`; same pattern
 /// as `tail_position`). Semantic state, not a replay cache: it
-/// survives sleep, `reset_replay`, and — via the transient-park
-/// selection snapshot ([`crate::node::callsite::SelSnap`]) — park and
-/// re-bind. Under the strict select rule the selection IS observable
-/// (becoming-selected fires), so any machinery that rebuilds a node
-/// tree must preserve it.
+/// survives sleep and `reset_replay`. Under the strict select rule
+/// the selection IS observable (becoming-selected fires), so any
+/// machinery that rebuilds a node tree must preserve it.
 #[derive(Debug)]
 pub(crate) struct SelCell(std::sync::atomic::AtomicUsize);
 
@@ -70,16 +68,6 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// a value-position re-selection fires — and the dispatch-level
     /// `tail_scrut_fired` fold.
     pub(crate) tail_position: std::sync::atomic::AtomicBool,
-    /// Set by `seed_selects` when a parked snapshot seeds `selected`
-    /// into a FRESH instance: the fresh arm's pattern-bind ids have no
-    /// store history (the retained twin's do, from its last genuine
-    /// re-match), so the first fast-path pass owes the taken arm a
-    /// one-shot STALE `bind_event` — a value-channel refresh, not an
-    /// event — or the arm body reads phantom bottoms and the whole
-    /// re-derivation rides bottom forever (aug13b rec survivors: a
-    /// capture-wake whose fired capture is consumed by an arm body
-    /// never re-derived because the chain died at the missing binds).
-    pub(crate) seed_binds: std::sync::atomic::AtomicBool,
     resident: TagValue,
 }
 
@@ -100,7 +88,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
-            seed_binds: std::sync::atomic::AtomicBool::new(false),
             resident: TagValue::phantom(),
         })
     }
@@ -142,7 +129,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             selected: SelCell::new(),
             tail_position: std::sync::atomic::AtomicBool::new(false),
-            seed_binds: std::sync::atomic::AtomicBool::new(false),
             resident: TagValue::phantom(),
         }))
     }
@@ -150,8 +136,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let Self { selected, arg, arms, typ: _, spec: _, tail_position, seed_binds, resident } =
-            self;
+        let Self { selected, arg, arms, typ: _, spec: _, tail_position, resident } = self;
         let mut pat_up = false;
         let arg_prod = arg.update(ctx, event);
         let bottomed = arg.tag.is_tainted();
@@ -323,23 +308,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             !bottomed && (arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up));
         let out = if !arg_trig && !pat_up {
             selected.get().and_then(|i| {
-                // A seeded selection's first quiet pass owes the arm
-                // its pattern binds (see `seed_binds`): STALE, a
-                // value-channel refresh against the held scrutinee —
-                // never an event. Re-match paths bind organically and
-                // the flag is consumed wherever the first pass lands.
-                if seed_binds.swap(false, Ordering::Relaxed) {
-                    if let Some(v) = arg.value.as_ref() {
-                        arms[i].0.bind_event(ctx, event, v, Tag::STALE);
-                    }
-                }
                 let (t, v) = arm_prod!(i);
                 emit!(t, v)
             })
         } else {
-            // A re-match binds organically below — the seed debt is
-            // discharged whichever path the first pass takes.
-            seed_binds.swap(false, Ordering::Relaxed);
             let sel = match arg.value.as_ref() {
                 None => None,
                 Some(v) => arms.iter().enumerate().find_map(|(i, (pat, _))| {
@@ -474,7 +446,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             typ: _,
             spec: _,
             tail_position: _,
-            seed_binds: _,
             resident: _,
         } = self;
         arg.node.delete(ctx);
@@ -492,7 +463,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             typ: _,
             spec: _,
             tail_position: _,
-            seed_binds: _,
             resident: _,
         } = self;
         arg.sleep(ctx);
@@ -528,7 +498,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             typ: _,
             spec: _,
             tail_position: _,
-            seed_binds: _,
             resident: _,
         } = self;
         arg.reset_replay(ctx);
@@ -548,7 +517,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             typ: _,
             spec: _,
             tail_position: _,
-            seed_binds: _,
             resident: _,
         } = self;
         arg.node.refs(refs);

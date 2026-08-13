@@ -707,13 +707,37 @@ enforces it):**
   Eric's bar 2026-08-07). ASPIRE: value residents in site blocks /
   slot chains (value-aware free machinery) to restore instance-kernel
   fusion for value-shaped scrutinees (`hof_nullable_map`).
-  KNOWN GAPS (documented in code): interior
-  recursive activations have no per-activation selection memory in
-  kernels (a change onto a const arm misses its fire — needs a design
-  item), and MapQ/FoldQ live slot subgraphs aren't in the park
-  snapshot. Pinned by `select-strict-rule-aug2026/` +
+  Pinned by `select-strict-rule-aug2026/` +
   `select-quiet-scrutinee-aug2026/` +
   `rec_same_arg_refire_quiet` / `rec_transient_pure_refire` fixtures.
+  (The former known gaps — no per-activation kernel selection memory,
+  MapQ/FoldQ slot subgraphs outside the park snapshot — are RESOLVED
+  by the 2026-08-13 recursion ruling below: the park snapshot no
+  longer exists and the derivation-changed bit covers the interior
+  fire discipline.)
+- **THE RECURSION RULING (Eric, 2026-08-13):** whether a callee is
+  recursive is NOT observable in firing — recursion fires like the
+  hand-inlined chain of distinct functions, and a pure function
+  re-applied to unchanged inputs is not an event (defended via
+  retained-twin ground truths;
+  `findings/recursion-fires-like-chain-aug2026/`). STRUCTURE (also
+  Eric's call): transient instances are RETAINED unconditionally — no
+  park, no budget, no snapshot/rebuild ("let the user run out of
+  memory; you can't fix stupid") — so the interp gets retained-twin
+  parity by construction; the delete-park/SelSnap/prime machinery is
+  DELETED. fib(24): 110s/111MB retained vs 121s/85MB parked. KERNEL
+  twin: `CTX_WIRE_SLOTS` slot 3, the DERIVATION-CHANGED bit — a
+  region-root call to a recursive callee (`KernelSig.has_self_call`)
+  computes root-args-changed from a per-site scalar-formal memo;
+  self-call back-edges forward it; the nomem selection paths dampen
+  becoming-selected with it. Captures are NOT in the memo key (their
+  fires flow organically in-band — the capture-consuming base arm
+  fires per delivery, the capture-ignoring const-body callee stays
+  quiet). KNOWN RESIDUAL: changed-args-same-selection-profile with a
+  const terminal (kernel fires, interp quiet) — the pending
+  tail-zero-iteration ruling's cousin. Fuzz children run under an 8GB
+  RLIMIT_AS (`GRAPHIX_FUZZ_MEM_LIMIT`) since retention lets fib-tree
+  subjects legitimately eat memory.
 - **The 2026-08-07 review arc** (Opus multi-agent review, 726eeb1c —
   18 finding dirs; 14 classes fixed same day, `f438e1bd..369fa71c`):
   (1) GUARDS tick per-invocation via a PROLOGUE in `emit_select_arms`
