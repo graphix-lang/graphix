@@ -1,0 +1,12 @@
+// The tail-fold ruling's >=1-ITERATION leg (aug13h hz0 divergence
+// 000000 — found by the fleet 40 minutes after the zero-iteration
+// kernel damp shipped): a same-args re-dispatch of a pure tail loop
+// is not an event at ANY iteration count. The kernel's wire-slot-3
+// damp had this; the INTERP's tail_scrut_fired upgrade fired
+// unconditionally on re-entered dispatches — fixed with the
+// derivation-changed entry-args memo on GXLambda (the kernel memo's
+// interp twin). The retained twin (non-recursive chain with the same
+// guarded inner select) is quiet and both engines agree on it. m
+// steps 0,0,1,1: fires at the m-flip (epoch 3) and the first
+// dispatch only — count 2, not 3.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; count(f(m))}

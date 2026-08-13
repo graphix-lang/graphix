@@ -172,6 +172,8 @@
 0	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
 1	recursion-fires-like-chain-aug2026/00_same_args_quiet.gx
 1	recursion-fires-like-chain-aug2026/01_capture_fires_through_chain.gx
+1	recursion-fires-like-chain-aug2026/02_nontail_const_base.gx
+1	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 21	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 3	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
@@ -276,6 +278,7 @@
 2	tail-scrut-fire-jul2026/02_const_base_arm_unframed_first_pass.gx
 2	tail-select-memory-jul2026/00_guard_on_capture.gx
 2	tail-zero-iteration-quiet-aug2026/00_zero_iteration_quiet.gx
+2	tail-zero-iteration-quiet-aug2026/01_same_args_reentered_quiet.gx
 2	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 3	tailloop-firing-jul2026/02_const_chain_capture.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx

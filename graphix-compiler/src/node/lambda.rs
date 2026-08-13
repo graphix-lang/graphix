@@ -13,6 +13,7 @@ use crate::{
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
     wrap,
 };
+use smallvec::SmallVec;
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
@@ -147,6 +148,15 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// recursing) and the JIT (`build_lambda_kernel` emits a native
     /// loop). `false` until the analysis runs / for non-tail lambdas.
     tail_loop: AtomicBool,
+    /// The previous dispatch's ENTRY ARG VALUES (tail-loop lambdas
+    /// only) — the interp twin of the kernel's derivation-changed
+    /// args memo (wire slot 3). The tail-scrutinee FIRED upgrade
+    /// below applies only when the derivation CHANGED: a same-args
+    /// re-dispatch of a pure loop is not an event at ANY iteration
+    /// count (the tail-zero ruling completed — its kernel damp alone
+    /// left the interp over-firing the >=1-iteration same-args case,
+    /// aug13h divergence_000000; the retained twin is quiet).
+    last_tail_entry: Option<Box<[Option<Value>]>>,
     self_recursive: AtomicBool,
     self_bind: Mutex<Option<BindId>>,
     /// The dispatch's return slot — `update` lends the body result
@@ -580,6 +590,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     });
                 }
             }
+            // The derivation-changed memo (tail loops only — the
+            // kernel's wire-slot-3 twin): snapshot the formals'
+            // current values and compare against the previous
+            // dispatch's. Same args + pure body => same derivation =>
+            // the tail fold below stays quiet.
+            let derivation_changed = if self.tail_loop.load(Ordering::Relaxed) {
+                let mut snap: SmallVec<[Option<Value>; 4]> = SmallVec::new();
+                for pat in self.args.iter() {
+                    pat.ids(&mut |id| {
+                        snap.push(match super::read_var(ctx, event, &id) {
+                            Some(super::VarRead::Delivered(tv))
+                            | Some(super::VarRead::Standing(tv)) => {
+                                if tv.tag().is_bottom() {
+                                    None
+                                } else {
+                                    Some(tv.value_cloned())
+                                }
+                            }
+                            None => None,
+                        });
+                    });
+                }
+                let changed = self.last_tail_entry.as_deref() != Some(&snap[..]);
+                if changed {
+                    self.last_tail_entry = Some(snap.drain(..).collect());
+                }
+                changed
+            } else {
+                true
+            };
             // Fresh tail-scrutinee accumulator for this dispatch (the
             // kernel initializes `tail_scrut_stale` per invocation);
             // the previous value is restored below so nested
@@ -750,7 +790,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 let entry = entry_fired || externals_triggered(&self.body, ctx, event);
                 if !entry {
                     TagValue::stale(res.value())
-                } else if ctx.tail_scrut_fired {
+                } else if ctx.tail_scrut_fired && derivation_changed {
                     TagValue::fired(res.value())
                 } else {
                     res
@@ -995,6 +1035,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             dispatch,
             scope: scope.lexical.clone(),
             args: Box::from_iter(argpats.drain(..)),
+            last_tail_entry: None,
             typ,
             body,
             tail_loop: AtomicBool::new(false),

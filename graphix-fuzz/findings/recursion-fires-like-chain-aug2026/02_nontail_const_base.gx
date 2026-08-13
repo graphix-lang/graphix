@@ -1,0 +1,10 @@
+// RESOLVED by the retention arc + the recursion ruling (2026-08-13,
+// see 00): non-tail chain recursion with a const base arm, driven by
+// a re-firing iter. Under retention the interp's chain is retained
+// instances (selection flips + fresh deeper levels fire organically);
+// the kernel's nomem paths fire becoming-selected on triggering
+// scrutinees, dampened by the derivation-changed bit. The round-2-era
+// header this replaces analyzed the transient fresh-bind init view —
+// machinery that no longer exists.
+// interp's transient fresh bind — it dispatches under a forced
+{let x = array::iter([i64:1, i64:2]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:7, _ => i64:0 + f(n - i64:1)}; f(x)}

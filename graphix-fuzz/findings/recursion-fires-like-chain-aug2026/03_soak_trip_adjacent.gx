@@ -1,0 +1,8 @@
+// RESOLVED with 02 (the aug13b soak original): depth-trip-adjacent
+// shape whose genuine calls between trips exercised the same
+// interior-activation fire discipline. Trips deliver FreshBottom as
+// ever; the interior fires follow the recursion ruling.
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(2, I64(4)), (4, I64(4))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:4 - f(n - i64:1)}; f(x - i64:1)}
