@@ -355,10 +355,24 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // firing per same-value call where `|n| {let x = select n {...};
     // x}` does not — the refactor asymmetry, Eric 2026-08-06). band
     // keeps a cleared (fired) bit cleared across loop iterations.
+    //
+    // DAMPENED by the derivation-changed bit (Eric's ruling
+    // 2026-08-13, tail-zero-iteration-fire): the control-dependence
+    // rationale reaches only dispatches whose derivation CHANGED — at
+    // an unchanged derivation there is no new iteration count and
+    // nothing is lost (a zero-iteration same-value re-dispatch IS a
+    // plain select taking the same arm, quiet by the strict rule and
+    // by the hand-inline principle). The interp's organic drop of
+    // that fire is the ruled-correct behavior; this fold matched the
+    // old over-broad written rule.
     let scrut_stale_bit = cx.b.ins().band_imm(scrut.disc(), STALE);
     if sel.tail_position.load(std::sync::atomic::Ordering::Relaxed) {
+        let dc = cx.derivation_changed();
+        let changed = cx.b.ins().icmp_imm(IntCC::NotEqual, dc, 0);
+        let stale_c = cx.b.ins().iconst(types::I64, STALE);
+        let damped = cx.b.ins().select(changed, scrut_stale_bit, stale_c);
         let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
-        let n = cx.b.ins().band(cur, scrut_stale_bit);
+        let n = cx.b.ins().band(cur, damped);
         cx.b.def_var(cx.ctx.tail.scrut_stale, n);
     }
     // EVERY tail-emitter select needs SELECTION MEMORY (the strict

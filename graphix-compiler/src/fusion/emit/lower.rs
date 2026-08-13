@@ -304,9 +304,14 @@ pub(super) fn compile_into_function(
     kernel
         .has_sleep_restart
         .store(lower.saw_restart_reach.get(), std::sync::atomic::Ordering::Relaxed);
-    kernel
-        .has_self_call
-        .store(lower.saw_self_call.get(), std::sync::atomic::Ordering::Relaxed);
+    // A tail loop's back-edge is a JUMP, not an emit_lambda_call_node
+    // is_self call — has_tail_loop marks that recursion; OR it in so
+    // the root call site's derivation-changed memo covers tail
+    // recursion too (the tail-zero-iteration ruling).
+    kernel.has_self_call.store(
+        lower.saw_self_call.get() || kernel.has_tail_loop,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let replay_words = lower.state.replay.borrow().clone();
     let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();

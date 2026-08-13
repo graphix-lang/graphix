@@ -8,7 +8,7 @@ use crate::{
         self,
         emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
     },
-    node::lambda::{GXLambda, LambdaDef},
+    node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, TVar, Type},
     wrap,
 };

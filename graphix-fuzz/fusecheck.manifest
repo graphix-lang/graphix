@@ -273,6 +273,7 @@
 2	tail-scrut-fire-jul2026/01_const_base_arm_framed.gx
 2	tail-scrut-fire-jul2026/02_const_base_arm_unframed_first_pass.gx
 2	tail-select-memory-jul2026/00_guard_on_capture.gx
+2	tail-zero-iteration-quiet-aug2026/00_zero_iteration_quiet.gx
 2	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 3	tailloop-firing-jul2026/02_const_chain_capture.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx

@@ -1373,12 +1373,17 @@ run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, |v: Result<&Value>| m
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // THE STRICT SELECT RULE at the call boundary (Eric's ruling
-// 2026-08-06): a non-tail recursion re-fired with the SAME argument
-// value is QUIET — the dispatch select's selection doesn't change and
-// no arm body input fires, so the call produces once, exactly like
-// `|n| i64:7` re-called. (A tail-recursive SPINE differs: its result
-// control-depends on the loop bound through the iteration count, so
-// the spine's scrutinee fold fires it — see `tail_scrut_stale`.)
+// 2026-08-06, completed by the recursion ruling 2026-08-13): a
+// recursion re-fired with the SAME argument value is QUIET — the
+// dispatch select's selection doesn't change and no arm body input
+// fires, so the call produces once, exactly like `|n| i64:7`
+// re-called. A tail-recursive SPINE fires only on a CHANGED
+// derivation: its result control-depends on the loop bound through
+// the iteration count, so the spine's scrutinee fold
+// (`tail_scrut_stale`) fires it — DAMPENED by the derivation-changed
+// bit, because at an unchanged derivation (including the
+// zero-iteration re-dispatch) there is no iteration count and
+// nothing is lost (tail-zero-iteration-quiet-aug2026).
 const REC_SAME_ARG_REFIRE_QUIET: &str = r#"
 {
   let go = 0;

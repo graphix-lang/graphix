@@ -1,3 +1,20 @@
+// RULED (Eric, 2026-08-13): THE INTERP IS CORRECT — quiet. The
+// selection didn't change and the taken arm's body produced nothing;
+// a zero-iteration same-value re-dispatch never touches the loop
+// machinery and IS a plain select taking the same arm (the
+// hand-inline principle), and a pure function re-applied to
+// unchanged inputs is not an event (the recursion ruling). The
+// written tail-spine rule's control-dependence rationale reaches
+// only CHANGED derivations — at zero iterations there is no
+// iteration count and nothing is lost. The drafted narrow interp
+// fix below is REJECTED; the kernel's tail_scrut_stale fold is
+// instead DAMPENED by the derivation-changed bit (flow.rs), which
+// has_tail_loop feeds into has_self_call so tail recursion gets the
+// root-site args memo. Residual unified with the
+// recursion-fires-like-chain one: changed-args zero-iteration with
+// a const base still over-fires kernel-side (bit=1), same narrow
+// family, same future refinement.
+//
 // The residual leg of tail-scrut-fire-jul2026: a tail-recursive
 // dispatch that takes the BASE arm immediately (zero iterations, never
 // loops, never framed).
@@ -54,4 +71,10 @@
 // control-depend on, so the kernel should stay quiet") would need
 // per-dispatch iteration-count memory in the kernel.
 // schedule-v1: cap=8 events=64; in0=i64:0
-{let rec f = |n: i64| -> i64 select n {i64:0 => i64:7, _ => f(n - i64:1)}; f(in0)}
+{
+    let rec f = |n: i64| -> i64 select n {
+        i64:0 => i64:7,
+        _ => f(n - i64:1)
+    };
+    f(in0)
+}
