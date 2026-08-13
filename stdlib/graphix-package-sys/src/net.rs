@@ -94,7 +94,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         {
             match as_path(path.clone()) {
                 None => {
-                    if let Either::Left(_) = &self.dv {
+                    // Release the old target's registration before
+                    // dropping it — overwriting leaked one Dval
+                    // registration per path change (the aug08e-era
+                    // flag; the graveyard only sees UNSUBSCRIBED
+                    // Dvals).
+                    if let Either::Left((_, old)) = &self.dv {
+                        let old = old.clone();
+                        NetState::get(ctx).unsubscribe(old, self.id);
                         self.dv = Either::Right(vec![]);
                     }
                     let e = errf!(literal!("WriteError"), "invalid path {path:?}");
@@ -115,7 +122,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                         }
                     };
                     match &mut self.dv {
-                        Either::Left(_) => (),
+                        Either::Left((_, old)) => {
+                            // Same release-before-overwrite as the
+                            // invalid-path arm above.
+                            let old = old.clone();
+                            NetState::get(ctx).unsubscribe(old, self.id);
+                        }
                         Either::Right(q) => {
                             for v in q.drain(..) {
                                 dv.write(v);
