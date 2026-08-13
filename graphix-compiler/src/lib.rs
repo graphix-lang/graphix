@@ -1115,6 +1115,19 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// may be deleted when its call returns only if every builtin its
     /// body calls is stateless. Conservative default: `false`.
     const STATELESS: bool = false;
+    /// Whether this builtin's `sleep` CLEARS semantic state — the
+    /// documented arm-rewake RESTART builtins
+    /// (`once`/`take`/`skip`/`hold`/`uniq`/`count`): an arm
+    /// deselection sleeps the instance and re-arms it for the next
+    /// selection. Only meaningful for `EFFECT = Sync` builtins.
+    /// Consulted by the fusion interior-sleep gate: a kernel has no
+    /// per-arm sleep initiator, so a sleep-restarting builtin's
+    /// DynCall refuses to emit inside a fused select arm and the
+    /// region de-fuses (the node-walk's arm sleep then applies). A
+    /// wrong `false` is a semantics bug (the kernel would keep burned
+    /// state the interp re-arms); a wrong `true` only costs fusion
+    /// coverage. Default: `false` (sleep-inert).
+    const SLEEP_RESTARTS: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1826,7 +1839,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         self.fusion.builtin_facts.insert(
             T::NAME,
-            effects::BuiltinFacts { effect: T::EFFECT, stateless: T::STATELESS },
+            effects::BuiltinFacts {
+                effect: T::EFFECT,
+                stateless: T::STATELESS,
+                sleep_restarts: T::SLEEP_RESTARTS,
+            },
         );
         Ok(())
     }
@@ -1862,6 +1879,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// default) for unknown names.
     pub fn builtin_stateless(&self, name: &str) -> bool {
         self.fusion.builtin_facts.get(name).map(|f| f.stateless).unwrap_or(false)
+    }
+
+    /// Look up a registered builtin's `SLEEP_RESTARTS` declaration
+    /// (see [`BuiltIn::SLEEP_RESTARTS`]). Returns `true` (the
+    /// conservative reading for the interior-sleep gate) for unknown
+    /// names.
+    pub fn builtin_sleep_restarts(&self, name: &str) -> bool {
+        self.fusion.builtin_facts.get(name).map(|f| f.sleep_restarts).unwrap_or(true)
     }
 
     /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin

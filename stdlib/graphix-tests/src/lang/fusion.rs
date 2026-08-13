@@ -1340,18 +1340,19 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     // `_first` alive so its `CompExp::drop`-triggered Delete doesn't race
     // the second compile (see compile_then_compile_*).
     //
-    // The callback's impurity is `once(x)` — a genuinely-async builtin
+    // The callback impurity is `throttle(x)` — a genuinely-async builtin
     // that stays a fusion boundary. (A connect no longer works here: a
     // connect to an EXTERNAL variable now FUSES into the callback kernel,
     // and a LOCAL connect-target de-fuses the WHOLE callback via the
     // read-after-write guard rather than splitting it — either way the
-    // per-slot node-walk residue this test measures disappears.) `once`
-    // forces the impure-HOF split: the async residue node-walks per slot
+    // per-slot node-walk residue this test measures disappears; `once`
+    // played this role until the P7 Sync flip.) `throttle` forces the
+    // impure-HOF split: the async residue node-walks per slot
     // (minting per-slot bindings), the `* 2 + 1` fuses via clone_rebind.
     let _first = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
     let res = ctx
         .rt
-        .compile(ArcStr::from("array::map(arr, |x| { let v = once(x) * 2 + 1; v })"))
+        .compile(ArcStr::from("array::map(arr, |x| { let v = throttle(x) * 2 + 1; v })"))
         .await?;
     let eid = res.exprs[0].id;
 

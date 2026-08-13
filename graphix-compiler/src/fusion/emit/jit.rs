@@ -1032,6 +1032,10 @@ fn define_kernel_body(
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (shared body)")?;
+    // Post-define fact publication (the interior-sleep gate): callers
+    // gate their reads on `defined`, so `has_sleep_restart` (stored at the
+    // end of `compile_into_function`) is only consulted once final.
+    kernel.defined.store(true, std::sync::atomic::Ordering::Relaxed);
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
     Ok(DefinedBody {

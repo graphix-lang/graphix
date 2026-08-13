@@ -452,6 +452,13 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
 ) -> Result<()> {
+    // The interior-sleep gate's deferred case (P7): a tail jump
+    // re-enters this kernel from inside an arm; whether that is
+    // sound depends on the body's finalized stateful fact, checked
+    // at the end of `compile_into_function`.
+    if cx.ctx.arm_depth.get() > 0 {
+        cx.ctx.self_backedge_in_arm.set(true);
+    }
     let spec_apply = match &cs.spec().kind {
         ExprKind::Apply(a) => a,
         _ => {

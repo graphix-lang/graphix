@@ -104,6 +104,16 @@ pub struct BuiltinCallSiteInfo {
     pub marshal_arg_indices: Vec<usize>,
     pub arg_types: Vec<Type>,
     pub return_type: Type,
+    /// The builtin's `SLEEP_RESTARTS` fact
+    /// (`ctx.builtin_sleep_restarts`), read at discovery.
+    /// Load-bearing for the interior-sleep gate: a sleep-restarting
+    /// builtin's DynCall must not emit inside a select-arm extent —
+    /// kernels have no interior arm-sleep initiator, so the interp's
+    /// documented arm-rewake RESTART semantics
+    /// (once/take/skip/hold/uniq/count clear on sleep) can't be
+    /// reproduced there; the region de-fuses instead (P7, the
+    /// Sync-flip gate). Cast/qop pseudo-sites are sleep-inert.
+    pub sleep_restarts: bool,
 }
 
 /// Output of [`walk_node_for_builtin_calls`].
@@ -194,6 +204,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
             marshal_arg_indices: vec![0],
             arg_types: vec![inner_typ.clone()],
             return_type: inner_typ,
+            sleep_restarts: false,
         },
     );
 }
@@ -246,6 +257,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             marshal_arg_indices: vec![0],
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
+            sleep_restarts: false,
         },
     );
 }
@@ -485,7 +497,13 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     });
     out.apply_sites.insert(
         apply_id,
-        BuiltinCallSiteInfo { fn_index, marshal_arg_indices, arg_types, return_type },
+        BuiltinCallSiteInfo {
+            fn_index,
+            marshal_arg_indices,
+            arg_types,
+            return_type,
+            sleep_restarts: ctx.builtin_sleep_restarts(info.name.as_str()),
+        },
     );
 }
 

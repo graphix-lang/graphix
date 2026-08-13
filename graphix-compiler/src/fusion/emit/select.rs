@@ -1154,7 +1154,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(body_ok);
             cx.b.seal_block(body_ok);
         }
-        emit_arm(cx, body, mark)?;
+        // The interior-sleep gate's extent (P7): DynCall emission
+        // refuses stateful builtins while any select ARM body is on
+        // the emission stack — see `LowerCtx::arm_depth`.
+        cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() + 1);
+        let arm_res = emit_arm(cx, body, mark);
+        cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
+        arm_res?;
         match fail {
             Some(f) => {
                 cx.b.switch_to_block(f);

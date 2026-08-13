@@ -54,10 +54,11 @@ async fn native_on_lambda_binding_is_error() {
 
 // `#[native]` on an async computation that cannot fuse is an error (this is
 // the teeth of the attribute — it forbids exactly the constructs that
-// de-fuse). `once` is classified async, so it node-walks.
+// de-fuse). `throttle` is classified async (cross-cycle pacing), so it
+// node-walks. (`once` played this role until the P7 Sync flip.)
 #[tokio::test]
 async fn native_on_unfusable_is_error() {
-    let r = eval("#[native]\nonce(i64:5)", crate::TEST_REGISTER).await;
+    let r = eval("#[native]\nthrottle(i64:5)", crate::TEST_REGISTER).await;
     assert!(
         r.is_err(),
         "#[native] on an async (non-fusing) expr must be a compile error, got {:?}",
@@ -326,14 +327,14 @@ async fn native_select_named_rest_defuses() {
 // The blocker LIST must be clean: a callback whose arithmetic fuses but
 // whose call node-walks should report the CALL ("builtin call site not
 // discovered"), NOT the structural `let`s ("node does not emit CLIF")
-// whose values fused — the successful-source filter suppresses those. `once` is
-// classified async (a permanent fusion boundary), so its call is the
-// stable non-fuser here (a recursive lambda call now fuses, #203, so it
-// can no longer play this role); the `let a` value still fuses, exercising
-// the filter.
+// whose values fused — the successful-source filter suppresses those.
+// `throttle` is classified async (a permanent fusion boundary), so its
+// call is the stable non-fuser here (a recursive lambda call fuses per
+// #203, and `once` went Sync at the P7 flip, so neither can play this
+// role); the `let a` value still fuses, exercising the filter.
 #[tokio::test]
 async fn native_blocker_list_is_filtered() {
-    let prog = "array::init(4, |idx| #[native] { let a = idx * 2; once(a) })";
+    let prog = "array::init(4, |idx| #[native] { let a = idx * 2; throttle(a) })";
     let e =
         eval(prog, crate::TEST_REGISTER).await.err().expect("must be a compile error");
     // `{:#}` includes anyhow's full cause chain (the `#[native]` blocker

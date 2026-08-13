@@ -158,9 +158,19 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   `Regex`, scratch buffers, a typecheck-derived cast type) are fine. Only
   consulted for `Sync` builtins, by the transient-recursion gate
   (`design/transient_recursion.md`) — a wrong `true` is a semantics bug, a
-  wrong `false` only costs memory. Both consts are pulled through
-  `EvalCached`/`CachedArgs` and recorded per name as `BuiltinFacts`
-  (`ctx.builtin_effect`/`ctx.builtin_stateless`).
+  wrong `false` only costs memory.
+- `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
+  semantic state — the arm-rewake RESTART builtins
+  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). Consulted by the fusion
+  interior-sleep gate (P7): kernels have no per-arm sleep initiator, so
+  such a builtin's DynCall (or a call to a callee kernel transitively
+  containing one) refuses to emit inside a fused select arm and the
+  region de-fuses. Deliberately NOT `!STATELESS` (dbg/log are
+  effectful-but-sleep-inert and stay arm-fusable). A wrong `false` is a
+  semantics bug; a wrong `true` only costs fusion coverage. All three
+  consts are pulled through `EvalCached`/`CachedArgs` and recorded per
+  name as `BuiltinFacts` (`ctx.builtin_effect`/`ctx.builtin_stateless`/
+  `ctx.builtin_sleep_restarts`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.
@@ -760,10 +770,13 @@ enforces it):**
   values/acc-carries — so a deselected-then-reselected arm whose fresh
   computation bottoms RIDES its history, exactly like the kernel's
   persistent replay words / DynCall slots / per-slot state words (the
-  kernel needed no change). Async builtins' documented arm-rewake
-  RESTART semantics (`once`/`take`/`skip`/`uniq`/`hold`/... clear on
-  sleep) are unchanged — they never fuse, so no kernel twin constrains
-  them. Pinned by `sleep-preserves-caches-jul2026/`.
+  kernel needed no change). The documented arm-rewake RESTART
+  semantics (`once`/`take`/`skip`/`uniq`/`hold`/`count` clear on
+  sleep) are unchanged; since the P7 Sync flip these builtins DO fuse
+  at region root, and the `SLEEP_RESTARTS` interior-sleep gate
+  de-fuses any select whose arm reaches one (kernels have no per-arm
+  sleep initiator — `findings/sleep-restart-gate-aug2026/`). Pinned by
+  `sleep-preserves-caches-jul2026/`.
 - **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
   state must be the call site's OWN history — a compiled callee
   body's interior builtin is ONE `graphix_dyncall` instruction
@@ -994,7 +1007,8 @@ tail → rebind-and-jump loop, non-tail → native recursion), transitive callee
 and builtin/cast/qop calls inside lambda bodies.
 
 The **correct-None denominator** (principled, never a gap): async/streaming
-builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
+builtins (timers, IO, netidx, `never`, `queue`, `throttle` — the
+once/take/skip family went Sync at P7 and fuses outside select arms), cross-cycle
 nodes (`~`, `Any`, `Catch`'s handler-read), and non-register-encodable types
 (`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
 TVars). Note that fusion recursion (`Update::fuse`) descends only through

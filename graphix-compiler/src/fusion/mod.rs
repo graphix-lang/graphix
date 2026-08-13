@@ -1357,6 +1357,8 @@ pub(crate) fn sig_from_inputs<'k>(
         return_type,
         has_tail_loop: false,
         lifted: Vec::new(),
+        defined: std::sync::atomic::AtomicBool::new(false),
+        has_sleep_restart: std::sync::atomic::AtomicBool::new(false),
     };
     Ok((sig, arg_types))
 }

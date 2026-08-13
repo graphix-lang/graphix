@@ -99,6 +99,23 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     info: &BuiltinCallSiteInfo,
     args: &[&Node<R, E>],
 ) -> Result<CompiledExpr> {
+    if info.sleep_restarts {
+        cx.ctx.saw_restart_reach.set(true);
+        if cx.ctx.arm_depth.get() > 0 {
+            // The interior-sleep gate (P7): the interp sleeps a
+            // deselected arm's subtree, which is what re-arms
+            // once/take/skip/hold/uniq/count for the next selection
+            // (the documented arm-rewake RESTART semantics). A kernel
+            // has no interior arm-sleep initiator, so a
+            // sleep-restarting builtin inside an arm extent de-fuses
+            // the region — the pre-P7 fusion shape for exactly these
+            // programs.
+            return Err(anyhow!(
+                "emit_clif: sleep-restarting builtin DynCall inside a \
+                 select arm (no interior arm-sleep in kernels)"
+            ));
+        }
+    }
     let buf_new = cx.helper("graphix_value_buf_new")?;
     let cap = cx.b.ins().iconst(types::I64, args.len() as i64);
     let call = cx.b.ins().call(buf_new, &[cap]);
@@ -779,6 +796,31 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     info: &LambdaCallInfo,
 ) -> Result<CompiledExpr> {
     let fn_name = &info.fn_name;
+    // The interior-sleep gate, callee side (P7): a call to a kernel
+    // whose body transitively reaches a sleep-restarting builtin must
+    // not emit inside a select-arm extent (the interp sleeps the
+    // arm's CallSite, which sleeps the callee instance and re-arms
+    // its builtins; kernels can't). Callees define before callers, so
+    // `defined` distinguishes a final fact from a self/back-edge
+    // call, which defers to the end-of-define check against the
+    // finalized fact (`LowerCtx::self_backedge_in_arm`).
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        if info.kernel.defined.load(Relaxed) {
+            if info.kernel.has_sleep_restart.load(Relaxed) {
+                cx.ctx.saw_restart_reach.set(true);
+                if cx.ctx.arm_depth.get() > 0 {
+                    return Err(anyhow!(
+                        "lambda call `{fn_name}`: callee reaches a \
+                         sleep-restarting builtin inside a select arm \
+                         (no interior arm-sleep in kernels)"
+                    ));
+                }
+            }
+        } else if cx.ctx.arm_depth.get() > 0 {
+            cx.ctx.self_backedge_in_arm.set(true);
+        }
+    }
     // Hoist the registry borrow (a `'c` ref independent of `cx`) so the
     // slot-grouping closures below capture IT, not `cx` — otherwise the
     // closures would hold `cx` shared while the per-slot emit needs

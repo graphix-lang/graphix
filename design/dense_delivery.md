@@ -708,3 +708,59 @@ stdout ORDER nondeterminism (two tops' prints interleave; the same
 binary produces different orders run-to-run, line MULTISETS identical
 in both modes; added to the noise record). P6 is CLOSED. Remaining
 after P6: P7 Sync flips, P8 corpus re-adjudication + docs, P9 soak.
+
+## As-built: P7 — the Sync flips + the interior-sleep gate (2026-08-12)
+
+**The flip.** once/take/skip/hold/count/uniq revert to `Sync` (the F2
+Async flip's premise is obsolete: the fused DynCall delivers per-arg
+truth — a non-fired slot arrives `TagValue::stale` and the seams tick
+on Fired only, dyncall-stale-arg-fired-aug2026 — so the
+update-history-sensitive state machines see the same per-arg events in
+a kernel as in the node-walk).
+
+**The interior-sleep gate (found by witness before any soak).** The
+flip alone is UNSOUND for interior placements: all six builtins CLEAR
+state on `sleep` (the documented arm-rewake RESTART semantics), the
+interp sleeps a deselected arm's subtree, and a kernel has no
+interior arm-sleep initiator. The witness
+(`findings/sleep-restart-gate-aug2026/00`): `select in0 % 2 { 0 =>
+once(in0), _ => -1 }` — interp re-arms once on re-selection and
+emits the fresh value; the pre-gate kernel re-emitted the burned
+once's STALE resident on the becoming-selected fire. The gate
+restores exactly the pre-P7 fusion shape for these programs:
+
+- `BuiltIn::SLEEP_RESTARTS` (default false; declared true by the
+  six; pulled through `EvalCached`/`CachedArgs`; recorded in
+  `BuiltinFacts`; unknown names read true). The predicate is
+  deliberately NOT `!STATELESS`: dbg/log are effectful-but-sleep-
+  INERT (arm-fusable), and sum/min/max/error are pure but
+  under-declare STATELESS — a `!STATELESS` gate cost them arm fusion
+  they have on main (caught by `error_arm_lambda_return::jit`).
+- `LowerCtx::arm_depth` wraps the shared `emit_select_arms` arm-body
+  driver; `emit_dyncall_node` refuses a sleep-restarting builtin's
+  DynCall at `arm_depth > 0` (region de-fuses — fusion loss only
+  where fusion was never sound).
+- The callee-transitive fact: `KernelSig` carries post-define
+  `defined`/`has_sleep_restart` atomics harvested from
+  `LowerCtx::saw_restart_reach` at the end of
+  `compile_into_function`; `emit_lambda_call_node` consults them
+  (callees define before callers). A self/back-edge call — fact not
+  final mid-emission — sets `self_backedge_in_arm` (also set by the
+  tail-jump emitter) and the end-of-define check refuses the kernel
+  when the finalized fact is true (`findings/.../02`: count at a rec
+  body's ROOT + tail call in an arm).
+- Witness corpus: `findings/sleep-restart-gate-aug2026/` — arm
+  direct, callee-carried, deferred-tail, and the root-placement GAIN
+  (count/uniq at region root fuse and agree across epochs).
+
+ASPIRE (Eric's call, recorded): full-fidelity interior arm-sleep —
+zero the arms' DynCall site words on a selection change so every
+arm's next dispatch mints a fresh inner Apply (the chain-leaf-reset
+mechanism the 5c loop slots already use). Blocked on a freeing story
+for per-call-site BLOCK anchors (zeroing an anchor word orphans its
+chain until kernel drop — a flapping selection would leak
+unboundedly), so the refusal ships instead.
+
+Test-vocabulary churn: `queue` replaces `once` as the canonical
+async/unfusable exemplar (native_on_unfusable_is_error,
+native_blocker_list_is_filtered, env_accounting_grow_shrink).

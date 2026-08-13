@@ -390,6 +390,11 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     /// unobservable. Conservative default: `false`. Pulled through to
     /// the builtin registry by `CachedArgs<T>`'s `BuiltIn` impl.
     const STATELESS: bool = false;
+    /// Same semantics as `BuiltIn::SLEEP_RESTARTS`: `sleep()` clears
+    /// semantic state (the arm-rewake RESTART builtins). Consulted by
+    /// the fusion interior-sleep gate. Default: `false` (sleep-inert
+    /// — the EvalCached wrapper's own sleep clears nothing semantic).
+    const SLEEP_RESTARTS: bool = false;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -437,6 +442,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const EFFECT: EffectKind = T::EFFECT;
     const NAME: &str = T::NAME;
     const STATELESS: bool = T::STATELESS;
+    const SLEEP_RESTARTS: bool = T::SLEEP_RESTARTS;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -838,15 +844,15 @@ struct Once {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_once";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -903,15 +909,15 @@ struct Take {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_take";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -973,15 +979,15 @@ struct Skip {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_skip";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1623,16 +1629,14 @@ struct Hold {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
-    // Async, deliberately (the F2 flip, same as Uniq below): hold is
-    // UPDATE-HISTORY-SENSITIVE — `current` is take()n on emission and
-    // re-arms only when `v` ACTUALLY updates, and `triggered` counts
-    // clock updates. The fused DynCall dispatch protocol re-delivers
-    // EVERY arg as a fresh update on every dispatch, so a fused hold
-    // re-latched `v` each clock tick and re-emitted the same value on
-    // every trigger (soak jul07c: interp emitted once, jit once per
-    // clock). Async = fusion boundary = the node-walk runs it with
-    // exact per-arg update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted, same as Uniq below):
+    // hold's `current` latch re-arms only when `v` ACTUALLY fires,
+    // and the fused DynCall now delivers per-arg truth — a non-fired
+    // slot arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the jul07c re-latch
+    // divergence class is structurally closed.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_hold";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1915,15 +1919,15 @@ struct Count {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_count";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2005,15 +2009,15 @@ type Mean = CachedArgs<MeanEv>;
 struct Uniq(Option<Value>, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_uniq";
 
     fn init<'a, 'b, 'c, 'd>(

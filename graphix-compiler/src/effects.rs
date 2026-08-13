@@ -80,6 +80,13 @@ pub struct BuiltinFacts {
     /// `BuiltIn::STATELESS` — delete-and-reinit is unobservable (no
     /// cross-invocation state, no per-invocation external effect).
     pub stateless: bool,
+    /// `BuiltIn::SLEEP_RESTARTS` — `sleep()` clears semantic state
+    /// (the documented arm-rewake RESTART builtins:
+    /// once/take/skip/hold/uniq/count). Consulted by the fusion
+    /// interior-sleep gate: kernels have no per-arm sleep initiator,
+    /// so such a builtin's DynCall refuses to emit inside a fused
+    /// select arm (the region de-fuses).
+    pub sleep_restarts: bool,
 }
 
 /// How a lambda recurses with respect to its own `LambdaId`. A summary
