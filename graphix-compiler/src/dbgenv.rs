@@ -31,6 +31,7 @@ dbg_flag!(graphix_dbg_tval, "GRAPHIX_DBG_TVAL");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
 dbg_flag!(gxdbg_cs, "GXDBG_CS");
 dbg_flag!(gxdbg_dync, "GXDBG_DYNC");
+dbg_flag!(gxdbg_ref, "GXDBG_REF");
 dbg_flag!(gxdbg_effect, "GXDBG_EFFECT");
 dbg_flag!(gxdbg_freeze_ret, "GXDBG_FREEZE_RET");
 dbg_flag!(gxdbg_instance_fusion, "GXDBG_INSTANCE_FUSION");
