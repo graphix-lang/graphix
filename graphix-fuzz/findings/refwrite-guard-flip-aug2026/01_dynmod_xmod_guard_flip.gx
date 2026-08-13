@@ -1,0 +1,21 @@
+// aug08e soak find (hz, pre-dense binary ~59f887ac; the campaign ran
+// ~800M subjects with 7 findings total — this is one of the TWO real
+// divergences). A cross-module ref-write flips a select GUARD across
+// events; the pre-dense jit missed the flip (stale guard/ride-era
+// machinery). AGREE on the dense engines (P8 triage 2026-08-13) —
+// pinned as a regression witness for the guard-flip semantics.
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, Bool(false)), (1, Bool(true))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, Bool(false)), (1, Bool(false))], capped: false }], stdout: [] })
+// mutant: { let v0: Map<string, i64> = select i64:7 { i64:7 if (false || true) => {"k2" => i64:-100}, i64:2 if (!true) => {"k0" => i64:100}, v0 => {"k2" => i64:1, "a" => (i64:7 + i64:0)} }; let v1 = mod d0 dynamic { sandbox whitelist [core, array, str]; sig { val g0: fn(a0: i8) -> bool }; source r'let v1 = (-(i64:7));\nlet g0 = |v2: i8| -> bool false' }; let v2 = select v1 { error as _ => m0::k0, null as _ => d0::g0((-(i8:127))) }; let v3 = &m0::k0; *v3 <- true; select (map::len({"k2" => "", "b" => "graphix", "k1" => ""}) * (i64:0 + i64:100)) { v4 if m0::k0 => m0::f1(u8:2, i32:2147483647), v2 if (f64:1.0 <= f64:0.0) => false, v4 => false } }\n// file-v1: m0.gxi\nval k0: bool;\nval f0: fn(a0: &bool) -> [`Nil(u8, f64), `Some(u8), `Some(u8, [string, null])];\nval f1: fn(a0: u8, a1: i32) -> bool;\n// file-v1: m0.gx\nlet k0: bool = (false && true);\nlet h0 = |v1: i64| -> i64 ((v1 + i64:42) + (i64:1 / i64:7));\nlet f0 = |v2: &bool| -> [`Nil(u8, f64), `Some(u8), `Some(u8, [string, null])] `Some(u8:255, "a");\nlet f1 = |v3: u8, v4: i32| -> bool k0;
+// minimized:
+{i64:0; let v1 = mod d0 dynamic { sandbox whitelist [ core, array, str ]; sig { val g0: fn(a0: i8) -> bool }; source "let v1 = (-(i64:7));\nlet g0 = |v2: i8| -> bool false" }; let v2 = select v1 {error as _ => m0::k0, null as _ => d0::g0((-(i8:127)))}; let v3 = &m0::k0; *v3 <- true; select (map::len({"k2" => "", "b" => "graphix", "k1" => ""}) * (i64:0 + i64:100)) {v4 if m0::k0 => m0::f1(u8:2, i32:2147483647), v2 if (f64:1. <= f64:0.) => false, v4 => false}}
+// file-v1: m0.gxi
+val k0: bool;
+val f0: fn(a0: &bool) -> [`Nil(u8, f64), `Some(u8), `Some(u8, [string, null])];
+val f1: fn(a0: u8, a1: i32) -> bool;
+// file-v1: m0.gx
+let k0: bool = (false && true);
+let h0 = |v1: i64| -> i64 ((v1 + i64:42) + (i64:1 / i64:7));
+let f0 = |v2: &bool| -> [`Nil(u8, f64), `Some(u8), `Some(u8, [string, null])] `Some(u8:255, "a");
+let f1 = |v3: u8, v4: i32| -> bool k0;

@@ -165,6 +165,8 @@
 0	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
 0	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx
 0	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
+21	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
+3	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
 1	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
 1	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
