@@ -2,7 +2,7 @@ use anyhow::Result;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, UserEvent, effects::EffectKind, expr::ExprId, typ::FnType,
+    Scope, TagValue, UserEvent, effects::EffectKind, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
@@ -124,6 +124,7 @@ fn drain_ready(
 pub(crate) struct DbSubscribe {
     tree_val: Option<Value>,
     abort: Option<tokio::task::AbortHandle>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
@@ -138,7 +139,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(DbSubscribe { tree_val: None, abort: None }))
+        Ok(Box::new(DbSubscribe {
+            tree_val: None,
+            abort: None,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -148,16 +153,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        let prefix_val = from[0].update(ctx, event).map(|tv| tv.value());
-        let tree_changed = from[1].update(ctx, event).map(|tv| tv.value());
+        let prefix_val = graphix_package_core::seam_tick(from[0].update(ctx, event))
+            .map(|tv| tv.value_cloned());
+        let tree_changed = graphix_package_core::seam_tick(from[1].update(ctx, event))
+            .map(|tv| tv.value_cloned());
         let tree_is_new = tree_changed.is_some();
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);
         }
         if self.tree_val.is_none() || (prefix_val.is_none() && !tree_is_new) {
-            return None;
+            return self.out.ride();
         }
         if let Some(Value::Abstract(ref a)) = self.tree_val
             && let Some(tv) = a.downcast_ref::<TreeValue>()
@@ -198,9 +205,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                 }
             });
             self.abort = Some(jh.abort_handle());
-            return Some(SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }));
+            return self.out.set(TagValue::fired(
+                SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }),
+            ));
         }
-        None
+        self.out.ride()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -252,6 +261,7 @@ macro_rules! db_event_accessor {
             top_id: ExprId,
             cached: CachedVals,
             bind_id: Option<BindId>,
+            out: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
@@ -270,6 +280,7 @@ macro_rules! db_event_accessor {
                     top_id,
                     cached: CachedVals::new(from),
                     bind_id: None,
+                    out: TagValue::phantom(),
                 }))
             }
         }
@@ -280,18 +291,25 @@ macro_rules! db_event_accessor {
                 ctx: &mut ExecCtx<R, E>,
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
-            ) -> Option<Value> {
+            ) -> &TagValue {
                 if self.cached.update(ctx, from, event) {
                     if let Some(bid) = self.bind_id.take() {
                         ctx.rt.unref_var(bid, self.top_id);
                     }
-                    let bid = extract_sub_bind_id(self.cached.0.first()?.as_ref()?);
+                    let first = match self.cached.0.first() {
+                        Some(Some(v)) => v,
+                        Some(None) | None => return self.out.ride(),
+                    };
+                    let bid = extract_sub_bind_id(first);
                     if let Some(bid) = bid {
                         ctx.rt.ref_var(bid, self.top_id);
                     }
                     self.bind_id = bid;
                 }
-                scan_db_events(self.bind_id, event, $convert)
+                match scan_db_events(self.bind_id, event, $convert) {
+                    Some(v) => self.out.set(TagValue::fired(v)),
+                    None => self.out.ride(),
+                }
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {

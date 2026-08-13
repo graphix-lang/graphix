@@ -13,7 +13,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
@@ -374,6 +374,7 @@ struct Group<R: Rt, E: UserEvent> {
     pid: BindId,
     nid: BindId,
     xid: BindId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
@@ -415,6 +416,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
                     pid,
                     nid,
                     xid,
+                    out: TagValue::phantom(),
                 }))
             }
             _ => bail!("expected two arguments"),
@@ -428,40 +430,41 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         macro_rules! set {
             ($v:expr) => {{
                 self.ready = false;
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
-                ctx.rt.cached_mut().insert(self.nid, len.clone());
+                ctx.rt.store_insert(self.nid, TagValue::fired(len.clone()));
                 event.variables.insert(self.nid, TagValue::fired(len));
-                ctx.rt.cached_mut().insert(self.xid, $v.clone());
+                ctx.rt.store_insert(self.xid, TagValue::fired($v.clone()));
                 event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
-        if let Some(v) = from[0].update(ctx, event) {
-            self.queue.push_back(v.value());
+        if let Some(tv) = seam_tick(from[0].update(ctx, event)) {
+            self.queue.push_back(tv.value_cloned());
         }
-        if let Some(v) = from[1].update(ctx, event) {
-            let v = v.value();
-            ctx.rt.cached_mut().insert(self.pid, v.clone());
-            event.variables.insert(self.pid, TagValue::fired(v));
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = tv.tag();
+            let v = tv.value_cloned();
+            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
+            event.variables.insert(self.pid, TagValue::tagged(v, tag));
         }
         if self.ready && self.queue.len() > 0 {
             let v = self.queue.pop_front().unwrap();
             set!(v);
         }
-        loop {
+        let res = loop {
             // Cooperative interrupt: abort a wedged grouping loop.
             if ctx.interrupted() {
                 break None;
             }
-            match self.pred.update(ctx, event) {
+            match seam_tick(self.pred.update(ctx, event)).map(|tv| tv.value_cloned()) {
                 None => break None,
                 Some(v) => {
                     self.ready = true;
-                    match v.value() {
+                    match v {
                         Value::Bool(true) => {
                             break Some(Value::Array(ValArray::from_iter_exact(
                                 self.buf.drain(..),
@@ -474,6 +477,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                     }
                 }
             }
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 
@@ -491,9 +498,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.nid);
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.xid);
+        ctx.rt.store_remove(&self.nid);
+        ctx.rt.store_remove(&self.pid);
+        ctx.rt.store_remove(&self.xid);
         self.pred.delete(ctx);
     }
 
@@ -507,15 +514,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         // removes); the queue, the group buffer, and the ready flag
         // are the grouping contract — they aggregate across events
         // and survive.
-        ctx.rt.cached_mut().remove(&self.nid);
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.xid);
         self.pred.reset_replay(ctx);
     }
 }
 
 #[derive(Debug)]
-struct Iter(BindId, ExprId);
+struct Iter(BindId, ExprId, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "array_iter";
@@ -530,7 +534,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(Iter(id, top_id)))
+        Ok(Box::new(Iter(id, top_id, TagValue::phantom())))
     }
 }
 
@@ -540,18 +544,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(Value::Array(a)) = from[0].update(ctx, event).map(|tv| tv.value()) {
+    ) -> &TagValue {
+        if let Some(Value::Array(a)) =
+            seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+        {
             for v in a.iter() {
                 // Cooperative interrupt: abort a wedged iter over a huge
                 // array (partial emit is accepted for a deliberate kill).
                 if ctx.interrupted() {
-                    return None;
+                    return self.2.ride();
                 }
                 ctx.rt.set_var(self.0, v.clone());
             }
         }
-        event.variables.get(&self.0).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.0).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.2.set(TagValue::fired(v)),
+            None => self.2.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -576,6 +586,7 @@ struct IterQ {
     queue: VecDeque<(usize, ValArray)>,
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
@@ -591,7 +602,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(IterQ { triggered: 0, queue: VecDeque::new(), id, top_id }))
+        Ok(Box::new(IterQ {
+            triggered: 0,
+            queue: VecDeque::new(),
+            id,
+            top_id,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -601,11 +618,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+    ) -> &TagValue {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
-        if let Some(Value::Array(a)) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(Value::Array(a)) =
+            seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        {
             if a.len() > 0 {
                 self.queue.push_back((0, a));
             }
@@ -614,7 +633,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
             let (i, a) = self.queue.front_mut().unwrap();
             while self.triggered > 0 && *i < a.len() {
                 if ctx.interrupted() {
-                    return None;
+                    return self.out.ride();
                 }
                 ctx.rt.set_var(self.id, a[*i].clone());
                 *i += 1;
@@ -624,7 +643,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

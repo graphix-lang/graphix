@@ -4,10 +4,10 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
-    expr::ExprId, typ::FnType,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::CachedVals;
+use graphix_package_core::{CachedVals, seam_tick};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use rand::{RngExt, rng, seq::SliceRandom};
@@ -16,6 +16,7 @@ use smallvec::{SmallVec, smallvec};
 #[derive(Debug)]
 struct Rand {
     args: CachedVals,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
@@ -30,7 +31,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
         from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Rand { args: CachedVals::new(from) }))
+        Ok(Box::new(Rand { args: CachedVals::new(from), out: TagValue::phantom() }))
     }
 }
 
@@ -40,7 +41,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         macro_rules! gen_cases {
             ($start:expr, $end:expr, $($typ:ident),+) => {
                 match ($start, $end) {
@@ -54,7 +55,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
             };
         }
         let up = self.args.update(ctx, from, event);
-        if up {
+        let res = if up {
             match &self.args.0[..] {
                 [Some(start), Some(end), Some(_)] => gen_cases!(
                     start, end, F32, F64, I32, I64, Z32, Z64, U32, U64, V32, V64
@@ -63,6 +64,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
             }
         } else {
             None
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 
@@ -78,7 +83,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
 }
 
 #[derive(Debug)]
-struct Pick;
+struct Pick {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -92,7 +99,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Pick))
+        Ok(Box::new(Pick { out: TagValue::phantom() }))
     }
 }
 
@@ -102,13 +109,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|a| match a.value() {
-            Value::Array(a) if a.len() > 0 => {
-                Some(a[rng().random_range(0..a.len())].clone())
-            }
-            _ => None,
-        })
+    ) -> &TagValue {
+        let res =
+            seam_tick(from[0].update(ctx, event)).and_then(|a| match a.value_cloned() {
+                Value::Array(a) if a.len() > 0 => {
+                    Some(a[rng().random_range(0..a.len())].clone())
+                }
+                _ => None,
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -117,7 +129,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
 }
 
 #[derive(Debug)]
-struct Shuffle(SmallVec<[Value; 32]>);
+struct Shuffle {
+    buf: SmallVec<[Value; 32]>,
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -131,7 +146,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Shuffle(smallvec![])))
+        Ok(Box::new(Shuffle { buf: smallvec![], out: TagValue::phantom() }))
     }
 }
 
@@ -141,24 +156,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|a| match a.value() {
-            Value::Array(a) => {
-                self.0.extend(a.iter().cloned());
-                self.0.shuffle(&mut rng());
-                Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
-            }
-            _ => None,
-        })
+    ) -> &TagValue {
+        let res =
+            seam_tick(from[0].update(ctx, event)).and_then(|a| match a.value_cloned() {
+                Value::Array(a) => {
+                    self.buf.extend(a.iter().cloned());
+                    self.buf.shuffle(&mut rng());
+                    Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
+                }
+                _ => None,
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.0.clear()
+        self.buf.clear()
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         // Scratch buffer only — drained every update, nothing replays.
-        self.0.clear()
+        self.buf.clear()
     }
 }
 

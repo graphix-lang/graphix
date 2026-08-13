@@ -288,8 +288,8 @@ fn resolve_ref(byref_chain: &ByRefChain, ref_id: BindId) -> Result<BindId, Value
 /// Resolve a ref BindId through the byref chain, returning the target
 /// variable's current u64 value — from this decode pass's own
 /// `written` record first (a length var an earlier field in the SAME
-/// pass wrote; `rt.cached` only advances at delivery), else from
-/// `rt.cached` (written in a previous cycle and since delivered).
+/// pass wrote; the store only advances at delivery), else from
+/// the store (written in a previous cycle and since delivered).
 /// Returns `Err` with a decode error if the ref isn't in the byref
 /// chain, `Ok(None)` if the value hasn't arrived yet (bottom).
 fn resolve_u64<R: Rt, E: UserEvent>(
@@ -299,10 +299,9 @@ fn resolve_u64<R: Rt, E: UserEvent>(
     ref_id: BindId,
 ) -> Result<Option<u64>, Value> {
     let target = resolve_ref(byref_chain, ref_id)?;
-    Ok(written
-        .get(&target)
-        .or_else(|| ctx.rt.cached().get(&target))
-        .map(|v| *unsafe { v.get_as_unchecked::<u64>() }))
+    Ok(written.get(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }).or_else(
+        || ctx.rt.store_value(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }),
+    ))
 }
 
 macro_rules! decode_fixed {
@@ -343,7 +342,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
         let byref_chain = ctx.env.byref_chain.clone();
         // Within ONE decode pass, later fields read length vars that
         // earlier fields in the SAME pass wrote (`UTF8` after `U32`).
-        // `rt.cached` now advances at DELIVERY (next cycle), so the
+        // the store now advances at DELIVERY (next cycle), so the
         // pass keeps its own record of what it wrote; `resolve_u64`
         // consults it before falling back to cached (a value written
         // in a previous cycle and since delivered).

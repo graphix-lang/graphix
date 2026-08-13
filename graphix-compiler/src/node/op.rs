@@ -1,6 +1,6 @@
-use super::{CFlag, Cached, compiler::compile};
+use super::{CFlag, compiler::compile};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     defetyp,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
@@ -57,8 +57,9 @@ macro_rules! compare_op {
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
             pub typ: Type,
-            pub lhs: Cached<R, E>,
-            pub rhs: Cached<R, E>,
+            pub lhs: Node<R, E>,
+            pub rhs: Node<R, E>,
+            resident: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -66,10 +67,8 @@ macro_rules! compare_op {
             /// Used by AOT-generated code.
             #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-                let lhs = Cached::new(lhs);
-                let rhs = Cached::new(rhs);
                 let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
             }
 
             pub(crate) fn compile(
@@ -81,10 +80,10 @@ macro_rules! compare_op {
                 lhs: &Expr,
                 rhs: &Expr
             ) -> Result<Node<R, E>> {
-                let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
-                let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
+                let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
+                let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
             }
         }
 
@@ -93,29 +92,33 @@ macro_rules! compare_op {
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
-            ) -> Option<TagValue> {
-                // Two-channel propagation, the CLIF `propagate_flags`
-                // twin: ANY production (fired or stale) recomputes and
-                // emits; the result fires iff a consumed production
-                // fired (AND-reduced STALE); consumed-cache taint ORs
-                // in and short-circuits the op.
+            ) -> &TagValue {
+                // Dense two-channel propagation, the CLIF
+                // `propagate_flags` twin: recompute on a TRIGGERING
+                // production (R1 — the skip is depth-0 only; a bottom
+                // resident refills from the value channel; frames
+                // recompute unconditionally). Bottomness derives from
+                // the consumed PRODUCTION tags (the join rule): any
+                // consumed bottom bottoms the result, fresh iff a
+                // delivery triggered.
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
-                if l.is_some() || r.is_some() {
-                    if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
-                        return Some(TagValue::tainted(Value::Null));
-                    }
-                    let fired = l.is_some_and(|t| t.is_fired())
-                        || r.is_some_and(|t| t.is_fired());
-                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                    return self.lhs.cached.as_ref().and_then(|lhs| {
-                        self.rhs
-                            .cached
-                            .as_ref()
-                            .map(|rhs| TagValue::tagged((lhs $op rhs).into(), tag))
-                    })
+                let (lt, rt) = (l.tag(), r.tag());
+                let trig = lt.triggers() || rt.triggers();
+                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                    return self.resident.ride();
                 }
-                None
+                if lt.is_bottom() || rt.is_bottom() {
+                    return if trig {
+                        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                    } else {
+                        self.resident.ride()
+                    };
+                }
+                let fired = lt.is_fired() || rt.is_fired();
+                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
+                let v = l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()));
+                self.resident.set(TagValue::tagged(v, tag))
             }
 
             fn spec(&self) -> &Expr {
@@ -127,13 +130,13 @@ macro_rules! compare_op {
             }
 
             fn refs(&self, refs: &mut Refs) {
-                self.lhs.node.refs(refs);
-                self.rhs.node.refs(refs);
+                self.lhs.refs(refs);
+                self.rhs.refs(refs);
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.node.delete(ctx);
-                self.rhs.node.delete(ctx)
+                self.lhs.delete(ctx);
+                self.rhs.delete(ctx)
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -147,8 +150,8 @@ macro_rules! compare_op {
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
+                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 // `fn('a, 'a) -> bool` (Eric's ruling, 2026-07-12):
                 // both operands are ONE type. The old asymmetric
                 // `lhs ⊇ rhs` admitted direction-dependent cross-type
@@ -160,8 +163,8 @@ macro_rules! compare_op {
                 // binding: a failed binding walk has no backtracking,
                 // so committing the losing direction first would
                 // pollute cells), then COMMIT the widening direction.
-                let lt = self.lhs.node.typ().clone();
-                let rt = self.rhs.node.typ().clone();
+                let lt = self.lhs.typ().clone();
+                let rt = self.rhs.typ().clone();
                 // RigidCheck as in the arith tail: a rigid declared
                 // formal never binds from a comparison during its def
                 // gate; inert at sites.
@@ -195,8 +198,8 @@ macro_rules! compare_op {
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck1(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck1(ctx))
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
 
             fn view(&self) -> $crate::NodeView<'_, R, E> {
@@ -210,8 +213,8 @@ macro_rules! compare_op {
                 $crate::fusion::emit::emit_cmp_node(
                     cx,
                     $crate::node::op::CmpOp::$name,
-                    &self.lhs.node,
-                    &self.rhs.node,
+                    &self.lhs,
+                    &self.rhs,
                 )
             }
 
@@ -232,17 +235,16 @@ macro_rules! bool_op {
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
             pub typ: Type,
-            pub lhs: Cached<R, E>,
-            pub rhs: Cached<R, E>,
+            pub lhs: Node<R, E>,
+            pub rhs: Node<R, E>,
+            resident: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
             #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-                let lhs = Cached::new(lhs);
-                let rhs = Cached::new(rhs);
                 let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
             }
 
             pub(crate) fn compile(
@@ -254,10 +256,10 @@ macro_rules! bool_op {
                 lhs: &Expr,
                 rhs: &Expr
             ) -> Result<Node<R, E>> {
-                let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
-                let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
+                let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
+                let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
             }
         }
 
@@ -266,31 +268,43 @@ macro_rules! bool_op {
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
-            ) -> Option<TagValue> {
+            ) -> &TagValue {
+                // STRICT — like every other binary op, `&&`/`||` need
+                // BOTH operands. A bottom operand makes the result
+                // bottom: `false && ⊥ = ⊥`, `true || ⊥ = ⊥`. NOT
+                // short-circuit: in a dataflow language a value must
+                // reflect all its inputs, so a downstream consumer
+                // never commits to a decision before every input is
+                // known. Recompute gate and bottom join as in the
+                // comparison ops.
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
-                if l.is_some() || r.is_some() {
-                    if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
-                        return Some(TagValue::tainted(Value::Null));
-                    }
-                    let fired = l.is_some_and(|t| t.is_fired())
-                        || r.is_some_and(|t| t.is_fired());
-                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                    // STRICT — like every other binary op, `&&`/`||` need
-                    // BOTH operands. A bottom (non-firing) operand makes
-                    // the result bottom: `false && ⊥ = ⊥`, `true || ⊥ =
-                    // ⊥`. NOT short-circuit: in a dataflow language a
-                    // value must reflect all its inputs, so a downstream
-                    // consumer never commits to a decision before every
-                    // input is known.
-                    return match (self.lhs.cached.as_ref(), self.rhs.cached.as_ref()) {
-                        (Some(Value::Bool(b0)), Some(Value::Bool(b1))) => {
-                            Some(TagValue::tagged(Value::Bool(*b0 $op *b1), tag))
-                        }
-                        (_, _) => None
-                    }
+                let (lt, rt) = (l.tag(), r.tag());
+                let trig = lt.triggers() || rt.triggers();
+                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                    return self.resident.ride();
                 }
-                None
+                if lt.is_bottom() || rt.is_bottom() {
+                    return if trig {
+                        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                    } else {
+                        self.resident.ride()
+                    };
+                }
+                let fired = lt.is_fired() || rt.is_fired();
+                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
+                let v = l.with_value(|lv| {
+                    r.with_value(|rv| match (lv, rv) {
+                        (Value::Bool(b0), Value::Bool(b1)) => {
+                            Some(Value::Bool(*b0 $op *b1))
+                        }
+                        _ => None,
+                    })
+                });
+                match v {
+                    Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+                    None => self.resident.ride(),
+                }
             }
 
             fn spec(&self) -> &Expr {
@@ -302,13 +316,13 @@ macro_rules! bool_op {
             }
 
             fn refs(&self, refs: &mut Refs) {
-                self.lhs.node.refs(refs);
-                self.rhs.node.refs(refs);
+                self.lhs.refs(refs);
+                self.rhs.refs(refs);
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.node.delete(ctx);
-                self.rhs.node.delete(ctx)
+                self.lhs.delete(ctx);
+                self.rhs.delete(ctx)
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -322,17 +336,17 @@ macro_rules! bool_op {
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
+                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 let bt = Type::Primitive(Typ::Bool.into());
-                wrap!(self.lhs.node, bt.check_contains(&ctx.env, self.lhs.node.typ()))?;
-                wrap!(self.rhs.node, bt.check_contains(&ctx.env, self.rhs.node.typ()))?;
+                wrap!(self.lhs, bt.check_contains(&ctx.env, self.lhs.typ()))?;
+                wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))?;
                 wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck1(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck1(ctx))
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
 
             fn view(&self) -> $crate::NodeView<'_, R, E> {
@@ -346,8 +360,8 @@ macro_rules! bool_op {
                 $crate::fusion::emit::emit_bool_node(
                     cx,
                     $crate::node::op::BoolOp::$name,
-                    &self.lhs.node,
-                    &self.rhs.node,
+                    &self.lhs,
+                    &self.rhs,
                 )
             }
 
@@ -363,13 +377,14 @@ pub struct Not<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Node<R, E>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Not<R, E> {
     #[allow(dead_code)]
     pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
         let typ = Type::Primitive(Typ::Bool.into());
-        Node::new(Self { spec, typ, n })
+        Node::new(Self { spec, typ, n, resident: TagValue::phantom() })
     }
 
     pub(crate) fn compile(
@@ -382,26 +397,24 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, n.clone(), scope, top_id)?;
         let typ = Type::Primitive(Typ::Bool.into());
-        Ok(Node::new(Self { spec, typ, n }))
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        self.n.update(ctx, event).and_then(|tv| {
-            if tv.is_tainted() {
-                return Some(TagValue::tainted(Value::Null));
-            }
-            let (v, tag) = tv.into_parts();
-            match v {
-                Value::Bool(b) => Some(TagValue::tagged(Value::Bool(!b), tag)),
-                _ => None,
-            }
-        })
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.n.update(ctx, event);
+        if tv.is_tainted() {
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+        }
+        let tag = tv.tag();
+        match tv.with_value(|v| match v {
+            Value::Bool(b) => Some(!*b),
+            _ => None,
+        }) {
+            Some(b) => self.resident.set(TagValue::tagged(Value::Bool(b), tag)),
+            None => self.resident.ride(),
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -453,12 +466,18 @@ pub struct Neg<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Node<R, E>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Neg<R, E> {
     #[allow(dead_code)]
     pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec, typ: Type::empty_tvar(), n })
+        Node::new(Self {
+            spec,
+            typ: Type::empty_tvar(),
+            n,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile(
@@ -470,39 +489,42 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
         n: &Expr,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, n.clone(), scope, top_id)?;
-        Ok(Node::new(Self { spec, typ: Type::empty_tvar(), n }))
+        Ok(Node::new(Self {
+            spec,
+            typ: Type::empty_tvar(),
+            n,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Unchecked negation: integers wrap (two's-complement, matching the
         // JIT's `ineg`); floats/decimal negate directly. `Value` equality
         // collapses Z32/I32 and Z64/I64, so producing the operand's own
         // variant agrees with the JIT's I32/I64-discriminated result.
-        self.n.update(ctx, event).and_then(|tv| {
-            if tv.is_tainted() {
-                return Some(TagValue::tainted(Value::Null));
-            }
-            let (v, tag) = tv.into_parts();
-            let neg = match v {
-                Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
-                Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
-                Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
-                Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
-                Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
-                Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
-                Value::F32(x) => Some(Value::F32(-x)),
-                Value::F64(x) => Some(Value::F64(-x)),
-                Value::Decimal(x) => Some(Value::Decimal(triomphe::Arc::new(-*x))),
-                _ => None,
-            };
-            neg.map(|v| TagValue::tagged(v, tag))
-        })
+        let tv = self.n.update(ctx, event);
+        if tv.is_tainted() {
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+        }
+        let tag = tv.tag();
+        let neg = tv.with_value(|v| match v {
+            Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
+            Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
+            Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
+            Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
+            Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
+            Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
+            Value::F32(x) => Some(Value::F32(-*x)),
+            Value::F64(x) => Some(Value::F64(-*x)),
+            Value::Decimal(x) => Some(Value::Decimal(triomphe::Arc::new(-**x))),
+            _ => None,
+        });
+        match neg {
+            Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+            None => self.resident.ride(),
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -667,8 +689,8 @@ macro_rules! arith_emit_clif {
             $crate::fusion::emit::emit_arith_node(
                 cx,
                 $crate::node::op::BinOp::$base,
-                &self.lhs.node,
-                &self.rhs.node,
+                &self.lhs,
+                &self.rhs,
             )
         }
     };
@@ -680,8 +702,8 @@ macro_rules! arith_emit_clif {
             $crate::fusion::emit::emit_checked_arith_node(
                 cx,
                 $crate::node::op::BinOp::$base,
-                &self.lhs.node,
-                &self.rhs.node,
+                &self.lhs,
+                &self.rhs,
             )
         }
     };
@@ -693,8 +715,9 @@ macro_rules! arith_op {
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
             pub typ: Type,
-            pub lhs: Cached<R, E>,
-            pub rhs: Cached<R, E>,
+            pub lhs: Node<R, E>,
+            pub rhs: Node<R, E>,
+            resident: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -710,9 +733,7 @@ macro_rules! arith_op {
                 typ: Type,
                 spec: Expr,
             ) -> Node<R, E> {
-                let lhs = Cached::new(lhs);
-                let rhs = Cached::new(rhs);
-                Node::new(Self { spec, typ, lhs, rhs })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
             }
 
             pub(crate) fn compile(
@@ -724,10 +745,10 @@ macro_rules! arith_op {
                 lhs: &Expr,
                 rhs: &Expr,
             ) -> Result<Node<R, E>> {
-                let lhs = Cached::new(compile(ctx, flags, lhs.clone(), scope, top_id)?);
-                let rhs = Cached::new(compile(ctx, flags, rhs.clone(), scope, top_id)?);
+                let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
+                let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::empty_tvar();
-                Ok(Node::new(Self { spec, typ, lhs, rhs }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
             }
 
             /// Homogeneous arithmetic — `fn('a: Number, 'a) -> 'a`
@@ -750,8 +771,8 @@ macro_rules! arith_op {
             /// typecheck1 after the operand cells settle.
             fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 let num = Type::Primitive(Typ::number());
-                let lt = self.lhs.node.typ().clone();
-                let rt = self.rhs.node.typ().clone();
+                let lt = self.lhs.typ().clone();
+                let rt = self.rhs.typ().clone();
                 // Number acceptance: a KNOWN operand must be numeric
                 // NOW (the def-time acceptance gate for a lambda body
                 // is typecheck0-only — `x + "hello"` must reject here
@@ -823,45 +844,60 @@ macro_rules! arith_op {
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
-            ) -> Option<TagValue> {
+            ) -> &TagValue {
+                // R1: recompute on TRIGGERING productions (a stale
+                // ride carries an unchanged value); a bottom resident
+                // still computes so a stale-filled first evaluation
+                // produces (the value channel fills through ops). The
+                // skip is valid ONLY at frame depth 0 (the R1 law):
+                // inside frames stale chains carry ADVANCING values
+                // (tail_jump_fired_plumbing), so a framed pass
+                // recomputes unconditionally — exactly the kernel.
+                // Bottomness derives from the consumed PRODUCTION tags
+                // (the join rule): any consumed bottom bottoms the
+                // result, fresh iff a delivery triggered. Logging
+                // stays trig-gated (Q2: a standing bottom re-derived
+                // in a frame never re-logs).
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
-                let produced = l.is_some() || r.is_some();
-                if self.lhs.tag.is_tainted() || self.rhs.tag.is_tainted() {
-                    // never attempt the op on a taint placeholder — pass
-                    // the taint toward its force point (and don't log a
-                    // synthetic error off it)
-                    return if produced {
-                        Some(TagValue::tainted(Value::Null))
+                let (lt, rt) = (l.tag(), r.tag());
+                let trig = lt.triggers() || rt.triggers();
+                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                    return self.resident.ride();
+                }
+                if lt.is_bottom() || rt.is_bottom() {
+                    // never attempt the op on a bottom placeholder —
+                    // pass the bottom toward its force point (and
+                    // don't log a synthetic error off it)
+                    return if trig {
+                        self.resident
+                            .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else {
-                        None
+                        self.resident.ride()
                     };
                 }
-                let lhs = self.lhs.cached.as_ref()?;
-                let rhs = self.rhs.cached.as_ref()?;
-                if produced {
-                    let fired = l.is_some_and(|t| t.is_fired())
-                        || r.is_some_and(|t| t.is_fired());
-                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                    if !$checked {
-                        if let Some(v) = wrapping_int_arith(BinOp::$base, lhs, rhs) {
-                            return Some(TagValue::tagged(v, tag));
-                        }
+                let fired = lt.is_fired() || rt.is_fired();
+                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
+                if !$checked {
+                    let v = l.with_value(|lv| {
+                        r.with_value(|rv| wrapping_int_arith(BinOp::$base, lv, rv))
+                    });
+                    if let Some(v) = v {
+                        return self.resident.set(TagValue::tagged(v, tag));
                     }
-                    let result = lhs.clone().$method(rhs.clone());
-                    if $checked {
-                        Some(TagValue::tagged(wrap_arith_error(result), tag))
-                    } else {
-                        match result {
-                            Value::Error(e) => {
-                                if ctx.frame_depth > 0 {
-                                    // In an inline callback frame this is a
-                                    // GENUINE bottom — the kernel's taint
-                                    // channel, and like the kernel it is
-                                    // SILENT (the log is a reactive-mode
-                                    // debugging aid, not value semantics).
-                                    return Some(TagValue::tainted(Value::Null));
-                                }
+                }
+                let result =
+                    l.with_value(|lv| r.with_value(|rv| lv.clone().$method(rv.clone())));
+                if $checked {
+                    self.resident.set(TagValue::tagged(wrap_arith_error(result), tag))
+                } else {
+                    match result {
+                        Value::Error(e) => {
+                            // a FRESH evaluation failure logs at
+                            // every depth (dense Q2); a standing
+                            // bottom re-derived from stale rides
+                            // never re-logs
+                            if trig {
                                 log::error!(
                                     "arith error in {} at {} {e}",
                                     self.spec.ori,
@@ -871,13 +907,16 @@ macro_rules! arith_op {
                                     "arith error in {} at {} {e}",
                                     self.spec.ori, self.spec.pos
                                 );
-                                None
                             }
-                            v => Some(TagValue::tagged(v, tag)),
+                            let btag = if trig {
+                                $crate::Tag::FRESH_BOTTOM
+                            } else {
+                                $crate::Tag::TAINT
+                            };
+                            self.resident.set(TagValue::tagged(Value::Null, btag))
                         }
+                        v => self.resident.set(TagValue::tagged(v, tag)),
                     }
-                } else {
-                    None
                 }
             }
 
@@ -890,13 +929,13 @@ macro_rules! arith_op {
             }
 
             fn refs(&self, refs: &mut Refs) {
-                self.lhs.node.refs(refs);
-                self.rhs.node.refs(refs);
+                self.lhs.refs(refs);
+                self.rhs.refs(refs);
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.node.delete(ctx);
-                self.rhs.node.delete(ctx);
+                self.lhs.delete(ctx);
+                self.rhs.delete(ctx);
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -910,8 +949,8 @@ macro_rules! arith_op {
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck0(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck0(ctx))?;
+                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 // The homogeneous unification IS the whole check now —
                 // it subsumes the retired operand pre-bind (an unbound
                 // formal binds to the concrete operand through the
@@ -925,15 +964,15 @@ macro_rules! arith_op {
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs.node, self.lhs.node.typecheck1(ctx))?;
-                wrap!(self.rhs.node, self.rhs.node.typecheck1(ctx))?;
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
                 // Settle still-unbound operand cells to their
                 // conjunction, then run the deferred `ut`.
-                if let Type::TVar(tv) = self.lhs.node.typ() {
-                    wrap!(self.lhs.node, tv.settle(&ctx.env))?;
+                if let Type::TVar(tv) = self.lhs.typ() {
+                    wrap!(self.lhs, tv.settle(&ctx.env))?;
                 }
-                if let Type::TVar(tv) = self.rhs.node.typ() {
-                    wrap!(self.rhs.node, tv.settle(&ctx.env))?;
+                if let Type::TVar(tv) = self.rhs.typ() {
+                    wrap!(self.rhs, tv.settle(&ctx.env))?;
                 }
                 self.typecheck_tail(ctx)
             }

@@ -16,7 +16,7 @@ use crate::{
             Seen, abi_kind, freeze_for_abi_normalized, scalar_prim,
         },
     },
-    node::{Cached, callsite::CallSite, lambda::GXLambda},
+    node::{callsite::CallSite, lambda::GXLambda},
     typ::{FnArgKind, FnType, Type},
 };
 use arcstr::ArcStr;
@@ -104,6 +104,16 @@ pub struct BuiltinCallSiteInfo {
     pub marshal_arg_indices: Vec<usize>,
     pub arg_types: Vec<Type>,
     pub return_type: Type,
+    /// The builtin's `SLEEP_RESTARTS` fact
+    /// (`ctx.builtin_sleep_restarts`), read at discovery.
+    /// Load-bearing for the interior-sleep gate: a sleep-restarting
+    /// builtin's DynCall must not emit inside a select-arm extent —
+    /// kernels have no interior arm-sleep initiator, so the interp's
+    /// documented arm-rewake RESTART semantics
+    /// (once/take/skip/hold/uniq/count clear on sleep) can't be
+    /// reproduced there; the region de-fuses instead (P7, the
+    /// Sync-flip gate). Cast/qop pseudo-sites are sleep-inert.
+    pub sleep_restarts: bool,
 }
 
 /// Output of [`walk_node_for_builtin_calls`].
@@ -194,6 +204,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
             marshal_arg_indices: vec![0],
             arg_types: vec![inner_typ.clone()],
             return_type: inner_typ,
+            sleep_restarts: false,
         },
     );
 }
@@ -246,6 +257,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             marshal_arg_indices: vec![0],
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
+            sleep_restarts: false,
         },
     );
 }
@@ -485,7 +497,13 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     });
     out.apply_sites.insert(
         apply_id,
-        BuiltinCallSiteInfo { fn_index, marshal_arg_indices, arg_types, return_type },
+        BuiltinCallSiteInfo {
+            fn_index,
+            marshal_arg_indices,
+            arg_types,
+            return_type,
+            sleep_restarts: ctx.builtin_sleep_restarts(info.name.as_str()),
+        },
     );
 }
 
@@ -526,33 +544,33 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
     }
 }
 
-/// Fold a slice of `Cached` element nodes into a constant
-/// `Value::Array` (the flat `ValArray` runtime shape shared by array
-/// and tuple literals), or `None` if any element isn't constant.
-fn const_valarray<R: Rt, E: UserEvent>(elems: &[Cached<R, E>]) -> Option<Value> {
+/// Fold a slice of element nodes into a constant `Value::Array` (the
+/// flat `ValArray` runtime shape shared by array and tuple literals),
+/// or `None` if any element isn't constant.
+fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
     let mut vals: poolshark::local::LPooled<Vec<Value>> =
         poolshark::local::LPooled::take();
     for c in elems.iter() {
-        vals.push(node_const_value(&c.node)?);
+        vals.push(node_const_value(c)?);
     }
     Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
 }
 
-/// Fold parallel key/value `Cached` node slices into a constant
+/// Fold parallel key/value node slices into a constant
 /// `Value::Map`, or `None` if any entry isn't constant. Shared by
 /// `node_const_value`'s `Map` arm and `emit_map_new`.
 /// (`pub(crate)`: also the direct path's `emit_map_new_node` —
 /// fusion::emit — const-folds through it.)
 pub(crate) fn const_map<R: Rt, E: UserEvent>(
-    keys: &[Cached<R, E>],
-    vals: &[Cached<R, E>],
+    keys: &[Node<R, E>],
+    vals: &[Node<R, E>],
 ) -> Option<Value> {
     if keys.len() != vals.len() {
         return None;
     }
     let mut map = netidx_value::Map::new();
     for (k, v) in keys.iter().zip(vals.iter()) {
-        map.insert_cow(node_const_value(&k.node)?, node_const_value(&v.node)?);
+        map.insert_cow(node_const_value(k)?, node_const_value(v)?);
     }
     Some(Value::Map(map))
 }

@@ -1,7 +1,7 @@
 use crate::GXExt;
 use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
-use graphix_compiler::{BindId, CustomBuiltinType, Rt, expr::ExprId};
+use graphix_compiler::{BindId, CustomBuiltinType, Rt, TagValue, expr::ExprId};
 use netidx_value::Value;
 use nohash::IntMap;
 use poolshark::global::GPooled;
@@ -27,11 +27,16 @@ fn dbg_vars() -> bool {
 
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
-    /// The last DELIVERED value of every bound variable — see
-    /// [`Rt::cached`]. Written by the cycle loop as each variable
-    /// event lands in `event.variables`, and by the same-cycle
-    /// publishers through [`Rt::cached_mut`].
-    pub(super) cached: IntMap<BindId, Value>,
+    /// The persistent tagged store (design/dense_delivery.md R3): the
+    /// (production, cycle-stamp) of every bound variable's last
+    /// delivery. Written by the cycle loop as each variable event
+    /// lands in `event.variables`, and by the same-cycle publishers
+    /// through [`Rt::store_insert`]. THE cross-cycle read — see
+    /// [`Rt::store`].
+    pub(super) store: IntMap<BindId, (TagValue, u64)>,
+    /// The store's clock — bumped once at the top of each `do_cycle`.
+    /// Also the trace recorder's cycle number (one clock).
+    pub(super) cycle: u64,
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
     pub(super) var_updates: VecDeque<(BindId, Value)>,
     pub(super) custom_updates: VecDeque<(BindId, Box<dyn CustomBuiltinType>)>,
@@ -66,7 +71,8 @@ impl<X: GXExt> GXRt<X> {
         let mut var_watches = SelectAll::new();
         var_watches.push(dummy_rx);
         Self {
-            cached: IntMap::default(),
+            store: IntMap::default(),
+            cycle: 0,
             by_ref: IntMap::default(),
             var_updates: VecDeque::new(),
             custom_updates: VecDeque::new(),
@@ -91,17 +97,31 @@ impl<X: GXExt> Default for GXRt<X> {
 impl<X: GXExt> Rt for GXRt<X> {
     type AbortHandle = task::AbortHandle;
 
-    fn cached(&self) -> &IntMap<BindId, Value> {
-        &self.cached
+    fn store(&self) -> &IntMap<BindId, (TagValue, u64)> {
+        &self.store
     }
 
-    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value> {
-        &mut self.cached
+    fn store_insert(&mut self, id: BindId, tv: TagValue) {
+        self.store.insert(id, (tv, self.cycle));
+    }
+
+    fn store_remove(&mut self, id: &BindId) {
+        self.store.remove(id);
+    }
+
+    fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
+        // stamped one cycle back: Standing to every same-cycle reader
+        self.store.insert(id, (tv, self.cycle.wrapping_sub(1)));
+    }
+
+    fn cycle(&self) -> u64 {
+        self.cycle
     }
 
     fn clear(&mut self) {
         let Self {
-            cached,
+            store,
+            cycle,
             by_ref,
             var_updates,
             custom_updates,
@@ -116,7 +136,8 @@ impl<X: GXExt> Rt for GXRt<X> {
         } = self;
         ext.clear();
         updated.clear();
-        cached.clear();
+        store.clear();
+        *cycle = 0;
         by_ref.clear();
         var_updates.clear();
         custom_updates.clear();

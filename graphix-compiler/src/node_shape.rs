@@ -274,13 +274,13 @@ fn node_children<'a, R: Rt, E: UserEvent>(
 ) -> Option<SmallVec<[&'a Node<R, E>; 4]>> {
     use NodeView as V;
 
-    // Arithmetic / comparison / boolean ops all share `lhs`/`rhs`
-    // (`Cached`); handle the whole family in one place.
+    // Arithmetic / comparison / boolean ops all share `lhs`/`rhs`;
+    // handle the whole family in one place.
     macro_rules! binop {
         ($n:expr) => {{
             let mut s: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
-            s.push(&$n.lhs.node);
-            s.push(&$n.rhs.node);
+            s.push(&$n.lhs);
+            s.push(&$n.rhs);
             return Some(s);
         }};
     }
@@ -312,12 +312,12 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Block(b) => kids.extend(b.children.iter()),
         V::Bind(b) => kids.push(&b.node),
         V::MapQ(m) => {
-            kids.push(&m.source.node);
+            kids.push(&m.source);
             kids.push(&m.prototype);
         }
         V::FoldQ(m) => {
-            kids.push(&m.source.node);
-            kids.push(&m.init.node);
+            kids.push(&m.source);
+            kids.push(&m.init);
             kids.push(&m.prototype);
         }
         V::Module(m) => kids.push(m.source()),
@@ -335,7 +335,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         }
         V::Select(s) => {
             kids.push(&s.arg.node);
-            kids.extend(s.arms.iter().map(|(_, c)| &c.node));
+            kids.extend(s.arms.iter().map(|(_, c)| c));
         }
         // Single/double-child wrappers.
         V::ExplicitParens(n) => kids.push(&n.n),
@@ -345,7 +345,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Not(n) => kids.push(&n.n),
         V::Neg(n) => kids.push(&n.n),
         V::Connect(n) => kids.push(&n.node),
-        V::ConnectDeref(n) => kids.push(&n.rhs.node),
+        V::ConnectDeref(n) => kids.push(&n.rhs),
         V::Sample(n) => {
             kids.push(&n.trigger);
             kids.push(&n.arg.node);
@@ -354,39 +354,39 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::ByRef(n) => kids.push(&n.child),
         V::Deref(n) => kids.push(&n.child),
         // Producers.
-        V::Struct(n) => kids.extend(n.n.iter().map(|c| &c.node)),
-        V::Tuple(n) => kids.extend(n.n.iter().map(|c| &c.node)),
-        V::Variant(n) => kids.extend(n.n.iter().map(|c| &c.node)),
-        V::Array(n) => kids.extend(n.n.iter().map(|c| &c.node)),
+        V::Struct(n) => kids.extend(n.n.iter()),
+        V::Tuple(n) => kids.extend(n.n.iter()),
+        V::Variant(n) => kids.extend(n.n.iter()),
+        V::Array(n) => kids.extend(n.n.iter()),
         V::Map(n) => {
-            kids.extend(n.keys.iter().map(|c| &c.node));
-            kids.extend(n.vals.iter().map(|c| &c.node));
+            kids.extend(n.keys.iter());
+            kids.extend(n.vals.iter());
         }
         V::StructWith(n) => {
             kids.push(&n.source);
-            kids.extend(n.replace.iter().map(|r| &r.n.node));
+            kids.extend(n.replace.iter().map(|r| &r.n));
         }
-        V::StringInterpolate(n) => kids.extend(n.args.iter().map(|c| &c.node)),
+        V::StringInterpolate(n) => kids.extend(n.args.iter()),
         V::Any(n) => kids.extend(n.n.iter()),
         // Accessors.
         V::StructRef(n) => kids.push(&n.source),
         V::TupleRef(n) => kids.push(&n.source),
         V::ArrayRef(n) => {
-            kids.push(&n.source.node);
-            kids.push(&n.i.node);
+            kids.push(&n.source);
+            kids.push(&n.i);
         }
         V::ArraySlice(n) => {
-            kids.push(&n.source.node);
+            kids.push(&n.source);
             if let Some(s) = &n.start {
-                kids.push(&s.node);
+                kids.push(s);
             }
             if let Some(e) = &n.end {
-                kids.push(&e.node);
+                kids.push(e);
             }
         }
         V::MapRef(n) => {
-            kids.push(&n.source.node);
-            kids.push(&n.key.node);
+            kids.push(&n.source);
+            kids.push(&n.key);
         }
         // A fused kernel's children are its input feeders (lets
         // `Contains` descend through a kernel into what feeds it).

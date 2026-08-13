@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
+    UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
@@ -8,7 +9,7 @@ use graphix_compiler::{
 };
 use netidx_value::{ValArray, Value};
 
-use crate::{CachedArgs, CachedVals, EvalCached};
+use crate::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
 
 // ── Predicates ─────────────────────────────────────────────────────
 
@@ -296,15 +297,17 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) {
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
-            ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = tv.tag();
+            let v = tv.value_cloned();
+            ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
     }
 
-    fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value) {
-        ctx.rt.cached_mut().insert(self.x, v.clone());
-        event.variables.insert(self.x, TagValue::fired(v));
+    fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value, tag: Tag) {
+        ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
+        event.variables.insert(self.x, TagValue::tagged(v, tag));
     }
 
     /// Standard fire-and-forget tick used by map/flat_map/is_some_and/
@@ -322,15 +325,27 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         on_null: Value,
     ) -> Option<Value> {
         self.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
-            Some(Value::Null) => Some(on_null),
-            Some(v) => {
-                self.feed_x(ctx, event, v);
-                None
+        let direct = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) => {
+                let tag = tv.tag();
+                // the null branch DRIVES an emission, so under the
+                // open gate it must be an event — a stale null is
+                // quiet (the republish branch is value-plane and rides
+                // the honest tag instead)
+                let drives = tv.is_fired();
+                match tv.value_cloned() {
+                    Value::Null if drives => Some(on_null),
+                    Value::Null => None,
+                    v => {
+                        self.feed_x(ctx, event, v, tag);
+                        None
+                    }
+                }
             }
             None => None,
         };
-        let inner_out = self.inner.update(ctx, event).map(|tv| tv.value());
+        let inner_out =
+            seam_tick(self.inner.update(ctx, event)).map(|tv| tv.value_cloned());
         direct.or(inner_out)
     }
 
@@ -341,14 +356,12 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // The published callback/element values are per-invocation
         // replay memory (same ids `delete` removes).
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
         self.inner.reset_replay(ctx);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.store_remove(&self.fid);
+        ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.inner.delete(ctx);
     }
@@ -367,6 +380,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptMap<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
@@ -385,7 +399,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -395,8 +412,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Null)
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Null) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -429,6 +449,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
@@ -447,7 +468,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -457,8 +481,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Null)
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Null) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -497,6 +524,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
     pending: Option<Value>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
@@ -515,7 +543,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)?, pending: None }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            pending: None,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -525,25 +557,40 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         self.s.feed_callable(ctx, from, event);
-        let direct = match from[0].update(ctx, event).map(|tv| tv.value()) {
-            Some(Value::Null) => {
-                self.pending = None;
-                Some(Value::Null)
-            }
-            Some(v) => {
-                self.pending = Some(v.clone());
-                self.s.feed_x(ctx, event, v);
-                None
+        let direct = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) => {
+                let tag = tv.tag();
+                // as in tick_unary: the null branch drives an
+                // emission, so under the open gate it requires an
+                // event — a stale null neither emits nor clears the
+                // pending latch
+                let drives = tv.is_fired();
+                match tv.value_cloned() {
+                    Value::Null if drives => {
+                        self.pending = None;
+                        Some(Value::Null)
+                    }
+                    Value::Null => None,
+                    v => {
+                        self.pending = Some(v.clone());
+                        self.s.feed_x(ctx, event, v, tag);
+                        None
+                    }
+                }
             }
             None => None,
         };
-        let inner_out = self.s.inner.update(ctx, event).map(|b| match b.value() {
-            Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
-            _ => Value::Null,
-        });
-        direct.or(inner_out)
+        let inner_out =
+            seam_tick(self.s.inner.update(ctx, event)).map(|b| match b.value_cloned() {
+                Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
+                _ => Value::Null,
+            });
+        match direct.or(inner_out) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -578,6 +625,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
@@ -596,7 +644,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -606,8 +657,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Bool(false))
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Bool(false)) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -640,6 +694,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
@@ -658,7 +713,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: HofState::unary(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: HofState::unary(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -668,8 +726,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        self.s.tick_unary(ctx, from, event, Value::Bool(true))
+    ) -> &TagValue {
+        match self.s.tick_unary(ctx, from, event, Value::Bool(true)) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -741,19 +802,24 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> (bool, bool) {
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
-            ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = tv.tag();
+            let v = tv.value_cloned();
+            ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        let a_updated = if let Some(a) = from[0].update(ctx, event) {
-            self.last_a = Some(a.value());
-            true
+        // the latches are value-plane (a stale delivery refreshes
+        // them); the returned flags DRIVE emission, so under the open
+        // gate they require an event
+        let a_updated = if let Some(a) = seam_value(from[0].update(ctx, event)) {
+            self.last_a = Some(a.value_cloned());
+            a.is_fired()
         } else {
             false
         };
-        let f_updated = if let Some(v) = self.inner.update(ctx, event) {
-            self.last_f = Some(v.value());
-            true
+        let f_updated = if let Some(v) = seam_value(self.inner.update(ctx, event)) {
+            self.last_f = Some(v.value_cloned());
+            v.is_fired()
         } else {
             false
         };
@@ -769,12 +835,11 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.last_a = None;
         self.last_f = None;
-        ctx.rt.cached_mut().remove(&self.fid);
         self.inner.reset_replay(ctx);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
+        ctx.rt.store_remove(&self.fid);
         self.inner.delete(ctx);
     }
 
@@ -790,6 +855,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptOrElse<R: Rt, E: UserEvent> {
     s: OrElseShared<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
@@ -808,7 +874,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: OrElseShared::init(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: OrElseShared::init(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -818,14 +887,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
         // a non-null always emits a
         // a null with cached f emits that f
         // f update while a is null emits the new f
         // a null without cached f stays silent — we have nothing to emit
         // until f produces, at which point the f_up arm below fires
-        if a_up {
+        let res = if a_up {
             match &self.s.last_a {
                 Some(Value::Null) => self.s.last_f.clone(),
                 Some(v) => Some(v.clone()),
@@ -835,6 +904,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
             self.s.last_f.clone()
         } else {
             None
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 
@@ -866,6 +939,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
 #[derive(Debug)]
 pub(crate) struct OptOkOrElse<R: Rt, E: UserEvent> {
     s: OrElseShared<R, E>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
@@ -884,7 +958,10 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
             bail!("expected two arguments");
         }
         let typ = resolved.unwrap_or(typ);
-        Ok(Box::new(Self { s: OrElseShared::init(ctx, typ, scope, top_id)? }))
+        Ok(Box::new(Self {
+            s: OrElseShared::init(ctx, typ, scope, top_id)?,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -894,10 +971,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
         let wrap_err = |e: Value| Value::Error(e.into());
-        if a_up {
+        let res = if a_up {
             match &self.s.last_a {
                 // a null without cached f stays silent until f produces.
                 Some(Value::Null) => self.s.last_f.clone().map(wrap_err),
@@ -908,6 +985,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
             self.s.last_f.clone().map(wrap_err)
         } else {
             None
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 

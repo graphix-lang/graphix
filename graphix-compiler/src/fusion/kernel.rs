@@ -20,7 +20,8 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    Apply, BindId, Event, ExecCtx, LambdaId, ModPath, Node, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, Event, ExecCtx, LambdaId, ModPath, Node, Refs, Rt, Scope, Tag,
+    UserEvent,
     expr::{Expr, ExprId},
     fusion::{
         emit::{STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
@@ -103,15 +104,6 @@ pub struct DynCallSlot<R: Rt, E: UserEvent> {
     /// can't change). `dispatch` short-circuits the LambdaDef
     /// downcast + rebind check for these slots.
     pre_bound: bool,
-    /// External BindIds referenced by labeled-default Node trees of
-    /// `BuiltinSlot::LabeledDefault` slots. At every dispatch cycle
-    /// `Kernel::update` primes `event.variables[id]` from
-    /// `ctx.cached[id]` for each entry here, so the default's `Ref`
-    /// node finds its value (mirrors `CallSite::bind`'s default-arg
-    /// priming step at the inner `compile_default!` call). Empty
-    /// for non-builtin slots and for builtin slots whose defaults
-    /// are pure literals with no external refs.
-    default_external_refs: Vec<BindId>,
     /// `false` until the current inner Apply's FIRST dispatch has
     /// run. A freshly-constructed Apply's first update IS its init
     /// (the same contract `CallSite::bind` provides a fresh callee):
@@ -218,7 +210,6 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             instances: Vec::new(),
             recipe: SlotRecipe::Lambda,
             pre_bound: false,
-            default_external_refs: Vec::new(),
             fired: false,
             scope,
             top_id,
@@ -343,19 +334,13 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                             self.top_id,
                         )?,
                     };
-                    // Mirror `compile_default!`'s priming: walk the
-                    // default node's external Refs and record them so
-                    // `Kernel::update` can prime `event.variables[id]`
-                    // from `ctx.cached[id]` at every cycle. Without
-                    // this, a default like `default_escape` (Ref to
-                    // a module-level binding) reads None on the first
-                    // dispatch — the binding's value is in ctx.cached
-                    // but never copied into the per-cycle event.
-                    let mut refs = Refs::default();
-                    node.refs(&mut refs);
-                    refs.with_external_refs(|id| {
-                        self.default_external_refs.push(id);
-                    });
+                    // A default naming an external binding (e.g.
+                    // `#esc = default_escape`) needs no priming: the
+                    // default node's `Ref` reads the persistent store
+                    // through `read_var` (R2) — a standing entry
+                    // serves Stale, or Fired under the first
+                    // dispatch's forced init view, exactly the interp
+                    // callsite's default-arg read.
                     new_arg_refs.push(node);
                 }
                 BuiltinSlot::Variadic { from_call_idx, count } => {
@@ -454,8 +439,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// reshaping (unlike `pre_bind_builtin`). Pre-bound, so dispatch
     /// runs `CastApply::update` directly and never re-binds.
     pub fn pre_bind_cast(&mut self, target: crate::typ::Type) {
-        let apply: Box<dyn Apply<R, E>> =
-            Box::new(CastApply { target: target.clone(), _p: std::marker::PhantomData });
+        let apply: Box<dyn Apply<R, E>> = Box::new(CastApply {
+            target: target.clone(),
+            out: TagValue::phantom(),
+            _p: std::marker::PhantomData,
+        });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
         self.recipe = SlotRecipe::Cast { target };
@@ -484,6 +472,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             handler_top,
             own_top,
             spec: spec.clone(),
+            out: TagValue::phantom(),
         });
         let sentinel = self as *const Self as *const u8;
         self.current = Some((sentinel, apply));
@@ -544,7 +533,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         taint_mask: u64,
         stale_mask: u64,
         site_id: u64,
-    ) -> Option<Value> {
+    ) -> Option<TagValue> {
         debug_assert_eq!(args.len(), self.bind_ids.len(), "DynCall arity");
         // Resolve WHICH inner Apply runs: `None` = the key-0 bucket
         // (no identity word — see the struct doc), `Some(i)` = the
@@ -613,31 +602,40 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         };
         let first = !*fired;
         *fired = true;
-        // Side-channel: stash each arg Value at its BindId so the
-        // arg_refs `Ref` nodes read it inside `apply.update`. The
-        // delivery TAG is the arg's own per-cycle truth, not the
-        // call's: a TAINT-masked slot (the arg bottomed this cycle)
-        // delivers ABSENCE — no write, so the callee's cached slot
-        // keeps its previous state and eval decides what a missing
-        // arg means (Eric's ruling 2026-07-20,
-        // dyncall-partial-args-jul2026; the buf's placeholder Value
-        // at that position drops with the buf) — and a STALE-masked
-        // slot delivers `TagValue::stale`: present, didn't fire, so
-        // production rules that gate on argument FIRING (update_diff,
-        // CachedArgs' eval re-run) see the node-walk's per-argument
-        // truth instead of a phantom fire per kernel invocation
+        // Side-channel: stash each arg's HONEST production at its
+        // BindId so the arg_refs `Ref` nodes read it inside
+        // `apply.update` (Seam B of the 5c flip — the four tag states
+        // ride the two masks): a TAINT-masked slot delivers the
+        // bottom itself — FreshBottom for a triggering poison,
+        // StaleBottom for a standing one — and the wrapper's Q1 arm
+        // bottoms the invocation without calling eval (bottom
+        // propagates; the old absence/tombstone delivery and its
+        // ride-own-history semantics are the re-blessed
+        // dyncall-partial-args delta). A STALE-masked slot delivers
+        // `TagValue::stale`: present, didn't fire, so production
+        // rules that gate on argument FIRING (seam_arg's fired flag,
+        // CachedArgs' eval re-run) see the per-argument truth instead
+        // of a phantom fire per kernel invocation
         // (dyncall-stale-arg-fired-aug2026). On the FIRST dispatch
-        // the init view makes everything an arrival (the interp's
-        // fresh Apply sees its args arrive at init), so stale is
-        // honored only after.
+        // the init view makes everything an arrival (R2's fresh
+        // reader: a standing value or bottom reads fresh), so the
+        // STALE bit is honored only after. An entry present for
+        // EVERY slot every dispatch also keeps the shared arg Refs'
+        // residents out of play (the site-identity rule — a read_var
+        // miss would ride ANOTHER site's last delivery).
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
-            if taint_mask & (1u64 << i) != 0 {
-                continue;
-            }
             let id = self.bind_ids[i];
-            let tv = if !first && stale_mask & (1u64 << i) != 0 {
+            let standing = !first && stale_mask & (1u64 << i) != 0;
+            let tv = if taint_mask & (1u64 << i) != 0 {
+                let tag = if standing {
+                    crate::Tag::STALE_BOTTOM
+                } else {
+                    crate::Tag::FRESH_BOTTOM
+                };
+                crate::TagValue::tagged(Value::Null, tag)
+            } else if standing {
                 crate::TagValue::stale(v.clone())
             } else {
                 crate::TagValue::fired(v.clone())
@@ -649,7 +647,25 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         if first {
             event.init = true;
         }
-        let result = apply.update(ctx, &mut self.arg_refs, event);
+        // Return the inner Apply's production WHOLE — value and tag
+        // (Seam B of the 5c flip): the call site's CLIF decodes the
+        // in-band TAINT/STALE bits natively (they are its own
+        // currency), so a bottomed invocation reaches the caller as a
+        // taint-flagged pair (never as `Value::Null` masquerading as
+        // a success — the masked_outer_call_cache_ride SEGV class)
+        // and a stale resurface reads as a quiet production instead
+        // of a phantom fire.
+        let result = {
+            let tv = apply.update(ctx, &mut self.arg_refs, event);
+            Some(tv.clone())
+        };
+        if crate::dbgenv::gxdbg_dync() {
+            let words = result.as_ref().map(|tv| {
+                let tv = std::mem::ManuallyDrop::new(tv.clone());
+                unsafe { std::mem::transmute_copy::<crate::TagValue, [u64; 2]>(&*tv) }
+            });
+            eprintln!("DYNC-RET first={first} prod={words:x?}");
+        }
         event.init = saved_init;
         // Cleanup: remove the side-channel entries so a downstream
         // dispatcher (or the outer event loop) doesn't see them.
@@ -760,6 +776,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             }
             SlotRecipe::Cast { target } => Some(Box::new(CastApply {
                 target: target.clone(),
+                out: TagValue::phantom(),
                 _p: std::marker::PhantomData,
             })),
             SlotRecipe::QopDeliver { handler_id, handler_top, own_top, spec } => {
@@ -768,6 +785,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                     handler_top: *handler_top,
                     own_top: *own_top,
                     spec: spec.clone(),
+                    out: TagValue::phantom(),
                 }))
             }
         }
@@ -797,10 +815,11 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
 /// [`FnSource::Cast`]). `update` reads the single side-channeled source
 /// value from `from[0]` and runs `target.cast_value(&ctx.env, v)` — the
 /// EXACT function `TypeCast::update` (the node-walk) calls, so the two
-/// evaluators agree by construction. Returns `None` (bottom) only when
-/// the source itself produced no value this cycle.
+/// evaluators agree by construction. Produces absent only when the
+/// source itself produced no value this cycle.
 pub(crate) struct CastApply<R: Rt, E: UserEvent> {
     target: crate::typ::Type,
+    out: TagValue,
     _p: std::marker::PhantomData<fn() -> (R, E)>,
 }
 
@@ -816,10 +835,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CastApply<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from.get_mut(0)?
-            .update(ctx, event)
-            .map(|tv| self.target.cast_value(&ctx.env, tv.value()))
+    ) -> &TagValue {
+        let Some(src) = from.get_mut(0) else { return TagValue::phantom_ref() };
+        let tv = src.update(ctx, event);
+        let tag = tv.tag();
+        if tag.is_bottom() {
+            return if tag.triggers() {
+                self.out.set(TagValue::tagged(Value::Null, crate::Tag::FRESH_BOTTOM))
+            } else {
+                self.out.ride()
+            };
+        }
+        // recompute on triggering productions (or the first stale fill
+        // of a bottom resident); quiet rides re-surface the last cast
+        if tag.triggers() || self.out.tag().is_bottom() {
+            let t = if tag.is_fired() { crate::Tag::FIRED } else { crate::Tag::STALE };
+            let v = tv.value_cloned();
+            self.out.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), t))
+        } else {
+            self.out.ride()
+        }
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -907,29 +942,46 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
     };
     let slot = &mut slots[fn_index as usize];
     let lambda_v = &fn_arg_values[fn_index as usize];
+    // The tool for "what did the CLIF marshal actually hand this
+    // dispatch": raw (disc, payload) words per arg — transmute_copy,
+    // never a deref, so it is safe to run on a corrupt Value (it
+    // located the masked_outer_call_cache_ride garbage-ArcStr in one
+    // run where the SEGV backtrace only named the victim).
+    if crate::dbgenv::gxdbg_dync() {
+        let words: Vec<[u64; 2]> =
+            args_vec.iter().map(crate::tval::value_words).collect();
+        eprintln!(
+            "DYNC fn={} site={} taint={:b} stale={:b} site_word={:x} args={:x?}",
+            fn_index, site_id, taint_mask, stale_mask, site_word as u64, words
+        );
+    }
     match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id)
     {
-        Some(v) => {
-            // Unified Value ABI: hand back the Value's two `repr(u64)`
-            // words for EVERY return type — the call site adapts per
-            // its static shape (narrow a scalar payload, adopt owned
-            // ValArray/ArcStr bits, keep a value-shape pair, discard
-            // Unit).
+        Some(tv) => {
+            // Unified Value ABI, honest tags in-band (Seam B): hand
+            // back the production's two words — the disc carries the
+            // TAINT/STALE tag in its high byte, the call site adapts
+            // per its static shape (narrow a scalar payload, adopt
+            // owned ValArray/ArcStr bits on the untainted path only,
+            // keep a value-shape pair, discard Unit). A bottomed
+            // production's payload is its helper-safe placeholder —
+            // the call site's taint path never adopts it.
             //
-            // SAFETY: Value is `#[repr(u64)]`, 16 bytes / 8-byte
-            // aligned — layout pinned by `emit_helpers`.
-            // `ManuallyDrop` prevents the local `v`'s Drop from
+            // SAFETY: TagValue is `#[repr(C)]` (disc, payload) — the
+            // same 16-byte layout the Value transmute used, tag bits
+            // included. `ManuallyDrop` prevents the local's Drop from
             // running while we transmute its bits out; ownership
             // transfers to the caller.
-            let v = std::mem::ManuallyDrop::new(v);
-            let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*v) };
+            let tv = std::mem::ManuallyDrop::new(tv);
+            let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*tv) };
             DynCallRet { word0: words[0], word1: words[1] }
         }
         None => {
-            // "No value this cycle" — the JIT'd call site
-            // take-and-clears this immediately and converts it to a
-            // #219 tainted placeholder that continues, so the bottom
-            // stays local to the result's consumers (item 28).
+            // A genuine dispatch abort (an instance init failure) —
+            // the JIT'd call site take-and-clears this immediately
+            // and converts it to a #219 tainted placeholder that
+            // continues, so the bottom stays local to the result's
+            // consumers (item 28).
             DYNCALL_PENDING.with(|c| c.set(true));
             DynCallRet { word0: 0, word1: 0 }
         }
@@ -985,10 +1037,6 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// The kernel's ABI contract; the `Arc` is also its identity (the
     /// JIT's `by_kernel` cache keys on the pointer).
     kernel: Arc<KernelSig>,
-    /// Per-cycle input cache, parallel to the `from` slice the runtime
-    /// passes into `update`. `None` means "haven't seen a value yet";
-    /// the kernel runs once every slot is `Some`.
-    args: Box<[Option<Value>]>,
     /// The compiled JIT wrapper this node dispatches into. Required:
     /// a fused node without a JIT cannot exist — JIT failure means
     /// the region was never spliced and the original nodes node-walk.
@@ -1013,16 +1061,14 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// so a fresh instance's init semantics fall out of the zeroing.
     state: Box<[u64]>,
     /// The kernel's RESULT slot on the value channel — the last value
-    /// a run produced. A region is pure by construction (effects
-    /// de-fuse), so when a poll delivers only STALE productions (an
-    /// evaluation frame re-running a node-walked loop around this
-    /// kernel — the only place stale productions originate) the cached
-    /// result is exactly what a re-run would compute; re-surface it
-    /// tagged STALE via [`Apply::out_tag`] instead of running the JIT.
-    /// The `CachedArgs::last_result` twin.
-    last_result: Option<Value>,
-    /// The tag of the last value `update` returned (see `out_tag`).
-    last_out: crate::Tag,
+    /// a run produced, absent until the first run. A region is pure
+    /// by construction (effects de-fuse), so when a poll delivers only
+    /// STALE productions (an evaluation frame re-running a node-walked
+    /// loop around this kernel — the only place stale productions
+    /// originate) the retained result is exactly what a re-run would
+    /// compute; re-surface it retagged STALE instead of running the
+    /// JIT. The `CachedArgs::resident` twin.
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
@@ -1196,13 +1242,11 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         }
         let mut node = Self {
             kernel,
-            args: vec![None; n_args].into_boxed_slice(),
             jit: wrapped,
             dyn_slots,
             arg_layout,
             state,
-            last_result: None,
-            last_out: crate::Tag::FIRED,
+            resident: TagValue::phantom(),
         };
         node.pre_init_binding_slots(ctx);
         node.pre_init_builtin_slots(ctx)?;
@@ -1229,7 +1273,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         let fps = self.jit.dyn_fn_params.clone();
         for (fn_idx, fp) in fps.iter().enumerate() {
             if let FnSource::Binding { bind_id } = &fp.source {
-                if let Some(v) = ctx.rt.cached().get(bind_id).cloned() {
+                if let Some(v) = ctx.rt.store_value(bind_id) {
                     if let Err(e) = self.dyn_slots[fn_idx].pre_init(&v, ctx) {
                         log::warn!(
                             "kernel: pre_init for fn_param `{}` failed: \
@@ -1301,46 +1345,32 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        // Drive each child and cache its update. Mirrors what
-        // `CachedVals::update` does: we want to fire the kernel only
-        // when at least one input has produced this cycle, but use
-        // cached values for inputs that didn't.
+    ) -> &TagValue {
+        // Poll every feeder once and take its production HONESTLY
+        // (Seam A of the 5c flip): the production's tag IS the staging
+        // truth — no retained arg slots, no reconstructed fired flags.
+        // The dense interp delivers every awake node's production
+        // every cycle, so a quiet feeder's ride carries the same value
+        // the old retained slot held, tagged STALE; the R2 store read
+        // is the wake/arm-replay memory the slots duplicated. A
+        // bottomed feeder (fresh, standing, or the never-produced
+        // phantom) carries no value — the staging below packs the
+        // param kind's helper-safe placeholder with TAINT, bare for a
+        // TRIGGERING bottom (a poison event this cycle), TAINT|STALE
+        // for a standing one (nothing new — must not fire loop/select
+        // machinery). The kernel invokes iff any production TRIGGERED
+        // (fired or FreshBottom) — the R1 recompute-skip otherwise.
         let mut any_updated = false;
-        // Per-feeder "fired THIS cycle" (vs retained-from-a-prior-cycle).
-        // `self.args[i]` records presence only — a `Some` may be fresh or
-        // cached — so this is the sole source of the STALE distinction the
-        // packing below stamps into each param's disc. Stack-resident up
-        // to 64 inputs; wider regions (there is no input-count ceiling)
-        // spill to the heap.
-        let mut fired_this_cycle: smallvec::SmallVec<[bool; 64]> =
-            smallvec::smallvec![false; from.len()];
-        // Any production at all (fired, tainted, OR merely stale) —
-        // drives the stale-resurface below when nothing triggered.
-        let mut any_produced = false;
-        for (i, src) in from.iter_mut().enumerate() {
-            if let Some(tv) = src.update(ctx, event) {
-                any_produced = true;
-                let (v, tag) = tv.into_parts();
-                if tag.is_tainted() {
-                    // A tainted feeder event: drop the retained value so
-                    // the pack below feeds the TAINT placeholder — the
-                    // kernel runs and bottoms only if the taken path
-                    // consumes it (#219).
-                    self.args[i] = None;
-                    fired_this_cycle[i] = true;
-                    any_updated = true;
-                } else {
-                    // A merely-STALE production refreshes the slot (the
-                    // value channel) without firing the kernel; a fired
-                    // one runs it.
-                    self.args[i] = Some(v);
-                    if tag.is_fired() {
-                        fired_this_cycle[i] = true;
-                        any_updated = true;
-                    }
-                }
+        let mut polled: smallvec::SmallVec<[(Tag, Option<Value>); 16]> =
+            smallvec::SmallVec::with_capacity(from.len());
+        for src in from.iter_mut() {
+            let tv = src.update(ctx, event);
+            let tag = tv.tag();
+            if tag.triggers() {
+                any_updated = true;
             }
+            let v = if tag.is_bottom() { None } else { Some(tv.value_cloned()) };
+            polled.push((tag, v));
         }
         // Binding-source fn_params don't sit in `from` (they resolve
         // through ctx.cached at dispatch time) but they DO influence
@@ -1391,45 +1421,32 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         }
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
-                "KPOLL {} init={} any_updated={any_updated} any_produced={any_produced} fired={:?} present={:?} fd={}",
+                "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?} fd={}",
                 self.kernel.fn_name,
                 event.init,
-                &fired_this_cycle[..],
-                self.args.iter().map(|a| a.is_some()).collect::<Vec<_>>(),
+                polled.iter().map(|(t, _)| t.bits()).collect::<Vec<_>>(),
+                polled.iter().map(|(_, v)| v.is_some()).collect::<Vec<_>>(),
                 ctx.frame_depth
             );
         }
         if !any_updated {
-            // A poll that delivered only STALE productions (an
-            // evaluation frame re-running the node-walked loop around
-            // this kernel): the region is pure and its inputs' VALUES
-            // are unchanged since the last run, so the cached result IS
-            // what a re-run would compute — re-surface it on the value
-            // channel (tagged STALE via `out_tag`) so the frame's acc
-            // chain can advance without a firing (see `last_result`).
-            // Inside a frame the resurface must not require a
-            // production: a ZERO-input const kernel (an inner
-            // callback's `|y| 7` region) has nothing that can produce
-            // after its init poll, and its `None` bottomed the framed
-            // loop via never-until-complete where the node-walk's
-            // Constant now rides the STALE value channel (jul12b
-            // 000000 — the nested-map stall). The Constant frame
-            // rule's kernel twin.
-            if (any_produced || ctx.frame_depth > 0)
-                && let Some(v) = &self.last_result
-            {
-                self.last_out = crate::Tag::STALE;
-                return Some(v.clone());
-            }
-            return None;
+            // Nothing triggered: the R1 skip — the region is pure and
+            // its inputs' values are unchanged since the last run, so
+            // the resident IS what a re-run would compute. RIDE it (the
+            // dense quiet production: STALE set in place, bottomness
+            // kept); a never-run kernel rides its phantom. This is the
+            // 5c output flip's quiet arm — the old any_produced/absent
+            // split was the sparse depth-0 hole (a quiet kernel
+            // vanished where every dense node delivers).
+            return self.resident.ride();
         }
         if crate::dbgenv::graphix_dbg_invoke() {
             eprintln!(
                 "KERNEL INVOKE {} init={} fired={:?} present={:?}",
                 self.kernel.fn_name,
                 event.init,
-                &fired_this_cycle[..],
-                self.args.iter().map(|a| a.is_some()).collect::<Vec<_>>()
+                polled.iter().map(|(t, _)| t.is_fired()).collect::<Vec<_>>(),
+                polled.iter().map(|(_, v)| v.is_some()).collect::<Vec<_>>()
             );
         }
         // Test instrumentation: a fused kernel has committed to
@@ -1439,26 +1456,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // additionally bumps `JIT_INVOCATIONS` inside its wrapper.
         #[cfg(debug_assertions)]
         record_fusion_invocation();
-        // Prime per-cycle `event.variables` from `ctx.cached` for
-        // every external Ref appearing inside a `BuiltinSlot::
-        // LabeledDefault`'s compiled Node. Mirrors `CallSite::bind`'s
-        // priming step at the inner `compile_default!` site —
-        // without it, a default that names another binding (e.g.
-        // `#esc = default_escape`) reads None on dispatch because
-        // its `Ref::update` only consults `event.variables` and
-        // the binding's value lives in `ctx.cached`. Skipping
-        // already-set entries is essential: an outer caller may
-        // have updated `id` this cycle and we don't want to
-        // clobber its new value with the stale cache.
-        for slot in self.dyn_slots.iter() {
-            for id in slot.default_external_refs.iter() {
-                if !event.variables.contains_key(id) {
-                    if let Some(v) = ctx.rt.cached().get(id) {
-                        event.variables.insert(*id, crate::TagValue::fired(v.clone()));
-                    }
-                }
-            }
-        }
         // Build the kernel's value-bearing args in params (= source)
         // order (`param_opts`) plus the fn-arg values for the DynCall
         // dispatcher. A MISSING input is NOT a whole-kernel abort: it
@@ -1472,13 +1469,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let n_params = k.params.len();
         let mut param_opts: smallvec::SmallVec<[Option<Value>; 16]> =
             smallvec::smallvec![None; n_params];
-        // Per-param-slot "fired this cycle", indexed like `param_opts`.
-        // A present-but-not-fired param packs its disc with STALE (it
-        // carries a cached value that did NOT update this cycle), so the
-        // kernel's firing gates (return / set_var) read the node-walk's
-        // combineLatest firing faithfully.
-        let mut param_fired: smallvec::SmallVec<[bool; 64]> =
-            smallvec::smallvec![false; n_params];
+        // Per-param production TAG, indexed like `param_opts` — the
+        // honest staging truth (Seam A): a present-but-not-fired param
+        // packs STALE, a triggering bottom packs bare TAINT, a
+        // standing bottom TAINT|STALE. An unwired param (not in
+        // `arg_layout` — shouldn't happen) defaults to the standing
+        // bottom.
+        let mut param_tags: smallvec::SmallVec<[Tag; 16]> =
+            smallvec::smallvec![Tag::STALE_BOTTOM; n_params];
         // Sized to the COMBINED slot table (`dyn_slots.len()`), not just
         // the parent's `fn_params`: `dispatch_typed` reads
         // `fn_arg_values[fn_index]` for EVERY slot, and a callee DynCall's
@@ -1492,12 +1490,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             fn_arg_values.push(Value::Null);
         }
         for (i, kind) in self.arg_layout.iter().enumerate() {
-            let v = self.args[i].clone();
-            let fired = fired_this_cycle[i];
+            let (tag, v) = std::mem::replace(&mut polled[i], (Tag::STALE_BOTTOM, None));
             match *kind {
                 ArgKind::Param(idx) => {
                     param_opts[idx as usize] = v;
-                    param_fired[idx as usize] = fired;
+                    param_tags[idx as usize] = tag;
                 }
                 ArgKind::Fn(fn_idx) => {
                     if let Some(v) = v {
@@ -1509,16 +1506,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // Resolve Binding-source fn slots by reading the BindId out
         // of `event.variables` first (current-cycle update) or
         // falling back to `ctx.cached` (prior cycle's value). If
-        // neither has a value yet, the kernel can't run — return
-        // None and try again next cycle.
+        // neither has a value yet, the kernel can't run — RIDE (a
+        // never-run kernel rides its phantom, a bottom-flavored
+        // production, not the sparse vanish) and try again next cycle.
         for (fn_idx, fp) in self.kernel.fn_params.iter().enumerate() {
             if let FnSource::Binding { bind_id } = &fp.source {
                 let v = event
                     .variables
                     .get(bind_id)
                     .map(|tv| tv.value_cloned())
-                    .or_else(|| ctx.rt.cached().get(bind_id).cloned())?;
-                fn_arg_values[fn_idx] = v;
+                    .or_else(|| ctx.rt.store_value(bind_id));
+                match v {
+                    Some(v) => fn_arg_values[fn_idx] = v,
+                    None => return self.resident.ride(),
+                }
             }
         }
         // JIT dispatch — the unified Value ABI. Every param is two wire
@@ -1534,17 +1535,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // the runtime survives; the divergence stays visible to the
         // fuzzer as a missing fire.
         let wrapped = &self.jit;
+        // A present param that did NOT fire this cycle carries STALE
+        // (a value-channel ride: a consumer fires only if some OTHER
+        // input fired). A bottomed param packs TAINT — bare for a
+        // TRIGGERING bottom (a poison event this cycle), TAINT|STALE
+        // for a standing one (a re-delivered bottom must not fire
+        // loop/select machinery) — the honest per-param tag from
+        // `polled` (Seam A), a shape MISMATCH being the one locally
+        // minted fresh poison.
         let taint = TAINT as u64;
-        // A present param that did NOT fire this cycle (a retained cached
-        // value) carries STALE: its node-walk `Cached` reported `false`,
-        // so a consumer fires only if some OTHER input fired. A `None`
-        // (never-fired) param keeps TAINT (no value at all).
         let stale = STALE as u64;
         // (disc, payload) words of a `repr(u64)` Value (16 bytes,
         // layout pinned by the const_assert in `emit_helpers`).
+        // Routed through `value_words` — a raw two-word read types out
+        // the UNDEF payload lane of dataless/narrow variants (a
+        // value-shaped param can stage `Value::Null` or a `Bool`),
+        // the release-only poison class the aug13a fleet gate caught.
         let bits = |v: &Value| -> (u64, u64) {
-            let p = v as *const Value as *const u64;
-            unsafe { (*p, *p.add(1)) }
+            let [d, p] = crate::tval::value_words(v);
+            (d, p)
         };
         // STAGE `(disc, payload word, keepalive Value)` per param, in
         // params (= ABI) order, in ONE pass: the present value
@@ -1564,7 +1573,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                let flag = if param_fired[i] { 0 } else { stale };
+                let ptag = param_tags[i];
+                let flag = if ptag.is_fired() { 0 } else { stale };
+                // The bottom flags: TAINT plus STALE for a standing
+                // bottom (a triggering one stages bare TAINT).
+                let bflag = taint | if ptag.triggers() { 0 } else { stale };
                 let mismatch = |v: &Value| {
                     log::error!(
                         "kernel param `{}`: runtime {v:?} doesn't match the \
@@ -1589,7 +1602,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         }
                     }
                     (ParamKind::Scalar(prim), None) => {
-                        let disc = prim_to_value_disc(*prim) as u64 | taint;
+                        let disc = prim_to_value_disc(*prim) as u64 | bflag;
                         (disc, 0, Value::Null)
                     }
                     (
@@ -1614,7 +1627,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                             None => {
                                 let v = Value::Array(ValArray::from([]));
                                 let (disc, payload) = bits(&v);
-                                (disc | taint, payload, v)
+                                (disc | bflag, payload, v)
                             }
                         }
                     }
@@ -1635,7 +1648,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                             None => {
                                 let v = Value::String(arcstr::ArcStr::new());
                                 let (disc, payload) = bits(&v);
-                                (disc | taint, payload, v)
+                                (disc | bflag, payload, v)
                             }
                         }
                     }
@@ -1658,7 +1671,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
                         None => {
                             let v = Value::Null;
                             let (disc, payload) = bits(&v);
-                            (disc | taint, payload, v)
+                            (disc | bflag, payload, v)
                         }
                     },
                 }
@@ -1724,49 +1737,60 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         let pending = DYNCALL_PENDING.with(|c| c.replace(false));
         if pending {
             // A GENUINE whole-kernel abort (interrupt poll, depth
-            // trip, the return-gate force, a propagated callee
-            // abort) — value-level DynCall pends were converted to
-            // #219 taint at their sites and never reach here. The
-            // kernel's *out slot holds the pending_exit sentinel
+            // trip, a propagated callee abort) — value-level DynCall
+            // pends were converted to #219 taint at their sites and
+            // never reach here, and the return-gate force is GONE (5c:
+            // a stale/bottom result returns honestly, decoded below).
+            // The kernel's *out slot holds the pending_exit sentinel
             // (garbage scalar / null pointer); every abort path
-            // dropped the owned set before jumping there, so
-            // discard and re-fire next cycle.
+            // dropped the owned set before jumping there, so nothing
+            // to decode. Split by CAUSE:
             //
-            // INSIDE an evaluation frame the abort must surface as the
-            // TAINTED placeholder, not None: the node-walk's in-frame
-            // bottoms are tainted productions (op.rs/error.rs frame
-            // gates) that poison downstream slot caches, where a None
-            // leaves them holding the PREVIOUS iteration's value — a
-            // consumer like `push(res, f(v))` then quietly re-used
-            // element 1's result when element 2's kernel bottomed
-            // (jul10h 000009). At depth 0 None stays v1.
-            if ctx.frame_depth > 0 {
-                self.last_out = crate::Tag::TAINT;
-                return Some(Value::Null);
+            // - A DEPTH TRIP is a DELIVERED FreshBottom, not silence —
+            //   the interp's tripped dispatch mints one and its
+            //   consumers poison (missing_fire_epoch3_aug08e). Peek,
+            //   don't take: the wrapping `FusedKernel` takes the flag
+            //   for the diagnostic.
+            // - An in-frame abort poisons the frame's slot caches
+            //   (jul10h 000009 — an absence left them riding the
+            //   previous iteration's value).
+            // - An interrupt abort is "re-fire next cycle": nothing
+            //   was computed — ride.
+            if ctx.control.peek_depth_trip() || ctx.frame_depth > 0 {
+                return TagValue::bottom_null(true);
             }
-            return None;
+            return self.resident.ride();
         }
         // Decode the wrapper's *out pair — the unified Value ABI:
         // every kernel returns the genuine (disc, payload) words of a
         // Value it owns (a scalar's payload widened per
         // `pack_value_to_u64`'s rules, a composite's ValArray bits, a
-        // string's ArcStr bits, a value-shape's payload). Route
-        // through `TagValue` (the sole raw-words -> Value gateway) so
-        // TAINT/STALE bits the kernel leaked are MASKED, not
-        // materialized as a corrupt `Value` (the UB class).
+        // string's ArcStr bits, a value-shape's payload), with its
+        // honest TAINT/STALE tag riding the disc in-band (the return
+        // gate is gone). Route through `TagValue` (the sole raw-words
+        // -> Value gateway): `.value()` masks the tag bits before the
+        // `Value` materializes, so a flagged disc never reaches a
+        // clone/drop (the UB class).
         //
         // SAFETY: the kernel's return path wrote a real Value's words
         // into the out slot (the pending path returned before the
         // decode).
-        let v = unsafe { TagValue::from_raw(out[0], out[1]) }.value();
-        // Fill the RESULT slot (the value channel — see `last_result`).
-        self.last_result = Some(v.clone());
-        self.last_out = crate::Tag::FIRED;
-        Some(v)
-    }
-
-    fn out_tag(&self) -> crate::Tag {
-        self.last_out
+        let tv = unsafe { TagValue::from_raw(out[0], out[1]) };
+        let tag = tv.tag();
+        if tag.is_bottom() {
+            // A bottomed result: the returned words own a helper-safe
+            // placeholder — free it and produce the shared bottom
+            // (FreshBottom if the output chain fired, StaleBottom for
+            // a standing bottom). The resident keeps the last genuine
+            // result for the value channel.
+            drop(tv.value());
+            return TagValue::bottom_null(tag.triggers());
+        }
+        // Fill the RESULT slot (the value channel — see `resident`)
+        // and lend it: Fired for a fresh result, Stale for a quiet
+        // one (the output chain didn't fire this invocation).
+        let v = tv.value();
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1786,11 +1810,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("KERNEL-APPLY-SLEEP {}", self.kernel.fn_name);
         }
-        // The per-arg last-value slots are KEPT — they are the
-        // arm-wake cached-replay memory (a re-selected arm's kernel
-        // must fire from its retained inputs; `FusedKernel::sleep`
-        // delegates here on exactly that contract). Contrast
-        // `reset_replay`, which clears them.
+        // Arm-wake replay memory is the R2 store read (a re-woken
+        // arm's feeders read their standing store entries as Fired
+        // under the forced init view) — the kernel retains no per-arg
+        // slots (Seam A of the 5c flip).
         //
         // Sleep restarts the arm: the interior-bottom taint caches are
         // node-walk `Cached` twins, which sleep clears.
@@ -1813,11 +1836,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The per-arg last-value slots are the kernel's combineLatest
-        // memory — replay state, same as sleep clears.
-        for slot in self.args.iter_mut() {
-            *slot = None;
-        }
         // Zero the emitted REPLAY state words (the interior-bottom
         // taint caches — `emit_scalar_taint_cache`): a value cached on
         // iteration i−1 must not bridge iteration i's bottom, exactly

@@ -1,5 +1,17 @@
 # reset_replay and evaluation frames
 
+> **SUPERSEDED (2026-08-13, the dense-delivery arc):** the delivery
+> model this document describes — `Update::update -> Option<TagValue>`
+> (sparse production), consumer operand caches riding absence, and
+> Ruling A.2's depth-0 fired-only kernel output filter — is GONE.
+> `design/dense_delivery.md` is the current authority: borrowed dense
+> productions (`-> &TagValue`, no Option), the orthogonal fired×bottom
+> tag algebra, the persistent tagged store, and the repeal of the
+> fire-gate/A.2 branch. What REMAINS current here: `reset_replay`'s
+> replay-vs-semantic classification rule and the tail-recursion FRAME
+> mechanism (private variable maps, prime/replay, the organic tag
+> algebra of v3) — both survived the dense flip unchanged in role.
+
 > **2026-07-13 note:** The `For`/sync-loop portions of this document are
 > historical because that language experiment was removed. The `TagValue`,
 > `reset_replay`, and tail-recursion frame rules remain current. Collection HOF

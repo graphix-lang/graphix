@@ -1429,8 +1429,9 @@ pub(crate) fn kernel_key(k: &std::sync::Arc<KernelSig>) -> usize {
 /// kernel entry binder, and the runtime arg packer) need to agree
 /// on, with no body attached. Built once per kernel and shared by
 /// `Arc`: the runtime dispatch node and the JIT cache key off the
-/// same allocation.
-#[derive(Debug, Clone)]
+/// same allocation. Clone is manual only because of the two
+/// post-define fact atomics (their current values carry).
+#[derive(Debug)]
 pub struct KernelSig {
     /// Graphix-level function name. A LABEL for emitted symbols and
     /// diagnostics only — never resolve calls by it (see
@@ -1458,6 +1459,33 @@ pub struct KernelSig {
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
     /// (CLIF) accordingly.
     pub has_tail_loop: bool,
+    /// Post-define facts for the interior-sleep gate (P7): `defined`
+    /// flips true when the kernel body's CLIF define completes, and
+    /// `has_sleep_restart` records whether the body TRANSITIVELY reaches a
+    /// SLEEP-RESTARTING builtin DynCall (harvested from
+    /// `LowerCtx::saw_restart_reach`). Callers consult these at
+    /// their call sites — callees define before callers, so a
+    /// `defined` read of `false` means a self/back-edge call, which
+    /// takes the deferred conservative check instead. Write-once
+    /// monotone; Relaxed suffices (single-threaded compilation).
+    pub defined: std::sync::atomic::AtomicBool,
+    pub has_sleep_restart: std::sync::atomic::AtomicBool,
+}
+
+impl Clone for KernelSig {
+    fn clone(&self) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        KernelSig {
+            fn_name: self.fn_name.clone(),
+            params: self.params.clone(),
+            fn_params: self.fn_params.clone(),
+            lifted: self.lifted.clone(),
+            return_type: self.return_type.clone(),
+            has_tail_loop: self.has_tail_loop,
+            defined: AtomicBool::new(self.defined.load(Relaxed)),
+            has_sleep_restart: AtomicBool::new(self.has_sleep_restart.load(Relaxed)),
+        }
+    }
 }
 
 /// One registered owner of a per-slot state CHAIN (see

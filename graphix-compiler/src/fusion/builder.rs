@@ -84,14 +84,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> Option<crate::TagValue> {
+    ) -> &crate::TagValue {
         // Delegate to Kernel (Apply) — drives the feeders, sets up
         // the DynCall dispatch handle, invokes JIT (or interp), and
-        // decodes the return value. A RUN only surfaces FIRED outputs
-        // (the return gate forces stale/taint to None inside the JIT);
-        // a stale-fed poll re-surfaces the kernel's result slot tagged
-        // STALE (`Kernel::last_result` — the value channel inside an
-        // evaluation frame), so propagate `out_tag`.
+        // decodes the return value. The production is HONEST (the 5c
+        // output flip): Fired/Stale results carry their in-band tag, a
+        // bottomed result is the shared FreshBottom/StaleBottom, a
+        // quiet poll rides the resident. Forward it — Kernel's
+        // resident IS this node's return slot, and the old depth-0
+        // fired-only filter (replay_frames Ruling A.2) is REPEALED:
+        // dense consumers read staleness and bottomness off the tag.
         let res = self.inner.update(ctx, &mut self.feeders, event);
         // A lambda dispatch inside the kernel hit the call-depth limit
         // (the `graphix_depth_push` helper flagged it — native code
@@ -99,23 +101,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // the runtime's event stream can tell the user WHICH
         // expression bottomed. Node-walk trips (including DynCall'd
         // node-walk residue) report themselves and don't set the flag.
+        // TAKE (Kernel::update only peeked — its production decision
+        // left the flag for this diagnostic).
         if ctx.control.take_depth_trip() {
             ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
                 limit: ctx.control.max_call_depth(),
                 spec: self.spec.clone(),
             });
         }
-        let res = res.map(|v| crate::TagValue::tagged(v, self.inner.out_tag()));
-        // STALE/TAINTED are intra-frame currency; at frame depth 0
-        // quiet or bottomed = no production (the CallSite gate's twin
-        // — see node/callsite.rs, including the init-view exemption:
-        // an arm-wake's forced init evaluates on the value channel and
-        // the select's emit provides the fire).
-        if ctx.frame_depth == 0 && !event.init {
-            res.filter(|tv| tv.tag().is_fired())
-        } else {
-            res
-        }
+        res
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

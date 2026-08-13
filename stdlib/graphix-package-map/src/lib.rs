@@ -4,10 +4,10 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
@@ -113,6 +113,7 @@ type Remove = CachedArgs<RemoveEv>;
 struct Iter {
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
@@ -128,7 +129,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(Self { id, top_id }))
+        Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
     }
 }
 
@@ -138,8 +139,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(Value::Map(m)) = from[0].update(ctx, event).map(|tv| tv.value()) {
+    ) -> &TagValue {
+        if let Some(Value::Map(m)) =
+            seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+        {
             for (k, v) in m.into_iter() {
                 let pair = Value::Array(ValArray::from_iter_exact(
                     [k.clone(), v.clone()].into_iter(),
@@ -147,7 +150,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 ctx.rt.set_var(self.id, pair);
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -172,6 +179,7 @@ struct IterQ {
     queue: VecDeque<(usize, LPooled<Vec<(Value, Value)>>)>,
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
@@ -187,7 +195,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
-        Ok(Box::new(IterQ { triggered: 0, queue: VecDeque::new(), id, top_id }))
+        Ok(Box::new(IterQ {
+            triggered: 0,
+            queue: VecDeque::new(),
+            id,
+            top_id,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -197,11 +211,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+    ) -> &TagValue {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
-        if let Some(Value::Map(m)) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(Value::Map(m)) =
+            seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        {
             let pairs: LPooled<Vec<(Value, Value)>> =
                 m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             if !pairs.is_empty() {
@@ -221,7 +237,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

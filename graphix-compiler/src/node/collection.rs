@@ -1,6 +1,4 @@
-use super::{
-    Cached, MAX_ARRAY_INIT_LEN, callsite::CallSite, genn, pattern::StructPatternNode,
-};
+use super::{MAX_ARRAY_INIT_LEN, callsite::CallSite, genn, pattern::StructPatternNode};
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
@@ -432,7 +430,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.call.delete(ctx);
-        ctx.rt.cached_mut().remove(&self.id);
+        ctx.rt.store_remove(&self.id);
         ctx.env.unbind_variable(self.id);
     }
 }
@@ -585,7 +583,7 @@ fn convert_collection_result(
 
 #[derive(Debug)]
 pub struct MapQBase<R: Rt, E: UserEvent> {
-    pub(crate) source: Cached<R, E>,
+    pub(crate) source: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
     element_type: Type,
     emit_call:
@@ -619,6 +617,7 @@ struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     slots: LPooled<Vec<Slot<R, E>>>,
     current: T::Collection,
     operation: T,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
@@ -644,8 +643,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             t => bail!("collection callback must be a function, got {t}"),
         };
         let element_type = T::Collection::element_type(typ)?;
-        let source =
-            Cached::new(genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id));
+        let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let prototype =
             Slot::new(ctx, scope, top_id, callback, &callback_type, &element_type, true);
         Ok(Node::new(Self {
@@ -665,6 +663,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             slots: LPooled::take(),
             current: T::Collection::default(),
             operation: T::default(),
+            resident: TagValue::phantom(),
         }))
     }
 
@@ -691,31 +690,33 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let old_len = self.slots.len();
         let mut production = None;
         let mut resized = false;
         let mut forced_taint = false;
-        if let Some(tag) = self.base.source.update(ctx, event) {
+        let src_trig;
+        {
+            let (tag, sval) = {
+                let tv = self.base.source.update(ctx, event);
+                let tag = tv.tag();
+                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+            };
+            src_trig = tag.triggers();
             // A tainted source is a placeholder, and an unselectable
             // value (init's over-limit count) is bottom — neither
             // carries elements to deliver, but the slot walk below must
             // still run so slot-internal state sees this cycle's events.
             if tag.is_tainted() {
                 forced_taint = true;
-            } else if let Some(source) = self
-                .base
-                .source
-                .cached
-                .clone()
-                .and_then(|value| T::Collection::select(value))
+            } else if let Some(source) =
+                sval.and_then(|value| T::Collection::select(value))
             {
                 while self.slots.len() > source.len() {
-                    self.slots.last_mut()?.delete(ctx);
+                    match self.slots.last_mut() {
+                        Some(slot) => slot.delete(ctx),
+                        None => return self.resident.ride(),
+                    }
                     self.slots.pop();
                     resized = true;
                 }
@@ -724,7 +725,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     resized = true;
                 }
                 for (slot, value) in self.slots.iter().zip(source.values()) {
-                    ctx.rt.cached_mut().insert(slot.id, value.clone());
+                    ctx.rt.store_insert(slot.id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
@@ -732,8 +733,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
-                    let value = self.operation.finish(&self.slots, &self.current)?;
-                    return Some(TagValue::tagged(value, tag));
+                    match self.operation.finish(&self.slots, &self.current) {
+                        Some(value) => {
+                            return self.resident.set(TagValue::tagged(value, tag));
+                        }
+                        None => return self.resident.ride(),
+                    }
                 }
             } else {
                 // An unselectable source (init's over-limit count, a
@@ -751,50 +756,74 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
-                return None;
+                return self.resident.ride();
             }
+            // A fresh slot's first dispatch runs under a forced init
+            // view: its callback ref reads the store's standing entry
+            // as Fired (R2) — the old explicit backfill is gone.
             if i >= old_len {
                 event.init = true;
-                if !event.variables.contains_key(&self.callback)
-                    && let Some(value) = ctx.rt.cached().get(&self.callback)
-                {
-                    event.variables.insert(self.callback, TagValue::fired(value.clone()));
-                }
             }
-            if let Some(tv) = self.slots[i].call.update(ctx, event) {
-                let (value, tag) = tv.into_parts();
-                production = merge_tag(production, tag);
-                if tag.is_tainted() {
-                    self.slots[i].tag = Tag::TAINT;
+            let tv = self.slots[i].call.update(ctx, event).clone();
+            let tag = tv.tag();
+            // Only TRIGGERING slot productions fold into the firing
+            // decision; a stale ride is the slot's value channel and
+            // by the R1 law carries an unchanged value. A bottomed
+            // slot WITH history rides its previous value (slot values
+            // are designated ride memory — fork 7 / the jul30a
+            // sleep-preserves-caches rule; the kernel's slot words
+            // agree); only a valueless bottom poisons the slot.
+            if tag.triggers() {
+                if tag.is_bottom() {
+                    if self.slots[i].value.is_none() {
+                        production = merge_tag(production, tag);
+                        self.slots[i].tag = Tag::TAINT;
+                    }
                 } else {
-                    self.slots[i].value = Some(value);
+                    production = merge_tag(production, tag);
+                    self.slots[i].value = Some(tv.value());
                     self.slots[i].tag = Tag::STALE;
                 }
+            } else if !tag.is_bottom() {
+                // the value channel flows through slots: a stale
+                // production refreshes the slot silently (an arm-wake's
+                // capture-only callback produces stale — the slot must
+                // still FILL, or the collection can never build)
+                self.slots[i].value = Some(tv.value());
             }
         }
         event.init = saved_init;
 
         if forced_taint {
-            return Some(TagValue::tainted(Value::Null));
+            return if src_trig {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
         }
-        let tag = production?;
+        let tag = match production {
+            Some(tag) => tag,
+            None => return self.resident.ride(),
+        };
         if tag.is_tainted() || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return Some(TagValue::tainted(Value::Null));
+            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
-            self.operation
-                .finish(&self.slots, &self.current)
-                .map(|value| TagValue::tagged(value, tag))
+            match self.operation.finish(&self.slots, &self.current) {
+                Some(value) => self.resident.set(TagValue::tagged(value, tag)),
+                None => self.resident.ride(),
+            }
         } else {
-            None
+            // an element has never produced: the collection is bottom
+            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         let Self { base, slots, .. } = self;
-        base.source.node.delete(ctx);
+        base.source.delete(ctx);
         base.prototype.delete(ctx);
-        ctx.rt.cached_mut().remove(&base.prototype_id);
+        ctx.rt.store_remove(&base.prototype_id);
         ctx.env.unbind_variable(base.prototype_id);
         for slot in slots.iter_mut() {
             slot.delete(ctx);
@@ -802,12 +831,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck0(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck1(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
     }
 
@@ -816,7 +845,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.base.source.node.refs(refs);
+        self.base.source.refs(refs);
         refs.bound.insert(self.base.prototype_id);
         self.base.prototype.refs(refs);
     }
@@ -842,7 +871,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         self.base.source.reset_replay(ctx);
         self.current = T::Collection::default();
         for slot in self.slots.iter_mut() {
-            ctx.rt.cached_mut().remove(&slot.id);
             slot.value = None;
             slot.tag = Tag::STALE;
             slot.call.reset_replay(ctx);
@@ -854,7 +882,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map::<R, E, T>(&self.base, &self.base.source.node, cx)?
+        emit_map::<R, E, T>(&self.base, &self.base.source, cx)?
             .ok_or_else(|| anyhow::anyhow!("collection operation does not emit CLIF"))
     }
 }
@@ -960,7 +988,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.call.delete(ctx);
         for id in [self.acc_id, self.element_id] {
-            ctx.rt.cached_mut().remove(&id);
+            ctx.rt.store_remove(&id);
             ctx.env.unbind_variable(id);
         }
     }
@@ -968,8 +996,8 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
 
 #[derive(Debug)]
 pub struct FoldQBase<R: Rt, E: UserEvent> {
-    pub(crate) source: Cached<R, E>,
-    pub(crate) init: Cached<R, E>,
+    pub(crate) source: Node<R, E>,
+    pub(crate) init: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
     element_type: Type,
     emit_call: fn(
@@ -1008,6 +1036,7 @@ struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     init: Option<Value>,
     source_present: bool,
     operation: PhantomData<T>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
@@ -1037,9 +1066,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
         };
         let acc_type = typ.args[1].typ.clone();
         let element_type = T::Collection::element_type(typ)?;
-        let source =
-            Cached::new(genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id));
-        let init = Cached::new(genn::reference(ctx, init_id, acc_type.clone(), top_id));
+        let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
+        let init = genn::reference(ctx, init_id, acc_type.clone(), top_id);
         let prototype = FoldSlot::new(
             ctx,
             scope,
@@ -1070,6 +1098,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             init: None,
             source_present: false,
             operation: PhantomData,
+            resident: TagValue::phantom(),
         }))
     }
 
@@ -1088,16 +1117,19 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let old_len = self.slots.len();
         let mut resized = false;
         let mut forced_taint = false;
         let mut source_tag = None;
-        if let Some(tag) = self.base.source.update(ctx, event) {
+        let src_trig;
+        {
+            let (tag, sval) = {
+                let tv = self.base.source.update(ctx, event);
+                let tag = tv.tag();
+                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+            };
+            src_trig = tag.triggers();
             // A tainted SOURCE is a placeholder with no elements to
             // deliver (a genuine destructuring consumer — forced), and
             // an unselectable source value is bottom; the slot walk
@@ -1106,17 +1138,16 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             // poisoned delivery, see below.)
             if tag.is_tainted() {
                 forced_taint = true;
-            } else if let Some(source) = self
-                .base
-                .source
-                .cached
-                .clone()
-                .and_then(|value| T::Collection::select(value))
+            } else if let Some(source) =
+                sval.and_then(|value| T::Collection::select(value))
             {
                 self.source_present = true;
                 source_tag = Some(tag);
                 while self.slots.len() > source.len() {
-                    self.slots.last_mut()?.delete(ctx);
+                    match self.slots.last_mut() {
+                        Some(slot) => slot.delete(ctx),
+                        None => return self.resident.ride(),
+                    }
                     self.slots.pop();
                     resized = true;
                 }
@@ -1125,7 +1156,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     resized = true;
                 }
                 for (slot, value) in self.slots.iter().zip(source.values()) {
-                    ctx.rt.cached_mut().insert(slot.element_id, value.clone());
+                    ctx.rt.store_insert(slot.element_id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
                 }
             } else {
@@ -1135,8 +1166,13 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             }
         }
 
-        let mut init_tag = None;
-        if let Some(tag) = self.base.init.update(ctx, event) {
+        let init_tag;
+        {
+            let (tag, ival) = {
+                let tv = self.base.init.update(ctx, event);
+                let tag = tv.tag();
+                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+            };
             init_tag = Some(tag);
             if tag.is_tainted() {
                 // A tainted INIT is a poisoned DELIVERY to slot 0's
@@ -1152,13 +1188,16 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // the init bind). The placeholder stays out of the
                 // cross-cycle store, like Bind's tainted arm.
                 if let Some(slot) = self.slots.first() {
-                    event.variables.insert(slot.acc_id, TagValue::tainted(Value::Null));
+                    event.variables.insert(
+                        slot.acc_id,
+                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                    );
                 }
             } else {
-                self.init = self.base.init.cached.clone();
+                self.init = ival;
                 if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone())
                 {
-                    ctx.rt.cached_mut().insert(slot.acc_id, value.clone());
+                    ctx.rt.store_insert(slot.acc_id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.acc_id, TagValue::tagged(value, tag));
                 }
             }
@@ -1166,26 +1205,45 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
 
         if self.slots.is_empty() && self.source_present && !forced_taint {
             let tag = match (source_tag, init_tag) {
-                (None, None) => return None,
-                (Some(a), Some(b)) => merge_tag(Some(a), b)?,
+                (None, None) => return self.resident.ride(),
+                (Some(a), Some(b)) => match merge_tag(Some(a), b) {
+                    Some(tag) => tag,
+                    None => return self.resident.ride(),
+                },
                 (Some(tag), None) | (None, Some(tag)) => tag,
             };
-            return self.init.clone().map(|value| TagValue::tagged(value, tag));
+            return match self.init.clone() {
+                Some(value) => self.resident.set(TagValue::tagged(value, tag)),
+                None if tag.triggers() => {
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                }
+                None => self.resident.ride(),
+            };
         }
 
+        // Only SLOT PRODUCTIONS seed the firing decision (the ruled
+        // per-slot precision: a same-length source refresh whose
+        // callback bodies are all quiet does NOT re-fire — MapQ's
+        // `production` merge and the kernel's SlotFlags agree). A
+        // fired source/init delivery reaches the result only through
+        // a slot body that consumes it; seeding from the deliveries
+        // made a const-body fold re-emit per source tick (twochannel
+        // p7, a 5b flip regression). `forced_taint && src_trig` stays:
+        // the bottom arm below distinguishes a triggering taint
+        // (FreshBottom) from a standing one (ride).
+        let mut any_trig = forced_taint && src_trig;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
-                return None;
+                return self.resident.ride();
             }
+            // A fresh slot's first dispatch runs under a forced init
+            // view (R2 serves the callback ref from the store); the
+            // acc SEED below is FoldQ's own semantic chain, not a
+            // cache backfill, and stays.
             if i >= old_len {
                 event.init = true;
-                if !event.variables.contains_key(&self.callback)
-                    && let Some(value) = ctx.rt.cached().get(&self.callback)
-                {
-                    event.variables.insert(self.callback, TagValue::fired(value.clone()));
-                }
                 let seed = if i == 0 {
                     self.init.clone()
                 } else {
@@ -1193,64 +1251,104 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 };
                 if let Some(value) = seed {
                     let acc_id = self.slots[i].acc_id;
-                    ctx.rt.cached_mut().insert(acc_id, value.clone());
+                    ctx.rt.store_insert(acc_id, TagValue::fired(value.clone()));
                     event.variables.insert(acc_id, TagValue::fired(value));
                 }
             }
-            match self.slots[i].call.update(ctx, event) {
-                Some(tv) => {
-                    let (value, tag) = tv.into_parts();
-                    self.slots[i].tag = tag;
-                    if tag.is_tainted() {
+            let tv = self.slots[i].call.update(ctx, event).clone();
+            let tag = tv.tag();
+            // Only TRIGGERING slot productions advance the fold; a
+            // stale ride is the value channel (unchanged by the R1
+            // law) and the acc chain's standing store entries serve
+            // the next slot — the old absence-as-signal next-acc
+            // REMOVAL is gone (honest propagation: a bottomed slot
+            // delivers a poisoned acc instead of withdrawing it).
+            if tag.triggers() {
+                any_trig = true;
+                if tag.is_bottom() {
+                    // a bottomed slot WITH held history rides (fork 7:
+                    // the acc carry is designated slot memory, like
+                    // the kernel's loop words); only a valueless
+                    // bottom poisons the chain
+                    if self.slots[i].held.is_none() {
+                        self.slots[i].tag = tag;
                         self.slots[i].cycle = None;
                         if i + 1 < self.slots.len() {
                             let next = self.slots[i + 1].acc_id;
-                            ctx.rt.cached_mut().remove(&next);
-                            event.variables.remove(&next);
+                            event.variables.insert(
+                                next,
+                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                            );
                         }
                     } else {
-                        self.slots[i].cycle = Some(value.clone());
-                        self.slots[i].held = Some(value.clone());
-                        if i + 1 < self.slots.len() {
-                            let next = self.slots[i + 1].acc_id;
-                            ctx.rt.cached_mut().insert(next, value.clone());
-                            event.variables.insert(next, TagValue::tagged(value, tag));
-                        }
+                        self.slots[i].cycle = None;
                     }
-                }
-                None => {
-                    self.slots[i].cycle = None;
+                } else {
+                    self.slots[i].tag = tag;
+                    let value = tv.value();
+                    self.slots[i].cycle = Some(value.clone());
+                    self.slots[i].held = Some(value.clone());
                     if i + 1 < self.slots.len() {
                         let next = self.slots[i + 1].acc_id;
-                        ctx.rt.cached_mut().remove(&next);
-                        event.variables.remove(&next);
+                        ctx.rt.store_insert(next, TagValue::fired(value.clone()));
+                        event.variables.insert(next, TagValue::tagged(value, tag));
                     }
                 }
+            } else if !tag.is_bottom() {
+                // the value channel advances the acc chain silently
+                // (stale result, no any_trig — see MapQ's twin)
+                self.slots[i].tag = Tag::STALE;
+                let value = tv.value();
+                self.slots[i].cycle = Some(value.clone());
+                self.slots[i].held = Some(value.clone());
+                if i + 1 < self.slots.len() {
+                    let next = self.slots[i + 1].acc_id;
+                    ctx.rt.store_insert(next, TagValue::fired(value.clone()));
+                    event.variables.insert(next, TagValue::stale(value));
+                }
+            } else {
+                self.slots[i].cycle = None;
             }
         }
         event.init = saved_init;
 
-        if forced_taint || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return Some(TagValue::tainted(Value::Null));
+        // CONSUMPTION decides (the kernel's FoldAcc sticky-flags rule):
+        // an interior slot's poison travels the acc chain and bottoms
+        // the fold only if a downstream callback CONSUMES it — an
+        // acc-ignoring callback recovers. Only the LAST slot's chain
+        // state is the result.
+        if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_tainted()) {
+            return if any_trig {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
         }
         if let Some(last) = self.slots.last() {
             if let Some(value) = last.cycle.clone() {
-                return Some(TagValue::tagged(value, last.tag));
+                // the firing rule: a fold fires iff it RESIZED, a slot
+                // fired, or the source fired empty — a resize's fresh
+                // chain result is an event even when the surviving
+                // slots' callbacks rode (an acc-only callback is
+                // organically stale, but the shape change isn't)
+                let tag = if resized || any_trig { Tag::FIRED } else { Tag::STALE };
+                return self.resident.set(TagValue::tagged(value, tag));
             }
             if resized && let Some(value) = last.held.clone() {
-                return Some(TagValue::tagged(value, source_tag.unwrap_or(Tag::FIRED)));
+                let tag = source_tag.unwrap_or(Tag::FIRED);
+                return self.resident.set(TagValue::tagged(value, tag));
             }
         }
-        None
+        self.resident.ride()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         let Self { base, slots, .. } = self;
-        base.source.node.delete(ctx);
-        base.init.node.delete(ctx);
+        base.source.delete(ctx);
+        base.init.delete(ctx);
         base.prototype.delete(ctx);
         for id in base.prototype_ids {
-            ctx.rt.cached_mut().remove(&id);
+            ctx.rt.store_remove(&id);
             ctx.env.unbind_variable(id);
         }
         for slot in slots.iter_mut() {
@@ -1259,14 +1357,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck0(ctx))?;
-        wrap!(self.base.init.node, self.base.init.node.typecheck0(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
+        wrap!(self.base.init, self.base.init.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source.node, self.base.source.node.typecheck1(ctx))?;
-        wrap!(self.base.init.node, self.base.init.node.typecheck1(ctx))?;
+        wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
+        wrap!(self.base.init, self.base.init.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
     }
 
@@ -1275,8 +1373,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.base.source.node.refs(refs);
-        self.base.init.node.refs(refs);
+        self.base.source.refs(refs);
+        self.base.init.refs(refs);
         refs.bound.extend(self.base.prototype_ids);
         self.base.prototype.refs(refs);
     }
@@ -1304,9 +1402,6 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         self.init = None;
         self.source_present = false;
         for slot in self.slots.iter_mut() {
-            for id in [slot.acc_id, slot.element_id] {
-                ctx.rt.cached_mut().remove(&id);
-            }
             slot.cycle = None;
             slot.held = None;
             slot.tag = Tag::STALE;
@@ -1319,13 +1414,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_fold::<R, E, T>(
-            &self.base,
-            &self.base.source.node,
-            &self.base.init.node,
-            cx,
-        )?
-        .ok_or_else(|| anyhow::anyhow!("collection fold does not emit CLIF"))
+        emit_fold::<R, E, T>(&self.base, &self.base.source, &self.base.init, cx)?
+            .ok_or_else(|| anyhow::anyhow!("collection fold does not emit CLIF"))
     }
 }
 

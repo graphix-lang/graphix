@@ -3,7 +3,7 @@ use crate::{
     UserEvent, defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
-    node::{Cached, compiler::compile},
+    node::{compiler::compile, dense_gate, gather, read_prod},
     typ::Type,
     wrap,
 };
@@ -12,6 +12,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
@@ -20,8 +21,9 @@ defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 pub struct Map<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
-    pub keys: Box<[Cached<R, E>]>,
-    pub vals: Box<[Cached<R, E>]>,
+    pub keys: Box<[Node<R, E>]>,
+    pub vals: Box<[Node<R, E>]>,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
@@ -35,26 +37,22 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     ) -> Result<Node<R, E>> {
         let keys = args
             .iter()
-            .map(|(k, _)| Ok(Cached::new(compile(ctx, flags, k.clone(), scope, top_id)?)))
+            .map(|(k, _)| compile(ctx, flags, k.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let vals = args
             .iter()
-            .map(|(_, v)| Ok(Cached::new(compile(ctx, flags, v.clone(), scope, top_id)?)))
+            .map(|(_, v)| compile(ctx, flags, v.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typ = Type::Map {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Node::new(Self { spec, typ, keys, vals }))
+        Ok(Node::new(Self { spec, typ, keys, vals, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.keys.is_empty() {
             // Empty producer = a constant: FIRED at init, the STALE
             // value channel inside frames (the Constant frame rule —
@@ -63,42 +61,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             // firing-jul2026/03).
             // Frame depth first — frames force init (see Constant).
             if ctx.frame_depth > 0 {
-                return Some(if ctx.frame_init {
+                return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Map(CMap::new()))
                 } else {
                     TagValue::stale(Value::Map(CMap::new()))
                 });
             } else if event.init {
-                return Some(TagValue::fired(Value::Map(CMap::new())));
+                return self.resident.set(TagValue::fired(Value::Map(CMap::new())));
             }
-            return None;
+            return self.resident.ride();
         }
-        let mut produced = false;
-        let mut fired = false;
-        let mut determined = true;
-        for c in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            if let Some(t) = c.update(ctx, event) {
-                produced = true;
-                fired |= t.is_fired();
-            }
-            determined &= c.cached.is_some();
+        let mut kvals: LPooled<Vec<Value>> = LPooled::take();
+        let mut vvals: LPooled<Vec<Value>> = LPooled::take();
+        let (kt, kf, kb) = gather(ctx, event, &mut self.keys, &mut kvals);
+        let (vt, vf, vb) = gather(ctx, event, &mut self.vals, &mut vvals);
+        let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
+        dense_gate!(self, ctx, trig, bottom);
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let mut m = CMap::new();
+        for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
+            m.insert_cow(k, v);
         }
-        if produced && determined {
-            if self.keys.iter().chain(self.vals.iter()).any(|c| c.tag.is_tainted()) {
-                return Some(TagValue::tainted(Value::Null));
-            }
-            let tag = if fired { Tag::FIRED } else { Tag::STALE };
-            let mut m = CMap::new();
-            for (k, v) in self.keys.iter().zip(self.vals.iter()) {
-                m.insert_cow(
-                    k.cached.as_ref().cloned().unwrap(),
-                    v.cached.as_ref().cloned().unwrap(),
-                );
-            }
-            Some(TagValue::tagged(Value::Map(m), tag))
-        } else {
-            None
-        }
+        self.resident.set(TagValue::tagged(Value::Map(m), tag))
     }
 
     fn spec(&self) -> &Expr {
@@ -110,8 +94,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.keys.iter_mut().for_each(|n| n.node.delete(ctx));
-        self.vals.iter_mut().for_each(|n| n.node.delete(ctx))
+        self.keys.iter_mut().for_each(|n| n.delete(ctx));
+        self.vals.iter_mut().for_each(|n| n.delete(ctx))
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -125,23 +109,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.keys.iter().for_each(|n| n.node.refs(refs));
-        self.vals.iter().for_each(|n| n.node.refs(refs))
+        self.keys.iter().for_each(|n| n.refs(refs));
+        self.vals.iter().for_each(|n| n.refs(refs))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            wrap!(n.node, n.node.typecheck0(ctx))?
+            wrap!(n, n.typecheck0(ctx))?
         }
         let ktype = self
             .keys
             .iter()
-            .fold(Ok(Type::Bottom), |acc, n| n.node.typ().union(&ctx.env, &acc?));
+            .fold(Ok(Type::Bottom), |acc, n| n.typ().union(&ctx.env, &acc?));
         let ktype = wrap!(self, ktype)?;
         let vtype = self
             .vals
             .iter()
-            .fold(Ok(Type::Bottom), |acc, n| n.node.typ().union(&ctx.env, &acc?));
+            .fold(Ok(Type::Bottom), |acc, n| n.typ().union(&ctx.env, &acc?));
         let vtype = wrap!(self, vtype)?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
@@ -149,7 +133,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            wrap!(n.node, n.node.typecheck1(ctx))?
+            wrap!(n, n.typecheck1(ctx))?
         }
         Ok(())
     }
@@ -165,11 +149,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
 #[derive(Debug)]
 pub struct MapRef<R: Rt, E: UserEvent> {
-    pub source: Cached<R, E>,
-    pub key: Cached<R, E>,
+    pub source: Node<R, E>,
+    pub key: Node<R, E>,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub vtyp: Type,
+    resident: TagValue,
 }
 
 /// Look up `key` in a `Value::Map`, returning the value or the
@@ -196,68 +181,62 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         source: &Expr,
         key: &Expr,
     ) -> Result<Node<R, E>> {
-        let source = Cached::new(compile(ctx, flags, source.clone(), scope, top_id)?);
-        let key = Cached::new(compile(ctx, flags, key.clone(), scope, top_id)?);
-        let vtyp = match &source.node.typ() {
+        let source = compile(ctx, flags, source.clone(), scope, top_id)?;
+        let key = compile(ctx, flags, key.clone(), scope, top_id)?;
+        let vtyp = match &source.typ() {
             Type::Map { value, .. } => (**value).clone(),
             _ => Type::empty_tvar(),
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
-        Ok(Node::new(Self { source, key, spec, typ, vtyp }))
+        Ok(Node::new(Self {
+            source,
+            key,
+            spec,
+            typ,
+            vtyp,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        let s = self.source.update(ctx, event);
-        let k = self.key.update(ctx, event);
-        if s.is_none() && k.is_none() {
-            return None;
-        }
-        if self.source.tag.is_tainted() || self.key.tag.is_tainted() {
-            return Some(TagValue::tainted(Value::Null));
-        }
-        let fired = s.is_some_and(|t| t.is_fired()) || k.is_some_and(|t| t.is_fired());
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let mut trig = false;
+        let mut fired = false;
+        let mut bottom = false;
+        let sval = read_prod!(self.source, ctx, event, trig, fired, bottom);
+        let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
+        dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let key = match &self.key.cached {
-            Some(key) => key,
-            None => return None,
-        };
-        match &self.source.cached {
-            Some(src) => Some(TagValue::tagged(map_get(src, key), tag)),
-            None => None,
-        }
+        let v = map_get(&sval.unwrap(), &kval.unwrap());
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source.node, self.source.node.typecheck0(ctx))?;
-        wrap!(self.key.node, self.key.node.typecheck0(ctx))?;
+        wrap!(self.source, self.source.typecheck0(ctx))?;
+        wrap!(self.key, self.key.typecheck0(ctx))?;
         let mt = Type::Map {
-            key: Arc::new(self.key.node.typ().clone()),
+            key: Arc::new(self.key.typ().clone()),
             value: Arc::new(self.vtyp.clone()),
         };
-        wrap!(self, mt.check_contains(&ctx.env, self.source.node.typ()))?;
+        wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source.node, self.source.node.typecheck1(ctx))?;
-        wrap!(self.key.node, self.key.node.typecheck1(ctx))?;
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        wrap!(self.key, self.key.typecheck1(ctx))?;
         Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.source.node.refs(refs);
-        self.key.node.refs(refs);
+        self.source.refs(refs);
+        self.key.refs(refs);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.node.delete(ctx);
-        self.key.node.delete(ctx);
+        self.source.delete(ctx);
+        self.key.delete(ctx);
     }
 
     fn typ(&self) -> &Type {
@@ -283,6 +262,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map_ref_node(cx, &self.source.node, &self.key.node)
+        emit_map_ref_node(cx, &self.source, &self.key)
     }
 }

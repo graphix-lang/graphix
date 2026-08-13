@@ -3,7 +3,7 @@ use crate::{
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
-    node::{Cached, compiler},
+    node::{Held, compiler},
     typ::{Type, TypeRef},
 };
 use anyhow::{Result, anyhow, bail};
@@ -709,12 +709,12 @@ impl StructPatternNode {
         match self {
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => {
-                ctx.rt.cached_mut().remove(&id);
+                ctx.rt.store_remove(&id);
                 ctx.env.unbind_variable(*id);
             }
             Self::Struct { all, binds } => {
                 if let Some(id) = all {
-                    ctx.rt.cached_mut().remove(id);
+                    ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for (_, _, n) in binds {
@@ -724,7 +724,7 @@ impl StructPatternNode {
             Self::Slice { tuple: _, all, binds }
             | Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
-                    ctx.rt.cached_mut().remove(id);
+                    ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in binds {
@@ -733,11 +733,11 @@ impl StructPatternNode {
             }
             Self::SlicePrefix { all, prefix, tail } => {
                 if let Some(id) = all {
-                    ctx.rt.cached_mut().remove(id);
+                    ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 if let Some(id) = tail {
-                    ctx.rt.cached_mut().remove(id);
+                    ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in prefix {
@@ -746,11 +746,11 @@ impl StructPatternNode {
             }
             Self::SliceSuffix { all, head, suffix } => {
                 if let Some(id) = all {
-                    ctx.rt.cached_mut().remove(id);
+                    ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 if let Some(id) = head {
-                    ctx.rt.cached_mut().remove(id);
+                    ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);
                 }
                 for n in suffix {
@@ -766,7 +766,7 @@ pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
     pub structure_predicate: StructPatternNode,
-    pub guard: Option<Cached<R, E>>,
+    pub guard: Option<Held<R, E>>,
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
@@ -816,7 +816,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             .as_ref()
             .map(|g| compiler::compile(ctx, flags, g.clone(), &scope, top_id))
             .transpose()?
-            .map(Cached::new);
+            .map(Held::new);
         Ok(PatternNode {
             explicit_type_predicate: explicit,
             type_predicate,
@@ -842,7 +842,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
             event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-            ctx.rt.cached_mut().insert(id, v);
+            ctx.rt.store_insert(id, TagValue::fired(v));
         })
     }
 
@@ -859,7 +859,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> bool {
         match &mut self.guard {
             None => false,
-            Some(g) => g.update(ctx, event).is_some(),
+            Some(g) => g.update_triggers(ctx, event),
         }
     }
 
@@ -869,7 +869,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             && match &self.guard {
                 None => true,
                 Some(g) => g
-                    .cached
+                    .value
                     .as_ref()
                     .and_then(|v| v.clone().get_as::<bool>())
                     .unwrap_or(false),

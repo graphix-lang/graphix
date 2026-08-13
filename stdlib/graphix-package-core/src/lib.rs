@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
-    UserEvent,
+    TagView, UserEvent,
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
@@ -196,26 +196,6 @@ macro_rules! impl_abstract_arc {
     };
 }
 
-#[macro_export]
-macro_rules! arity1 {
-    ($from:expr, $updates:expr) => {
-        match (&*$from, &*$updates) {
-            ([arg], [arg_up]) => (arg, arg_up),
-            (_, _) => unreachable!(),
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! arity2 {
-    ($from:expr, $updates:expr) => {
-        match (&*$from, &*$updates) {
-            ([arg0, arg1], [arg0_up, arg1_up]) => ((arg0, arg1), (arg0_up, arg1_up)),
-            (_, _) => unreachable!(),
-        }
-    };
-}
-
 // ── Testing infrastructure ─────────────────────────────────────────
 
 pub mod testing;
@@ -250,6 +230,54 @@ pub fn is_struct(arr: &ValArray) -> bool {
 
 // ── Shared traits and structs ──────────────────────────────────────
 
+/// The TICK view of a production at a builtin's arg seam — `Some` iff
+/// this delivery is a consumable EVENT (one that advances the
+/// builtin's state machine: burns `once`'s shot, counts in `count`,
+/// consumes a `take`, emits a print). Only `Fired` ticks — a stale
+/// delivery is the value channel, not an event, and bottoms never
+/// tick (a bottom is no event and no value at a builtin seam, per the
+/// Q1 ruling).
+pub fn seam_tick<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
+    match tv.view() {
+        TagView::Fired(tv) => Some(tv),
+        TagView::Stale(_) | TagView::FreshBottom | TagView::StaleBottom => None,
+    }
+}
+
+/// The VALUE view of a production at a builtin's arg seam — `Some` for
+/// any value-bearing delivery (fired or stale), `None` for bottoms.
+/// For config/label args (`throttle`'s duration, `take`'s `#n`, a
+/// print destination) whose consumption is value-plane tracking rather
+/// than event counting: dense and sparse agree, so it takes no gate.
+pub fn seam_value<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
+    match tv.view() {
+        TagView::Fired(tv) | TagView::Stale(tv) => Some(tv),
+        TagView::FreshBottom | TagView::StaleBottom => None,
+    }
+}
+
+/// The per-arg dense read for raw-Apply builtins tracking their own
+/// designated state (subscriptions, queues, listeners): update the arg
+/// node and return `(value, fired)` — the production's value channel
+/// (`None` for bottoms: a bottom is no event and no value at a builtin
+/// seam, per the Q1 ruling) and whether this delivery is an EVENT
+/// (fired; bottoms never tick). Every arg must be read every cycle, so
+/// call this for each of `from` unconditionally before any early
+/// return.
+pub fn seam_arg<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    node: &mut Node<R, E>,
+    event: &mut Event<E>,
+) -> (Option<Value>, bool) {
+    match seam_value(node.update(ctx, event)) {
+        Some(tv) => {
+            let fired = tv.is_fired();
+            (Some(tv.value_cloned()), fired)
+        }
+        None => (None, false),
+    }
+}
+
 #[derive(Debug)]
 pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 
@@ -277,6 +305,16 @@ impl CachedVals {
         self.1.iter().any(|t| t.is_tainted())
     }
 
+    /// The Q1 wrapper-seam test (design/dense_delivery.md, BOTTOM
+    /// PROPAGATES): true if any arg slot is currently BOTTOM — either
+    /// poisoned at rest (the taint mark) or never delivered at all
+    /// (the phantom). The wrapper bottoms the invocation on this
+    /// instead of calling `eval`, so builtin authors never see a
+    /// bottomed or missing arg.
+    pub fn any_bottom(&self) -> bool {
+        self.0.iter().any(|v| v.is_none()) || self.any_tainted()
+    }
+
     /// Update the slots from the arg nodes; `true` iff any production
     /// TRIGGERED (fired or tainted — a merely-stale production
     /// refreshes its slot silently). A tainted production marks the
@@ -302,47 +340,21 @@ impl CachedVals {
     ) -> Option<Tag> {
         let mut prod: Option<Tag> = None;
         for (i, src) in from.iter_mut().enumerate() {
-            if let Some(tv) = src.update(ctx, event) {
-                let (v, tag) = tv.into_parts();
-                if tag.is_tainted() {
-                    self.1[i] = Tag::TAINT;
-                } else {
-                    self.0[i] = Some(v);
-                    self.1[i] = tag;
-                }
-                prod = Some(match prod {
-                    None => tag,
-                    // taint ORs; fired beats stale
-                    Some(p) if p.is_tainted() || tag.is_tainted() => Tag::TAINT,
-                    Some(p) if p.is_fired() || tag.is_fired() => Tag::FIRED,
-                    Some(_) => Tag::STALE,
-                });
+            let tv = src.update(ctx, event);
+            let tag = tv.tag();
+            if tag.is_tainted() {
+                self.1[i] = Tag::TAINT;
+            } else {
+                self.0[i] = Some(tv.value_cloned());
+                self.1[i] = tag;
             }
+            // the orthogonal OR-join (taint ORs, stale ANDs)
+            prod = Some(match prod {
+                None => tag,
+                Some(p) => p.join(tag),
+            });
         }
         prod
-    }
-
-    /// Like update, but return the indexes of the nodes that updated
-    /// instead of a consolidated bool
-    pub fn update_diff<R: Rt, E: UserEvent>(
-        &mut self,
-        up: &mut [bool],
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) {
-        for (i, n) in from.iter_mut().enumerate() {
-            if let Some(tv) = n.update(ctx, event) {
-                let (v, tag) = tv.into_parts();
-                if tag.is_tainted() {
-                    self.1[i] = Tag::TAINT;
-                } else {
-                    self.0[i] = Some(v);
-                    self.1[i] = tag;
-                }
-                up[i] = tag.triggers();
-            }
-        }
     }
 
     pub fn flat_iter<'a>(&'a self) -> impl Iterator<Item = Option<Value>> + 'a {
@@ -378,6 +390,11 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     /// unobservable. Conservative default: `false`. Pulled through to
     /// the builtin registry by `CachedArgs<T>`'s `BuiltIn` impl.
     const STATELESS: bool = false;
+    /// Same semantics as `BuiltIn::SLEEP_RESTARTS`: `sleep()` clears
+    /// semantic state (the arm-rewake RESTART builtins). Consulted by
+    /// the fusion interior-sleep gate. Default: `false` (sleep-inert
+    /// — the EvalCached wrapper's own sleep clears nothing semantic).
+    const SLEEP_RESTARTS: bool = false;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -414,13 +431,10 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 pub struct CachedArgs<T> {
     cached: CachedVals,
     /// The last value `eval` produced — the builtin's RESULT slot on
-    /// the value channel: a merely-stale arg refresh re-surfaces it
-    /// (tagged stale via `out_tag`) instead of re-running `eval`,
-    /// exactly the kernel's DynCall result temp.
-    last_result: Option<Value>,
-    /// The tag of the last value `update` returned (see
-    /// `Apply::out_tag`).
-    last_out: Tag,
+    /// the value channel (absent until the first result): a
+    /// merely-stale arg refresh re-surfaces it retagged STALE instead
+    /// of re-running `eval`, exactly the kernel's DynCall result temp.
+    resident: TagValue,
     t: T,
 }
 
@@ -428,6 +442,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const EFFECT: EffectKind = T::EFFECT;
     const NAME: &str = T::NAME;
     const STATELESS: bool = T::STATELESS;
+    const SLEEP_RESTARTS: bool = T::SLEEP_RESTARTS;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -439,8 +454,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
             cached: CachedVals::new(from),
-            last_result: None,
-            last_out: Tag::FIRED,
+            resident: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -453,9 +467,20 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         match self.cached.update_full(ctx, from, event) {
-            None => None,
+            None => self.resident.ride(),
+            Some(t) if self.cached.any_bottom() => {
+                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
+                // arg is bottom — standing poison or the
+                // never-delivered phantom — so the invocation bottoms
+                // WITHOUT calling eval; authors never see bottoms.
+                // FreshBottom iff a delivery triggered this cycle
+                // (`triggers()` becomes the dense fired-bit rule at
+                // the 5b flip). No resident clobber: the value channel
+                // may re-surface the last genuine result on recovery.
+                TagValue::bottom_null(t.triggers())
+            }
             Some(_) if self.cached.any_tainted() => {
                 // DEFENSE-IN-DEPTH: unreachable when the seams hold —
                 // the CallSite gates every builtin's tainted arg
@@ -464,29 +489,23 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
                 // rulings 2026-07-19/20), so no poisoned delivery can
                 // reach these slots. If a new channel leaks one, emit
                 // the tainted placeholder (loud downstream) rather
-                // than replaying stale state.
-                self.last_out = Tag::TAINT;
-                Some(Value::Null)
+                // than replaying stale state — the SHARED placeholder,
+                // so the resident keeps the last genuine result.
+                TagValue::tainted_null()
             }
-            Some(t) if t.is_fired() => {
-                let res = self.t.eval(ctx, &self.cached);
-                if let Some(v) = &res {
-                    self.last_result = Some(v.clone());
-                }
-                self.last_out = Tag::FIRED;
-                res
-            }
+            Some(t) if t.is_fired() => match self.t.eval(ctx, &self.cached) {
+                Some(v) => self.resident.set(TagValue::fired(v)),
+                // eval produced nothing: ride the resident — the
+                // previous result re-surfaces stale, a never-set
+                // resident stays the phantom.
+                None => self.resident.ride(),
+            },
             Some(_) => {
                 // stale refresh: surface the result slot on the value
                 // channel — eval does NOT re-run
-                self.last_out = Tag::STALE;
-                self.last_result.clone()
+                self.resident.retag(Tag::STALE)
             }
         }
-    }
-
-    fn out_tag(&self) -> Tag {
-        self.last_out
     }
 
     fn typecheck0(
@@ -580,6 +599,7 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     top_id: ExprId,
     queued: VecDeque<T::Args>,
     running: bool,
+    out: TagValue,
     t: T,
 }
 
@@ -602,6 +622,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
             running: false,
+            out: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -614,11 +635,18 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if self.cached.update(ctx, from, event)
-            && let Some(args) = self.t.prepare_args(&self.cached)
-        {
-            self.queued.push_back(args);
+    ) -> &TagValue {
+        let mut bottomed = false;
+        if self.cached.update(ctx, from, event) {
+            if self.cached.any_bottom() {
+                // Q1 BOTTOM PROPAGATES: an arg is bottom, so this
+                // invocation bottoms and eval is never queued (a
+                // completed reply from a PRIOR invocation below still
+                // wins the cycle's output).
+                bottomed = true;
+            } else if let Some(args) = self.t.prepare_args(&self.cached) {
+                self.queued.push_back(args);
+            }
         }
         let res = event.variables.remove(&self.id).and_then(|tv| {
             self.running = false;
@@ -631,7 +659,11 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             let id = self.id;
             ctx.rt.spawn_var(async move { (id, T::eval(args).await) });
         }
-        res
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None if bottomed => TagValue::bottom_null(true),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -674,8 +706,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
 // ── Core builtins ──────────────────────────────────────────────────
 
-#[derive(Debug)]
-struct IsErr;
+#[derive(Debug, Default)]
+struct IsErr {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -690,7 +724,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(IsErr))
+        Ok(Box::new(IsErr::default()))
     }
 }
 
@@ -700,11 +734,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).map(|tv| match tv.value() {
-            Value::Error(_) => Value::Bool(true),
-            _ => Value::Bool(false),
-        })
+    ) -> &TagValue {
+        match seam_tick(from[0].update(ctx, event)).map(|tv| {
+            tv.with_value(|v| match v {
+                Value::Error(_) => Value::Bool(true),
+                _ => Value::Bool(false),
+            })
+        }) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -712,8 +751,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-#[derive(Debug)]
-struct FilterErr;
+#[derive(Debug, Default)]
+struct FilterErr {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -728,7 +769,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(FilterErr))
+        Ok(Box::new(FilterErr::default()))
     }
 }
 
@@ -738,11 +779,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|tv| match tv.value() {
-            v @ Value::Error(_) => Some(v),
-            _ => None,
-        })
+    ) -> &TagValue {
+        match seam_tick(from[0].update(ctx, event)).and_then(|tv| {
+            match tv.value_cloned() {
+                v @ Value::Error(_) => Some(v),
+                _ => None,
+            }
+        }) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -750,8 +796,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-#[derive(Debug)]
-struct ToError;
+#[derive(Debug, Default)]
+struct ToError {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const EFFECT: EffectKind = EffectKind::Sync;
@@ -765,7 +813,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(ToError))
+        Ok(Box::new(ToError::default()))
     }
 }
 
@@ -775,8 +823,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).map(|e| Value::Error(e.value().into()))
+    ) -> &TagValue {
+        match seam_tick(from[0].update(ctx, event))
+            .map(|e| Value::Error(e.value_cloned().into()))
+        {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -787,18 +840,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
 #[derive(Debug)]
 struct Once {
     val: bool,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_once";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -809,7 +863,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Once { val: false }))
+        Ok(Box::new(Once { val: false, out: TagValue::phantom() }))
     }
 }
 
@@ -819,17 +873,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        match from {
-            [s] => s.update(ctx, event).and_then(|v| {
+    ) -> &TagValue {
+        let res = match from {
+            [s] => seam_tick(s.update(ctx, event)).and_then(|tv| {
                 if self.val {
                     None
                 } else {
                     self.val = true;
-                    Some(v.value())
+                    Some(tv.value_cloned())
                 }
             }),
             _ => None,
+        };
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 
@@ -847,18 +905,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 #[derive(Debug)]
 struct Take {
     n: Option<usize>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_take";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -869,7 +928,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Take { n: None }))
+        Ok(Box::new(Take { n: None, out: TagValue::phantom() }))
     }
 }
 
@@ -879,22 +938,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
+    ) -> &TagValue {
+        // seed the countdown on a TICK only: a stale ride of #n is
+        // the value channel and must not clobber the running count (a
+        // fired re-delivery is a genuine re-seed)
+        if let Some(n) = seam_tick(from[0].update(ctx, event))
+            .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        match from[1].update(ctx, event) {
-            None => None,
-            Some(v) => match &mut self.n {
+        let res =
+            seam_tick(from[1].update(ctx, event)).and_then(|tv| match &mut self.n {
                 None => None,
                 Some(n) if *n > 0 => {
                     *n -= 1;
-                    return Some(v.value());
+                    Some(tv.value_cloned())
                 }
                 Some(_) => None,
-            },
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 
@@ -911,18 +975,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
 #[derive(Debug)]
 struct Skip {
     n: Option<usize>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_skip";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -933,7 +998,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Skip { n: None }))
+        Ok(Box::new(Skip { n: None, out: TagValue::phantom() }))
     }
 }
 
@@ -943,22 +1008,27 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(n) =
-            from[0].update(ctx, event).and_then(|v| v.value().cast_to::<usize>().ok())
+    ) -> &TagValue {
+        // seed the countdown on a TICK only: a stale ride of #n is
+        // the value channel and must not clobber the running count (a
+        // fired re-delivery is a genuine re-seed)
+        if let Some(n) = seam_tick(from[0].update(ctx, event))
+            .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        match from[1].update(ctx, event) {
-            None => None,
-            Some(v) => match &mut self.n {
-                None => Some(v.value()),
+        let res =
+            seam_tick(from[1].update(ctx, event)).and_then(|tv| match &mut self.n {
+                None => Some(tv.value_cloned()),
                 Some(n) if *n > 0 => {
                     *n -= 1;
                     None
                 }
-                Some(_) => Some(v.value()),
-            },
+                Some(_) => Some(tv.value_cloned()),
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
         }
     }
 
@@ -1362,6 +1432,7 @@ struct Filter<R: Rt, E: UserEvent> {
     pending: Option<Value>,
     fid: BindId,
     x: BindId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
@@ -1394,7 +1465,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
                     &ptyp,
                     top_id,
                 );
-                Ok(Box::new(Self { pred, pending: None, fid, x }))
+                Ok(Box::new(Self {
+                    pred,
+                    pending: None,
+                    fid,
+                    x,
+                    out: TagValue::phantom(),
+                }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -1407,20 +1484,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
-            ctx.rt.cached_mut().insert(self.fid, v.clone());
-            event.variables.insert(self.fid, TagValue::fired(v));
+    ) -> &TagValue {
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            let tag = tv.tag();
+            let v = tv.value_cloned();
+            ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
+            event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        if let Some(v) = from[0].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(tv) = seam_value(from[0].update(ctx, event)) {
+            let tag = tv.tag();
+            let v = tv.value_cloned();
             self.pending = Some(v.clone());
-            ctx.rt.cached_mut().insert(self.x, v.clone());
-            event.variables.insert(self.x, TagValue::fired(v));
+            ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
+            event.variables.insert(self.x, TagValue::tagged(v, tag));
         }
-        self.pred.update(ctx, event).and_then(|b| match b.value() {
-            Value::Bool(true) => self.pending.clone(),
-            _ => None,
-        })
+        let res = seam_tick(self.pred.update(ctx, event)).and_then(|b| {
+            match b.value_cloned() {
+                Value::Bool(true) => self.pending.clone(),
+                _ => None,
+            }
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -1437,8 +1524,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.store_remove(&self.fid);
+        ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
     }
@@ -1451,8 +1538,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // `pending` (the held candidate value) and the published
         // pred-fn/element values are all per-invocation replay memory.
-        ctx.rt.cached_mut().remove(&self.fid);
-        ctx.rt.cached_mut().remove(&self.x);
         self.pending = None;
         self.pred.reset_replay(ctx);
     }
@@ -1464,6 +1549,7 @@ struct Queue {
     queue: VecDeque<Value>,
     id: BindId,
     top_id: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
@@ -1481,7 +1567,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
             [_, _] => {
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
-                Ok(Box::new(Self { triggered: 0, queue: VecDeque::new(), id, top_id }))
+                Ok(Box::new(Self {
+                    triggered: 0,
+                    queue: VecDeque::new(),
+                    id,
+                    top_id,
+                    out: TagValue::phantom(),
+                }))
             }
             _ => bail!("expected two arguments"),
         }
@@ -1494,18 +1586,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+    ) -> &TagValue {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
-        if let Some(v) = from[1].update(ctx, event) {
-            self.queue.push_back(v.value());
+        if let Some(tv) = seam_tick(from[1].update(ctx, event)) {
+            self.queue.push_back(tv.value_cloned());
         }
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
             ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1530,19 +1625,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
 struct Hold {
     triggered: usize,
     current: Option<Value>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
-    // Async, deliberately (the F2 flip, same as Uniq below): hold is
-    // UPDATE-HISTORY-SENSITIVE — `current` is take()n on emission and
-    // re-arms only when `v` ACTUALLY updates, and `triggered` counts
-    // clock updates. The fused DynCall dispatch protocol re-delivers
-    // EVERY arg as a fresh update on every dispatch, so a fused hold
-    // re-latched `v` each clock tick and re-emitted the same value on
-    // every trigger (soak jul07c: interp emitted once, jit once per
-    // clock). Async = fusion boundary = the node-walk runs it with
-    // exact per-arg update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted, same as Uniq below):
+    // hold's `current` latch re-arms only when `v` ACTUALLY fires,
+    // and the fused DynCall now delivers per-arg truth — a non-fired
+    // slot arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the jul07c re-latch
+    // divergence class is structurally closed.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_hold";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1554,7 +1648,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _] => Ok(Box::new(Self { triggered: 0, current: None })),
+            [_, _] => Ok(Box::new(Self {
+                triggered: 0,
+                current: None,
+                out: TagValue::phantom(),
+            })),
             _ => bail!("expected two arguments"),
         }
     }
@@ -1566,20 +1664,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
+    ) -> &TagValue {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
-        if let Some(v) = from[1].update(ctx, event) {
-            self.current = Some(v.value());
+        if let Some(tv) = seam_tick(from[1].update(ctx, event)) {
+            self.current = Some(tv.value_cloned());
         }
         if self.triggered > 0
             && let Some(v) = self.current.take()
         {
             self.triggered -= 1;
-            Some(v)
+            self.out.set(TagValue::fired(v))
         } else {
-            None
+            self.out.ride()
         }
     }
 
@@ -1601,6 +1699,7 @@ struct Seq {
     id: BindId,
     top_id: ExprId,
     args: CachedVals,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
@@ -1617,7 +1716,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
         let args = CachedVals::new(from);
-        Ok(Box::new(Self { id, top_id, args }))
+        Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
     }
 }
 
@@ -1627,9 +1726,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if self.args.update(ctx, from, event) {
-            match &self.args.0[..] {
+            let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
                     // Range guard (the array::init precedent, same
                     // shared cap): each element is one queued set_var —
@@ -1642,23 +1741,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                     if *j as i128 - *i as i128
                         > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
                     {
-                        return Some(errf!(
+                        Some(errf!(
                             e,
                             "seq range {i}..{j} exceeds the {} element limit",
                             graphix_compiler::node::MAX_ARRAY_INIT_LEN
-                        ));
-                    }
-                    for v in *i..*j {
-                        ctx.rt.set_var(self.id, Value::I64(v));
+                        ))
+                    } else {
+                        for v in *i..*j {
+                            ctx.rt.set_var(self.id, Value::I64(v));
+                        }
+                        None
                     }
                 }
                 _ => {
                     let e = literal!("SeqError");
-                    return Some(err!(e, "invalid args i must be <= j"));
+                    Some(err!(e, "invalid args i must be <= j"))
                 }
+            };
+            if let Some(e) = err {
+                return self.out.set(TagValue::fired(e));
             }
         }
-        event.variables.get(&self.id).map(|tv| tv.value_cloned())
+        match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1680,7 +1787,13 @@ struct Throttle {
     last: Option<Instant>,
     tid: Option<BindId>,
     top_id: ExprId,
-    args: CachedVals,
+    /// The latest value of the throttled arg — the emission source
+    /// when the timer fires (async, after the arg's delivery is long
+    /// gone). An explicit OWN field, not an arg-cache slot: the value
+    /// a throttle emits is its designated semantic memory
+    /// (design/dense_delivery.md, the throttle/timer P4 item).
+    last_v: Option<Value>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
@@ -1691,11 +1804,17 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let args = CachedVals::new(from);
-        Ok(Box::new(Self { wait: Duration::ZERO, last: None, tid: None, top_id, args }))
+        Ok(Box::new(Self {
+            wait: Duration::ZERO,
+            last: None,
+            tid: None,
+            top_id,
+            last_v: None,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -1705,28 +1824,48 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
+        macro_rules! emit_cached {
+            () => {{
+                match self.last_v.clone() {
+                    Some(v) => return self.out.set(TagValue::fired(v)),
+                    None => return self.out.ride(),
+                }
+            }};
+        }
         macro_rules! maybe_schedule {
             ($last:expr) => {{
                 let now = Instant::now();
                 if now - *$last >= self.wait {
                     *$last = now;
-                    return self.args.0[1].clone();
+                    emit_cached!()
                 } else {
                     let id = BindId::new();
                     ctx.rt.ref_var(id, self.top_id);
                     ctx.rt.set_timer(id, self.wait - (now - *$last));
                     self.tid = Some(id);
-                    return None;
+                    return self.out.ride();
                 }
             }};
         }
-        let mut up = [false; 2];
-        self.args.update_diff(&mut up, ctx, from, event);
-        if up[0]
-            && let Some(Value::Duration(d)) = &self.args.0[0]
-        {
-            self.wait = **d;
+        // both args update up front: a fired duration retunes the
+        // wait; the throttled arg's value lands in `last_v` on ANY
+        // value-bearing delivery (the value channel), while only a
+        // FIRED delivery counts as an event to throttle.
+        let new_wait = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) if tv.is_fired() => tv.with_value(|v| match v {
+                Value::Duration(d) => Some(**d),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let mut up1 = false;
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            up1 = tv.is_fired();
+            self.last_v = Some(tv.value_cloned());
+        }
+        if let Some(d) = new_wait {
+            self.wait = d;
             if let Some(id) = self.tid.take()
                 && let Some(last) = &mut self.last
             {
@@ -1734,12 +1873,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 maybe_schedule!(last)
             }
         }
-        if up[1] && self.tid.is_none() {
+        if up1 && self.tid.is_none() {
             match &mut self.last {
                 Some(last) => maybe_schedule!(last),
                 None => {
                     self.last = Some(Instant::now());
-                    return self.args.0[1].clone();
+                    emit_cached!()
                 }
             }
         }
@@ -1749,9 +1888,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             ctx.rt.unref_var(id, self.top_id);
             self.tid = None;
             self.last = Some(Instant::now());
-            return self.args.0[1].clone();
+            emit_cached!()
         }
-        None
+        self.out.ride()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1764,31 +1903,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.delete(ctx);
         self.last = None;
         self.wait = Duration::ZERO;
-        self.args.clear();
+        self.last_v = None;
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Timing state is semantic, and the cached args feed the
-        // in-flight timer's emission (async — never inside a sync
-        // frame).
+        // Timing state is semantic, and `last_v` feeds the in-flight
+        // timer's emission (async — never inside a sync frame).
     }
 }
 
 #[derive(Debug)]
 struct Count {
     count: i64,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_count";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1799,7 +1938,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Count { count: 0 }))
+        Ok(Box::new(Count { count: 0, out: TagValue::phantom() }))
     }
 }
 
@@ -1809,12 +1948,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if from.into_iter().fold(false, |u, n| u || n.update(ctx, event).is_some()) {
+    ) -> &TagValue {
+        if from
+            .into_iter()
+            .fold(false, |u, n| u || seam_tick(n.update(ctx, event)).is_some())
+        {
             self.count += 1;
-            Some(Value::I64(self.count))
+            self.out.set(TagValue::fired(Value::I64(self.count)))
         } else {
-            None
+            self.out.ride()
         }
     }
 
@@ -1864,18 +2006,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
 type Mean = CachedArgs<MeanEv>;
 
 #[derive(Debug)]
-struct Uniq(Option<Value>);
+struct Uniq(Option<Value>, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
-    // Async, deliberately (F2 flip): this builtin's semantics are
-    // UPDATE-HISTORY-SENSITIVE — its Apply keeps state keyed to which
-    // arg updated on which cycle. The fused DynCall dispatch protocol
-    // re-delivers EVERY arg as a fresh update on every dispatch (the
-    // kernel can't reproduce per-arg update granularity), so eager
-    // dispatch mis-counts (e.g. fused `skip(#n:1, e)` saw `n` "update"
-    // every cycle and never passed an event). Async = fusion boundary
-    // = the node-walk runs it with exact update semantics.
-    const EFFECT: EffectKind = EffectKind::Async;
+    // Sync since P7 (the F2 Async flip reverted): every output
+    // appears on the same cycle as the event that triggered it, and
+    // the fused DynCall delivers per-arg truth — a non-fired slot
+    // arrives `TagValue::stale` and the seam ticks on Fired only
+    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
+    // sensitive state machine sees the same per-arg events in a
+    // kernel as in the node-walk.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const SLEEP_RESTARTS: bool = true;
     const NAME: &str = "core_uniq";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1886,7 +2028,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Uniq(None)))
+        Ok(Box::new(Uniq(None, TagValue::phantom())))
     }
 }
 
@@ -1896,16 +2038,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        from[0].update(ctx, event).and_then(|tv| {
-            let v = tv.value();
+    ) -> &TagValue {
+        let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
+            let v = tv.value_cloned();
             if Some(&v) != self.0.as_ref() {
                 self.0 = Some(v.clone());
                 Some(v)
             } else {
                 None
             }
-        })
+        });
+        match res {
+            Some(v) => self.1.set(TagValue::fired(v)),
+            None => self.1.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -1953,11 +2099,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         for n in from {
             n.update(ctx, event);
         }
-        None
+        TagValue::phantom_ref()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2009,6 +2155,7 @@ struct Dbg {
     spec: Expr,
     dest: LogDest,
     typ: Type,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
@@ -2027,6 +2174,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
             spec: from[1].spec().clone(),
             dest: LogDest::Stderr,
             typ: Type::Bottom,
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -2037,14 +2185,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(v) = from[0].update(ctx, event)
-            && let Ok(d) = v.value().cast_to::<LogDest>()
+    ) -> &TagValue {
+        if let Some(v) =
+            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            && let Ok(d) = v.cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        from[1].update(ctx, event).map(|v| {
-            let v = v.value();
+        let ticked = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned());
+        let res = ticked.map(|v| {
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
                     ctx.libstate.get::<PrintSink>().cloned()
@@ -2084,7 +2233,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
                 },
             };
             v
-        })
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2129,13 +2282,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(v) = from[0].update(ctx, event)
-            && let Ok(d) = v.value().cast_to::<LogDest>()
+    ) -> &TagValue {
+        if let Some(v) =
+            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            && let Ok(d) = v.cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+        if let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        {
             let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
             let sink = match self.dest {
                 LogDest::Stdout | LogDest::Stderr => {
@@ -2161,7 +2316,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
                 },
             }
         }
-        None
+        TagValue::phantom_ref()
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2199,14 +2354,17 @@ macro_rules! printfn {
                 ctx: &mut ExecCtx<R, E>,
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
-            ) -> Option<Value> {
+            ) -> &TagValue {
                 use std::fmt::Write;
-                if let Some(v) = from[0].update(ctx, event)
-                    && let Ok(d) = v.value().cast_to::<LogDest>()
+                if let Some(v) =
+                    seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+                    && let Ok(d) = v.cast_to::<LogDest>()
                 {
                     self.dest = d;
                 }
-                if let Some(v) = from[1].update(ctx, event).map(|tv| tv.value()) {
+                if let Some(v) =
+                    seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+                {
                     self.buf.clear();
                     match v {
                         Value::String(s) => write!(self.buf, "{s}"),
@@ -2243,7 +2401,7 @@ macro_rules! printfn {
                         },
                     }
                 }
-                None
+                TagValue::phantom_ref()
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

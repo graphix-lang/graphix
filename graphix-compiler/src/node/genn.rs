@@ -4,7 +4,7 @@ use super::{
     callsite::{Arg, ArgKey, CallSite, Callee},
 };
 use crate::{
-    BindId, ExecCtx, Node, Rt, Scope, UserEvent,
+    BindId, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
@@ -43,7 +43,16 @@ pub fn bind<R: Rt, E: UserEvent>(
         )
         .id;
     ctx.rt.ref_var(id, top_id);
-    (id, Node::new(Ref { spec: NOP.clone(), typ, id, top_id }))
+    (
+        id,
+        Node::new(Ref {
+            spec: NOP.clone(),
+            typ,
+            id,
+            top_id,
+            resident: TagValue::phantom(),
+        }),
+    )
 }
 
 /// generate a reference to a bind id
@@ -54,7 +63,7 @@ pub fn reference<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Node<R, E> {
     ctx.rt.ref_var(id, top_id);
-    Node::new(Ref { spec: NOP.clone(), typ, id, top_id })
+    Node::new(Ref { spec: NOP.clone(), typ, id, top_id, resident: TagValue::phantom() })
 }
 
 pub fn constant<R: Rt, E: UserEvent>(v: Value) -> Node<R, E> {
@@ -62,6 +71,7 @@ pub fn constant<R: Rt, E: UserEvent>(v: Value) -> Node<R, E> {
         spec: NOP.clone(),
         typ: Type::Primitive(Typ::get(&v).into()),
         value: v,
+        resident: TagValue::phantom(),
     })
 }
 
@@ -140,5 +150,6 @@ fn apply_inner<R: Rt, E: UserEvent>(
         is_self_tail_call: AtomicBool::new(false),
         tail_arg_order: Mutex::new(None),
         callee_lambda_id: Mutex::new(None),
+        resident: TagValue::phantom(),
     })
 }

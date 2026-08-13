@@ -1,0 +1,9 @@
+// P7 witness (the gain): count/uniq at region root — legal fused
+// placement, per-arg truth through the DynCall stale masks. Multi-epoch
+// injection: count ticks per fired delivery, uniq dedups equal fires.
+// schedule-v1: cap=96 events=768; in0=i64:1; in0=i64:2; in0=i64:2; in0=i64:7
+{
+	let c = count(in0);
+	let u = uniq(in0);
+	c * 100 + u
+}

@@ -44,6 +44,7 @@ pub fn fused_iterate_body(
 #[derive(Debug)]
 pub struct FusedIterateAuto {
     pub args: ::graphix_package_core::CachedVals,
+    pub out: ::graphix_compiler::TagValue,
 }
 
 impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
@@ -61,6 +62,7 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     ) -> ::anyhow::Result<::std::boxed::Box<dyn ::graphix_compiler::Apply<R, E>>> {
         ::std::result::Result::Ok(::std::boxed::Box::new(FusedIterateAuto {
             args: ::graphix_package_core::CachedVals::new(from),
+            out: ::graphix_compiler::TagValue::phantom(),
         }))
     }
 }
@@ -73,11 +75,11 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
         ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
         from: &mut [::graphix_compiler::Node<R, E>],
         event: &mut ::graphix_compiler::Event<E>,
-    ) -> ::std::option::Option<::netidx::subscriber::Value> {
+    ) -> &::graphix_compiler::TagValue {
         if !self.args.update(ctx, from, event) {
-            return ::std::option::Option::None;
+            return self.out.ride();
         }
-        match &self.args.0[..] {
+        let __res = match &self.args.0[..] {
             [
                 ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a0)),
                 ::std::option::Option::Some(::netidx::subscriber::Value::F64(__a1)),
@@ -89,6 +91,12 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
                 ::std::option::Option::Some(::netidx::subscriber::Value::I64(__r))
             }
             _ => ::std::option::Option::None,
+        };
+        match __res {
+            ::std::option::Option::Some(__v) => {
+                self.out.set(::graphix_compiler::TagValue::fired(__v))
+            }
+            ::std::option::Option::None => self.out.ride(),
         }
     }
 

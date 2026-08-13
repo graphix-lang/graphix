@@ -1,0 +1,15 @@
+// P7 witness (deferred self-call check): count at the body ROOT of a
+// tail-recursive fn (legal placement alone), tail self-call in an arm.
+// The end-of-define check must refuse the kernel (self_backedge_in_arm
+// && saw_stateful_reach).
+// schedule-v1: cap=96 events=768; in0=i64:3; in0=i64:2; in0=i64:5
+{
+	let rec f = |n: i64| -> i64 {
+		let c = count(n);
+		select n {
+			x if x <= 0 => c,
+			_ => f(n - 1)
+		}
+	};
+	f(in0)
+}

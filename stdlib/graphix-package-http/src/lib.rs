@@ -17,7 +17,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_arg,
 };
 use graphix_rt::GXRt;
 use netidx_value::{
@@ -682,7 +682,6 @@ async fn serve_loop(
 
 #[derive(Debug)]
 pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
-    args: CachedVals,
     id: BindId,
     top_id: ExprId,
     handler: Node<R, E>,
@@ -691,6 +690,7 @@ pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
     queue: VecDeque<(Value, Option<tokio::sync::oneshot::Sender<Value>>)>,
     ready: bool,
     abort: Option<tokio::task::AbortHandle>,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
@@ -727,7 +727,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
                 let handler =
                     genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
                 Ok(Box::new(HttpServe {
-                    args: CachedVals::new(from),
                     id,
                     top_id,
                     handler,
@@ -736,6 +735,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
                     queue: VecDeque::new(),
                     ready: true,
                     abort: None,
+                    out: TagValue::phantom(),
                 }))
             }
             _ => bail!("expected five arguments"),
@@ -749,29 +749,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        let mut changed = [false; 5];
-        self.args.update_diff(&mut changed, ctx, from, event);
+    ) -> &TagValue {
+        let (addrv, addr_fired) = seam_arg(ctx, &mut from[0], event);
+        let (certv, cert_fired) = seam_arg(ctx, &mut from[1], event);
+        let (keyv, key_fired) = seam_arg(ctx, &mut from[2], event);
+        let (maxv, max_fired) = seam_arg(ctx, &mut from[3], event);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[4], event);
         // update handler function reference
-        if changed[4] {
-            if let Some(v) = self.args.0[4].clone() {
-                ctx.rt.cached_mut().insert(self.pid, v.clone());
-                event.variables.insert(self.pid, TagValue::fired(v));
-            }
+        if f_fired && let Some(v) = fv {
+            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
+            event.variables.insert(self.pid, TagValue::fired(v));
         }
         // start/restart server when addr/cert/key/max_connections changes
         let mut server_result = None;
-        if changed[0] || changed[1] || changed[2] || changed[3] {
+        if addr_fired || cert_fired || key_fired || max_fired {
             if let Some(abort) = self.abort.take() {
                 abort.abort();
             }
-            if let Some(Value::String(addr)) = &self.args.0[0] {
+            if let Some(Value::String(addr)) = &addrv {
                 // build TLS acceptor if cert and key are provided
-                let tls = match (&self.args.0[1], &self.args.0[2]) {
+                let tls = match (&certv, &keyv) {
                     (Some(Value::Bytes(cert)), Some(Value::Bytes(key))) => {
                         match build_tls_acceptor(cert, key) {
                             Ok(a) => Some(a),
-                            Err(e) => return Some(e),
+                            Err(e) => return self.out.set(TagValue::fired(e)),
                         }
                     }
                     (Some(Value::Null), Some(Value::Null))
@@ -779,39 +780,53 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     | (Some(Value::Null), None)
                     | (None, Some(Value::Null)) => None,
                     _ => {
-                        return Some(errf!(
+                        return self.out.set(TagValue::fired(errf!(
                             "HTTPError",
                             "both cert and key must be provided for TLS"
-                        ));
+                        )));
                     }
                 };
-                let max_conn = match &self.args.0[3] {
+                let max_conn = match &maxv {
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
                     Some(Value::I64(n)) => {
-                        return Some(errf!(
+                        return self.out.set(TagValue::fired(errf!(
                             "HTTPError",
                             "max_connections must be > 0, got {n}"
-                        ));
+                        )));
                     }
                     _ => 768,
                 };
                 let std_listener = match std::net::TcpListener::bind(&**addr) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "bind to {addr} failed: {e}"));
+                        return self.out.set(TagValue::fired(errf!(
+                            "HTTPError",
+                            "bind to {addr} failed: {e}"
+                        )));
                     }
                 };
                 let bound_addr = match std_listener.local_addr() {
                     Ok(a) => a,
-                    Err(e) => return Some(errf!("HTTPError", "local_addr failed: {e}")),
+                    Err(e) => {
+                        return self.out.set(TagValue::fired(errf!(
+                            "HTTPError",
+                            "local_addr failed: {e}"
+                        )));
+                    }
                 };
                 if let Err(e) = std_listener.set_nonblocking(true) {
-                    return Some(errf!("HTTPError", "set_nonblocking failed: {e}"));
+                    return self.out.set(TagValue::fired(errf!(
+                        "HTTPError",
+                        "set_nonblocking failed: {e}"
+                    )));
                 }
                 let listener = match tokio::net::TcpListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
-                        return Some(errf!("HTTPError", "tokio listener failed: {e}"));
+                        return self.out.set(TagValue::fired(errf!(
+                            "HTTPError",
+                            "tokio listener failed: {e}"
+                        )));
                     }
                 };
                 let (tx, rx) = mpsc::channel(100);
@@ -839,13 +854,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if self.ready && !self.queue.is_empty() {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
-                ctx.rt.cached_mut().insert(self.x, req.clone());
+                ctx.rt.store_insert(self.x, TagValue::fired(req.clone()));
                 event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
         // process handler responses
         loop {
-            match self.handler.update(ctx, event) {
+            match graphix_package_core::seam_tick(self.handler.update(ctx, event))
+                .map(|tv| tv.clone())
+            {
                 None => break,
                 Some(v) => {
                     self.ready = true;
@@ -857,7 +874,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     match self.queue.front() {
                         Some((req, _)) => {
                             self.ready = false;
-                            ctx.rt.cached_mut().insert(self.x, req.clone());
+                            ctx.rt.store_insert(self.x, TagValue::fired(req.clone()));
                             event.variables.insert(self.x, TagValue::fired(req.clone()));
                         }
                         None => break,
@@ -865,7 +882,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 }
             }
         }
-        server_result
+        match server_result {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn typecheck0(
@@ -886,9 +906,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
-        ctx.rt.cached_mut().remove(&self.x);
+        ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
-        ctx.rt.cached_mut().remove(&self.pid);
+        ctx.rt.store_remove(&self.pid);
         self.handler.delete(ctx);
     }
 
@@ -899,16 +919,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
-        self.args.clear();
         self.queue.clear();
         self.ready = true;
         self.handler.sleep(ctx);
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
-        ctx.rt.cached_mut().remove(&self.pid);
-        ctx.rt.cached_mut().remove(&self.x);
         self.handler.reset_replay(ctx);
     }
 }

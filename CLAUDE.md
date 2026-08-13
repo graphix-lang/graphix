@@ -158,9 +158,19 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   `Regex`, scratch buffers, a typecheck-derived cast type) are fine. Only
   consulted for `Sync` builtins, by the transient-recursion gate
   (`design/transient_recursion.md`) — a wrong `true` is a semantics bug, a
-  wrong `false` only costs memory. Both consts are pulled through
-  `EvalCached`/`CachedArgs` and recorded per name as `BuiltinFacts`
-  (`ctx.builtin_effect`/`ctx.builtin_stateless`).
+  wrong `false` only costs memory.
+- `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
+  semantic state — the arm-rewake RESTART builtins
+  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). Consulted by the fusion
+  interior-sleep gate (P7): kernels have no per-arm sleep initiator, so
+  such a builtin's DynCall (or a call to a callee kernel transitively
+  containing one) refuses to emit inside a fused select arm and the
+  region de-fuses. Deliberately NOT `!STATELESS` (dbg/log are
+  effectful-but-sleep-inert and stay arm-fusable). A wrong `false` is a
+  semantics bug; a wrong `true` only costs fusion coverage. All three
+  consts are pulled through `EvalCached`/`CachedArgs` and recorded per
+  name as `BuiltinFacts` (`ctx.builtin_effect`/`ctx.builtin_stateless`/
+  `ctx.builtin_sleep_restarts`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.
@@ -435,6 +445,13 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what".
+- `GXDBG_DYNC=1` — print every `graphix_dyncall` dispatch (fn index,
+  site id, taint/stale masks, each arg's raw (disc, payload) words —
+  transmute_copy, no deref, so safe on a corrupt Value). The tool for
+  "what did the CLIF marshal actually hand this dispatch" — located
+  the 5b dispatch-boundary corruption (a present bottom passed
+  through as Value::Null, whose uninit payload word the typed call
+  site adopted as an ArcStr) in one run.
 - `GRAPHIX_DBG_TVAL=1` — print every `TVal` render step (deref'd type
   + naked value) as the typed printer walks. The tool for "why did
   this value print in this form" — found the union-member selection
@@ -627,39 +644,34 @@ enforces it):**
   debugging swallowed errors.
 - `a[i]` / `a[i..j]` / `bytes[i]` / `m{key}` are bounds-checked through shared
   `node::array` / `node::map` helpers — one semantic seam, all backends agree.
-- **Bottom** ("no value this cycle" — div0, `?`-error, an unfired input, a Sync
-  builtin returning `None`) is `None`-from-`update` in the node-walk. In the JIT
-  it is the **taint channel** (#219): a missing/unfired input becomes a
-  taint-marked, helper-safe placeholder (`Value::Null` / empty `ValArray` /
-  empty `ArcStr`), taint propagates through pure ops (`propagate_taint`), and
-  the kernel forces bottom (emits `None`) only if the taken output path
-  *consumes* a tainted value (`is_tainted`) — so a missing input no longer
-  de-fuses the whole region. A **pended DynCall** (the builtin returned no
-  value — `buffer::encode`'s Pad guard) rides the same channel since 2026-07-06:
-  each site take-and-clears `DYNCALL_PENDING` and continues with the tainted
-  placeholder, so `DYNCALL_PENDING` reaching `Kernel::update` means only a
-  GENUINE whole-kernel abort (interrupt poll, depth trip, return-gate force,
-  callee abort propagated at the call site by `emit_lambda_call_node`). The
-  old `array::init` runaway-length whole-kernel abort is gone: an over-limit
-  count taints and clamps to zero length in `emit_init_loop`, matching the
-  node-walk's log-and-no-fire. `design/representable_bottom.md`.
-- **Taint never reaches builtins** (Eric's rulings 2026-07-19/20:
-  taint == bottom == no input to a builtin — authors must never see
-  the taint channel). EVERY builtin's arg seam converts a poisoned
-  production to ABSENCE: the `CallSite` publish loop gates it to
-  silence (`gate_tainted_args`, set at both callee-binding sites —
-  once/take/skip don't count poison), and a fused DynCall passes a
-  per-arg taint MASK through `graphix_dyncall` so masked slots
-  deliver nothing (the whole-call any-tainted skip was wrong — the
-  cached slot RIDES its previous state and EVAL decides what a
-  missing arg means; a masked arg folds as neutral STALE into the
-  result disc; >64 args de-fuse). Symmetric with the kernel output
-  boundary, which forces a fused arg region's tainted result to None.
-  Lambda callees keep poisoned formals. `CachedArgs`' any_tainted arm
-  is an unreachable-by-construction backstop. Pinned by
-  `builtin-taint-gate-jul2026` + `dyncall-partial-args-jul2026` (the
-  latter also fixed `array::window` to require ALL its args — its
-  eval produced `[]` at `#n: 0` with the val slot absent).
+- **Bottom** ("no value this cycle" — div0, `?`-error, a bottomed input, a Sync
+  builtin producing nothing) is DENSE since the 2026-08 flip
+  (`design/dense_delivery.md`): `Update::update` returns `&TagValue` every
+  cycle — `Fired(v)` / `Stale(v)` / `FreshBottom` / `StaleBottom` (the
+  orthogonal fired×bottom algebra; `TagValue::view()` is the consumption
+  API). A standing bottom re-delivers `StaleBottom` and RIDES (never re-fires
+  consumers); bottomness joins by OR over consumed productions (`Tag::join`).
+  In the JIT the same bits ride each param's disc (#219's taint channel:
+  bottom = TAINT bit + a helper-safe placeholder payload; `propagate_taint`
+  through pure ops; TAINT|STALE for standing bottoms so loop/select machinery
+  doesn't fire). A **pended DynCall** (the builtin produced no value —
+  `buffer::encode`'s Pad guard) taints at the site and continues;
+  `DYNCALL_PENDING` reaching `Kernel::update` means only a GENUINE
+  whole-kernel abort (interrupt poll, return-gate force, callee abort). A
+  DEPTH TRIP is a delivered FreshBottom since 5c, not an abort
+  (`findings/depth-trip-delivered-bottom-aug2026/`).
+- **Bottom never reaches builtin authors** (Q1, BOTTOM PROPAGATES —
+  the dense evolution of the 2026-07-19/20 taint-gate rulings): a
+  bottomed arg (fresh, standing, or phantom) makes the wrapper bottom
+  the invocation WITHOUT calling `eval` (`CachedVals::any_bottom` in
+  `CachedArgs`/`CachedArgsAsync`; `FreshBottom` iff a delivery
+  triggered, else `StaleBottom`). Raw-Apply authors read args through
+  `seam_arg`/`seam_tick`/`seam_value` (package-core), whose bottom
+  arms are None/no-tick. The old `gate_tainted_args` CallSite silencing
+  and the DynCall absence-tombstone adapters died at the 5b/5c flips —
+  bottoms flow IN-BAND with honest tags on both engines. The jul30a
+  re-woken-arm ride and `array::window` []-on-absent pins were
+  RE-BLESSED as ruled deltas.
 - **THE STRICT SELECT RULE** (Eric's ruling 2026-08-06): a select
   emits iff its SELECTION CHANGES (becoming-selected emits the new
   arm's current value FIRED) or the TAKEN ARM's body produces — a
@@ -743,20 +755,31 @@ enforces it):**
   module-state-callee-reactivity — is a cross-module callee's read
   of module state quiet-in-steady-state/fresh-at-instantiation, the
   status-quo interp artifact of the Module proxy post-pass strip, or
-  fully reactive?) + the tag-blind builtin gate. Triaged-open kernel
-  gap: missing_fire_epoch3_aug08e (depth-trip whole-kernel abort vs
-  the interp's caller-frame ride) waits in `fuzz/pending-triage/` on
-  the callee taint-cache/value-resident work.
+  fully reactive?) + the tag-blind builtin gate. P8 re-adjudication
+  under dense (2026-08-13): all four of those classes AGREE and are
+  promoted to `findings/` (module-state resolved by Q3
+  fresh-at-instantiation; tag-blind unwritable by construction;
+  missing_fire_epoch3 fixed by the 5c depth-trip-delivers-bottom
+  split → `findings/depth-trip-delivered-bottom-aug2026/`). Still
+  pending Eric: `fuzz/pending-ruling/tail-zero-iteration-fire-aug2026`
+  (the interp drops a re-delivered loop bound's fire on a
+  zero-iteration tail dispatch; the written tail-spine rule says fire;
+  narrow interp fix drafted in the witness header, awaiting
+  confirmation vs the "no iterations = no control dependence"
+  alternative reading).
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
-  value-channel caches survive an arm's sleep — `Cached` residents,
-  `CachedArgs` arg slots, `StructWith.current`, collection slot
-  values/acc-carries — so a deselected-then-reselected arm whose fresh
-  computation bottoms RIDES its history, exactly like the kernel's
-  persistent replay words / DynCall slots / per-slot state words (the
-  kernel needed no change). Async builtins' documented arm-rewake
-  RESTART semantics (`once`/`take`/`skip`/`uniq`/`hold`/... clear on
-  sleep) are unchanged — they never fuse, so no kernel twin constrains
-  them. Pinned by `sleep-preserves-caches-jul2026/`.
+  value-channel state survives an arm's sleep — `Held` residents (the
+  three designated ride sites), `CachedVals` staging slots, collection
+  slot values/acc-carries — so a deselected-then-reselected arm whose
+  fresh computation bottoms RIDES its history, exactly like the
+  kernel's persistent replay words / DynCall slots / per-slot state
+  words (the kernel needed no change). The documented arm-rewake RESTART
+  semantics (`once`/`take`/`skip`/`uniq`/`hold`/`count` clear on
+  sleep) are unchanged; since the P7 Sync flip these builtins DO fuse
+  at region root, and the `SLEEP_RESTARTS` interior-sleep gate
+  de-fuses any select whose arm reaches one (kernels have no per-arm
+  sleep initiator — `findings/sleep-restart-gate-aug2026/`). Pinned by
+  `sleep-preserves-caches-jul2026/`.
 - **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
   state must be the call site's OWN history — a compiled callee
   body's interior builtin is ONE `graphix_dyncall` instruction
@@ -987,7 +1010,8 @@ tail → rebind-and-jump loop, non-tail → native recursion), transitive callee
 and builtin/cast/qop calls inside lambda bodies.
 
 The **correct-None denominator** (principled, never a gap): async/streaming
-builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
+builtins (timers, IO, netidx, `never`, `queue`, `throttle` — the
+once/take/skip family went Sync at P7 and fuses outside select arms), cross-cycle
 nodes (`~`, `Any`, `Catch`'s handler-read), and non-register-encodable types
 (`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
 TVars). Note that fusion recursion (`Update::fuse`) descends only through
@@ -1028,14 +1052,21 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
-- `dense_delivery.md` — **APPROVED 2026-08-11, implementation in progress:**
-  the dense-delivery redesign — `Update::update -> &TagValue` (borrowed
-  production, no Option), orthogonal fired×bottom tag algebra, `TagView`
-  exhaustive-match API, persistent tagged store replacing rt.cached, consumer
-  caches eliminated, bottom-propagates at builtin seams, log-everywhere.
-  Holds the rulings, the ruled-delta list, and the tag-removal post-mortem
-  (removal is foreclosed — do not attempt again). Supersedes
-  `replay_frames.md` Ruling A.2 and the fire-gate branch when it lands.
+- `dense_delivery.md` — **BUILT (P0–P8 landed 2026-08-13; P9 soak/merge
+  remains):** the dense-delivery redesign — `Update::update -> &TagValue`
+  (borrowed production, no Option), orthogonal fired×bottom tag algebra,
+  `TagView` exhaustive-match API, persistent tagged store (rt.cached is
+  GONE — `Rt::store_value` is the one cross-cycle read, bottom ⇒ None),
+  consumer caches deleted (`Held` survives at the 3 designated ride
+  sites: select scrutinee, pattern guard, `~`'s arg), Q1
+  bottom-propagates at builtin seams (the sparse view is
+  UNREPRESENTABLE — `seam_arg`/`seam_tick`/`seam_value` +
+  `CachedVals` staging), log-everywhere, the P7 Sync flips + the
+  `SLEEP_RESTARTS` interior-sleep gate. Holds the rulings, the
+  ruled-delta list, the per-phase as-built records + gate records, and
+  the tag-removal post-mortem (removal is foreclosed — do not attempt
+  again). Supersedes `replay_frames.md`'s delivery model (its
+  reset_replay classification + frame mechanism remain).
 - `final_jit_architecture.md` — the end-state architecture (`Expr → node graph →
   CLIF`), now realized.
 - `distributed_jit.md` — how the GIR IR was removed and fusion distributed as

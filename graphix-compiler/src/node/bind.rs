@@ -1,7 +1,7 @@
 use super::{collection::CollectionIntrinsic, pattern::StructPatternNode};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, TagValue, Update, UserEvent, bailat,
+    Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -185,31 +185,38 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        if let Some(tv) = self.node.update(ctx, event) {
-            let (v, tag) = tv.into_parts();
-            if tag.is_tainted() {
-                // Never destructure a taint placeholder (the kernel's
-                // destructuring-consumer force): poison each bound name
-                // instead, and keep the placeholder OUT of the
-                // cross-cycle store.
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.node.update(ctx, event);
+        let tag = tv.tag();
+        // Publish TRIGGERING productions only — a stale RHS is the
+        // value channel, already served by the bound names' store
+        // entries. A fresh bottom poisons each bound name AND persists
+        // in the store (ruled delta 7: a fresh reader must see the
+        // standing bottom, not resurrect the pre-bottom value; the
+        // store keeps at-rest bottoms, `cached` never sees the
+        // placeholder).
+        if tag.triggers() {
+            if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
-                    event.variables.insert(id, TagValue::tainted(Value::Null));
+                    event
+                        .variables
+                        .insert(id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                    ctx.rt.store_insert(
+                        id,
+                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                    );
                     ctx.rt.notify_set(id);
                 });
             } else {
+                let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
                     event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    ctx.rt.cached_mut().insert(id, v);
+                    ctx.rt.store_insert(id, TagValue::fired(v));
                     ctx.rt.notify_set(id);
                 })
             }
         }
-        None
+        TagValue::phantom_ref()
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -291,6 +298,7 @@ pub struct Ref {
     pub typ: Type,
     pub id: BindId,
     pub(super) top_id: ExprId,
+    pub(crate) resident: TagValue,
 }
 
 impl Ref {
@@ -308,7 +316,13 @@ impl Ref {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Node::new(Self { spec: Arc::new(spec), typ, id, top_id })
+        Node::new(Self {
+            spec: Arc::new(spec),
+            typ,
+            id,
+            top_id,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
@@ -337,22 +351,40 @@ impl Ref {
                 }
                 ctx.rt.ref_var(bind_id, top_id);
                 let spec = Arc::new(spec);
-                Ok(Node::new(Self { spec, typ, id: bind_id, top_id }))
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    id: bind_id,
+                    top_id,
+                    resident: TagValue::phantom(),
+                }))
             }
         }
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
-    fn update(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        // The entry's tag flows through: an ordinary delivery is
-        // fired, a frame re-delivery/seed is stale, a poisoned bind
-        // is tainted.
-        event.variables.get(&self.id).map(|v| v.clone())
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        // THE dense read (R2/R3): overlays first (a delivery's own tag
+        // flows through), then the store — a standing entry is the
+        // value channel, viewed Stale, or Fired under the reader's
+        // REAL init view (frames force `event.init` for re-derivation,
+        // so the framed read consults `frame_init`, the
+        // const_stale_gate convention — a capture must not re-fire on
+        // every framed pass). This read IS what every init backfill
+        // used to synthesize. A store miss rides the resident (the
+        // phantom until the first delivery ever).
+        match super::read_var(ctx, event, &self.id) {
+            Some(super::VarRead::Delivered(tv)) => self.resident.set(tv.clone()),
+            Some(super::VarRead::Standing(tv)) => {
+                let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+                let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
+                let mut tv = tv.clone();
+                tv.retag(tag);
+                self.resident.set(tv)
+            }
+            None => self.resident.ride(),
+        }
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -398,6 +430,7 @@ pub struct ByRef<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub child: Node<R, E>,
     pub id: BindId,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
@@ -411,7 +444,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     /// node.
     #[allow(dead_code)]
     pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec, typ, child, id })
+        Node::new(Self { spec, typ, child, id, resident: TagValue::phantom() })
     }
 
     pub(crate) fn compile(
@@ -428,38 +461,35 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             ctx.env.byref_chain.insert_cow(id, c.id);
         }
         let typ = Type::ByRef(Arc::new(child.typ().clone()));
-        Ok(Node::new(Self { spec, typ, child, id }))
+        Ok(Node::new(Self { spec, typ, child, id, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Fired-only write gate: a stale refresh must not re-write the
         // referent, and a taint placeholder must never enter the
         // cross-cycle store.
-        if let Some(tv) = self.child.update(ctx, event) {
-            if tv.is_fired() {
-                let v = tv.value();
-                if event.init {
-                    // Seed the cache WITHOUT queuing a delivery: `Deref`'s
-                    // init fallback reads the cache THIS cycle, so the
-                    // queued write would arrive next cycle as a duplicate —
-                    // every deref (and anything downstream, e.g. an HOF
-                    // slot's predicate) re-fired once with the same value
-                    // (soak finding corpus-fuzz/divergence_000027; Eric's
-                    // ruling 2026-07-04: the echo was the wart, the JIT's
-                    // single delivery is correct).
-                    ctx.rt.cached_mut().insert(self.id, v);
-                } else {
-                    ctx.rt.set_var(self.id, v);
-                }
+        let tv = self.child.update(ctx, event);
+        if tv.is_fired() {
+            let v = tv.value_cloned();
+            if event.init {
+                // Seed the store WITHOUT a delivery (a STANDING write):
+                // `Deref`'s init read serves it THIS cycle via the R2
+                // store view; a queued write would arrive next cycle as
+                // a duplicate (corpus-fuzz/divergence_000027; Eric's
+                // ruling 2026-07-04: the JIT's single delivery is
+                // correct).
+                ctx.rt.store_insert_standing(self.id, TagValue::fired(v));
+            } else {
+                ctx.rt.set_var(self.id, v);
             }
         }
-        if event.init { Some(TagValue::fired(Value::U64(self.id.inner()))) } else { None }
+        if event.init {
+            self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
+        } else {
+            self.resident.ride()
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -510,6 +540,7 @@ pub struct Deref<R: Rt, E: UserEvent> {
     pub child: Node<R, E>,
     pub id: Option<BindId>,
     pub(super) top_id: ExprId,
+    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
@@ -519,7 +550,14 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// empty type variable for the interpreter to pin down later.
     #[allow(dead_code)]
     pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec, typ, child, id: None, top_id })
+        Node::new(Self {
+            spec,
+            typ,
+            child,
+            id: None,
+            top_id,
+            resident: TagValue::phantom(),
+        })
     }
 
     pub(crate) fn compile(
@@ -532,17 +570,21 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     ) -> Result<Node<R, E>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self { spec, typ, child, id: None, top_id }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            child,
+            id: None,
+            top_id,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
-        if let Some(tv) = self.child.update(ctx, event) {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.child.update(ctx, event);
+        if !tv.tag().is_bottom() {
             let id = tv.with_value(|v| match v {
                 Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
                 _ => None,
@@ -557,10 +599,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 }
             }
         }
-        self.id.and_then(|id| match event.variables.get(&id).cloned() {
-            None if event.init => ctx.rt.cached().get(&id).cloned().map(TagValue::fired),
-            v => v,
-        })
+        let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
+            Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
+            Some(super::VarRead::Standing(tv)) => {
+                let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+                let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
+                let mut c = tv.clone();
+                c.retag(tag);
+                Some(c)
+            }
+            None => None,
+        });
+        match res {
+            Some(tv) => self.resident.set(tv),
+            None => self.resident.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

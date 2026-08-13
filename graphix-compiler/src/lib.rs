@@ -33,7 +33,7 @@ use compact_str::CompactString;
 pub use cranelift_codegen;
 pub use cranelift_frontend;
 pub use fusion::FusionStats;
-pub use tval::{Tag, TagValue};
+pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
     effects::EffectKind,
@@ -202,6 +202,15 @@ impl Control {
     /// Take (and clear) the JIT depth-trip flag.
     pub fn take_depth_trip(&self) -> bool {
         self.depth_trip.swap(false, Ordering::Relaxed)
+    }
+
+    /// Read the JIT depth-trip flag WITHOUT clearing it.
+    /// `Kernel::update` peeks to decide its production (a trip is a
+    /// delivered FreshBottom, not a silent abort —
+    /// missing_fire_epoch3_aug08e); the wrapping `FusedKernel` then
+    /// takes it for the diagnostic.
+    pub fn peek_depth_trip(&self) -> bool {
+        self.depth_trip.load(Ordering::Relaxed)
     }
 
     /// Request that in-flight loops abort this cycle; the runtime keeps
@@ -453,7 +462,19 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
     pub init: bool,
+    /// The INNERMOST overlay: same-cycle transient deliveries (select
+    /// arm binds, QopDeliver, DynCall side channels, call-site formal
+    /// publishes) at depth 0, or the current evaluation frame's
+    /// private writes inside a framed pass. Under dense delivery
+    /// (design/dense_delivery.md R3) this is NOT the value store —
+    /// reads fall through the frame stack to [`Rt::store`] via
+    /// `node::read_var`.
     pub variables: IntMap<BindId, TagValue>,
+    /// The enclosing overlays of the current frame stack (innermost
+    /// last). Empty at depth 0. A framed pass reads through to
+    /// enclosing frames (an inner dispatch's captures live in its
+    /// caller's frame) and then to the store.
+    pub(crate) frames: Vec<IntMap<BindId, TagValue>>,
     pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
     pub user: E,
 }
@@ -463,17 +484,39 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: false,
             variables: IntMap::default(),
+            frames: Vec::new(),
             custom: IntMap::default(),
             user,
         }
     }
 
     pub fn clear(&mut self) {
-        let Self { init, variables, custom, user } = self;
+        let Self { init, variables, frames, custom, user } = self;
         *init = false;
         variables.clear();
+        debug_assert!(frames.is_empty(), "unbalanced enter_frame at cycle end");
+        frames.clear();
         custom.clear();
         user.clear();
+    }
+
+    /// Enter an evaluation-frame OVERLAY: the current `variables` map
+    /// is pushed onto the frame stack and `frame` (the pass's private
+    /// writes — usually empty, or the tail loop's rebound formals)
+    /// becomes the innermost overlay. Reads fall through the stack to
+    /// the persistent store, so no seeding is required.
+    pub fn enter_frame(&mut self, frame: IntMap<BindId, TagValue>) {
+        self.frames.push(std::mem::replace(&mut self.variables, frame));
+    }
+
+    /// Leave the frame entered by [`Self::enter_frame`]: the enclosing
+    /// overlay returns to `variables`; the frame's final map is
+    /// handed back (the tail loop reads it as the previous pass's
+    /// rebinds; everything else discards it — only
+    /// `ExecCtx::frame_outbox` outlives a frame).
+    pub fn exit_frame(&mut self) -> IntMap<BindId, TagValue> {
+        let outer = self.frames.pop().expect("exit_frame without enter_frame");
+        std::mem::replace(&mut self.variables, outer)
     }
 }
 
@@ -589,11 +632,7 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         Self(std::mem::ManuallyDrop::new(Box::new(node)))
     }
 
-    pub fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue> {
+    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         stack::ensure_sufficient(|| self.0.update(ctx, event))
     }
 
@@ -705,25 +744,20 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         ApplyViewMut::BuiltIn
     }
 
+    /// Same borrowed-production contract as [`Update::update`]: the
+    /// returned `&TagValue` is the builtin's RESIDENT (its result slot
+    /// — an ordinary builtin returns `self.out.set(TagValue::fired(v))`
+    /// and rides the resident on a quiet cycle). The production's
+    /// tag rides in the value — there is no side channel: `GXLambda`
+    /// returns its body's tag, `CachedArgs` re-surfaces its result
+    /// slot retagged STALE on a quiet arg refresh, the fused `Kernel`
+    /// returns the JIT out slot's disc tags.
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value>;
-
-    /// The tag of the LAST value [`Self::update`] returned — how an
-    /// `Apply` (whose return stays a clean `Option<Value>`: a builtin
-    /// cannot know fired-ness, its wrapper does) surfaces the
-    /// two-channel tag to the owning `CallSite`. The default FIRED is
-    /// right for every ordinary builtin (a builtin that produced was
-    /// triggered by a fired arg or its own async self-fire); overridden
-    /// by `GXLambda` (its body's tag), `BuiltInLambda` (delegates), the
-    /// `CachedArgs` wrappers (taint short-circuit), and the fused
-    /// `Kernel` (the JIT out slot's disc tags).
-    fn out_tag(&self) -> Tag {
-        Tag::FIRED
-    }
+    ) -> &TagValue;
 
     /// delete any internally generated nodes, only needed for
     /// builtins that dynamically generate code at runtime
@@ -772,8 +806,15 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// nodes, such as call sites.
     fn refs<'a>(&self, _refs: &mut Refs) {}
 
-    /// put the node to sleep, used in conditions like select for branches that
-    /// are not selected. Any cached values should be cleared on sleep.
+    /// Put the builtin to sleep — used by constructs like select for
+    /// unselected branches. Sleep is PAUSE, not reset (Eric's ruling
+    /// 2026-07-31): value-channel state (arg slots, the result
+    /// resident) SURVIVES so a re-woken arm rides its history. Only
+    /// the documented arm-rewake RESTART builtins clear their
+    /// semantic latches here (once/take/skip/hold/uniq/count — such a
+    /// builtin must declare `SLEEP_RESTARTS = true` so the fusion
+    /// interior-sleep gate keeps kernels honest), and async builtins
+    /// may tear down watches/subscriptions to re-arm on wake.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
     /// Clear REPLAY caches, preserve SEMANTIC state — the `Apply`-side
@@ -936,22 +977,15 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 /// application represented by Apply. Regular graph nodes are used for
 /// every built in node except for builtin functions.
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
-    /// Update the node with the specified event and return any output
-    /// it might generate. `None` = no production at all;
-    /// `Some(fired v)` = the ordinary event (today's `Some`);
-    /// `Some(stale v)` = a value-channel refresh — the parent caches
-    /// the value but nothing fires (originates only at the evaluation
-    /// frame seam: re-delivered call args, frame seeds);
-    /// `Some(tainted v)` = a possible-bottom placeholder flowing
-    /// toward a force point (originates only at in-frame swallowed
-    /// -error sites). Outside frames every production is fired, so
-    /// reactive semantics are unchanged. See `tval::TagValue` and
-    /// `design/replay_frames.md` v2.
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<TagValue>;
+    /// Update the node with the specified event and return its
+    /// production, borrowed from the node's own production slot (the
+    /// RESIDENT — a computing node recomputes into it, a delegating
+    /// node forwards its child's borrow). DENSE: every awake node
+    /// delivers every cycle — Fired(v) / Stale(v) / FreshBottom /
+    /// StaleBottom; a quiet cycle rides the resident
+    /// (`self.resident.ride()`). See `tval::TagValue`, [`TagView`],
+    /// and `design/dense_delivery.md`.
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue;
 
     /// delete the node and it's children from the specified context
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
@@ -1088,6 +1122,19 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// may be deleted when its call returns only if every builtin its
     /// body calls is stateless. Conservative default: `false`.
     const STATELESS: bool = false;
+    /// Whether this builtin's `sleep` CLEARS semantic state — the
+    /// documented arm-rewake RESTART builtins
+    /// (`once`/`take`/`skip`/`hold`/`uniq`/`count`): an arm
+    /// deselection sleeps the instance and re-arms it for the next
+    /// selection. Only meaningful for `EFFECT = Sync` builtins.
+    /// Consulted by the fusion interior-sleep gate: a kernel has no
+    /// per-arm sleep initiator, so a sleep-restarting builtin's
+    /// DynCall refuses to emit inside a fused select arm and the
+    /// region de-fuses (the node-walk's arm sleep then applies). A
+    /// wrong `false` is a semantics bug (the kernel would keep burned
+    /// state the interp re-arms); a wrong `true` only costs fusion
+    /// coverage. Default: `false` (sleep-inert).
+    const SLEEP_RESTARTS: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1246,23 +1293,45 @@ pub trait Rt: Debug + Any {
     /// presented as a new batch.
     fn set_var(&mut self, id: BindId, value: Value);
 
-    /// The last DELIVERED value of every bound variable. Maintained by
-    /// the runtime's cycle loop AT DELIVERY — when a queued `set_var`
-    /// actually lands in `event.variables` — so a primed read (select
-    /// arm wake, fresh callsite bind, fresh collection slot) can never
-    /// observe a value AHEAD of the delivery stream. Two consequences
-    /// the old `ExecCtx`-owned map got wrong: a same-cycle `<-` write
-    /// was visible to primers a cycle early (soak jul08l/jul08n), and
-    /// a variable set N times in one cycle showed its LAST value while
-    /// the deliveries still had N-1 cycles to run. Same-cycle
-    /// publishers (`Bind`'s direct `event.variables` insert, `ByRef`'s
-    /// init seed) update it through [`Rt::cached_mut`] at their insert
-    /// — those ARE deliveries.
-    fn cached(&self) -> &IntMap<BindId, Value>;
+    /// The persistent tagged store (design/dense_delivery.md R3): the
+    /// (production, cycle-stamp) of every bound variable's last
+    /// delivery. THE cross-cycle read under dense delivery: a reader
+    /// interprets `stamp == cycle()` as delivered-this-cycle (the
+    /// entry's own tag), an older stamp as the standing value channel
+    /// (Stale — Fired under an init view, R2), and absence as the
+    /// phantom. Maintained AT DELIVERY — when a queued `set_var`
+    /// actually lands in `event.variables` — so a primed read can
+    /// never observe a value AHEAD of the delivery stream (the old
+    /// `ExecCtx`-owned map got this wrong twice — soak jul08l/jul08n).
+    fn store(&self) -> &IntMap<BindId, (TagValue, u64)>;
 
-    /// Mutable access to [`Rt::cached`] for the same-cycle publishers
-    /// and delete/unbind cleanup.
-    fn cached_mut(&mut self) -> &mut IntMap<BindId, Value>;
+    /// The last delivered VALUE of a bind — the store entry's value
+    /// half. A bind whose last delivery was a bottom yields `None`:
+    /// per ruled delta 7 there is no pre-bottom value to resurrect
+    /// (the sparse `cached` map retained one; that behavior died with
+    /// it at P5b′).
+    fn store_value(&self, id: &BindId) -> Option<Value> {
+        self.store().get(id).and_then(|(tv, _)| {
+            if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
+        })
+    }
+
+    /// Insert a full tagged production into the store, stamped with
+    /// the current cycle — the same-cycle publishers' seam (`Bind`'s
+    /// publish, the runtime's delivery loop, pattern binds).
+    fn store_insert(&mut self, id: BindId, tv: TagValue);
+
+    /// Remove a bind from the store — delete/unbind/replay cleanup.
+    fn store_remove(&mut self, id: &BindId);
+
+    /// Insert a STANDING entry — value-channel maintenance that is
+    /// deliberately NOT a delivery (`ByRef`'s init seed): stamped as
+    /// an earlier cycle, so a same-cycle reader sees it Standing
+    /// (stale / init-fired), never Delivered.
+    fn store_insert_standing(&mut self, id: BindId, tv: TagValue);
+
+    /// The current cycle number — the store's stamp clock.
+    fn cycle(&self) -> u64;
 
     /// Notify the RT that a top level variable has been set internally
     ///
@@ -1543,7 +1612,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// (e.g. inside an HOF callback — #203). PERSISTENT across batches
     /// since the jul12 shell resolution-flap fix: the old per-batch
     /// clear dropped the stdlib's entries before the user file
-    /// compiled, so resolution fell to the `rt.cached()` fallback and
+    /// compiled, so resolution fell to the `store_value` fallback and
     /// FUSION became a race against the previous batch's init cycle.
     /// Each RT batch entry instead prunes the OUTGOING batch's
     /// `unstable_bindings` (exactly the `<-`-retargeted lambdas the
@@ -1777,7 +1846,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         self.fusion.builtin_facts.insert(
             T::NAME,
-            effects::BuiltinFacts { effect: T::EFFECT, stateless: T::STATELESS },
+            effects::BuiltinFacts {
+                effect: T::EFFECT,
+                stateless: T::STATELESS,
+                sleep_restarts: T::SLEEP_RESTARTS,
+            },
         );
         Ok(())
     }
@@ -1813,6 +1886,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// default) for unknown names.
     pub fn builtin_stateless(&self, name: &str) -> bool {
         self.fusion.builtin_facts.get(name).map(|f| f.stateless).unwrap_or(false)
+    }
+
+    /// Look up a registered builtin's `SLEEP_RESTARTS` declaration
+    /// (see [`BuiltIn::SLEEP_RESTARTS`]). Returns `true` (the
+    /// conservative reading for the interior-sleep gate) for unknown
+    /// names.
+    pub fn builtin_sleep_restarts(&self, name: &str) -> bool {
+        self.fusion.builtin_facts.get(name).map(|f| f.sleep_restarts).unwrap_or(true)
     }
 
     /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin

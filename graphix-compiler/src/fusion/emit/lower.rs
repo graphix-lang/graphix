@@ -188,6 +188,9 @@ pub(super) fn compile_into_function(
         callee_refs,
         helper_refs,
         init_override: std::cell::Cell::new(None),
+        arm_depth: std::cell::Cell::new(0),
+        saw_restart_reach: std::cell::Cell::new(false),
+        self_backedge_in_arm: std::cell::Cell::new(false),
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
@@ -201,7 +204,6 @@ pub(super) fn compile_into_function(
         type_env: spec.type_env,
         registry: spec.registry,
         fn_index_offset: spec.fn_index_offset,
-        gate_stale_at_return: spec.gate_stale_at_return,
         lifted: spec.lifted,
         lifted_ord: &kernel.lifted,
         state: StateChannel {
@@ -226,6 +228,7 @@ pub(super) fn compile_into_function(
         callee_layouts,
         lazy_site_leaves,
         loop_depth: std::cell::Cell::new(0),
+        guard_depth: std::cell::Cell::new(0),
     };
     // Cooperative-interrupt poll at the tail-loop head, before the body:
     // a wedged native rebind-and-jump loop aborts to bottom on
@@ -271,6 +274,22 @@ pub(super) fn compile_into_function(
     // pending_exit). FunctionBuilder requires all blocks be sealed
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
+    // The interior-sleep gate's deferred self/back-edge check (P7):
+    // a self- or back-edge call inside an arm could not consult its
+    // callee's fact mid-emission (the callee IS this kernel, or a
+    // cycle peer still defining). Now the transitive fact is final:
+    // if the body reaches a stateful builtin, that call re-enters
+    // state that only arm-sleep could restart — refuse the define.
+    if lower.self_backedge_in_arm.get() && lower.saw_restart_reach.get() {
+        return Err(anyhow::anyhow!(
+            "emit_clif: self/back-edge call inside a select arm in a \
+             kernel that reaches a stateful builtin (no interior \
+             arm-sleep in kernels)"
+        ));
+    }
+    kernel
+        .has_sleep_restart
+        .store(lower.saw_restart_reach.get(), std::sync::atomic::Ordering::Relaxed);
     let replay_words = lower.state.replay.borrow().clone();
     let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
@@ -568,6 +587,16 @@ pub(crate) struct LowerCtx<'a> {
     /// word can't hold per-slot memory (the node-walk gives each slot
     /// its own state, but an inline loop body is one function).
     pub(super) loop_depth: std::cell::Cell<u32>,
+    /// Depth of enclosing select GUARD expressions at the current
+    /// emission point. Guards are VALUE-DRIVEN consumers in the dense
+    /// interp: a guard's truth test reads its interior nodes' CACHED
+    /// VALUES, which survive under a poisoned tag ("bottom
+    /// productions poison the tag, never overwrite the value"), so
+    /// guard-interior bottom origins ride where statement/merge
+    /// positions propagate (Q1). Together with `loop_depth` (per-slot
+    /// rides, fork 7) this scopes the interior-bottom taint caches —
+    /// see `in_ride_scope`.
+    pub(super) guard_depth: std::cell::Cell<u32>,
     /// Cross-kernel call sites resolve their callee's kernel IDENTITY
     /// (`kernel_key` of the site's `info.kernel` Arc) through this map
     /// to a CLIF `FuncRef` — never by name (names shadow, and
@@ -595,6 +624,29 @@ pub(crate) struct LowerCtx<'a> {
     /// outside arm bodies (and inside arms of stateless-context
     /// selects, which refuse arm-lifted binds instead).
     pub(super) init_override: std::cell::Cell<Option<ClifValue>>,
+    /// Depth of select-ARM body emission currently in progress (the
+    /// shared `emit_select_arms` driver increments around each arm
+    /// body). Load-bearing for the interior-sleep gate (P7): a
+    /// STATEFUL builtin's DynCall — and a call to a callee kernel
+    /// whose transitive body contains one — refuses to emit at
+    /// `arm_depth > 0`, de-fusing the region. Kernels have no
+    /// interior arm-sleep initiator, so the interp's arm-rewake
+    /// RESTART semantics can only be had by interpreting the select.
+    pub(super) arm_depth: std::cell::Cell<u32>,
+    /// Accumulates "this kernel's body transitively reaches a
+    /// SLEEP-RESTARTING builtin" during emission: set by every such
+    /// DynCall emission and by every lambda call whose callee sig
+    /// carries the fact. Harvested at the end of
+    /// `compile_into_function` into `KernelSig::has_sleep_restart` so
+    /// CALLERS can consult it at their own call sites (callees
+    /// define before callers).
+    pub(super) saw_restart_reach: std::cell::Cell<bool>,
+    /// A self- or back-edge lambda call was emitted at `arm_depth >
+    /// 0` — its callee's fact wasn't final mid-emission, so the
+    /// interior-sleep check is deferred to the end of
+    /// `compile_into_function` against the finalized
+    /// `saw_restart_reach`.
+    pub(super) self_backedge_in_arm: std::cell::Cell<bool>,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A forced-bottom
@@ -674,10 +726,6 @@ pub(crate) struct LowerCtx<'a> {
     /// classifiers (`abi_kind`/freeze/`resolve_abstract`) via
     /// [`BodyCx::registry`].
     pub(super) registry: &'a AbstractRegistry,
-    /// Whether [`emit_kernel_return`] gates this body's return on STALE —
-    /// `true` for a published body, `false` for a cross-kernel callee.
-    /// See [`BodyEmitter::gate_stale_at_return`].
-    pub(super) gate_stale_at_return: bool,
     /// Lifted connect-target bind ids (let-bound scalar counters routed
     /// in as feeders). Read by [`emit_let_node`] (seed-select) and
     /// [`emit_connect_node`] (write gate). See [`BodyEmitter::lifted`].

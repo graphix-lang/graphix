@@ -1,29 +1,32 @@
 //! The tagged Value — the shared value currency of the interpreter and
-//! the JIT (`design/replay_frames.md` "v2: TagValue as the interpreter
-//! currency").
+//! the JIT, and under the dense-delivery model
+//! (`design/dense_delivery.md`) the ONLY production currency: every
+//! awake node delivers one of these every cycle.
 //!
 //! A `TagValue` is bit-identical to `Value` (16 bytes, two integer
 //! eightbytes → two registers, so the JIT marshals it exactly like a
 //! `Value`), EXCEPT the upper 8 bits of the discriminant word are
 //! reserved for a tag. The real `Value` discriminant only uses the low
 //! bits (`value_disc` tops out at `0x8000_0000`), so the tag and the
-//! discriminant never collide. Two tag bits carry the two channels the
-//! kernel's disc word carries (`fusion/emit.rs` `STALE`/`TAINT`):
+//! discriminant never collide. Two ORTHOGONAL tag bits carry the two
+//! channels the kernel's disc word carries (`fusion/emit.rs`
+//! `STALE`/`TAINT`), giving four states — [`TagView`]:
 //!
-//! - **STALE** — "did not fire this cycle; the payload is a cached
-//!   prior value". Result of an op fires iff ANY consumed operand
-//!   fired (AND-reduce); forced fresh at the kernel output and at
-//!   `set_var` writes, and in the interpreter at loop-driver body
-//!   results and the runtime delivery boundary.
-//! - **TAINT** — a BOTTOM PLACEHOLDER (#219: a div0, a handler-less
-//!   `?`, a missing input). The payload is never a usable value;
-//!   anything that consumes it is bottom. The word can still FLOW
-//!   without bottoming anything — straight-line evaluation computes
-//!   untaken paths, so whether the RESULT is bottom is decided at the
-//!   force points (output, `set_var`, destructuring consumers), not at
-//!   the producing site. Propagates by OR through consumption.
-//!   Invariant: TAINT ⟹ STALE (the constructors make the violation
-//!   unrepresentable).
+//! - **fired × value** (`Fired`, tag 0) — an event carrying a value.
+//! - **¬fired × value** (`Stale`, STALE bit) — present, not an event:
+//!   the value channel. The payload is the producer's current value.
+//! - **fired × bottom** (`FreshBottom`, TAINT bit alone) — the
+//!   computation produced no usable value THIS cycle (a div0, a
+//!   handler-less `?`, a tripped call depth): an event with no value.
+//!   The payload is a helper-safe placeholder, never usable.
+//! - **¬fired × bottom** (`StaleBottom`, both bits) — a standing
+//!   bottom, nothing new; also the PHANTOM initial state of a
+//!   production slot that has never produced (`never()`, a
+//!   pre-first-value async source).
+//!
+//! Both bits propagate by OR over consumed inputs ([`Tag::join`]).
+//! Consumption is [`TagValue::view`] — exhaustive matching is the
+//! rule; the boolean accessors are for the JIT disc boundary.
 //!
 //! The BOUNDARY GUARANTEE: a `TagValue` is *uninterpreted* raw words —
 //! the only ways to recover a `Value` are [`TagValue::value`] and
@@ -51,63 +54,157 @@ const TAG_MASK: u64 = 0xFF00_0000_0000_0000;
 pub struct Tag(u8);
 
 impl Tag {
-    /// "did not fire this cycle" (kernel disc bit 61).
+    /// "not an event this cycle" (kernel disc bit 61).
     pub const STALE_BIT: u8 = 0x20;
-    /// A bottom placeholder — consuming it makes the consumer bottom;
-    /// the result bottoms only if a taken path consumes it (#219;
-    /// kernel disc bit 62).
+    /// "no usable value" — bottom (kernel disc bit 62). The payload
+    /// under this bit is a helper-safe placeholder, never usable.
     pub const TAINT_BIT: u8 = 0x40;
-
     /// Fired this cycle, not a bottom — the ordinary production.
     pub const FIRED: Tag = Tag(0);
     /// A value-channel refresh: present, valid, did not fire.
     pub const STALE: Tag = Tag(Self::STALE_BIT);
-    /// A possible bottom. TAINT ⟹ STALE by construction.
-    pub const TAINT: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
+    /// A bottom that is an event: the computation produced no usable
+    /// value THIS cycle.
+    pub const FRESH_BOTTOM: Tag = Tag(Self::TAINT_BIT);
+    /// A standing bottom (nothing new), and the phantom initial state
+    /// of a production slot that has never produced.
+    pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
+    /// The sparse world's single bottom — legacy name for
+    /// [`Self::STALE_BOTTOM`]; dies with the P2 consumer sweep.
+    pub const TAINT: Tag = Self::STALE_BOTTOM;
 
-    /// Wrap a raw tag byte from the JIT boundary, restoring the
-    /// TAINT ⟹ STALE invariant (the kernel maintains it in CLIF, but
-    /// a helper-minted byte might carry TAINT alone).
+    /// Wrap a raw tag byte. HONEST: the four states read as minted.
     pub fn from_raw(bits: u8) -> Self {
-        if bits & Self::TAINT_BIT != 0 { Self::TAINT } else { Tag(bits) }
+        Tag(bits)
     }
 
     pub fn bits(self) -> u8 {
         self.0
     }
 
-    /// Fired this cycle (neither stale nor tainted).
+    /// Fired this cycle and carrying a usable value.
     pub fn is_fired(self) -> bool {
         self.0 & (Self::STALE_BIT | Self::TAINT_BIT) == 0
     }
 
-    pub fn is_tainted(self) -> bool {
+    /// Bottom — no usable value (fresh or standing).
+    pub fn is_bottom(self) -> bool {
         self.0 & Self::TAINT_BIT != 0
     }
 
-    /// Should this production trigger the consumer's evaluation?
-    /// True for fired productions AND tainted ones (taint must ride
-    /// toward its force point); false for merely-stale refreshes.
-    pub fn triggers(self) -> bool {
-        self.is_fired() || self.is_tainted()
+    /// Legacy name for [`Self::is_bottom`]; dies with the P2 sweep.
+    pub fn is_tainted(self) -> bool {
+        self.is_bottom()
     }
 
-    /// Combine per the kernel's propagation rules: taint ORs (any
-    /// consumed bottom taints the result), stale AND-reduces (a result
-    /// fires iff ANY operand fired). `FIRED` is the identity for
-    /// taint accumulation and the absorbing element for firing.
+    /// Should this production trigger the consumer's evaluation? The
+    /// DENSE definition (the 5b flip): the fired bit alone — `Fired`
+    /// and `FreshBottom` are events, the stale states are not.
+    pub fn triggers(self) -> bool {
+        self.0 & Self::STALE_BIT == 0
+    }
+
+    /// The orthogonal OR-join: bottom ORs (any consumed bottom bottoms
+    /// the result), fired ORs — written as its complement, the STALE
+    /// bit AND-reduces (a result is an event iff ANY consumed input
+    /// was). `FIRED` is the identity for bottom accumulation and the
+    /// absorbing element for firing.
     pub fn join(self, other: Tag) -> Tag {
         let taint = (self.0 | other.0) & Self::TAINT_BIT;
         let stale = (self.0 & other.0) & Self::STALE_BIT;
         Self::from_raw(taint | stale)
     }
 
-    /// OR `other`'s taint into self, leaving self's firing alone —
+    /// OR `other`'s bottom into self, leaving self's firing alone —
     /// the op-result rule for a consumed operand cache (the operand's
-    /// staleness doesn't matter mid-expression; its taint does).
+    /// staleness doesn't matter mid-expression; its bottom does).
+    /// (Through the P1 `from_raw` clamp this still lands on
+    /// `STALE_BOTTOM` regardless of self's firing.)
     pub fn with_taint_of(self, other: Tag) -> Tag {
         if other.is_tainted() { Self::TAINT } else { self }
     }
+
+    /// The quiet-cycle downgrade: set the STALE bit, keep bottomness —
+    /// the tag a resident re-surfaces under when nothing triggered
+    /// this cycle. (`STALE` alone would mint a usable value out of a
+    /// phantom's placeholder; quiet preserves the TAINT bit.)
+    pub fn quiet(self) -> Tag {
+        Tag(self.0 | Self::STALE_BIT)
+    }
+
+    /// The init-view upgrade (R2): clear the STALE bit, keep
+    /// bottomness — a fresh reader sees a standing value as new (a
+    /// standing bottom as a fresh bottom).
+    pub fn fresh(self) -> Tag {
+        Tag(self.0 & !Self::STALE_BIT)
+    }
+}
+
+/// The exhaustive view of a production — THE way to consume a
+/// [`TagValue`] (compiler and stdlib alike; boolean tag accessors are
+/// for the JIT disc boundary). The value-bearing variants carry
+/// `&TagValue`, not `&Value`: the tag rides the disc's upper byte, so
+/// no untagged `Value` exists at any address to lend — read the value
+/// through the masking APIs ([`TagValue::with_value`] /
+/// [`TagValue::value_cloned`]), zero-clone. The bottom variants carry
+/// nothing: the placeholder payload is never a usable value.
+#[derive(Debug)]
+pub enum TagView<'a> {
+    /// An event carrying a value.
+    Fired(&'a TagValue),
+    /// Present, not an event — the value channel.
+    Stale(&'a TagValue),
+    /// An event with no usable value: the computation bottomed THIS
+    /// cycle. Unobservable until the 5b flip (see [`Tag::from_raw`]).
+    FreshBottom,
+    /// A standing bottom / the never-produced phantom.
+    StaleBottom,
+}
+
+/// The `(disc, payload)` words of a `Value` with EVERY BYTE DEFINED —
+/// the only sanctioned `Value` → words read. A raw transmute reads the
+/// payload lane of the dataless (`Null`) and narrow
+/// (`Bool`/`u8`/…/`f32`) variants as PADDING: undefined bytes typed as
+/// `u64`, which LLVM treats as poison — at opt-level 3 + fat LTO it
+/// folded a partially-undef branch merge in the DynCall delivery to
+/// the WRONG lane, turning a FreshBottom delivery into a fired
+/// placeholder (the aug13a release-only fleet-gate class: 11 corpus
+/// regressions, debug-invisible). Narrow scalars widen with
+/// `pack_value_to_u64`'s conventions (signed sign-extend, unsigned
+/// zero-extend, `f32` bit pattern) so a word a kernel call site
+/// narrows back reads exactly; pointer payloads read their fully
+/// initialized word through `MaybeUninit` (never typing out a
+/// possibly-undef lane).
+pub fn value_words(v: &Value) -> [u64; 2] {
+    use std::mem::MaybeUninit;
+    let w: [MaybeUninit<u64>; 2] = unsafe { std::mem::transmute_copy(v) };
+    let disc = unsafe { w[0].assume_init() };
+    let payload = match v {
+        Value::Null => 0,
+        Value::Bool(x) => *x as u64,
+        Value::U8(x) => *x as u64,
+        Value::I8(x) => *x as i64 as u64,
+        Value::U16(x) => *x as u64,
+        Value::I16(x) => *x as i64 as u64,
+        Value::U32(x) | Value::V32(x) => *x as u64,
+        Value::I32(x) | Value::Z32(x) => *x as i64 as u64,
+        Value::F32(x) => x.to_bits() as u64,
+        Value::U64(_)
+        | Value::V64(_)
+        | Value::I64(_)
+        | Value::Z64(_)
+        | Value::F64(_)
+        | Value::String(_)
+        | Value::Bytes(_)
+        | Value::Error(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Decimal(_)
+        | Value::DateTime(_)
+        | Value::Duration(_)
+        | Value::Abstract(_) => unsafe { w[1].assume_init() },
+    };
+    [disc, payload]
 }
 
 #[repr(C)]
@@ -141,7 +238,8 @@ impl TagValue {
     /// Stuff `tag` into the upper 8 bits of `v`'s discriminant.
     #[inline]
     pub fn tagged(v: Value, tag: Tag) -> Self {
-        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(v) };
+        let [disc, payload] = value_words(&v);
+        std::mem::forget(v);
         debug_assert_eq!(disc & TAG_MASK, 0, "Value discriminant overlaps the tag byte");
         TagValue { disc: disc | ((tag.bits() as u64) << 56), payload }
     }
@@ -162,6 +260,77 @@ impl TagValue {
     #[inline]
     pub fn stale(v: Value) -> Self {
         Self::tagged(v, Tag::STALE)
+    }
+
+    /// The initial state of a production slot that has never produced
+    /// — a standing bottom with the helper-safe placeholder payload.
+    #[inline]
+    pub fn phantom() -> Self {
+        Self::tagged(Value::Null, Tag::STALE_BOTTOM)
+    }
+
+    /// Store a fresh production into this slot (a node's RESIDENT) and
+    /// hand back the borrow — the tail of every computing node's
+    /// `update`: `self.resident.set(TagValue::fired(v))`.
+    #[inline]
+    pub fn set(&mut self, tv: TagValue) -> &TagValue {
+        *self = tv;
+        self
+    }
+
+    /// Rewrite the tag byte in place, keeping the payload, and hand
+    /// back the borrow — a resident's quiet-cycle downgrade
+    /// (`self.resident.retag(Tag::STALE)`): the value channel
+    /// re-surfaces the last result without a clone.
+    #[inline]
+    pub fn retag(&mut self, tag: Tag) -> &TagValue {
+        self.disc = (self.disc & !TAG_MASK) | ((tag.bits() as u64) << 56);
+        self
+    }
+
+    /// The quiet-cycle production (the dense model's "nothing new"):
+    /// downgrade the resident's tag in place — STALE set, bottomness
+    /// kept — and hand back the borrow. A never-set resident stays the
+    /// phantom; a genuine result re-surfaces on the value channel.
+    #[inline]
+    pub fn ride(&mut self) -> &TagValue {
+        let t = self.tag().quiet();
+        self.retag(t)
+    }
+
+    /// The shared production of a node that NEVER produces (`never()`,
+    /// an effect-only builtin): the permanent phantom.
+    pub fn phantom_ref() -> &'static TagValue {
+        static PHANTOM: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(TagValue::phantom);
+        &PHANTOM
+    }
+
+    /// The shared tainted-placeholder production — for a return path
+    /// that must deliver the helper-safe poison WITHOUT clobbering its
+    /// resident (the resident holds the last genuine result, which the
+    /// value channel may still re-surface: `CachedArgs`' leak
+    /// backstop, the fused kernel's in-frame abort).
+    pub fn tainted_null() -> &'static TagValue {
+        static TAINTED: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(|| TagValue::tainted(Value::Null));
+        &TAINTED
+    }
+
+    /// The shared bottom production for a wrapper that bottoms an
+    /// invocation without clobbering its resident (the Q1
+    /// bottom-propagates seam, design/dense_delivery.md): `triggering`
+    /// picks `FreshBottom` (an arg delivery triggered this cycle) vs
+    /// `StaleBottom` (a standing bottom re-surfacing). The minted bits
+    /// are honest; until the 5b flip removes [`Tag::from_raw`]'s clamp
+    /// both READ as the sparse single-flavored TAINT, so pre-flip
+    /// consumers can't tell them apart — by design.
+    pub fn bottom_null(triggering: bool) -> &'static TagValue {
+        static FRESH: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(|| TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+        static STALE: std::sync::LazyLock<TagValue> =
+            std::sync::LazyLock::new(|| TagValue::tagged(Value::Null, Tag::STALE_BOTTOM));
+        if triggering { &FRESH } else { &STALE }
     }
 
     /// A possible-bottom placeholder (tainted, hence also stale).
@@ -190,6 +359,18 @@ impl TagValue {
     #[inline]
     pub fn is_tainted(&self) -> bool {
         self.tag().is_tainted()
+    }
+
+    /// The exhaustive production view — see [`TagView`].
+    #[inline]
+    pub fn view(&self) -> TagView<'_> {
+        let tag = self.tag();
+        match (tag.is_bottom(), tag.bits() & Tag::STALE_BIT != 0) {
+            (false, false) => TagView::Fired(self),
+            (false, true) => TagView::Stale(self),
+            (true, false) => TagView::FreshBottom,
+            (true, true) => TagView::StaleBottom,
+        }
     }
 
     /// Recover the clean `Value`, MASKING the tag. The sole raw-words →
@@ -236,6 +417,13 @@ impl TagValue {
     }
 }
 
+impl Default for TagValue {
+    /// The phantom — a production slot's never-produced initial state.
+    fn default() -> Self {
+        Self::phantom()
+    }
+}
+
 impl Clone for TagValue {
     #[inline]
     fn clone(&self) -> Self {
@@ -245,7 +433,8 @@ impl Clone for TagValue {
             std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
         });
         let dup: Value = (*view).clone();
-        let [disc, payload] = unsafe { std::mem::transmute::<Value, [u64; 2]>(dup) };
+        let [disc, payload] = value_words(&dup);
+        std::mem::forget(dup);
         TagValue { disc: disc | (self.disc & TAG_MASK), payload }
     }
 }
@@ -294,12 +483,15 @@ mod tests {
         // stale AND-reduces: any fired operand fires the result
         assert_eq!(T::FIRED.join(T::STALE), T::FIRED);
         assert_eq!(T::STALE.join(T::STALE), T::STALE);
-        // taint ORs and implies stale
-        assert_eq!(T::FIRED.join(T::TAINT), T::TAINT);
-        assert_eq!(T::STALE.join(T::TAINT), T::TAINT);
+        // taint ORs; firedness is independent (the orthogonal algebra
+        // — a standing bottom joined with a fired operand is a FRESH
+        // bottom: the result is an event with no usable value)
+        assert_eq!(T::FIRED.join(T::TAINT), T::FRESH_BOTTOM);
+        assert_eq!(T::STALE.join(T::TAINT), T::STALE_BOTTOM);
         assert!(T::TAINT.is_tainted() && !T::TAINT.is_fired());
-        // a raw taint-only byte is invariant-restored
-        assert_eq!(T::from_raw(T::TAINT_BIT), T::TAINT);
+        // raw bytes are honest since the 5b flip; the kernel-output
+        // seam clamps locally
+        assert_eq!(T::from_raw(T::TAINT_BIT), T::FRESH_BOTTOM);
     }
 
     #[test]
@@ -309,5 +501,30 @@ mod tests {
         assert!(dup.is_tainted());
         assert_eq!(dup.value(), Value::from("boo"));
         assert_eq!(tv.value_cloned(), Value::from("boo"));
+    }
+
+    #[test]
+    fn view_maps_the_observable_states() {
+        let fired = TagValue::fired(Value::from(1i64));
+        assert!(
+            matches!(fired.view(), TagView::Fired(tv) if tv.value_cloned() == Value::from(1i64))
+        );
+        let stale = TagValue::stale(Value::from(2i64));
+        assert!(
+            matches!(stale.view(), TagView::Stale(tv) if tv.value_cloned() == Value::from(2i64))
+        );
+        let bottom = TagValue::tainted(Value::Null);
+        assert!(matches!(bottom.view(), TagView::StaleBottom));
+    }
+
+    #[test]
+    fn fresh_bottom_is_observable() {
+        // The 5b flip: raw tags read honest — a bare-TAINT
+        // construction IS a FreshBottom through tag()/view() (this
+        // test asserted the inverse under the P1 clamp).
+        let tv = TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM);
+        assert_eq!(tv.tag(), Tag::FRESH_BOTTOM);
+        assert!(matches!(tv.view(), TagView::FreshBottom));
+        assert!(tv.tag().triggers() && tv.tag().is_bottom());
     }
 }

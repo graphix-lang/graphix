@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Refs, Scope, compile,
+    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope, compile,
     expr::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, Source, parse_modpath, read_to_arcstr,
@@ -235,9 +235,6 @@ pub(super) struct GX<X: GXExt> {
     /// watched expr emits, or `None` when the runtime next goes idle. See
     /// `GXHandle::wait_result_or_idle`.
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
-    /// Index of the currently-running (or next) `do_cycle`. Absolute
-    /// values are not comparable across runs — see [`TraceEvent`].
-    cycle: u64,
     /// Active trace recording, if any. See [`GXHandle::trace_start`].
     trace: Option<TraceState>,
     /// The SESSION scope for statement-at-a-time compiles (REPL inputs
@@ -279,7 +276,6 @@ impl<X: GXExt> GX<X> {
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
             result_watch: None,
-            cycle: 0,
             trace: None,
             scope: Scope::root(),
         };
@@ -316,16 +312,20 @@ impl<X: GXExt> GX<X> {
                 }
             };
         }
-        // Variable DELIVERY is where `Rt::cached` advances: the Vacant
+        // Variable DELIVERY is where the store advances: the Vacant
         // arm below is a value landing in `event.variables` this cycle;
-        // the Occupied arm re-queues (NOT delivered — cached must not
-        // move, or a variable set N times in one cycle would show its
-        // final value while the deliveries still had cycles to run).
+        // the Occupied arm re-queues (NOT delivered — the store must
+        // not move, or a variable set N times in one cycle would show
+        // its final value while the deliveries still had cycles to
+        // run).
         macro_rules! push_var_event {
             ($id:expr, $v:expr) => {
                 match self.event.variables.entry($id) {
                     Entry::Vacant(e) => {
-                        self.ctx.rt.cached.insert($id, $v.clone());
+                        self.ctx.rt.store_insert(
+                            $id,
+                            graphix_compiler::TagValue::fired($v.clone()),
+                        );
                         // an ordinary runtime delivery is a FIRED event
                         e.insert(graphix_compiler::TagValue::fired($v));
                         if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
@@ -373,32 +373,17 @@ impl<X: GXExt> GX<X> {
         let mut run_nodes = || {
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
-                    let mut clear: LPooled<Vec<BindId>> = LPooled::take();
+                    // No init backfill: under dense delivery a Ref's
+                    // store read serves the init view itself (R2 — a
+                    // standing entry reads Fired when `event.init`).
                     self.event.init = *init;
-                    if self.event.init {
-                        let mut refs = Refs::default();
-                        n.refs(&mut refs);
-                        refs.with_external_refs(|id| {
-                            if let Some(v) = self.ctx.rt.cached.get(&id) {
-                                if let Entry::Vacant(e) = self.event.variables.entry(id) {
-                                    // FIRED: an init view — the fresh
-                                    // top sees everything as new
-                                    e.insert(graphix_compiler::TagValue::fired(
-                                        v.clone(),
-                                    ));
-                                    clear.push(id);
-                                }
-                            }
-                        });
-                    }
                     // The runtime delivery boundary is a firing FORCE
                     // point (the kernel-output twin): only a FIRED
                     // production becomes an event; a stale or tainted
                     // one is dropped here.
-                    if let Some(tv) = n.update(&mut self.ctx, &mut self.event)
-                        && tv.is_fired()
-                    {
-                        let v = tv.value();
+                    let tv = n.update(&mut self.ctx, &mut self.event);
+                    if tv.is_fired() {
+                        let v = tv.value_cloned();
                         let watched = matches!(
                             self.result_watch.as_ref(),
                             Some((wid, _)) if wid == id
@@ -409,7 +394,7 @@ impl<X: GXExt> GX<X> {
                             }
                         }
                         if let Some(tr) = self.trace.as_mut() {
-                            tr.record(self.cycle, *id, &v);
+                            tr.record(self.ctx.rt.cycle, *id, &v);
                         }
                         batch.push(GXEvent::Updated(*id, v))
                     }
@@ -418,9 +403,6 @@ impl<X: GXExt> GX<X> {
                     // attributed to this top-level expression.
                     for d in self.ctx.diagnostics.drain(..) {
                         batch.push(GXEvent::Diagnostic(Some(*id), d));
-                    }
-                    for id in clear.drain(..) {
-                        self.event.variables.remove(&id);
                     }
                 }
             }
@@ -447,9 +429,9 @@ impl<X: GXExt> GX<X> {
             batch.push(GXEvent::Diagnostic(None, d));
         }
         if let Some(tr) = self.trace.as_mut() {
-            tr.cycle_end(self.cycle, worked);
+            tr.cycle_end(self.ctx.rt.cycle, worked);
         }
-        self.cycle += 1;
+        self.ctx.rt.cycle += 1;
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
@@ -580,7 +562,7 @@ impl<X: GXExt> GX<X> {
                     // An already-capped trace resolves here; otherwise
                     // the waiter resolves at the top-of-loop idle check
                     // or when a cap trips at the end of a cycle.
-                    Some(tr) => tr.wait(res, self.cycle),
+                    Some(tr) => tr.wait(res, self.ctx.rt.cycle),
                 },
             }
         }
@@ -588,11 +570,11 @@ impl<X: GXExt> GX<X> {
 
     /// Record a [`TraceEvent::Compiled`] anchor for each expression of a
     /// successful `compile`/`load`, at the moment the nodes are
-    /// registered (their init cycle is `self.cycle`, the next to run).
+    /// registered (their init cycle is `self.ctx.rt.cycle`, the next to run).
     fn record_compiled(&mut self, r: &Result<CompRes<X>>) {
         if let (Ok(cr), Some(tr)) = (r, self.trace.as_mut()) {
             for e in cr.exprs.iter() {
-                tr.record_compiled(self.cycle, e.id);
+                tr.record_compiled(self.ctx.rt.cycle, e.id);
             }
         }
     }
@@ -620,7 +602,7 @@ impl<X: GXExt> GX<X> {
         // `<-` targets instead of clearing it (see the field doc,
         // #203 + the jul12 shell resolution FLAP): stable cross-batch
         // entries (the stdlib's exports above all) must survive into
-        // this batch, or resolution falls to the `rt.cached()`
+        // this batch, or resolution falls to the `store_value`
         // fallback — whose contents depend on whether the previous
         // batch's init cycle has RUN yet, making FUSION a race
         // (release shell: identical program, instances fused on some
@@ -671,7 +653,7 @@ impl<X: GXExt> GX<X> {
         // `<-` targets instead of clearing it (see the field doc,
         // #203 + the jul12 shell resolution FLAP): stable cross-batch
         // entries (the stdlib's exports above all) must survive into
-        // this batch, or resolution falls to the `rt.cached()`
+        // this batch, or resolution falls to the `store_value`
         // fallback — whose contents depend on whether the previous
         // batch's init cycle has RUN yet, making FUSION a race
         // (release shell: identical program, instances fused on some
@@ -904,7 +886,7 @@ impl<X: GXExt> GX<X> {
         // `<-` targets instead of clearing it (see the field doc,
         // #203 + the jul12 shell resolution FLAP): stable cross-batch
         // entries (the stdlib's exports above all) must survive into
-        // this batch, or resolution falls to the `rt.cached()`
+        // this batch, or resolution falls to the `store_value`
         // fallback — whose contents depend on whether the previous
         // batch's init cycle has RUN yet, making FUSION a race
         // (release shell: identical program, instances fused on some
@@ -974,7 +956,7 @@ impl<X: GXExt> GX<X> {
             bid: id,
             typ,
             target_bid,
-            last: self.ctx.rt.cached.get(&id).cloned(),
+            last: self.ctx.rt.store_value(&id),
             rt,
         })
     }
@@ -1087,7 +1069,7 @@ impl<X: GXExt> GX<X> {
                         let _ = tx.send(None);
                     }
                     if let Some(tr) = self.trace.as_mut() {
-                        tr.resolve(self.cycle);
+                        tr.resolve(self.ctx.rt.cycle);
                     }
                     idle_passes = 0;
                 }

@@ -2,18 +2,26 @@ use anyhow::{Result, bail};
 use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind, err, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::{CachedVals, arity2};
+use graphix_package_core::{CachedVals, seam_tick, seam_value};
 use netidx::{publisher::FromValue, subscriber::Value};
 use std::{ops::SubAssign, time::Duration};
 
 #[derive(Debug)]
 pub(crate) struct AfterIdle {
-    args: CachedVals,
+    /// The latest raw timeout value — re-cast when a delivery
+    /// (re)arms the idle timer.
+    timeout_v: Option<Value>,
+    /// The latest value of the watched arg — the emission source when
+    /// the timer fires (async, after the arg's delivery is long
+    /// gone). An explicit OWN field, not an arg-cache slot
+    /// (design/dense_delivery.md, the throttle/timer P4 item).
+    last_v: Option<Value>,
     id: Option<BindId>,
     eid: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
@@ -25,10 +33,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(AfterIdle { args: CachedVals::new(from), id: None, eid: top_id }))
+        Ok(Box::new(AfterIdle {
+            timeout_v: None,
+            last_v: None,
+            id: None,
+            eid: top_id,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -38,39 +52,47 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        let mut up = [false; 2];
-        self.args.update_diff(&mut up, ctx, from, event);
-        let ((timeout, val), (timeout_up, val_up)) = arity2!(self.args.0, &up);
-        match ((timeout, val), (timeout_up, val_up)) {
-            ((Some(secs), _), (true, _)) | ((Some(secs), _), (_, true)) => {
-                match secs.clone().cast_to::<Duration>() {
-                    Ok(dur) => {
-                        let id = BindId::new();
-                        self.id = Some(id);
-                        ctx.rt.ref_var(id, self.eid);
-                        ctx.rt.set_timer(id, dur);
-                        return None;
-                    }
-                    Err(_) => {
-                        self.id = None;
-                        return None;
-                    }
+    ) -> &TagValue {
+        let mut timeout_up = false;
+        if let Some(tv) = seam_value(from[0].update(ctx, event)) {
+            timeout_up = tv.is_fired();
+            self.timeout_v = Some(tv.value_cloned());
+        }
+        let mut val_up = false;
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            val_up = tv.is_fired();
+            self.last_v = Some(tv.value_cloned());
+        }
+        if let Some(secs) = &self.timeout_v
+            && (timeout_up || val_up)
+        {
+            match secs.clone().cast_to::<Duration>() {
+                Ok(dur) => {
+                    let id = BindId::new();
+                    self.id = Some(id);
+                    ctx.rt.ref_var(id, self.eid);
+                    ctx.rt.set_timer(id, dur);
+                    return self.out.ride();
+                }
+                Err(_) => {
+                    self.id = None;
+                    return self.out.ride();
                 }
             }
-            ((None, _), (_, _))
-            | ((_, None), (_, _))
-            | ((Some(_), Some(_)), (false, _)) => (),
-        };
-        self.id.and_then(|id| {
+        }
+        let res = self.id.and_then(|id| {
             if event.variables.contains_key(&id) {
                 self.id = None;
                 ctx.rt.unref_var(id, self.eid);
-                self.args.0.get(1).and_then(|v| v.clone())
+                self.last_v.clone()
             } else {
                 None
             }
-        })
+        });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -83,11 +105,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         if let Some(id) = self.id.take() {
             ctx.rt.unref_var(id, self.eid);
         }
-        self.args.clear()
+        self.timeout_v = None;
+        self.last_v = None
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
+        self.timeout_v = None;
+        self.last_v = None
     }
 }
 
@@ -132,11 +156,15 @@ impl Repeat {
 
 #[derive(Debug)]
 pub(crate) struct Timer {
-    args: CachedVals,
+    /// The latest raw repeat value — re-cast when a later timeout
+    /// delivery (re)schedules, the cross-cycle read the arg-cache
+    /// slot used to serve.
+    repeat_v: Option<Value>,
     timeout: Option<Duration>,
     repeat: Repeat,
     id: Option<BindId>,
     eid: ExprId,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
@@ -148,15 +176,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
+        _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self {
-            args: CachedVals::new(from),
+            repeat_v: None,
             timeout: None,
             repeat: Repeat::No,
             id: None,
             eid: top_id,
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -167,16 +196,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         macro_rules! error {
             () => {{
                 self.id = None;
                 self.timeout = None;
                 self.repeat = Repeat::No;
-                return Some(err!(
+                return self.out.set(TagValue::fired(err!(
                     literal!("TimerError"),
                     "timer(per, rep): expected duration, bool or number >= 0"
-                ));
+                )));
             }};
         }
         macro_rules! schedule {
@@ -187,29 +216,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                 ctx.rt.set_timer(id, $dur);
             }};
         }
-        let mut up = [false; 2];
-        self.args.update_diff(&mut up, ctx, from, event);
-        let ((timeout, repeat), (timeout_up, repeat_up)) = arity2!(self.args.0, &up);
-        match ((timeout, repeat), (timeout_up, repeat_up)) {
-            ((None, Some(r)), (true, true)) | ((_, Some(r)), (false, true)) => {
-                match r.clone().cast_to::<Repeat>() {
-                    Err(_) => error!(),
-                    Ok(repeat) => {
-                        self.repeat = repeat;
-                        if let Some(dur) = self.timeout {
-                            if self.id.is_none() && repeat.will_repeat() {
-                                schedule!(dur)
-                            }
+        let new_timeout = match seam_value(from[0].update(ctx, event)) {
+            Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
+            _ => None,
+        };
+        let mut repeat_up = false;
+        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+            repeat_up = tv.is_fired();
+            self.repeat_v = Some(tv.value_cloned());
+        }
+        match (new_timeout, &self.repeat_v, repeat_up) {
+            (None, Some(r), true) => match r.clone().cast_to::<Repeat>() {
+                Err(_) => error!(),
+                Ok(repeat) => {
+                    self.repeat = repeat;
+                    if let Some(dur) = self.timeout {
+                        if self.id.is_none() && repeat.will_repeat() {
+                            schedule!(dur)
                         }
                     }
                 }
-            }
-            ((Some(s), None), (true, _)) => match s.clone().cast_to::<Duration>() {
+            },
+            (Some(s), None, _) => match s.cast_to::<Duration>() {
                 Err(_) => error!(),
                 Ok(dur) => self.timeout = Some(dur),
             },
-            ((Some(s), Some(r)), (true, _)) => {
-                match (s.clone().cast_to::<Duration>(), r.clone().cast_to::<Repeat>()) {
+            (Some(s), Some(r), _) => {
+                match (s.cast_to::<Duration>(), r.clone().cast_to::<Repeat>()) {
                     (Err(_), _) | (_, Err(_)) => error!(),
                     (Ok(dur), Ok(repeat)) => {
                         self.timeout = Some(dur);
@@ -218,13 +251,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                     }
                 }
             }
-            ((_, _), (false, false))
-            | ((None, None), (_, _))
-            | ((None, _), (true, false))
-            | ((_, None), (false, true)) => (),
+            (None, _, _) => (),
         }
-        self.id.and_then(|id| event.variables.get(&id).map(|now| (id, now))).map(
-            |(id, now)| {
+        let res = self
+            .id
+            .and_then(|id| event.variables.get(&id).map(|now| (id, now)))
+            .map(|(id, now)| {
                 ctx.rt.unref_var(id, self.eid);
                 self.id = None;
                 self.repeat -= 1;
@@ -234,8 +266,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                     }
                 }
                 now.value_cloned()
-            },
-        )
+            });
+        match res {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -245,7 +280,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.args.clear();
+        self.repeat_v = None;
         self.timeout = None;
         self.repeat = Repeat::No;
         if let Some(id) = self.id.take() {
@@ -254,12 +289,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
+        self.repeat_v = None
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Now;
+pub(crate) struct Now {
+    out: TagValue,
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     // When trigger fires, samples the current time and emits same-cycle.
@@ -274,7 +311,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self))
+        Ok(Box::new(Self { out: TagValue::phantom() }))
     }
 }
 
@@ -284,11 +321,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if from[0].update(ctx, event).is_some() {
-            Some(Value::from(Utc::now()))
+    ) -> &TagValue {
+        if seam_tick(from[0].update(ctx, event)).is_some() {
+            self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {
-            None
+            self.out.ride()
         }
     }
 

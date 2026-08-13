@@ -5,11 +5,12 @@
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent, effects::EffectKind,
-    errf, expr::ExprId, typ::FnType,
+    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
+    seam_tick,
 };
 use graphix_rt::GXRt;
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -436,6 +437,7 @@ pub(crate) type JoinPath = CachedArgs<JoinPathEv>;
 #[derive(Debug)]
 pub(crate) struct Args {
     fired: bool,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
@@ -455,7 +457,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { fired: false }))
+        Ok(Box::new(Self { fired: false, out: TagValue::phantom() }))
     }
 }
 
@@ -465,15 +467,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
         ctx: &mut ExecCtx<R, E>,
         _from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
+    ) -> &TagValue {
         if event.init && !self.fired {
             self.fired = true;
             let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
             let arr: ValArray =
                 pargs.0.iter().map(|s| Value::String(s.clone())).collect();
-            Some(Value::Array(arr))
+            self.out.set(TagValue::fired(Value::Array(arr)))
         } else {
-            None
+            self.out.ride()
         }
     }
 
@@ -515,16 +517,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> Option<Value> {
-        if let Some(Value::I64(code)) =
-            from.get_mut(0).and_then(|n| n.update(ctx, event)).map(|tv| tv.value())
+    ) -> &TagValue {
+        if let Some(Value::I64(code)) = from
+            .get_mut(0)
+            .and_then(|n| seam_tick(n.update(ctx, event)))
+            .map(|tv| tv.value_cloned())
         {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
             std::process::exit(code as i32);
         }
-        None
+        TagValue::phantom_ref()
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}

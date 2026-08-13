@@ -10,7 +10,6 @@ use crate::{
         kernel_abi::{self, AbiKind, PrimType},
     },
     node::{
-        Cached,
         op::CmpOp,
         pattern::{PatternNode, StructPatternNode},
         select::Select,
@@ -368,7 +367,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // de-fuse (soak jul08g fuzz divergence 6).
     let has_arm_lift = sel.arms.iter().any(|(_, body)| {
         let mut found = false;
-        fusion::for_each_node(&body.node, &mut |n| {
+        fusion::for_each_node(body, &mut |n| {
             if let NodeView::Bind(b) = n.view() {
                 if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
                     found = true;
@@ -470,25 +469,25 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         }
         cx.env.truncate(mark);
     }
-    // The select's merged output is an interior-bottom taint ORIGIN like
-    // `%`/`/`/qop/DynCall sites: its producing site changes when the
-    // selection switches, so a newly-taken arm that bottoms has no
-    // op-site history even though the select's VALUE STREAM does (the
-    // aug01b reactive divergence: arm 1 fed `u8:1`, then the scrutinee
-    // switched to an arm whose body div0'd — the node-walk's consumer
-    // `Cached` rides the stream's last value while the untreated merge
-    // taint poisoned the consuming select's dispatch). Ride at the
-    // merge, same contract as every other origin; non-scalar shapes
-    // through the owned-value twin (the aug02 reactive divergence —
-    // an Array-typed merge rode at the wrong seam without it).
+    // 5c Q1: a bottoming taken arm IS a fresh bottom at the select's
+    // output — propagate (the dense interp's consumers poison on it;
+    // the aug01b-era merge ride matched the pre-dense consumer
+    // `Cached`, which no longer rides), except in ride scopes
+    // (`in_ride_scope`: an in-loop or guard-interior select's merge
+    // keeps the per-slot/guard ride). The SCRUTINEE ride
+    // (emit_scrut_ride above) is the select's designated memory and
+    // is untouched.
     let result = CompiledExpr::new(rdisc, rpayload);
-    match merge_shape {
-        SelectMerge::Scalar(p) => Ok(emit_scalar_taint_cache(cx, p, result)),
-        SelectMerge::Value | SelectMerge::Composite | SelectMerge::String => {
-            let tail = cx.ctx.tail_leaves.borrow().contains(&sel.spec.id.inner());
-            emit_value_taint_cache(cx, result, tail)
-        }
+    if super::abi::in_ride_scope(cx) {
+        return match merge_shape {
+            SelectMerge::Scalar(p) => Ok(emit_scalar_taint_cache(cx, p, result)),
+            SelectMerge::Value | SelectMerge::Composite | SelectMerge::String => {
+                let tail = cx.ctx.tail_leaves.borrow().contains(&sel.spec.id.inner());
+                emit_value_taint_cache(cx, result, tail)
+            }
+        };
     }
+    Ok(result)
 }
 
 /// The final-arm fail block of a VALUE-position select: reached only
@@ -963,7 +962,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    emit_arm: &mut dyn FnMut(&mut BodyCx, &Cached<R, E>, usize) -> Result<()>,
+    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
     // scrutinee): value position jumps to the merge with a tainted
     // bottom; tail position sets pending and exits.
@@ -1059,7 +1058,12 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             }
         };
         install_arm_binds(cx, &binds, scrut, pcond)?;
-        let gcv = g.node.emit_clif(cx)?;
+        // Guard scope: interior bottom origins ride their cached
+        // values (see `in_ride_scope`).
+        cx.ctx.guard_depth.set(cx.ctx.guard_depth.get() + 1);
+        let gcv = g.node.emit_clif(cx);
+        cx.ctx.guard_depth.set(cx.ctx.guard_depth.get() - 1);
+        let gcv = gcv?;
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         cx.env.truncate(gmark);
@@ -1150,7 +1154,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(body_ok);
             cx.b.seal_block(body_ok);
         }
-        emit_arm(cx, body, mark)?;
+        // The interior-sleep gate's extent (P7): DynCall emission
+        // refuses stateful builtins while any select ARM body is on
+        // the emission stack — see `LowerCtx::arm_depth`.
+        cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() + 1);
+        let arm_res = emit_arm(cx, body, mark);
+        cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
+        arm_res?;
         match fail {
             Some(f) => {
                 cx.b.switch_to_block(f);
@@ -1670,7 +1680,7 @@ fn install_arm_binds(
 /// verbatim from the pre-F0b `emit_select_node` arm loop.
 fn emit_select_value_arm<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    body: &Cached<R, E>,
+    body: &Node<R, E>,
     mark: usize,
     merge_shape: SelectMerge,
     merge: Block,
@@ -1678,14 +1688,10 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     sel_state: (SelWord, usize),
 ) -> Result<()> {
     use NodeView;
-    let body_frozen =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.node.typ())
-            .ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: select arm type {:?} doesn't freeze concrete",
-                    body.node.typ()
-                )
-            })?;
+    let body_frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        .ok_or_else(|| {
+            anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
+        })?;
     // Selection memory (see `emit_select_node`): compare-and-record
     // this arm's index BEFORE the body — the woke bit (changed with a
     // valid scrutinee) is the becoming-selected fire of the strict
@@ -1750,7 +1756,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                      match the scalar merge {rp:?}"
                 ));
             }
-            let cv = body.node.emit_clif(cx)?;
+            let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
         SelectMerge::Value => {
@@ -1761,7 +1767,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     // A bare-null arm body has nothing to emit (and a
                     // Null-shaped node can't emit anyway); only the
                     // literal constant form is recognized.
-                    match body.node.view() {
+                    match body.view() {
                         NodeView::Constant(c) if matches!(c.value, Value::Null) => {}
                         _ => {
                             return Err(anyhow!(
@@ -1782,14 +1788,14 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                     (d, p)
                 }
                 Some(AbiKind::Scalar(p)) => {
-                    let cv = body.node.emit_clif(cx)?;
+                    let cv = body.emit_clif(cx)?;
                     (cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload))
                 }
                 Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                    let cv = body.node.emit_clif(cx)?;
+                    let cv = body.emit_clif(cx)?;
                     ensure_owned_value_src(
                         cx,
-                        node_composite_source(&body.node),
+                        node_composite_source(body),
                         cv.disc,
                         cv.payload,
                     )?
@@ -1812,12 +1818,9 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                      match the composite merge"
                 ));
             }
-            let cv = body.node.emit_clif(cx)?;
-            let v = ensure_owned_composite_src(
-                cx,
-                node_composite_source(&body.node),
-                cv.payload,
-            )?;
+            let cv = body.emit_clif(cx)?;
+            let v =
+                ensure_owned_composite_src(cx, node_composite_source(body), cv.payload)?;
             (cv.disc, v)
         }
         SelectMerge::String => {
@@ -1831,7 +1834,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                 ));
             }
             // String reads/produces are owned at production.
-            let cv = body.node.emit_clif(cx)?;
+            let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
     };

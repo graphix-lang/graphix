@@ -1,3 +1,6 @@
+// PROMOTED from pending under dense (P8, 2026-08-13): AGREE on the
+// dense engines — the class below is resolved by the dense-delivery
+// rulings (design/dense_delivery.md); kept as a regression pin.
 // The steady-state face of 00: a STANDING cross-module callsite whose
 // body reads module state is NOT reactive to an outside write of that
 // state — in EITHER engine. Both trace [0:false]; the epoch-1 write of
