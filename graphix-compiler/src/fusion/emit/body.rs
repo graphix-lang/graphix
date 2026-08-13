@@ -1229,6 +1229,15 @@ pub(super) fn emit_kernel_return(
     // chain fired OR any tail-select scrutinee on the executed path
     // did. With no tail select the accumulator is the STALE-set
     // identity and this folds to the value's own bit.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GXDBG_CALLRET").is_some() {
+        let f = cx.helper("graphix_dbg_disc")?;
+        let t = cx.b.ins().iconst(types::I64, 2);
+        cx.b.ins().call(f, &[t, cv.disc]);
+        let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
+        let t3 = cx.b.ins().iconst(types::I64, 3);
+        cx.b.ins().call(f, &[t3, acc]);
+    }
     {
         let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
         cv.disc = fold_stale(cx.b, cv.disc, acc);

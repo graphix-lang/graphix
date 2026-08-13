@@ -1,0 +1,9 @@
+// aug13b round 2, the soak original (mis-triaged as post-trip silence:
+// the trips were CORRECT — the genuine calls between them were the
+// interior-activation staleness of 00). See 00_nontail_const_base.
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(2, I64(4)), (4, I64(4))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
+// mutant: {let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let m = x + select array::iter([`Foo, `Bar("hello world")]) {`Foo => i64:0, `Bar(s) if s == "hello world" => i64:1, _ => i64:2}; let f = x; let m = count(let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:4 - f(n - i64:1)}); f(x - i64:1)}
+// minimized:
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:4 - f(n - i64:1)}; f(x - i64:1)}

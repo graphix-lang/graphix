@@ -794,6 +794,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
     info: &LambdaCallInfo,
+    is_self: bool,
 ) -> Result<CompiledExpr> {
     let fn_name = &info.fn_name;
     // The interior-sleep gate, callee side (P7): a call to a kernel
@@ -818,6 +819,9 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                 }
             }
         } else if cx.ctx.arm_depth.get() > 0 {
+            cx.ctx.self_backedge_in_arm.set(true);
+        }
+        if is_self && cx.ctx.arm_depth.get() > 0 {
             cx.ctx.self_backedge_in_arm.set(true);
         }
     }
@@ -967,6 +971,19 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // ever, then never again (the word is call-site-shared across
     // loop iterations, exactly like the shared instance). No word
     // available (a callee body) → the plain kernel init flag.
+    // NOTE (aug13b round 2, reverted same night): forcing the callee
+    // init view for interior recursive activations (is_self) fixed
+    // the interior-const staleness (interior-activation witnesses in
+    // fuzz/pending-triage) but BROKE the ruled capture-wake pin
+    // (transient-rebind-init-jul2026: a quiet re-derivation must not
+    // fire consts — the retained twin is the semantics). The correct
+    // model: interior activations fire via PER-ACTIVATION SELECTION
+    // CHANGES (the retained twin's shared select flips arms per
+    // depth), which is exactly the documented "no per-activation
+    // selection memory in kernels" design item — not an init view.
+    // Until that lands, interior calls keep the parent's flag and the
+    // interior-const class stays a known divergence.
+    let _ = is_self;
     let callee_init = match cx.claim_state_word_loop_invariant() {
         Some(off) => {
             let sp = cx.state_ptr();
@@ -1189,6 +1206,12 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx.b.seal_block(dmerge);
     let disc = cx.b.block_params(dmerge)[0];
     let payload = cx.b.block_params(dmerge)[1];
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GXDBG_CALLRET").is_some() {
+        let f = cx.helper("graphix_dbg_disc")?;
+        let t = cx.b.ins().iconst(types::I64, 1);
+        cx.b.ins().call(f, &[t, disc]);
+    }
     Ok(CompiledExpr::new(disc, payload))
 }
 

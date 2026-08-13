@@ -1,0 +1,28 @@
+// aug13b reactive class (hz0-re 000005/000013/000014 + shape-family
+// 000002/000003/000006, hz1-re 000001): a fold whose INIT arg bottoms
+// on alternate cycles (100 / (x % 3) at x=0).
+//
+// INTERP (canonical): the tainted init's FRESH_BOTTOM acc delivery
+// (collection.rs ~1190) is GATED TO SILENCE at the callback CallSite
+// (the taint-gate: poison never dispatches a callee), so the slot
+// stays quiet and the fold delivers Stale(resident) — the value
+// channel advances, and a `~`-sampled connect accumulator grows EVERY
+// cycle: v1 = 0,100,200,300,400.
+// NOTE: this CONTRADICTS the intent comment at the FRESH_BOTTOM
+// insert ("a consuming callback taints its slot and the
+// any-slot-tainted check bottoms the fold") — the gate silences the
+// delivery before any slot can consume it. Comment or behavior is
+// wrong; adjudicate which.
+//
+// KERNEL: the fold's acc chain taints (FoldAcc carries the init
+// taint), the region result taints, the boundary forces absence, the
+// sample's held arg rides its LAST GOOD sum — the bottom cycle's
+// accumulation is LOST: v1 = 0,100,200 (every other cycle).
+//
+// If the interp is ruled right, the kernel needs a RIDE at the fold
+// result seam (tainted-with-history result delivers the ridden value
+// STALE — the scrut/guard-ride pattern at the loop's result disc).
+// If the comment is ruled right, the interp's gate must except
+// FoldQ's own acc chain. Either way one engine changes; parked for
+// the ruling.
+{let x = array::iter([i64:1, i64:0, i64:1, i64:0]); let v1 = i64:0; let v3: i64 = array::fold([false], i64:100 / (x % i64:3), |v4, v5| v4); v1 <- x ~ v1 + v3; v1}

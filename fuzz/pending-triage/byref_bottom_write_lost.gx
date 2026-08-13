@@ -1,0 +1,15 @@
+// aug13c hz0 generate/000006: ByRef of a BOTTOMED bind — the write
+// never lands in the interp, lands in the kernel.
+// v2's producer is -(0/0) (bottom); v5 = &v2 while v2 is bottom; the
+// ByRef production presumably bottoms with it, so *v5 <- 0 has no
+// resolved target and the write is dropped — v2 stays bottom and the
+// program is silent forever (interp Trace([])). The kernel resolves
+// the BindId statically, the write lands, and v2 % -1000 emits 0
+// (jit Trace([1:0])).
+// ADJUDICATE: is a reference to a bottomed BINDING itself bottom
+// (the reference is to the binding, not the value — arguably it
+// should always be valid)? Adjacent to refwrite-guard-flip-aug2026
+// (aug08e) and the net::write path-switch flag. Whichever engine is
+// ruled right, the other needs the fix at the ByRef production /
+// static-resolve seam.
+{let v1 = 'a: Number|v0: 'a| -> 'a v0 - v0; let v2 = -((cast<i64>(u8:0)$ / v1(i64:0))); let v5 = &v2; *v5 <- i64:0; v2 % cast<i64>(z32:-1000)$}

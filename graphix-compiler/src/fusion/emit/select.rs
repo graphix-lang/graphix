@@ -1064,6 +1064,22 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let gcv = g.node.emit_clif(cx);
         cx.ctx.guard_depth.set(cx.ctx.guard_depth.get() - 1);
         let gcv = gcv?;
+        // THE GUARD RIDE (aug13b divergence_000000): a bottomed guard
+        // re-matches against its last good value — the interp's
+        // `Held` keeps the value on a bottom production and `is_match`
+        // reads it back, so `0 if m == 0` with m bottoming (MIN % -1)
+        // holds the standing selection QUIET instead of failing the
+        // arm and firing a phantom becoming-selected on the wildcard.
+        // An op-site ride like the interior-bottom cache it reuses:
+        // substitute the cached boolean on tainted-with-history; a
+        // no-history taint passes through and the mask below reads it
+        // false (the interp's `unwrap_or(false)` phantom rule).
+        // Claim-refused contexts (callee-body loops — mandelbrot's
+        // formal-reading escape guard) degrade to the unwrapped mask,
+        // the same documented residual as every other op-site there;
+        // the value-scrutinee DE-FUSE bar does not apply to guard
+        // op-sites.
+        let gcv = emit_scalar_taint_cache(cx, PrimType::Bool, gcv);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         cx.env.truncate(gmark);

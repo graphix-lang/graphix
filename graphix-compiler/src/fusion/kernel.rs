@@ -1756,6 +1756,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             //   previous iteration's value).
             // - An interrupt abort is "re-fire next cycle": nothing
             //   was computed — ride.
+            if crate::dbgenv::graphix_dbg_invoke() {
+                eprintln!(
+                    "KERNEL RESULT {} PENDING trip={} fd={}",
+                    self.kernel.fn_name,
+                    ctx.control.peek_depth_trip(),
+                    ctx.frame_depth
+                );
+            }
             if ctx.control.peek_depth_trip() || ctx.frame_depth > 0 {
                 return TagValue::bottom_null(true);
             }
@@ -1777,6 +1785,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // decode).
         let tv = unsafe { TagValue::from_raw(out[0], out[1]) };
         let tag = tv.tag();
+        if crate::dbgenv::graphix_dbg_invoke() {
+            eprintln!("KERNEL RESULT {} tag={tag:?} pending=false", self.kernel.fn_name);
+        }
         if tag.is_bottom() {
             // A bottomed result: the returned words own a helper-safe
             // placeholder — free it and produce the shared bottom
