@@ -374,7 +374,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         // every framed pass). This read IS what every init backfill
         // used to synthesize. A store miss rides the resident (the
         // phantom until the first delivery ever).
-        let dbg = crate::dbgenv::gxdbg_dync();
+        // GXDBG_REF=1 — print every Ref read's arm + tag (the tool
+        // that found the aug13b double-read: one bind read twice in a
+        // cycle flipping STALE→FIRED through the poisoned store twin).
+        let dbg = crate::dbgenv::gxdbg_ref();
         let r = match super::read_var(ctx, event, &self.id) {
             Some(super::VarRead::Delivered(tv)) => {
                 if dbg {
