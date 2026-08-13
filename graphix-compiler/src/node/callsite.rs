@@ -1855,44 +1855,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // outermost park's delete cleans any subtree the replay didn't
         // reach). Outside a prime, `transient` never survives an
         // update — bind and park happen in the same call.
-        if !ctx.transient_prime
-            && matches!(&self.callee, Callee::DynamicBound { transient: true, .. })
-        {
-            let Callee::DynamicBound { def, mut apply, .. } =
-                mem::replace(&mut self.callee, Callee::DynamicUnbound)
-            else {
-                unreachable!()
-            };
-            let fnode_id = match self.fnode.view() {
-                NodeView::Ref(r) => Some(r.id),
-                _ => None,
-            };
-            let refs_span = crate::perfdbg::span(&crate::perfdbg::REFS_NS);
-            let mut refs = Refs::default();
-            apply.refs(&mut refs);
-            drop(refs_span);
-            let mut ext: LPooled<Vec<BindId>> = LPooled::take();
-            refs.with_external_refs(|id| {
-                if Some(id) != fnode_id {
-                    ext.push(id);
-                }
-            });
-            for id in ext.iter() {
-                ctx.rt.ref_var(*id, self.top_id);
-            }
-            // Harvest the instance's selection snapshot before the
-            // delete — selection memory is observable under the strict
-            // select rule and must survive the park (see [`SelSnap`]).
-            let sels = match apply.view() {
-                ApplyView::Lambda(l) => snap_selects(l.body()),
-                ApplyView::BuiltIn => Box::default(),
-            };
-            let del_span = crate::perfdbg::span(&crate::perfdbg::DELETE_NS);
-            apply.delete(ctx);
-            drop(del_span);
-            self.callee =
-                Callee::TransientParked { def, ext_refs: ext.drain(..).collect(), sels };
-        }
+        // RETENTION IS UNCONDITIONAL (Eric's structural ruling
+        // 2026-08-13): a transient instance never parks — it stays
+        // bound, its own live refs are the wake set, and the ordinary
+        // already-bound dispatch path serves every later cycle. That
+        // is retained-twin parity BY CONSTRUCTION: the delete-park /
+        // snapshot / rebuild machinery kept reproducing retained
+        // state channel by channel (selections, pattern binds, guard
+        // helds, formals, init views) and each hole was a soak class.
+        // Memory is the user's: a fib(28)-shaped tree materializes
+        // its full call tree of retained instances, exactly as the
+        // hand-inlined equivalent would ("you can't fix stupid").
+        // The defended semantics: whether a callee is recursive is
+        // not observable in firing — a pure function re-applied to
+        // unchanged inputs is not an event, and recursion fires like
+        // the hand-inlined chain of distinct functions.
         for id in set.drain(..) {
             event.variables.remove(&id);
         }
