@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(1, I64(-1)), (2, I64(1)), (3, I64(-1)), (4, I64(3))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(1, I64(-1)), (3, I64(-1))], capped: false }], stdout: [] })
+// mutant: {let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let m = x / i64:3; let f = |k| select i64:-1 {i64:0 if m == i64:0 => i64:1, _ => i64:1}; let m = count(let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - f(f(x) + i64:1 - i64:1)}); f(x - i64:1)}
+// minimized:
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - f(f(x) + i64:1 - i64:1)}; f(x - i64:1)}

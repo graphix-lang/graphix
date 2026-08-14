@@ -1,0 +1,42 @@
+// aug13j hz0 fuzz divergence_000000 (2026-08-13 night, seeds 4400M —
+// LATENT, reproduces identically at ac432b6a pre-aug13i-fixes).
+//
+// THE FORK: what is the scope of a depth trip's bottom — the tripping
+// DISPATCH (per-level unwind), or the whole DERIVATION?
+//
+// x=2's cycle: f(2) is value-infinite (every level re-calls f(x) via
+// the capture) -> trip at depth 256 -> settled FreshBottom.
+//
+// INTERP (per-level unwind, = the written rulings composed): the trip
+// bottoms level 256; each level above consumes its callee's bottom by
+// the ordinary rules. Fresh interior instances (levels 2..255, minted
+// this cycle) have no ride history -> stay bottom (aug04b phantom
+// rule). But the ONE RETAINED instance — the outer body's second
+// callsite B, which computed f(0)=0 on the x=0 cycle — has a cached
+// scrutinee: the aug06 SCRUTINEE RIDE fires, B rides arm 1's 0 out
+// stale, and the root emits n - 0 = 1 FIRED. Defensible: the
+// hand-inlined chain of 256 distinct functions would unwind exactly
+// this way (recursion-fires-like-chain).
+//
+// KERNEL (whole-derivation bottom): the native recursion's trip
+// (graphix_depth_push fail) bottoms the ENTIRE invocation — no
+// interior unwind, no rides — root quiet. Defensible: the depth
+// limit is a budget on the DERIVATION the outermost call initiated;
+// per-level unwind makes the observable VALUE depend on which
+// interior level the global limit happened to fall at (ambient-depth
+// sensitivity — the same f(2) called from depth 10 vs depth 250
+// produces differently-shaped ride opportunities). Also structural:
+// per-SITE ride storage cannot represent per-ACTIVATION rides (the
+// parked interior-activation item), so the kernel cannot implement
+// the interp's reading without per-activation value state.
+//
+// OPTIONS: (a) rule per-level -> kernel needs per-activation ride
+// storage or must de-fuse recursive callees containing rideable
+// selects (big coverage loss); (b) rule whole-derivation -> interp's
+// trip return poisons the unwind chain (small change, only affects
+// already-degraded logged-error programs, kills the ambient-depth
+// sensitivity); (c) document as accepted divergence under depth trip
+// (degraded mode). Recommend (b) on the straight-face test.
+//
+// interp: [1:-1 2:1] (rr_b minimal); jit: [1:-1]
+{let x = array::iter([i64:0, i64:2]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - f(f(x))}; f(x - i64:1)}
