@@ -28,7 +28,7 @@ use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
         const_stale_gate, emit_scalar_taint_cache, emit_scalar_taint_cache_claimed,
-        emit_value_taint_cache, emit_value_taint_cache_borrowed, is_tainted,
+        emit_value_taint_cache_borrowed, is_tainted,
         is_untainted, prim_to_value_disc, propagate_flags, propagate_stale,
         propagate_taint, scalar_disc, value_disc,
     },

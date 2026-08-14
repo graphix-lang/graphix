@@ -1,0 +1,13 @@
+// aug13i hz0 reactive divergence_000001 (2026-08-13): INTERP-side
+// resurrection — the JIT was right. The lambda formal publish's
+// fresh-bottom arm inserted the poison into event.variables only,
+// never the store ("the formal ride"), so a stdlib wrapper's formal
+// (list::fold's `l`) kept its pre-bottom CLEAN value in the store;
+// the next quiet cycle's Standing read served the clean list to the
+// fold, whose slots had kept computing on capture fires, and the
+// fold emitted FIRED where the kernel (marshaling TAINT|STALE)
+// stayed bottom. Fix: the fresh-bottom formal publish persists the
+// placeholder in the store at depth 0 — the Bind twin (ruled delta
+// 7); the entry-formal ride was never a designated ride.
+// schedule-v1: cap=128 events=1024; in0=i64:0; in0=i64:0; in0=i64:1
+{let v0: Array<i64> = []; v0 <- in0 ~ array::push(v0, in0); let v1 = array::len(v0); let v3: i64 = {let v2 = select v1 {_ if (u32:100000 == u32:1) => v1, i64:2 => i64:-1, v2 => ((-(i64:-100)) / (i64:0 * in0))}; list::fold(list::from_array([v2, in0]), i64:42, |v3, v4| v0[i64:0]$)}; ((v1 + v3) * v3)}

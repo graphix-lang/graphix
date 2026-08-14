@@ -1,0 +1,13 @@
+// aug13i hz1 reactive divergence_000000 (2026-08-13): INTERP missed a
+// FreshBottom — the JIT was right. A fold slot whose callback returns
+// a PHANTOM-bottom outer stream (skip's never-produced output) took
+// the non-triggering bottom path in the slot walk, which recorded
+// nothing: the fresh-slot STALE tag survived, the last-slot poison
+// check saw a clean chain, and the resize's poisoned result rode the
+// resident (Stale) instead of firing FreshBottom — downstream then
+// emitted riding the fold's pre-bottom value where the kernel
+// (resize fires + tainted chain) was quiet. Fix: the standing-bottom
+// arm records the slot tag, and the bottom-result branch counts
+// `resized` as a trigger.
+// schedule-v1: cap=96 events=768; in0=i64:0
+{let v0 = skip(#n: i64:1, in0); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3 = i64:0; let v4: i64 = {let v5: i64 = array::fold(v1, i64:7, |v6, v7| v0); v3 <- in0 ~ (v3 + v5); (v5 + i64:1)}; ((v3 + v4) * v4)}

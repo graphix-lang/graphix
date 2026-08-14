@@ -422,6 +422,12 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   call-depth-guard trip. The tool for "why didn't this recursion tail-loop" —
   found the runtime-clone back-edge effect miss (soak jul08g div 4). (The
   per-`mark_recursion`-decision print it once had is gone.)
+- `GXDBG_TAIL=1` — print every tail-loop dispatch pass (`TAILDBG`: lambda
+  id, reentered/framed/init flags, the pass result value+tag, the pending
+  tail call's rebind args). The tool for "what did this tail loop actually
+  compute per pass" — found the quiet-poll re-derivation clobber in one
+  run (aug13i: the settled resident overwritten by a stale entry-formal
+  re-read).
 - `GRAPHIX_DUMP_CLIF=1` — dump every compiled kernel's CLIF (note: the
   display shows `u0:N` func indices, not helper names; map N to the
   registration order of the helper table in `emit_helpers.rs`).

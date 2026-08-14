@@ -793,6 +793,19 @@ impl SlotFlags {
                 self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
             }
         };
+        // A FRESH-tainted source is an event — the interp's
+        // `any_trig = forced_taint && src_trig`. None of the firing
+        // terms can see it: the tainted placeholder keeps the length
+        // (no resize), the slots run quiet (or zero iterations), and
+        // the source isn't empty — so the poison delivery rode out as
+        // a silent TAINT|STALE where the interp fires FreshBottom
+        // (aug13i hz0-reactive-000002: a fold over a literal holding a
+        // div0 element re-surfaced its pre-bottom result downstream).
+        let tainted = cx.b.ins().icmp_imm(IntCC::NotEqual, src_taint, 0);
+        let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
+        let fresh_taint = cx.b.ins().band(tainted, src_fired);
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        let stale = cx.b.ins().select(fresh_taint, zero, stale);
         r.disc = cx.b.ins().bor(r.disc, stale);
         r
     }

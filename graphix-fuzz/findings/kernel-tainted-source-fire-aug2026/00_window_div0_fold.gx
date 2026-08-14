@@ -1,0 +1,12 @@
+// aug13i hz0 reactive divergence_000002 (2026-08-13): KERNEL-side
+// missing FreshBottom — the interp was right. A fused fold whose
+// source literal carries a FRESH-tainted element (div0 upstream) ran
+// with the tainted placeholder: no resize (the placeholder keeps the
+// length), quiet const-body slots, source not empty — the firing rule
+// had no term for the poison delivery itself, so the result rode out
+// TAINT|STALE and a later independent fire re-emitted the pre-bottom
+// value. Fix: SlotFlags::apply force-fires on a fresh-tainted source
+// (the kernel twin of the interp's `any_trig = forced_taint &&
+// src_trig`).
+// schedule-v1: cap=96 events=768; in0=i64:1; in0=i64:0
+{let v0 = array::len(array::window(#n: i64:3, [in0], i64:100 / (in0 % i64:3))); let v3: i64 = {let v1 = &u8:1; array::fold([i64:100, v0, i64:1], str::len("xyz"), |v0, v2| (i64:-100 % i64:42))}; let v4 = i64:0; v4 <- in0 ~ (v4 + in0); (v4 + v3)}

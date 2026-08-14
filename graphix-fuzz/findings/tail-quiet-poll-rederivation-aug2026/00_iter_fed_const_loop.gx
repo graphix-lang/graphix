@@ -1,0 +1,13 @@
+// aug13i hz1 fuzz divergence_000000 (2026-08-13): INTERP-side value
+// corruption — the JIT was right. A quiet poll of a previously-LOOPED
+// tail body re-ran the body unframed against the ENTRY formals: the
+// loop's rebinds were frame-private and died with the frames, so the
+// select's base arm re-read acc's entry value (0) from the store and
+// the resulting Stale(0) production OVERWROTE the settled resident
+// (125250) — `lp(500,0) + x` then rode the stale 0 and emitted bare x
+// per delivery. An R1 law violation (Stale => payload unchanged since
+// last recompute). Fix: the dispatch skips the body on a quiet poll
+// of a prev_looped tail lambda and rides the resident — the kernel
+// twin (a kernel never invokes on a quiet cycle). Sound because
+// tail_loop requires lambda_is_sync.
+{let feedback: Any = never(); let qf = |x: i64| -> i64 {let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, acc + n)}; lp(i64:500, i64:0) + x}; let out = qf(array::iter([i64:1, i64:2, i64:3])); out}

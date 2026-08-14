@@ -3,7 +3,7 @@
 //! binding, ownership kinds, scope truncation).
 
 use crate::{BindId, Node, Rt, UserEvent, fusion::kernel_abi::PrimType};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     BlockArg, InstBuilder, MemFlags, Type as ClifType, Value as ClifValue,
@@ -342,128 +342,9 @@ fn emit_taint_cache_at(
     CompiledExpr::new(disc, value)
 }
 
-/// [`emit_scalar_taint_cache`] for OWNED two-word Value-shaped origins
-/// (Value/Composite/String select merges, non-scalar DynCall results,
-/// non-scalar qop exits) — the same Eric-approved interior-bottom
-/// contract, with clone/drop discipline in place of the branchless
-/// scalar store (the aug02 reactive divergence: an Array-typed select
-/// switched to an arm whose body div0'd, and the untreated merge taint
-/// rode downstream to the wrong seam — the node-walk's consumer
-/// `Cached` rides the ARRAY stream and recomputes the index fresh).
-///
-/// The resident is a (clean disc, payload) pair in two claimed replay
-/// state words, disc 0 = empty. On an untainted compute the old
-/// resident drops and a CLONE of the result moves in (the original
-/// rides on to the consumer). On a tainted compute with a resident,
-/// the tainted placeholder production (owned — every non-scalar seam
-/// produces owned placeholders) drops and a clone of the resident
-/// substitutes, disc `| STALE` — didn't-fire-this-cycle, exactly the
-/// node-walk. A no-history taint passes through and gates at the
-/// output as before. The runtime `Kernel` drops the resident on
-/// `sleep`/`reset_replay`/`Drop` ([`WrappedKernel::replay_value_pairs`]).
-/// No storage channel (scaffold loops, callee bodies, lambda kernels
-/// — the chain/site free machinery is value-unaware): REFUSE, so the
-/// enclosing region de-fuses and the node-walk's operand cache rides
-/// (Eric's bar 2026-08-07: no storage → de-fuse, never pass through —
-/// the old unwrapped-result "residual" was an observable missing-fire,
-/// callee-value-taint-passthrough-aug2026). The repair that restores
-/// this coverage is the ASPIRE item: value residents in site blocks /
-/// slot chains.
-pub(super) fn emit_value_taint_cache(
-    cx: &mut BodyCx,
-    cv: CompiledExpr,
-    tail: bool,
-) -> Result<CompiledExpr> {
-    let Some(off) = cx.claim_state_word_replay_value() else {
-        // A TAIL-position producer's ride belongs to the CALLER: on a
-        // bottom the callee produces nothing and the caller's cached
-        // consumer rides — the interp's own structure — so the
-        // pass-through is EXACT there, not a divergence. Interior
-        // positions refuse (Eric's bar).
-        if tail {
-            return Ok(cv);
-        }
-        return Err(anyhow!("emit_clif: value taint cache has no storage channel here"));
-    };
-    let off_pay = off + 8;
-    let sp = cx.state_ptr();
-    let tainted = is_tainted(cx.b, cv.disc);
-    let cdisc = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-    let cpay = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off_pay);
-    let merge = cx.b.create_block();
-    cx.b.append_block_param(merge, types::I64);
-    cx.b.append_block_param(merge, types::I64);
-    let taint_bl = cx.b.create_block();
-    let store_bl = cx.b.create_block();
-    cx.b.ins().brif(tainted, taint_bl, &[], store_bl, &[]);
-    // Untainted: refresh — drop the old resident (if any), move a
-    // clone of the result in, pass the original through.
-    cx.b.switch_to_block(store_bl);
-    cx.b.seal_block(store_bl);
-    {
-        let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cdisc, 0);
-        let drop_bl = cx.b.create_block();
-        let cont_bl = cx.b.create_block();
-        cx.b.ins().brif(have, drop_bl, &[], cont_bl, &[]);
-        cx.b.switch_to_block(drop_bl);
-        cx.b.seal_block(drop_bl);
-        let val_drop = cx.helper("graphix_value_drop")?;
-        cx.b.ins().call(val_drop, &[cdisc, cpay]);
-        cx.b.ins().jump(cont_bl, &[]);
-        cx.b.switch_to_block(cont_bl);
-        cx.b.seal_block(cont_bl);
-    }
-    let clone = cx.helper("graphix_value_clone")?;
-    let call = cx.b.ins().call(clone, &[cv.disc, cv.payload]);
-    let cloned_pay = cx.b.inst_results(call)[1];
-    let clean = clean_disc(cx.b, cv.disc);
-    cx.b.ins().store(MemFlags::trusted(), clean, sp, off);
-    cx.b.ins().store(MemFlags::trusted(), cloned_pay, sp, off_pay);
-    cx.b.ins().jump(merge, &[BlockArg::Value(cv.disc), BlockArg::Value(cv.payload)]);
-    // Tainted: substitute the resident if there is one, else pass the
-    // taint through untouched.
-    cx.b.switch_to_block(taint_bl);
-    cx.b.seal_block(taint_bl);
-    let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cdisc, 0);
-    let subst_bl = cx.b.create_block();
-    cx.b.ins().brif(
-        have,
-        subst_bl,
-        &[],
-        merge,
-        &[BlockArg::Value(cv.disc), BlockArg::Value(cv.payload)],
-    );
-    cx.b.switch_to_block(subst_bl);
-    cx.b.seal_block(subst_bl);
-    {
-        // The tainted production is an owned placeholder — drop it
-        // (guarded: a pending sentinel's clean disc is 0).
-        let pclean = clean_disc(cx.b, cv.disc);
-        let nz = cx.b.ins().icmp_imm(IntCC::NotEqual, pclean, 0);
-        let drop_bl = cx.b.create_block();
-        let cont_bl = cx.b.create_block();
-        cx.b.ins().brif(nz, drop_bl, &[], cont_bl, &[]);
-        cx.b.switch_to_block(drop_bl);
-        cx.b.seal_block(drop_bl);
-        let val_drop = cx.helper("graphix_value_drop")?;
-        cx.b.ins().call(val_drop, &[pclean, cv.payload]);
-        cx.b.ins().jump(cont_bl, &[]);
-        cx.b.switch_to_block(cont_bl);
-        cx.b.seal_block(cont_bl);
-    }
-    let clone = cx.helper("graphix_value_clone")?;
-    let call = cx.b.ins().call(clone, &[cdisc, cpay]);
-    let sub_pay = cx.b.inst_results(call)[1];
-    let sub_disc = cx.b.ins().bor_imm(cdisc, STALE);
-    cx.b.ins().jump(merge, &[BlockArg::Value(sub_disc), BlockArg::Value(sub_pay)]);
-    cx.b.switch_to_block(merge);
-    cx.b.seal_block(merge);
-    let params = cx.b.block_params(merge);
-    Ok(CompiledExpr::new(params[0], params[1]))
-}
-
-/// [`emit_value_taint_cache`] for a BORROWED read position — the
-/// select SCRUTINEE ride (the input twin of the merge cache above,
+/// The value-shaped interior-bottom taint cache ([`emit_scalar_taint_cache`]
+/// for OWNED two-word Value-shaped origins, with clone/drop discipline) at a
+/// BORROWED read position — the select SCRUTINEE ride (the input twin of the merge cache above,
 /// Eric's ruling 2026-08-07: selection is observable memory, and the
 /// interp re-matches guards and rides pattern binds against the
 /// select's CACHED scrutinee, so the kernel must present the cached

@@ -389,14 +389,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             }
             // Publish TRIGGERING deliveries only: a stale production is
             // the value channel, which the formal's store read already
-            // serves (a standing entry reads Stale; a standing bottom
-            // rides the last bound value — the formal ride). A fresh
-            // bottom poisons the formals (callees keep poisoned
-            // formals; never destructure the placeholder, never store
-            // it).
+            // serves (a standing entry reads Stale). A fresh bottom
+            // poisons the formals AND persists in the store (the Bind
+            // twin, ruled delta 7 / STRICT): a later quiet cycle's
+            // Standing read must see the standing bottom, not
+            // resurrect the pre-bottom value — the un-stored bottom
+            // let a stdlib wrapper's formal serve the CLEAN list to a
+            // fold whose real source had bottomed (aug13i
+            // hz0-reactive-000001), where the kernel marshals
+            // TAINT|STALE. Placeholder inserted per-id (never
+            // destructured); frames never write the store (R3).
             if tag.triggers() {
                 if tag.is_bottom() {
+                    let store = ctx.frame_depth == 0;
                     pat.ids(&mut |id| {
+                        if store {
+                            ctx.rt.store_insert(
+                                id,
+                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                            );
+                        }
                         event
                             .variables
                             .insert(id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
@@ -440,6 +452,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         if ctx.control.interrupted() {
             // abort ≠ bottom: an interrupted dispatch re-surfaces its
             // last result on the value channel
+            return self.resident.ride();
+        }
+        // A quiet poll of a previously-LOOPED tail body rides the
+        // resident instead of re-deriving: the loop's rebinds were
+        // frame-private and died with the frames, so an unframed pass
+        // re-reads the ENTRY formals and derives the PRE-loop value —
+        // a Stale production whose payload differs from the settled
+        // result (`lp(500, 0) + x` rode a stale 0 over the settled
+        // 125250 — aug13i hz1-fuzz). The kernel never invokes on a
+        // quiet cycle, so riding is the exact twin. Sound to skip the
+        // body entirely: tail_loop requires `lambda_is_sync`, so a
+        // quiet pass can produce nothing new.
+        if self.tail_loop.load(Ordering::Relaxed)
+            && self.prev_looped
+            && !entry_fired
+            && !externals_triggered(&self.body, ctx, event)
+        {
             return self.resident.ride();
         }
         let depth_pushed = match self.dispatch {
@@ -675,6 +704,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     }
                     res
                 };
+                if crate::dbgenv::gxdbg_tail() {
+                    eprintln!(
+                        "TAILDBG id={:?} pass reentered={reentered} framed={framed} init={} fi={} res={:?} pending={:?}",
+                        self.id,
+                        event.init,
+                        ctx.frame_init,
+                        res,
+                        ctx.pending_tail_call.as_ref().map(|p| (&p.lambda, &p.args))
+                    );
+                }
                 let mine = matches!(
                     &ctx.pending_tail_call,
                     Some(p) if p.lambda == self.id

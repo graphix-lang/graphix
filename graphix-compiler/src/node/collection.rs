@@ -1328,6 +1328,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     event.variables.insert(next, TagValue::stale(value));
                 }
             } else {
+                // A STANDING bottom still poisons the chain: record it
+                // so the last-slot check below sees a chain born bottom
+                // (a slot whose callback NEVER produced — a phantom
+                // filter/skip read — keeps its fresh-slot STALE tag
+                // otherwise, and a resize's poisoned result rode the
+                // resident instead of bottoming: aug13i hz0/hz1
+                // reactive, the fold-callback-outer-bottom pair).
+                self.slots[i].tag = tag;
                 self.slots[i].cycle = None;
             }
         }
@@ -1339,7 +1347,11 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         // acc-ignoring callback recovers. Only the LAST slot's chain
         // state is the result.
         if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_tainted()) {
-            return if any_trig {
+            // A RESIZE is an event even when the chain is poisoned —
+            // the firing rule below counts it, and the kernel's
+            // SlotFlags fire the tainted result the same way. Without
+            // it a fold growing onto a bottomed chain was silent.
+            return if any_trig || resized {
                 self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             } else {
                 self.resident.ride()

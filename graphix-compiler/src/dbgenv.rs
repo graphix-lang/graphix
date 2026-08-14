@@ -43,6 +43,7 @@ dbg_flag!(gxdbg_refmiss, "GXDBG_REFMISS");
 dbg_flag!(gxdbg_reset, "GXDBG_RESET");
 dbg_flag!(gxdbg_resolve, "GXDBG_RESOLVE");
 dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
+dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
 
 /// GRAPHIX_DBG_BIND_BT doubles as a VALUE read (a target TVarId for
 /// per-cell write backtraces) — cached like the flags.

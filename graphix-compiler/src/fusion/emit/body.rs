@@ -323,19 +323,6 @@ pub(super) trait BodyEmitter {
         env: &mut JitEnv,
         ctx: &LowerCtx,
     ) -> Result<()>;
-
-    /// The body root's TAIL-LEAF ExprIds (empty when the emitter has
-    /// no node root). A tail-position producer's interior-bottom ride
-    /// belongs to the CALLER — the callee produces nothing and the
-    /// caller's cached consumer rides, the interp's own structure —
-    /// so the value taint cache's no-storage branch passes a tail
-    /// leaf through instead of refusing
-    /// (callee-value-taint-passthrough-aug2026: the refusal scoped to
-    /// interior positions only; a blanket refusal de-fused every
-    /// builtin-bodied stdlib lambda with a non-scalar return).
-    fn tail_leaves(&self) -> nohash::IntSet<u64> {
-        nohash::IntSet::default()
-    }
 }
 
 /// The data facts a kernel build needs about one body, alongside its
@@ -411,19 +398,6 @@ pub(super) struct NodeBodyEmitter<'a, R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BodyEmitter for NodeBodyEmitter<'_, R, E> {
-    fn tail_leaves(&self) -> nohash::IntSet<u64> {
-        let mut set = nohash::IntSet::default();
-        crate::fusion::for_each_tail_leaf(
-            self.root,
-            &mut |n| {
-                set.insert(n.spec().id.inner());
-                true
-            },
-            &mut |_| {},
-        );
-        set
-    }
-
     fn emit(
         &self,
         b: &mut FunctionBuilder,
