@@ -1,0 +1,15 @@
+// Constructed probe (2026-08-14, while answering "why not fix it?"):
+// the MULTI-LEVEL face of the same class. n/2 collapses roots 5 and 4
+// onto the identical interior chain (2 -> 1 -> 0), non-tail position.
+// Interp 1 fire (correct), kernel 4. The self-call site is invoked at
+// THREE levels per derivation, so a per-site (static) self-call args
+// memo — the cheap sound partial fix that would close 00's
+// single-invocation face — cannot damp this one: per-site state
+// conflates levels, and damping on conflated positions is unsound in
+// the missing-fire direction. Closing this face requires
+// per-derivation-position state (the interp's retained-instance
+// memory mirrored into the kernel) — the ASPIRE-class fix.
+// Note the TAIL twin of this program (drop the `0 +`) AGREES at 4
+// fires on both engines: tail position is governed by the tail-spine
+// control-dependence fold, by ruling.
+{let x = array::iter([i64:5, i64:4, i64:5, i64:4]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:0 + f(n / i64:2)}; f(x)}
