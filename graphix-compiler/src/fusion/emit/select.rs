@@ -37,7 +37,7 @@ use super::{
         node_composite_source,
     },
     call::CompositeSource,
-    lower::resolve_node_typ,
+    lower::{SelWord, resolve_node_typ},
     scalar::{
         cast_u64_to_prim, compile_cmp, compile_const, prim_to_clif,
         scalar_to_payload_i64, struct_get_helper, valarray_get_helper,
@@ -347,35 +347,68 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // state-word claims and their de-fuse are gone; the interp twin is
     // `own_fired` in node/select.rs).
     //
-    // An arm body holding a LIFTED connect target (`let s = 0; s <-
-    // …; s` — the per-arm reactive accumulator) still needs the
-    // per-instance state word: the node-walk RE-SEEDS the bind on
-    // every arm wake (the init-view contract), which the arm emitter
-    // reproduces from the selection-changed bit. That is VALUE-plane
-    // state (the seed resets the accumulator), not firing. The lifted
-    // write target is per INSTANCE, so neither per-slot nor
-    // per-call-site memory can represent it — no word → de-fuse.
-    let has_arm_lift = sel.arms.iter().any(|(_, body)| {
-        let mut found = false;
-        fusion::for_each_node(body, &mut |n| {
-            if let NodeView::Bind(b) = n.view() {
+    // WAKE-INIT memory (the sleep contract's other half — R2): a
+    // re-selected arm updates under a forced init view in the interp,
+    // so interior CACHED state (DynCall sites, callee site blocks,
+    // lifted seeds) catches up on deliveries the sleeping arm missed
+    // (dyncall-arm-init-stale pin: without it a re-selected arm's
+    // DynCall re-surfaced a prior selection's result). This is
+    // VALUE-plane catch-up, never firing — the emission stays fully
+    // organic. Only arms with such interiors need the word:
+    // - a LIFTED connect target (`let s = 0; s <- …; s`) re-seeds on
+    //   wake and its write target is per INSTANCE — the per-instance
+    //   state word is REQUIRED (a table/site word can't represent it);
+    // - an interior CallSite (builtin DynCall or lambda call) holds
+    //   per-site caches — any word shape works (state word, per-slot
+    //   chain, per-call-site block; the Guarded null base = a fresh
+    //   transient activation, first selection ≡ becoming-selected).
+    // No word available → de-fuse. Plain selects claim nothing.
+    let mut has_arm_lift = false;
+    let mut has_arm_sites = false;
+    for (_, body) in sel.arms.iter() {
+        fusion::for_each_node(body, &mut |n| match n.view() {
+            NodeView::Bind(b) => {
                 if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
-                    found = true;
+                    has_arm_lift = true;
                 }
             }
+            NodeView::CallSite(_) => has_arm_sites = true,
+            _ => {}
         });
-        found
-    });
-    let sel_state = if has_arm_lift {
-        match cx.claim_state_word() {
+    }
+    let sel_state = if has_arm_lift || has_arm_sites {
+        let claimed = match cx.claim_state_word() {
             Some(off) => {
                 let sp = cx.state_ptr();
-                Some(cx.b.ins().iadd_imm(sp, off as i64))
+                Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
             }
+            None if !has_arm_lift => match cx.slot_select_word(sel.spec.id) {
+                Some(w) => Some(w),
+                // Site words are per CALL SITE, not per slot: a
+                // loop-context select without a table entry must NOT
+                // claim one (it would alias slots).
+                None if cx.ctx.loop_depth.get() == 0 => {
+                    cx.claim_site_word().map(|off| {
+                        let base = cx.site_ptr();
+                        let addr = cx.b.ins().iadd_imm(base, off as i64);
+                        SelWord::Guarded { base, addr }
+                    })
+                }
+                None => None,
+            },
+            None => None,
+        };
+        match claimed {
+            Some(w) => Some(w),
             None => {
                 return Err(anyhow!(
-                    "emit_clif: an arm-lifted connect target requires the \
-                     per-instance state word — de-fuse"
+                    "emit_clif: no wake-init memory available for a select \
+                     arm holding {} — de-fuse",
+                    if has_arm_lift {
+                        "a lifted connect target (requires the per-instance word)"
+                    } else {
+                        "interior call sites"
+                    }
                 ));
             }
         }
@@ -1053,12 +1086,17 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // the same documented residual as every other op-site there;
         // the value-scrutinee DE-FUSE bar does not apply to guard
         // op-sites.
-        let gcv = emit_scalar_taint_cache(cx, PrimType::Bool, gcv);
+        // The organic fold reads the PRE-RIDE disc: a FreshBottom
+        // guard delivery is a triggering production (the interp's
+        // pat_up counts it — guard-bottom-ride pin, the ride holds
+        // the SELECTION, not the firing), while the ride's
+        // substituted disc|STALE below would read it quiet.
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
         guard_stale = Some(match guard_stale {
             None => gs,
             Some(a) => cx.b.ins().band(a, gs),
         });
+        let gcv = emit_scalar_taint_cache(cx, PrimType::Bool, gcv);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         cx.env.truncate(gmark);
@@ -1680,14 +1718,15 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge_shape: SelectMerge,
     merge: Block,
     scrut_disc: ClifValue,
-    // Present only for arm-lift selects (see `emit_select_node`): the
-    // per-instance selection word + this arm's index, driving the
-    // arm-wake INIT VIEW so lifted connect targets re-seed on
-    // becoming-selected (the node-walk updates a newly-taken arm with
-    // `event.init = true`). Recording is skipped for a TAINTED
-    // scrutinee: the arm is taken structurally but the node-walk made
-    // no selection. Plain selects need no memory — organic firing.
-    sel_state: Option<(ClifValue, usize)>,
+    // Present only for selects whose arms hold cached interiors (see
+    // `emit_select_node`): the wake-init word + this arm's index,
+    // driving the arm-wake INIT VIEW so interior site caches and
+    // lifted seeds catch up on becoming-selected (the node-walk
+    // updates a newly-taken arm with `event.init = true` — R2's
+    // store re-read). Recording is skipped for a TAINTED scrutinee:
+    // the arm is taken structurally but the node-walk made no
+    // selection. NEVER folds into the emission — organic firing.
+    sel_state: Option<(SelWord, usize)>,
     guard_stale: Option<ClifValue>,
 ) -> Result<()> {
     use NodeView;
@@ -1696,7 +1735,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
     let base_init = cx.init_flag();
-    let prev_override = if let Some((addr, idx)) = sel_state {
+    let record = |cx: &mut BodyCx, addr: ClifValue, idx: usize| {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
         let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
@@ -1705,10 +1744,44 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
         let woke = cx.b.ins().band(changed, valid);
         let woke64 = cx.b.ins().uextend(types::I64, woke);
-        let eff_init = cx.b.ins().bor(base_init, woke64);
-        cx.ctx.init_override.replace(Some(eff_init))
-    } else {
-        cx.ctx.init_override.replace(Some(base_init))
+        cx.b.ins().bor(base_init, woke64)
+    };
+    let prev_override = match sel_state {
+        Some((SelWord::Sure(addr), idx)) => {
+            let eff_init = record(cx, addr, idx);
+            cx.ctx.init_override.replace(Some(eff_init))
+        }
+        // A site-block word: 0 base = a recursive back-edge's interior
+        // activation — a FRESH TRANSIENT activation whose every
+        // selection on a triggering valid scrutinee is its first
+        // (becoming-selected ≡ init view; the interp mints fresh
+        // retained instances per interior position).
+        Some((SelWord::Guarded { base, addr }, idx)) => {
+            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let mem_bl = cx.b.create_block();
+            let nomem_bl = cx.b.create_block();
+            let merge = cx.b.create_block();
+            cx.b.append_block_param(merge, types::I64); // eff_init
+            cx.b.ins().brif(has, mem_bl, &[], nomem_bl, &[]);
+            cx.b.switch_to_block(mem_bl);
+            cx.b.seal_block(mem_bl);
+            let eff_init = record(cx, addr, idx);
+            cx.b.ins().jump(merge, &[BlockArg::Value(eff_init)]);
+            cx.b.switch_to_block(nomem_bl);
+            cx.b.seal_block(nomem_bl);
+            let ss = cx.b.ins().band_imm(scrut_disc, STALE);
+            let fired = cx.b.ins().icmp_imm(IntCC::Equal, ss, 0);
+            let valid = is_untainted(cx.b, scrut_disc);
+            let woke = cx.b.ins().band(fired, valid);
+            let woke64 = cx.b.ins().uextend(types::I64, woke);
+            let eff_init = cx.b.ins().bor(base_init, woke64);
+            cx.b.ins().jump(merge, &[BlockArg::Value(eff_init)]);
+            cx.b.switch_to_block(merge);
+            cx.b.seal_block(merge);
+            let eff = cx.b.block_params(merge)[0];
+            cx.ctx.init_override.replace(Some(eff))
+        }
+        None => cx.ctx.init_override.replace(Some(base_init)),
     };
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(rp) => {
