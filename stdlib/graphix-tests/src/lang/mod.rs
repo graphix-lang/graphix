@@ -11,6 +11,7 @@ mod fusion;
 mod interfaces;
 mod maps;
 mod modules;
+mod organic_deltas;
 mod select;
 mod tuples_structs;
 mod types;

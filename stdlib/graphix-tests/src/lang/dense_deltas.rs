@@ -32,7 +32,7 @@ use tokio::sync::mpsc;
 /// Run `code` (wrapped as `let result = {code}`) to quiescence in one
 /// mode, collecting every update of the result expression and the
 /// captured print output. Quiescence = no events for 700ms.
-async fn run_delta(code: &str, fusion_disabled: bool) -> Result<(Vec<Value>, String)> {
+pub(super) async fn run_delta(code: &str, fusion_disabled: bool) -> Result<(Vec<Value>, String)> {
     let (tx, mut rx) = mpsc::channel(10);
     let gx_code = format!("let result = {code}");
     let tbl = ahash::AHashMap::from_iter([(
@@ -87,7 +87,7 @@ async fn run_delta(code: &str, fusion_disabled: bool) -> Result<(Vec<Value>, Str
     Ok((values, out))
 }
 
-fn as_i64s(values: &[Value]) -> Vec<i64> {
+pub(super) fn as_i64s(values: &[Value]) -> Vec<i64> {
     values
         .iter()
         .map(|v| match v {
