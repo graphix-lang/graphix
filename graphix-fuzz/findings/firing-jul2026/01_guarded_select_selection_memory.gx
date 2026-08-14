@@ -1,3 +1,7 @@
+// SUPERSEDED CADENCE — ORGANIC FIRING (Eric, 2026-08-14, delta 2):
+// guard-dep fires now EMIT regardless of selection; the selection
+// memory this pin motivated is deleted. Both engines agree on the
+// per-delivery cadence. Historical header follows.
 // bisect: guarded-select FIRING over-fire — the node-walk emits on a
 // guard-only event only when the SELECTION changes (guard feeder fires,
 // same arm re-taken → NO emission), but the kernel's guard-feeder STALE

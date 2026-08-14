@@ -1,2 +1,5 @@
+// SUPERSEDED CADENCE — ORGANIC FIRING (Eric, 2026-08-14, deltas 1/2):
+// the gate select re-emits per scrutinee delivery now (an extra
+// second-epoch emission on both engines). Historical header follows.
 // schedule-v1: cap=64 events=512; in0=i64:0
 select array::fold([i64:1, i64:9], i64:0, |m, v| select v > m {true => v, false => m}) {i64:0 if in0 % i64:2 == i64:0 => i64:1, _ => i64:5}

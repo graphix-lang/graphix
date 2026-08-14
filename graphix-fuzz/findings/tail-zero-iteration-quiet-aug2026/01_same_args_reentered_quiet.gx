@@ -1,3 +1,8 @@
+// SUPERSEDED CADENCE — ORGANIC FIRING (Eric, 2026-08-14, delta 6):
+// the same-args-quiet cadence below is repealed; m refires per x
+// delivery as an op and every dispatch emits — count 4, not 2, both
+// engines. The GXLambda entry-args memo this pin's fix built is
+// deleted. Historical header follows.
 // The tail-fold ruling's >=1-ITERATION leg (aug13h hz0 divergence
 // 000000 — found by the fleet 40 minutes after the zero-iteration
 // kernel damp shipped): a same-args re-dispatch of a pure tail loop

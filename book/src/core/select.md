@@ -35,6 +35,13 @@ evaluated by select, all other code is "asleep", it will not be evaluated
 until it is selected (and if it has netidx subscriptions or published values
 they will be unsubscribed and unpublished until it is selected again).
 
+Like every other expression, a select updates whenever any of its inputs
+update: a new value of the argument, a new value read by a guard, or a new
+value produced by the selected arm's body all cause the select to produce its
+current value — even if the same arm stays selected and the value is
+unchanged. If you want updates only when the value actually changes, wrap the
+argument (or the whole select) in `uniq`.
+
 ## Matching Types
 
 Consider we want to select from a value of type `[Array<i64>, i64, null]`,

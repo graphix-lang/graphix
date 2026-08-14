@@ -1,3 +1,7 @@
+// SUPERSEDED CADENCE — ORGANIC FIRING (Eric, 2026-08-14, delta 2):
+// the capture-driven guard fire now flows through the prologue guard
+// fold (every guard fire emits); the tail_sel_path final-selection
+// machinery below is deleted. Historical header follows.
 // FIXED 2026-07-18: guarded TAIL selects now claim SELECTION MEMORY
 // (a state word at region root, a per-call-site block word in callee
 // bodies) recorded only on TERMINATING returns (`LowerCtx::

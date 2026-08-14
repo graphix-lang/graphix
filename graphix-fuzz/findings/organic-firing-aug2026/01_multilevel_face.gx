@@ -1,0 +1,6 @@
+// The multi-level face (n/2 collapses roots 5 and 4 onto the same
+// interior chain, non-tail position) — constructed to show the
+// per-site memo couldn't close the old class; under organic firing
+// it simply agrees per-delivery. Formerly
+// fuzz/known-kernel-gaps/const-terminal-changed-args/01.
+{let x = array::iter([i64:5, i64:4, i64:5, i64:4]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:0 + f(n / i64:2)}; f(x)}

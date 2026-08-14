@@ -1372,29 +1372,28 @@ run!(rec_transient_pure_refire, REC_TRANSIENT_PURE_REFIRE, |v: Result<&Value>| m
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// THE STRICT SELECT RULE at the call boundary (Eric's ruling
-// 2026-08-06, completed by the recursion ruling 2026-08-13): a
-// recursion re-fired with the SAME argument value is QUIET — the
-// dispatch select's selection doesn't change and no arm body input
-// fires, so the call produces once, exactly like `|n| i64:7`
-// re-called. A tail-recursive SPINE fires only on a CHANGED
-// derivation: its result control-depends on the loop bound through
-// the iteration count, so the spine's scrutinee fold
-// (`tail_scrut_stale`) fires it — DAMPENED by the derivation-changed
-// bit, because at an unchanged derivation (including the
-// zero-iteration re-dispatch) there is no iteration count and
-// nothing is lost (tail-zero-iteration-quiet-aug2026).
-const REC_SAME_ARG_REFIRE_QUIET: &str = r#"
+// ORGANIC FIRING at the call boundary (Eric's ruling 2026-08-14,
+// design/organic_firing.md delta 5 — REPEALS the strict-rule/
+// recursion-ruling quiet this fixture used to describe): a recursion
+// re-fired with the SAME argument value FIRES per delivery — a fired
+// input fires the output, and `uniq` is the explicit damp. go steps
+// 0,1,2 so `go ~ 10` delivers 10 three times and count(f(10))
+// reaches 3, gated out once when the driver's own count reaches 3.
+// (The old assertion — count 1 checked on the FIRST emission — was
+// vacuous either way: run! checks the first update, which is 1 under
+// any cadence.)
+const REC_SAME_ARG_REFIRE_FIRES: &str = r#"
 {
   let go = 0;
   go <- select go { n if n < 2 => n + 1, _ => never() };
   let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, i64:1 => i64:1, _ => f(n - i64:1) + f(n - i64:2)};
-  count(f(go ~ i64:10))
+  let c = count(f(go ~ i64:10));
+  select count(go) { 3 => c, _ => never() }
 }
 "#;
 
-run!(rec_same_arg_refire_quiet, REC_SAME_ARG_REFIRE_QUIET, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
+run!(rec_same_arg_refire_fires, REC_SAME_ARG_REFIRE_FIRES, |v: Result<&Value>| match v {
+    Ok(Value::I64(3)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 

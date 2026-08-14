@@ -1,9 +1,14 @@
 # Organic Firing — the fired-plane simplification
 
-Status: RULED by Eric, 2026-08-14 (conversation: the const-terminal
-witness → "option 4 is change the semantics" → fired-args recursion →
-fire-on-discriminant selects → this doc). Not yet built; this is the
-as-ruled record and the migration plan.
+Status: RULED by Eric 2026-08-14 and BUILT the same day — P0 red
+fixtures 27d846ba, P1 interp flip 9be11267 (desync enumeration in the
+commit message: 17 suite + 4 corpus flips, all mapped), P2 kernel flip
+0d8a561c + sweep 6c0fcbe9, P3 re-bless c980f3db+ (corpus 340/0,
+graphix-tests 1949/0, workspace green). P4 (fresh-clock fleet soak)
+remains. The conversation arc: the const-terminal witness → "option 4
+is change the semantics" → fired-args recursion → fire-on-discriminant
+selects → the CSP framing ("simplest fastest implementation, simplest
+defensible semantics; we're still at day 0") → this doc.
 
 Supersedes (fired plane only — the bottom/ride axis is untouched):
 - THE STRICT SELECT RULE (2026-08-06) and its scrutinee/guard-quiet

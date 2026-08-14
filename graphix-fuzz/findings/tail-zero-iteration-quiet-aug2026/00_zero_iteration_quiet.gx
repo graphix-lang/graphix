@@ -1,3 +1,9 @@
+// SUPERSEDED CADENCE — ORGANIC FIRING (Eric, 2026-08-14,
+// design/organic_firing.md delta 6): the cceb0809 quiet ruling below
+// is REPEALED — a same-value re-dispatch fires at any iteration
+// count, and both the tail_scrut damp and the entry-args memo are
+// deleted. Both engines now emit per delivery. Historical header
+// follows.
 // RULED (Eric, 2026-08-13): THE INTERP IS CORRECT — quiet. The
 // selection didn't change and the taken arm's body produced nothing;
 // a zero-iteration same-value re-dispatch never touches the loop

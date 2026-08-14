@@ -678,90 +678,77 @@ enforces it):**
   bottoms flow IN-BAND with honest tags on both engines. The jul30a
   re-woken-arm ride and `array::window` []-on-absent pins were
   RE-BLESSED as ruled deltas.
-- **THE STRICT SELECT RULE** (Eric's ruling 2026-08-06): a select
-  emits iff its SELECTION CHANGES (becoming-selected emits the new
-  arm's current value FIRED) or the TAKEN ARM's body produces — a
-  scrutinee or guard re-fire that changes neither is QUIET. Uniform in
-  EVERY position (`|n| select ...` ≡ `|n| {let x = select ...; x}`);
-  select-as-sampler (`select t { _ => v }`) is dead, `~` is the
-  sampling construct. The interp's same-arm ride re-emit and the
-  kernel's scrutinee-disc/guard-feeder folds at value merges are gone;
-  every fused select claims selection memory (state word / per-slot
-  chain / site word — none available de-fuses). Calls stay
-  dependence-driven per replay-frames v3 — organic tags ARE the
-  dependence tracking (`|n| i64:7` fires once; a body reading its
-  formal fires per delivery) — and the TAIL-SPINE scrutinee fold
-  survives, scoped to `tail_position` only: a loop bound is a CONTROL
-  dependence (iteration count) whose new value is otherwise LOST, not
-  merely quiet (`|n, acc| select n {0 => acc, _ => g(n-1, acc+cap)}`).
-  Under this rule SELECTION IS OBSERVABLE MEMORY: transient parks
-  harvest+reseed a `SelSnap` snapshot (callsite.rs — the prime
-  otherwise eats becoming-selected transitions and re-fired recursion
-  starves), and the kernel's null-site-block back-edge reads QUIET,
-  not becoming-selected. **THE SCRUTINEE RIDE** (Eric's ruling
-  2026-08-07, aug06ghz0): the standing selection lives on against the
-  select's CACHED scrutinee when a delivery bottoms upstream — the
+- **THE ORGANIC FIRING RULE** (Eric's ruling 2026-08-14,
+  `design/organic_firing.md` — BUILT same day, P1 interp 9be11267 /
+  P2 kernel 0d8a561c+6c0fcbe9; SUPERSEDES the 2026-08-06 strict
+  select rule, the 2026-07-15 per-slot firing rule, the guard-quiet
+  rule, and cceb0809): **a node fires iff a consumed input fires** —
+  no node stores a previous value or selection to decide a tag.
+  `uniq`/`filter`/`~` are the explicit cadence tools; the compiler
+  never gates firing on value or selection identity. A select emits
+  per fired input (scrutinee delivery, guard production, or the taken
+  arm's own production — `own_fired` in node/select.rs; the
+  scrutinee/guard STALE folds at the kernel merges), same-arm
+  re-matches emit the arm's current value, select-as-sampler is legal
+  again, and an untaken arm's body is NOT a consumed input (arm sleep
+  quietness survives — `guarded_select_firing_count`). Selection
+  memory survives ONLY for sleep/wake routing and the arm-lift
+  re-seed (the per-instance word — the one remaining select memory
+  claim; no word → de-fuse). The tail-spine fold is now just the
+  general rule's plumbing (the accumulator carries own-fires across
+  frames; the `tail_sel_path` machinery and all no-memory de-fuses
+  are deleted). Calls fire organically — the body's selects fire per
+  delivery, so recursion fires like the hand-inlined chain with ZERO
+  machinery (`|n| i64:7` still fires once: consts fire at init only).
+  The ruled deltas + the red→green fixture protocol live in
+  `organic_deltas.rs`; the design doc holds the deletion inventory.
+  **THE SCRUTINEE RIDE** (Eric's ruling 2026-08-07, aug06ghz0 — the
+  bottom axis, UNTOUCHED by organic firing): the standing selection
+  lives on against the select's CACHED scrutinee when a delivery
+  bottoms upstream — a bottomed delivery is NOT an own-fire, the
   taken arm's body fires on its own deps, guard-dep fires RE-MATCH
-  against the cached value (a flip re-selects and fires
-  becoming-selected), and pattern binds RIDE it. Kernel:
-  `emit_scrut_ride` (select.rs) — the input twin of the merge taint
-  cache — substitutes the cached scrutinee (disc|STALE) at the
-  boundary on tainted-with-history; no-history taint still misses
-  (the aug04b phantom rule). Value/composite residents ride at
-  region root only (borrow-substituting value cache); NO storage →
-  DE-FUSE, never pass through (a pass-through is a known divergence —
-  Eric's bar 2026-08-07). ASPIRE: value residents in site blocks /
-  slot chains (value-aware free machinery) to restore instance-kernel
-  fusion for value-shaped scrutinees (`hof_nullable_map`).
-  Pinned by `select-strict-rule-aug2026/` +
-  `select-quiet-scrutinee-aug2026/` +
-  `rec_same_arg_refire_quiet` / `rec_transient_pure_refire` fixtures.
-  (The former known gaps — no per-activation kernel selection memory,
-  MapQ/FoldQ slot subgraphs outside the park snapshot — are RESOLVED
-  by the 2026-08-13 recursion ruling below: the park snapshot no
-  longer exists and the derivation-changed bit covers the interior
-  fire discipline.)
-- **THE RECURSION RULING (Eric, 2026-08-13):** whether a callee is
-  recursive is NOT observable in firing — recursion fires like the
-  hand-inlined chain of distinct functions, and a pure function
-  re-applied to unchanged inputs is not an event (defended via
-  retained-twin ground truths;
-  `findings/recursion-fires-like-chain-aug2026/`). STRUCTURE (also
-  Eric's call): transient instances are RETAINED unconditionally — no
+  against the cached value, and pattern binds RIDE it. Kernel:
+  `emit_scrut_ride` (select.rs) substitutes the cached scrutinee
+  (disc|STALE) on tainted-with-history — which is exactly why the
+  organic stale fold stays quiet on rides; no-history taint still
+  misses (the aug04b phantom rule). Value/composite residents ride at
+  region root only; NO storage → DE-FUSE, never pass through (Eric's
+  bar 2026-08-07). ASPIRE: value residents in site blocks to restore
+  instance-kernel fusion for value-shaped scrutinees
+  (`hof_nullable_map`). A select whose taken arm is bottom emits
+  FreshBottom per fired input (op-consistency; not
+  language-observable — delta 4).
+- **THE RECURSION RULING (Eric, 2026-08-13; firing clause amended by
+  organic firing 2026-08-14):** recursion fires like the hand-inlined
+  chain of distinct functions — under organic firing this holds with
+  ZERO machinery, since both fire per delivery (the original
+  "unchanged inputs are not an event" clause and its entire
+  derivation-changed apparatus — the per-site scalar-formal memo,
+  wire slot 3, `KernelSig.has_self_call`, the interp's entry-args
+  memo — are REPEALED and deleted; the const-terminal witnesses that
+  forced the question now agree per-delivery,
+  `findings/organic-firing-aug2026/`). STRUCTURE (Eric's call,
+  unchanged): transient instances are RETAINED unconditionally — no
   park, no budget, no snapshot/rebuild ("let the user run out of
-  memory; you can't fix stupid") — so the interp gets retained-twin
-  parity by construction; the delete-park/SelSnap/prime machinery is
-  DELETED. fib(24): 110s/111MB retained vs 121s/85MB parked. KERNEL
-  twin: `CTX_WIRE_SLOTS` slot 3, the DERIVATION-CHANGED bit — a
-  region-root call to a recursive callee (`KernelSig.has_self_call`)
-  computes root-args-changed from a per-site scalar-formal memo;
-  self-call back-edges forward it; the nomem selection paths dampen
-  becoming-selected with it. Captures are NOT in the memo key (their
-  fires flow organically in-band — the capture-consuming base arm
-  fires per delivery, the capture-ignoring const-body callee stays
-  quiet). RULED RESIDUAL (Eric, 2026-08-14: QUIET — the interp is
-  correct): changed-args-same-selection-profile with a const terminal
-  is an OPEN KERNEL OVER-FIRE (the hand-inlined twin is quiet on BOTH
-  engines and fuses, so the kernel's fire makes recursion observable).
-  Exact fix needs per-derivation-position selection memory the
-  transient-derivation kernel lacks (ASPIRE-class); root result-value
-  damp is inexact (`n % 1 + 8` arms legitimately fire unchanged
-  values), de-fuse-on-const-terminals catches fib. Witness:
-  `fuzz/known-kernel-gaps/const-terminal-changed-args-aug2026/` —
-  outside the regress corpus; soak re-findings of the class are known.
-  Fuzz children run under an 8GB
-  RLIMIT_AS (`GRAPHIX_FUZZ_MEM_LIMIT`) since retention lets fib-tree
-  subjects legitimately eat memory.
+  memory; you can't fix stupid"); the delete-park/SelSnap/prime
+  machinery is DELETED. fib(24): 110s/111MB retained vs 121s/85MB
+  parked. Fuzz children run under an 8GB RLIMIT_AS
+  (`GRAPHIX_FUZZ_MEM_LIMIT`) since retention lets fib-tree subjects
+  legitimately eat memory.
 - **The 2026-08-07 review arc** (Opus multi-agent review, 726eeb1c —
   18 finding dirs; 14 classes fixed same day, `f438e1bd..369fa71c`):
   (1) GUARDS tick per-invocation via a PROLOGUE in `emit_select_arms`
   (the interp ticks every arm's guard every cycle; lazy chain
   evaluation desynced their operand caches — guard-shortcircuit).
-  Binds install taint-masked by the arm's own pattern cond; guard
-  discs never fold into the result. SCHEDULE-FREE guards (pure
-  never-bottom fns of the arm's own binds — cmp/logic/wrapping-arith
-  over binds+consts, `guard_schedule_free`) stay lazy in the chain:
-  observably equivalent, and the blanket prologue cost symbolic +58%.
+  Binds install taint-masked by the arm's own pattern cond. (The
+  original "guard discs never fold into the result" rule is REPEALED
+  by organic firing 2026-08-14: prologue guard STALE bits now AND-fold
+  into the emission — `guard_stale` in emit_select_arms.)
+  SCHEDULE-FREE guards (pure never-bottom fns of the arm's own binds —
+  cmp/logic/wrapping-arith over binds+consts, `guard_schedule_free`)
+  stay lazy in the chain: still observably equivalent under organic
+  firing (their inputs are scrutinee-derived binds, covered by the
+  scrutinee fold), and the blanket prologue cost symbolic +58%.
   (2) A fused DynCall delivers non-fired args as `TagValue::stale`
   (a STALE mask beside the taint mask) — never absence (all-const-arg
   builtins must keep producing) and never `fired` (rand
@@ -799,13 +786,11 @@ enforces it):**
   fresh-at-instantiation; tag-blind unwritable by construction;
   missing_fire_epoch3 fixed by the 5c depth-trip-delivers-bottom
   split → `findings/depth-trip-delivered-bottom-aug2026/`).
-  tail-zero-iteration RULED QUIET 2026-08-13 (cceb0809: the drafted
-  interp fix rejected, kernel `tail_scrut_stale` fold dampened by the
-  derivation-changed bit, witness promoted to
-  `findings/tail-zero-iteration-quiet-aug2026/`); its unified
-  non-tail residual RULED QUIET 2026-08-14 (the recursion ruling's
-  RULED RESIDUAL above). Remaining for Eric:
-  `fuzz/pending-ruling/depth-trip-unwind-scope-aug2026/`.
+  tail-zero-iteration: ruled quiet 2026-08-13 (cceb0809), then the
+  whole family REVERSED by organic firing 2026-08-14 — same-args
+  re-dispatches FIRE at any iteration count now (delta 6; the
+  tail-zero pins carry superseded-cadence banners). Remaining for
+  Eric: `fuzz/pending-ruling/depth-trip-unwind-scope-aug2026/`.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel state survives an arm's sleep — `Held` residents (the
   three designated ride sites), `CachedVals` staging slots, collection
@@ -850,26 +835,22 @@ detection, and `apply` reproduces the interpreted MapQ/FoldQ rule (fires iff
 resized ∨ a slot fired ∨ the source fired empty; fold results are acc-carried
 via `result_is_firing`). A same-length source refresh with a quiet body does
 NOT re-fire — the per-slot precision the P4 sequential loops had lost.
-Guarded selects in loop bodies have PER-SLOT selection memory at ANY nesting
-depth (2026-07-15, Eric's firing rule: an arm fires once when it BECOMES
-selected + when its body deps fire; guard updates that don't change the
-selection are quiet; guarded selects never de-fuse): each select site anchors
-a chain of owning tables mirroring its loop nesting — one static anchor word,
-one directory level per enclosing loop, a leaf word per slot
-(`graphix_slot_state_table` + `own_levels`; MapQ prefix retention applied per
-level, ragged inner lengths fine; chains freed by `Kernel::drop` via
-`WrappedKernel::slot_table_words`) — `design/kernel_instance_state.md`
-"Per-slot state tables". CALLEE bodies have PER-CALL-SITE state blocks
-(2026-07-16, wire slot 2 / `CTX_WIRE_SLOTS` 3): the callee's claims are its
-`SiteLayout` (callees define before parents; a missing layout = recursive
-back-edge, pass 0 + null-guards = fresh transient semantics); callers allocate
-from their own storage (root: contiguous words with anchor translation;
-in-loop: chain leaves with `words` stride, `SiteAnchor`/`SiteLeaf` recursive
-free for deep compositions). The select identity algebra is CLOSED — (region)
-× (loop chain) × (call chain). The tail emitter needs no selection memory
-(entry-derived seam tags on both backends). Remaining select-adjacent item:
-arm-lifted connects in loops/callees still de-fuse (coverage, not
-correctness).
+Selects need NO firing memory since organic firing (2026-08-14 — the
+2026-07-15 per-slot firing rule is repealed): the emission folds the
+scrutinee's and prologue guards' STALE bits at every merge, in loops and
+callees alike. The per-slot chain machinery (`graphix_slot_state_table` +
+`own_levels`, `SiteAnchor`/`SiteLeaf` recursive free, `Kernel::drop` via
+`WrappedKernel::slot_table_words`) SURVIVES for its other consumers:
+SlotFlags' nested-loop exact prev-len words and in-loop callee SITE BLOCKS.
+CALLEE bodies keep PER-CALL-SITE state blocks (2026-07-16, wire slot 2): the
+callee's claims are its `SiteLayout` (callees define before parents; a missing
+layout = recursive back-edge, pass 0 + null-guards); callers allocate from
+their own storage (root: contiguous words with anchor translation; in-loop:
+chain leaves with `words` stride). Those blocks carry DynCall site identity,
+first-dispatch init words, and prev-len state — never select firing memory.
+Remaining select-adjacent item: arm-lifted connects in loops/callees still
+de-fuse (the per-instance word is the one surviving select memory claim —
+coverage, not correctness).
 
 **Testing is differential:**
 
@@ -1091,6 +1072,17 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `organic_firing.md` — **BUILT (P0–P3 landed 2026-08-14, one day;
+  P4 fresh-clock soak remains):** the fired-plane simplification — a
+  node fires iff a consumed input fires; no stored value/selection
+  gates a tag; `uniq`/`filter`/`~` are the explicit cadence tools.
+  Holds the ruling arc (const-terminal witness → "change the
+  semantics" → fired-args recursion → fire-on-discriminant selects),
+  the 9-item ruled-delta list, the deletion inventory, and the
+  red→green/desync-enumeration migration record. Supersedes the
+  strict select rule, the per-slot firing rule, the guard-quiet rule,
+  the recursion ruling's unchanged-inputs clause, and cceb0809 —
+  fired plane only; the bottom/ride axis is untouched.
 - `dense_delivery.md` — **BUILT (P0–P8 landed 2026-08-13; P9 soak/merge
   remains):** the dense-delivery redesign — `Update::update -> &TagValue`
   (borrowed production, no Option), orthogonal fired×bottom tag algebra,

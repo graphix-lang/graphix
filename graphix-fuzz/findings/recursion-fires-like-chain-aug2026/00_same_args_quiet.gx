@@ -1,3 +1,11 @@
+// SUPERSEDED CADENCE — ORGANIC FIRING (Eric, 2026-08-14,
+// design/organic_firing.md delta 5): the "pure function re-applied to
+// unchanged inputs is not an event" clause below is REPEALED — a
+// recursive call fires per triggering delivery, so x = [1, 2, 2] now
+// emits on ALL THREE cycles on both engines ([1:7 2:7 3:7]), and the
+// derivation-changed machinery this header describes is deleted. The
+// ruling's headline (recursion fires like the hand-inlined chain)
+// survives — both now fire per delivery. Historical header follows.
 // THE RULING (Eric, 2026-08-13): whether a callee is recursive is not
 // observable in firing — recursion fires like the hand-inlined chain
 // of distinct functions, and a pure function re-applied to unchanged
