@@ -192,7 +192,82 @@ pub fn analyze<R: Rt, E: UserEvent>(
     infer_effects(&sites, ctx);
     // Pass 3: instance call-graph SCCs, recursion + tail marking.
     mark_recursion(&graph, ctx);
+    // Verify pending definition assertions (`#[tail_recursive]` /
+    // `#[sync]` / `#[async]` — `crate::DefAssertion`, stamped by
+    // `node::compiler::compile`) against the facts the passes above just
+    // wrote. An assertion whose definition the analysis hasn't reached
+    // yet (not called anywhere compiled so far) stays PENDING for a
+    // later compile — verified-or-failed exactly once, at the first
+    // analyze that covers it. A loop over the stamped list: no tree
+    // walk, and mode-independent (analyze runs with fusion off too).
+    check_def_assertions(&graph, &sites, ctx)?;
     Ok(())
+}
+
+fn assertion_error(spec: &crate::expr::Expr, msg: &str) -> anyhow::Error {
+    anyhow::anyhow!("{msg}").context(crate::expr::ErrorContext(spec.clone()))
+}
+
+fn check_def_assertions<R: Rt, E: UserEvent>(
+    graph: &StaticCallGraph<'_, R, E>,
+    sites: &[(&GXLambda<R, E>, BindId)],
+    ctx: &ExecCtx<R, E>,
+) -> Result<()> {
+    let mut pending = ctx.def_assertions.lock();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut covered: LPooled<IntSet<LambdaId>> = LPooled::take();
+    covered.extend(sites.iter().map(|(g, _)| g.id()));
+    covered.extend(graph.instances.values().map(|g| g.id()));
+    let mut err: Option<anyhow::Error> = None;
+    pending.retain(|a| {
+        if err.is_some() || !covered.contains(&a.id) {
+            return true;
+        }
+        let Some(d) = lambda_def(ctx, a.id) else { return true };
+        let failed: Option<anyhow::Error> = match a.kind {
+            crate::DefAssertionKind::Sync => {
+                (!d.intrinsic_effect.lock().is_sync()).then(|| {
+                    assertion_error(
+                        &a.spec,
+                        "#[sync]: this function is async — its body reaches \
+                         an async builtin or an async callee",
+                    )
+                })
+            }
+            crate::DefAssertionKind::Async => {
+                d.intrinsic_effect.lock().is_sync().then(|| {
+                    assertion_error(
+                        &a.spec,
+                        "#[async]: this function is sync — nothing in its \
+                         body defers an output to a later cycle",
+                    )
+                })
+            }
+            crate::DefAssertionKind::TailRecursive => match *d.recursion.lock() {
+                RecursionKind::TailRecursive => None,
+                RecursionKind::Recursive => Some(assertion_error(
+                    &a.spec,
+                    "#[tail_recursive]: this function recurses through a \
+                     non-tail self-call or mutual recursion — every \
+                     recursive call must be in tail position",
+                )),
+                RecursionKind::NotRecursive => Some(assertion_error(
+                    &a.spec,
+                    "#[tail_recursive]: this function is not recursive",
+                )),
+            },
+        };
+        match failed {
+            Some(e) => {
+                err = Some(e);
+                false
+            }
+            None => false,
+        }
+    });
+    err.map_or(Ok(()), Err)
 }
 
 /// Analyze a callee bound at RUNTIME (`CallSite::bind`): the lazy-bound

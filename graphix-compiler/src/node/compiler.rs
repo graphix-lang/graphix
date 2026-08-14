@@ -56,17 +56,69 @@ fn compile_inner<R: Rt, E: UserEvent>(
             scope: scope.clone(),
         });
     }
-    // Reject unknown attributes. Every Expr re-enters `compile` exactly once
-    // (per-kind `compile`s recurse through here), so this single check covers
-    // the whole tree. The per-attribute semantic check (e.g. `#[native]`) runs
-    // post-fusion; this only validates that the attribute name is registered.
+    // Attribute handling — one pass here covers the whole tree (every Expr
+    // re-enters `compile` exactly once; per-kind `compile`s recurse through
+    // here). DEFINITION-ASSERTING names (`#[tail_recursive]`/`#[sync]`/
+    // `#[async]`) are compiler-reserved (the `CollectionIntrinsic` precedent)
+    // and are stamped onto `ctx.def_assertions` below, once the node exists;
+    // everything else must be a registered attribute (dispatched later by
+    // the fusion walk) or it is an unknown-attribute error.
+    let mut def_asserts: smallvec::SmallVec<[crate::DefAssertionKind; 2]> =
+        smallvec::SmallVec::new();
     if let Some(dec) = &spec.dec {
         for attr in dec.attrs.iter() {
-            if ctx.lookup_attribute(&attr.name).is_none() {
-                crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
+            match crate::DefAssertionKind::from_name(&attr.name) {
+                Some(k) => def_asserts.push(k),
+                None => {
+                    if ctx.lookup_attribute(&attr.name).is_none() {
+                        crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
+                    }
+                }
             }
         }
     }
+    if !def_asserts.is_empty() {
+        let node = compile_kind(ctx, flags, &spec, scope, top_id)?;
+        // The assertion's target: the definition the decorated statement
+        // binds (`let f = |..| ..`, `let rec f = ..`) or a bare lambda
+        // expression. Anything else can't carry a definition assertion.
+        let lid = match node.view() {
+            crate::NodeView::Bind(b) => match b.node.view() {
+                crate::NodeView::Lambda(l) => l.lambda_id::<R, E>(),
+                _ => None,
+            },
+            crate::NodeView::Lambda(l) => l.lambda_id::<R, E>(),
+            _ => None,
+        };
+        let Some(id) = lid else {
+            crate::bailat!(
+                spec,
+                "#[{}] annotates a function definition",
+                match def_asserts[0] {
+                    crate::DefAssertionKind::Sync => "sync",
+                    crate::DefAssertionKind::Async => "async",
+                    crate::DefAssertionKind::TailRecursive => "tail_recursive",
+                }
+            );
+        };
+        let mut pending = ctx.def_assertions.lock();
+        for kind in def_asserts.drain(..) {
+            if !pending.iter().any(|a| a.id == id && a.kind == kind) {
+                pending.push(crate::DefAssertion { id, kind, spec: spec.clone() });
+            }
+        }
+        return Ok(node);
+    }
+    compile_kind(ctx, flags, &spec, scope, top_id)
+}
+
+fn compile_kind<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: &Expr,
+    scope: &Scope,
+    top_id: ExprId,
+) -> Result<Node<R, E>> {
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {

@@ -690,6 +690,16 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // The fuse driver never descends a collection callback (its fusion
+        // is the inline emission at the enclosing call), so decorated nodes
+        // inside the prototype body get their attribute dispatch here.
+        if let Some(body) = self.base.callback_body() {
+            crate::fusion::check_attributes_subtree(body, ctx)?;
+        }
+        Ok(None)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let old_len = self.slots.len();
         let mut production = None;
@@ -1119,6 +1129,16 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // The fuse driver never descends a collection callback (its fusion
+        // is the inline emission at the enclosing call), so decorated nodes
+        // inside the prototype body get their attribute dispatch here.
+        if let Some(body) = self.base.callback_body() {
+            crate::fusion::check_attributes_subtree(body, ctx)?;
+        }
+        Ok(None)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let old_len = self.slots.len();
         let mut resized = false;

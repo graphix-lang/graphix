@@ -36,7 +36,7 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    effects::{EffectKind, RecursionKind},
+    effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
@@ -1152,13 +1152,56 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     ) -> Result<Box<dyn Apply<R, E>>>;
 }
 
-/// A compile-time check for a `#[..]` attribute. Run once per decorated node
-/// after fusion, with `node` the compiled (possibly fused) node of the
-/// expression the attribute sits above and `attr` the specific attribute.
+/// A compile-time check for a `#[..]` attribute. Dispatched by the FUSION
+/// walk (`fusion::fuse`) at each visited decorated node, after that node's
+/// fusion attempt resolved — so `node` is the final (possibly fused) node of
+/// the expression the attribute sits above, and the check sees exactly the
+/// fusion outcome. There is no separate attribute walk; under `--no-fusion`
+/// the walk never runs and registry attributes are vacuously satisfied (the
+/// documented `#[native]` contract). A node absorbed into a strictly-larger
+/// ancestor kernel is never visited — also correct (it IS native).
 /// Returning `Err` turns the attribute into a compile error. Registered on the
 /// `ExecCtx` via [`ExecCtx::register_attribute`], mirroring builtin
-/// registration, so packages can add their own attributes.
+/// registration, so packages can add their own attributes. (The
+/// definition-asserting attributes — `#[tail_recursive]`, `#[sync]`,
+/// `#[async]` — are NOT registry attributes: they are compiler-reserved
+/// names stamped into `ExecCtx::def_assertions` at compile and verified at
+/// the tail of `analysis::analyze`, mode-independently.)
 pub type AttributeCheckFn<R, E> = fn(&ExecCtx<R, E>, &Attr, &Node<R, E>) -> Result<()>;
+
+/// A definition assertion stamped by a compiler-reserved attribute
+/// (`#[tail_recursive]` / `#[sync]` / `#[async]`) on a function definition.
+/// Stamped by `node::compiler::compile` when the decorated statement is
+/// built; verified (and removed) at the tail of `analysis::analyze` once the
+/// definition has been reached by the analysis — an assertion on a
+/// not-yet-called definition stays pending until a later compile uses it
+/// (REPL: define now, call later, verified then; dead code is never
+/// verified, like dead code anywhere).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefAssertionKind {
+    Sync,
+    Async,
+    TailRecursive,
+}
+
+impl DefAssertionKind {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "sync" => Some(Self::Sync),
+            "async" => Some(Self::Async),
+            "tail_recursive" => Some(Self::TailRecursive),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DefAssertion {
+    pub(crate) id: LambdaId,
+    pub(crate) kind: DefAssertionKind,
+    /// The decorated statement, for error positions.
+    pub(crate) spec: Expr,
+}
 
 /// Trait implemented by graphix attributes (`#[name]` / `#[name(args)]`).
 pub trait Attribute<R: Rt, E: UserEvent> {
@@ -1166,12 +1209,6 @@ pub trait Attribute<R: Rt, E: UserEvent> {
     /// `#[native]`). Attribute names are a flat global namespace — they are
     /// NOT package-prefixed the way builtin names are.
     const NAME: &str;
-    /// When the check runs. `PRE_FUSION` checks (`#[tail_recursive]`,
-    /// `#[sync]`, `#[async]`) consume analysis facts and must see the
-    /// UN-SPLICED tree — fusion may consume the decorated statement into a
-    /// kernel, which would make a post-fusion check silently vacuous.
-    /// Post-fusion checks (`#[native]`) consume the fusion outcome itself.
-    const PRE_FUSION: bool = false;
     fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()>;
 }
 
@@ -1201,14 +1238,10 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         if let NodeView::FusedKernel(_) = node.view() {
             return Ok(());
         }
-        if !ctx.fusion.enabled {
-            // Nothing to verify when fusion is off — a `#[native]` requirement
-            // is vacuously satisfied (there is no fusion to check against). This
-            // lets `#[native]` ride in `run!` fixtures (which run an interp/
-            // node-walk mode) and in bench programs executed under `--no-fusion`,
-            // rather than being a hard error outside a fusion-on run.
-            return Ok(());
-        }
+        // (Under `--no-fusion` this check never dispatches at all — the
+        // fusion walk doesn't run — the same vacuous pass the old in-check
+        // `fusion.enabled` branch produced: `#[native]` rides in `run!`
+        // interp fixtures and `--no-fusion` bench runs.)
         // The node survived fusion as node-walk residue. Surface the REAL
         // blockers, filtering out attempt-then-recurse protocol noise:
         // `try_fuse` records a `failed` entry for EVERY region root it tries,
@@ -1263,126 +1296,6 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             node.spec(),
             "#[native] expression did not fully fuse to native code:{reasons}"
         );
-    }
-}
-
-/// Resolve the function definitions a decorated node denotes: the node must
-/// be function-typed (through tvars), and each `LambdaId` the signature has
-/// accumulated must have a registered [`LambdaDef`]. Shared by the
-/// definition-asserting attributes (`#[tail_recursive]`, `#[sync]`,
-/// `#[async]`).
-fn attr_lambda_defs<'a, R: Rt, E: UserEvent>(
-    ctx: &'a ExecCtx<R, E>,
-    name: &str,
-    node: &Node<R, E>,
-) -> Result<LPooled<Vec<&'a LambdaDef<R, E>>>> {
-    let ids = node.typ().with_deref(|t| match t {
-        Some(Type::Fn(ft)) => Some(ft.lambda_ids.ids()),
-        _ => None,
-    });
-    let Some(ids) = ids else {
-        crate::bailat!(
-            node.spec(),
-            "#[{name}] annotates a function definition (got {})",
-            node.typ()
-        );
-    };
-    let mut defs: LPooled<Vec<&'a LambdaDef<R, E>>> = LPooled::take();
-    for id in ids.iter() {
-        if let Some(d) =
-            ctx.lambda_defs.get(id).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
-        {
-            defs.push(d);
-        }
-    }
-    if defs.is_empty() {
-        crate::bailat!(
-            node.spec(),
-            "#[{name}]: cannot resolve the function's definition here — \
-             annotate the definition site"
-        );
-    }
-    Ok(defs)
-}
-
-/// The `#[tail_recursive]` attribute (Eric, 2026-08-14): the decorated
-/// definition must be a TAIL-recursive function — self-recursive with every
-/// self-call in tail position (the summary `analysis::analyze` records on the
-/// [`LambdaDef`]). Such a function executes as a rebind-and-jump loop on both
-/// engines and cannot hit the call-depth limit through its own recursion —
-/// the guarantee the whole-derivation depth-trip ruling makes worth
-/// asserting. Non-tail self-calls, mutual recursion, and a non-recursive
-/// target (a vacuous assertion) are compile errors.
-pub struct TailRecursive;
-
-impl<R: Rt, E: UserEvent> Attribute<R, E> for TailRecursive {
-    const PRE_FUSION: bool = true;
-    const NAME: &str = "tail_recursive";
-
-    fn check(ctx: &ExecCtx<R, E>, _attr: &Attr, node: &Node<R, E>) -> Result<()> {
-        for d in attr_lambda_defs(ctx, <Self as Attribute<R, E>>::NAME, node)?.drain(..) {
-            match *d.recursion.lock() {
-                RecursionKind::TailRecursive => (),
-                RecursionKind::Recursive => crate::bailat!(
-                    node.spec(),
-                    "#[tail_recursive]: this function recurses through a \
-                     non-tail self-call or mutual recursion — every \
-                     recursive call must be in tail position"
-                ),
-                RecursionKind::NotRecursive => crate::bailat!(
-                    node.spec(),
-                    "#[tail_recursive]: this function is not recursive"
-                ),
-            }
-        }
-        Ok(())
-    }
-}
-
-/// The `#[sync]` attribute: assert the decorated function's intrinsic effect
-/// is Sync — every output appears on the same cycle as its trigger (its body
-/// reaches no async builtin or async callee). Assert-only: it never changes
-/// the classification, it only fails the compile when the inference disagrees.
-pub struct SyncAttr;
-
-impl<R: Rt, E: UserEvent> Attribute<R, E> for SyncAttr {
-    const PRE_FUSION: bool = true;
-    const NAME: &str = "sync";
-
-    fn check(ctx: &ExecCtx<R, E>, _attr: &Attr, node: &Node<R, E>) -> Result<()> {
-        for d in attr_lambda_defs(ctx, <Self as Attribute<R, E>>::NAME, node)?.drain(..) {
-            if !d.intrinsic_effect.lock().is_sync() {
-                crate::bailat!(
-                    node.spec(),
-                    "#[sync]: this function is async — its body reaches an \
-                     async builtin or an async callee"
-                );
-            }
-        }
-        Ok(())
-    }
-}
-
-/// The `#[async]` attribute: assert the decorated function's intrinsic effect
-/// is Async — some input can produce its output on a later cycle (a timer, IO,
-/// a stateful pacing builtin, or an async callee). The mirror of `#[sync]`.
-pub struct AsyncAttr;
-
-impl<R: Rt, E: UserEvent> Attribute<R, E> for AsyncAttr {
-    const PRE_FUSION: bool = true;
-    const NAME: &str = "async";
-
-    fn check(ctx: &ExecCtx<R, E>, _attr: &Attr, node: &Node<R, E>) -> Result<()> {
-        for d in attr_lambda_defs(ctx, <Self as Attribute<R, E>>::NAME, node)?.drain(..) {
-            if d.intrinsic_effect.lock().is_sync() {
-                crate::bailat!(
-                    node.spec(),
-                    "#[async]: this function is sync — nothing in its body \
-                     defers an output to a later cycle"
-                );
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1712,7 +1625,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     // all registered attributes (`#[name]`), keyed by bare name. An attr whose
     // name is absent here is an "unknown attribute" compile error; present
     // names are checked post-fusion via their `AttributeCheckFn`.
-    attributes: AHashMap<&'static str, (AttributeCheckFn<R, E>, bool)>,
+    attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
     // whether calling built-in functions is allowed in this context, used for
     // sandboxing
     builtins_allowed: bool,
@@ -1888,6 +1801,12 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// fragments mid-unwind (fuzz depth-trip-unwind-scope witnesses;
     /// the kernel's abort-to-root is the model).
     pub(crate) depth_tripped: bool,
+    /// Pending definition assertions (see [`DefAssertion`]): stamped at
+    /// compile, verified and removed at `analysis::analyze`'s tail once the
+    /// asserted definition is reached by the analysis. Persistent across
+    /// compiles (a REPL definition is verified when a later statement calls
+    /// it); deduped on push.
+    pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
     /// Variable deliveries raised inside an evaluation frame that must
     /// ESCAPE it. A frame runs the body against a PRIVATE
     /// `event.variables` map, which is the point — an interior publish
@@ -1948,15 +1867,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_init: false,
             tail_scrut_fired: false,
             depth_tripped: false,
+            def_assertions: Mutex::new(Vec::new()),
             frame_outbox: Vec::new(),
         };
         // `#[native]` is a language-level attribute (its check is
         // compiler-internal), so it is registered here rather than by a
         // package. Other attributes can be registered via `register_attribute`.
         this.register_attribute::<Native>()?;
-        this.register_attribute::<TailRecursive>()?;
-        this.register_attribute::<SyncAttr>()?;
-        this.register_attribute::<AsyncAttr>()?;
         Ok(this)
     }
 
@@ -1991,7 +1908,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn register_attribute<T: Attribute<R, E>>(&mut self) -> Result<()> {
         match self.attributes.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert((T::check, T::PRE_FUSION));
+                e.insert(T::check);
             }
             Entry::Occupied(_) => {
                 bail!("attribute {} is already registered", T::NAME)
@@ -2000,14 +1917,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         Ok(())
     }
 
-    /// The check fn for a registered attribute (with its PRE_FUSION phase
-    /// flag), or `None` if `name` is not a known attribute. Used by the
-    /// compiler to reject unknown attributes and to run each known
-    /// attribute's check in its phase.
-    pub fn lookup_attribute(
-        &self,
-        name: &str,
-    ) -> Option<(AttributeCheckFn<R, E>, bool)> {
+    /// The check fn for a registered attribute, or `None` if `name` is not a
+    /// known attribute. Used by the compiler to reject unknown attributes and
+    /// by the fusion walk to dispatch each known attribute's check.
+    pub fn lookup_attribute(&self, name: &str) -> Option<AttributeCheckFn<R, E>> {
         self.attributes.get(name).copied()
     }
 
@@ -2181,13 +2094,6 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         ctx.env = env;
         return Err(e);
     }
-    // PRE-FUSION attribute checks (`#[tail_recursive]`, `#[sync]`,
-    // `#[async]`): they consume analysis facts and must see the un-spliced
-    // tree — fusion may consume the decorated statement into a kernel.
-    if let Err(e) = check_attributes(&node, ctx, true) {
-        ctx.env = env;
-        return Err(e);
-    }
     if ctx.fusion.enabled {
         let st = Instant::now();
         if let Err(e) = fusion::fuse(&mut node, ctx) {
@@ -2196,79 +2102,5 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         }
         info!("fusion time {:?}", st.elapsed());
     }
-    // Run each registered attribute's post-fusion check over the final graph.
-    // Runs unconditionally (not gated on `fusion.enabled`) so a `#[native]`
-    // program under `--no-fusion` errors clearly rather than silently passing.
-    if let Err(e) = check_attributes(&node, ctx, false) {
-        ctx.env = env;
-        return Err(e);
-    }
     Ok((node, out_scope))
-}
-
-/// Walk the post-fusion graph and run each registered attribute's check on the
-/// node of every decorated expression. `for_each_node` visits every node-walk
-/// survivor and every top-level `FusedKernel`, but stops at kernel interiors
-/// and lambda bodies — so a decorated node ABSORBED into a larger fused region
-/// is (correctly) never re-checked (it's native). HOF callback bodies are NOT
-/// absorbed into the visible graph (they fuse into a per-element template held
-/// by the HOF builtin), so [`check_decorated_node`] explicitly descends into
-/// them — otherwise `#[native]` inside `array::map(a, |x| ...)` would pass
-/// vacuously. Returns the first error.
-fn check_attributes<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
-    pre_fusion: bool,
-) -> Result<()> {
-    let mut err: Option<anyhow::Error> = None;
-    fusion::for_each_node(node, &mut |n| {
-        if err.is_none() {
-            if let Err(e) = check_decorated_node(n, ctx, pre_fusion) {
-                err = Some(e);
-            }
-        }
-    });
-    err.map_or(Ok(()), Err)
-}
-
-/// Run every registered attribute's check on `n`'s own decorations, then
-/// DESCEND into a resolved lambda call site's per-callsite instance BODY.
-/// The main `for_each_node` walk stops at lambda bodies, so a decorated
-/// expression inside a callback (`array::map(a, |x| #[native] ...)`) is
-/// otherwise never visited. The instance body carries `FusedKernel`s for
-/// the sub-regions that fused and node-walk residue (recorded in
-/// `FusionStats`) for those that didn't — exactly what each attribute's
-/// per-node verdict needs. Recurses through nested resolved call sites
-/// (a recursive def's self-call site is not statically resolved to a
-/// nested instance, so the descent terminates).
-fn check_decorated_node<R: Rt, E: UserEvent>(
-    n: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
-    pre_fusion: bool,
-) -> Result<()> {
-    if let Some(dec) = &n.spec().dec {
-        for attr in dec.attrs.iter() {
-            if let Some((check, pre)) = ctx.lookup_attribute(&attr.name) {
-                if pre == pre_fusion {
-                    check(ctx, attr, n)?;
-                }
-            }
-        }
-    }
-    if let NodeView::CallSite(cs) = n.view() {
-        if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
-            let mut err: Option<anyhow::Error> = None;
-            fusion::for_each_node(g.body(), &mut |bn| {
-                if err.is_none() {
-                    if let Err(e) = check_decorated_node(bn, ctx, pre_fusion) {
-                        err = Some(e);
-                    }
-                }
-            });
-            if let Some(e) = err {
-                return Err(e);
-            }
-        }
-    }
-    Ok(())
 }

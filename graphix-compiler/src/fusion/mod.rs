@@ -909,11 +909,76 @@ pub fn fuse<R: Rt, E: UserEvent>(
     if let Some(new) = try_fuse(child, ctx)? {
         let mut old = std::mem::replace(child, new);
         old.delete(ctx);
+        check_node_attributes(child, ctx)?;
         return Ok(());
     }
     if let Some(new) = child.fuse(ctx)? {
         let mut old = std::mem::replace(child, new);
         old.delete(ctx);
+    }
+    check_node_attributes(child, ctx)?;
+    Ok(())
+}
+
+/// Dispatch each registered attribute's check on a decorated node the fusion
+/// walk just resolved (see [`crate::AttributeCheckFn`] — this IS the
+/// attribute check pass; there is no separate walk). A successfully fused
+/// node was replaced by its [`FusedKernel`], which carries the region root's
+/// spec — so `#[native]` checks against the replacement and passes; a node
+/// absorbed into a strictly-larger ancestor kernel is never visited here,
+/// which is also a pass (it IS native). Definition assertions
+/// (`#[tail_recursive]`/`#[sync]`/`#[async]`) are not registry attributes
+/// and never reach this — they verify at `analysis::analyze`'s tail.
+fn check_node_attributes<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> anyhow::Result<()> {
+    if let Some(dec) = &node.spec().dec {
+        for attr in dec.attrs.iter() {
+            if let Some(check) = ctx.lookup_attribute(&attr.name) {
+                check(ctx, attr, node)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Attribute sweep over a subtree the fuse driver does NOT route
+/// node-by-node: collection-intrinsic callback bodies (`MapQ`/`FoldQ`
+/// prototypes — their fusion is the inline emission at the enclosing call,
+/// so the driver never descends them). Called from `MapQ`/`FoldQ::fuse`.
+/// Walks with `for_each_node` and descends through resolved lambda call
+/// sites (a nested collection or lambda inside the callback), exactly the
+/// coverage the retired standalone check walk gave these trees — scoped to
+/// the trees that need it.
+pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
+    root: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> anyhow::Result<()> {
+    let mut err: Option<anyhow::Error> = None;
+    let mut stack: poolshark::local::LPooled<Vec<&Node<R, E>>> =
+        poolshark::local::LPooled::take();
+    stack.push(root);
+    while let Some(node) = stack.pop() {
+        let mut descend: poolshark::local::LPooled<Vec<&Node<R, E>>> =
+            poolshark::local::LPooled::take();
+        for_each_node(node, &mut |n| {
+            if err.is_none() {
+                if let Err(e) = check_node_attributes(n, ctx) {
+                    err = Some(e);
+                    return;
+                }
+            }
+            if let NodeView::CallSite(cs) = n.view() {
+                if let Some(crate::ApplyView::Lambda(g)) = cs.resolved_apply() {
+                    descend.push(g.body());
+                }
+            }
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        stack.extend(descend.drain(..));
     }
     Ok(())
 }
