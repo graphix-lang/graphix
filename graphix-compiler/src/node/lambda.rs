@@ -516,7 +516,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     // event with no value — under the sparse clamp it
                     // still reads TAINT; post-flip it delivers
                     // honestly on both engines.
+                    //
+                    // TRIGGERED dispatches only: a QUIET poll's
+                    // re-derivation re-trips deterministically (the
+                    // non-tail path re-drills every cycle — there is
+                    // no quiet-poll skip without frames to invalidate),
+                    // and an unconditional FRESH mint here re-fired the
+                    // settled bottom per cycle, clobbering a
+                    // same-cycle ref-write's Fired delivery to the
+                    // bound name (aug13k hz0 fuzz 000000 — the
+                    // non-tail sibling of the tail quiet-poll ride).
+                    // Nothing new happened: ride the settled resident.
                     ctx.pending_tail_call = None;
+                    if !entry_fired && !externals_triggered(&self.body, ctx, event) {
+                        return self.resident.ride();
+                    }
                     return self
                         .resident
                         .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));

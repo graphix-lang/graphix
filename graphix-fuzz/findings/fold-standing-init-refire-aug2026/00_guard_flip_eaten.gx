@@ -1,0 +1,24 @@
+// aug13k hz0 generate divergence_000000 (2026-08-14 dawn): INTERP-side
+// phantom re-fire — the JIT was right. FoldQ's tainted-init arm
+// injected a FRESH bottom into slot 0's acc UNCONDITIONALLY, so a
+// STANDING bottom init (the $-swallowed error riding quiet) re-minted
+// the poison every cycle: the acc-consuming callback re-fired, the
+// fold produced perpetual FreshBottom, and the bound name's Bind
+// re-published it each cycle — clobbering a ref-write's same-cycle
+// Fired(true) in the variables map, which ate the guard flip: the
+// select never re-matched onto the now-true guarded arm while the
+// kernel (standing TAINT|STALE param, quiet loop) fired
+// becoming-selected. Fix: the acc poison injects on TRIGGERING init
+// deliveries only; standing bottoms ride.
+{
+  let mk = |x: i64| select x { i64:0 => true, _ => error(f64:2.5) };
+  let bot = mk(i64:1)$;
+  let flag: bool = array::fold(["hello"], bot, |a, b| a);
+  let r = &flag;
+  *r <- true;
+  select str::len("xyz") {
+    i64:1 if (!false) => f64:3.14,
+    v if (true || flag) => f64:65535.0,
+    _ => f64:-1.0 % f64:0.1
+  }
+}

@@ -1189,7 +1189,19 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // escapes as a tainted production at init and poisons
                 // the init bind). The placeholder stays out of the
                 // cross-cycle store, like Bind's tainted arm.
-                if let Some(slot) = self.slots.first() {
+                //
+                // TRIGGERING deliveries only: a STANDING bottom is
+                // "nothing new" and must ride — the unconditional
+                // insert re-minted a FRESH acc poison every cycle, the
+                // acc-consuming callback re-fired, and the fold's
+                // perpetual FreshBottom clobbered a ref-write's
+                // same-cycle Fired delivery to the bound name, eating
+                // a guard flip downstream (aug13k hz0 generate
+                // 000000; the kernel's standing TAINT|STALE param is
+                // quiet).
+                if tag.triggers()
+                    && let Some(slot) = self.slots.first()
+                {
                     event.variables.insert(
                         slot.acc_id,
                         TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
