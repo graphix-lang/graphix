@@ -22,15 +22,32 @@
 // and the same program with `let f` instead of `let rec f` (no frame)
 // agrees for every one of those bodies.
 //
-// Working theory (unconfirmed): the arm-wake init view IS forced around
-// the arm production (node/select.rs ~388), so a woken constant fires
-// and `Bind::update` publishes it — but `Bind::update` publishes only on
-// a TRIGGERING production (node/bind.rs:198), and inside a recursion
-// FRAME the woken arm's constant appears Stale, so the local is never
-// published, the body reads a phantom, and the select emits nothing.
-// Needs the rule derived before either engine is touched: does a frame
-// pass re-publish frame-local binds (R1 says framed passes recompute
-// unconditionally)?
+// ROOT CAUSE (confirmed 2026-08-14, GXDBG_REF=1 + shell bisect):
+// two rules meet and drop the value channel on the floor.
+//   1. `Constant::update` (node/mod.rs:644) checks FRAME DEPTH BEFORE
+//      `event.init`, by design (gtailr epoch 2) — so inside a recursion
+//      frame a constant delivers STALE even under the arm-wake's forced
+//      init view (node/select.rs:388).
+//   2. `Bind::update` (node/bind.rs:198) publishes only TRIGGERING
+//      productions, on the premise that a stale RHS is "already served
+//      by the bound names' store entries".
+// That premise fails for an arm-local whose RHS is constant-only and
+// whose arm was ASLEEP during the one genuine-init dispatch: it was
+// never published, so there is no store entry to serve. The read then
+// misses outright — `REF BindId(2790) MISS ride tag=Tag(96)` — rides a
+// phantom bottom, the block bottoms, and the select has no arm value.
+//
+// Bisect receipts (recursive shell probe, interp vs jit):
+//   {let a = X; a}       interp: 2 2        jit: X X 2 2   <-- read
+//   {let a = X; i64:5}   interp: 5 5 2 2    jit: same      <-- unread
+//   i64:7 / (3+4)        interp: 7 7 2 2    jit: same      <-- no bind
+//   non-recursive        agree in every shape (genuine init reaches it)
+//
+// RECOMMENDED FIX: `Bind::update` materializes the value channel on its
+// FIRST value-bearing production regardless of tag (publish with the
+// honest tag, no notify) — dense R3's "producers write on genuine
+// production, any tag". Publishing EVERY stale production would also
+// work and is more uniform, but costs a store write per bind per cycle.
 //
 // Attribution: PRE-EXISTING, not today's work. On ac432b6a (this
 // morning's tree, pre-organic-firing) the same program already
