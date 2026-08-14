@@ -248,6 +248,24 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // carries per-site inner-Apply state, which is what makes honest
     // stale masks sound there.
     let (site_word, site_claimed) = emit_dyncall_site_word(cx);
+    // An UNCLAIMED site is the shared key-0 bucket — ONE inner Apply
+    // serves every logical call site (every collection position, every
+    // recursion depth). For a builtin whose OUTPUT depends on
+    // cross-invocation state (the SLEEP_RESTARTS family) the sharing
+    // is a value divergence, not an approximation: the interp's
+    // per-slot `count(x)` instances each count their own deliveries
+    // while the shared bucket's one tally absorbs them all (aug13j
+    // hz0 fuzz 000001 — fold [x,x] with a count callback: interp 1,
+    // kernel 2). No identity storage → refuse, never pass through
+    // (the storage law). The runtime-null callee back-edge (claimed
+    // word, 0 at run time) is the recursion-adjacent residual this
+    // compile-time gate cannot see.
+    if !site_claimed && info.sleep_restarts {
+        return Err(anyhow!(
+            "emit_clif: sleep-restarting builtin DynCall at an \
+             identity-less (key-0) site — shared state would be observable"
+        ));
+    }
     // The STALE twin (dyncall-stale-arg-fired-aug2026): bit `i` set =
     // the arg is present but did not fire this cycle. The dispatcher
     // delivers those slots as `TagValue::stale`, so builtins whose

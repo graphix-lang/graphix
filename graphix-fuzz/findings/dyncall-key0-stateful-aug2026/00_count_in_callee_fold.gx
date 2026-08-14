@@ -1,0 +1,12 @@
+// aug13j hz0 fuzz divergence_000001 (2026-08-13 night): KERNEL-side
+// over-count — the interp was right (per-slot instances, one delivery
+// each -> count = 1). The fold lives in a CALLEE body where the
+// per-slot identity chain isn't claimable, so the DynCall site fell
+// to the shared key-0 bucket: ONE count instance absorbed both
+// slots' ticks (GXDBG_DYNC: two dispatches, site_word=0, first=true
+// then first=false -> 1 then 2). LATENT (pre-aug13i). Fix: an
+// identity-less (key-0) site REFUSES a SLEEP_RESTARTS builtin's
+// DynCall — shared cross-invocation state is a value divergence, not
+// an approximation (the storage law); the region de-fuses and the
+// interp's per-slot semantics stand.
+{let helper = |x: i64| -> i64 array::fold([x, x], i64:0, |a, b| count(x)); let outer = |x: i64| -> i64 helper(x); outer(i64:5)}
