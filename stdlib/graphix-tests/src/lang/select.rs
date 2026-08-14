@@ -81,11 +81,13 @@ select 42 {
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: select pattern analysis
+// Fuses since Select::fuse (2026-08-14): the scrutinee/arm sub-region
+// descent — the never() arms de-fuse individually, the wildcard arm and
+// scrutinee fuse.
 run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NESTEDMATCH0: &str = r#"
 {

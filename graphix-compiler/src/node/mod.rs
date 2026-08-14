@@ -215,15 +215,32 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
+        inner: Expr,
         scope: &Scope,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        let n = compile(ctx, flags, spec.clone(), scope, top_id)?;
+        // `spec` is the OUTER parens expression — it carries the position
+        // and any `#[..]` decorations, so the node (and a kernel that
+        // replaces it) must own it; the INNER expression compiles the
+        // value. Storing the inner as the spec orphaned decorations on
+        // parenthesized expressions (no node carried them — `#[native]
+        // (…)` was silently unchecked until the census made it loud).
+        let n = compile(ctx, flags, inner, scope, top_id)?;
         Ok(Node::new(ExplicitParens { spec, n }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // A parenthesized expression is a fusion boundary the user drew
+        // deliberately — give the interior its own region pass (this is
+        // what lets `clock ~ (a + b)` fuse the `a + b` without the old
+        // hoist-into-a-let workaround, wherever the parens are reachable)
+        // and routes attribute dispatch to a decorated interior.
+        crate::fusion::fuse(&mut self.n, ctx)?;
+        Ok(None)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         self.n.update(ctx, event)
     }

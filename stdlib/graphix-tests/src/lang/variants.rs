@@ -15,16 +15,14 @@ const VARIANTS0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Fuses since Select::fuse (2026-08-14): arm/scrutinee sub-regions.
 run!(variants0, VARIANTS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(0), Value::I64(1)] => true,
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const VARIANTS1: &str = r#"
 {

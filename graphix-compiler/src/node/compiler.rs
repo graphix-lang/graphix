@@ -73,6 +73,13 @@ fn compile_inner<R: Rt, E: UserEvent>(
                     if ctx.lookup_attribute(&attr.name).is_none() {
                         crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
                     }
+                    // Honesty census: this registry attribute must be
+                    // dispatched or absorbed by the fusion walk
+                    // (`compile_stmt` reconciles; see `attr_census`).
+                    let mut census = ctx.attr_census.lock();
+                    if !census.iter().any(|e| e.id == spec.id) {
+                        census.push(spec.clone());
+                    }
                 }
             }
         }
@@ -122,7 +129,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => {
-            ExplicitParens::compile(ctx, flags, (**s).clone(), scope, top_id)
+            ExplicitParens::compile(ctx, flags, spec.clone(), (**s).clone(), scope, top_id)
         }
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {

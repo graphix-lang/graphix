@@ -671,4 +671,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_select_node(cx, self)
     }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // Reached only when no enclosing region fused this select whole
+        // (a region-interior select emits via emit_select_node instead).
+        // The scrutinee, each guard, and each arm BODY get their own
+        // region passes: an arm body is an ordinary node, so a fused arm
+        // is just a FusedKernel in arm position — sleep/wake already has
+        // kernel semantics (Kernel::sleep keeps the input slots for the
+        // arm-wake replay), the select's wake-forced event.init flows
+        // into the kernel per invocation (wire slot 0), and pattern
+        // binds are store-backed BindIds the region collector treats as
+        // external inputs with in-band tags. This is also what routes
+        // attribute dispatch into arms — `#[native]` on an arm body
+        // errors honestly instead of sitting inert (Eric, 2026-08-14).
+        // Constant bodies are skipped: a 0-input kernel wrapping a
+        // literal is pure dispatch overhead (the CallSite::fuse rule).
+        crate::fusion::fuse(&mut self.arg.node, ctx)?;
+        for (pat, body) in self.arms.iter_mut() {
+            if let Some(g) = &mut pat.guard {
+                if !matches!(g.node.view(), NodeView::Constant(_)) {
+                    crate::fusion::fuse(&mut g.node, ctx)?;
+                }
+            }
+            if !matches!(body.view(), NodeView::Constant(_)) {
+                crate::fusion::fuse(body, ctx)?;
+            }
+        }
+        Ok(None)
+    }
 }

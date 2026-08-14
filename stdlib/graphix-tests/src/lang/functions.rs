@@ -1234,7 +1234,7 @@ const REC_VARIANT_UNION_INFERS: &str = r#"
 
 run!(rec_variant_union_infers, REC_VARIANT_UNION_INFERS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // The exhaustiveness soundness hole the wildcard misclassification
 // hid: a select over [`A, `B] missing the `B arm COMPILED (all-bare-

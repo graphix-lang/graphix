@@ -1041,11 +1041,17 @@ builtins (timers, IO, netidx, `never`, `queue`, `throttle` — the
 once/take/skip family went Sync at P7 and fuses outside select arms), cross-cycle
 nodes (`~`, `Any`, `Catch`'s handler-read), and non-register-encodable types
 (`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
-TVars). Note that fusion recursion (`Update::fuse`) descends only through
-Module/Block/Bind/CallSite/Catch/Lambda — a sync expression under `~`, `<-`,
-`select`, or an operator fuses only as part of an enclosing block/bind region
-that fuses as a whole, so `clock ~ (a + b)` leaves the `a + b` node-walking
-unless it is hoisted into its own `let` (accepted current design, 2026-07-02).
+TVars). Fusion recursion (`Update::fuse`) descends through
+Module/Block/Bind/CallSite/Catch/Lambda, and since 2026-08-14 (Eric's
+attribute-honesty arc) ALSO Select (scrutinee, guards, and each arm body get
+their own region passes — a fused arm is a `FusedKernel` in arm position;
+sleep/wake and the wake-forced `event.init` compose with kernels already) and
+ExplicitParens (the interior gets its own pass — `clock ~ (a + b)` fuses the
+`a + b` where the parens are reachable). Constant arm/guard bodies are
+skipped (0-input kernels are pure overhead). Still NOT descended: `~`, `<-`,
+and operator operands — a sync expression there fuses only as part of an
+enclosing region; a REGISTRY attribute in such a position is a loud compile
+error (the honesty census below), never silently unchecked.
 
 The remaining missed-fusion tail (each pinned by a `#[native]` de-fuse test or an
 ASPIRE comment where noted):

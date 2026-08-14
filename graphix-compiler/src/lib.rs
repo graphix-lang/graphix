@@ -1807,6 +1807,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// compiles (a REPL definition is verified when a later statement calls
     /// it); deduped on push.
     pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
+    /// Registry-attribute honesty census (reset per `compile_stmt`): every
+    /// registry attribute (`#[native]`, package attrs) recorded at compile
+    /// must, by the end of the fusion walk, have been DISPATCHED
+    /// (`fusion::check_node_attributes`) or ABSORBED into a successfully
+    /// fused region (collected at splice) — anything left over sits in a
+    /// position the fusion walk cannot reach, and lying silently is not an
+    /// option: `compile_stmt` errors on it. Empty census ⇒ zero work.
+    pub(crate) attr_census: Mutex<Vec<Expr>>,
+    pub(crate) attr_dispatched: Mutex<IntSet<ExprId>>,
+    pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
     /// Variable deliveries raised inside an evaluation frame that must
     /// ESCAPE it. A frame runs the body against a PRIVATE
     /// `event.variables` map, which is the point — an interior publish
@@ -1868,6 +1878,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             tail_scrut_fired: false,
             depth_tripped: false,
             def_assertions: Mutex::new(Vec::new()),
+            attr_census: Mutex::new(Vec::new()),
+            attr_dispatched: Mutex::new(IntSet::default()),
+            attr_absorbed: Mutex::new(IntSet::default()),
             frame_outbox: Vec::new(),
         };
         // `#[native]` is a language-level attribute (its check is
@@ -2054,6 +2067,9 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     // (below) early-return on any error before the fusion call, so fusion is
     // reached iff this expr is well-typed.
     ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
+    ctx.attr_census.lock().clear();
+    ctx.attr_dispatched.lock().clear();
+    ctx.attr_absorbed.lock().clear();
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
     let env = ctx.env.clone();
@@ -2101,6 +2117,33 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             return Err(e);
         }
         info!("fusion time {:?}", st.elapsed());
+    }
+    // Registry-attribute honesty reconciliation (see `attr_census`): a
+    // decorated expression the fusion walk neither dispatched nor absorbed
+    // sits where no check can reach it — error loudly instead of letting
+    // the annotation silently assert nothing. Skipped under `--no-fusion`
+    // (the documented vacuity) and free when no attributes exist.
+    if ctx.fusion.enabled {
+        let census = ctx.attr_census.lock();
+        if !census.is_empty() {
+            let dispatched = ctx.attr_dispatched.lock();
+            let absorbed = ctx.attr_absorbed.lock();
+            for spec in census.iter() {
+                if !dispatched.contains(&spec.id) && !absorbed.contains(&spec.id) {
+                    let e = ::anyhow::anyhow!(
+                        "attribute in a position the fusion pass cannot check — \
+                         put the decorated expression in its own statement \
+                         (or a select arm)"
+                    )
+                    .context(expr::ErrorContext(spec.clone()));
+                    drop(census);
+                    drop(dispatched);
+                    drop(absorbed);
+                    ctx.env = env;
+                    return Err(e);
+                }
+            }
+        }
     }
     Ok((node, out_scope))
 }

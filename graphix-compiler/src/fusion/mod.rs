@@ -908,6 +908,21 @@ pub fn fuse<R: Rt, E: UserEvent>(
 ) -> anyhow::Result<()> {
     if let Some(new) = try_fuse(child, ctx)? {
         let mut old = std::mem::replace(child, new);
+        // Honesty census: decorated nodes inside the fused subtree are
+        // ABSORBED — the region compiled natively, so their checks are
+        // satisfied by construction (`#[native]` most of all). Collected
+        // only when a census exists (attribute-free compiles skip this).
+        if !ctx.attr_census.lock().is_empty() {
+            // The EMISSION walk, not the plain node walk: a fused region
+            // absorbs collection callback bodies and resolved callee
+            // bodies too, and their decorations are satisfied with it.
+            let mut absorbed = ctx.attr_absorbed.lock();
+            for_each_emitted_node(&old, &mut |n| {
+                if n.spec().dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
+                    absorbed.insert(n.spec().id);
+                }
+            });
+        }
         old.delete(ctx);
         check_node_attributes(child, ctx)?;
         return Ok(());
@@ -934,10 +949,15 @@ fn check_node_attributes<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
 ) -> anyhow::Result<()> {
     if let Some(dec) = &node.spec().dec {
+        let mut any = false;
         for attr in dec.attrs.iter() {
             if let Some(check) = ctx.lookup_attribute(&attr.name) {
+                any = true;
                 check(ctx, attr, node)?;
             }
+        }
+        if any {
+            ctx.attr_dispatched.lock().insert(node.spec().id);
         }
     }
     Ok(())
