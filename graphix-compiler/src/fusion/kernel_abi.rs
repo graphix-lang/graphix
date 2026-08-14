@@ -1470,11 +1470,6 @@ pub struct KernelSig {
     /// monotone; Relaxed suffices (single-threaded compilation).
     pub defined: std::sync::atomic::AtomicBool,
     pub has_sleep_restart: std::sync::atomic::AtomicBool,
-    /// The kernel's body contains a SELF-CALL (set at end-of-define
-    /// from the emission's `saw_self_call` cell, like
-    /// `has_sleep_restart`): callers consult it to decide whether the
-    /// call site needs the derivation-changed args memo (wire slot 3).
-    pub has_self_call: std::sync::atomic::AtomicBool,
 }
 
 impl Clone for KernelSig {
@@ -1489,7 +1484,6 @@ impl Clone for KernelSig {
             has_tail_loop: self.has_tail_loop,
             defined: AtomicBool::new(self.defined.load(Relaxed)),
             has_sleep_restart: AtomicBool::new(self.has_sleep_restart.load(Relaxed)),
-            has_self_call: AtomicBool::new(self.has_self_call.load(Relaxed)),
         }
     }
 }
@@ -1563,20 +1557,10 @@ pub struct SiteLeaf {
 /// back-edges (a fresh transient activation in the node-walk; for a
 /// single-shot activation fresh memory ≡ no memory) — every
 /// site-block consumer null-guards its base.
-///
-/// Slot 3 is the DERIVATION-CHANGED bit (`I64`, 0/1): for a RECURSIVE
-/// callee body, whether this whole derivation's root arguments
-/// changed vs the previous invocation of the same call site (Eric's
-/// ruling 2026-08-13: recursion fires like the hand-inlined chain,
-/// and a pure function re-applied to unchanged inputs is not an
-/// event). The region-root call site to a recursive callee computes
-/// it from a per-site args memo; self-call back-edges forward it
-/// verbatim (it is invocation-invariant by purity); every other
-/// context passes 1 (conservative: fire-on-triggering, the fresh
-/// semantics). The nomem selection paths in recursive callee bodies
-/// dampen their becoming-selected fires with it — capture-driven
-/// fires still flow organically through each param's in-band disc.
-pub(crate) const CTX_WIRE_SLOTS: usize = 4;
+/// (The former slot 3 — the derivation-changed bit — died with the
+/// organic-firing ruling, design/organic_firing.md: firing needs no
+/// recursion machinery.)
+pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
 impl KernelSig {
     /// Iterate the kernel's parameters in ABI order — the `params`

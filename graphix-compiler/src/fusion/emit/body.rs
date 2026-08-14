@@ -490,14 +490,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.state.ptr
     }
 
-    /// The derivation-changed bit (`I64` 0/1) from wire slot 3 — see
-    /// [`kernel_abi::CTX_WIRE_SLOTS`]. 1 in every non-recursive
-    /// context; in a recursive callee body, whether the root args of
-    /// this whole derivation changed vs the previous invocation.
-    pub fn derivation_changed(&self) -> ClifValue {
-        self.ctx.derivation_changed
-    }
-
     /// Claim one `u64` of per-kernel-INSTANCE cross-invocation memory,
     /// returning its byte offset from [`state_ptr`](Self::state_ptr) —
     /// or `None` when state is unavailable here: inside a scaffold
