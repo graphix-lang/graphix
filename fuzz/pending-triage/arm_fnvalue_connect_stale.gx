@@ -1,0 +1,47 @@
+// bisect: divergence — again the INTERP looks like the wrong one.
+// Found by soak aug14c (hz0 fuzz divergence_000002, katana fuzz
+// divergence_000000 — two boxes, same shape), 2026-08-14, campaign
+// binary 0b7fd7ef; survives the sleep-ride fix (0ba39657). Fuzzer-
+// minimized.
+//
+//   interp: [1:i64:0  2:<array::map fn value>  3:i64:0  4:<fn value>]
+//   jit:    [1:i64:0  2:<array::map fn value>  3:i64:4  4:<fn value>]
+//
+// m = x % 2 alternates 1,0,1,0, so the select alternates between the
+// `_` arm (the i64 block) and the arm holding a FUNCTION VALUE.
+// Event 1 takes the `_` arm: s is 0 and the connect schedules s <- 4
+// for the next cycle — but on that next cycle the arm is ASLEEP (the
+// map arm is selected). Event 3 re-selects the `_` arm: the JIT reads
+// s = 4 (the scheduled write landed while the arm slept), the interp
+// reads s = 0 (as if the write never happened).
+//
+// The rule to derive: does a scheduled `<-` write land while the target
+// binding's arm is asleep? Sleep is PAUSE (Eric 2026-07-31) and a
+// connect write is a runtime event on the BINDING, not a node
+// computation, which argues the JIT is right — but say so explicitly
+// before touching either engine.
+//
+// Ingredients (both required):
+//   - an arm holding a FUNCTION VALUE (array::map): replacing it with
+//     i64:1 agrees.
+//   - an arm block that binds a local and connects to it: a plain
+//     {let s = i64:5; s + i64:1} arm agrees.
+//
+// Possible shared root with [rec_arm_let_missing_fire.gx]: both are
+// arm-LOCAL binding state crossing a sleep or a frame in the interp,
+// where `Bind::update` publishes only on a triggering production
+// (node/bind.rs:198).
+//
+// ATTRIBUTION: this one is NEW TODAY, and it is the KERNEL that moved.
+// On ac432b6a (pre-organic-firing) both engines agree, and they agree
+// on the interp's CURRENT answer (event 3 = i64:0). So today's work
+// (organic firing / Select::fuse arm regions — NOT the 0ba39657 sleep
+// fix, which postdates the witness) changed the kernel from 0 to 4.
+//
+// THE RULING NEEDED (Eric): on re-selection of an arm whose body is
+// `{let s = i64:0; s <- ...; s}`, does the `let` RE-INITIALIZE s to 0
+// (interp's 0, and the wake-init-view reading of 0453e1ec), or does the
+// connect-written value persist across the arm's sleep (jit's 4, and
+// the sleep-is-PAUSE reading)? Both are defensible from existing
+// rulings, which is why this is parked instead of patched.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x % i64:2; let sel = select m {i64:0 => array::map, _ => {let s = i64:0; s <- array::fold([i64:1, i64:2, i64:1], i64:0, |acc, e| acc + e); s}}; sel}

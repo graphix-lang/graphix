@@ -1,0 +1,40 @@
+// bisect: divergence — and here the INTERP is the wrong one.
+// Found by soak aug14c (hz0 fuzz divergence_000000/000001, katana-class
+// sibling), 2026-08-14, campaign binary 0b7fd7ef; survives the
+// sleep-ride fix (0ba39657). Reduced by the fuzzer to 220 bytes, then
+// by hand to the single ingredient below.
+//
+//   interp: Trace([0:i64:2 3:i64:2 4:i64:2])
+//   jit:    Trace([0:i64:2 1:i64:7 2:i64:7 3:i64:2 4:i64:2])
+//
+// x iterates 1,2,3,4 so m = x/3 = 0,0,1,1, and the guard `m == i64:0`
+// is true,true,false,false. The JIT's 2,7,7,2,2 is what the ruled
+// semantics predict (init emits the `_` arm, then each m delivery fires
+// the select and emits the taken arm's current value). The INTERP drops
+// both guard-true productions entirely.
+//
+// The trigger is EXACTLY a `let` in the arm body, under recursion:
+//   {let a = i64:3; a + i64:4}    DIVERGES
+//   {let a = i64:3; let b = i64:4; a + b}  DIVERGES
+//   (i64:3 + i64:4)              agrees
+//   i64:3 + i64:4                agrees
+//   i64:7                        agrees
+// and the same program with `let f` instead of `let rec f` (no frame)
+// agrees for every one of those bodies.
+//
+// Working theory (unconfirmed): the arm-wake init view IS forced around
+// the arm production (node/select.rs ~388), so a woken constant fires
+// and `Bind::update` publishes it — but `Bind::update` publishes only on
+// a TRIGGERING production (node/bind.rs:198), and inside a recursion
+// FRAME the woken arm's constant appears Stale, so the local is never
+// published, the body reads a phantom, and the select emits nothing.
+// Needs the rule derived before either engine is touched: does a frame
+// pass re-publish frame-local binds (R1 says framed passes recompute
+// unconditionally)?
+//
+// Attribution: PRE-EXISTING, not today's work. On ac432b6a (this
+// morning's tree, pre-organic-firing) the same program already
+// diverges — interp [0:2 3:2] vs jit [0:2 1:7 3:7]. Organic firing
+// changed the CADENCE on both sides (5 events now, 3 then) but not the
+// class: the interp has never emitted the guard-true arm here.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => {let a = i64:3; a + i64:4}, _ => i64:2}, _ => f(n - i64:1)}; f(i64:3)}
