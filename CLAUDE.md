@@ -803,8 +803,14 @@ enforces it):**
   three designated ride sites), `CachedVals` staging slots, collection
   slot values/acc-carries — so a deselected-then-reselected arm whose
   fresh computation bottoms RIDES its history, exactly like the
-  kernel's persistent replay words / DynCall slots / per-slot state
-  words (the kernel needed no change). The documented arm-rewake RESTART
+  kernel's replay words / DynCall slots / per-slot state words. Those
+  were persistent only because nothing fused under a sleep initiator;
+  **arm-region fusion (2026-08-14) made `Kernel::sleep` live and it
+  was still CLEARING them** — the interior-bottom taint caches
+  (replay words, owned value pairs, per-slot reset chains) now survive
+  sleep too, and only `reset_replay` (frames) and `Drop` clear them
+  (`findings/sleep-preserves-caches-jul2026/03`, the kernel face of
+  the July pair). The documented arm-rewake RESTART
   semantics (`once`/`take`/`skip`/`uniq`/`hold`/`count` clear on
   sleep) are unchanged; since the P7 Sync flip these builtins DO fuse
   at region root, and the `SLEEP_RESTARTS` interior-sleep gate

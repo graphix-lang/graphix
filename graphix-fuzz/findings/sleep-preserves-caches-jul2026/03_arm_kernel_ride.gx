@@ -1,0 +1,20 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin
+// Found by soak aug14c hz0 reactive lane (seed 4550000000 range,
+// 2026-08-14, campaign binary 0b7fd7ef) ~20 minutes into the round;
+// hand-reduced from the fuzzer's minimized form.
+// Pre-fix: interp Trace([]; [0:i64:0]; [0:f64:0.]; [0:i64:0])
+//          jit    Trace([]; [0:i64:0]; [0:f64:0.]; [])
+// root_cause: the KERNEL FACE of 01/02 — sleep is PAUSE for the ride
+// caches too. `impl Apply for Kernel::sleep` zeroed the interior-bottom
+// taint caches (replay words, owned value pairs, per-slot reset chains)
+// on the premise, true until 2026-08-14, that no fused artifact could
+// sit under a sleep initiator. Arm-region fusion (Select::fuse) put a
+// kernel in arm position, so a deselected-then-reselected arm returned
+// to a bottomed scrutinee with NO ride history and produced nothing,
+// while the node-walk rode its `Held` resident.
+//
+// Epoch 3 is the witness: in0=0 makes the inner scrutinee (0 % 0) %? 0
+// bottom, the outer scrutinee (0 % 2 = 0) re-selects the arm slept
+// during epoch 2, and the inner select must ride its cached 0.
+// schedule-v1: cap=144 events=1152; in0=i64:100; in0=i64:1; in0=i64:0
+{let v1 = select in0 % i64:2 {i64:0 => (select ((in0 % in0) %? in0) {i64 as n => n, _ => i64:7}), _ => f64:0.}; v1}

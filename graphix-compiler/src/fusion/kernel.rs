@@ -1826,21 +1826,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // under the forced init view) — the kernel retains no per-arg
         // slots (Seam A of the 5c flip).
         //
-        // Sleep restarts the arm: the interior-bottom taint caches are
-        // node-walk `Cached` twins, which sleep clears.
-        for w in self.jit.replay_state_words.iter() {
-            self.state[*w as usize] = 0;
-        }
-        self.drop_replay_values();
-        self.free_reset_chains();
+        // SLEEP IS PAUSE (Eric's ruling 2026-07-31): the interior-bottom
+        // taint caches are the kernel twins of the interp's `Held` ride
+        // residents, and those survive an arm's sleep — a re-selected
+        // arm whose fresh computation bottoms RIDES its history. So
+        // sleep clears NOTHING here; only a frame reset
+        // (`reset_replay`) and instance death (`Drop`) do. Arm-region
+        // fusion (2026-08-14) made this path live, and the day it did
+        // the stale clearing became a missing fire: an arm-position
+        // kernel returned to a bottomed scrutinee with no ride history
+        // while the node-walk rode its own. The arm-rewake RESTART
+        // builtins never reach here — the `SLEEP_RESTARTS` interior-
+        // sleep gate de-fuses any arm that contains one.
+        //
         // The dyn slots' bound applies sleep like any node-walked
-        // callee's would (`CallSite::sleep` sleeps its apply). NOTE:
-        // no fused artifact can currently sit under a sleep-initiating
-        // position (fusion's descent never enters select arms — the C3
-        // reachability sweep, 2026-07-20), so this whole path is
-        // exercised only by the GXDBG_KERNEL_SLEEP probes today; it
-        // exists so the sleep algebra is coherent the day arm-region
-        // fusion lands.
+        // callee's would (`CallSite::sleep` sleeps its apply).
         for slot in self.dyn_slots.iter_mut() {
             slot.sleep(ctx);
         }

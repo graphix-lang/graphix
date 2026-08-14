@@ -128,12 +128,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
         }
-        // Delegates: `Kernel::sleep` KEEPS the input slots (the
+        // Delegates: `Kernel::sleep` KEEPS both the input slots (the
         // arm-wake cached replay — a re-selected arm's kernel must
-        // fire from its retained inputs), clears the replay words
-        // (node-walk `Cached` twins), and sleeps the dyn slots' bound
+        // fire from its retained inputs) and the interior-bottom ride
+        // caches (sleep is PAUSE), and sleeps the dyn slots' bound
         // applies (the `CallSite::sleep` twin). Contrast
-        // `reset_replay` below, which clears the input slots.
+        // `reset_replay` below, which clears both.
         self.inner.sleep(ctx);
         for feeder in self.feeders.iter_mut() {
             feeder.sleep(ctx);
