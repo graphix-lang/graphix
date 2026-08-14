@@ -785,14 +785,11 @@ run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Selection memory (design/kernel_instance_state.md): the node-walk
-// emits on a guard-only event only when the SELECTION changes — m
-// alternates 1,0,1,0, so the guard re-selects arms on cycles 2..4 (3
-// emissions) but cycle 1 re-takes the init selection (no emission):
-// 4 total with the init. The kernel's per-instance state word records
-// the taken arm (idx+1) and the guard term fires only on a change;
-// without it the guard-feeder fold over-fired the unchanged cycle
-// (interp 4, jit 5 — findings/firing-jul2026/01).
+// ORGANIC FIRING delta 2 (design/organic_firing.md, Eric 2026-08-14):
+// a guard-dep fire EMITS regardless of whether the selection changes.
+// m fires per x delivery, so the select emits 5 times (init + 4 guard
+// fires) on both engines — the old selection-memory cadence (4) and
+// the per-instance state word that produced it are gone.
 const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -806,18 +803,12 @@ const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Result<
     &Value,
 >| {
-    matches!(v, Ok(Value::I64(4)))
+    matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// PER-SLOT selection memory (soak-jul14b fuzz divergence 000009,
-// Eric's firing rule 2026-07-15: an arm fires once when it BECOMES
-// selected, then when its body deps fire; a guard update that doesn't
-// change the selection is quiet). Inside a collection loop the select
-// is one per slot in the node-walk, so the kernel's word comes from a
-// per-slot side table (`BodyCx::open_slot_tables`) instead of the
-// static claim. m holds 0 for x=1,2 then 1 for x=3,4 — one selection
-// change after the init, so the map fires twice; the unrefined guard
-// term re-fired every x.
+// Delta 2 inside a collection loop: the slot's select emits per guard
+// fire (5 = init + 4), no per-slot selection memory involved — the
+// structural context survives as organic-cadence coverage.
 const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -831,16 +822,14 @@ const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
 run!(
     guarded_select_in_loop_selection_memory,
     GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Per-slot INDEPENDENCE: the two slots hold DIFFERENT stable
-// selections (slot 0 takes arm 0, slot 1 takes arm 1) while the guard
-// feeder x fires every cycle. Each slot's selection never changes, so
-// the map is quiet after the init — a word SHARED across slots would
-// thrash (slot 0 reads slot 1's record as a selection change) and
-// re-fire every cycle.
+// Delta 2, two slots with different stable selections: both slots
+// emit per guard fire now (5 = init + 4) — under organic firing
+// per-slot independence is trivially exact because there is no
+// selection memory to alias.
 const GUARDED_SELECT_PER_SLOT_INDEPENDENCE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -853,14 +842,12 @@ const GUARDED_SELECT_PER_SLOT_INDEPENDENCE: &str = r#"
 run!(
     guarded_select_per_slot_independence,
     GUARDED_SELECT_PER_SLOT_INDEPENDENCE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Slot-table resize: the source grows 1 → 2 mid-run. The retained
-// prefix slot keeps its selection memory (no spurious fire) and the
-// fresh slot's first selection fires — exactly the interpreted MapQ
-// slot lifecycle (prefix retention, fresh slots on regrow).
+// Delta 2 across a source resize (1 → 2 mid-run): emissions follow
+// deliveries through the regrow on both engines (5 total).
 const GUARDED_SELECT_SLOT_TABLE_RESIZE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -876,17 +863,12 @@ const GUARDED_SELECT_SLOT_TABLE_RESIZE: &str = r#"
 run!(
     guarded_select_slot_table_resize,
     GUARDED_SELECT_SLOT_TABLE_RESIZE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// NESTED-loop selection memory (Eric's review of the depth-1 fix:
-// "each loop that has a select in it needs its own set of slots").
-// The select is two loops deep, so its state chain is anchor word →
-// directory (indexed by the outer ordinal) → leaf table (indexed by
-// the inner ordinal) — `BodyCx::open_slot_tables`' recursive path.
-// Same schedule as the depth-1 fixture: one selection change after
-// the init.
+// Delta 2 two loops deep: per-delivery emission through nested loops
+// (5 = init + 4 guard fires), no state chain involved.
 const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -900,15 +882,12 @@ const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
 run!(
     guarded_select_nested_loop_selection_memory,
     GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Per-(outer, inner) independence: the four slot pairs hold DIFFERENT
-// stable selections ((i+j) parity) while the guard feeder x fires
-// every cycle — quiet after the init. A table indexed by the inner
-// ordinal alone (or any flat sharing) would alias pairs with
-// different selections and thrash.
+// Delta 2, four slot pairs with different stable selections ((i+j)
+// parity): all emit per guard fire (5 = init + 4).
 const GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -921,14 +900,12 @@ const GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE: &str = r#"
 run!(
     guarded_select_nested_per_pair_independence,
     GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Ragged inner lengths + outer resize: the outer directory grows
-// 1 → 2 mid-run (retained entry keeps its inner table; the fresh
-// entry's inner table starts fresh) and the two inner tables have
-// different lengths — the chain is sized per level, per slot.
+// Delta 2 with ragged inner lengths + an outer resize mid-run:
+// per-delivery emission through the reshape (5 total).
 const GUARDED_SELECT_NESTED_RAGGED_RESIZE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -944,11 +921,11 @@ const GUARDED_SELECT_NESTED_RAGGED_RESIZE: &str = r#"
 run!(
     guarded_select_nested_ragged_resize,
     GUARDED_SELECT_NESTED_RAGGED_RESIZE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Depth 3 — the chain recursion beyond one directory level.
+// Delta 2 at loop depth 3 (5 = init + 4 guard fires).
 const GUARDED_SELECT_TRIPLE_NESTED: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -962,15 +939,12 @@ const GUARDED_SELECT_TRIPLE_NESTED: &str = r#"
 run!(
     guarded_select_triple_nested,
     GUARDED_SELECT_TRIPLE_NESTED,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// PER-CALL-SITE selection memory (design/kernel_instance_state.md
-// "Per-call-site state blocks"): a guarded select in a CALLEE body
-// claims words from the site block the caller supplies (wire slot 2),
-// so the node-walk's per-CallSite Apply instance memory is exact —
-// a guard-only event with an unchanged selection is quiet.
+// Delta 2 in a CALLEE body: a guard-dep fire emits through the
+// compiled callee (5 = init + 4) — no per-call-site selection words.
 const GUARDED_SELECT_IN_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -982,13 +956,11 @@ const GUARDED_SELECT_IN_CALLEE: &str = r#"
 "#;
 
 run!(guarded_select_in_callee, GUARDED_SELECT_IN_CALLEE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(3)))
+    matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Per-call-site INDEPENDENCE: one compiled callee, two call sites
-// whose selects hold DIFFERENT stable selections while the guard
-// feeder fires every cycle — quiet after init. Sharing one word
-// across the sites would thrash.
+// Delta 2, one compiled callee at two call sites with different
+// stable selections: both sites emit per guard fire (55 = 5*10 + 5).
 const GUARDED_SELECT_CALLEE_TWO_SITES: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1003,13 +975,12 @@ const GUARDED_SELECT_CALLEE_TWO_SITES: &str = r#"
 run!(
     guarded_select_callee_two_sites,
     GUARDED_SELECT_CALLEE_TWO_SITES,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(21))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(55))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A callee called INSIDE a loop gets one block per slot (the chain
-// leaf carries `words` stride): the two slots' selects hold different
-// stable selections and stay quiet.
+// Delta 2, a callee called inside a loop (two slots, different stable
+// selections): per-delivery emission (5).
 const GUARDED_SELECT_CALLEE_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1023,14 +994,12 @@ const GUARDED_SELECT_CALLEE_IN_LOOP: &str = r#"
 run!(
     guarded_select_callee_in_loop,
     GUARDED_SELECT_CALLEE_IN_LOOP,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A callee whose OWN body has a loop-select (its chain anchors in the
-// site block) called at root: the anchors translate into the caller's
-// registered words, so the chain lives in caller storage and Drop
-// frees it.
+// Delta 2, a callee whose own body has a loop-select, called at root:
+// per-delivery emission (5).
 const GUARDED_SELECT_CALLEE_INTERNAL_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1044,14 +1013,12 @@ const GUARDED_SELECT_CALLEE_INTERNAL_LOOP: &str = r#"
 run!(
     guarded_select_callee_internal_loop,
     GUARDED_SELECT_CALLEE_INTERNAL_LOOP,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// The deep composition: a callee with an internal loop-select, called
-// from INSIDE a loop — per-slot blocks whose in-block anchors own the
-// callee's chains (`SiteLeaf`; the blocks resize helper and Kernel
-// drop free through it recursively).
+// Delta 2, the deep composition — a callee with an internal
+// loop-select, called from inside a loop: per-delivery emission (5).
 const GUARDED_SELECT_CALLEE_LOOP_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1066,15 +1033,13 @@ const GUARDED_SELECT_CALLEE_LOOP_IN_LOOP: &str = r#"
 run!(
     guarded_select_callee_loop_in_loop,
     GUARDED_SELECT_CALLEE_LOOP_IN_LOOP,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A guarded select in value position inside a TAIL-RECURSIVE callee:
-// the entry call supplies the block, tail jumps reuse it (selection
-// persists across iterations and cycles — the ruled reset_replay
-// semantics), and the recursive back-edge shape (null block) never
-// makes a wrong value.
+// Delta 2 inside a TAIL-RECURSIVE callee: the interior select's guard
+// fires per delivery and the emission rides out through the loop
+// (5 = init + 4) — no site-block selection words.
 const GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1091,7 +1056,7 @@ const GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE: &str = r#"
 run!(
     guarded_select_in_tail_recursive_callee,
     GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(3))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
@@ -1149,16 +1114,12 @@ run!(select_arm_local_reseed_fold, SELECT_ARM_LOCAL_RESEED_FOLD, |v: Result<&Val
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A GUARD reading a CAPTURE inside a rec callee's TAIL select: the
-// selection flips while the entry (the const call arg) stays quiet,
-// so the callee's firing can't be entry-derived — guarded tail
-// selects claim SELECTION MEMORY recorded on terminating returns, and
-// a final-selection change fires the result (becoming-selected, the
-// node-walk's depth-0 retained-arm semantics; jul17c capture-dispatch
-// pin). The ruled emission sequence: 2 (init, m absent), 1 (m=0
-// selects the guard arm), quiet (m re-fires 0 — same selection), 2
-// (m=1 deselects). The old entry-derived seam tag returned STALE
-// after init and emitted only the first 2.
+// A GUARD reading a CAPTURE inside a rec callee's TAIL select.
+// Delta 2 on the tail spine, capture-driven guard: every m fire
+// emits (the old sequence had a quiet same-selection cycle; organic
+// emits it — [2, 1, 1] with the final 2 still in group's open
+// bucket). The jul17c capture-flip fire now flows through the
+// prologue guard fold instead of final-selection memory.
 const TAIL_SELECT_GUARD_CAPTURE_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1178,7 +1139,7 @@ run!(
         match v {
             Ok(Value::Array(a)) => {
                 a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                    == vec![2, 1, 2]
+                    == vec![2, 1, 1]
             }
             _ => false,
         }

@@ -4,11 +4,11 @@
 // delta Eric ruled intended IN ADVANCE (2026-08-14): a node fires iff a
 // consumed input fires — selects emit per fired input (scrutinee, guard
 // dep, or arm production), calls fire organically, no node stores a
-// previous value or selection to decide a tag. They are #[ignore]d
-// until the flip and each was verified RED against the pre-flip build
-// (baselines in the header of each fixture) — the red→green discipline
-// that makes them the flip's adjudication key rather than post-hoc
-// blessings. Do NOT un-ignore or adjust expectations without a ruling.
+// previous value or selection to decide a tag. Each was verified RED against the
+// pre-flip build (baselines in the header of each fixture) and went
+// green at the P1/P2 flips — the red→green discipline that made them
+// the flip's adjudication key rather than post-hoc blessings. Do NOT
+// adjust expectations without a ruling.
 //
 // Delta-list disposition (numbers from design/organic_firing.md):
 //   1     -> same_arm_refire_emits (below)
@@ -48,13 +48,11 @@ async fn same_arm_refire_emits(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn same_arm_refire_emits_interp() -> Result<()> {
     same_arm_refire_emits(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn same_arm_refire_emits_jit() -> Result<()> {
     same_arm_refire_emits(false).await
 }
@@ -79,13 +77,11 @@ async fn guard_fire_emits(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn guard_fire_emits_interp() -> Result<()> {
     guard_fire_emits(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn guard_fire_emits_jit() -> Result<()> {
     guard_fire_emits(false).await
 }
@@ -110,13 +106,11 @@ async fn gating_select_samples(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn gating_select_samples_interp() -> Result<()> {
     gating_select_samples(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn gating_select_samples_jit() -> Result<()> {
     gating_select_samples(false).await
 }
@@ -141,13 +135,11 @@ async fn rec_same_args_fires(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn rec_same_args_fires_interp() -> Result<()> {
     rec_same_args_fires(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn rec_same_args_fires_jit() -> Result<()> {
     rec_same_args_fires(false).await
 }
@@ -176,13 +168,11 @@ async fn tail_same_args_fires(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn tail_same_args_fires_interp() -> Result<()> {
     tail_same_args_fires(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn tail_same_args_fires_jit() -> Result<()> {
     tail_same_args_fires(false).await
 }
@@ -207,13 +197,11 @@ async fn const_terminal_agrees(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn const_terminal_agrees_interp() -> Result<()> {
     const_terminal_agrees(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn const_terminal_agrees_jit() -> Result<()> {
     const_terminal_agrees(false).await
 }
@@ -242,13 +230,11 @@ async fn chain_matches_rec(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn chain_matches_rec_interp() -> Result<()> {
     chain_matches_rec(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "organic-firing flip pending (design/organic_firing.md)"]
 async fn chain_matches_rec_jit() -> Result<()> {
     chain_matches_rec(false).await
 }
