@@ -1,0 +1,16 @@
+// aug13l hz0 reactive divergence_000000 (2026-08-14): KERNEL-side
+// standing-bottom remint — the interp was right. A fused select over
+// a CONST-bottom scrutinee (u16:1 % u16:0, $-swallowed) routes every
+// take to the shared miss block, whose disc was minted bare-TAINT —
+// FRESH — so each invocation an unrelated input triggered (the arm
+// guard's in0) re-fired the settled bottom, and the select's bind
+// republish clobbered a same-cycle `*v2 <- -1` ref-write every
+// epoch: v1 stayed bottom forever and the whole downstream region
+// was permanently silent (jit emitted NOTHING across 6 epochs where
+// the interp emitted per-epoch). The kernel face of the
+// standing-bottoms-never-refire genus (fold-standing-init +
+// depth-trip-quiet-remint were the interp faces). Fix: the miss
+// disc inherits the SCRUTINEE's STALE bit (the interp's
+// arg_prod.triggers() rule) — standing taint misses quiet.
+// schedule-v1: cap=144 events=1152; in0=bool:true; in0=bool:false in1=bool:false; in0=bool:false in1=bool:false; in0=bool:true in1=bool:true; in0=bool:true in1=bool:false
+{ let v0 = i64:0; v0 <- in0 ~ (select in0 { true => v0 + i64:1, false => v0 }); let v3: i64 = { let v1 = select cast<i64>((u16:1 % u16:0))$ { i64:7 if in0 => (v0 / str::len("xyz")), in0 => i64:1 }; let v2 = &v1; *v2 <- i64:-1; select v0 { i64:100 if in0 => ((v0 + v1) % i64:-1), i64:100 => (v1 / map::len({"k0" => i64:42, "k2" => i64:0, "a" => i64:1})), v3 => *v2 } }; ((v0 * v0) + v3) }

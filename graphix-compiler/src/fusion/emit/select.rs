@@ -434,7 +434,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 (sel_word, idx),
             )
         },
-        &mut |cx| emit_select_miss_value(cx, merge_shape, merge),
+        &mut |cx| emit_select_miss_value(cx, merge_shape, merge, scrut_disc),
     )?;
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);
@@ -482,10 +482,21 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
 /// Jump to the merge with a drop-safe tainted bottom — the disc's TAINT
 /// forces a bottom at the output, and the payload is a valid empty
 /// allocation so a scope-exit drop is null-safe.
+///
+/// The bottom's FRESHNESS is the SCRUTINEE's (the interp's
+/// `arg_prod.triggers()` rule at the no-ride bottom return): a
+/// STANDING-tainted scrutinee's miss is TAINT|STALE — nothing new —
+/// where the old bare-TAINT mint re-fired the settled bottom on every
+/// invocation an unrelated input triggered, and the select's bind
+/// republish clobbered a same-cycle ref-write forever (aug13l hz0
+/// reactive 000000: the region went permanently silent downstream).
+/// A FRESH-tainted (or genuinely fired mismatching) scrutinee keeps
+/// the fresh taint.
 fn emit_select_miss_value(
     cx: &mut BodyCx,
     merge_shape: SelectMerge,
     merge: Block,
+    scrut_disc: ClifValue,
 ) -> Result<()> {
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(p) => {
@@ -523,6 +534,8 @@ fn emit_select_miss_value(
             (d, s)
         }
     };
+    let s = cx.b.ins().band_imm(scrut_disc, STALE);
+    let disc = cx.b.ins().bor(disc, s);
     cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     Ok(())
 }
