@@ -33,10 +33,11 @@ use super::{
         propagate_taint, scalar_disc, value_disc,
     },
     body::{
-        BodyCx, ensure_owned_composite_src, ensure_owned_value_src, node_composite_source,
+        BodyCx, ensure_owned_composite_src, ensure_owned_value_src, fold_stale,
+        node_composite_source,
     },
     call::CompositeSource,
-    lower::{SelWord, resolve_node_typ},
+    lower::resolve_node_typ,
     scalar::{
         cast_u64_to_prim, compile_cmp, compile_const, prim_to_clif,
         scalar_to_payload_i64, struct_get_helper, valarray_get_helper,
@@ -338,33 +339,22 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     };
     cx.b.append_block_param(merge, payload_ty); // payload
     let scrut_disc = scrut.disc();
-    // THE STRICT SELECT RULE (Eric's ruling 2026-08-06): a select
-    // FIRES iff its SELECTION CHANGED (an arm becoming selected emits
-    // that arm's value — the node-walk's arm-wake fire) or the TAKEN
-    // ARM's body fired (a body that consumes the scrutinee or a guard
-    // feeder fires through those inputs' discs). A scrutinee or
-    // guard-feeder event that re-takes the same arm with a quiet body
-    // is NOT an emission. The old scrutinee-disc fold (fire on any
-    // scrutinee fire — the node-walk's ride re-emit, both since
-    // removed) and the guard-feeder stale word are gone. Consequently
-    // EVERY fused value-position select needs selection memory: the
-    // per-instance state word (root body), the loop's per-slot chain
-    // (`slot_state_sites` registers every select — each MapQ/FoldQ
-    // slot's subgraph has its own Select instance in the node-walk,
-    // soak-jul14b divergence 000009), or the per-call-site block word
-    // (callee root; 0 base on a recursive back-edge = a fresh
-    // transient activation whose first selection always reads
-    // changed, matching the node-walk's fresh-Apply-per-frame
-    // semantics). No word available → de-fuse: the strict rule is
-    // unrepresentable without memory, and an approximation in either
-    // direction is a wrong firing.
+    // ORGANIC FIRING (Eric's ruling 2026-08-14,
+    // design/organic_firing.md): a select fires iff a consumed input
+    // fires — the scrutinee's or a prologue guard's STALE bit folds
+    // into every arm result beside the arm's own production. No
+    // selection memory is needed for FIRING (the strict rule's
+    // state-word claims and their de-fuse are gone; the interp twin is
+    // `own_fired` in node/select.rs).
+    //
     // An arm body holding a LIFTED connect target (`let s = 0; s <-
-    // …; s` — the per-arm reactive accumulator) needs the state word
-    // unconditionally: the node-walk RE-SEEDS the bind on every arm
-    // wake (the init-view contract above), which the arm emitter
-    // reproduces from the selection-changed bit. Without a word
-    // (loop/callee context) that semantics is unrepresentable — Err,
-    // de-fuse (soak jul08g fuzz divergence 6).
+    // …; s` — the per-arm reactive accumulator) still needs the
+    // per-instance state word: the node-walk RE-SEEDS the bind on
+    // every arm wake (the init-view contract), which the arm emitter
+    // reproduces from the selection-changed bit. That is VALUE-plane
+    // state (the seed resets the accumulator), not firing. The lifted
+    // write target is per INSTANCE, so neither per-slot nor
+    // per-call-site memory can represent it — no word → de-fuse.
     let has_arm_lift = sel.arms.iter().any(|(_, body)| {
         let mut found = false;
         fusion::for_each_node(body, &mut |n| {
@@ -376,43 +366,21 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         });
         found
     });
-    // The word's ADDRESS: static (state_ptr + off) at root level,
-    // this slot's entry in the loop's side table, or — in a CALLEE
-    // body at its root level — a word in the per-call-site state
-    // block (null-guarded: 0 on recursive back-edges). The arm-lift
-    // re-seed never reads a table or a site block — the lifted write
-    // target is per INSTANCE (one state word), so neither per-slot
-    // nor per-call-site memory can represent it.
-    let sel_state = match cx.claim_state_word() {
-        Some(off) => {
-            let sp = cx.state_ptr();
-            Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
-        }
-        None if !has_arm_lift => match cx.slot_select_word(sel.spec.id) {
-            Some(w) => Some(w),
-            // Site words are per CALL SITE, not per slot: a
-            // loop-context select without a table entry must NOT
-            // claim one (it would alias slots).
-            None if cx.ctx.loop_depth.get() == 0 => cx.claim_site_word().map(|off| {
-                let base = cx.site_ptr();
-                let addr = cx.b.ins().iadd_imm(base, off as i64);
-                SelWord::Guarded { base, addr }
-            }),
-            None => None,
-        },
-        None => None,
-    };
-    let Some(sel_word) = sel_state else {
-        return Err(anyhow!(
-            "emit_clif: no selection memory available here (the strict \
-             select rule needs a state word{}) — de-fuse",
-            if has_arm_lift {
-                "; an arm-lifted connect target additionally requires the \
-                 per-instance word"
-            } else {
-                ""
+    let sel_state = if has_arm_lift {
+        match cx.claim_state_word() {
+            Some(off) => {
+                let sp = cx.state_ptr();
+                Some(cx.b.ins().iadd_imm(sp, off as i64))
             }
-        ));
+            None => {
+                return Err(anyhow!(
+                    "emit_clif: an arm-lifted connect target requires the \
+                     per-instance state word — de-fuse"
+                ));
+            }
+        }
+    } else {
+        None
     };
     let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
@@ -421,7 +389,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut,
         scrut_kind,
         &scrut_typ,
-        &mut |cx, body, mark| {
+        &mut |cx, body, mark, guard_stale| {
             let idx = arm_index.get();
             arm_index.set(idx + 1);
             emit_select_value_arm(
@@ -431,7 +399,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 merge_shape,
                 merge,
                 scrut_disc,
-                (sel_word, idx),
+                sel_state.map(|addr| (addr, idx)),
+                guard_stale,
             )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge, scrut_disc),
@@ -962,7 +931,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize) -> Result<()>,
+    // (cx, arm body, env mark, guard_stale): guard_stale is the AND of
+    // every prologue-evaluated guard's STALE bit — ORGANIC FIRING
+    // (design/organic_firing.md): a guard production's fire is one of
+    // the select's own fires and folds into the emission. None when no
+    // guard took a prologue slot (schedule-free guards' inputs are
+    // scrutinee-derived binds, covered by the scrutinee fold).
+    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, Option<ClifValue>) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
     // scrutinee): value position jumps to the merge with a tainted
     // bottom; tail position sets pending and exits.
@@ -1007,9 +982,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // (select-phantom-arm-eval-aug2026/03). Guard-interior owned
     // locals rely on the guard expression's own emission discipline,
     // exactly as before the hoist; the prologue's own installs are
-    // all scalar.
+    // all scalar. Each prologue guard's disc STALE bit ANDs into
+    // `guard_stale` — the organic-firing guard fold handed to the arm
+    // emitters (a fired or fresh-bottom guard production fires the
+    // select; a StaleBottom or quiet one doesn't).
     let mut guard_vals: smallvec::SmallVec<[Option<ClifValue>; 8]> =
         smallvec::smallvec![None; n];
+    let mut guard_stale: Option<ClifValue> = None;
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
         // A schedule-free guard needs no prologue slot: its value at
@@ -1075,6 +1054,11 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // the value-scrutinee DE-FUSE bar does not apply to guard
         // op-sites.
         let gcv = emit_scalar_taint_cache(cx, PrimType::Bool, gcv);
+        let gs = cx.b.ins().band_imm(gcv.disc, STALE);
+        guard_stale = Some(match guard_stale {
+            None => gs,
+            Some(a) => cx.b.ins().band(a, gs),
+        });
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         cx.env.truncate(gmark);
@@ -1169,7 +1153,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // refuses stateful builtins while any select ARM body is on
         // the emission stack — see `LowerCtx::arm_depth`.
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() + 1);
-        let arm_res = emit_arm(cx, body, mark);
+        let arm_res = emit_arm(cx, body, mark, guard_stale);
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
         arm_res?;
         match fail {
@@ -1696,26 +1680,23 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge_shape: SelectMerge,
     merge: Block,
     scrut_disc: ClifValue,
-    sel_state: (SelWord, usize),
+    // Present only for arm-lift selects (see `emit_select_node`): the
+    // per-instance selection word + this arm's index, driving the
+    // arm-wake INIT VIEW so lifted connect targets re-seed on
+    // becoming-selected (the node-walk updates a newly-taken arm with
+    // `event.init = true`). Recording is skipped for a TAINTED
+    // scrutinee: the arm is taken structurally but the node-walk made
+    // no selection. Plain selects need no memory — organic firing.
+    sel_state: Option<(ClifValue, usize)>,
+    guard_stale: Option<ClifValue>,
 ) -> Result<()> {
     use NodeView;
     let body_frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
         .ok_or_else(|| {
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
-    // Selection memory (see `emit_select_node`): compare-and-record
-    // this arm's index BEFORE the body — the woke bit (changed with a
-    // valid scrutinee) is the becoming-selected fire of the strict
-    // select rule AND drives the arm's EFFECTIVE INIT. The node-walk
-    // updates a newly-taken arm with `event.init = true`
-    // (node/select.rs — the wake is an init view), so the body is
-    // emitted under `kernel_init | (changed & valid)`: seeds re-fire,
-    // constants re-deliver, lifted connect targets re-seed (soak
-    // jul08g fuzz divergence 6). Recording (and the init view) is
-    // skipped for a TAINTED scrutinee: the arm is taken structurally
-    // but the node-walk made no selection.
     let base_init = cx.init_flag();
-    let record = |cx: &mut BodyCx, addr: ClifValue, idx: usize| {
+    let prev_override = if let Some((addr, idx)) = sel_state {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
         let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
@@ -1725,57 +1706,10 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         let woke = cx.b.ins().band(changed, valid);
         let woke64 = cx.b.ins().uextend(types::I64, woke);
         let eff_init = cx.b.ins().bor(base_init, woke64);
-        (woke, eff_init)
+        cx.ctx.init_override.replace(Some(eff_init))
+    } else {
+        cx.ctx.init_override.replace(Some(base_init))
     };
-    let (word, idx) = sel_state;
-    let sel_changed = match word {
-        SelWord::Sure(addr) => record(cx, addr, idx),
-        // A site-block word: 0 base = a recursive back-edge's interior
-        // activation — a FRESH TRANSIENT activation (Eric's ruling
-        // 2026-08-13, interior-activation class; the tail twin's nomem
-        // rule in `emit_kernel_return`). The interp gives every
-        // re-derived interior activation fresh selection state AND
-        // dispatches it under a fresh-instance init view, so an arm
-        // match on a TRIGGERING scrutinee delivery is
-        // becoming-selected: it fires and forces the arm's init view
-        // (consts re-deliver — the x=[1,2,2] probe). A stale
-        // scrutinee never re-matches (the capture-wake pin stays
-        // quiet). Unlike the tail twin, a tainted scrutinee reaches
-        // the arm structurally here, so the woke bit requires
-        // untainted as well as fired.
-        SelWord::Guarded { base, addr } => {
-            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-            let mem_bl = cx.b.create_block();
-            let nomem_bl = cx.b.create_block();
-            let merge = cx.b.create_block();
-            cx.b.append_block_param(merge, types::I8); // woke
-            cx.b.append_block_param(merge, types::I64); // eff_init
-            cx.b.ins().brif(has, mem_bl, &[], nomem_bl, &[]);
-            cx.b.switch_to_block(mem_bl);
-            cx.b.seal_block(mem_bl);
-            let (woke, eff_init) = record(cx, addr, idx);
-            cx.b.ins().jump(merge, &[BlockArg::Value(woke), BlockArg::Value(eff_init)]);
-            cx.b.switch_to_block(nomem_bl);
-            cx.b.seal_block(nomem_bl);
-            let ss = cx.b.ins().band_imm(scrut_disc, STALE);
-            let fired = cx.b.ins().icmp_imm(IntCC::Equal, ss, 0);
-            let valid = is_untainted(cx.b, scrut_disc);
-            // Dampened by the derivation-changed bit (wire slot 3):
-            // see the tail twin's nomem rule in `emit_kernel_return`.
-            let dc = cx.derivation_changed();
-            let changed = cx.b.ins().icmp_imm(IntCC::NotEqual, dc, 0);
-            let woke = cx.b.ins().band(fired, valid);
-            let woke = cx.b.ins().band(woke, changed);
-            let woke64 = cx.b.ins().uextend(types::I64, woke);
-            let eff_init = cx.b.ins().bor(base_init, woke64);
-            cx.b.ins().jump(merge, &[BlockArg::Value(woke), BlockArg::Value(eff_init)]);
-            cx.b.switch_to_block(merge);
-            cx.b.seal_block(merge);
-            let params = cx.b.block_params(merge);
-            (params[0], params[1])
-        }
-    };
-    let prev_override = cx.ctx.init_override.replace(Some(sel_changed.1));
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(rp) => {
             if kernel_abi::scalar_prim(cx.registry(), &body_frozen) != Some(rp) {
@@ -1866,19 +1800,24 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             (cv.disc, cv.payload)
         }
     };
-    // Fold flags into the arm result (the strict select rule, Eric's
-    // ruling 2026-08-06). TAINT = OR(arm, scrut): a missing scrutinee
-    // bottoms regardless of arm. FIRING = the arm's own production OR
-    // the becoming-selected fire (the woke bit recorded above) — the
-    // scrutinee's and guard feeders' firing do NOT fold in; a body
-    // that consumes them fires through its own inputs' discs.
+    // Fold flags into the arm result — ORGANIC FIRING (Eric's ruling
+    // 2026-08-14). TAINT = OR(arm, scrut): a missing scrutinee bottoms
+    // regardless of arm. FIRING = OR(arm production, scrutinee
+    // delivery, prologue guard productions) — the STALE bits AND-fold
+    // (the interp's `own_fired` join in node/select.rs). A RIDDEN
+    // scrutinee arrives disc|STALE from `emit_scrut_ride`, so a bottom
+    // delivery with history stays quiet here (the ride axis).
     cx.ctx.init_override.set(prev_override);
     let base = clean_disc(cx.b, disc);
     let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
     let d = propagate_stale(cx.b, d, &[disc]);
-    let fired = cx.b.ins().band_imm(d, !STALE);
-    let disc = cx.b.ins().select(sel_changed.0, fired, d);
+    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
+    let d = fold_stale(cx.b, d, scrut_stale);
+    let d = match guard_stale {
+        Some(gs) => fold_stale(cx.b, d, gs),
+        None => d,
+    };
     cx.env.truncate(mark);
-    cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
+    cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
     Ok(())
 }

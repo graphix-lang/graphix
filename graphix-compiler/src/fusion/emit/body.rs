@@ -17,7 +17,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlags, Value as ClifValue,
+    Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue,
     condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
@@ -1193,7 +1193,7 @@ pub(super) fn emit_return_from_node<R: Rt, E: UserEvent>(
 /// AND `mask`'s STALE bit into `disc`'s — the firing fold (STALE
 /// survives only when BOTH sides are stale); every other bit is
 /// unchanged.
-fn fold_stale(b: &mut FunctionBuilder, disc: ClifValue, mask: ClifValue) -> ClifValue {
+pub(super) fn fold_stale(b: &mut FunctionBuilder, disc: ClifValue, mask: ClifValue) -> ClifValue {
     let vs = b.ins().band_imm(disc, STALE);
     let folded = b.ins().band(vs, mask);
     let cleaned = b.ins().band_imm(disc, !STALE);
@@ -1224,82 +1224,11 @@ pub(super) fn emit_kernel_return(
         let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
         cv.disc = fold_stale(cx.b, cv.disc, acc);
     }
-    // Becoming-selected firing for the enclosing GUARDED tail selects
-    // (`LowerCtx::tail_sel_path`): this return IS the invocation's
-    // final selection for each select on the path — compare each
-    // selection word against the taken arm index, fire on change, and
-    // record. The scrutinee was forced valid before the arms ran, so
-    // the record is unconditional here (the node-walk updates
-    // `selected` before the arm body too).
-    {
-        let path: smallvec::SmallVec<[(SelWord, usize, ClifValue); 4]> =
-            cx.ctx.tail.sel_path.borrow().iter().copied().collect();
-        for (word, idx, scrut_stale_bit) in path {
-            let record = |cx: &mut BodyCx, addr: ClifValue| -> ClifValue {
-                let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-                let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
-                let changed = cx.b.ins().icmp(IntCC::NotEqual, stored, tag);
-                cx.b.ins().store(MemFlags::trusted(), tag, addr, 0);
-                // STALE when unchanged (the fold identity), 0 on a
-                // selection change (forces FIRED).
-                let stale_c = cx.b.ins().iconst(types::I64, STALE);
-                let zero = cx.b.ins().iconst(types::I64, 0);
-                cx.b.ins().select(changed, zero, stale_c)
-            };
-            let mask = match word {
-                SelWord::Sure(addr) => record(cx, addr),
-                // Null site block (recursive back-edge): a FRESH
-                // TRANSIENT activation. The interp gives every
-                // re-derived interior activation fresh selection state,
-                // so ANY arm match on a TRIGGERING scrutinee delivery
-                // is becoming-selected and fires (Eric's ruling
-                // 2026-08-13, interior-activation class — pinned by the
-                // x=[1,2,2] same-value re-fire probe); a stale
-                // scrutinee never re-matches and stays quiet (the
-                // capture-wake pin, transient-rebind-init-jul2026/00).
-                // The mask is therefore the scrutinee's own STALE bit,
-                // threaded from the select head: 0 (fired) forces the
-                // becoming-selected fire through the fold, STALE is
-                // the quiet identity. The early taint return above the
-                // arms guarantees the scrutinee is untainted here. The
-                // round-2 init-force failure is instructive: the
-                // trigger must be the scrutinee's own delivery tag,
-                // never the invocation itself.
-                SelWord::Guarded { base, addr } => {
-                    let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-                    let mem_bl = cx.b.create_block();
-                    let nomem_bl = cx.b.create_block();
-                    let merge = cx.b.create_block();
-                    cx.b.append_block_param(merge, types::I64);
-                    cx.b.ins().brif(has, mem_bl, &[], nomem_bl, &[]);
-                    cx.b.switch_to_block(mem_bl);
-                    cx.b.seal_block(mem_bl);
-                    let mask = record(cx, addr);
-                    cx.b.ins().jump(merge, &[BlockArg::Value(mask)]);
-                    cx.b.switch_to_block(nomem_bl);
-                    cx.b.seal_block(nomem_bl);
-                    // Dampened by the derivation-changed bit (wire
-                    // slot 3, Eric's ruling 2026-08-13): an UNCHANGED
-                    // derivation's interior re-match is quiet (STALE
-                    // identity — recursion fires like the hand-inlined
-                    // chain, whose retained per-site words read
-                    // same-arm); a changed one fires becoming-selected
-                    // on its triggering scrutinee (the fresh view —
-                    // the interp's selection flips and fresh deeper
-                    // levels land in the same observable).
-                    let dc = cx.derivation_changed();
-                    let changed = cx.b.ins().icmp_imm(IntCC::NotEqual, dc, 0);
-                    let stale_c = cx.b.ins().iconst(types::I64, STALE);
-                    let nomask = cx.b.ins().select(changed, scrut_stale_bit, stale_c);
-                    cx.b.ins().jump(merge, &[BlockArg::Value(nomask)]);
-                    cx.b.switch_to_block(merge);
-                    cx.b.seal_block(merge);
-                    cx.b.block_params(merge)[0]
-                }
-            };
-            cv.disc = fold_stale(cx.b, cv.disc, mask);
-        }
-    }
+    // ORGANIC FIRING (Eric's ruling 2026-08-14): the tail_sel_path
+    // final-selection-change machinery is gone — a selection flip
+    // implies a fired scrutinee or guard, and those fold into the
+    // accumulator at the select head (fusion/emit/flow.rs), so the
+    // fold above already carries every own-fire.
     // Unified Value ABI: every kernel returns the two-word genuine
     // Value pair; TAINT/STALE ride the disc in-band (the old
     // CALLEE_RESULT_FLAGS side channel is gone). The disc is REBASED

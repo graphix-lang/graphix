@@ -28,7 +28,6 @@ use super::{
         node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
-    lower::SelWord,
     nodes::emit_elem_placeholder,
     scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_select_arms},
@@ -340,70 +339,28 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
-    // TAIL-SPINE selects only (`tail_position` — the dispatch select
-    // of a tail-recursive loop): fold this scrutinee's firing into the
-    // kernel's tail-firing accumulator (see `LowerCtx::tail_scrut_stale`).
-    // The loop bound is a CONTROL dependence of the result — a re-call
-    // with a fired bound produces its value through the iteration
-    // count even when the data chain into the base arm is all-stale
-    // (`|n, acc| select n {0 => acc, _ => g(n-1, acc+cap)}` — the
-    // const-seeded acc), so without the fold the new value is LOST,
-    // not merely quiet. A NON-spine return-position select has no
-    // iteration structure — its control dependence is fully captured
-    // by final-selection change (below), and folding its scrutinee
-    // would resurrect the pre-strict-rule ride (`|n| select n {...}`
-    // firing per same-value call where `|n| {let x = select n {...};
-    // x}` does not — the refactor asymmetry, Eric 2026-08-06). band
-    // keeps a cleared (fired) bit cleared across loop iterations.
-    //
-    // DAMPENED by the derivation-changed bit (Eric's ruling
-    // 2026-08-13, tail-zero-iteration-fire): the control-dependence
-    // rationale reaches only dispatches whose derivation CHANGED — at
-    // an unchanged derivation there is no new iteration count and
-    // nothing is lost (a zero-iteration same-value re-dispatch IS a
-    // plain select taking the same arm, quiet by the strict rule and
-    // by the hand-inline principle). The interp's organic drop of
-    // that fire is the ruled-correct behavior; this fold matched the
-    // old over-broad written rule.
+    // Fold this select's own fires into the kernel's tail-firing
+    // accumulator (`LowerCtx::tail_scrut_stale`, applied at every
+    // `emit_kernel_return`) — ORGANIC FIRING (Eric's ruling
+    // 2026-08-14, design/organic_firing.md): a fired scrutinee
+    // delivery or guard production fires the emission, and on the
+    // tail spine the arm emissions are swallowed by the jump
+    // machinery, so the accumulator is the only channel that carries
+    // an own-fire to the final base-arm emission (the interp twin is
+    // the `ctx.tail_scrut_fired` fold in node/select.rs). The
+    // cceb0809 derivation-changed damp and the final-selection
+    // memory (tail_sel_path) are gone: a selection flip implies a
+    // fired input (a capture-driven guard flip fires through the
+    // prologue guard fold below), so the own-fire folds carry all of
+    // it. band keeps a cleared (fired) bit cleared across loop
+    // iterations. Non-spine return-position selects fold too — the
+    // uniform rule.
     let scrut_stale_bit = cx.b.ins().band_imm(scrut.disc(), STALE);
-    if sel.tail_position.load(std::sync::atomic::Ordering::Relaxed) {
-        let dc = cx.derivation_changed();
-        let changed = cx.b.ins().icmp_imm(IntCC::NotEqual, dc, 0);
-        let stale_c = cx.b.ins().iconst(types::I64, STALE);
-        let damped = cx.b.ins().select(changed, scrut_stale_bit, stale_c);
+    {
         let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
-        let n = cx.b.ins().band(cur, damped);
+        let n = cx.b.ins().band(cur, scrut_stale_bit);
         cx.b.def_var(cx.ctx.tail.scrut_stale, n);
     }
-    // EVERY tail-emitter select needs SELECTION MEMORY (the strict
-    // select rule): the select fires iff its FINAL selection changed
-    // vs the previous invocation's (the becoming-selected fire — a
-    // scrutinee landing on a different base arm, or a guard capture
-    // flipping the selection, jul17c capture-dispatch pin) or the
-    // taken arm's own production fired. The word records
-    // TERMINATING-arm indices only (`tail_sel_path` — recorded at
-    // `emit_kernel_return`), so loop-pass oscillation through jump
-    // arms is invisible and the compare is final vs final. No word
-    // available → de-fuse (the rule is unrepresentable without
-    // memory).
-    let sel_word: Option<SelWord> = match cx.claim_state_word() {
-        Some(off) => {
-            let sp = cx.state_ptr();
-            Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
-        }
-        None => cx.claim_site_word().map(|off| {
-            let base = cx.site_ptr();
-            let addr = cx.b.ins().iadd_imm(base, off as i64);
-            SelWord::Guarded { base, addr }
-        }),
-    };
-    let Some(sel_word) = sel_word else {
-        return Err(anyhow!(
-            "emit_clif: no selection memory available for a tail select \
-             (the strict select rule needs a state word) — de-fuse"
-        ));
-    };
-    let sel_word = Some(sel_word);
     // Tail position: a missing (tainted) scrutinee RETURNS the tainted
     // placeholder early — a value-level bottom. In a callee it rides
     // back in-band in the returned disc and bottoms only the call's
@@ -434,20 +391,17 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         scrut,
         scrut_kind,
         &scrut_typ,
-        &mut |cx, body, mark| {
-            let idx = arm_index.get();
-            arm_index.set(idx + 1);
-            // Scope this select's (word, arm) onto the terminating-path
-            // stack: a return inside this arm records it; a tail JUMP
-            // never returns, leaving the word untouched by loop
-            // mechanics.
-            if let Some(w) = sel_word {
-                cx.ctx.tail.sel_path.borrow_mut().push((w, idx, scrut_stale_bit));
+        &mut |cx, body, mark, guard_stale| {
+            arm_index.set(arm_index.get() + 1);
+            // A prologue guard's fire is one of this select's own
+            // fires (organic firing): fold it into the accumulator on
+            // the taken arm's path, beside the scrutinee fold above.
+            if let Some(gs) = guard_stale {
+                let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
+                let n = cx.b.ins().band(cur, gs);
+                cx.b.def_var(cx.ctx.tail.scrut_stale, n);
             }
             emit_body_tail(cx, body, ret)?;
-            if sel_word.is_some() {
-                cx.ctx.tail.sel_path.borrow_mut().pop();
-            }
             // The arm terminated; pop its binds for the next arm's
             // compile-time scope. (Arm binds are scalars — no drops.)
             cx.env.truncate(mark);

@@ -194,7 +194,6 @@ pub(super) fn compile_into_function(
             param_mark,
             call_slots,
             scrut_stale: tail_scrut_stale,
-            sel_path: std::cell::RefCell::new(Vec::new()),
         },
         init_flag,
         callee_refs,
@@ -535,28 +534,6 @@ pub(super) struct TailCtx<'a> {
     /// fires when the arm-selecting scrutinee fired — the tail-arm
     /// mirror of the value-position select's merge-point fold.
     pub(super) scrut_stale: Variable,
-    /// The enclosing GUARDED tail selects' (selection word, taken arm
-    /// index) on the CURRENT arm-emission path. `emit_select_node_tail`
-    /// pushes one entry per guarded select around each arm's body
-    /// emission; `emit_kernel_return` — reached only on TERMINATING
-    /// paths — compares each word against the taken index and folds a
-    /// selection CHANGE into the returned disc (becoming-selected
-    /// fires, Eric's ruled select semantics), then records the index.
-    /// Jump arms never reach a return, so intra-invocation loop
-    /// mechanics (the dispatch arm oscillating per iteration) never
-    /// touch the word — the compare is final-selection vs the previous
-    /// invocation's final selection, which is exactly the node-walk's
-    /// cross-cycle `selected` memory as seen from its depth-0 retained
-    /// -arm pass (jul17c capture-dispatch pin: a guard reading a
-    /// CAPTURE flips selection while the entry stays quiet — the old
-    /// entry-derived seam tag could never fire it).
-    /// (word, taken-arm index, the scrutinee's STALE bit at the select
-    /// head — 0 when the delivery fired). The stale bit is the
-    /// no-memory record's mask: a fresh transient activation
-    /// (recursive back-edge, site base 0) IS becoming-selected on any
-    /// triggering scrutinee delivery (the interp's fresh-instance
-    /// rule, Eric's ruling 2026-08-13 — interior-activation class).
-    pub(super) sel_path: std::cell::RefCell<Vec<(SelWord, usize, ClifValue)>>,
 }
 
 pub(crate) struct LowerCtx<'a> {
