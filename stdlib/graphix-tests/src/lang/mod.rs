@@ -1,6 +1,7 @@
 // Language feature tests organized by category
 
 mod arrays;
+mod attributes;
 mod basics;
 mod byref;
 mod datetime;

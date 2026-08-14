@@ -40,6 +40,7 @@ use crate::{
         lambda::{GXLambda, LambdaDef},
     },
 };
+use ahash::AHashSet;
 use anyhow::Result;
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
@@ -515,7 +516,16 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         let only_self = component
             .and_then(|component| component_sizes.get(&component).copied())
             == Some(1);
-        let tail = only_self && body_has_self_tail_call(g.body(), *instance);
+        // TAIL means ALL self-calls in tail position, not merely one:
+        // a mixed body (one tail self-call, one non-tail) still
+        // recurses on the native stack at the non-tail site, and the
+        // summary is what `#[tail_recursive]` asserts — a
+        // cannot-trip-the-depth-limit guarantee. (The operational
+        // per-site gate below is unchanged: tail SITES loop
+        // regardless.)
+        let tail = only_self
+            && body_has_self_tail_call(g.body(), *instance)
+            && !body_has_non_tail_self_call(g.body(), *instance);
         let summary = if tail {
             RecursionKind::TailRecursive
         } else if recursive {
@@ -589,6 +599,42 @@ fn body_has_self_tail_call<R: Rt, E: UserEvent>(
         },
         &mut |_| (),
     )
+}
+
+/// Whether any self-call site sits OUTSIDE tail position: collect the
+/// tail-position self-sites by spec id, then sweep the whole body for
+/// self-sites not in that set. (Nested lambdas don't confound this —
+/// a self-call from an inner closure is an edge from the inner
+/// instance, which breaks `only_self` before this runs.)
+fn body_has_non_tail_self_call<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    instance: LambdaInstanceId,
+) -> bool {
+    let mut tail_sites: LPooled<AHashSet<crate::ExprId>> = LPooled::take();
+    fusion::for_each_tail_leaf(
+        node,
+        &mut |n| match n.view() {
+            NodeView::CallSite(site)
+                if site.static_target().map(|t| t.instance) == Some(instance) =>
+            {
+                tail_sites.insert(n.spec().id);
+                true
+            }
+            _ => false,
+        },
+        &mut |_| (),
+    );
+    let mut non_tail = false;
+    fusion::for_each_node(node, &mut |n| {
+        if let NodeView::CallSite(site) = n.view() {
+            if site.static_target().map(|t| t.instance) == Some(instance)
+                && !tail_sites.contains(&n.spec().id)
+            {
+                non_tail = true;
+            }
+        }
+    });
+    non_tail
 }
 
 /// The call's positional argument `BindId`s in order — the tail-loop's
