@@ -739,9 +739,17 @@ enforces it):**
   becoming-selected with it. Captures are NOT in the memo key (their
   fires flow organically in-band — the capture-consuming base arm
   fires per delivery, the capture-ignoring const-body callee stays
-  quiet). KNOWN RESIDUAL: changed-args-same-selection-profile with a
-  const terminal (kernel fires, interp quiet) — the pending
-  tail-zero-iteration ruling's cousin. Fuzz children run under an 8GB
+  quiet). RULED RESIDUAL (Eric, 2026-08-14: QUIET — the interp is
+  correct): changed-args-same-selection-profile with a const terminal
+  is an OPEN KERNEL OVER-FIRE (the hand-inlined twin is quiet on BOTH
+  engines and fuses, so the kernel's fire makes recursion observable).
+  Exact fix needs per-derivation-position selection memory the
+  transient-derivation kernel lacks (ASPIRE-class); root result-value
+  damp is inexact (`n % 1 + 8` arms legitimately fire unchanged
+  values), de-fuse-on-const-terminals catches fib. Witness:
+  `fuzz/known-kernel-gaps/const-terminal-changed-args-aug2026/` —
+  outside the regress corpus; soak re-findings of the class are known.
+  Fuzz children run under an 8GB
   RLIMIT_AS (`GRAPHIX_FUZZ_MEM_LIMIT`) since retention lets fib-tree
   subjects legitimately eat memory.
 - **The 2026-08-07 review arc** (Opus multi-agent review, 726eeb1c —
@@ -790,13 +798,14 @@ enforces it):**
   promoted to `findings/` (module-state resolved by Q3
   fresh-at-instantiation; tag-blind unwritable by construction;
   missing_fire_epoch3 fixed by the 5c depth-trip-delivers-bottom
-  split → `findings/depth-trip-delivered-bottom-aug2026/`). Still
-  pending Eric: `fuzz/pending-ruling/tail-zero-iteration-fire-aug2026`
-  (the interp drops a re-delivered loop bound's fire on a
-  zero-iteration tail dispatch; the written tail-spine rule says fire;
-  narrow interp fix drafted in the witness header, awaiting
-  confirmation vs the "no iterations = no control dependence"
-  alternative reading).
+  split → `findings/depth-trip-delivered-bottom-aug2026/`).
+  tail-zero-iteration RULED QUIET 2026-08-13 (cceb0809: the drafted
+  interp fix rejected, kernel `tail_scrut_stale` fold dampened by the
+  derivation-changed bit, witness promoted to
+  `findings/tail-zero-iteration-quiet-aug2026/`); its unified
+  non-tail residual RULED QUIET 2026-08-14 (the recursion ruling's
+  RULED RESIDUAL above). Remaining for Eric:
+  `fuzz/pending-ruling/depth-trip-unwind-scope-aug2026/`.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel state survives an arm's sleep — `Held` residents (the
   three designated ride sites), `CachedVals` staging slots, collection
