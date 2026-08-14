@@ -767,6 +767,14 @@ pub struct PatternNode<R: Rt, E: UserEvent> {
     pub type_predicate: Type,
     pub structure_predicate: StructPatternNode,
     pub guard: Option<Held<R, E>>,
+    /// The guard's held ride is BLOCKED this cycle (Eric's
+    /// whole-derivation depth-trip ruling, 2026-08-14): set by
+    /// `update` when a depth-trip unwind is in flight and the guard's
+    /// production is tainted — `is_match` then reads the guard FALSE
+    /// (the no-history phantom rule) instead of riding the held bool,
+    /// exactly the kernel's tainted-guard mask. Outside an unwind a
+    /// bottomed guard keeps THE GUARD RIDE (aug13b).
+    guard_ride_blocked: bool,
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
@@ -822,6 +830,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             type_predicate,
             structure_predicate,
             guard,
+            guard_ride_blocked: false,
         })
     }
 
@@ -871,7 +880,11 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> bool {
         match &mut self.guard {
             None => false,
-            Some(g) => g.update_triggers(ctx, event),
+            Some(g) => {
+                let up = g.update_triggers(ctx, event);
+                self.guard_ride_blocked = ctx.depth_tripped && g.tag.is_tainted();
+                up
+            }
         }
     }
 
@@ -880,6 +893,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             && self.structure_predicate.is_match(v)
             && match &self.guard {
                 None => true,
+                Some(_) if self.guard_ride_blocked => false,
                 Some(g) => g
                     .value
                     .as_ref()

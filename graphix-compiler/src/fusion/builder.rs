@@ -104,6 +104,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // TAKE (Kernel::update only peeked — its production decision
         // left the flag for this diagnostic).
         if ctx.control.take_depth_trip() {
+            log::error!(
+                "call depth limit ({}) exceeded in fused region {} — the                  derivation produced a settled bottom (raise via                  Control::set_max_call_depth)",
+                ctx.control.max_call_depth(),
+                self.spec
+            );
             ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
                 limit: ctx.control.max_call_depth(),
                 spec: self.spec.clone(),

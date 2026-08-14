@@ -264,6 +264,12 @@ impl Control {
         self.depth.fetch_sub(1, Ordering::Relaxed);
     }
 
+    /// The current non-tail call depth (0 = no recursive dispatch in
+    /// flight on this context).
+    pub fn depth(&self) -> u32 {
+        self.depth.load(Ordering::Relaxed)
+    }
+
     /// Reset the depth counter to zero. Called by the runtime at the
     /// end of each cycle — pure insurance against a leaked push (a bug,
     /// but one that would otherwise ratchet every later cycle toward a
@@ -1746,6 +1752,16 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dispatch saves/resets it on entry and applies it in the
     /// result-tag derivation (`node/lambda.rs`).
     pub(crate) tail_scrut_fired: bool,
+    /// A call-depth trip is UNWINDING (Eric's whole-derivation ruling
+    /// 2026-08-14): set when a dispatch trips the limit and mints its
+    /// FreshBottom, cleared when the derivation's ROOT dispatch pops
+    /// the depth back to 0. While set, the designated value rides
+    /// (the select scrutinee ride, guard-held selections over
+    /// triggering bottoms) REFUSE — the entire derivation bottoms at
+    /// the root instead of assembling partial values from stale
+    /// fragments mid-unwind (fuzz depth-trip-unwind-scope witnesses;
+    /// the kernel's abort-to-root is the model).
+    pub(crate) depth_tripped: bool,
     /// Variable deliveries raised inside an evaluation frame that must
     /// ESCAPE it. A frame runs the body against a PRIVATE
     /// `event.variables` map, which is the point — an interior publish
@@ -1805,6 +1821,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_depth: 0,
             frame_init: false,
             tail_scrut_fired: false,
+            depth_tripped: false,
             frame_outbox: Vec::new(),
         };
         // `#[native]` is a language-level attribute (its check is

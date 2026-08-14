@@ -1,3 +1,16 @@
+// RULED (Eric, 2026-08-14): WHOLE-DERIVATION — a depth trip bottoms
+// the entire function call at the root, with log::error at the trip
+// (a program hitting the limit is a serious problem for the user).
+// Implementation: ctx.depth_tripped is set at the trip and cleared
+// when the derivation's root pops the depth to 0; while set, the
+// select scrutinee ride refuses (no stale fragment may be assembled
+// mid-unwind) and a tainted guard's held ride reads FALSE (the
+// kernel's tainted-guard mask). The kernel needed only the log — its
+// value-level trip propagation with no interior ride storage already
+// implements the ruling. Both engines agree; the old interp behavior
+// (per-level unwind with retained-instance rides, ambient-depth
+// sensitive) is repealed.
+//
 // aug13j hz0 fuzz divergence_000000 (2026-08-13 night, seeds 4400M —
 // LATENT, reproduces identically at ac432b6a pre-aug13i-fixes).
 //

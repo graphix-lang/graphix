@@ -789,8 +789,15 @@ enforces it):**
   tail-zero-iteration: ruled quiet 2026-08-13 (cceb0809), then the
   whole family REVERSED by organic firing 2026-08-14 — same-args
   re-dispatches FIRE at any iteration count now (delta 6; the
-  tail-zero pins carry superseded-cadence banners). Remaining for
-  Eric: `fuzz/pending-ruling/depth-trip-unwind-scope-aug2026/`.
+  tail-zero pins carry superseded-cadence banners). DEPTH-TRIP SCOPE
+  RULED 2026-08-14 (Eric): WHOLE-DERIVATION — a trip bottoms the
+  entire call at the root with log::error at the trip (both engines;
+  `ctx.depth_tripped` poisons the interp's unwind rides — scrutinee
+  ride refuses, tainted guard's held ride reads false — cleared at
+  pop-to-zero; the kernel's value-level trip propagation with no
+  interior ride storage already implemented it, it only gained the
+  log). Pins: `findings/depth-trip-whole-derivation-aug2026/`.
+  fuzz/pending-ruling/ is EMPTY — no rulings outstanding.
 - **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
   value-channel state survives an arm's sleep — `Held` residents (the
   three designated ride sites), `CachedVals` staging slots, collection

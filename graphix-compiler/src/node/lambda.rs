@@ -521,6 +521,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     if !entry_fired && !externals_triggered(&self.body, ctx, event) {
                         return self.resident.ride();
                     }
+                    // Whole-derivation bottom (Eric's ruling
+                    // 2026-08-14): poison the unwind — no ride may
+                    // assemble a partial value between here and the
+                    // derivation's root (cleared at pop-to-zero).
+                    ctx.depth_tripped = true;
                     return self
                         .resident
                         .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
@@ -826,6 +831,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
         if depth_pushed {
             ctx.control.depth_pop();
+            if ctx.control.depth() == 0 {
+                // The derivation's root has unwound: the trip poison
+                // ends here — beyond the root the delivered bottom is
+                // an ordinary bottom (standing rules apply).
+                ctx.depth_tripped = false;
+            }
         }
         // Lend the body result — tag riding in the value — to the
         // owning CallSite through the resident. Bottom is a DELIVERED

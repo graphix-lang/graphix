@@ -1,0 +1,9 @@
+// The guard-ride face, constructed while implementing the ruling: the
+// interp ticks EVERY arm's guard every cycle, so this guard's f(x)
+// self-call trips deep in the guard-tick chain even on the healthy
+// epoch (arm 0 matches before the guard is consulted). During the
+// unwind the tainted guard's held ride is BLOCKED (reads false — the
+// kernel's tainted-guard mask); a first broad attempt that bottomed
+// the whole select on any trip-poisoned guard wrongly silenced
+// selects whose SELECTION never consulted the poisoned guard.
+{let x = array::iter([i64:0, i64:2]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, m if f(x) == i64:0 => i64:42, _ => i64:1}; f(x - i64:1)}
