@@ -773,7 +773,17 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
     LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>>,
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
+    LPooled<nohash::IntSet<ExprId>>,
 ) {
+    // Honesty-census piggyback: decorated nodes seen by THIS walk are
+    // exactly the nodes a successful region build ABSORBS (the walk
+    // descends collection callbacks and callee bodies — everything the
+    // kernel compiles). `try_fuse` commits them to `attr_absorbed` on
+    // success; no dedicated attribute traversal exists. Collected only
+    // when a census exists — attribute-free compiles skip even the
+    // per-node dec test.
+    let collect_decorated = !ctx.attr_census.lock().is_empty();
+    let mut decorated: LPooled<nohash::IntSet<ExprId>> = LPooled::take();
     // Identified by kernel IDENTITY (`kernel_key`), like `bodies` —
     // names shadow and monomorphizations share a name, so a name-keyed
     // map here bound call sites to the wrong kernel (audit-jul2026
@@ -797,6 +807,11 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             LPooled::take();
         let mut enqueue: LPooled<Vec<(&'n Node<R, E>, usize)>> = LPooled::take();
         for_each_emitted_node(body, &mut |n| {
+            if collect_decorated
+                && n.spec().dec.as_ref().is_some_and(|d| !d.attrs.is_empty())
+            {
+                decorated.insert(n.spec().id);
+            }
             let NodeView::CallSite(cs) = n.view() else {
                 return;
             };
@@ -882,7 +897,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
         }
         worklist.extend(enqueue.drain(..).map(|(body, ptr)| (body, Some(ptr))));
     }
-    (root_sites, callees, bodies)
+    (root_sites, callees, bodies, decorated)
 }
 
 /// Run the fusion phase on one `Node` — the distributed path's uniform
@@ -908,21 +923,9 @@ pub fn fuse<R: Rt, E: UserEvent>(
 ) -> anyhow::Result<()> {
     if let Some(new) = try_fuse(child, ctx)? {
         let mut old = std::mem::replace(child, new);
-        // Honesty census: decorated nodes inside the fused subtree are
-        // ABSORBED — the region compiled natively, so their checks are
-        // satisfied by construction (`#[native]` most of all). Collected
-        // only when a census exists (attribute-free compiles skip this).
-        if !ctx.attr_census.lock().is_empty() {
-            // The EMISSION walk, not the plain node walk: a fused region
-            // absorbs collection callback bodies and resolved callee
-            // bodies too, and their decorations are satisfied with it.
-            let mut absorbed = ctx.attr_absorbed.lock();
-            for_each_emitted_node(&old, &mut |n| {
-                if n.spec().dec.as_ref().is_some_and(|d| !d.attrs.is_empty()) {
-                    absorbed.insert(n.spec().id);
-                }
-            });
-        }
+        // (Honesty-census absorption was committed by `try_fuse` on
+        // success, collected during its discovery walk — no dedicated
+        // traversal here.)
         old.delete(ctx);
         check_node_attributes(child, ctx)?;
         return Ok(());
@@ -1105,7 +1108,8 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // which emission (under the jit lock) can't have. The callees
     // compile from their body Nodes during the parallel period; the
     // parent's call sites emit CLIF `call`s against them.
-    let (lambda_sites, lambda_callees, callee_bodies) = discover_lambda_calls(node, ctx);
+    let (lambda_sites, lambda_callees, callee_bodies, region_decorated) =
+        discover_lambda_calls(node, ctx);
     let source_id = node.spec().id;
     let (mut sig, _arg_types) = match sig_from_inputs(
         arcstr::ArcStr::from(
@@ -1265,6 +1269,12 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 }
             }
             ctx.fusion.stats.record_fused(node.spec());
+            // Commit the honesty-census absorption (collected during
+            // discovery's walk — see `discover_lambda_calls`): every
+            // decorated node in this now-native region is satisfied.
+            if !region_decorated.is_empty() {
+                ctx.attr_absorbed.lock().extend(region_decorated.iter().copied());
+            }
             Ok(Some(n))
         }
         Err(e) => {

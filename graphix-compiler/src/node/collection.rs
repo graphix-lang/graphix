@@ -693,9 +693,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // The fuse driver never descends a collection callback (its fusion
         // is the inline emission at the enclosing call), so decorated nodes
-        // inside the prototype body get their attribute dispatch here.
-        if let Some(body) = self.base.callback_body() {
-            crate::fusion::check_attributes_subtree(body, ctx)?;
+        // inside the prototype body get their attribute dispatch here —
+        // census-gated: attribute-free compiles pay nothing.
+        if !ctx.attr_census.lock().is_empty() {
+            if let Some(body) = self.base.callback_body() {
+                crate::fusion::check_attributes_subtree(body, ctx)?;
+            }
         }
         Ok(None)
     }
@@ -1132,9 +1135,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // The fuse driver never descends a collection callback (its fusion
         // is the inline emission at the enclosing call), so decorated nodes
-        // inside the prototype body get their attribute dispatch here.
-        if let Some(body) = self.base.callback_body() {
-            crate::fusion::check_attributes_subtree(body, ctx)?;
+        // inside the prototype body get their attribute dispatch here —
+        // census-gated: attribute-free compiles pay nothing.
+        if !ctx.attr_census.lock().is_empty() {
+            if let Some(body) = self.base.callback_body() {
+                crate::fusion::check_attributes_subtree(body, ctx)?;
+            }
         }
         Ok(None)
     }
