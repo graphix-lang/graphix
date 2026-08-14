@@ -151,22 +151,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // "The scrutinee has a bindable value view this cycle": a
         // value-bearing production, or the ride.
         let arg_up = !bottomed || ride;
-        let arg_fired = arg_prod.is_fired();
-        // Fold a tail-spine scrutinee's firing into the dispatch-wide
-        // accumulator (the kernel's `tail_scrut_stale`, folded by
-        // `emit_select_node_tail` per pass and applied at every
-        // `emit_kernel_return`). The arms terminate individually and a
-        // jump arm's emission is swallowed by the tail-call stash, so
-        // this is the only channel that carries the scrutinee's
-        // control-dependence firing to the final base-arm emission — a
-        // const base arm re-selected by a later cycle's loop read
-        // stale here while the kernel's return fold fired (jul21g
-        // divergence). Depth-0 passes fold too: a dispatch whose
-        // previous cycle didn't loop runs its first pass unframed, and
-        // that pass's entry delivery is iteration 1's disc.
-        if arg_fired && tail_position.load(Ordering::Relaxed) {
-            ctx.tail_scrut_fired = true;
-        }
         // Arm binds carry the SCRUTINEE's production tag (the kernel's
         // arm-bind disc carry): a stale scrutinee production — a
         // framed re-derivation from a quiet entry — binds STALE
@@ -216,6 +200,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 pat.unbind_event(event);
             }
         }
+        // ORGANIC FIRING (Eric's ruling 2026-08-14,
+        // design/organic_firing.md): the select's own fired inputs — a
+        // triggering VALUE delivery of the scrutinee or a triggering
+        // guard production — fire the emission regardless of whether
+        // the selection or the taken arm's value changed. `uniq` is
+        // the explicit cadence tool; the compiler never gates firing
+        // on value or selection identity. The bottom/ride axis is
+        // untouched: a bottomed scrutinee delivery rides (selection
+        // continuity) and is not an own-fire.
+        let own_fired = (!bottomed && arg_prod.triggers()) || pat_up;
+        // Fold a tail-spine select's own fires into the dispatch-wide
+        // accumulator (the kernel's `tail_scrut_stale`, applied at
+        // every `emit_kernel_return`). The arms terminate individually
+        // and a jump arm's emission is swallowed by the tail-call
+        // stash, so this is the only channel that carries an own-fire
+        // to the final base-arm emission — a const base arm
+        // re-selected by a later cycle's loop read stale here while
+        // the kernel's return fold fired (jul21g divergence). Depth-0
+        // passes fold too: a dispatch whose previous cycle didn't loop
+        // runs its first pass unframed, and that pass's entry delivery
+        // is iteration 1's disc.
+        if own_fired && tail_position.load(Ordering::Relaxed) {
+            ctx.tail_scrut_fired = true;
+        }
         // A NO-HISTORY bottomed scrutinee can't be matched (nothing to
         // ride — the aug04b phantom rule): the whole select bottoms. A
         // triggering delivery is a fresh bottom; a standing one rides
@@ -238,24 +246,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 event.variables.len()
             );
         }
-        // TAIL-SPINE selects inside evaluation FRAMES ride the ARM's
-        // organic tag alone: the scrutinee is the loop variable, whose
-        // per-jump FIRED deliveries are loop plumbing, not observable
-        // events (the kernel's `emit_body_tail` no-scrutinee-fold
-        // rule; replay-frames v3, 2026-07-16 — a call's result is an
-        // event iff an input the result depends on fired). At frame
-        // depth 0 the scrutinee firing is a genuine entry event and
-        // the normal fold applies.
+        // In-frame wake binds ride the loop plumbing's honest tag
+        // (per-jump re-selections arrive STALE by ruling,
+        // tail_jump_fired_plumbing) — used by `wake_tag` below.
         let tail = tail_position.load(Ordering::Relaxed) && ctx.frame_depth > 0;
-        // An arm result's tag: tainted if the arm's resident value is a
-        // placeholder; else fired iff the arm production fired; else
-        // stale (the value channel). The scrutinee's firing does NOT
-        // fold in (the strict select rule, Eric's ruling 2026-08-06: a
-        // select emits iff the selection changes or the taken arm's
-        // body produces — a scrutinee re-fire that changes neither is
-        // quiet; the old #178 scrutinee fold was the ride re-emit).
-        // When the body consumes the scrutinee its binds deliver the
-        // scrutinee's tag, so consumption fires organically.
         // Read the taken arm's production: its tag plus the value
         // (None for a bottom — the placeholder is never usable).
         macro_rules! arm_prod {
@@ -266,29 +260,38 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 (t, v)
             }};
         }
+        // THE ORGANIC EMISSION: the arm's production tag joined with
+        // the select's own fires. A fired input (scrutinee delivery,
+        // guard production, or the arm's own body) fires the emission
+        // of the taken arm's current value; a bottom arm is FreshBottom
+        // when anything fired (op-consistency: an op with a
+        // standing-bottom operand also mints FreshBottom when
+        // triggered) and rides otherwise.
         macro_rules! emit {
             ($t:expr, $v:expr) => {{
                 let t: Tag = $t;
                 if t.is_bottom() {
-                    // the join rule: a fresh bottom is an event, a
-                    // standing one rides the select's own resident
-                    if t.triggers() {
+                    if t.triggers() || own_fired {
                         Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else {
                         None
                     }
                 } else {
-                    let tag = if t.is_fired() { Tag::FIRED } else { Tag::STALE };
+                    let tag = if t.is_fired() || own_fired {
+                        Tag::FIRED
+                    } else {
+                        Tag::STALE
+                    };
                     $v.map(|v| TagValue::tagged(v, tag))
                 }
             }};
         }
-        // THE FLOW DRIVER (the strict select rule): a re-match runs on
-        // a TRIGGERING scrutinee delivery or a guard-dep fire — a
-        // merely-stale ride is the value channel and stays on the fast
-        // path (a framed descent's leaked SelCell selection must not
-        // be "discovered" by a quiet poll's re-match and fire a
-        // phantom becoming-selected — the once_tainted re-descent).
+        // THE FLOW DRIVER: a re-match runs on a TRIGGERING scrutinee
+        // delivery or a guard-dep fire — a merely-stale ride is the
+        // value channel and stays on the fast path (a framed descent's
+        // leaked SelCell selection must not be "discovered" by a quiet
+        // poll's re-match and fire a phantom becoming-selected — the
+        // once_tainted re-descent).
         // The scrutinee RIDE re-matches only via pat_up, per the
         // aug06ghz0 ruling ("a guard-dep fire re-matches against the
         // cached value").
@@ -382,45 +385,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     event.init = true;
                     let (t, v) = arm_prod!(i);
                     event.init = init;
-                    if t.is_bottom() {
-                        // a selection change onto a bottomed arm IS an
-                        // event (the strict select rule) — a fresh
-                        // bottom regardless of the arm's own freshness
-                        Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                    } else if tail {
-                        // A selection change on the in-frame tail
-                        // spine is loop mechanics (the dispatch arm
-                        // oscillates between the jump and base arms
-                        // every framed evaluation) — the result is an
-                        // event iff the arm's own production fired.
-                        // The scrutinee's control-dependence firing is
-                        // NOT lost by the stale read here: it rides
-                        // `ctx.tail_scrut_fired` (folded above) and
-                        // upgrades the final result tag at the
-                        // dispatch, the kernel's return fold (jul21g
-                        // divergence: a const base arm re-selected by
-                        // a later cycle's loop). Residual: a FEEDER-
-                        // guard-driven re-selection of a const arm
-                        // (scrutinee quiet, a capture flips the guard)
-                        // reads stale here where the kernel's
-                        // `tail_sel_path` selection word fires on
-                        // final-selection change — no known witness;
-                        // revisit if the fuzzer finds one.
-                        let tag = if t.is_fired() { Tag::FIRED } else { Tag::STALE };
-                        v.map(|v| TagValue::tagged(v, tag))
-                    } else {
-                        // BECOMING selected is the fire (Eric's ruled
-                        // select semantics; the kernel's selection-
-                        // memory word compare). `selected` is semantic
-                        // state that persists across frames and cycles
-                        // (5e246d2f), so reaching this path at all
-                        // means the selection genuinely changed — the
-                        // old trigger-derivation (and its
-                        // body_input_fired approximation, which
-                        // over-counted deliveries a quiet inner select
-                        // had suppressed) is subsumed.
-                        v.map(|v| TagValue::fired(v))
-                    }
+                    // The wake emission is the SAME organic rule: a
+                    // genuine wake always has `own_fired` set (the
+                    // depth-0 flow driver only re-matches on a
+                    // triggering delivery or a guard fire), so
+                    // becoming-selected emits FIRED — while a framed
+                    // value-driven re-selection (loop mechanics, no
+                    // trigger) rides the arm's organic tag, with the
+                    // in-frame own-fires carried to the final emission
+                    // by `ctx.tail_scrut_fired` above.
+                    emit!(t, v)
                 }
                 (None, Some(j)) => {
                     arms[j].1.sleep(ctx);
