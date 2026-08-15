@@ -14,6 +14,23 @@
 //   interp: ep0 [(0,-49),(1,-35)]  ep1 [(1,-14)]           ep2 [(1,14)]
 //   jit:    ep0 [(0,-49),(1,-35)]  ep1 [(0,-35),(1,-14)]   ep2 [(0,-14),(1,14)]
 //
+// THREE WITNESSES NOW SHARE AN EXACT SIGNATURE (this one, ryouko's
+// reactive_guard_arm_epoch3.gx, and hz0 aug14f reactive
+// divergence_000001 — not filed separately, it is a near-duplicate and
+// recoverable from the box). In every one:
+//   * the program is REACTIVE (schedule-driven, multi-epoch),
+//   * it has two outputs, 0 and 1,
+//   * in epoch 0 both engines agree,
+//   * in EVERY later epoch the jit emits an EXTRA event at output 0
+//     carrying exactly the value output 1 carried in the PREVIOUS epoch.
+// e.g. interp ep1 [(1,26214000)] vs jit ep1 [(0,13107000),(1,26214000)]
+//      where 13107000 was output 1 in ep0.
+// None of the three uses a ref-in-a-tuple, so this is NOT the
+// refintuple_recursion_extra_fire trigger despite the shared symptom.
+// The stale value being the PREVIOUS EPOCH'S OTHER OUTPUT is the
+// specific lead here — it points at output/slot identity across epochs,
+// not at a value-ride on output 0 itself.
+//
 // Same GENUS as reactive_guard_arm_epoch3.gx (the ryouko aug14e class):
 // the JIT re-fires a stale value where the interp is quiet. Suspect the
 // kernel stale-ride, as in the aug13i silent-ride family.
