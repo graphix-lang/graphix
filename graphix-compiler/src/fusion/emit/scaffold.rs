@@ -31,8 +31,8 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local,
-        bind_scalar_var_with_disc, clean_disc, prim_to_value_disc, scalar_disc,
-        value_disc,
+        bind_scalar_var_with_disc, clean_disc, emit_scalar_taint_cache,
+        prim_to_value_disc, scalar_disc, value_disc,
     },
     body::{
         BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
@@ -1492,6 +1492,20 @@ where
     taint.set_len(len);
     taint.result_is_firing();
     let init_cv = init(cx)?;
+    // The init is a taint-cache consumer like any op operand: a
+    // bottomed init WITH HISTORY seeds the chain from its last good
+    // value (STALE ride) instead of poisoning every acc — the interp
+    // twin is FoldQ's staged init arg, which serves its retained
+    // value at the next triggering recompute (aug13k made the interp
+    // poison a single-cycle production, not a chain reseed; the fused
+    // fold was poisoning the whole result and going silent where the
+    // interp fires off the source's growth — soak aug14f). Scalar
+    // accs only; pointer-shaped inits keep the poison (the deleted
+    // value-cache residual).
+    let init_cv = match &acc {
+        FoldAcc::Scalar(p) => emit_scalar_taint_cache(cx, *p, init_cv),
+        _ => init_cv,
+    };
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
     // reads already clone; a scalar owns nothing. A Value acc owns
