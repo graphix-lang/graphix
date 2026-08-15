@@ -1716,13 +1716,13 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
     use tokio::task::JoinSet;
     let par = parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    let mut set: JoinSet<(String, Option<Divergence>)> = JoinSet::new();
+    let mut set: JoinSet<(usize, Option<Divergence>, bool)> = JoinSet::new();
     let mut next = 0usize;
     let spawn_one = |set: &mut JoinSet<_>, i: usize| {
-        let (name, prog) = (entries[i].0.to_string(), entries[i].1.to_string());
+        let prog = entries[i].1.to_string();
         set.spawn(async move {
-            let d = check(&prog, timeout).await;
-            (name, d)
+            let (d, ran) = check_classified(&prog, timeout).await;
+            (i, d, ran)
         });
     };
     while next < entries.len() && set.len() < par {
@@ -1730,13 +1730,43 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
         next += 1;
     }
     let mut regressions = Vec::new();
+    let mut suspect: Vec<usize> = Vec::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((name, Some(d))) = res {
-            regressions.push((name, d));
+        if let Ok((i, d, ran)) = res {
+            match d {
+                Some(d) => regressions.push((entries[i].0.to_string(), d)),
+                // A non-ran agreement from the PARALLEL pass is not
+                // trusted: both-Timeout compares equal (correct for
+                // the legitimately-bottom pins), so a pin whose
+                // budget blew on BOTH modes under load silently
+                // "passed" — the 2026-08-15 false-green, which
+                // admitted a ruling-violating fold change past three
+                // broken pins on consecutive runs, each run forgiving
+                // a different load-starved subset. CompileErr-agree
+                // pins land here too; their retry costs milliseconds.
+                None if !ran => suspect.push(i),
+                None => (),
+            }
         }
         if next < entries.len() {
             spawn_one(&mut set, next);
             next += 1;
+        }
+    }
+    // Retry the untrusted agreements SEQUENTIALLY at 4x budget: alone
+    // on the box the load-starvation window is gone, so a still-quiet
+    // pin is genuinely CompileErr/Timeout-shaped and passes on its
+    // own character.
+    if !suspect.is_empty() {
+        eprintln!(
+            "regress: retrying {} non-ran agreement(s) sequentially at full budget",
+            suspect.len()
+        );
+        for i in suspect {
+            let (d, _) = check_classified(entries[i].1, timeout * 4).await;
+            if let Some(d) = d {
+                regressions.push((entries[i].0.to_string(), d));
+            }
         }
     }
     regressions
