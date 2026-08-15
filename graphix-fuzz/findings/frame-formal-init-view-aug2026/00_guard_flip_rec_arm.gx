@@ -1,0 +1,15 @@
+// aug14f ryouko fuzz divergence_000000, INTERP-side (the jit was
+// right — the non-recursive twin agrees with the jit's trace
+// exactly). A guard flip re-selects an arm whose body is a tick-gated
+// builtin call (`is_err`) inside a recursion frame: the becoming-
+// selected dispatch seeded the callee's formal into the frame overlay
+// as STALE VERBATIM, but a `bound` dispatch runs under the REAL init
+// view, where a depth-0 standing-store read upgrades to Fired (R2).
+// The overlay has no read-time upgrade, so the seam-tick builtin rode
+// its phantom forever and the arm had no value to emit — the interp
+// dropped the guard-flip fires the recursion ruling requires
+// (recursion fires like the hand-inlined chain). Fix: in-frame bound-
+// dispatch seeding inserts FIRED overlay entries — R2 applied to the
+// channel frames actually use; the entry is cycle-scoped, exactly as
+// wide as the init-view dispatch.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:9223372036854775807]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => is_err(i64:3), _ => i64:2}, _ => f(i64:0)}; f(i64:3)}

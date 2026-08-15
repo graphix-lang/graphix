@@ -1484,18 +1484,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             for (id, tv) in prods.iter() {
                 let tag = tv.tag();
                 if !tag.triggers() && !tag.is_bottom() {
-                    let sv = TagValue::stale(tv.value_cloned());
                     if ctx.frame_depth == 0 {
                         // The STORE standing entry serves both dispatch
                         // views (Stale ordinarily, Fired under the
                         // real-init arm — R2). An overlay entry here
                         // would SHADOW that init upgrade (overlay reads
                         // precede the store and carry STALE verbatim).
-                        ctx.rt.store_insert_standing(*id, sv);
+                        ctx.rt.store_insert_standing(*id, TagValue::stale(tv.value_cloned()));
                     } else {
                         // In frames the store is off-limits (R3): the
-                        // cycle-scoped overlay entry is the channel.
-                        event.variables.insert(*id, sv);
+                        // cycle-scoped overlay entry is the channel —
+                        // and it must carry the view R2 gives the store
+                        // read. A `bound` dispatch runs under the REAL
+                        // init view (below), where a standing read
+                        // upgrades to Fired; the overlay has no
+                        // read-time upgrade, so seed FIRED directly.
+                        // The entry is cycle-scoped (withdrawn with
+                        // `set`), exactly as wide as the init-view
+                        // dispatch. Seeding STALE verbatim left a woken
+                        // arm's tick-gated builtin (is_err) riding its
+                        // phantom forever — the arm had no value to
+                        // emit (aug14f iter_rec_guard).
+                        event.variables.insert(*id, TagValue::fired(tv.value_cloned()));
                         set.push(*id);
                     }
                 }

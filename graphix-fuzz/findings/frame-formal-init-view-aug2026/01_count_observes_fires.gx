@@ -1,0 +1,5 @@
+// aug14f ryouko fuzz divergence_000001: the same seam observed
+// through `count` — the interp's dropped guard-flip dispatches made
+// count see 3 fires where the semantics (and the jit) count 4. Pins
+// the fix's firing-plane effect through a SLEEP_RESTARTS builtin.
+{i64:2; {let x = array::iter([i64:1, i64:2, i64:-9223372036854775808, i64:4]); let m = x / i64:-9223372036854775808; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => count(i64:5) % i64:10}, _ => f(n - i64:1)}; count(f(m))}}
