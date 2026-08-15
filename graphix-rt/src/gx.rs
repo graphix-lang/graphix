@@ -370,6 +370,17 @@ impl<X: GXExt> GX<X> {
         // multi-threaded runtime; on `current_thread` there's nowhere to
         // migrate, so run inline (the abort flag still breaks the loop;
         // IO just stalls until it does).
+        //
+        // Discard a STALE one-shot interrupt FIRST: the bit is only
+        // meaningful to the cycle in flight when it is set (that is the
+        // wedge it aborts), so one that arrived while the runtime sat
+        // IDLE must not poison this cycle. Clearing after the walk
+        // instead left an idle-time `interrupt()` armed — and once the
+        // shell started arming Ctrl-C, a stray keystroke at the prompt
+        // would bottom the loops of whatever cycle came next. An
+        // interrupt landing DURING the walk is still seen by it (the
+        // poll reads the live flag) and is discarded here next cycle.
+        self.ctx.control.clear_interrupt();
         let mut run_nodes = || {
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
@@ -415,12 +426,10 @@ impl<X: GXExt> GX<X> {
         } else {
             tokio::task::block_in_place(run_nodes);
         }
-        // The one-shot interrupt is consumed; abort stays sticky for the
-        // run loop's pre-cycle shutdown check. The call-depth counter
-        // resets with it — pure insurance against a leaked push, which
-        // would otherwise ratchet every later cycle toward a spurious
-        // depth limit.
-        self.ctx.control.clear_interrupt();
+        // The call-depth counter resets per cycle — pure insurance
+        // against a leaked push, which would otherwise ratchet every
+        // later cycle toward a spurious depth limit. `abort` stays
+        // sticky for the run loop's pre-cycle shutdown check.
         self.ctx.control.depth_reset();
         // Diagnostics produced OUTSIDE a node update (a callable
         // invocation, an extension cycle) have no top-level expr to
