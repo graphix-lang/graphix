@@ -856,9 +856,29 @@ enforces it):**
   `design/kernel_instance_state.md` "DynCall site identity"; pinned
   by `dyncall_site_identity_state` +
   `findings/dyncall-site-identity-jul2026/`.
-- An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
-  the scheduler) — accepted/correct; the reactive node-walk's per-cycle
-  "continue" is the artifact.
+- **A program may spin forever inside one cycle, on BOTH engines** — an
+  infinite tail recursion is the constant-stack, bounded-memory case.
+  This is semantics, not a JIT artifact (Eric's ruling 2026-08-15,
+  `design/atomic_recursion.md`): recursion fires like the hand-inlined
+  chain, an inlined chain is one expression, and an expression
+  evaluates atomically — so evaluation cannot be paused mid-derivation.
+  The old per-eval-per-cycle model made wedges impossible but made
+  recursion observable (the inlined twin finished in one cycle, the
+  recursive one took N) and capped a JIT loop at one step per cycle;
+  iteration credits would be worse still — the same input would run in
+  one cycle or many depending on its size, observably, and every
+  credit constant would have to be replicated bit-identically in both
+  engines or become a trace divergence. What remains is CONTAINMENT,
+  which lives outside the language and which no program can observe:
+  the cooperative interrupt (`GXHandle::interrupt`), polled by the
+  interp's tail driver (`node/lambda.rs`) and at every emitted loop
+  head (`emit_interrupt_check` — the tail rebind-and-jump head in
+  `emit/lower.rs` plus all eight HOF scaffolds). The shell arms it on
+  Ctrl-C and `abort()`s on the way out; an embedder wanting a
+  slow-program watchdog arms `interrupt()` on a wall-clock timer.
+  Pinned by `lib_tests/interrupt.rs` (both engines recover) and
+  `graphix-shell/tests/interrupt_wedge.rs` (the process stays
+  killable by Ctrl-C).
 
 **Per-cycle firing (the STALE fired-bit):** a fused kernel must replicate the
 node-walk's non-async firing — an output fires only when an input that feeds it
@@ -1114,6 +1134,16 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `atomic_recursion.md` — **RULED 2026-08-15:** function evaluation is
+  atomic within a cycle, so a program may legally spin forever inside
+  one — the no-wedge property of the old one-eval-per-cycle model is
+  given up, because atomicity follows from the recursion ruling
+  (recursion fires like the hand-inlined chain; an inlined chain is one
+  expression) and iteration credits would make the same input run in
+  one cycle or many depending on its size. Containment lives outside
+  the language: the cooperative interrupt, armed by a human or an
+  embedder, observable by no program. Holds the trilemma argument, the
+  loop-head poll inventory, and the shell's cancel path.
 - `organic_firing.md` — **BUILT (P0–P3 landed 2026-08-14, one day;
   P4 fresh-clock soak remains):** the fired-plane simplification — a
   node fires iff a consumed input fires; no stored value/selection

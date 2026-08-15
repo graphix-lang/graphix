@@ -651,6 +651,36 @@ impl<X: GXExt> GXHandle<X> {
     /// Request that in-flight loops in the runtime abort to bottom this
     /// cycle — a runaway sync tail-loop or a `map`/`fold`/… over a huge
     /// array won't wedge the runtime thread. The runtime keeps running.
+    ///
+    /// This is the ONLY containment for a program that spins forever
+    /// inside one cycle, which the language permits: evaluation is
+    /// atomic within a cycle, so an infinite tail recursion never
+    /// yields (`design/atomic_recursion.md`). It is deliberately
+    /// outside the semantics — nothing arms it but a human or an
+    /// embedder, so no program can observe it, and the engine ships no
+    /// default timeout (that would be an iteration budget, whose
+    /// observable behavior would depend on input size).
+    ///
+    /// The shell arms it on Ctrl-C. An embedder that wants a
+    /// slow-program watchdog builds one — there is no engine support
+    /// to wait for:
+    ///
+    /// ```ignore
+    /// let gx = handle.clone();
+    /// tokio::spawn(async move {
+    ///     loop {
+    ///         tokio::time::sleep(Duration::from_secs(5)).await;
+    ///         if gx.get_env().now_or_never().is_none() {
+    ///             log::error!("graphix program exceeded its budget; interrupting");
+    ///             gx.interrupt();
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// The aborted cycle rides its last result and re-fires next cycle
+    /// (abort ≠ bottom), so a wrongly-fired watchdog costs a cycle, not
+    /// correctness.
     pub fn interrupt(&self) {
         self.0.control.interrupt()
     }

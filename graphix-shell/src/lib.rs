@@ -354,6 +354,22 @@ impl<X: GXExt> Shell<X> {
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
+        // Arm CANCEL before the first cycle runs. A program may wedge on
+        // the very first cycle (a top-level infinite tail recursion —
+        // recursion evaluates atomically within a cycle, so the engine
+        // does not bound it), and that cycle runs inside `load_env`,
+        // long before the input loop below exists. Independent of the
+        // input path so it lands either way: in script mode the
+        // terminal is cooked and ^C is a SIGINT; in the REPL, reedline
+        // owns ^C in raw mode and the loop's own branch handles it.
+        let sigint = {
+            let gx = gx.clone();
+            tokio::spawn(async move {
+                while tokio::signal::ctrl_c().await.is_ok() {
+                    gx.interrupt();
+                }
+            })
+        };
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
         let mut output = if script { Output::EmptyScript } else { Output::None };
@@ -366,7 +382,7 @@ impl<X: GXExt> Shell<X> {
             println!("Welcome to the graphix shell");
             println!("Press ctrl-c to cancel, ctrl-d to exit, and tab for help")
         }
-        loop {
+        let exit = loop {
             select! {
                 batch = from_gx.recv() => match batch {
                     None => bail!("graphix runtime is dead"),
@@ -396,6 +412,17 @@ impl<X: GXExt> Shell<X> {
                         Err(e) => eprintln!("error reading line {e:?}"),
                         Ok(Signal::CtrlC) if script => break Ok(()),
                         Ok(Signal::CtrlC) => {
+                            // CANCEL: break any in-flight loop first.
+                            // A program can legally spin forever inside
+                            // one cycle (an infinite tail recursion —
+                            // recursion evaluates atomically, so the
+                            // engine does not bound it), and a wedged
+                            // runtime can't serve `output.clear()`, so
+                            // clearing before interrupting would hang
+                            // the prompt we are trying to recover. The
+                            // interrupt aborts the loop to bottom and
+                            // leaves the runtime running.
+                            gx.interrupt();
                             output.clear().await;
                         }
                         Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break Ok(()),
@@ -430,6 +457,17 @@ impl<X: GXExt> Shell<X> {
                     }
                 },
             }
-        }
+        };
+        // Shut the runtime down explicitly on the way out. The tokio
+        // runtime's drop waits for the `block_in_place` section
+        // `do_cycle` runs in, so a program still spinning inside a
+        // cycle (an infinite tail recursion) made Ctrl-C/Ctrl-D at the
+        // prompt hang the PROCESS — the only way out was SIGKILL.
+        // `abort()` breaks the loop first, then stops the runtime; it
+        // takes `&self`, so it works with handle clones still alive
+        // (a drop could not).
+        gx.abort();
+        sigint.abort();
+        exit
     }
 }

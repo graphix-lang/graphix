@@ -106,3 +106,6 @@ poolshark = { workspace = true }
 reedline = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+
+[dev-dependencies]
+libc = { workspace = true }
