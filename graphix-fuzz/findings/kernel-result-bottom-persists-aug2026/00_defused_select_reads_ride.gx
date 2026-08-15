@@ -1,0 +1,20 @@
+// aug14f overnight swarm (2026-08-15): 11 of the round's 17 live
+// witnesses were this one seam. `Kernel::update`'s bottom-result arm
+// returned the shared bottom WITHOUT persisting it ("the resident
+// keeps the last genuine result", written at the 5c flip) — so the
+// next quiet cycle's R1 ride re-served Stale(pre-bottom value), a
+// REAL value, where the interp op's resident (node/op.rs) goes
+// StaleBottom. A de-fused consumer (here: the interpreted select's
+// arm re-match on the scrutinee's connect-cycle fire) read the ridden
+// value, re-fired it as Fired, and the downstream product kernel
+// emitted it — jit [1:0] on an epoch the interp holds bottom-quiet.
+// Boundary matrix (each one ingredient off the diverging case):
+//   const-bottom untaken arm (de-fuses the select) ....... DIVERGE
+//   untaken arm i64:5 (whole select fuses, seam gone) .... agree
+//   final epoch in0=2 (no fresh bottom in taken arm) ..... agree
+//   without the `v1: i64` annotation ..................... DIVERGE
+// Fix: persist the bottom into the resident (the interp op twin) —
+// the kernel face of the standing-bottoms genus, sibling of
+// formal-bottom-persists-aug2026.
+// schedule-v1: cap=112 events=896; in0=i64:1; in0=i64:0
+{let v0 = i64:0; v0 <- in0; let v1: i64 = select v0 {i64:-1 => cast<i64>(null)$, _ => i64:-100 % (in0 + i64:0)}; v0 * v1}

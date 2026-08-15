@@ -1,0 +1,16 @@
+// PARKED 2026-08-15 (soak aug14f, aieka reactive divergence_000000).
+// OPEN — survives the kernel-result bottom-persist fix, and it is the
+// round's one MISSING-fire survivor (jit emits less, not more).
+//
+//   interp: []; [0:3 1:4]; [1:5]
+//   jit:    []; [0:3 1:4]; []      <- missing fire at ep2
+//
+// array::window whose value argument bottoms (100 / (in0 % 3) with
+// in0=0) feeding array::len, beside a `<-` push accumulator and a
+// fold. On the epoch where the window's value arg bottoms, the interp
+// still fires the result off the accumulator's growth; the jit goes
+// silent. Not yet matrixed — do that first. Check against
+// generated_missing_fires.gx (also missing fires, also a fold) before
+// treating as a separate class.
+// schedule-v1: cap=144 events=1152; in0=i64:1; in0=i64:0
+{let v0 = array::len(array::window(#n: i64:3, [in0], i64:100 / (in0 % i64:3))); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, v0, |v3, v2| v3); (v2 + v3)}

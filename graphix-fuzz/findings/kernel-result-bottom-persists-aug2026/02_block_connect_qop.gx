@@ -1,0 +1,8 @@
+// aug14f aieka reactive divergence_000006 (2026-08-15): the
+// connect-in-a-block face. The `%?` select's error arm `-1 / v3`
+// bottoms while v3 is 0; the un-persisted kernel resident rode the
+// arm's pre-bottom value across the connect cycle and the jit
+// emitted an extra trailing [1:-1] on an epoch the interp ends
+// quiet. Agrees once the bottom persists on the value channel.
+// schedule-v1: cap=176 events=1408; in0=i64:3; in0=i64:0; in0=i64:0
+{let v3 = i64:0; {let v5: i64 = select (i64:100 * i64:1) %? in0 {error as _ => i64:-1 / v3, i64 as n => n}; v3 <- in0 ~ v3 + v5}; (v3 + in0)}

@@ -1,0 +1,8 @@
+// Promoted from fuzz/pending-triage/reactive_catch_qop_select.gx
+// (aug14d katana reactive, parked 2026-08-14 untriaged). Resolved by
+// the kernel-result bottom-persist fix — the guard's re::is_match
+// over the connect-fed string and the catch/qop arm both sit behind
+// de-fused seams whose kernels bottom; the ridden pre-bottom
+// residents re-fired on later epochs.
+// schedule-v1: cap=144 events=1152; in0=i64:1; in0=i64:0
+{let v0 = ""; v0 <- in0 ~ "x"; let v1 = i64:0; let v2: i64 = select in0 {i64:1 if (true && false) => i64:7 + cast<i64>(i8:-100)$, v2 if re::is_match(#pat: "\[a-z\]+", v0)$ => {catch(e) in0; ((v2 % in0) *? cast<i64>(u8:100)$)?}, i64:0 => -(i64:0), v2 => i64:42 + (in0 + v1)}; let v3 = i64:0; (v1 - in0) * v2}

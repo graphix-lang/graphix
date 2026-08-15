@@ -14,10 +14,13 @@
 //   interp: ep0 [(0,-49),(1,-35)]  ep1 [(1,-14)]           ep2 [(1,14)]
 //   jit:    ep0 [(0,-49),(1,-35)]  ep1 [(0,-35),(1,-14)]   ep2 [(0,-14),(1,14)]
 //
-// THREE WITNESSES NOW SHARE AN EXACT SIGNATURE (this one, ryouko's
-// reactive_guard_arm_epoch3.gx, and hz0 aug14f reactive
-// divergence_000001 — not filed separately, it is a near-duplicate and
-// recoverable from the box). In every one:
+// UPDATE 2026-08-15: the original three-witness signature SPLIT under
+// the kernel-result bottom-persist fix — reactive_guard_arm_epoch3
+// fell to it (promoted to findings/kernel-result-bottom-persists-
+// aug2026/01) while this one and hz0 divergence_000001 survive. The
+// surviving cluster's refined shape (rec called with CONST args whose
+// untaken arm reads an input) is in rec_const_args_stale_refire.gx —
+// triage there first. Original signature note follows. In every one:
 //   * the program is REACTIVE (schedule-driven, multi-epoch),
 //   * it has two outputs, 0 and 1,
 //   * in epoch 0 both engines agree,

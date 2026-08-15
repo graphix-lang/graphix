@@ -1,0 +1,11 @@
+// Promoted from fuzz/pending-triage/reactive_guard_arm_epoch3.gx
+// (aug14e ryouko reactive, parked 2026-08-14 as "epoch-3 extra JIT
+// fire"; one of the three witnesses filed under the extra-stale-fire
+// signature). Resolved by the kernel-result bottom-persist fix: the
+// arm's `i64:1 / v0` (v0 = const 0) kernel bottoms, the un-persisted
+// resident rode the arm's pre-bottom value, and the epoch-3
+// re-selection re-fired it (jit extra [0:9] where the interp holds
+// quiet). The remaining extra-stale-fire witnesses (hz0 aug14f
+// reactive 000000/000001) are a DIFFERENT mechanism and stay parked.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:1
+select i64:0 {i64:0 if in0 % i64:2 == i64:0 => i64:-9223372036854775808, _ => {let ep = i64:0; ep <- select ep {n if n < i64:2 => n + i64:1, _ => never()}; let in0 = ep; let in1 = select ep {i64:1 => true, _ => false}; let v0 = i64:0; select in1 {true => i64:9, _ => i64:1 / v0}}}

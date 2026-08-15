@@ -1790,12 +1790,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         }
         if tag.is_bottom() {
             // A bottomed result: the returned words own a helper-safe
-            // placeholder — free it and produce the shared bottom
-            // (FreshBottom if the output chain fired, StaleBottom for
-            // a standing bottom). The resident keeps the last genuine
-            // result for the value channel.
+            // placeholder — free it and PERSIST the bottom on the value
+            // channel (the interp op twin, node/op.rs): the R1 quiet
+            // ride must deliver StaleBottom afterwards, because a
+            // re-run against the same inputs would bottom again. Riding
+            // the pre-bottom value instead let a de-fused consumer
+            // re-fire it as real (soak aug14f).
             drop(tv.value());
-            return TagValue::bottom_null(tag.triggers());
+            return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         // Fill the RESULT slot (the value channel — see `resident`)
         // and lend it: Fired for a fresh result, Stale for a quiet

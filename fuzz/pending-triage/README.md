@@ -1,59 +1,63 @@
-# pending-triage — open classes, 2026-08-15
+# pending-triage — open classes, 2026-08-15 (post aug14f triage)
 
-Seven open classes. Six of them came out of the aug14e/aug14f soaks and
-share one SYMPTOM — "the jit emits an extra event carrying a prior
-value" — but they split cleanly into **two families with no overlap**,
-which is the useful structure here. Do not fix them as one thing until
-something actually connects the families.
+The aug14f overnight round (~240M subjects, five boxes) landed 25
+findings. Eleven of the seventeen live divergences, plus two classes
+parked earlier (`reactive_guard_arm_epoch3`, `reactive_catch_qop_select`),
+were ONE seam: `Kernel::update`'s bottom-result arm did not persist the
+bottom into the resident, so quiet cycles re-served the pre-bottom value
+to de-fused consumers. Fixed (the interp-op twin now holds at the kernel
+result seam); pinned as `findings/kernel-result-bottom-persists-aug2026/`.
+What remains here survives that fix.
 
-## Family A — refs (3 witnesses, 3 distinct sub-triggers)
+## Family A — refs (3 witnesses, 3 distinct sub-triggers, unchanged)
 
 Every witness uses a value ref (`let r = &x`) AND a ref write
-(`*r <- v`). Each sub-trigger was reduced to a small deterministic
-program with a one-ingredient-at-a-time boundary matrix.
+(`*r <- v`). No new witnesses overnight.
 
 | file | trigger |
 |---|---|
-| `refintuple_recursion_extra_fire.gx` | ref carried in a **tuple**, deref'd through `.0`, inside a **recursive** fn. Needs BOTH; struct- and array-carried refs agree *and fuse identically* |
-| `refwrite_guard_extra_fire.gx` | ref-write flips a select **scrutinee**, guard read through a **second ref**. No recursion, no composite |
+| `refintuple_recursion_extra_fire.gx` | ref carried in a **tuple**, deref'd through `.0`, inside a **recursive** fn |
+| `refwrite_guard_extra_fire.gx` | ref-write flips a select **scrutinee**, guard read through a **second ref** |
 | `crossmodule_refwrite_extra_fire.gx` | ref-write to **another module's** binding, recursive callee in that module reads it |
 
-CLAUDE.md lists ByRef/Deref as a *lower-impact* missed-fusion gap. Three
-independent correctness divergences in one campaign says it is not
-lower-impact — it is a systematic seam. Two existing finding dirs are on
-the same ground and should be read first:
-`findings/refwrite-guard-flip-aug2026` and
-`findings/module-state-callee-reactivity-aug2026`.
+Read `findings/refwrite-guard-flip-aug2026` and
+`findings/module-state-callee-reactivity-aug2026` first.
 
-## Family B — reactive, no refs (3 witnesses, one exact signature)
+## Family B refined — rec-const-args stale refire (5 witnesses)
 
-`reactive_extra_stale_fire.gx` (+ two near-duplicates recorded in its
-header, incl. `reactive_guard_arm_epoch3.gx`). None of these uses a ref
-at all. Signature is identical across all three:
+The old "extra event at output 0" signature was really "extra fire at
+CYCLE OFFSET 0 (the injection cycle) carrying the previous epoch's
+result" — the offsets in traces are cycle offsets, not output ids. The
+surviving cluster shares one shape: a RECURSIVE fn called with CONSTANT
+args whose terminal select reads a schedule input in an arm the taken
+path never takes, plus a `<-` connect elsewhere. The interp is quiet at
+offset 0 (the input is consumed only by an untaken arm); the jit
+re-emits the stale result.
 
-* reactive, schedule-driven, multi-epoch; exactly two outputs 0 and 1
-* epoch 0 agrees
-* every later epoch, the jit emits an extra event at output **0**
-  carrying the value output **1** held in the **previous** epoch
+* `rec_const_args_stale_refire.gx` — minimized core + full sibling list
+* `reactive_extra_stale_fire.gx` — the original hz0 witness (header
+  updated; hz0 reactive 000001 is its on-box near-dup)
 
-The stale value being the *other output's* prior value is the lead: a
-value-ride on output 0 would re-deliver output 0's own history. This
-points at output/slot identity across epochs.
+## New this round (each survives the bottom-persist fix)
 
-## Unrelated to both
+| file | note |
+|---|---|
+| `iter_rec_guard_wrong_value.gx` | jit emits an untaken arm's VALUE (a bool through an [i64,bool] union) on deliveries where the interp is silent; sibling pure-extra-fire witness via `count` recorded in the header. Possibly the guard-read face of Family B — matrix before assuming |
+| `window_div0_missing_fire.gx` | the round's one MISSING-fire survivor (window value-arg bottoms; jit silent where interp fires). Not yet matrixed; compare with `generated_missing_fires.gx` |
+
+## Unrelated to all of the above
 
 | file | note |
 |---|---|
 | `connect_in_call_arg_nontermination.gx` | needs an Eric ruling: should a `<-` inside a call ARGUMENT re-evaluate per call? and should an infinite recursion settle on the depth-limit bottom rather than grind? |
-| `generated_missing_fires.gx` | MISSING fires, not extra. Not yet minimized — do that first |
-| `reactive_catch_qop_select.gx` | parked 2026-08-14 |
+| `generated_missing_fires.gx` | MISSING fires. Not yet minimized — do that first |
 
-## Refuted leads (recorded so they are not re-chased)
+## Refuted leads (do not re-chase)
 
-* **dynamic modules.** Three of the first four aug14f findings carried a
-  `mod .. dynamic` and it looked like a common cause. A minimal dynamic
-  module AGREES, and the witness that had one minimized to a program
-  with none. Refuted.
-* **"struct/array just de-fuse."** The obvious deflation of Family A's
-  tuple row. Ruled out: all three composite rows report identical
-  fusion (attempted=11 fused=2).
+* **dynamic modules** — minimal dynmod AGREES; witnesses minimized to
+  programs with none.
+* **"struct/array just de-fuse"** (Family A's tuple row) — all three
+  composite rows report identical fusion.
+* **one cause for the whole extra-fire symptom** — the aug14f fix pass
+  proved the split empirically: 13 witnesses fell to bottom-persist,
+  Family A and the rec-const-args cluster survived it.
