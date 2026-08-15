@@ -1232,22 +1232,23 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // the init bind). The placeholder stays out of the
                 // cross-cycle store, like Bind's tainted arm.
                 //
-                // TRIGGERING deliveries only: a STANDING bottom is
-                // "nothing new" and must ride — the unconditional
-                // insert re-minted a FRESH acc poison every cycle, the
-                // acc-consuming callback re-fired, and the fold's
-                // perpetual FreshBottom clobbered a ref-write's
-                // same-cycle Fired delivery to the bound name, eating
-                // a guard flip downstream (aug13k hz0 generate
-                // 000000; the kernel's standing TAINT|STALE param is
-                // quiet).
-                if tag.triggers()
-                    && let Some(slot) = self.slots.first()
-                {
-                    event.variables.insert(
-                        slot.acc_id,
-                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-                    );
+                // The acc delivery MIRRORS the init's current tag: a
+                // TRIGGERING bottom is a FRESH poison; a STANDING one
+                // delivers the kernel's quiet TAINT|STALE twin —
+                // StaleBottom, which poisons the value channel without
+                // firing anything (the aug13k re-mint bug was minting
+                // FRESH per cycle; the quiet poison keeps its fix
+                // while option A's bottom-in-bottom-out holds across
+                // standing cycles — without it slot 0's ref fell back
+                // to the STORE's pre-bottom entry and the retained
+                // init substituted for a poisoned production, aug14f
+                // window_div0).
+                if let Some(slot) = self.slots.first() {
+                    let poison =
+                        if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
+                    event
+                        .variables
+                        .insert(slot.acc_id, TagValue::tagged(Value::Null, poison));
                 }
             } else {
                 self.init = ival;
@@ -1304,6 +1305,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         // the bottom arm below distinguishes a triggering taint
         // (FreshBottom) from a standing one (ride).
         let mut any_trig = forced_taint && src_trig;
+        // The previous slot's production bottomed THIS cycle — a fresh
+        // slot's seed gate (below): the resize must propagate the
+        // chain's current poison, not resurrect `held`.
+        let mut prev_slot_bottom = false;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
@@ -1316,19 +1321,42 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             // cache backfill, and stays.
             if i >= old_len {
                 event.init = true;
-                let seed = if i == 0 {
-                    self.init.clone()
+                let acc_id = self.slots[i].acc_id;
+                // A fresh slot's seed is the chain's CURRENT state,
+                // never a substitute for it (option A: `held`/the
+                // retained init serve only genuinely quiet value
+                // channels): seeding from the last-good value while
+                // the incoming chain is bottom THIS cycle overwrote
+                // the poison the resize should propagate — a fold
+                // whose init stood bottom recovered its pre-bottom
+                // init on every resize (aug14f window_div0; the
+                // kernel reseeds from the init operand's current disc
+                // per invocation and stays bottom).
+                let incoming_bottom = if i == 0 {
+                    init_tag.is_some_and(|t| t.is_bottom())
                 } else {
-                    self.slots[i - 1].held.clone()
+                    prev_slot_bottom
                 };
-                if let Some(value) = seed {
-                    let acc_id = self.slots[i].acc_id;
-                    ctx.rt.store_insert(acc_id, TagValue::fired(value.clone()));
-                    event.variables.insert(acc_id, TagValue::fired(value));
+                if incoming_bottom {
+                    event.variables.insert(
+                        acc_id,
+                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                    );
+                } else {
+                    let seed = if i == 0 {
+                        self.init.clone()
+                    } else {
+                        self.slots[i - 1].held.clone()
+                    };
+                    if let Some(value) = seed {
+                        ctx.rt.store_insert(acc_id, TagValue::fired(value.clone()));
+                        event.variables.insert(acc_id, TagValue::fired(value));
+                    }
                 }
             }
             let tv = self.slots[i].call.update(ctx, event).clone();
             let tag = tv.tag();
+            prev_slot_bottom = tag.is_bottom();
             // Only TRIGGERING slot productions advance the fold; a
             // stale ride is the value channel (unchanged by the R1
             // law) and the acc chain's standing store entries serve

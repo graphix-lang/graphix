@@ -1,6 +1,7 @@
 // The campaign original's shape (aieka aug14f reactive 000000): same
 // class as 00 with the bottoming value routed through array::window
-// before the fold — pins the window path's delivery of the standing
-// bottom alongside the direct form.
+// before the fold. See 00 for the mechanism and the mis-fix
+// post-mortem; both engines are silent on the resize cycle while the
+// init stands bottom (option A).
 // schedule-v1: cap=144 events=1152; in0=i64:1; in0=i64:0
 {let v0 = array::len(array::window(#n: i64:3, [in0], i64:100 / (in0 % i64:3))); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, v0, |v3, v2| v3); (v2 + v3)}

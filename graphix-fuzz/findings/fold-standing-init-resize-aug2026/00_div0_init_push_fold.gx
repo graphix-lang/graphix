@@ -1,0 +1,27 @@
+// aug14f aieka reactive divergence_000000, reduced (array::window
+// probed out as irrelevant). THE KERNEL WAS RIGHT — recorded as a
+// mis-fix post-mortem: this class was first "fixed" by making the
+// kernel RIDE the bottomed init (a scalar taint-cache on the fold
+// init seed), matching the interp — but option A (Eric 2026-08-13,
+// fold-tainted-init: the fold is a function of (source, init,
+// callback), bottom in bottom out, `held` never substitutes for a
+// poisoned production) rules the OTHER way, and the ride broke the
+// fold-tainted-init + strict-bottom-collections pins. The regress
+// gate FALSE-GREENED over those breaks twice, which is how the wrong
+// fix briefly landed; the check-based corpus sweep caught it.
+//
+// The real holes were INTERP-side, both "retained value substitutes
+// for a poisoned production" faces the empty-fold fix (pin
+// strict-bottom-collections/01) had already named:
+//   1. a STANDING bottom init inserted no acc poison (the aug13k
+//      re-mint fix gated on triggering), so slot 0's ref fell back to
+//      the STORE's pre-bottom entry;
+//   2. the fresh-slot RESIZE seed served the retained held/init
+//      unconditionally, overwriting the chain's current poison.
+// Fix: the acc delivery mirrors the init's current tag (FreshBottom
+// triggering / StaleBottom standing — the kernel's quiet TAINT|STALE
+// param twin), and a fresh slot poison-seeds when the incoming chain
+// is bottom THIS cycle. Both engines are now silent on the resize
+// cycle while the init stands bottom.
+// schedule-v1: cap=144 events=1152; in0=i64:1; in0=i64:0
+{let v0 = i64:100 / (in0 % i64:3); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, v0, |v3, v2| v3); (v2 + v3)}
