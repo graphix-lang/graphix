@@ -21,7 +21,7 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use super::{
     abi::{
         CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
-        emit_untainted_i64, is_tainted,
+        emit_untainted_i64, is_tainted, propagate_stale,
         scalar_disc, taint_if, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
@@ -376,6 +376,27 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // Results per return shape: the returned disc's TAINT/STALE bits
     // ARE the production's tag — adopt them.
     let tagbits = cx.b.ins().band_imm(raw0, TAINT | STALE);
+    // Key-0 in-loop sites deliver args FIRED (the mask-0 rationale
+    // above), so the inner Apply's returned tag cannot tell a quiet
+    // invocation from a fresh one — and the fired plane lied through
+    // a callee kernel's return disc (aug14f refwrite_guard: an
+    // unrelated input's invocation re-fired a fused select via its
+    // map-HOF callee). Restore the honest plane at the RESULT: fold
+    // the real arg discs' STALE (AND-reduced — stale iff nothing
+    // consumed fired) into the adopted tag, suppressed under the
+    // effective init view exactly like the mask path (the aug08b
+    // arm-override re-eval is genuinely fresh). Value/cache behavior
+    // is untouched — only the reported firedness.
+    let tagbits = if cx.ctx.loop_depth.get() > 0 && !site_claimed {
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        let folded = propagate_stale(cx.b, zero, &arg_taint_discs);
+        let init = cx.init_flag();
+        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+        let stale_fold = cx.b.ins().select(init_b, zero, folded);
+        cx.b.ins().bor(tagbits, stale_fold)
+    } else {
+        tagbits
+    };
     match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: the payload word carries the Value-encoded

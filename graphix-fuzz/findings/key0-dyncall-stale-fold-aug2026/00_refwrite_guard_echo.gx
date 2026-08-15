@@ -1,0 +1,21 @@
+// aug14f hz0 generate divergence_000001, reduced (2026-08-15). The
+// key-0 scaffold-loop FIRED-delivery approximation leaking into the
+// fired plane: on the ref-write's propagation cycle the fused select
+// region is invoked with only v65 fired — an input consumed solely by
+// the const-false-guarded arm — and the scrutinee's map-HOF callee
+// runs cross-kernel unconditionally. Its interior filter-callback and
+// map::len DynCalls sit at UNCLAIMED key-0 sites, which deliver args
+// FIRED by design (the aug08a shared-cache rationale), so the loop
+// claimed a slot fired, the callee returned a FIRED disc, the organic
+// merge folded scrutinee-fired, v17 re-fired, and the second ref
+// echoed it through the final select's guard one cycle later (extra
+// [3:true]). The interp's CallSite never even dispatches (any-arg-
+// fired gate). Ingredient matrix: const callee body agrees, no
+// ref-deref in the untaken arm agrees, guard-without-second-ref
+// agrees. Fix: the key-0 in-loop dispatch KEEPS fired delivery (the
+// value/cache rationale stands) but the adopted result tag folds the
+// real arg discs' STALE, suppressed under the effective init view —
+// the fired plane stops lying without touching cache behavior. Full
+// per-position site claiming (site-identity v2) remains the deeper
+// design item.
+{let v41 = u8:100; let v42 = true; let v8 = |v34: bool, v35: i64, v27: f64| -> i64 map::len(map::filter({"k1" => null, "k2" => null}, |kv| str::len(kv.0) > i64:1)); let v60 = &v41; *v60 <- u8:1; let v65 = *v60; let v17 = select v8(v42, i64:0, f64:0.) {v27 if (i32:-1 > i32:42) => v65 != u8:2, _ => v42}; let v79 = &v17; select v65 {u8:100 if *v79 => i64:7, _ => true}}
