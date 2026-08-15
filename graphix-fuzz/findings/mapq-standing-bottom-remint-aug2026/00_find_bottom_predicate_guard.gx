@@ -1,0 +1,19 @@
+// aug14f hz0 generate divergence_000000, minimized 12.6KB -> ~250B
+// (2026-08-15). INTERP-side, the MapQ face of the standing-bottoms
+// genus ("standing bottoms never re-fire" — the aug13k fold-init /
+// depth-trip / select-miss family; FoldQ got its triggering/standing
+// split, MapQ's finish never did). A slot's taint mark is PERSISTENT
+// (set once by a triggering bottom, cleared only by a clean
+// production), and the finish minted FRESH_BOTTOM on ANY production
+// while any slot carried it — so a find over a permanently-bottoming
+// predicate (`re::is_match` with an invalid pattern, `$`-dropped) fed
+// by a PASS_THROUGH source ride re-delivered FreshBottom every cycle.
+// The triggering delivery drove the guard-select downstream and the
+// outer select emitted on a cycle where nothing it consumed fired
+// (the ref-write block exists only to give the program a second
+// cycle; the earlier "ref-write wake" reading was wrong — GXDBG_CS
+// showed the callback riding stale while the find's CS-RES stayed
+// Tag(64)). Fix: both bottom mints in MapQ's finish gate on
+// tag.triggers(); a quiet production over standing poison rides
+// (StaleBottom).
+{let v47: [bool, null] = array::find([true, true, true], |v21| re::is_match(#pat: "((", "a")$); {let v61 = i64:3; let v67 = &v61; *v67 <- i64:0}; select i64:0 {i64:7 if select v47 {null as _ => false, bool as n => n} => true, v91 => true}}

@@ -820,17 +820,33 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             Some(tag) => tag,
             None => return self.resident.ride(),
         };
+        // Bottom mints gate on a TRIGGERING production — the
+        // standing-bottoms rule (aug13k, the fold-init/depth-trip
+        // twins): a slot's taint mark is PERSISTENT (set once, cleared
+        // only by a clean production), so minting FRESH on every
+        // production re-fired a standing bottom off a quiet
+        // PASS_THROUGH source ride forever — a find over a
+        // permanently-bottoming predicate re-delivered FreshBottom per
+        // cycle and drove a downstream select's guard on cycles where
+        // nothing consumed fired (aug14f generated_missing_fires).
+        // A quiet production over standing poison RIDES (StaleBottom).
         if tag.is_tainted() || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+            return if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
             match self.operation.finish(&self.slots, &self.current) {
                 Some(value) => self.resident.set(TagValue::tagged(value, tag)),
                 None => self.resident.ride(),
             }
-        } else {
+        } else if tag.triggers() {
             // an element has never produced: the collection is bottom
             self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+        } else {
+            self.resident.ride()
         }
     }
 

@@ -1,31 +1,39 @@
-# pending-triage — aug14f batch closed out, 2026-08-15
+# pending-triage — aug14f batch fully resolved, 2026-08-15
 
-The aug14f round (~240M subjects, five boxes, 25 findings) is fully
-resolved: FIVE engine bugs found and fixed same day — two kernel
-(bottom-persist 835542d2, frame-init const fire c8794f0f), then the
-three remaining root-caused classes on Eric's "fix what needs no
-ruling": the fused fold's standing-bottom init poison (kernel), the
-in-frame formal init view (interp), and the key-0 dyncall fired-plane
-leak (kernel). Pins: `findings/kernel-result-bottom-persists-aug2026/`,
-`findings/kernel-frame-init-const-fire-aug2026/`,
-`findings/fold-init-bottom-ride-aug2026/`,
-`findings/frame-formal-init-view-aug2026/`,
-`findings/key0-dyncall-stale-fold-aug2026/`.
+The aug14f round (~240M subjects, five boxes, 25 findings) closed with
+SIX engine bugs found and fixed in one day:
 
-## Awaiting Eric — everything left in this directory
+1. kernel-result bottom persist (835542d2)
+2. kernel frame-init const fire (c8794f0f)
+3. fold standing-bottom init poison (81c610f1)
+4. in-frame formal init view (43e6af90)
+5. key-0 dyncall fired-plane leak (45c5a4fb)
+6. MapQ standing-bottom remint — the finish minted FRESH_BOTTOM on any
+   production while a slot carried its persistent taint mark; a find
+   over a permanently-bottoming predicate re-fired a standing bottom
+   off quiet PASS_THROUGH source rides. The "ref-write wake" polarity
+   question this was briefly held on DISSOLVED: there was never a
+   wake-driven emission, just the remint driving a guard — covered by
+   the existing standing-bottoms ruling
+   (pin: findings/mapq-standing-bottom-remint-aug2026/).
+
+Every witness from the round — campaign findings, probes, and parked
+classes — now AGREEs except the known-benign fib(30) asymmetric
+timeout.
+
+## Awaiting Eric — the only open item
 
 | file | question |
 |---|---|
-| `connect_in_call_arg_nontermination.gx` | engines AGREE (both Timeout). (1) is a `<-` inside a call ARGUMENT meant to advance once (non-terminating here) or re-evaluate fresh per call? (2) should an infinite recursion settle on the depth-trip bottom instead of grinding? |
-| `generated_missing_fires.gx` | the batch's one unfixed divergence, adjudicated interp-side over-fire (a ref-write WAKE converts into an emission through a guard-select over a standing-bottom scrutinee; organic firing says quiet and the jit is quiet). Held for polarity confirmation before the interp fix: may a ref-write wake ever produce emissions from nodes whose consumed inputs did not fire? |
+| `connect_in_call_arg_nontermination.gx` | engines AGREE (both Timeout — no divergence). (1) is a `<-` inside a call ARGUMENT meant to advance once (making this program non-terminating) or re-evaluate fresh per call? (2) should an infinite recursion settle on the depth-trip bottom instead of grinding past budgets? |
 
 ## Notes carried forward
 
-* The deeper design item behind the key-0 fix: DynCall site-identity
-  v2 (claimed per-position sites in scaffold loops taking the honest
-  stale MASK, not just an honest result tag). The stale-fold fix
-  closes the fired-plane divergence; per-position identity would also
-  end the effect-refire and cross-position-cache residuals.
+* DynCall site-identity v2 (claimed per-position sites in scaffold
+  loops taking the honest stale MASK) remains the deeper design item
+  behind the key-0 fix — it would also end the effect-refire and
+  cross-position-cache residuals.
 * Refuted leads from this batch (do not re-chase): dynamic modules;
-  "struct/array just de-fuse"; one cause for the extra-fire symptom
-  (it was two); array::window in the fold class.
+  "struct/array just de-fuse"; one cause for the extra-fire symptom;
+  array::window in the fold class; the ref-write-wake reading of the
+  find remint.
