@@ -657,8 +657,21 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     // class hid behind `sys::time` because every kill fixture paired
     // with a timer trigger until a mutant swapped the trigger out),
     // and OS-assigned pids (same class as the addr getters).
+    // `throttle` is the one wall-clock reader OUTSIDE sys:: (core
+    // lib.rs:1856 — `Instant::now() - last >= wait` decides whether a
+    // delivery passes or is deferred to a timer). It was listed only as
+    // fire-count-sensitive, which is checked inside the sys:: arm, so a
+    // throttle program with no sys:: fell through to Exact — soak aug14e
+    // hz0 divergence_000000 recorded `count(throttle(#rate:
+    // duration:0.001s, x))` over a 3-element iter, where a rate near the
+    // cycle time makes each pass a coin flip. Same-engine reruns flip
+    // both the event COUNT and its EPOCH, and the program fuses nothing
+    // at all (both sides run the same node-walk), so it is
+    // nondeterminism, not a divergence. Same class as `sys::time` —
+    // hence top-level, not fire-count-conditional.
     let excluded = [
         "rand::",
+        "throttle",
         "sys::time",
         "sys::net",
         "sys::process::kill",
@@ -727,7 +740,6 @@ pub fn oracle_tier(code: &str) -> OracleTier {
             "and(",
             "or(",
             "queue(",
-            "throttle(",
             "take(",
             "skip(",
             "window(",
@@ -3042,6 +3054,31 @@ mod tests {
         assert_eq!(
             oracle_tier("sys::tcp::connect(\"127.0.0.1:5000\")"),
             OracleTier::FinalValues
+        );
+    }
+
+    #[test]
+    fn throttle_is_excluded_tier() {
+        // `throttle` gates on Instant::now() and is the only wall-clock
+        // reader outside sys:: — soak aug14e hz0 divergence_000000
+        // recorded a rate near the cycle time as a phantom divergence
+        // (same-engine reruns flip both event count and epoch). It must
+        // exclude on its own, with no sys:: in the program.
+        assert_eq!(
+            oracle_tier("count(throttle(#rate: duration:0.001s, x))"),
+            OracleTier::Excluded
+        );
+        // The other fire-count-sensitive builtins are NOT wall-clock
+        // readers: they stay Exact when nothing async is in play.
+        assert_eq!(oracle_tier("count(x)"), OracleTier::Exact);
+        // A bare marker is broad enough to catch a COMMENT, which would
+        // silently un-gate a pin that merely names the builtin — the
+        // oracle-tier-comment-scan-aug2026 class. The comment strip must
+        // hold for it: dyncall-stale-arg-fired-aug2026/01 discusses
+        // throttle in its header and must stay Exact.
+        assert_eq!(
+            oracle_tier("// a header naming throttle\ncount(x)"),
+            OracleTier::Exact
         );
     }
 
