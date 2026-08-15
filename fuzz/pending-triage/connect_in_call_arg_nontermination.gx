@@ -1,8 +1,13 @@
-// bisect: asymmetric timeout (interp exceeds budget; jit produces) —
-// OPEN, parked 2026-08-14. Found by soak aug14d (katana fuzz
-// divergence_000000) BEFORE the arm-local seam fixes, and it still
-// times out after them — not a regression from that work, but the
-// same seam is what makes the question interesting.
+// STATUS 2026-08-15: no longer an engine divergence — after the
+// kernel frame-init fix BOTH engines Timeout (the jit's in-frame
+// const fire was what let it produce values; both now read the
+// program as non-terminating and grind). The oracle scores
+// both-Timeout as AGREE. What remains is purely the semantics
+// questions below, still awaiting Eric — question 2's depth-trip
+// settle now applies to BOTH engines.
+// Originally: asymmetric timeout (interp exceeds budget; jit
+// produces) — parked 2026-08-14, found by soak aug14d (katana fuzz
+// divergence_000000) BEFORE the arm-local seam fixes.
 //
 // The recursive call's ARGUMENT is `{let s = i64:0; s <- fold(…); s}`.
 // Now that a `<-` target's seed applies once (arm-local-bind-aug2026),

@@ -1,0 +1,13 @@
+// Promoted from fuzz/pending-triage/crossmodule_refwrite_extra_fire.gx
+// (aug14f hz1 generate lane). The module-state face: a ref-write to
+// another module's binding while a recursive fn calls a callee in
+// that module which reads the written binding — the jit emitted an
+// extra fire of the same value. Same frame-init mechanism as 00/02;
+// sits on the module-state-callee-reactivity-aug2026 seam (Q3
+// fresh-at-instantiation) without disturbing it.
+{let rec v12 = |v13: i64, v15: i64| -> i64 select v13 {v14 if v14 <= i64:0 => m2::f0(u8:255), v14 => v12(i64:0, v15)}; let v16 = v12(i64:8, i64:0); let v17 = &m2::k2; *v17 <- true; array::fold([true, true, true], i64:0, |v19, v20| v16)}
+// file-v1: m1.gx
+let f2 = |v12: bool| -> i64 cast<i64>(z32:-1000)$
+// file-v1: m2.gx
+let k2: bool = true;
+let f0 = |v14: u8| -> i64 m1::f2(k2)

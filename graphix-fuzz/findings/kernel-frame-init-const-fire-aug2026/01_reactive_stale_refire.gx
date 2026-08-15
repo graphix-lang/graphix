@@ -1,0 +1,11 @@
+// Promoted from fuzz/pending-triage/reactive_extra_stale_fire.gx
+// (aug14f hz0 reactive divergence_000000; its box near-dup is
+// divergence_000001). The multi-epoch reactive face of the frame-init
+// const fire: every epoch after the first, the jit emitted an extra
+// event at cycle offset 0 carrying the previous epoch's result. The
+// old header's "extra event at output 0 carrying output 1's prior
+// value" read the trace ids as output ids — they are CYCLE OFFSETS;
+// the real signature was "extra fire at the injection cycle, stale
+// value". The dynamic module is incidental (a minimal one agrees).
+// schedule-v1: cap=96 events=768; in0=i64:0
+{let v0 = ["let f = |v0: i64| -> i64 i64:1; let q = f(i64:4) * i64:5; let z = array::len(\[q, q + i64:1, f(i64:4 + i64:2)\]); let w = q + z", "let f = |v1: i64| -> i64 v1; let q = f(i64:2) * i64:5; let z = array::len(\[q, q + i64:1, f(i64:2 + i64:2)\]); let w = q + z"]; let v1 = mod dr0 dynamic { sandbox whitelist [ core ]; sig { val f: fn(x: i64) -> i64 }; source v0[in0 % i64:2]$ }; let v2 = select v1 {error as _ => i64:-1, null as _ => dr0::f(cast<i64>(i8:1)$)}; let v13: i64 = {let rec v3 = |v4: i64, v6: i64| -> i64 select v4 {v5 if v5 <= i64:0 => select (i64:0 +? v5) {error as _ => in0, i64 as n => n}, v5 => v3(v5 - i64:1, v6 + v5)}; let v7 = v3(i64:1, i64:0); let v10 = |v8, v9| ((v8 + v9) - v8); let v11 = v10(z32:0, z32:-1000); let v12 = v10(u8:0, u8:2); select v7 {v2 => i64:7}}; let v14 = ""; v14 <- in0 ~ "[v14]x[in0]"; let v15 = str::len(v14); ((v15 - v13) * v13)}

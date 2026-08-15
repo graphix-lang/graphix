@@ -1681,7 +1681,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // param in ABI (= params) order.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
-        slots.push(event.init as u64);
+        // The invocation-uniform init flag the emitted const_stale_gate
+        // reads: inside a frame the honest view is `ctx.frame_init`
+        // (frames force `event.init`, so the raw flag fired every
+        // in-frame const per pass — the Constant node's own gate,
+        // node/mod.rs) — the bind.rs/lambda.rs idiom at the wire slot.
+        let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+        slots.push(init as u64);
         slots.push(if self.state.is_empty() {
             0
         } else {

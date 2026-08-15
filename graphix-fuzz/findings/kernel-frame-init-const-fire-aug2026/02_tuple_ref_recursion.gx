@@ -1,0 +1,10 @@
+// Promoted from fuzz/pending-triage/refintuple_recursion_extra_fire.gx
+// (aug14f katana generate lane). The tuple-carried-ref face: a ref in
+// a tuple deref'd through .0 inside a recursive fn — the jit
+// re-delivered the PRE-WRITE value on the ref-write's propagation
+// cycle. The original boundary matrix blamed the tuple (struct- and
+// array-carried refs agreed), but the mechanism was the frame-init
+// const fire: the framed re-derivation on the write's delivery ran
+// the arm regions with init=1, minting FIRED consts. Agrees once the
+// kernel's init wire carries frame_init inside frames.
+{let x = i64:9; let r = &x; *r <- i64:0; let t = (r, x); let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => *t.0, m => f(i64:0)}; f(i64:10)}

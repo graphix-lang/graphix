@@ -1,0 +1,20 @@
+// aug14f's second family (2026-08-15): the rec-const-args stale
+// refire — five reactive witnesses across three boxes, plus two of
+// pending-triage's Family A refs. Kernel::update pushed the RAW
+// `event.init` as the kernel's init wire slot, but frames force
+// `event.init`, so every fused region invoked from an ordinary framed
+// re-derivation (a retained recursion re-dispatching on a delivery)
+// ran with init=1 and its const_stale_gate minted FIRED consts. Here:
+// on in1's delivery the terminal select's scrutinee `v2 /? 42` folds
+// STALE(v2) AND STALE(const 42) — with the const spuriously FIRED the
+// scrutinee read fired, the taken arm's value fired, and the arm
+// region returned Tag(0): the jit re-emitted the stale result at the
+// injection cycle where the interp (whose Constant node gates on
+// `ctx.frame_init` in-frame) is quiet. The hand-inlined f->g chain
+// (quiet, both engines) is the semantics per the recursion ruling.
+// Boundary matrix: non-tail recursion agrees, zero-jump f(0) agrees,
+// in1 in the TAKEN arm fires both engines. Fix: the wire slot carries
+// `frame_depth > 0 ? frame_init : event.init` — the bind.rs/lambda.rs
+// idiom.
+// schedule-v1: cap=64 events=512; in1=i64:0
+{let rec v0 = |v1: i64| -> i64 select v1 {v2 if v2 <= i64:0 => select (v2 /? i64:42) {i64 as n => n, _ => in1}, v2 => v0(v2 - i64:1)}; v0(i64:5)}
