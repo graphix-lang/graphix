@@ -1,0 +1,20 @@
+// bisect: asymmetric timeout (interp exceeds budget; jit produces) —
+// OPEN, parked 2026-08-14. Found by soak aug14d (katana fuzz
+// divergence_000000) BEFORE the arm-local seam fixes, and it still
+// times out after them — not a regression from that work, but the
+// same seam is what makes the question interesting.
+//
+// The recursive call's ARGUMENT is `{let s = i64:0; s <- fold(…); s}`.
+// Now that a `<-` target's seed applies once (arm-local-bind-aug2026),
+// s advances 0 -> 6, so f(6) recurses on 6 forever: the program IS
+// non-terminating under the current reading. Two things to settle:
+//   1. is that the intended reading of a connect inside a call
+//      argument, or should the argument block be re-evaluated fresh
+//      per call (which is what makes it terminate)?
+//   2. if it IS non-terminating, the interp should hit the call-depth
+//      limit and bottom the derivation (Eric's whole-derivation
+//      ruling) rather than grind past the fuzzer's budget — check
+//      whether the trip re-arms every cycle instead of settling.
+// The kernel meanwhile produces values, and which values it produces
+// changed with the seed rule ([1,2,3,4] before, [1,1,2,2] after).
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f({let s = i64:0; s <- array::fold([i64:1, i64:2, i64:3], i64:0, |acc, e| acc + e); s})}; f(m)}
