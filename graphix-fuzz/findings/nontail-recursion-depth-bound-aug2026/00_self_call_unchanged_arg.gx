@@ -1,0 +1,21 @@
+// Promoted 2026-08-15 from graphix-fuzz/fuzz/crashes/crash_000002.gx,
+// one of eight artifacts parked there in June 2026 under the header
+// "do not promote to findings/ until fixed (regress runs in-process)".
+// They were SIGABRTs — `thread 'tokio-rt-worker' has overflowed its
+// stack, fatal runtime error` — and the whole backlog was audited to
+// zero on 2026-08-15: every one is now either bounded here or a
+// legally-spinning tail loop (design/atomic_recursion.md).
+//
+// The invariant none of the depth-trip pins stated on its own: an
+// UNBOUNDED NON-TAIL recursion must settle on the call-depth limit's
+// whole-derivation bottom, never grow the native stack until the
+// process aborts. `n - i64:0` never decreases, and `n + f(..)` keeps
+// the call live, so this recurses forever at depth; both engines now
+// produce an empty trace (bottom) in milliseconds.
+//
+// A regression here does NOT report as a normal failure — regress runs
+// subjects in-process, so a return to stack growth ABORTS the gate
+// run. That is loud, if ugly, and was the original reason these sat
+// outside the corpus; they are safe to include now that the bound
+// holds.
+{let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n + f(n - i64:0)}; f(i64:10)}
