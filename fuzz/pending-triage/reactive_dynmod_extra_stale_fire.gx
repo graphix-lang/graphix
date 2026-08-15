@@ -1,0 +1,26 @@
+// PARKED 2026-08-15 (soak aug14f, hz0 reactive lane). OPEN.
+// NOT caused by the select-guard fix (c9be5274): verified DIVERGENCE on
+// a pre-fix binary too. Deterministic, 3/3.
+//
+// The JIT emits an EXTRA event at output 0 in every epoch after the
+// first, carrying the value the interp emitted at output 1 in the
+// PREVIOUS epoch:
+//   interp: ep0 [(0,-49),(1,-35)]  ep1 [(1,-14)]           ep2 [(1,14)]
+//   jit:    ep0 [(0,-49),(1,-35)]  ep1 [(0,-35),(1,-14)]   ep2 [(0,-14),(1,14)]
+//
+// Same GENUS as reactive_guard_arm_epoch3.gx (the ryouko aug14e class):
+// the JIT re-fires a stale value where the interp is quiet. Suspect the
+// kernel stale-ride, as in the aug13i silent-ride family.
+//
+// Common thread with dynmod_sandbox_missing_fires.gx: BOTH new aug14f
+// classes carry a `mod .. dynamic`, and here the module's SOURCE is
+// selected by `v0[in0 % i64:2]`, so the module reloads as in0 advances.
+// Worth checking whether dynamic-module reload is the actual trigger
+// before chasing the ride machinery.
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(-49)), (1, I64(-35))], capped: false }, Epoch { events: [(1, I64(-14))], capped: false }, Epoch { events: [(1, I64(14))], capped: false }], stdout: [] })
+// jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(-49)), (1, I64(-35))], capped: false }, Epoch { events: [(0, I64(-35)), (1, I64(-14))], capped: false }, Epoch { events: [(0, I64(-14)), (1, I64(14))], capped: false }], stdout: [] })
+// mutant: // schedule-v1: cap=96 events=768; in0=i64:12; in0=i64:100\n{ let v0 = [r'let f = |v0: i64| -> i64 i64:1; let q = f(i64:4) * i64:5; let z = array::len([q, q + i64:1, f(i64:4 + i64:2)]); let w = q + z', r'let f = |v1: i64| -> i64 v1; let q = f(i64:2) * i64:5; let z = array::len([q, q + i64:1, f(i64:2 + i64:2)]); let w = q + z']; let v1 = mod dr0 dynamic { sandbox whitelist [core];          sig { val f: fn(x: i64) -> i64 };          source v0[in0 % i64:2]$ }; let v2 = select v1 { error as _ => i64:-1, null as _ =>          dr0::f(cast<i64>(i8:1)$) }; let v13: i64 = { let rec v3 = |v4: i64, v6: i64| -> i64 select v4 { v5 if v5 <= i64:0 => select (i64:0 +? v5) { error as _ => in0, i64 as n => n }, v5 => v3(v5 - i64:1, v6 + v5) }; let v7 = v3(i64:1, i64:0); let v10 = |v8, v9| ((v8 + v9) - v8); let v11 = v10(z32:0, z32:-1000); let v12 = v10(u8:0, u8:2); select v7 { v2 => i64:7 } }; let v14 = ""; v14 <- in0 ~ "[v14]x[in0]"; let v15 = str::len(v14); ((v15 - v13) * v13) }
+// minimized:
+// schedule-v1: cap=96 events=768; in0=i64:0
+{let v0 = ["let f = |v0: i64| -> i64 i64:1; let q = f(i64:4) * i64:5; let z = array::len(\[q, q + i64:1, f(i64:4 + i64:2)\]); let w = q + z", "let f = |v1: i64| -> i64 v1; let q = f(i64:2) * i64:5; let z = array::len(\[q, q + i64:1, f(i64:2 + i64:2)\]); let w = q + z"]; let v1 = mod dr0 dynamic { sandbox whitelist [ core ]; sig { val f: fn(x: i64) -> i64 }; source v0[in0 % i64:2]$ }; let v2 = select v1 {error as _ => i64:-1, null as _ => dr0::f(cast<i64>(i8:1)$)}; let v13: i64 = {let rec v3 = |v4: i64, v6: i64| -> i64 select v4 {v5 if v5 <= i64:0 => select (i64:0 +? v5) {error as _ => in0, i64 as n => n}, v5 => v3(v5 - i64:1, v6 + v5)}; let v7 = v3(i64:1, i64:0); let v10 = |v8, v9| ((v8 + v9) - v8); let v11 = v10(z32:0, z32:-1000); let v12 = v10(u8:0, u8:2); select v7 {v2 => i64:7}}; let v14 = ""; v14 <- in0 ~ "[v14]x[in0]"; let v15 = str::len(v14); ((v15 - v13) * v13)}
