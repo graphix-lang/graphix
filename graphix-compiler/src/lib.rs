@@ -468,6 +468,17 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
     pub init: bool,
+    /// Set alongside `init` when the init view being forced is a select
+    /// arm's WAKE rather than a birth. The wake must look like an init
+    /// to everything whose init handling is its own machinery (fused
+    /// kernels force their input view, call sites prime their first
+    /// dispatch, refs read standing entries as Fired), but a resumed arm
+    /// is not a new one: a `<-` target that already holds a value keeps
+    /// it instead of being reseeded by its own re-fired initializer,
+    /// because sleep is PAUSE (Eric 2026-07-31). Without this a
+    /// `{let s = i64:0; s <- …; s}` arm reset to its seed on every
+    /// re-selection (fuzz/pending-triage/arm_fnvalue_connect_stale.gx).
+    pub wake_init: bool,
     /// The INNERMOST overlay: same-cycle transient deliveries (select
     /// arm binds, QopDeliver, DynCall side channels, call-site formal
     /// publishes) at depth 0, or the current evaluation frame's
@@ -489,6 +500,7 @@ impl<E: UserEvent> Event<E> {
     pub fn new(user: E) -> Self {
         Event {
             init: false,
+            wake_init: false,
             variables: IntMap::default(),
             frames: Vec::new(),
             custom: IntMap::default(),
@@ -497,8 +509,9 @@ impl<E: UserEvent> Event<E> {
     }
 
     pub fn clear(&mut self) {
-        let Self { init, variables, frames, custom, user } = self;
+        let Self { init, wake_init, variables, frames, custom, user } = self;
         *init = false;
+        *wake_init = false;
         variables.clear();
         debug_assert!(frames.is_empty(), "unbalanced enter_frame at cycle end");
         frames.clear();
@@ -1677,6 +1690,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// fused (a `<-` target rebinds at runtime, so a static splice
     /// into native code would dispatch into stale state).
     pub unstable_bindings: IntSet<BindId>,
+    /// The same `<-` targets, but DURABLE: `unstable_bindings` is
+    /// cleared at the head of every compile batch and repopulated as
+    /// that batch's Connects compile, so it only ever names the current
+    /// batch. `Bind::update` needs the question answered for the whole
+    /// program lifetime — a select arm's wake must not reseed a `<-`
+    /// target that already holds a value (sleep is PAUSE) — and a REPL
+    /// or dynamic-module batch compiled afterwards would otherwise wipe
+    /// the answer for every earlier arm. Populated beside
+    /// `unstable_bindings` by [`node::Connect::compile`]; `Bind::delete`
+    /// removes its ids, so growth is bounded exactly as
+    /// `bind_to_lambda`'s is.
+    pub connect_targets: IntSet<BindId>,
     /// `(scope, name)` → builtin metadata for bindings whose value
     /// is a builtin lambda (i.e. `let foo = |...| 'builtin_name`).
     /// Keyed by name+scope rather than `BindId` because sig and
@@ -1860,6 +1885,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambda_defs: IntMap::default(),
             bind_to_lambda: IntMap::default(),
             unstable_bindings: nohash::IntSet::default(),
+            connect_targets: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
             def_gate_params: nohash::IntSet::default(),

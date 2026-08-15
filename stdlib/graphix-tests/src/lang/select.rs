@@ -1062,14 +1062,16 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Arm-wake re-seed (soak jul08g fuzz divergence 6): the node-walk
-// updates a newly-taken arm with `event.init = true` (node/select.rs),
-// so an arm-local lifted connect target RE-SEEDS on every re-entry —
-// sel alternates arms and each arm-2 take emits the SEED 10, never the
-// connect-written 11 the feeder retains from the previous take. The
-// kernel reproduces the init view from the select's selection-memory
-// state word (arm bodies emit under an effective init).
-const SELECT_ARM_LOCAL_RESEED: &str = r#"
+// Arm-local `<-` target PERSISTS across the arm's sleep (2026-08-14,
+// supersedes the jul08g re-seed this fixture used to pin): a wake
+// RESUMES an arm, it does not create one, so the seed is a birth value
+// and the connect-written 11 survives the take where the arm slept.
+// Sleep is PAUSE (Eric 2026-07-31); `findings/arm-local-bind-aug2026/`
+// carries the three faces of the seam. Both engines changed — the
+// node-walk stopped re-executing the arm's binds under the wake view,
+// and the kernel's lifted seed-select stopped preferring the seed when
+// the init override is active (fusion/emit/flow.rs).
+const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x % 2;
@@ -1081,20 +1083,20 @@ const SELECT_ARM_LOCAL_RESEED: &str = r#"
 }
 "#;
 
-run!(select_arm_local_reseed, SELECT_ARM_LOCAL_RESEED, |v: Result<&Value>| {
+run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
             a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![10, 0, 10, 0]
+                == vec![10, 0, 11, 0]
         }
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Same shape, connect RHS recomputed by a fold on each wake — the
-// re-entry emits the seed 0 first (the fold's write lands a cycle
-// later, while the arm is asleep again, so 6 never surfaces).
-const SELECT_ARM_LOCAL_RESEED_FOLD: &str = r#"
+// Same shape, connect RHS computed by a fold: the write lands while
+// the arm is asleep, and the re-entry now SEES it (6) instead of the
+// seed — the persistence rule above.
+const SELECT_ARM_LOCAL_PERSISTS_FOLD: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
   let m = x % 2;
@@ -1106,11 +1108,11 @@ const SELECT_ARM_LOCAL_RESEED_FOLD: &str = r#"
 }
 "#;
 
-run!(select_arm_local_reseed_fold, SELECT_ARM_LOCAL_RESEED_FOLD, |v: Result<&Value>| {
+run!(select_arm_local_persists_fold, SELECT_ARM_LOCAL_PERSISTS_FOLD, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
             a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                == vec![0, 100, 0, 100]
+                == vec![0, 100, 6, 100]
         }
         _ => false,
     }

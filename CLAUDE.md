@@ -463,6 +463,13 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   this value print in this form" — found the union-member selection
   picking the never() arm's ⊥-settled cell over the concrete member
   (jul19f divergence_000000, the interp-vs-jit tuple-render split).
+- `GXDBG_LETBIND=1` — print every `let` binding's publication decision
+  (`LETBIND`: spec pos, production tag, whether the binding has ever
+  published, frame depth, wake-hold, publishing y/n). The tool for
+  "does this binding's value ever reach the store" — showed the
+  arm-local that never published inside a recursion frame
+  (`findings/arm-local-bind-aug2026/`, 2026-08-14). Pairs with
+  `GXDBG_REF=1`, which shows the resulting read MISS.
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
   spec, BindId, unstable/b2l/cached hit), the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export
@@ -810,7 +817,23 @@ enforces it):**
   (replay words, owned value pairs, per-slot reset chains) now survive
   sleep too, and only `reset_replay` (frames) and `Drop` clear them
   (`findings/sleep-preserves-caches-jul2026/03`, the kernel face of
-  the July pair). The documented arm-rewake RESTART
+  the July pair). **A select arm's own `let` bindings obey the same
+  rule** (`findings/arm-local-bind-aug2026/`, 2026-08-14): an arm's
+  WAKE resumes the arm, it does not create one, so a binding that is a
+  `<-` target and already holds a value is NOT reseeded by its own
+  re-fired initializer — `Event::wake_init` flags the wake so the
+  init view stays real for everything whose init handling is its own
+  machinery (fused kernels marshal their inputs off it, call sites
+  prime, refs read standing entries as Fired). The opposite face: a
+  PRODUCER must materialize its value channel on its FIRST
+  production whatever the tag — `Bind` publishes a quiet first
+  production, and `CachedArgs` runs `eval` once when its result slot is
+  still the phantom — because inside a frame `Constant` delivers STALE
+  by design, so a never-yet-computed subtree fed only by constants has
+  no triggering input and would produce nothing at all. These are VALUE
+  rules: firing a wake's constants instead re-emits provably-unchanged
+  outputs (`findings/tail-jump-honest-tags-jul2026/00`). The
+  documented arm-rewake RESTART
   semantics (`once`/`take`/`skip`/`uniq`/`hold`/`count` clear on
   sleep) are unchanged; since the P7 Sync flip these builtins DO fuse
   at region root, and the `SLEEP_RESTARTS` interior-sleep gate

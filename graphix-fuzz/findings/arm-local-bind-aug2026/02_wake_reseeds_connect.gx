@@ -1,4 +1,5 @@
-// bisect: divergence — again the INTERP looks like the wrong one.
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// The INTERP was the wrong one here too.
 // Found by soak aug14c (hz0 fuzz divergence_000002, katana fuzz
 // divergence_000000 — two boxes, same shape), 2026-08-14, campaign
 // binary 0b7fd7ef; survives the sleep-ride fix (0ba39657). Fuzzer-
@@ -47,11 +48,13 @@
 // the always-selected control shows both engines agree the seed applies
 // once. The interp's reseed-on-wake is the bug.
 //
-// RECOMMENDED FIX: make the arm-wake init view a READ view (R2:
-// standing store entries read as Fired) rather than a re-EXECUTION of
-// the arm's binds — concretely, a connect-target (lifted) bind's seed
-// applies only at genuine instance/frame init, mirroring the kernel's
-// lift. Same seam as [rec_arm_let_missing_fire.gx] from the opposite
+// FIX: the wake still forces a REAL init view (kernels force their
+// input view off it, call sites prime, refs read standing entries as
+// Fired) but now flags it as a WAKE — `Event::wake_init` — and a bind
+// that is a `<-` target and already holds a value skips its own
+// initializer under that flag. Making the wake a read-only view instead
+// was tried first and broke the KERNEL side of this very witness: a
+// fused arm kernel needs the forced init to marshal its inputs. Same seam as [rec_arm_let_missing_fire.gx] from the opposite
 // side: there the re-execution CANNOT happen (frame) and a local never
 // materializes; here it happens when it should not and clobbers state.
 //

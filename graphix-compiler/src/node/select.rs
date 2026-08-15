@@ -385,10 +385,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         Tag::FIRED
                     };
                     bind!(i, wake_tag);
-                    let init = event.init;
+                    // The init view is REAL (kernels force their input
+                    // view, call sites prime, refs read standing entries
+                    // as Fired), but flagged as a WAKE: the arm is
+                    // RESUMED, not created, so a `<-` target that
+                    // already holds a value is not reseeded by its own
+                    // initializer — sleep is PAUSE. A first-ever
+                    // selection needs no special case: nothing has
+                    // published yet, so the seed applies normally.
+                    let (init, wake) = (event.init, event.wake_init);
                     event.init = true;
+                    event.wake_init = true;
                     let (t, v) = arm_prod!(i);
                     event.init = init;
+                    event.wake_init = wake;
                     // The wake emission is the SAME organic rule: a
                     // genuine wake always has `own_fired` set (the
                     // depth-0 flow driver only re-matches on a

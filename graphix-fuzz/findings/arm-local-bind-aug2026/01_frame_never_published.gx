@@ -1,4 +1,5 @@
-// bisect: divergence — and here the INTERP is the wrong one.
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// The INTERP was the wrong one here.
 // Found by soak aug14c (hz0 fuzz divergence_000000/000001, katana-class
 // sibling), 2026-08-14, campaign binary 0b7fd7ef; survives the
 // sleep-ride fix (0ba39657). Reduced by the fuzzer to 220 bytes, then
@@ -43,11 +44,12 @@
 //   i64:7 / (3+4)        interp: 7 7 2 2    jit: same      <-- no bind
 //   non-recursive        agree in every shape (genuine init reaches it)
 //
-// RECOMMENDED FIX: `Bind::update` materializes the value channel on its
-// FIRST value-bearing production regardless of tag (publish with the
-// honest tag, no notify) — dense R3's "producers write on genuine
-// production, any tag". Publishing EVERY stale production would also
-// work and is more uniform, but costs a store write per bind per cycle.
+// FIX: `Bind::update` materializes the value channel on its FIRST
+// value-bearing production whatever the tag (honest tag, no notify) —
+// dense R3's "producers write on genuine production, any tag". After
+// that the store serves readers as the old comment assumed. Publishing
+// EVERY quiet production would also work and is more uniform, but costs
+// a store write per bind per cycle for no gain.
 //
 // Attribution: PRE-EXISTING, not today's work. On ac432b6a (this
 // morning's tree, pre-organic-firing) the same program already

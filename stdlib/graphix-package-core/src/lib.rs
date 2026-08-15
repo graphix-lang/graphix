@@ -500,10 +500,28 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
                 // resident stays the phantom.
                 None => self.resident.ride(),
             },
-            Some(_) => {
+            Some(_) if !self.resident.tag().is_bottom() => {
                 // stale refresh: surface the result slot on the value
                 // channel — eval does NOT re-run
                 self.resident.retag(Tag::STALE)
+            }
+            Some(_) => {
+                // ...unless there is NOTHING to surface. A result slot
+                // still holding its phantom has never been filled, and
+                // "re-surface the last result" is vacuous: the call
+                // produces no value at all, so a caller that needs one
+                // (a select arm whose body is `math::to_radians(f64:45.)`
+                // — every argument a constant, hence never a triggering
+                // delivery inside a frame) computes nothing at all,
+                // while the kernel recomputes per invocation and has
+                // the value. Establish the value channel by running
+                // `eval` ONCE; the result is STALE, so this is a value
+                // rule and not a firing one
+                // (`findings/arm-local-bind-aug2026/03`).
+                match self.t.eval(ctx, &self.cached) {
+                    Some(v) => self.resident.set(TagValue::stale(v)),
+                    None => self.resident.ride(),
+                }
             }
         }
     }

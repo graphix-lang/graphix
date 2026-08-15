@@ -650,6 +650,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
             // that reads only constants computes (quietly) instead of
             // bottoming when the frame discipline has cleared its
             // consumers' operand caches.
+            // ORDINARY framed passes are per-invocation re-derivation:
+            // constants stay on the value channel (the gtailr epoch-2
+            // gate). A select arm's wake does NOT change that — firing
+            // a guard's constant under the wake manufactures freshness
+            // and re-emits provably-unchanged outputs
+            // (`findings/tail-jump-honest-tags-jul2026/00`). What a
+            // fresh subtree needs is a VALUE, not a fire, and that is
+            // the producers' own first-production rule (Bind, and the
+            // builtin arg seam).
             if ctx.frame_init {
                 self.resident.set(TagValue::fired(self.value.clone()))
             } else {
@@ -1118,6 +1127,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         // by BindId so an inner shadow of a Connect-target name stays
         // stable (only the specific BindId being written is unstable).
         ctx.unstable_bindings.insert(id);
+        ctx.connect_targets.insert(id);
         if ctx.env.lsp_mode {
             ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,

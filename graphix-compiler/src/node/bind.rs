@@ -24,6 +24,10 @@ pub struct Bind<R: Rt, E: UserEvent> {
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
     pub(crate) node: Node<R, E>,
+    /// Has this binding ever put a value on the value channel? Until it
+    /// has, there is no store entry for a reader to fall through to, so
+    /// even a QUIET production must be published — see `update`.
+    published: bool,
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
@@ -156,7 +160,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 }
             }
         }
-        Ok(Node::new(Self { spec, typ, pattern, node }))
+        Ok(Node::new(Self { spec, typ, pattern, node, published: false }))
     }
 
     /// The LambdaDef `Value` this binding holds, when its value node is
@@ -188,14 +192,50 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
-        // Publish TRIGGERING productions only — a stale RHS is the
-        // value channel, already served by the bound names' store
-        // entries. A fresh bottom poisons each bound name AND persists
-        // in the store (ruled delta 7: a fresh reader must see the
-        // standing bottom, not resurrect the pre-bottom value; the
-        // store keeps at-rest bottoms, `cached` never sees the
-        // placeholder).
-        if tag.triggers() {
+        // Publish TRIGGERING productions — a stale RHS is the value
+        // channel, already served by the bound names' store entries. A
+        // fresh bottom poisons each bound name AND persists in the
+        // store (ruled delta 7: a fresh reader must see the standing
+        // bottom, not resurrect the pre-bottom value; the store keeps
+        // at-rest bottoms, `cached` never sees the placeholder).
+        //
+        // "already served" holds only once there IS an entry, so the
+        // FIRST value-bearing production publishes whatever its tag:
+        // a binding whose RHS is constant-only, inside a select arm
+        // that was asleep for the one genuine-init dispatch, never
+        // fires again (in a frame `Constant` delivers STALE by design,
+        // node/mod.rs — frame depth is checked before `event.init`).
+        // Without this its readers MISS the store outright and ride a
+        // phantom bottom, so the arm computes nothing at all while the
+        // kernel, which recomputes constants per invocation, produces
+        // the value (fuzz/pending-triage/rec_arm_let_missing_fire.gx).
+        // The tag stays honest, so a quiet publish is value channel
+        // only and wakes nobody.
+        // A select arm's WAKE resumes the arm, it does not create one:
+        // re-running the initializer of a binding that is a `<-` target
+        // and already holds a value would throw away what the connect
+        // accumulated while the arm slept, and sleep is PAUSE (Eric
+        // 2026-07-31). Only `<-` targets are held back — every other
+        // binding's initializer is idempotent w.r.t. the value channel,
+        // and the wake's init view stays intact for everything else
+        // (kernels, call-site priming, fresh reads).
+        let wake_hold = event.wake_init && self.published && {
+            let mut target = false;
+            self.pattern.ids(&mut |id| {
+                target = target || ctx.connect_targets.contains(&id);
+            });
+            target
+        };
+        if crate::dbgenv::gxdbg_letbind() {
+            eprintln!(
+                "LETBIND {} tag={tag:?} published={} fd={} wake_hold={wake_hold} publishing={}",
+                self.spec.pos,
+                self.published,
+                ctx.frame_depth,
+                !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom()))
+            );
+        }
+        if !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom())) {
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
                     event
@@ -208,12 +248,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                     ctx.rt.notify_set(id);
                 });
             } else {
+                let quiet = !tag.triggers();
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
                     event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     ctx.rt.store_insert(id, TagValue::fired(v));
-                    ctx.rt.notify_set(id);
-                })
+                    if !quiet {
+                        ctx.rt.notify_set(id);
+                    }
+                });
+                self.published = true;
             }
         }
         TagValue::phantom_ref()
@@ -232,6 +276,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // long-lived runtime (LSP/REPL) accumulates dead LambdaDefs.
         self.pattern.ids(&mut |id| {
             ctx.bind_to_lambda.remove(&id);
+            ctx.connect_targets.remove(&id);
         });
         self.node.delete(ctx);
         self.pattern.delete(ctx);

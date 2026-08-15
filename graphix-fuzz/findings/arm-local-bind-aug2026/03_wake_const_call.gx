@@ -1,0 +1,31 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// The INTERP was the wrong one, as in 01/02.
+// Found by soak aug14d (hz1 fuzz divergence_000002, 2026-08-14) on the
+// tree that already carried the 01 fix — the THIRD face of the same
+// seam, and the one that proved 01's fix was too narrow.
+//
+// Pre-fix: interp emitted only the `_` arm's i64:2 productions; the jit
+// emitted the guard-true arm's radians value as well.
+//
+// 01 gave a BINDING its value channel, but this arm has no binding:
+// its body is a call whose arguments are all CONSTANTS. Inside a frame
+// `Constant` delivers STALE by design (node/mod.rs — frame depth is
+// checked before `event.init`, the gtailr epoch-2 gate), so no argument
+// ever triggers, and the builtin wrapper's "stale refresh: re-surface
+// the last result" path had NOTHING to surface — its result slot was
+// still the phantom. The arm therefore produced no value at all, while
+// the kernel recomputes per invocation and had one.
+//
+// FIX: `CachedArgs::update` runs `eval` ONCE when its result slot is
+// still empty, even on a quiet refresh, and tags the result STALE — a
+// VALUE rule, not a firing rule (design/dense_delivery.md R1: a node
+// with no resident must compute; the skip-if-quiet path is only valid
+// once there is something to skip to).
+//
+// REJECTED ALTERNATIVE, kept as a warning: firing the arm's constants
+// under the wake instead. It fixes this witness and breaks
+// `tail-jump-honest-tags-jul2026/00` — a GUARD's constant (`v7 <=
+// i64:0`) then fires every wake, the select fires organically off it,
+// and a provably-unchanged output re-emits. A fresh subtree needs a
+// VALUE, not a fire.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => math::to_radians(f64:45.), _ => i64:2}, _ => f(n - i64:1)}; f(i64:3)}

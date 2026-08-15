@@ -496,21 +496,20 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             let pdisc = cx.b.use_var(vv.disc);
             let ppay = cx.b.use_var(vv.payload);
             let valid = is_untainted(cx.b, pdisc);
-            // Inside a select ARM body (init-override active), the
-            // node-walk RE-FIRES this bind's seed on every arm init
-            // view (wake/entry — node/select.rs sets `event.init`),
-            // preferring it over the feeder's retained value; the
-            // connect then rebuilds from the seed (soak jul08g fuzz
-            // divergence 6). Outside arms the feeder wins whenever it
-            // has ever fired, exactly as before (at kernel init the
-            // feeder is tainted, so the seed wins there too).
-            let use_feeder = match cx.ctx.init_override.get() {
-                None => valid,
-                Some(eff) => {
-                    let quiet = cx.b.ins().icmp_imm(IntCC::Equal, eff, 0);
-                    cx.b.ins().band(valid, quiet)
-                }
-            };
+            // The feeder wins whenever it has ever fired — the seed is a
+            // BIRTH value, everywhere. At kernel init the feeder is
+            // tainted, so the seed wins there.
+            //
+            // This used to special-case a select ARM body (init-override
+            // active), re-firing the seed on every arm wake to mirror
+            // the node-walk of the time (soak jul08g fuzz divergence 6).
+            // The node-walk stopped doing that on 2026-08-14: a wake
+            // RESUMES an arm, it does not create one, so a `<-` target
+            // keeps what it accumulated while the arm slept — sleep is
+            // PAUSE (`findings/arm-local-bind-aug2026/`). The wake-init
+            // override still drives interior CACHE catch-up (DynCall
+            // sites, callee blocks); it just no longer reseeds.
+            let use_feeder = valid;
             let frozen =
                 kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
             let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
