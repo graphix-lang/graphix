@@ -1,4 +1,7 @@
 // PARKED 2026-08-15 (soak aug14f, hz0 generate lane). OPEN.
+// NAME CORRECTED 2026-08-15: filed as dynmod_sandbox_* under a
+// dynamic-module hypothesis that is now REFUTED (see
+// refwrite_guard_extra_fire.gx). Not yet minimized — do that first.
 // NOT caused by the select-guard fix (c9be5274): verified DIVERGENCE on
 // a pre-fix binary too. Deterministic, 3/3.
 //

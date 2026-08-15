@@ -1,4 +1,10 @@
 // PARKED 2026-08-15 (soak aug14f, hz0 reactive lane). OPEN.
+// NAME CORRECTED 2026-08-15: filed as *_dynmod_* under a
+// dynamic-module hypothesis that is now REFUTED — a minimal dynamic
+// module AGREES, and the sibling witness minimized to a program with
+// no dynamic module at all (see refwrite_guard_extra_fire.gx). The
+// dynamic module here is probably incidental too; minimize before
+// theorizing.
 // NOT caused by the select-guard fix (c9be5274): verified DIVERGENCE on
 // a pre-fix binary too. Deterministic, 3/3.
 //

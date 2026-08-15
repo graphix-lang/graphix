@@ -1,0 +1,35 @@
+// PARKED 2026-08-15 (soak aug14f, hz0 generate lane). OPEN.
+// NOT caused by the select-guard fix (c9be5274) — the sibling findings
+// from this lane were verified DIVERGENT on a pre-fix binary; this one
+// minimized out of the same lane. Deterministic 3/3.
+//
+//   interp: [0:("graphix",[..],7)  2:true]
+//   jit:    [0:("graphix",[..],7)  2:true  3:true]   <- extra fire
+//
+// Minimized 15888 -> ~700 bytes (3028 oracle checks). The original
+// carried a sandboxed `mod .. dynamic` and I had it filed under a
+// dynamic-module hypothesis; the reduction has NO dynamic module, and
+// a minimal dynamic-module program AGREES in both engines. That thread
+// is REFUTED — do not chase it.
+//
+// What survives reduction is a REF WRITE flipping the select's
+// scrutinee across cycles, with the guard read through a SECOND ref:
+//     let v41 = v39(i64:1);            // u8:100
+//     let v60 = &v41;  *v60 <- u8:1;   // flips the scrutinee
+//     let v65 = *v60;
+//     let v79 = &v17;
+//     select v65 { u8:100 if *v79 => v13, _ => true }
+//
+// That is the `refwrite-guard-flip-aug2026` family (a cross-module
+// ref-write flipping a select guard). That class was triaged AGREE on
+// the dense engines at P8 and pinned as a regression witness; its pin
+// still passes (regress 350/0), so this is an UNCOVERED MEMBER of the
+// family rather than a regression of it. Start there, and check
+// whether the pin's coverage is narrower than the family.
+//
+// Sibling symptom, different ingredients: reactive_extra_stale_fire.gx
+// and reactive_guard_arm_epoch3.gx are also "jit emits an extra event
+// carrying a prior value", but neither uses refs — so the shared
+// symptom may not mean a shared cause. Establish that before merging
+// the three.
+{let v16 = |v15: string| -> u8 u8:2; let v13: (string, Array<{y: bool}>, i64) = ("graphix", [{ y: true }, { y: true }], i64:7); let v8 = |v34: bool, v35: i64, v27: f64| -> i64 map::len(map::filter({"k1" => null, "k2" => null}, |kv| str::len(kv.0) > i64:1)); let v39 = |v40: i64| u8:100; let v41 = v39(i64:1); let v42 = true; let v60 = &v41; *v60 <- u8:1; let v65 = *v60; let v17 = select v8(v42, i64:0, f64:0.) {v27 if (i32:-1 > i32:42) => v65 != v16("xyz"), _ => v42}; let v79 = &v17; select v65 {u8:100 if *v79 => v13, _ => true}}
