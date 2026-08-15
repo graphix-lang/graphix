@@ -1,0 +1,42 @@
+// PARKED 2026-08-15 (soak aug14f, katana generate lane). OPEN.
+// Deterministic 3/3. Minimized 4134 -> 274 bytes (526 checks), then
+// hand-reduced to the one-liner below with a boundary matrix.
+//
+//   interp: [0:i64:9         2:i64:0]
+//   jit:    [0:i64:9  1:i64:9  2:i64:0]    <- extra fire, STALE value
+//
+// The JIT re-delivers the PRE-WRITE value (9) on the cycle while the
+// ref write is propagating. Same SYMPTOM as refwrite_guard_extra_fire,
+// reactive_extra_stale_fire and reactive_guard_arm_epoch3 (jit emits an
+// extra event carrying a prior value) but a DIFFERENT trigger — see the
+// matrix. Do not assume one cause for the four until one is shown.
+//
+// INGREDIENT MATRIX (each row differs from the diverging case by ONE
+// ingredient; all four ran on the same binary, all deterministic):
+//
+//   ref in a TUPLE, deref .0, inside a RECURSIVE fn ......... DIVERGE
+//   ...same but a non-recursive fn .......................... agree
+//   ...same but no fn at all (deref at top level) ........... agree
+//   ...same but the ref is in a STRUCT   (*t.a) ............. agree
+//   ...same but the ref is in an ARRAY   (*t[0]$) ........... agree
+//   ref used DIRECTLY (no composite) inside the recursive fn  agree
+//   bare `let x; let r = &x; *r <- v; select *r` ............ agree
+//
+// So it needs BOTH a tuple-carried ref AND recursion; neither alone
+// reproduces, and the outer select is NOT required (this witness has
+// none). The struct/array rows are the surprising ones — the same ref
+// reached through a different composite agrees.
+//
+// The obvious deflation — "struct/array just de-fuse, so they never
+// exercise the path" — is RULED OUT: all three composite rows report
+// identical fusion (attempted=11 fused=2), so struct-of-ref and
+// array-of-ref fuse just as much as tuple-of-ref and still agree. The
+// tuple path is specifically wrong, not merely the only one compiled.
+// First question is therefore how a tuple-carried ref is
+// frozen/marshalled across the kernel boundary vs a struct-carried one,
+// under recursion (which is what adds the extra dispatch the stale
+// value rides in on).
+//
+// (The array row uses `*t[0]$` — the `$` changes the node shape, so
+// that row is weaker evidence than the struct row.)
+{let x = i64:9; let r = &x; *r <- i64:0; let t = (r, x); let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => *t.0, m => f(i64:0)}; f(i64:10)}
