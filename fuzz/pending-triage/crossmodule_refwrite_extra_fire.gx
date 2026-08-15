@@ -1,0 +1,31 @@
+// PARKED 2026-08-15 (soak aug14f, hz1 generate lane). OPEN.
+// Deterministic 2/2. Minimized 3851 -> 418 bytes (982 checks).
+//
+//   interp: [0:i64:-1000]
+//   jit:    [0:i64:-1000  1:i64:-1000]    <- extra fire, same value
+//
+// A ref-write to ANOTHER MODULE's binding (`&m2::k2` then `*v17 <- true`)
+// while a RECURSIVE function calls a callee in that module which reads
+// the written binding (`m2::f0` reads `k2`). The fold at the end just
+// surfaces the recursion's result.
+//
+// THIRD distinct ref trigger of this campaign — see ../pending-triage
+// README-style note in refintuple_recursion_extra_fire.gx for the other
+// two. It is NOT either of them: no ref in a tuple, and no guard reads
+// through a ref.
+//
+// Related existing classes worth reading first, both about cross-module
+// ref-writes: findings/refwrite-guard-flip-aug2026 (a cross-module
+// ref-write flipping a select guard — triaged AGREE on the dense
+// engines at P8) and findings/module-state-callee-reactivity-aug2026
+// (whether a cross-module callee's read of module state is
+// quiet-in-steady-state or fresh-at-instantiation; resolved by Eric's
+// Q3 ruling as FRESH-AT-INSTANTIATION). This witness sits exactly on
+// that seam: the callee reads module state that a ref-write is changing
+// underneath it, from inside a recursion.
+{let rec v12 = |v13: i64, v15: i64| -> i64 select v13 {v14 if v14 <= i64:0 => m2::f0(u8:255), v14 => v12(i64:0, v15)}; let v16 = v12(i64:8, i64:0); let v17 = &m2::k2; *v17 <- true; array::fold([true, true, true], i64:0, |v19, v20| v16)}
+// file-v1: m1.gx
+let f2 = |v12: bool| -> i64 cast<i64>(z32:-1000)$
+// file-v1: m2.gx
+let k2: bool = true;
+let f0 = |v14: u8| -> i64 m1::f2(k2)
