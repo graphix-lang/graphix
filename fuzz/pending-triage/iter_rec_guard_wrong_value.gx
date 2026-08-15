@@ -1,17 +1,21 @@
 // PARKED 2026-08-15 (soak aug14f, ryouko fuzz divergence_000000).
-// OPEN — survives the kernel-result bottom-persist fix. Deterministic.
+// OPEN — survives both aug14f fixes. Deterministic.
+// ADJUDICATED same day: the INTERP is wrong (polarity corrected — an
+// earlier header read the jit's extra events as suspect).
 //
 //   interp: [0:i64:2         3:i64:2 4:i64:2]
 //   jit:    [0:i64:2 1:false 2:false 3:i64:2 4:i64:2]
 //
-// Not just pacing: on the two array::iter deliveries where m == 0
-// selects the `is_err(i64:3)` arm, the interp emits NOTHING while the
-// jit emits that arm's VALUE (false — a bool crossing an [i64,bool]
-// union result). Sibling with the same ingredients minus the union
-// (ryouko aug14f fuzz divergence_000001, still on box + scratchpad):
-// `count(f(m))` observes interp 3 fires vs jit 4 — pure extra-fire.
-// Shared shape: array::iter driving multi-delivery, a rec fn whose
-// inner select's guard reads a derived binding (m == 0), the guard
-// flipping across deliveries. Possibly the guard-read twin of
-// rec_const_args_stale_refire.gx — matrix before assuming.
+// The deciding receipt: the NON-RECURSIVE twin (`select i64:0 {i64:0
+// if m == i64:0 => is_err(i64:3), _ => i64:2}` fed by the same
+// array::iter/m) AGREES on both engines with EXACTLY the jit's trace
+// — on the two deliveries where the guard flips true, the newly
+// selected arm's value (false) is emitted, per organic firing (a
+// guard production firing is an own-fire). Wrapping the same terminal
+// select in `rec f = |n| select n {0 => <terminal>, _ => f(0)}`
+// makes the interp DROP those two fires. Per the recursion ruling
+// (recursion fires like the hand-inlined chain) the interp is the
+// deviant: a guard-flip re-selection inside a recursion frame fails
+// to emit. Interp-side fix needed; sibling witness via `count`
+// (ryouko aug14f fuzz divergence_000001) counts 3 vs the correct 4.
 {let x = array::iter([i64:1, i64:2, i64:3, i64:9223372036854775807]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => is_err(i64:3), _ => i64:2}, _ => f(i64:0)}; f(i64:3)}

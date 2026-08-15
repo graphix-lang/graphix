@@ -1,16 +1,23 @@
 // PARKED 2026-08-15 (soak aug14f, aieka reactive divergence_000000).
-// OPEN — survives the kernel-result bottom-persist fix, and it is the
-// round's one MISSING-fire survivor (jit emits less, not more).
+// OPEN — survives both aug14f fixes. Deterministic. ROOT-CAUSED to
+// mechanism level same day; the JIT is wrong.
 //
-//   interp: []; [0:3 1:4]; [1:5]
-//   jit:    []; [0:3 1:4]; []      <- missing fire at ep2
+//   interp: []; [0:101 1:102]; [1:103]
+//   jit:    []; [0:101 1:102]; []      <- missing fire at ep2
+//   (trace of the reduced form below; the original window shape
+//    diverges identically — array::window is IRRELEVANT, probed out)
 //
-// array::window whose value argument bottoms (100 / (in0 % 3) with
-// in0=0) feeding array::len, beside a `<-` push accumulator and a
-// fold. On the epoch where the window's value arg bottoms, the interp
-// still fires the result off the accumulator's growth; the jit goes
-// silent. Not yet matrixed — do that first. Check against
-// generated_missing_fires.gx (also missing fires, also a fold) before
-// treating as a separate class.
+// Reduced shape: a fold whose INIT input holds a STANDING bottom
+// (100 / (in0 % 3) with in0=0, computed fresh at ep2 cycle 0, standing
+// by cycle 1) while its SOURCE fires (the push-connect grew v1). The
+// interp follows the aug13k fold-standing-init ruling (4031ca15: init
+// poison gates on TRIGGERING delivery — a standing bottom init does
+// not re-poison) and serves the retained acc chain, firing off the
+// source's growth. The fused fold poisons the result on the standing
+// bottom too and goes silent — the kernel twin of the aug13k interp
+// fix, missing the triggering/standing split at the loop's init
+// input. No-bottom control (in0=2) agrees; no-fold control agrees.
+// Fix locus: emit_fold's init taint handling (bare TAINT vs
+// TAINT|STALE).
 // schedule-v1: cap=144 events=1152; in0=i64:1; in0=i64:0
-{let v0 = array::len(array::window(#n: i64:3, [in0], i64:100 / (in0 % i64:3))); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, v0, |v3, v2| v3); (v2 + v3)}
+{let v0 = i64:100 / (in0 % i64:3); let v1: Array<i64> = []; v1 <- in0 ~ array::push(v1, in0); let v2 = array::len(v1); let v3: i64 = array::fold(v1, v0, |v3, v2| v3); (v2 + v3)}
