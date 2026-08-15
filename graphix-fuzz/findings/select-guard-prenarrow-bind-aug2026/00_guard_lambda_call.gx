@@ -1,0 +1,40 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
+// The TYPECHECKER was the wrong one; after the fix this program is a
+// CompileErr in both modes (AGREE), like arith-tc-unsound-jul2026.
+// Found by soak aug14e (katana fuzz divergence_000001, 2026-08-14);
+// reduced from a struct + slice pattern to the essential shape.
+//
+// Pre-fix: interp i64:0, jit i64:1, with the kernel logging
+//   kernel param `v`: runtime F64(1.0) doesn't match the compiled
+//   Scalar(I64) slot (typechecker static/dynamic mismatch)
+//
+// A select arm's GUARD was typechecked in `Select::typecheck0`'s FIRST
+// loop, before the second loop's
+//     ntype.contains(&ctx.env, &pat.type_predicate.any_as_tvar())
+// narrows the arm's pattern binds to the scrutinee type. So the guard
+// saw `v` as a still-open TVar and the first use inside it BOUND the
+// cell: `p: fn(i64) -> bool` bound `v := i64` even though the scrutinee
+// is `[i64, f64]`. The identical call in the arm BODY is correctly
+// rejected — bodies typecheck after the narrowing — which is what made
+// the asymmetry findable:
+//     select u { v => p(v) }         rejected   (body, narrowed)
+//     select u { v if p(v) => .. }   ACCEPTED   (guard, not yet narrowed)
+//
+// The node-walk then compared dynamically (Value::partial_cmp is total
+// across types, so f64:1.0 > i64:0 is true) while the kernel froze the
+// param to Scalar(I64) per the now-wrong static type and bottomed the
+// f64 at the ABI boundary — the guard read false and the `_` arm won.
+//
+// FIX: move the guard's own `typecheck0` out of the first loop and into
+// the second, immediately before the bool check that was moved there
+// earlier for the SAME reason (its comment: "so that a guard which IS
+// the arm's own bind reports against the bind's settled type"). The
+// narrowing is per-arm and progressive — `ntype` is diffed by each
+// earlier unguarded irrefutable arm — so the second loop is the only
+// place the settled type exists.
+//
+// Note the guard must move, not just be re-run: the premature bind is
+// destructive (the cell is bound for the rest of compilation), so
+// re-checking later would compare against the type the guard itself
+// chose.
+{let p = |x| x > i64:0; select {let x = [f64:1., f64:2.]; select x {[x, y, ..] => x, _ => i64:0}} {v if p(v) => i64:0, _ => i64:1}}

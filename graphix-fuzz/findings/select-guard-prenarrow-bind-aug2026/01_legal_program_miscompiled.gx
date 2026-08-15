@@ -1,0 +1,33 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
+// The WORSE face of 00, and the reason that fix is a correctness fix
+// and not merely a strictness one. Found by soak aug14e (hz1 fuzz
+// divergence_000000, 2026-08-14), same night, same root cause.
+//
+// Pre-fix: interp emitted both events, jit only the first, with
+//   kernel param `v`: runtime Array([1,2,2,3,1,4,5,5]) doesn't match
+//   the compiled Scalar(I64) slot (typechecker static/dynamic mismatch)
+//
+// 00 is an ILL-typed program that the premature guard bind let through.
+// This one is WELL-typed and stays well-typed after the fix — it still
+// compiles. What the premature bind corrupted here is the type itself:
+// the scrutinee is `any(x, y, <array>)`, i.e. `[i64, Array<i64>]`, and
+// the guard `v == i64:1` bound `v := i64` before the narrowing could
+// widen it. The kernel then froze the param to Scalar(I64) — faithfully
+// implementing a type that was a lie — and every Array arrival bottomed
+// at the ABI boundary, silently dropping the third arm's event.
+//
+// So the same one-line ordering bug produces two different failures:
+// programs that should not compile do (00), and programs that should
+// compile are miscompiled (01). Only the second is reachable by a user
+// writing correct code, which is why the fix is not gated on the
+// strictness question.
+//
+// Post-fix both engines emit both events: `v` keeps its honest union
+// type, so the param is no longer frozen to a scalar.
+//
+// A near-miss worth knowing: the reduced form
+//     {let x = i64:1; select any(x, [i64:1, i64:2]) {v if v == i64:1 => "one", _ => "other"}}
+// compiles and AGREES in both engines before AND after the fix — the
+// union alone is not enough. This witness is kept unreduced because the
+// reductions stopped reproducing.
+{let x = i64:1; let y = x; select any(x, y, [i64:1, i64:2, i64:2, i64:3, i64:1, i64:4, {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let f = |n| array::map([n], |i| select i {i64:0 if m == i64:0 => i64:1, _ => i64:2}); let c = count(f(i64:0)); select count(x) {i64:4 => c, _ => never()}}, i64:5]) {v if v == i64:1 => "first [v]", v if v == i64:2 => "second ", v => "third "}}

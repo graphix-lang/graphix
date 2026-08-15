@@ -1,0 +1,36 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// Found by soak aug14d (hz0 fuzz divergence_000005) and PARKED as an
+// open question; the aug14e fix for 00/01 resolved it, and re-reading
+// it with the root cause in hand shows it was never the question it
+// looked like.
+//
+//   interp: [1:i64:1  2:<sys::tcp::connect fn value>  3:i64:1  4:f64:2.]
+//   jit:    [1:i64:1                                  3:i64:1]
+//
+// Parked, it read as a semantics question: the source array is
+// HETEROGENEOUS (i64, a function value, an f64) and the guard
+// `x < i64:10` is meaningful only for the i64s, so what SHOULD a guard
+// that bottoms on a non-numeric element do — fall through to the
+// wildcard arm (interp) or bottom the whole select (kernel)? It looked
+// like it needed a ruling against the guard-ride rules (aug06ghz0) and
+// depth-trip poisoning.
+//
+// It needed neither. The program is ILL-TYPED and should never have
+// compiled: `x < i64:10` requires Number, and the scrutinee is
+// `[[i64, f64], fn(addr: string) -> Result<io::Stream<`Tcp>, ..>]`. It
+// compiled only because the guard was typechecked before the arm's
+// binds were narrowed to the scrutinee type, so the guard's own use of
+// `x` bound the open cell to i64 and the function member was never
+// checked against it (see 00 for the mechanism).
+//
+// That makes this the worst face of the three: the node-walk emitted a
+// FUNCTION VALUE as a program result. Post-fix both engines reject:
+//   type mismatch Number does not contain
+//     '_9168: [[i64, f64], fn(addr: string) -> Result<..>]
+//
+// Worth keeping for the triage lesson as much as the regression: a
+// divergence that poses a semantics question may be posing it only
+// because a typing hole let an impossible program reach the engines.
+// Check that the witness is well-typed BEFORE adjudicating what the
+// engines should do with it.
+{let x = array::iter([i64:0, sys::tcp::connect, i64:0, math::abs(f64:2.)]); let rec f = |n: i64| -> i64 n; select x {x if x < i64:10 => f(x + i64:1), x => x}}

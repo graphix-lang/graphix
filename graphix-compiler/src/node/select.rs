@@ -542,7 +542,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             let inferred_irrefutable = !pat.explicit_type_predicate
                 && pat.structure_predicate.matches_anything();
             match &mut pat.guard {
-                Some(guard) => guard.node.typecheck0(ctx)?,
+                // The guard's OWN typecheck0 runs in the second loop,
+                // after the bind narrowing — see the note there.
+                Some(_) => (),
                 None => {
                     if inferred_irrefutable {
                         wildcard = true;
@@ -626,7 +628,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // first loop it bound that still-open TVar to bool instead,
             // and the failure surfaced as an unrelated "pattern will
             // never match" from the coverage walk.
-            if let Some(guard) = &pat.guard {
+            // The guard is typechecked HERE, after the narrowing above,
+            // for the same reason its bool check is: a guard reads the
+            // arm's own binds, so it must see them at their SETTLED
+            // type. Run in the first loop (where it used to be) the
+            // binds are still open TVars, and the first use inside the
+            // guard binds them — `select u { v if p(v) => .. }` with
+            // `u: [i64, f64]` and `p: fn(i64) -> bool` bound `v := i64`
+            // and compiled, where the same call in the arm BODY is
+            // correctly rejected. The node-walk then compared
+            // dynamically while the kernel froze the param to
+            // Scalar(I64) and bottomed the f64 at the ABI boundary
+            // (soak aug14e, katana divergence_000001 / hz1
+            // divergence_000000 — the same hole reached through a
+            // struct+slice pattern and through `any`).
+            if let Some(guard) = &mut pat.guard {
+                guard.node.typecheck0(ctx)?;
                 let bt = Type::Primitive(Typ::Bool.into());
                 wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
             }

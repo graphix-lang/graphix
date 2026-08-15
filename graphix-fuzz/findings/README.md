@@ -284,6 +284,29 @@ un-widened to an i64 helper, so cranelift rejects the whole shared body
 with a VERIFIER error and an arbitrarily large region falls back to the
 node-walk. Two one-line `widen_to_i64` fixes.
 
+## select-guard-prenarrow-bind-aug2026 — WRONG VALUE / MISSING FIRE
+
+A select arm's GUARD was typechecked in `Select::typecheck0`'s first
+loop, before the second loop narrows the arm's pattern binds to the
+scrutinee type. The guard therefore saw its own binds as open TVars and
+its first use BOUND them: `select u { v if p(v) => .. }` with
+`u: [i64, f64]` and `p: fn(i64) -> bool` bound `v := i64` and compiled,
+where the identical call in the arm BODY is correctly rejected (bodies
+typecheck after the narrowing). Two faces, from two boxes the same
+night: 00 is an ill-typed program admitted — the node-walk compares
+dynamically while the kernel freezes the param to Scalar(I64) and
+bottoms the f64; 01 is the one a user can hit writing CORRECT code — a
+well-typed `[i64, Array<i64>]` scrutinee whose guard narrowed `v` to
+i64, so the kernel froze a scalar param and silently dropped every
+Array arrival. 02 was found a day earlier and PARKED as a semantics
+question (what should a guard that bottoms on a non-numeric element
+do?) — it was the same hole, the witness was ill-typed, and the
+node-walk was emitting a FUNCTION VALUE as a program result. Fix: move
+the guard's `typecheck0` into the second loop, beside the bool check
+that was moved there earlier for the same reason. The narrowing is
+progressive per arm, so the second loop is the only place the settled
+type exists.
+
 ## oracle-tier-comment-scan-aug2026 — HARNESS
 
 `oracle_tier` substring-scans the whole wrapper text, comments included,
