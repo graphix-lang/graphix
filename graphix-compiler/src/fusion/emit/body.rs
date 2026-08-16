@@ -880,6 +880,24 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         }
     }
 
+    /// Claim the word that roots a SELF-CALL's per-activation block
+    /// tree ([`kernel_abi::SelfBlock`]). One per self-call SITE, so
+    /// sibling calls at the same depth get separate trees — depth is
+    /// not identity.
+    ///
+    /// Refused inside scaffold loops, where the root would alias every
+    /// slot: the per-slot chain machinery is what belongs there, and
+    /// until it grows a case for this the in-loop self-call keeps the
+    /// old no-memory degrade.
+    pub(crate) fn claim_self_block_word(&self) -> Option<i32> {
+        if self.ctx.loop_depth.get() > 0 {
+            return None;
+        }
+        let off = self.claim_site_word()?;
+        self.ctx.self_call_roots.borrow_mut().push(off);
+        Some(off)
+    }
+
     /// [`claim_site_word`](Self::claim_site_word) for a word that
     /// ANCHORS a slot-table chain: registered on the kernel's
     /// [`SiteLayout`] so the block's OWNER (the caller's runtime

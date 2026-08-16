@@ -43,7 +43,14 @@ pub(super) fn compile_into_function(
     body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
-) -> Result<(usize, Vec<u32>, Vec<u32>, Vec<kernel_abi::SiteAnchor>, SiteLayout)> {
+) -> Result<(
+    usize,
+    Vec<u32>,
+    Vec<u32>,
+    Vec<kernel_abi::SiteAnchor>,
+    Vec<kernel_abi::SelfBlock>,
+    SiteLayout,
+)> {
     let spec = &body.spec;
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -201,6 +208,7 @@ pub(super) fn compile_into_function(
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
         site_replay_hdr: std::cell::Cell::new(None),
+        self_call_roots: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
@@ -219,6 +227,7 @@ pub(super) fn compile_into_function(
             replay: std::cell::RefCell::new(Vec::new()),
             replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
+            self_blocks: std::cell::RefCell::new(Vec::new()),
         },
         replay_enabled: spec.allow_replay_state,
         site: StateChannel {
@@ -228,6 +237,7 @@ pub(super) fn compile_into_function(
             replay: std::cell::RefCell::new(Vec::new()),
             replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
+            self_blocks: std::cell::RefCell::new(Vec::new()),
         },
         slot_tables: std::cell::RefCell::new(Vec::new()),
         callee_layouts,
@@ -297,17 +307,48 @@ pub(super) fn compile_into_function(
     let replay_words = lower.state.replay.borrow().clone();
     let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
+    let words = lower.site.next.get() as u32;
+    let replay: std::sync::Arc<[u32]> = lower.site.replay.borrow().clone().into();
+    let replay_hdr = lower.site_replay_hdr.get().map(|h| (h / 8) as u32);
+    // A self-call's child block has THIS body's layout, which only
+    // exists now — so the self-similar description is assembled here,
+    // from the roots the call sites claimed, and the same list becomes
+    // every child's own `slots`. `site_desc` publishes (words, header)
+    // for the emitted code, which had to read them at run time for the
+    // same reason.
+    let self_roots: std::sync::Arc<[u32]> = {
+        let mut v: Vec<u32> =
+            lower.self_call_roots.borrow().iter().map(|off| (*off / 8) as u32).collect();
+        v.sort_unstable();
+        v.into()
+    };
+    kernel.site_desc.store(
+        (words as u64) | (replay_hdr.map(|h| h as u64 + 1).unwrap_or(0) << 32),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let mut self_blocks: Vec<kernel_abi::SelfBlock> = self_roots
+        .iter()
+        .map(|rel| kernel_abi::SelfBlock {
+            rel: *rel,
+            words,
+            slots: self_roots.clone(),
+            replay: replay.clone(),
+        })
+        .collect();
+    self_blocks.extend(lower.site.self_blocks.borrow().iter().cloned());
     let site_layout = SiteLayout {
-        words: lower.site.next.get() as u32,
+        words,
         anchors: lower.site.anchors.borrow().clone().into(),
-        replay: lower.site.replay.borrow().clone().into(),
-        replay_hdr: lower.site_replay_hdr.get().map(|h| (h / 8) as u32),
+        replay,
+        replay_hdr,
+        self_blocks: self_blocks.into(),
     };
     Ok((
         lower.state.next.get(),
         replay_words,
         replay_value_pairs,
         slot_table_words,
+        lower.state.self_blocks.borrow().clone(),
         site_layout,
     ))
 }
@@ -394,6 +435,10 @@ pub(crate) struct SiteLayout {
     /// The block's honor header (rel word index) — `Some` iff `replay`
     /// is non-empty.
     pub(crate) replay_hdr: Option<u32>,
+    /// Words in this block that root PER-ACTIVATION block trees — this
+    /// body's own self-calls, plus any owned by callees whose blocks
+    /// this body carves. The block's owner frees and resets them.
+    pub(crate) self_blocks: std::sync::Arc<[kernel_abi::SelfBlock]>,
 }
 
 /// A selection-memory word's address, with its null-guard obligation.
@@ -490,6 +535,12 @@ pub(super) struct StateChannel {
     /// the chain's OWNER (`state`: the runtime `Kernel`'s `Drop`;
     /// `site`: the block's owner). See [`BodyCx::open_slot_tables`].
     pub(super) anchors: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
+    /// Words holding PER-ACTIVATION block trees ([`kernel_abi::SelfBlock`]),
+    /// owned by this channel: our own self-call roots, plus every one a
+    /// callee we carved a block for owns inside it (rebased, so the
+    /// block's owner frees and resets the whole forest without knowing
+    /// whose recursion it came from).
+    pub(super) self_blocks: std::cell::RefCell<Vec<kernel_abi::SelfBlock>>,
 }
 
 /// The tail-loop machinery for a self-recursive kernel body — `None`s
@@ -659,6 +710,12 @@ pub(crate) struct LowerCtx<'a> {
     /// block, a tail-loop body) leaves it 0 and the cache is INERT
     /// (today's taint-through behavior), never wrong.
     pub(super) site_replay_hdr: std::cell::Cell<Option<i32>>,
+    /// Byte offsets of the site words this body's SELF-CALL sites
+    /// claimed to root their per-activation block trees
+    /// ([`kernel_abi::SelfBlock`]). Collected during emission because
+    /// the description they need — this body's own block size — is only
+    /// final once emission ends.
+    pub(super) self_call_roots: std::cell::RefCell<Vec<i32>>,
     /// Direct-path lazy interning arenas (see
     /// [`KernelStrings::lazy`]) — entries appended during emission via
     /// [`BodyCx::interned_str`] / [`BodyCx::interned_value`], harvested

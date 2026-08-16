@@ -1454,6 +1454,7 @@ pub(crate) fn sig_from_inputs<'k>(
         lifted: Vec::new(),
         defined: std::sync::atomic::AtomicBool::new(false),
         has_sleep_restart: std::sync::atomic::AtomicBool::new(false),
+        site_desc: std::sync::atomic::AtomicU64::new(0),
     };
     Ok((sig, arg_types))
 }

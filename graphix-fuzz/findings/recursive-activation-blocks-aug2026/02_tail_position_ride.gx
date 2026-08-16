@@ -1,0 +1,16 @@
+// The second half of the same fix: THE SCRUTINEE RIDE was only wired
+// into the value-position select emitter, and a recursive function's
+// body IS a tail-position select — so every such body poisoned itself
+// on a bottomed scrutinee. Both halves are needed and neither works
+// alone: riding against a cache shared by every activation re-selects
+// the caller's arm and recurses to the limit, and per-activation
+// blocks with no ride to use them change nothing.
+//
+// Note the tail-LOOP exemption this pins by contrast: in a
+// rebind-and-jump body the interp's per-iteration `reset_replay`
+// clears the cache, so there is no history to ride and the kernel
+// passes through rather than de-fusing (which would have cost the
+// whole 178x tail-loop family its fusion).
+{let x = array::iter([i64:1, i64:0, i64:1]);
+ let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, i64:5 => i64:5, _ => i64:7};
+ i64:8 - f(i64:1 / x)}

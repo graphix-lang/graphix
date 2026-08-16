@@ -349,3 +349,36 @@ computation with the select at top level always agreed.
 The RECURSIVE half of the same campaign witness is not fixed: a
 self-call cannot carve a block for itself, so a recursive activation has
 no cache memory at all. See `fuzz/open/01_recursive_activation_cache.gx`.
+
+## recursive-activation-blocks-aug2026 — MISSING FIRE (jit)
+
+The node-walk gives every activation in a recursive call tree its own
+retained instance — measured at ~10.4 KB per call, dead linear in the
+tree — so an inner call that bottoms rides ITS OWN history. A kernel's
+per-call-site block is carved statically out of the caller's, which a
+self-call cannot do (the carving would nest one level per activation, at
+a depth only known at run time), so it passed 0 and the recursive
+activation had no interior memory at all.
+
+Fixed in two halves, neither of which works alone: a self-call now roots
+a lazily-grown TREE of per-activation blocks mirroring the instance
+tree — keyed by call SITE, since two siblings at the same depth are
+distinct activations — and THE SCRUTINEE RIDE, which had only ever been
+wired into the value-position select emitter, now also runs in tail
+position, where a recursive function's body actually lives. Riding
+against a block SHARED by every activation was tried and rejected: it
+re-selects the caller's own arm and recurses to the depth limit.
+
+~82 bytes per activation against the interp's ~10.4 KB, and the growth
+is the ruled semantics (Eric 2026-08-13, "memory is the user's"), not a
+new leak — `Kernel::drop` frees the forest, `reset_replay` walks it.
+
+Tail-LOOP bodies are exempt from the ride: the interp's per-iteration
+`reset_replay` clears the cache there, so there is no history to ride
+and passing through is the exact match — de-fusing instead would have
+cost the whole 178x rebind-and-jump family its fusion.
+
+The depth-trip poison needed an explicit kernel twin once this landed:
+`graphix_depth_tripped` gates the ride, because a trip bottoms the WHOLE
+derivation (Eric 2026-08-14) and the kernel had been getting that for
+free by having no interior ride storage to assemble from.

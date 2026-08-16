@@ -639,6 +639,25 @@ safe fn graphix_depth_push() -> i8 {
     })
 }
 
+/// Is a call-depth trip unwinding right now? The kernel twin of the
+/// interp's `ctx.depth_tripped`: a trip bottoms the WHOLE derivation
+/// (Eric's ruling 2026-08-14), so no ride between the trip and the
+/// derivation's root may assemble a partial value out of history. The
+/// flag is set at the trip (`graphix_depth_push`) and taken by
+/// `Kernel::update` after the invocation, which is exactly the extent
+/// of one derivation.
+safe fn graphix_depth_tripped() -> i8 {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if p.is_null() {
+            0
+        } else {
+            // SAFETY: see `graphix_interrupted`.
+            i8::from(unsafe { (*p).peek_depth_trip() })
+        }
+    })
+}
+
 /// The fused HOF-loop twin of [`graphix_depth_push`]: enter the
 /// callback-dispatch level a scaffold loop's inlined body runs at.
 /// One unit covers the whole scaffold (every element dispatches at
@@ -1414,6 +1433,46 @@ pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
     }
 }
 
+/// Free a PER-ACTIVATION block tree ([`kernel_abi::SelfBlock`]) rooted
+/// at `vecptr` — one `Box<Vec<u64>>` per activation, each holding its
+/// own children at `slots`. Depth-first, so the Rust stack cost is the
+/// recursion DEPTH (bounded by `max_call_depth`), not the tree size.
+/// Called only from `Kernel::drop`: these blocks are instance memory,
+/// and instance death is the only thing that reclaims them.
+pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) {
+    if vecptr == 0 {
+        return;
+    }
+    let v = unsafe { Box::from_raw(vecptr as *mut Vec<u64>) };
+    for s in slots.iter() {
+        if let Some(child) = v.get(*s as usize) {
+            free_self_block_tree(*child, slots);
+        }
+    }
+}
+
+/// Zero the REPLAY words through a per-activation block tree — the
+/// `replay_state_words` rule applied to every activation, so a value
+/// cached on one evaluation-frame iteration can't bridge the next at
+/// any depth. Semantic words (selection memory, first-call flags) and
+/// the honor header survive, exactly as they do in the flat case.
+pub fn reset_self_block_tree(vecptr: u64, slots: &[u32], replay: &[u32]) {
+    if vecptr == 0 {
+        return;
+    }
+    let v = unsafe { &mut *(vecptr as *mut Vec<u64>) };
+    for r in replay.iter() {
+        if let Some(w) = v.get_mut(*r as usize) {
+            *w = 0;
+        }
+    }
+    for s in slots.iter() {
+        if let Some(child) = v.get(*s as usize).copied() {
+            reset_self_block_tree(child, slots, replay);
+        }
+    }
+}
+
 /// Free the anchor-owned chains inside a run of call-site blocks.
 fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     for block in words.chunks_exact(leaf.stride as usize) {
@@ -1567,6 +1626,46 @@ unsafe fn graphix_slot_state_table(
         v.truncate(len)
     } else if len > v.len() {
         v.resize(len, 0)
+    }
+    v.as_mut_ptr()
+}
+
+/// The per-activation block for a SELF-CALL
+/// ([`kernel_abi::SelfBlock`]): allocate-on-first-use, retained
+/// thereafter, so a recursive activation gets the instance memory a
+/// statically-carved call-site block cannot give it. `word` is the
+/// root word in the CALLER's own block (null when the caller has no
+/// block — the no-memory degrade stands); `desc` points at the
+/// callee's `KernelSig::site_desc`, which is where the block's size
+/// lives because a self-call's size is its own body's, unknown while
+/// that body is still emitting.
+///
+/// The honor header is copied down from the parent every call: the
+/// child's caches are live exactly when its parent's are, which is
+/// what makes the reset contract hold for the whole tree (whoever
+/// resets the root walks it — `reset_self_block_tree`).
+unsafe fn graphix_site_child_block(
+    word: *mut u64,
+    desc: *const u64,
+    parent: *const u64,
+) -> *mut u64 {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    if word.is_null() {
+        return std::ptr::null_mut();
+    }
+    let d = unsafe { (*(desc as *const AtomicU64)).load(Relaxed) };
+    let words = (d & 0xffff_ffff) as usize;
+    if words == 0 {
+        return std::ptr::null_mut();
+    }
+    let word = unsafe { &mut *word };
+    if *word == 0 {
+        *word = Box::into_raw(Box::new(vec![0u64; words])) as u64;
+    }
+    let v = unsafe { &mut *(*word as *mut Vec<u64>) };
+    let hdr = (d >> 32) as usize;
+    if hdr != 0 && !parent.is_null() {
+        v[hdr - 1] = unsafe { *parent.add(hdr - 1) };
     }
     v.as_mut_ptr()
 }

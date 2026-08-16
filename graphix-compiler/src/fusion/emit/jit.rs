@@ -286,6 +286,12 @@ pub struct WrappedKernel {
     /// own caches sat inert forever and its scrutinee rides silently
     /// degraded to no-history (aug15b hz0 fuzz 000000).
     pub(crate) own_site: Option<SiteLayout>,
+    /// PER-ACTIVATION block-tree roots ([`kernel_abi::SelfBlock`]) that
+    /// live in the parent's own STATE buffer — a recursive callee whose
+    /// block this body carved out of its instance words. The runtime
+    /// `Kernel` frees and resets these alongside the ones in its own
+    /// site block.
+    pub(crate) state_self_blocks: Vec<kernel_abi::SelfBlock>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -416,6 +422,8 @@ struct CachedKernel {
     replay_value_pairs: Vec<u32>,
     /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
+    /// See [`WrappedKernel::state_self_blocks`]; filled in phase 2.
+    state_self_blocks: Vec<kernel_abi::SelfBlock>,
     /// The kernel's per-call-site state-block layout ([`SiteLayout`]),
     /// filled when its body is DEFINED (phase 2, callees before
     /// parents). `None` = not yet defined — a caller emitting against
@@ -789,6 +797,7 @@ fn compile_kernel_with_callees_inner(
             cached.replay_state_words = db.replay_words;
             cached.replay_value_pairs = db.replay_value_pairs;
             cached.slot_table_words = db.slot_table_words;
+            cached.state_self_blocks = db.state_self_blocks;
             callee_layouts.insert(ptr, db.site_layout.clone());
             cached.site_layout = Some(db.site_layout);
             cached._site_leaves = db.site_leaves;
@@ -813,19 +822,27 @@ fn compile_kernel_with_callees_inner(
     // prior compile) still sizes the runtime buffer correctly. Only
     // the parent's ROOT body may claim (callee claims would alias
     // across call sites), so callees' entries stay 0 by construction.
-    let (state_words, replay_state_words, replay_value_pairs, slot_table_words, own_site) =
-        jit.by_kernel
-            .get(&(parent_ptr, 0, parent_layout))
-            .map(|e| {
-                (
-                    e.state_words,
-                    e.replay_state_words.clone(),
-                    e.replay_value_pairs.clone(),
-                    e.slot_table_words.clone(),
-                    e.site_layout.clone(),
-                )
-            })
-            .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
+    let (
+        state_words,
+        replay_state_words,
+        replay_value_pairs,
+        slot_table_words,
+        state_self_blocks,
+        own_site,
+    ) = jit
+        .by_kernel
+        .get(&(parent_ptr, 0, parent_layout))
+        .map(|e| {
+            (
+                e.state_words,
+                e.replay_state_words.clone(),
+                e.replay_value_pairs.clone(),
+                e.slot_table_words.clone(),
+                e.state_self_blocks.clone(),
+                e.site_layout.clone(),
+            )
+        })
+        .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
         wrapper_fn_ptr,
         _ctx: None,
@@ -839,6 +856,7 @@ fn compile_kernel_with_callees_inner(
         replay_state_words,
         replay_value_pairs,
         slot_table_words,
+        state_self_blocks,
         own_site,
     })
 }
@@ -878,6 +896,7 @@ fn ensure_declared(
             // Filled in during phase 2 by `define_kernel_body`.
             _strings: KernelStrings::empty(),
             _values: KernelValues::empty(),
+            state_self_blocks: Vec::new(),
             state_words: 0,
             replay_state_words: Vec::new(),
             replay_value_pairs: Vec::new(),
@@ -899,6 +918,7 @@ struct DefinedBody {
     replay_words: Vec<u32>,
     replay_value_pairs: Vec<u32>,
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
+    state_self_blocks: Vec<kernel_abi::SelfBlock>,
     site_layout: SiteLayout,
     site_leaves: Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
 }
@@ -943,6 +963,7 @@ fn define_kernel_body(
         replay_words,
         replay_value_pairs,
         slot_table_words,
+        state_self_blocks,
         site_layout,
         site_leaves,
     ) = {
@@ -1014,6 +1035,7 @@ fn define_kernel_body(
             replay_words,
             replay_value_pairs,
             slot_table_words,
+            state_self_blocks,
             site_layout,
         ) = compile_into_function(
             &mut builder,
@@ -1040,6 +1062,7 @@ fn define_kernel_body(
             replay_words,
             replay_value_pairs,
             slot_table_words,
+            state_self_blocks,
             site_layout,
             lazy_site_leaves.into_inner(),
         )
@@ -1050,6 +1073,16 @@ fn define_kernel_body(
     // Post-define fact publication (the interior-sleep gate): callers
     // gate their reads on `defined`, so `has_sleep_restart` (stored at the
     // end of `compile_into_function`) is only consulted once final.
+    if crate::dbgenv::graphix_dbg_kernels() {
+        eprintln!(
+            "KERNEL DEFINED {}: state_words={} site_words={} site_replay={} self_blocks={}",
+            kernel.fn_name,
+            state_words,
+            site_layout.words,
+            site_layout.replay.len(),
+            site_layout.self_blocks.len()
+        );
+    }
     kernel.defined.store(true, std::sync::atomic::Ordering::Relaxed);
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
@@ -1060,6 +1093,7 @@ fn define_kernel_body(
         replay_words,
         replay_value_pairs,
         slot_table_words,
+        state_self_blocks,
         site_layout,
         site_leaves,
     })

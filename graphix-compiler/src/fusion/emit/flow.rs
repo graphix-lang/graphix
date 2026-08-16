@@ -19,8 +19,8 @@ use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        is_fresh, is_tainted,
-        is_untainted, propagate_flags, scalar_disc, taint_if, value_disc,
+        is_fresh, is_tainted, is_untainted, propagate_flags, scalar_disc, taint_if,
+        value_disc,
     },
     body::{
         BodyCx, emit_kernel_bottom, emit_kernel_return, emit_return_from_node,
@@ -339,6 +339,30 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
+    // THE SCRUTINEE RIDE (Eric's ruling 2026-08-07) belongs here too.
+    // It had only ever been wired into the value-position emitter, and
+    // a recursive function's body IS a tail-position select — so every
+    // such body poisoned itself on a bottomed scrutinee where the
+    // interp's Select rode its cached one and kept the standing
+    // selection (fuzz/open/01: `8 - f(n % -1)` with the modulo
+    // bottoming rode 0 in the interp and bottomed here).
+    //
+    // Load-bearing that this comes AFTER per-activation blocks exist:
+    // riding against a cache SHARED by every activation re-selects the
+    // caller's own arm and recurses to the depth limit. Each
+    // activation rides its own history or none.
+    // ...except in a TAIL-LOOP body, where the interp has no history
+    // to ride either: its `reset_replay` runs per framed pass, so each
+    // iteration starts with an empty scrutinee cache. Passing through
+    // is the exact match, and it is what keeps the rebind-and-jump
+    // kernels (the 120-185x family) fusing — the storage claim is
+    // refused there for the same reason the interp clears (one block
+    // cannot sever iteration i−1 from iteration i, the jul10h rule).
+    let scrut = if cx.ctx.tail.loop_head.is_some() {
+        scrut
+    } else {
+        super::select::emit_scrut_ride(cx, scrut)?
+    };
     // Fold this select's own fires into the kernel's tail-firing
     // accumulator (`LowerCtx::tail_scrut_stale`, applied at every
     // `emit_kernel_return`) — ORGANIC FIRING (Eric's ruling

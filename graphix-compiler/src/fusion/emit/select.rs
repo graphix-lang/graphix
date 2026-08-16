@@ -28,9 +28,8 @@ use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
         const_stale_gate, emit_scalar_taint_cache, emit_scalar_taint_cache_claimed,
-        emit_value_taint_cache_borrowed, is_tainted,
-        is_untainted, prim_to_value_disc, propagate_flags, propagate_stale,
-        propagate_taint, scalar_disc, value_disc,
+        emit_value_taint_cache_borrowed, is_tainted, is_untainted, prim_to_value_disc,
+        propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src, fold_stale,
@@ -240,7 +239,53 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
 /// aug04b phantom-arm rule: no selection was ever made). No storage
 /// channel → de-fuse: a pass-through here is a KNOWN divergence, not
 /// a documented residual (Eric's bar 2026-08-07).
-fn emit_scrut_ride(cx: &mut BodyCx, scrut: SelectScrut) -> Result<SelectScrut> {
+pub(super) fn emit_scrut_ride(
+    cx: &mut BodyCx,
+    scrut: SelectScrut,
+) -> Result<SelectScrut> {
+    let ride = emit_scrut_ride_inner(cx, scrut.clone())?;
+    // WHOLE-DERIVATION DEPTH TRIP (Eric's ruling 2026-08-14): while a
+    // trip unwinds, no ride may assemble a partial value out of
+    // history — the interp's `ctx.depth_tripped` poison, which the
+    // kernel used to get for free by having no interior ride storage
+    // at all. Per-activation blocks gave it that storage, so it needs
+    // the poison explicitly: fall back to the raw (tainted) scrutinee,
+    // which misses every arm and bottoms the derivation.
+    let f = cx.helper("graphix_depth_tripped")?;
+    let call = cx.b.ins().call(f, &[]);
+    let tripped = cx.b.inst_results(call)[0];
+    let tripped = cx.b.ins().icmp_imm(IntCC::NotEqual, tripped, 0);
+    Ok(match (ride, scrut) {
+        (
+            SelectScrut::Scalar { disc, value, prim },
+            SelectScrut::Scalar { disc: rd, value: rv, .. },
+        ) => SelectScrut::Scalar {
+            disc: cx.b.ins().select(tripped, rd, disc),
+            value: cx.b.ins().select(tripped, rv, value),
+            prim,
+        },
+        (
+            SelectScrut::Value { disc, payload },
+            SelectScrut::Value { disc: rd, payload: rp },
+        ) => SelectScrut::Value {
+            disc: cx.b.ins().select(tripped, rd, disc),
+            payload: cx.b.ins().select(tripped, rp, payload),
+        },
+        (
+            SelectScrut::Composite { disc, ptr },
+            SelectScrut::Composite { disc: rd, ptr: rp },
+        ) => SelectScrut::Composite {
+            disc: cx.b.ins().select(tripped, rd, disc),
+            ptr: cx.b.ins().select(tripped, rp, ptr),
+        },
+        (SelectScrut::Opaque { disc }, SelectScrut::Opaque { disc: rd }) => {
+            SelectScrut::Opaque { disc: cx.b.ins().select(tripped, rd, disc) }
+        }
+        (r, _) => r,
+    })
+}
+
+fn emit_scrut_ride_inner(cx: &mut BodyCx, scrut: SelectScrut) -> Result<SelectScrut> {
     match scrut {
         SelectScrut::Scalar { disc, value, prim } => {
             let cv =
@@ -387,13 +432,11 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 // Site words are per CALL SITE, not per slot: a
                 // loop-context select without a table entry must NOT
                 // claim one (it would alias slots).
-                None if cx.ctx.loop_depth.get() == 0 => {
-                    cx.claim_site_word().map(|off| {
-                        let base = cx.site_ptr();
-                        let addr = cx.b.ins().iadd_imm(base, off as i64);
-                        SelWord::Guarded { base, addr }
-                    })
-                }
+                None if cx.ctx.loop_depth.get() == 0 => cx.claim_site_word().map(|off| {
+                    let base = cx.site_ptr();
+                    let addr = cx.b.ins().iadd_imm(base, off as i64);
+                    SelWord::Guarded { base, addr }
+                }),
                 None => None,
             },
             None => None,
@@ -970,7 +1013,12 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // the select's own fires and folds into the emission. None when no
     // guard took a prologue slot (schedule-free guards' inputs are
     // scrutinee-derived binds, covered by the scrutinee fold).
-    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, Option<ClifValue>) -> Result<()>,
+    emit_arm: &mut dyn FnMut(
+        &mut BodyCx,
+        &Node<R, E>,
+        usize,
+        Option<ClifValue>,
+    ) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
     // scrutinee): value position jumps to the merge with a tainted
     // bottom; tail position sets pending and exits.

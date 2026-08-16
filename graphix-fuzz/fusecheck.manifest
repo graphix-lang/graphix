@@ -211,6 +211,9 @@
 1	recursion-fires-like-chain-aug2026/01_capture_fires_through_chain.gx
 1	recursion-fires-like-chain-aug2026/02_nontail_const_base.gx
 1	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
+1	recursive-activation-blocks-aug2026/00_recursive_ride_needs_own_block.gx
+1	recursive-activation-blocks-aug2026/01_hand_inlined_twin.gx
+1	recursive-activation-blocks-aug2026/02_tail_position_ride.gx
 31	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 4	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx

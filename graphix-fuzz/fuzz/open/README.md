@@ -4,43 +4,14 @@ Confirmed interp/jit divergences with a named root cause and a minimal
 witness, kept OUT of `findings/` because they still diverge — `regress`
 must stay green. Each names what it would take to close.
 
+(01, the recursive-activation cache, is FIXED — per-activation block
+trees, `findings/recursive-activation-blocks-aug2026`.)
+
 Run one: `graphix-fuzz check graphix-fuzz/fuzz/open/<file>.gx`
 
-## 01 — recursive activations have no per-activation cache memory
+## a newly-resolved deref fires one cycle late
 
-From aug15b hz0 fuzz 000000, the recursive half (its non-recursive half
-is fixed and pinned as `findings/callee-taint-cache-honor-aug2026`).
-
-The interp gives every call site its own retained lambda instance, so a
-recursive chain has one instance PER ACTIVATION, each with its own
-select-scrutinee cache. `f(n % -1)` bottoming at depth 1 therefore rides
-depth 1's own history (the previous cycle's `0`), and `8 - 0` publishes.
-
-A kernel's per-call-site block is carved by the CALLER out of its own
-storage, which a self-call cannot do: the block would have to nest one
-level per activation, unboundedly. The back-edge passes 0, so the
-recursive activation gets no memory and its ride misses.
-
-Sharing the caller's own block was tried and REJECTED: it aliases two
-activations' histories, which produces wrong values rather than missing
-ones — strictly worse than no memory.
-
-Closing it means one of:
-  (a) **De-fuse** any non-tail-recursive body that claims interior cache
-      words. Honest, and it is what Eric's "no storage → de-fuse, never
-      pass through" bar (2026-08-07) already says. Costs the fusion of
-      essentially every non-tail recursive function (fib and friends) —
-      a real perf regression, hence a decision rather than a fix.
-      NOT tail loops: `claim_site_word_replay` already refuses in
-      tail-loop bodies, so the rebind-and-jump kernels are untouched.
-  (b) **Per-activation blocks**: a retained chain of blocks indexed by
-      recursion depth, the exact analogue of the interp's per-activation
-      instances, freed with the kernel. The depth counter already exists
-      (`graphix_depth_push`) and the per-slot chain machinery
-      (`graphix_slot_state_table`) is the same shape, so this is a
-      contained feature rather than a redesign.
-
-## 02 — a newly-resolved deref fires one cycle late
+WAS 02.
 
 From aug15b aieka reactive 000000. INTERP-side.
 
@@ -58,7 +29,9 @@ landing it is PACING — firing a cycle earlier moves the interp relative
 to the JIT, and the oracle compares per-cycle traces, so the JIT's own
 first-fire timing has to be checked against it rather than assumed.
 
-## 03 — a bottomed string dependency rides in the interp, misses in the JIT
+## a bottomed string dependency rides in the interp, misses in the JIT
+
+WAS 03.
 
 From aug15b hz0 reactive 000000.
 

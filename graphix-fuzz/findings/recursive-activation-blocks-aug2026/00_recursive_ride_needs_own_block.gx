@@ -1,0 +1,29 @@
+// aug15b hz0 fuzz divergence_000000 (2026-08-16), the RECURSIVE half
+// (the non-recursive half is callee-taint-cache-honor-aug2026).
+//
+// The interp gives every activation in a recursive call tree its own
+// retained lambda instance — measured at ~10.4 KB per call, dead
+// linear in the tree (fib(16)/fib(20)/fib(22) = 63/258/634 MB), which
+// is Eric's structural ruling 2026-08-13 working as written. So the
+// inner `f(n % -1)`, bottoming at the third element, rides ITS OWN
+// history (the 0 it computed on the previous element) and `8 - 0`
+// publishes.
+//
+// A kernel's per-call-site block is carved statically out of the
+// caller's block, and a self-call cannot do that: the carving would
+// nest one level per activation, and the depth is a run-time fact. It
+// passed 0 — no memory at all — so the recursive activation's ride
+// missed where the interp's rode.
+//
+// Fix: the self-call roots a lazily-grown TREE of per-activation
+// blocks (`graphix_site_child_block`), mirroring the instance tree,
+// retained across cycles and freed with the kernel. Keyed by call
+// SITE, never by depth — two siblings at the same depth are distinct
+// activations with distinct histories. ~82 bytes per activation
+// against the interp's ~10.4 KB.
+//
+// Sharing the caller's own block was tried and REJECTED: aliasing two
+// activations' histories produces WRONG VALUES rather than missing
+// ones, and here it re-selects the caller's arm and recurses to the
+// depth limit.
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:8 - f(n % i64:-1)}; f(x - i64:-9223372036854775808)}

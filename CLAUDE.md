@@ -411,7 +411,11 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   found the select-arm greedy narrowing (soak jul05 item 12) twice.
 - `GRAPHIX_DBG_KERNELS=1` — print each lambda kernel built by
   `build_lambda_kernel` (name + frozen return type + AbiKind). Locates
-  which per-slot/cross-kernel callee actually compiled.
+  which per-slot/cross-kernel callee actually compiled. Also prints
+  `KERNEL DEFINED` per body: state words, site words, site replay
+  words, and per-activation block roots (`SelfBlock`) — the tool for
+  "does this recursive kernel have interior memory, and where does it
+  live".
 - `GRAPHIX_DBG_INVOKE=1` — print each fused-kernel runtime invocation
   (kernel name, `event.init`, per-input fired/present). Pins WHICH
   kernel a JIT crash happened in (the frame is unsymbolized native code).

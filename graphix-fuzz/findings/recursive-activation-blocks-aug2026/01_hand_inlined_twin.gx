@@ -1,0 +1,8 @@
+// The oracle for 00: the same chain as two DISTINCT functions, which
+// has its own block by the ordinary static carving and always rode.
+// Recursion fires like the hand-inlined chain, so the recursive twin
+// must produce this too.
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]);
+ let g = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:8 - n};
+ let f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:8 - g(n % i64:-1)};
+ f(x - i64:-9223372036854775808)}

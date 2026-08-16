@@ -1094,6 +1094,20 @@ impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
                 a.leaf.as_deref(),
             );
         }
+        // PER-ACTIVATION block trees (`SelfBlock`): a recursive call's
+        // activations allocate their own blocks lazily, and instance
+        // death is the only thing that reclaims them — the node-walk's
+        // retained instance tree, freed when its owner dies.
+        for b in self.jit.state_self_blocks.iter() {
+            let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
+            super::emit_helpers::free_self_block_tree(p, &b.slots);
+        }
+        if let Some(l) = self.jit.own_site.as_ref() {
+            for b in l.self_blocks.iter() {
+                let p = std::mem::replace(&mut self.site[b.rel as usize], 0);
+                super::emit_helpers::free_self_block_tree(p, &b.slots);
+            }
+        }
         // Anchors inside the block we supplied ourselves: a cross-kernel
         // caller frees the chains in the blocks it hands out, so a
         // region parent must free its own.
@@ -1902,6 +1916,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         if let Some(l) = self.jit.own_site.as_ref() {
             for w in l.replay.iter() {
                 self.site[*w as usize] = 0;
+            }
+        }
+        // And through every per-activation block tree: a recursive
+        // activation's caches are honored (the header rides down from
+        // its parent), so they are reset with everything else.
+        for b in self.jit.state_self_blocks.iter() {
+            super::emit_helpers::reset_self_block_tree(
+                self.state[b.rel as usize],
+                &b.slots,
+                &b.replay,
+            );
+        }
+        if let Some(l) = self.jit.own_site.as_ref() {
+            for b in l.self_blocks.iter() {
+                super::emit_helpers::reset_self_block_tree(
+                    self.site[b.rel as usize],
+                    &b.slots,
+                    &b.replay,
+                );
             }
         }
         self.drop_replay_values();

@@ -628,10 +628,54 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 ///   Plain leaf when the callee has no anchors; a
 ///   [`kernel_abi::SiteLeaf`]-described block leaf otherwise (the
 ///   resize helper and Drop free through it, recursively).
-fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> {
+fn emit_site_block(
+    cx: &mut BodyCx,
+    info: &LambdaCallInfo,
+    is_self: bool,
+) -> Result<ClifValue> {
     let key = kernel_abi::kernel_key(&info.kernel);
     let layout = match cx.callee_site_layout(key) {
-        None => return Ok(cx.b.ins().iconst(types::I64, 0)),
+        // No recorded layout means a back-edge: the callee is still
+        // being emitted, so it is either US (a self-call) or a mutual
+        // cycle — and mutual cycles de-fuse at the static call edge, so
+        // in practice it is US.
+        //
+        // A self-call cannot carve its callee's block out of ours the
+        // way every other call site does: it would have to nest one
+        // level per activation, and how deep the recursion runs is a
+        // run-time fact. Root a lazily-grown TREE of per-activation
+        // blocks instead (`graphix_site_child_block`) — the node-walk's
+        // tree of retained instances, at a few words per activation
+        // instead of ~10KB. Passing 0 here, as this did, left every
+        // recursive activation with no interior memory at all, so its
+        // rides missed where the interp's rode
+        // (fuzz/open/01_recursive_activation_cache.gx).
+        None => {
+            let Some(off) = (if is_self { cx.claim_self_block_word() } else { None })
+            else {
+                return Ok(cx.b.ins().iconst(types::I64, 0));
+            };
+            let base = cx.site_ptr();
+            let word = cx.b.ins().iadd_imm(base, off as i64);
+            // Our own block can be null (we are ourselves a back-edge
+            // activation that got no block); the helper takes that as
+            // "no memory" and hands back null, which every consumer
+            // already guards.
+            let live = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            let word = cx.b.ins().select(live, word, zero);
+            // The size lives in the callee's `site_desc` cell, read at
+            // run time: our own layout is not final while we are still
+            // emitting into it. The cell's address is stable for the
+            // JIT's lifetime (the kernel cache holds the `Arc`).
+            let desc = cx.b.ins().iconst(
+                types::I64,
+                (&info.kernel.site_desc as *const std::sync::atomic::AtomicU64) as i64,
+            );
+            let f = cx.helper("graphix_site_child_block")?;
+            let call = cx.b.ins().call(f, &[word, desc, base]);
+            return Ok(cx.b.inst_results(call)[0]);
+        }
         Some(l) => l.clone(),
     };
     if layout.words == 0 {
@@ -644,6 +688,14 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                     .expect("contiguous instance claims can't fail mid-run");
             }
             let base_idx = (first / 8) as u32;
+            for b in layout.self_blocks.iter() {
+                cx.ctx.state.self_blocks.borrow_mut().push(kernel_abi::SelfBlock {
+                    rel: base_idx + b.rel,
+                    words: b.words,
+                    slots: b.slots.clone(),
+                    replay: b.replay.clone(),
+                });
+            }
             for a in layout.anchors.iter() {
                 cx.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                     rel: base_idx + a.rel,
@@ -681,6 +733,14 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                 cx.claim_site_word().expect("contiguous site claims can't fail mid-run");
             }
             let base_idx = (first / 8) as u32;
+            for b in layout.self_blocks.iter() {
+                cx.ctx.site.self_blocks.borrow_mut().push(kernel_abi::SelfBlock {
+                    rel: base_idx + b.rel,
+                    words: b.words,
+                    slots: b.slots.clone(),
+                    replay: b.replay.clone(),
+                });
+            }
             for a in layout.anchors.iter() {
                 cx.ctx.site.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                     rel: base_idx + a.rel,
@@ -1110,7 +1170,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     };
     clif_args.push(callee_init);
     clif_args.push(cx.state_ptr());
-    let site_block = emit_site_block(cx, info)?;
+    let site_block = emit_site_block(cx, info, is_self)?;
     clif_args.push(site_block);
     for cv in slot_cvs.iter() {
         clif_args.push(cv.disc);

@@ -1470,6 +1470,15 @@ pub struct KernelSig {
     /// monotone; Relaxed suffices (single-threaded compilation).
     pub defined: std::sync::atomic::AtomicBool,
     pub has_sleep_restart: std::sync::atomic::AtomicBool,
+    /// This body's own call-site block shape, packed so a SELF-CALL can
+    /// read it: `words | ((replay_hdr + 1) << 32)`, high half 0 for no
+    /// header. A self-call has to allocate a block for the activation
+    /// it is entering, and the size of that block is THIS body's — not
+    /// known while this body is still being emitted. So the emitted
+    /// code bakes the address of this cell and reads it at run time;
+    /// `define_kernel_body` fills it the moment the layout is final.
+    /// Same write-once-monotone discipline as `defined`.
+    pub site_desc: std::sync::atomic::AtomicU64,
 }
 
 impl Clone for KernelSig {
@@ -1484,8 +1493,40 @@ impl Clone for KernelSig {
             has_tail_loop: self.has_tail_loop,
             defined: AtomicBool::new(self.defined.load(Relaxed)),
             has_sleep_restart: AtomicBool::new(self.has_sleep_restart.load(Relaxed)),
+            site_desc: std::sync::atomic::AtomicU64::new(self.site_desc.load(Relaxed)),
         }
     }
+}
+
+/// A word holding the root of a PER-ACTIVATION block tree: the storage
+/// a recursive call's activations use for their interior caches.
+///
+/// A cross-kernel call site normally carves its callee's block out of
+/// the caller's own, statically at emit time. A SELF-call cannot — the
+/// carving would have to nest one level per activation, and how deep
+/// the recursion goes is a run-time fact. So the word at `rel` holds a
+/// lazily-allocated child block (`graphix_site_child_block`), each of
+/// which holds its own children the same way: a tree of blocks growing
+/// exactly like the node-walk's tree of retained lambda instances, and
+/// bounded the same way — by the call depth limit and the user's
+/// patience (Eric's structural ruling 2026-08-13). It is much cheaper
+/// than its twin: a few words per activation against the interp's ~10KB
+/// instance.
+///
+/// Keyed by call SITE, never by depth: two sibling calls at the same
+/// depth are distinct activations with distinct histories, so a
+/// depth-indexed chain would alias them.
+///
+/// `words`/`slots`/`replay` describe the CHILD blocks (identical at
+/// every level, since only self-calls take this path — mutual recursion
+/// de-fuses at the static call edge), so the free and reset walks are
+/// self-similar and need nothing else.
+#[derive(Debug, Clone)]
+pub struct SelfBlock {
+    pub rel: u32,
+    pub words: u32,
+    pub slots: std::sync::Arc<[u32]>,
+    pub replay: std::sync::Arc<[u32]>,
 }
 
 /// One registered owner of a per-slot state CHAIN (see
