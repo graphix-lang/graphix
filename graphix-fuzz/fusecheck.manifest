@@ -19,6 +19,11 @@
 0	call-arity-jul2026/00_excess_pos_skips_nested_check.gx
 0	call-arity-jul2026/01_excess_pos_silently_dropped.gx
 1	callee-flags-jul2026/01_bottom_call_result_as_unused_arg.gx
+1	callee-taint-cache-honor-aug2026/00_two_level_call_ride.gx
+1	callee-taint-cache-honor-aug2026/01_top_level_control.gx
+1	callee-taint-cache-honor-aug2026/02_matching_arm_ride.gx
+1	callee-taint-cache-honor-aug2026/03_string_callee.gx
+1	callee-taint-cache-honor-aug2026/04_ignored_bottom_arg.gx
 2	callee-value-taint-passthrough-aug2026/00_callee_value_bottom_no_ride.gx
 2	capture-name-alias-jul2026/01_captured_x_reads_fold_element.gx
 0	cast-bottom-composite-aug2026/01_array_bottom_settle.gx
@@ -254,6 +259,7 @@
 2	sleep-restart-gate-aug2026/03_count_root_gain.gx
 1	slice-pattern-tuple-type-aug2026/00_union_tuple_member.gx
 0	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
+3	slice-pattern-tuple-type-aug2026/02_abstract_in_tuple_still_matches.gx
 0	soak-jul2026/01_clone_rebind_typedef_panic.gx
 1	soak-jul2026/02_slice_taint_placeholder_error.gx
 1	soak-jul2026/03_dead_dollar_stmt_kernel_abort.gx

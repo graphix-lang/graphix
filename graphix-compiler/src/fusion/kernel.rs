@@ -1060,6 +1060,13 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// Zero = "no previous observation": consumers store `value + 1`,
     /// so a fresh instance's init semantics fall out of the zeroing.
     state: Box<[u64]>,
+    /// This instance's PER-CALL-SITE block (wire slot 2) when the
+    /// compiled body claimed site words — the storage a kernel CALLER
+    /// would normally supply. A region parent has no kernel caller, so
+    /// it supplies its own here and writes the honor header, which is
+    /// what makes its interior taint caches (scrutinee rides, call-
+    /// result caches) live rather than inert.
+    site: Box<[u64]>,
     /// The kernel's RESULT slot on the value channel — the last value
     /// a run produced, absent until the first run. A region is pure
     /// by construction (effects de-fuse), so when a poll delivers only
@@ -1086,6 +1093,19 @@ impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
                 a.own_levels as u64,
                 a.leaf.as_deref(),
             );
+        }
+        // Anchors inside the block we supplied ourselves: a cross-kernel
+        // caller frees the chains in the blocks it hands out, so a
+        // region parent must free its own.
+        if let Some(l) = self.jit.own_site.as_ref() {
+            for a in l.anchors.iter() {
+                let p = std::mem::replace(&mut self.site[a.rel as usize], 0);
+                super::emit_helpers::free_slot_chain(
+                    p,
+                    a.own_levels as u64,
+                    a.leaf.as_deref(),
+                );
+            }
         }
         self.drop_replay_values();
     }
@@ -1240,12 +1260,25 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         for (i, id) in kernel.lifted.iter().enumerate() {
             state[i] = id.inner();
         }
+        // The parent's OWN call-site block, when its body was compiled
+        // to the callee ABI. Honoring it (the header word) is what
+        // activates the body's interior taint caches; the reset
+        // contract they need is this node's `reset_replay`, below.
+        let mut site =
+            vec![0u64; wrapped.own_site.as_ref().map(|l| l.words as usize).unwrap_or(0)]
+                .into_boxed_slice();
+        if let Some(l) = wrapped.own_site.as_ref()
+            && let Some(h) = l.replay_hdr
+        {
+            site[h as usize] = 1;
+        }
         let mut node = Self {
             kernel,
             jit: wrapped,
             dyn_slots,
             arg_layout,
             state,
+            site,
             resident: TagValue::phantom(),
         };
         node.pre_init_binding_slots(ctx);
@@ -1693,9 +1726,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         } else {
             self.state.as_mut_ptr() as u64
         });
-        // Slot 2: the per-call-site state block — a CALLEE-only channel
-        // (`CTX_WIRE_SLOTS`); a region parent has none.
-        slots.push(0);
+        // Slot 2: the per-call-site state block. Supplied by the CALLER
+        // for a cross-kernel call; a region parent supplies its own
+        // (empty unless its body was compiled to the callee ABI).
+        slots.push(if self.site.is_empty() { 0 } else { self.site.as_mut_ptr() as u64 });
         for (disc, payload, _keepalive) in staged.iter() {
             slots.push(*disc);
             slots.push(*payload);
@@ -1862,6 +1896,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // (lifted ids, first-call flags, select memory) survive.
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
+        }
+        // The same contract for the block we own as our own caller
+        // (`site`): honoring those caches obliges us to reset them.
+        if let Some(l) = self.jit.own_site.as_ref() {
+            for w in l.replay.iter() {
+                self.site[*w as usize] = 0;
+            }
         }
         self.drop_replay_values();
         self.free_reset_chains();

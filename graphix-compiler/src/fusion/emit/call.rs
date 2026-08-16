@@ -21,8 +21,8 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use super::{
     abi::{
         CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
-        emit_untainted_i64, is_tainted, propagate_stale,
-        scalar_disc, taint_if, value_disc,
+        emit_untainted_i64, is_tainted, propagate_stale, scalar_disc, taint_if,
+        value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     lower::{LowerCtx, SelWord},
@@ -689,9 +689,49 @@ fn emit_site_block(cx: &mut BodyCx, info: &LambdaCallInfo) -> Result<ClifValue> 
                     reset: a.reset,
                 });
             }
+            // Activate the callee's interior taint caches, exactly as
+            // the state branch above does — register its replay words
+            // on OUR OWN layout so our caller's reset registration
+            // reaches them transitively, and forward our honor header
+            // into the block we just carved for it. Honor then travels
+            // as far down the call chain as the reset contract does.
+            //
+            // Skipping this left every nested callee's caches inert
+            // forever (the header stayed 0, so `ok` never latched):
+            // that body's scrutinee ride silently degraded to
+            // no-history and a bottomed scrutinee missed every arm,
+            // which is precisely the pass-through `emit_scrut_ride`'s
+            // de-fuse bar exists to forbid — the claim SUCCEEDS here,
+            // so the bar never fired (aug15b hz0 fuzz 000000: a
+            // two-level call chain rode in the interp and bottomed in
+            // the JIT).
+            let base = cx.site_ptr();
+            if let Some(h) = layout.replay_hdr
+                && let Some(our_hdr) = cx.ensure_site_replay_hdr()
+            {
+                for o in layout.replay.iter() {
+                    cx.ctx.site.replay.borrow_mut().push(base_idx + o);
+                }
+                let live = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                let set_bl = cx.b.create_block();
+                let cont_bl = cx.b.create_block();
+                cx.b.ins().brif(live, set_bl, &[], cont_bl, &[]);
+                cx.b.seal_block(set_bl);
+                cx.b.switch_to_block(set_bl);
+                let honor =
+                    cx.b.ins().load(types::I64, MemFlags::trusted(), base, our_hdr);
+                cx.b.ins().store(
+                    MemFlags::trusted(),
+                    honor,
+                    base,
+                    first + (h as i32) * 8,
+                );
+                cx.b.ins().jump(cont_bl, &[]);
+                cx.b.seal_block(cont_bl);
+                cx.b.switch_to_block(cont_bl);
+            }
             // Our own block may be 0 (a back-edge activation of THIS
             // callee) — forward 0, not a garbage offset.
-            let base = cx.site_ptr();
             let addr = cx.b.ins().iadd_imm(base, first as i64);
             let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
             let zero = cx.b.ins().iconst(types::I64, 0);

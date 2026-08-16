@@ -273,6 +273,19 @@ pub struct WrappedKernel {
     /// touches them (semantic state, like the static select memory
     /// word).
     pub slot_table_words: Vec<kernel_abi::SiteAnchor>,
+    /// This body's OWN per-call-site claims, when it was compiled to
+    /// the callee ABI (any body reachable by a cross-kernel call —
+    /// including a self-call — puts its interior taint caches in SITE
+    /// space, because one compiled body serves every call site and
+    /// state-space claims would alias across them).
+    ///
+    /// A CALLER normally supplies that block. When this kernel is the
+    /// REGION PARENT there is no kernel caller, so the runtime
+    /// [`crate::fusion::kernel::Kernel`] supplies it from its own
+    /// per-instance storage and honors it — without which the parent's
+    /// own caches sat inert forever and its scrutinee rides silently
+    /// degraded to no-history (aug15b hz0 fuzz 000000).
+    pub(crate) own_site: Option<SiteLayout>,
     /// Per-kernel ArcStr slots that the JIT'd code references via
     /// stable `*const ArcStr` pointers. Held here so the slots live
     /// as long as the compiled function does. When this struct
@@ -800,18 +813,19 @@ fn compile_kernel_with_callees_inner(
     // prior compile) still sizes the runtime buffer correctly. Only
     // the parent's ROOT body may claim (callee claims would alias
     // across call sites), so callees' entries stay 0 by construction.
-    let (state_words, replay_state_words, replay_value_pairs, slot_table_words) = jit
-        .by_kernel
-        .get(&(parent_ptr, 0, parent_layout))
-        .map(|e| {
-            (
-                e.state_words,
-                e.replay_state_words.clone(),
-                e.replay_value_pairs.clone(),
-                e.slot_table_words.clone(),
-            )
-        })
-        .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
+    let (state_words, replay_state_words, replay_value_pairs, slot_table_words, own_site) =
+        jit.by_kernel
+            .get(&(parent_ptr, 0, parent_layout))
+            .map(|e| {
+                (
+                    e.state_words,
+                    e.replay_state_words.clone(),
+                    e.replay_value_pairs.clone(),
+                    e.slot_table_words.clone(),
+                    e.site_layout.clone(),
+                )
+            })
+            .ok_or_else(|| anyhow!("parent kernel missing from the by_kernel cache"))?;
     Ok(WrappedKernel {
         wrapper_fn_ptr,
         _ctx: None,
@@ -825,6 +839,7 @@ fn compile_kernel_with_callees_inner(
         replay_state_words,
         replay_value_pairs,
         slot_table_words,
+        own_site,
     })
 }
 

@@ -17,8 +17,8 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue,
-    condcodes::IntCC, types,
+    Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue, condcodes::IntCC,
+    types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use netidx_value::Value;
@@ -847,24 +847,37 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// [`LowerCtx::site_replay_hdr`]. Refused inside scaffold loops
     /// (one per-call-site word would alias slots — the jul10h rule).
     pub(crate) fn claim_site_word_replay(&self) -> Option<(i32, i32)> {
-        // Also refused in TAIL-LOOP bodies: the caller's cross-cycle
-        // reset can't sever iteration i−1's success from iteration i's
-        // bottom the way the interp's per-frame `reset_replay` does —
-        // the jul10h rule applied across the loop this body IS.
-        if self.ctx.loop_depth.get() > 0 || self.ctx.tail.loop_head.is_some() {
-            return None;
-        }
-        let hdr = match self.ctx.site_replay_hdr.get() {
-            Some(h) => h,
-            None => {
-                let h = self.claim_site_word()?;
-                self.ctx.site_replay_hdr.set(Some(h));
-                h
-            }
-        };
+        let hdr = self.ensure_site_replay_hdr()?;
         let off = self.claim_site_word()?;
         self.ctx.site.replay.borrow_mut().push((off / 8) as u32);
         Some((off, hdr))
+    }
+
+    /// This callee body's block-shared HONOR header, claiming it on
+    /// first use. Its VALUE is written by whoever allocates this
+    /// body's block, and it gates every replay word in the block: a
+    /// caller that cannot register those words for reset leaves it 0
+    /// and the caches stay inert. Also the gate a nested call site
+    /// forwards from (see `emit_site_block`) — honor propagates down
+    /// a call chain exactly as far as the reset registration does.
+    pub(crate) fn ensure_site_replay_hdr(&self) -> Option<i32> {
+        // Refused in scaffold loops (one per-call-site word would
+        // alias slots — the jul10h rule) and in TAIL-LOOP bodies: the
+        // caller's cross-cycle reset can't sever iteration i−1's
+        // success from iteration i's bottom the way the interp's
+        // per-frame `reset_replay` does — the same rule applied across
+        // the loop this body IS.
+        if self.ctx.loop_depth.get() > 0 || self.ctx.tail.loop_head.is_some() {
+            return None;
+        }
+        match self.ctx.site_replay_hdr.get() {
+            Some(h) => Some(h),
+            None => {
+                let h = self.claim_site_word()?;
+                self.ctx.site_replay_hdr.set(Some(h));
+                Some(h)
+            }
+        }
     }
 
     /// [`claim_site_word`](Self::claim_site_word) for a word that
@@ -1185,7 +1198,11 @@ pub(super) fn emit_return_from_node<R: Rt, E: UserEvent>(
 /// AND `mask`'s STALE bit into `disc`'s — the firing fold (STALE
 /// survives only when BOTH sides are stale); every other bit is
 /// unchanged.
-pub(super) fn fold_stale(b: &mut FunctionBuilder, disc: ClifValue, mask: ClifValue) -> ClifValue {
+pub(super) fn fold_stale(
+    b: &mut FunctionBuilder,
+    disc: ClifValue,
+    mask: ClifValue,
+) -> ClifValue {
     let vs = b.ins().band_imm(disc, STALE);
     let folded = b.ins().band(vs, mask);
     let cleaned = b.ins().band_imm(disc, !STALE);

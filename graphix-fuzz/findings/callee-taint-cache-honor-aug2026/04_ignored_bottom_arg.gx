@@ -1,0 +1,9 @@
+// The seam probe from the triage: a callee that IGNORES its bottomed
+// argument still produces. Kept because it pins the lambda seam
+// against the BUILTIN seam, where a bottomed arg bottoms the
+// invocation without calling eval (Q1) — the two are deliberately
+// different and both engines implement both.
+{let x = array::iter([i64:1, i64:0, i64:1]);
+ let g = |n: i64| -> i64 i64:5;
+ let f = |m: i64| -> i64 select m {i64:99 => i64:0, _ => g(i64:1 / m)};
+ f(x)}

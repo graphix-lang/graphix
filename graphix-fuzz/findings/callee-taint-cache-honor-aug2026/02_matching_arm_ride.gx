@@ -1,0 +1,6 @@
+// 00 with a callee arm that can MATCH the ridden scrutinee (`i64:0`),
+// so the ride selects a different arm than the fresh value would have.
+{let x = array::iter([i64:1, i64:0, i64:1]);
+ let g = |n: i64| -> i64 select n {i64:0 => i64:0, _ => i64:7};
+ let f = |m: i64| -> i64 select m {i64:99 => i64:0, _ => i64:8 - g(i64:1 / m)};
+ f(x)}

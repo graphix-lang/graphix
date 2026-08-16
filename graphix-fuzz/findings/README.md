@@ -313,3 +313,39 @@ type exists.
 so a finding whose write-up merely MENTIONS an excluded API is silently
 excluded from the oracle and reports AGREE forever. Three existing pins
 are affected today. README-only (no .gx).
+
+## tail-loop-internal-connect-aug2026 — MISSING FIRE (interp)
+
+The tail-loop driver's quiet-poll ride asked "did anything EXTERNAL to
+the body trigger this cycle". A `<-` target declared INSIDE the body is
+bound there, so it wasn't external, and the runtime's cross-cycle
+delivery to it was swallowed: the connect scheduled, the variable was
+set, and the loop never re-derived. Hoisting the target above the lambda
+made both engines agree, which named the bug — externality was only ever
+a proxy for "can this change under us", and it stopped being a sound one
+once a body could own the target. Adjudicated without a new ruling: the
+hand-inlined chain (02) and the non-tail twin (03) both emitted BOTH
+deliveries all along, and recursion fires like the hand-inlined chain.
+Fix: `Refs::with_refs` / `inputs_triggered` counts every id the body
+READS, inside or out, at all five of the predicate's sites.
+
+## callee-taint-cache-honor-aug2026 — MISSING FIRE (jit)
+
+A body reachable by a cross-kernel call keeps its interior taint caches
+(scrutinee ride, op-site rides) in SITE space, in a block the CALLER
+supplies; the block's honor header is what activates them. Only the
+state-space branch of `emit_site_block` wrote that header, so a callee
+that itself calls a callee left its callee's caches inert FOREVER —
+rides degraded to no-history and a bottomed scrutinee missed every arm.
+Because the storage CLAIM succeeds on that path, `emit_scrut_ride`'s
+"no storage → de-fuse" bar never fired: this was the pass-through the
+bar exists to forbid. Fix: the site branch registers the callee's replay
+words on its own layout and forwards its own honor header, so honor
+travels as far down a call chain as the reset contract does; and the
+runtime `Kernel` supplies + honors its own block, since a region parent
+has no kernel caller. 01 is the control that located it — the same
+computation with the select at top level always agreed.
+
+The RECURSIVE half of the same campaign witness is not fixed: a
+self-call cannot carve a block for itself, so a recursive activation has
+no cache memory at all. See `fuzz/open/01_recursive_activation_cache.gx`.

@@ -1,0 +1,6 @@
+// String-returning callee: the ride has to carry the callee's result
+// through a second seam (`str::len`) as well as its own scrutinee.
+{let x = array::iter([i64:1, i64:0, i64:1]);
+ let g = |n: i64| -> string select n {i64:5 => "five", _ => "other"};
+ let f = |m: i64| -> i64 select m {i64:99 => i64:0, _ => i64:8 - str::len(g(i64:1 / m))};
+ f(x)}

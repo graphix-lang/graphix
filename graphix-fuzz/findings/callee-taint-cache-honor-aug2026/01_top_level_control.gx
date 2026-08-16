@@ -1,0 +1,9 @@
+// The control that named the bug in 00: the SAME computation with the
+// outer select at top level instead of inside a lambda. Here g's block
+// comes from the region's state space, whose branch always wrote the
+// honor header — so this always agreed. Wrapping a computation in a
+// function and calling it must not change what it produces, and that
+// is the discrepancy that located the missing write.
+{let x = array::iter([i64:1, i64:0, i64:1]);
+ let g = |n: i64| -> i64 select n {i64:5 => i64:5, _ => i64:7};
+ select x {i64:99 => i64:0, _ => i64:8 - g(i64:1 / x)}}

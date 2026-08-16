@@ -1,0 +1,28 @@
+// aug15b hz0 fuzz divergence_000000 (2026-08-16), the NON-RECURSIVE
+// half of the class. Interp emitted on the bottom cycle, jit did not.
+//
+// A body's interior taint caches (the scrutinee ride, the op-site
+// rides) live in SITE space whenever the body can be reached by a
+// cross-kernel call — one compiled body serves every call site, so
+// state-space claims would alias. Each caller supplies that block, and
+// the block's HONOR HEADER is what activates the caches: a caller that
+// cannot register the words for reset leaves it 0 and they stay inert.
+//
+// Only the state-space branch of `emit_site_block` ever wrote that
+// header. A callee that itself calls a callee took the SITE branch,
+// which wrote nothing — so every nested callee's caches were inert
+// FOREVER, its rides silently degraded to no-history, and a bottomed
+// scrutinee missed every arm. The claim SUCCEEDS in that path, so
+// `emit_scrut_ride`'s "no storage → de-fuse" bar never fired: this was
+// exactly the pass-through the bar exists to forbid.
+//
+// Fix: the site branch registers the callee's replay words on its OWN
+// layout (so the reset chain reaches them transitively) and forwards
+// its own honor header into the block it carves. Honor now travels as
+// far down a call chain as the reset contract does. The runtime
+// `Kernel` supplies (and honors) its own block for the same reason: a
+// REGION PARENT has no kernel caller.
+{let x = array::iter([i64:1, i64:0, i64:1]);
+ let g = |n: i64| -> i64 select n {i64:5 => i64:5, _ => i64:7};
+ let f = |m: i64| -> i64 select m {i64:99 => i64:0, _ => i64:8 - g(i64:1 / m)};
+ f(x)}
