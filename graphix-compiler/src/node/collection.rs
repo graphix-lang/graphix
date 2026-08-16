@@ -680,12 +680,21 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
     }
 }
 
+/// Fold one production into the collection's. This IS the orthogonal
+/// tag algebra — taint ORs, stale ANDs — so it delegates to
+/// [`Tag::join`] rather than restating it. The hand-rolled version
+/// collapsed its taint arm to `Tag::TAINT`, whose invariant form is
+/// TAINT|STALE: merging two FRESH bottoms produced a STANDING one and
+/// the fired bit was lost. Only visible with 2+ slots (one slot takes
+/// the `None` arm verbatim), and the consequence was that a
+/// collection going bottom never delivered a TRIGGERING poison — so
+/// every consumer stayed on the R1 quiet-ride and kept re-serving its
+/// pre-bottom value, three epochs on (an `array::init(i64:2, |_| v0)`
+/// over a bottomed capture; aug14f backlog, hz0 aug13d 000312).
 fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
     Some(match current {
         None => next,
-        Some(tag) if tag.is_tainted() || next.is_tainted() => Tag::TAINT,
-        Some(tag) if tag.is_fired() || next.is_fired() => Tag::FIRED,
-        Some(_) => Tag::STALE,
+        Some(tag) => tag.join(next),
     })
 }
 
@@ -779,6 +788,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             }
             let tv = self.slots[i].call.update(ctx, event).clone();
             let tag = tv.tag();
+            if crate::dbgenv::gxdbg_slot() {
+                eprintln!("SLOT call[{i}] produced tag={} fresh={}", tag.bits(), i >= old_len);
+            }
             // Only TRIGGERING slot productions fold into the firing
             // decision; a stale ride is the slot's value channel and
             // by the R1 law carries an unchanged value. STRICT
@@ -816,26 +828,50 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 self.resident.ride()
             };
         }
+        // A slot's taint mark is PERSISTENT — set by a triggering
+        // bottom, cleared only by a clean production — so "is this
+        // collection bottom?" is a question about the slots NOW, not
+        // about what arrived this cycle. Option A (fold-tainted-init,
+        // Eric 2026-08-13): bottom in, bottom out, and the retained
+        // value NEVER substitutes for a poisoned production.
+        //
+        // The production tag decides only the FIRED bit: FreshBottom
+        // when something triggered, StaleBottom when the cycle was
+        // quiet (the aug13k rule — a standing bottom must not re-fire;
+        // minting FRESH per cycle drove a downstream guard where
+        // nothing consumed fired, aug14f generated_missing_fires).
+        // Riding the resident instead is what leaked: `ride` keeps the
+        // last VALUE, so a quiet cycle over standing poison re-served
+        // the pre-bottom collection and a consumer firing on its own
+        // trigger read it as current (aug14f backlog, an
+        // `array::init` over a bottomed capture resurrecting three
+        // epochs later).
+        let poisoned = self.slots.iter().any(|slot| slot.tag.is_tainted());
+        if crate::dbgenv::gxdbg_slot() {
+            eprintln!(
+                "SLOT map prod={:?} resized={resized} forced={forced_taint} poisoned={poisoned} slots={:?}",
+                production.map(|t| t.bits()),
+                self.slots
+                    .iter()
+                    .map(|s| (s.tag.bits(), s.value.is_some()))
+                    .collect::<Vec<_>>(),
+            );
+        }
         let tag = match production {
             Some(tag) => tag,
-            None => return self.resident.ride(),
+            None => {
+                return if poisoned {
+                    self.resident
+                        .set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM))
+                } else {
+                    self.resident.ride()
+                };
+            }
         };
-        // Bottom mints gate on a TRIGGERING production — the
-        // standing-bottoms rule (aug13k, the fold-init/depth-trip
-        // twins): a slot's taint mark is PERSISTENT (set once, cleared
-        // only by a clean production), so minting FRESH on every
-        // production re-fired a standing bottom off a quiet
-        // PASS_THROUGH source ride forever — a find over a
-        // permanently-bottoming predicate re-delivered FreshBottom per
-        // cycle and drove a downstream select's guard on cycles where
-        // nothing consumed fired (aug14f generated_missing_fires).
-        // A quiet production over standing poison RIDES (StaleBottom).
-        if tag.is_tainted() || self.slots.iter().any(|slot| slot.tag.is_tainted()) {
-            return if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+        if tag.is_tainted() || poisoned {
+            let t =
+                if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
+            return self.resident.set(TagValue::tagged(Value::Null, t));
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
             match self.operation.finish(&self.slots, &self.current) {

@@ -1,0 +1,31 @@
+// Found 2026-08-15 in the aug14f BACKLOG AUDIT (hz0 aug13d reactive
+// divergence_000312, never triaged at the time; it survived every
+// intervening fix and was still live). INTERP-side.
+//
+//   interp: [0:0]; [1:100 2:100]; [1:200]   <- resurrects
+//   jit:    [0:0]; [1:100 2:100]; []
+//
+// `merge_tag` — the collection's per-slot production fold — was a
+// hand-rolled restatement of the orthogonal tag algebra whose TAINT
+// arm collapsed to `Tag::TAINT`, and TAINT's invariant form is
+// TAINT|STALE. So merging two FRESH bottoms produced a STANDING one:
+// the fired bit was lost. Invisible with a single slot (the fold's
+// `None` arm returns the tag verbatim) — this witness needs
+// `array::init(i64:2, ..)`, i.e. TWO slots, over a capture that
+// bottoms.
+//
+// The consequence is the resurrection, not the tag: a collection that
+// goes bottom never delivers a TRIGGERING poison, so every downstream
+// consumer stays on the R1 quiet-ride and keeps re-serving its
+// pre-bottom value. Here `v1[i64:0]$` re-served 100 three epochs on
+// and the connect advanced 100 -> 200 off `in0`'s own trigger, while
+// the kernel (marshaling the bottom as TAINT) stayed silent. Option A
+// (fold-tainted-init, Eric 2026-08-13) says the collection is bottom:
+// both engines now go quiet.
+//
+// merge_tag now delegates to `Tag::join`. New tool: GXDBG_SLOT=1
+// (per-slot productions + the collection's fold decision) — it showed
+// `call[0] produced tag=64` (fresh) against `prod=Some(96)`
+// (standing) in one run, which is the whole bug.
+// schedule-v1: cap=144 events=1152; in0=i64:1; in0=i64:0 in1=i64:1
+{let v0 = i64:100 / (in0 % i64:3); let v1: Array<i64> = array::init(i64:2, |in1| v0); let v2 = i64:0; let v3: i64 = {let v4: i64 = v1[i64:0]$; v2 <- in0 ~ v2 + v4}; v2}

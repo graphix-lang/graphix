@@ -470,6 +470,13 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   arm-local that never published inside a recursion frame
   (`findings/arm-local-bind-aug2026/`, 2026-08-14). Pairs with
   `GXDBG_REF=1`, which shows the resulting read MISS.
+- `GXDBG_SLOT=1` — print each collection cycle's per-slot production
+  tag (`SLOT call[i] produced tag=..`) and the resulting fold decision
+  (`SLOT map prod=.. resized=.. forced=.. poisoned=.. slots=[..]`).
+  The tool for "why did this map/init/find/filter fire (or not)" —
+  found the `merge_tag` fired-bit loss in one run by showing
+  `call[0] produced tag=64` (fresh bottom) against `prod=Some(96)`
+  (standing), which is the whole bug.
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
   spec, BindId, unstable/b2l/cached hit), the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export

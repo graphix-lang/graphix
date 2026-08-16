@@ -1,0 +1,64 @@
+// PARKED 2026-08-15 — NEEDS A RULING (it changes what programs are
+// legal). Found in the aug14f BACKLOG AUDIT: ryouko aug14d fuzz
+// divergence_000005, which slipped that round's triage and survived
+// every fix since.
+//
+//   interp: [1:true 2:u32:2 3:true 4:true]
+//   jit:    [1:true        3:true 4:true]
+//
+// BOTH ENGINES ARE WRONG, and the interp is UNSOUND. The scrutinee is
+// a heterogeneous array, so `array::iter` yields a union
+// [Array<u8>, (bool, bool), bool, i64]. Element 2 is the TUPLE:
+//
+//   * the interp matches it against the ARRAY pattern `[x, y]` — at
+//     the Value level a tuple IS a 2-element array, and
+//     `StructPatternNode::Slice` carries a `tuple` flag that
+//     `is_match`/`bind` both ignore (`tuple: _`). It binds x=y=true,
+//     computes `true + true`, and emits u32:2 — then logs its own
+//     violation: "error, type [u8, bool] does not match value 2".
+//   * the jit types the arm's leaves from the pattern kind (array =>
+//     element type u8), so the tuple's bools don't fit the compiled
+//     shape; the marshal treats the mismatch as MISSING and the kernel
+//     goes silent (kernel.rs's documented obs-4 defence).
+//   * the CORRECT answer is neither: the tuple should fall through to
+//     `_` and emit `true`.
+//
+// The type system is unambiguous — both probes reject:
+//     select (true, true) {[x, y] => x, _ => false}
+//       => "pattern Array<..> will never match (bool, bool),
+//           unused match cases"
+//     select array::iter([(true,true), (false,true)]) {[x,y] => ..}
+//       => same
+// It is only the UNION case that compiles: `[x, y]` is live for the
+// Array<u8> member, so the arm is not dead, and the tuple member is
+// supposed to be covered by `_`.
+//
+// WHY THIS NEEDS A RULING RATHER THAN A FIX: there is no runtime
+// discriminator. A tuple and an array are the same `Value::Array`, so
+// the interp cannot ask the value what it is; it can only ask the
+// TYPE. Where the members differ in element type ((bool,bool) vs
+// Array<u8>) a strict is-a walk could decide, but `Array<u8>` versus
+// `(u8, u8)` in one union is undecidable at runtime by construction.
+// Three options:
+//
+//   (a) type-directed matching — store the compiled type on the Slice
+//       node and is-a the value before matching. Fixes THIS witness,
+//       costs a runtime type walk on a hot path, and is INCOMPLETE:
+//       the same-element-type case stays arbitrary.
+//   (b) REJECT AT COMPILE TIME (recommended) — a slice pattern of
+//       arity N over a union that also contains a tuple of arity N
+//       (or, for prefix/suffix patterns, any tuple of arity >= the
+//       fixed part) is ambiguous at the value level, so refuse it.
+//       Total, no runtime cost, makes the invalid state
+//       unrepresentable; the cost is rejecting programs that "work"
+//       today by accident. Narrow: differing arities are unambiguous
+//       and stay legal.
+//   (c) rule that slice patterns DO match tuples (tuples are arrays at
+//       the value level) — but that contradicts the typechecker's
+//       existing "will never match" rejection and would need `x + y`
+//       over the tuple's members to typecheck, so it is a real
+//       language change.
+//
+// Until it is ruled, the interp can produce a value that violates its
+// own static type — which is the strongest argument for (b).
+{let a = array::iter([[u8:0, u8:159, u8:146, u8:150], (true, true), true, i64:0]); select a {[x] => x, [x, y] => x + y, _ => true}}
