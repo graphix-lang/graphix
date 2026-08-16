@@ -23,6 +23,12 @@ impl FromValue for ConstraintV {
             [Value::String(s), Value::I64(p)] => match &**s {
                 "Min" => Constraint::Min(*p as u16),
                 "Max" => Constraint::Max(*p as u16),
+                // `Length` is in the declared `Constraint` type, so the
+                // typechecker accepts it — it was simply missing here,
+                // and a decode failure makes the whole widget produce
+                // NOTHING rather than complain: a table with
+                // `#widths: &[`Length(10), ..]` rendered an empty box.
+                "Length" => Constraint::Length(*p as u16),
                 "Percentage" => Constraint::Percentage(*p as u16),
                 "Fill" => Constraint::Fill(*p as u16),
                 s => bail!("invalid constraint tag {s}"),

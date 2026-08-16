@@ -1,0 +1,115 @@
+// Fleet soak dashboard.
+//
+//   graphix graphix-fuzz/soak-dash.gx        (ctrl-c to quit)
+//
+// One row per lane: which box, which campaign directory it is soaking,
+// how many subjects that lane has run, and what it has logged —
+// divergences, crashes, and how many of those made it into the
+// campaign corpus. A box that stops answering shows DOWN rather than
+// vanishing, because "no row" and "no lanes" are different facts.
+//
+// The ssh fan-out lives in soak-collect.sh, spawned here as a child and
+// killed with the dashboard (kill_on_drop). It rewrites a status file
+// every few seconds; this program re-reads it on a timer. Splitting it
+// that way keeps five concurrent ssh sessions out of the reactive
+// graph — the dashboard only ever reads one small local file.
+
+use tui;
+use tui::table;
+use tui::block;
+use tui::text;
+
+let status_file = "/tmp/graphix-soak-status";
+let collector = "/home/eric/proj/graphix/graphix-fuzz/soak-collect.sh";
+
+// Spawned once, at init. Its output goes nowhere: the status file is
+// the channel.
+let child = sys::process::spawn(sys::process::options(
+    #args: [collector, status_file, "10"],
+    #kill_on_drop: true,
+    #stdio: sys::process::stdio(#stdout: `Null, #stderr: `Null),
+    "bash"
+));
+
+let tick = sys::time::timer(duration:3.s, true);
+let raw = sys::fs::read_all(tick ~ status_file)$;
+let lines = str::split(#pat: "\n", raw);
+
+// host <name> <campaign> <up|down|nolanes> <lanes>
+// lane <host> <lane> <runs> <div> <crash> <corpus> <shapes>
+// stamp <hh:mm:ss>
+let rows = array::filter_map(lines, |l| select str::split(#pat: " ", l) {
+    [k, host, camp, state, lanes] if k == "host" => `Host((host, camp, state, lanes)),
+    [k, hst, lane, runs, div, crash, corpus, shapes] if k == "lane" =>
+        `Lane((lane, runs, div, crash, corpus)),
+    other => null
+});
+
+let stamp = array::fold(lines, "waiting for first collection", |acc, l|
+    select str::split(#pat: " ", l) {
+        [k, t] if k == "stamp" => t,
+        _ => acc
+    });
+
+// Colour carries the only two things worth seeing from across the
+// room: a box that is down, and a lane that has logged something.
+// The parameter is annotated because the renderers accept `Line`s as
+// well as strings, which leaves the inferred parameter looser than
+// what `rows` actually carries.
+type Entry = [
+    `Host((string, string, string, string)),
+    `Lane((string, string, string, string, string))
+];
+let to_row = |r: Entry| select r {
+    `Host((host, camp, state, lanes)) => row(
+        #style: select state {
+            "up" => style(#fg: `Green),
+            "down" => style(#fg: `Red, #add_modifier: [`Bold]),
+            _ => style(#fg: `Yellow)
+        },
+        [
+            cell(line(host)),
+            cell(line(camp)),
+            cell(line(str::concat(state, " ", lanes, " lanes"))),
+            cell(line("")),
+            cell(line("")),
+            cell(line(""))
+        ]
+    ),
+    `Lane((lane, runs, div, crash, corpus)) => row(
+        #style: select div != "0" || crash != "0" {
+            true => style(#fg: `Red, #add_modifier: [`Bold]),
+            false => style(#fg: `DarkGray)
+        },
+        [
+            cell(line("")),
+            cell(line(str::concat("  ", lane))),
+            cell(line(runs)),
+            cell(line(div)),
+            cell(line(crash)),
+            cell(line(corpus))
+        ]
+    )
+};
+
+let header = row(
+    #style: style(#fg: `Black, #bg: `Cyan),
+    [
+        cell(line("box")),
+        cell(line("campaign / lane")),
+        cell(line("runs")),
+        cell(line("diverge")),
+        cell(line("crash")),
+        cell(line("corpus"))
+    ]
+);
+
+block(
+    #border: &`All,
+    #title: &line(str::concat("graphix soak fleet — ", stamp, " — ctrl-c to quit")),
+    &table(
+        #header: &header,
+        #widths: &[`Length(9), `Length(24), `Length(12), `Length(9), `Length(8), `Length(8)],
+        &array::map(rows, |r| &to_row(r))
+    )
+)
