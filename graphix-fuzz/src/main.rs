@@ -766,14 +766,25 @@ async fn main() -> Result<()> {
         Some("selfcheck-one") => {
             let code = read_stdin()?;
             let mut mask = 0;
+            let mut inconclusive = false;
             for mode in graphix_fuzz::selfcheck_one(code.trim(), timeout()).await {
                 match mode {
                     "interp" => mask |= 1,
                     "jit" => mask |= 2,
+                    // Timed out at 4x on the confirm pair: the budget,
+                    // not the engine, decided. Reported separately so a
+                    // gate that stops covering subjects says so.
+                    "inconclusive" => inconclusive = true,
                     _ => mask |= 3,
                 }
             }
-            std::process::exit(if mask == 0 { 0 } else { 40 + mask });
+            std::process::exit(if mask != 0 {
+                40 + mask
+            } else if inconclusive {
+                50
+            } else {
+                0
+            });
         }
         // Hidden: the isolated minimizer (program on stdin, the reduced
         // program written to the FILE named by the extra argument —

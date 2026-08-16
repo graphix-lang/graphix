@@ -1,0 +1,33 @@
+// aug14d ryouko fuzz divergence_000005 — found in the aug14f BACKLOG
+// AUDIT (it slipped its own round's triage and survived every fix
+// since). RULED by Eric 2026-08-15: "that's a type error, for an
+// array slice pattern to match a tuple, huge problem."
+//
+//   before: interp [1:true 2:u32:2 3:true 4:true]
+//           jit    [1:true         3:true 4:true]
+//   after:  both   [1:true 2:true  3:true 4:true]
+//
+// BOTH engines were wrong, and the interp was UNSOUND. `array::iter`
+// over a heterogeneous literal yields the union
+// [Array<u8>, (bool, bool), bool, i64]. On the TUPLE element:
+//   * the interp matched it against the ARRAY pattern `[x, y]` — a
+//     tuple and an array are the same `Value::Array` at runtime — and
+//     bound x,y at the arm's compiled leaf type u8. `x + y` then added
+//     two bools and emitted u32:2, where the arm's type says
+//     [u8, bool]; the node-walk logged its own violation ("error, type
+//     [u8, bool] does not match value 2") and delivered it anyway.
+//   * the jit types leaves from the pattern KIND, so the bools didn't
+//     fit the compiled shape and the marshal treated the mismatch as
+//     MISSING — silent, per kernel.rs's obs-4 defence.
+//   * correct is neither: the tuple falls through to `_` => true.
+//
+// Root cause: `PatternNode::is_match` applied the type predicate only
+// when it was WRITTEN (`!explicit_type_predicate ||`), treating the
+// structural test as a sufficient proxy for an INFERRED one. It is not
+// — structure cannot distinguish a tuple from an array. The predicate
+// now holds either way. The typechecker already agreed all along:
+//     select (true, true) {[x, y] => x, _ => false}
+//       => "pattern Array<..> will never match (bool, bool)"
+// only the UNION case compiled, because `[x, y]` is live for the
+// Array<u8> member and the tuple was supposed to be the wildcard's.
+{let a = array::iter([[u8:0, u8:159, u8:146, u8:150], (true, true), true, i64:0]); select a {[x] => x, [x, y] => x + y, _ => true}}

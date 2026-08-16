@@ -889,7 +889,21 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(super) fn is_match(&self, env: &Env, v: &Value) -> bool {
-        (!self.explicit_type_predicate || self.type_predicate.is_a(env, v))
+        // The type predicate holds whether it was WRITTEN or INFERRED.
+        // Skipping the inferred one treated the structural test as a
+        // sufficient proxy for the type, and it is not: a tuple and an
+        // array are the SAME `Value::Array` at runtime, so `[x, y]` —
+        // whose inferred predicate is `Array<_>` — matched a 2-tuple
+        // out of a union scrutinee. The typechecker forbids exactly
+        // that ("pattern Array<..> will never match (bool, bool),
+        // unused match cases"), so the interp was binding leaves at
+        // types the arm's body had already been compiled against:
+        // `(true, true)` bound x,y:u8 and `x + y` added two bools,
+        // emitting a u32 where the arm's type said `[u8, bool]` — the
+        // node-walk even logged its own violation. A type error, so it
+        // must not match (Eric, 2026-08-15); the tuple falls through
+        // to the wildcard like any other unmatched member.
+        self.type_predicate.is_a(env, v)
             && self.structure_predicate.is_match(v)
             && match &self.guard {
                 None => true,

@@ -252,6 +252,8 @@
 3	sleep-restart-gate-aug2026/01_once_callee_arm.gx
 3	sleep-restart-gate-aug2026/02_count_tail_deferred.gx
 2	sleep-restart-gate-aug2026/03_count_root_gain.gx
+1	slice-pattern-tuple-type-aug2026/00_union_tuple_member.gx
+0	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
 0	soak-jul2026/01_clone_rebind_typedef_panic.gx
 1	soak-jul2026/02_slice_taint_placeholder_error.gx
 1	soak-jul2026/03_dead_dollar_stmt_kernel_abort.gx

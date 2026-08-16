@@ -1,0 +1,6 @@
+// The PREFIX-pattern face of 00: `[x, rest..]` is an array pattern
+// too, and a tuple is structurally a prefix-match of any arity <= its
+// length, so the same union scrutinee reached it the same way. Pins
+// that the restored type predicate covers SlicePrefix/SliceSuffix and
+// not just the exact-length Slice.
+{let a = array::iter([[u8:0, u8:159, u8:146], (true, true), i64:0]); select a {[x, rest..] => true, _ => false}}

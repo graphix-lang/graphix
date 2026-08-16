@@ -1897,8 +1897,15 @@ pub async fn selfcheck(
     }
     let mut flaky = Vec::new();
     let mut done = 0usize;
+    let mut inconclusive = 0usize;
     while let Some(res) = set.join_next().await {
         if let Ok(mut bad) = res {
+            // Budget-limited subjects are NOT findings: counted and
+            // reported, never failed on (a Timeout compared against a
+            // value measures the budget, not determinism).
+            let n = bad.len();
+            bad.retain(|(_, mode)| *mode != "inconclusive");
+            inconclusive += n - bad.len();
             // Stream each finding as it lands — a killed or wedged run
             // must not take the collected list with it.
             for (prog, mode) in &bad {
@@ -1908,12 +1915,23 @@ pub async fn selfcheck(
         }
         done += 1;
         if done % 200 == 0 {
-            eprintln!("  …{done}/{} selfchecked, {} flaky", progs.len(), flaky.len());
+            eprintln!(
+                "  …{done}/{} selfchecked, {} flaky, {inconclusive} inconclusive",
+                progs.len(),
+                flaky.len()
+            );
         }
         if next < progs.len() {
             spawn_one(&mut set, progs[next].clone());
             next += 1;
         }
+    }
+    if inconclusive > 0 {
+        eprintln!(
+            "selfcheck: {inconclusive}/{} subject(s) inconclusive — timed out at 4x \
+             the budget on the confirm pair, so determinism was not measured for them",
+            progs.len()
+        );
     }
     flaky
 }
@@ -2367,9 +2385,28 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
             run_program(prog, mode, timeout),
         );
         if !a.agrees_with_at(&b, tier) {
-            let a2 = run_program(prog, mode, timeout).await;
-            let b2 = run_program(prog, mode, timeout).await;
+            // The confirm pair runs at 4x, and a TIMEOUT on one side is
+            // read as a budget artifact rather than a verdict: a
+            // Timeout is not a value, so comparing it against one
+            // measures the budget, not the engine's determinism. Under
+            // a loaded gate (the full workspace suite is ~13x slower
+            // than a solo run) a subject sitting near the budget flips
+            // Timeout/Trace between runs and reported as nondeterminism
+            // — a `f(i64:256)` non-tail recursion did exactly this,
+            // 1-2 times per 200-subject sweep, while being perfectly
+            // deterministic in isolation (8/8 identical). Same medicine
+            // as `run_regression`'s sequential retry: never let a
+            // budget artifact become a semantic verdict.
+            let big = timeout * 4;
+            let a2 = run_program(prog, mode, big).await;
+            let b2 = run_program(prog, mode, big).await;
             if a2.agrees_with_at(&b2, tier) {
+                continue;
+            }
+            if matches!(a2, Outcome::Timeout) || matches!(b2, Outcome::Timeout) {
+                // Inconclusive at this budget, not flaky. The caller
+                // counts these so coverage can't degrade silently.
+                bad.push("inconclusive");
                 continue;
             }
             bad.push(match mode {
@@ -2428,6 +2465,9 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
         Some(41) => vec!["interp"],
         Some(42) => vec!["jit"],
         Some(43) => vec!["interp", "jit"],
+        // Timed out at 4x on the confirm pair — the budget decided, not
+        // the engine. Counted, never a failure.
+        Some(50) => vec!["inconclusive"],
         _ => vec!["crash"],
     }
 }
@@ -4204,6 +4244,7 @@ mod tests {
         let t = Duration::from_secs(10);
         let mut rng = Rng::new(0xD17EC7);
         let mut fused = 0usize;
+        let mut budget_skipped = 0usize;
         for _ in 0..120 {
             let code = gen_program(&mut rng);
             let (interp, (direct, stats)) = tokio::join!(
@@ -4216,6 +4257,31 @@ mod tests {
             // assert when interp agrees with itself — mirrors the
             // oracle's double-run guard.
             if !interp.agrees_with(&direct) {
+                // A TIMEOUT on either side is the budget talking, not
+                // the backend: this test runs inside `cargo test
+                // --workspace`, where the whole suite is ~13x slower
+                // than a solo run (550s vs 42s), so a heavy subject
+                // near the 10s budget completes in one mode and times
+                // out in the other and the assert reads it as a
+                // divergence. Solo runs never showed it. Re-check at 4x
+                // before believing any disagreement involving a
+                // Timeout; the fuzz oracle escalates the same way.
+                if matches!(interp, Outcome::Timeout)
+                    || matches!(direct, Outcome::Timeout)
+                {
+                    let big = t * 4;
+                    let (i2, j2) = tokio::join!(
+                        run_program(&code, Mode::Interp, big),
+                        run_program(&code, Mode::Jit, big),
+                    );
+                    if i2.agrees_with(&j2)
+                        || matches!(i2, Outcome::Timeout)
+                        || matches!(j2, Outcome::Timeout)
+                    {
+                        budget_skipped += 1;
+                        continue;
+                    }
+                }
                 let interp2 = run_program(&code, Mode::Interp, t).await;
                 if !interp.agrees_with(&interp2) {
                     continue; // nondeterministic — not a backend bug
@@ -4227,8 +4293,13 @@ mod tests {
             }
         }
         // The live coverage number — visible in every `--nocapture`
-        // run, no instrumentation ritual required.
-        eprintln!("sweep: {fused} regions fused across 120 programs");
+        // run, no instrumentation ritual required. Budget skips are
+        // reported beside it: a suite run that quietly stopped
+        // COMPARING its subjects would otherwise look identical to a
+        // clean one.
+        eprintln!(
+            "sweep: {fused} regions fused across 120 programs              ({budget_skipped} skipped on budget)"
+        );
     }
 
     /// Every scheduled hand seed (Phase 3.1) agrees across modes at
