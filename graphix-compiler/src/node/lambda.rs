@@ -185,7 +185,17 @@ enum LambdaDispatch {
 /// formals ++ captures). Reads through the dense seam: only a
 /// DELIVERED production can trigger; the standing value channel never
 /// does.
-fn externals_triggered<R: Rt, E: UserEvent>(
+/// Did anything the body READS carry new information into this cycle?
+///
+/// Every id the body reads counts, not just the ones bound outside it.
+/// A `<-` target declared inside the body (`x => { let s = 0; s <- e; s }`)
+/// receives its update from the runtime across cycles exactly like a
+/// capture does, so a poll that delivers one is not quiet — riding the
+/// resident through it swallowed the connect's delivery outright, and
+/// the loop never re-derived (aug15b katana fuzz 000000). Externality
+/// was only ever a proxy for "can this change under us", and it stopped
+/// being a sound one once a body could own the target.
+fn inputs_triggered<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
     event: &Event<E>,
@@ -193,7 +203,7 @@ fn externals_triggered<R: Rt, E: UserEvent>(
     let mut refs = Refs::default();
     body.refs(&mut refs);
     let mut hit = false;
-    refs.with_external_refs(|id| {
+    refs.with_refs(|id| {
         hit |= matches!(
             super::read_var(ctx, event, &id),
             Some(super::VarRead::Delivered(tv)) if tv.tag().triggers()
@@ -457,7 +467,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         if self.tail_loop.load(Ordering::Relaxed)
             && self.prev_looped
             && !entry_fired
-            && !externals_triggered(&self.body, ctx, event)
+            && !inputs_triggered(&self.body, ctx, event)
         {
             return self.resident.ride();
         }
@@ -518,7 +528,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     // non-tail sibling of the tail quiet-poll ride).
                     // Nothing new happened: ride the settled resident.
                     ctx.pending_tail_call = None;
-                    if !entry_fired && !externals_triggered(&self.body, ctx, event) {
+                    if !entry_fired && !inputs_triggered(&self.body, ctx, event) {
                         return self.resident.ride();
                     }
                     // Whole-derivation bottom (Eric's ruling
@@ -597,7 +607,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // re-firing.
             let framed = self.prev_looped
                 && !event.init
-                && (entry_fired || externals_triggered(&self.body, ctx, event));
+                && (entry_fired || inputs_triggered(&self.body, ctx, event));
             if framed {
                 self.body.reset_replay(ctx);
                 // Seed the framed first pass's frame with the FORMALS'
@@ -772,7 +782,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 || framed
                 || event.init
                 || entry_fired
-                || externals_triggered(&self.body, ctx, event)
+                || inputs_triggered(&self.body, ctx, event)
             {
                 self.prev_looped = reentered;
             }
@@ -805,7 +815,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 // even when the taken arm's own production is
                 // stale (a const base arm re-selected by a later
                 // cycle's loop — jul21g divergence).
-                let entry = entry_fired || externals_triggered(&self.body, ctx, event);
+                let entry = entry_fired || inputs_triggered(&self.body, ctx, event);
                 if !entry {
                     TagValue::stale(res.value())
                 } else if ctx.tail_scrut_fired {

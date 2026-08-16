@@ -1,0 +1,19 @@
+// aug15b katana fuzz divergence_000000 (2026-08-16), minimized: an
+// INTERP-side miss — the JIT was right.
+//
+// The tail-loop driver's quiet-poll ride (`GXLambda::update`) asked
+// "did anything EXTERNAL to the body trigger this cycle" and rode its
+// resident when nothing had. A `<-` target declared INSIDE the body is
+// bound there, so it was not external — and the runtime's cross-cycle
+// delivery to it was swallowed whole: the connect scheduled, `s` was
+// set, and the loop never re-derived, so the second delivery never
+// reached the program. Hoisting `s` above the lambda made both engines
+// agree, which is what named the bug: externality was only ever a
+// proxy for "can this change under us", and it stopped being a sound
+// one once a body could own the target.
+//
+// Fix: the predicate counts every id the body READS, bound inside it or
+// out (`Refs::with_refs`, `inputs_triggered`) — used at all five of its
+// sites, so the re-derivation is FRAMED like any other triggered one.
+// Depth 1 is enough; the campaign witness recursed to 10.
+{let rec f = |x: i64| select x {x if x < i64:1 => f(x + i64:1), x => {let s = i64:0; s <- i64:0; s}}; f(i64:0)}

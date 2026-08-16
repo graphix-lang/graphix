@@ -1,0 +1,8 @@
+// THE ORACLE for 00, kept as a pin in its own right: the hand-inlined
+// chain of distinct functions. The recursion ruling (2026-08-13) says
+// recursion fires like this program, and this program always emitted
+// BOTH deliveries on both engines — which is how the recursive twin's
+// single delivery was adjudicated an interp miss without a new ruling.
+{let g = |x: i64| {let s = i64:0; s <- i64:0; s};
+ let f = |x: i64| select x {x if x < i64:1 => g(x + i64:1), x => g(x)};
+ f(i64:0)}

@@ -1,0 +1,6 @@
+// The NON-TAIL sibling of 00 — same body, but the recursive call sits
+// under an operator so the interp never enters the tail-loop driver.
+// It always agreed; it pins the boundary of the fix (the quiet-poll
+// ride is tail-loop-only, so only the tail path could swallow the
+// delivery).
+{let rec f = |x: i64| select x {x if x < i64:1 => i64:0 + f(x + i64:1), x => {let s = i64:0; s <- i64:0; s}}; f(i64:0)}

@@ -313,6 +313,10 @@
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 2	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
 2	tail-jump-honest-tags-jul2026/00_ignored_capture_arg.gx
+2	tail-loop-internal-connect-aug2026/00_internal_connect_in_tail_arm.gx
+2	tail-loop-internal-connect-aug2026/01_campaign_witness.gx
+3	tail-loop-internal-connect-aug2026/02_inlined_twin.gx
+2	tail-loop-internal-connect-aug2026/03_nontail_twin.gx
 1	tail-quiet-poll-rederivation-aug2026/00_iter_fed_const_loop.gx
 1	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 2	tail-scrut-fire-jul2026/01_const_base_arm_framed.gx

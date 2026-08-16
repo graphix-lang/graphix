@@ -615,6 +615,18 @@ impl Refs {
         }
     }
 
+    /// Visit every id READ in the walked subtree, whether it is bound
+    /// inside it or outside. Externality answers "who owns this
+    /// binding", which is the wrong question for "did anything this
+    /// subtree reads carry new information this cycle" — a `<-` target
+    /// declared INSIDE the subtree is written across cycles by the
+    /// runtime just like a capture is.
+    pub fn with_refs(&self, mut f: impl FnMut(BindId)) {
+        for id in &*self.refed {
+            f(*id);
+        }
+    }
+
     /// True if `id` is referenced anywhere in the walked subtree
     /// (whether or not it is also bound there).
     pub fn is_refed(&self, id: BindId) -> bool {
