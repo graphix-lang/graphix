@@ -219,7 +219,10 @@
       "Bash(git rm *)",
       "Bash(GRAPHIX_DBG_VARS=1 GXDBG_REF=1 timeout 240 ~/tmp/target/debug/graphix-fuzz check /home/eric/proj/graphix/fuzz/pending-triage/generated_missing_fires.gx)",
       "Bash(GXDBG_LETBIND=1 timeout 240 ~/tmp/target/debug/graphix-fuzz check /home/eric/proj/graphix/fuzz/pending-triage/generated_missing_fires.gx)",
-      "Bash(GXDBG_CS=1 timeout 240 ~/tmp/target/debug/graphix-fuzz check /home/eric/proj/graphix/fuzz/pending-triage/generated_missing_fires.gx)"
+      "Bash(GXDBG_CS=1 timeout 240 ~/tmp/target/debug/graphix-fuzz check /home/eric/proj/graphix/fuzz/pending-triage/generated_missing_fires.gx)",
+      "Bash(~/tmp/target/debug/graphix --help)",
+      "Bash(timeout 240 ~/tmp/target/debug/graphix-fuzz check /home/eric/proj/graphix/graphix-fuzz/findings/strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx)",
+      "Bash(xargs -P 12 -I{} bash -c 'v=$\\(timeout 300 ~/tmp/target/debug/graphix-fuzz check \"{}\" 2>/dev/null | grep -E \"^\\(AGREE|DIVERGENCE\\)\" | head -1\\); echo \"{} :: ${v:-TIMEOUT}\"')"
     ],
     "deny": [],
     "ask": []
