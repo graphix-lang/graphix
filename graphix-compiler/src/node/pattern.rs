@@ -4,7 +4,7 @@ use crate::{
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
     node::{Held, compiler},
-    typ::{Type, TypeRef},
+    typ::{IsAFlags, Type, TypeRef},
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -903,7 +903,26 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // node-walk even logged its own violation. A type error, so it
         // must not match (Eric, 2026-08-15); the tuple falls through
         // to the wildcard like any other unmatched member.
-        self.type_predicate.is_a(env, v)
+        //
+        // An INFERRED predicate is checked PERMISSIVELY, though: it is
+        // not a claim the user made, so it must not add refusals the
+        // user never asked for. `MatchAbstract` is the difference —
+        // an abstract type's representation is hidden by design, so a
+        // runtime check cannot verify it, and refusing made ordinary
+        // destructuring of a module-opaque value stop matching
+        // (`select (m0::mk(i64:1), i64:0) {(x, _) => ..}` produced
+        // NOTHING; caught within minutes by the fleet's generate
+        // lanes). The other unverifiable leaves — `Any`, `⊥`, an
+        // unbound tvar — are already permissive without `Strict`.
+        // An EXPLICIT predicate (`x as T`) keeps the strict reading:
+        // there the check IS the user's claim, and runtime dispatch
+        // must never claim a value it cannot verify.
+        let typed = if self.explicit_type_predicate {
+            self.type_predicate.is_a(env, v)
+        } else {
+            self.type_predicate.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
+        };
+        typed
             && self.structure_predicate.is_match(v)
             && match &self.guard {
                 None => true,

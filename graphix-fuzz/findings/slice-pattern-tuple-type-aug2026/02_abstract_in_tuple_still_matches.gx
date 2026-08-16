@@ -1,0 +1,45 @@
+// aug15a ryouko generate divergence_000000 — caught by the fleet's
+// generate lanes within MINUTES of the launch, on four boxes at once
+// (8/8/4/7 findings), and the reason that round was stopped and
+// relaunched. A regression from the same-day slice-pattern fix
+// (e86d18c1), which made a pattern's type predicate load-bearing at
+// runtime whether written or inferred.
+//
+//   interp: []              <- the arm stopped matching
+//   jit:    [0:"3.14"]
+//
+// `m0::mk` returns an ABSTRACT type, and `Type::Abstract` matches
+// NOTHING without `IsAFlags::MatchAbstract` — by design: a hidden
+// representation cannot be verified from outside its module, so
+// runtime dispatch must not claim it. Applied to an INFERRED
+// predicate that rule refuses an arm the user never asked to have
+// checked: destructuring a tuple that merely CONTAINS an opaque value
+// stopped matching, and the select produced nothing at all.
+//
+// The distinction the fix restores: an EXPLICIT predicate (`x as T`)
+// is the user's claim and stays strict; an INFERRED one is a
+// by-product of the structure and is checked permissively
+// (MatchAbstract), which still distinguishes `Array<u8>` from a bool
+// tuple — what the slice-pattern ruling was about — while never
+// refusing what it cannot verify.
+{let v4 = m0::mk(i64:-100); let v5 = (v4, (i64:-100 / i64:100)); let v8 = array::fold([[false]], f64:-1., |v8, v9| f64:2.5) * (-(f64:2.5)); select v5 {(_, i64:100) if (!false) => "graphix", (v11, _) => "[f64:3.14]"}}
+// file-v1: m0.gxi
+val k0: u8;
+/// generated
+val f0: fn(a0: bool) -> string;
+val f1: fn(a0: &i64) -> string;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m0.gx
+let k0: u8 = u8:2 / u8:1;
+let f0 = |v5: bool| "a";
+let f1 = |v6: &i64| -> string "graphix";
+type T = i64;
+let mk = |x: i64| -> T x;
+let un = |t: T| -> i64 t
+// file-v1: m1.gx
+type T = (i64, i64);
+let mk = |x: i64| -> T (x, x + i64:1)
+// file-v1: m2.gx
+true

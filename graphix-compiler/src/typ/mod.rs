@@ -24,6 +24,7 @@ use std::{
 use triomphe::Arc;
 
 mod cast;
+pub use cast::IsAFlags;
 mod contains;
 pub use contains::ContainsFlags;
 pub mod fntyp;
