@@ -38,10 +38,15 @@ let hosts = ["ryouko", "hz0", "hz1", "aieka", "katana"];
 // The last counter line of each source is republished every few seconds.
 // That reduction belongs here, next to the log, not in the dashboard.
 let remote = r'
-d=$(ls -dt ~/tmp/target/fuzz/*/ 2>/dev/null | head -1)
-if [ -z "$d" ]; then while :; do echo "LIVE - no"; sleep 5; done; fi
-c=$(basename "$d")
 while :; do
+  # Re-resolve the campaign EVERY cycle. Binding it once at connect time
+  # meant a probe kept watching whichever campaign existed when it
+  # started: restart the fleet under a new name and the dashboard sat on
+  # the old directory reporting DOWN forever, unable to recover without
+  # being restarted itself.
+  d=$(ls -dt ~/tmp/target/fuzz/*/ 2>/dev/null | head -1)
+  if [ -z "$d" ]; then echo "LIVE - no"; sleep 5; continue; fi
+  c=$(basename "$d")
   pid=$(cat "$d/state/soak.pid" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=yes; else live=no; fi
   echo "LIVE $c $live"
