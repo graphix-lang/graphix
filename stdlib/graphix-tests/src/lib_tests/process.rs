@@ -283,9 +283,12 @@ const IO_LINES_BATCHED: &str = r#"
   let out = opt::ok_or(child.stdout, `Null("stdout"))?;
   let batch = sys::io::lines_batched(out)?;
   let seen = [];
-  seen <- array::push(batch ~ seen, batch);
+  // Assert the CONTRACT (every line, in order, never split across
+  // events), not the read boundaries: a pipe may split one write across
+  // reads, so how many lines ride in a given batch is not ours to pin.
+  seen <- array::concat(batch ~ seen, batch);
   select array::len(seen) {
-    i64:2 => array::map(seen, |b| str::join(#sep: ",", b)),
+    i64:5 => str::join(#sep: ",", seen),
     _ => never()
   }
 }
@@ -293,17 +296,5 @@ const IO_LINES_BATCHED: &str = r#"
 
 #[cfg(unix)]
 run!(io_lines_batched, IO_LINES_BATCHED, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => {
-            let got: Vec<&str> = a
-                .iter()
-                .filter_map(|v| match v {
-                    Value::String(s) => Some(&**s),
-                    _ => None,
-                })
-                .collect();
-            got == ["a1,a2,a3", "b1,b2"]
-        }
-        _ => false,
-    }
+    matches!(v, Ok(Value::String(s)) if &**s == "a1,a2,a3,b1,b2")
 }; graphix_package_core::testing::FuseExpect::Jit);

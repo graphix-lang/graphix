@@ -32,7 +32,16 @@ best() {
     local prog="$1"; shift   # remaining args = mode flags
     local best="" t out
     for _ in $(seq 1 "$iters"); do
-        out=$(timeout "$timeout_s" "$graphix" "$@" "$prog" 2>/dev/null)
+        # --no-netidx: the netidx bench must measure a round trip, not
+        # the box's netidx INSTALL. The shell otherwise seeds the local
+        # client config, so `netidx_stream` published into whatever
+        # resolver that names — and when it is down (or its TLS is not
+        # set up for whoever is running the bench) publish and subscribe
+        # simply never complete. That reads as `timeout` in the results
+        # table, which looks like a performance number and is not one;
+        # it also burns the full budget twice per run. The internal
+        # netidx is a real one, so the round trip is still real.
+        out=$(timeout "$timeout_s" "$graphix" --no-netidx "$@" "$prog" 2>/dev/null)
         if [[ $? -eq 124 ]]; then echo "timeout"; return; fi
         t=$(sed -n 's/.*elapsed_s=\([0-9.eE+-]*\).*/\1/p' <<<"$out" | head -1)
         [[ -z "$t" ]] && { echo "fail"; return; }
