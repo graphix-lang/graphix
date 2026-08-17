@@ -730,20 +730,8 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // arrival — flaps 3/5 in EITHER mode; de-asynced it agrees
         // deterministically).
         let fire_count_sensitive = [
-            "count(",
-            "sum(",
-            "product(",
-            "mean(",
-            "min(",
-            "max(",
-            "all(",
-            "and(",
-            "or(",
-            "queue(",
-            "take(",
-            "skip(",
-            "window(",
-            "iterq",
+            "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
+            "queue(", "take(", "skip(", "window(", "iterq",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
             return OracleTier::Excluded;
@@ -1197,11 +1185,14 @@ fn batch_size_async() -> usize {
 async fn batch_isolated(
     progs: Vec<String>,
     timeout: Duration,
-) -> Vec<(String, PoolResult)> {
+) -> (Vec<(String, PoolResult)>, Duration) {
     let n = progs.len();
     let mut resolved: Vec<Option<PoolResult>> = (0..n).map(|_| None).collect();
     let mut individual: Vec<usize> = Vec::new();
     let mut remaining: Vec<usize> = (0..n).collect();
+    // Every child this batch spends — re-batched rounds and individual
+    // fallbacks included — is charged to the source that asked for it.
+    let mut cpu = Duration::ZERO;
     // RE-BATCH after a clean abort: a wedged subject (an infinite
     // reactive loop leaves the runtime never-idle — no probe budget
     // recovers it) is reported `O` before the child stops, so the
@@ -1216,7 +1207,8 @@ async fn batch_isolated(
     // progress means no third try.
     loop {
         let batch: Vec<String> = remaining.iter().map(|&i| progs[i].clone()).collect();
-        let (clean, verdicts) = run_batch_child(&batch, timeout).await;
+        let (clean, verdicts, round_cpu) = run_batch_child(&batch, timeout).await;
+        cpu += round_cpu;
         if !clean || verdicts.is_empty() {
             individual.extend(remaining.drain(..));
             break;
@@ -1237,16 +1229,19 @@ async fn batch_isolated(
         }
     }
     for &i in &individual {
-        resolved[i] = Some(check_isolated(&progs[i], timeout).await);
+        let (res, one_cpu) = check_isolated(&progs[i], timeout).await;
+        cpu += one_cpu;
+        resolved[i] = Some(res);
     }
-    progs
+    let out = progs
         .into_iter()
         .zip(resolved)
         .map(|(prog, res)| {
             let res = res.unwrap_or(PoolResult::Agree { ran: false });
             (prog, res)
         })
-        .collect()
+        .collect();
+    (out, cpu)
 }
 
 /// Spawn one `check-batch` child over `progs`, returning (clean-exit,
@@ -1257,7 +1252,7 @@ async fn batch_isolated(
 async fn run_batch_child(
     progs: &[String],
     timeout: Duration,
-) -> (bool, AHashMap<usize, BatchVerdict>) {
+) -> (bool, AHashMap<usize, BatchVerdict>, Duration) {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(child_exe());
     let sandbox = sandbox_cwd(&mut cmd);
@@ -1327,7 +1322,7 @@ async fn run_batch_child(
             }
         }
     }
-    (clean, verdicts)
+    (clean, verdicts, child_cpu(sandbox.path()))
 }
 
 /// Coarse "same bug" key: the bisection class + the interp/jit outcome
@@ -2154,6 +2149,18 @@ pub async fn fuzz(
     timeout: Duration,
     corpus: &std::sync::Arc<Corpus>,
 ) -> FuzzStats {
+    // Unnamed: a single-source campaign keeps the pre-merge log format.
+    let mut src = fuzz_source(seed, 1.0);
+    src.name = "";
+    run_pool_multi(corpus, iters, timeout, vec![src])
+        .await
+        .pop()
+        .map(|(_, stats, _)| stats)
+        .unwrap_or_default()
+}
+
+/// Source A: mutate the curated seed corpus.
+pub fn fuzz_source(seed: u64, weight: f64) -> Source<'static> {
     let seeds = corpus::all_seeds();
     let donors = mutate::donor_pool(&seeds);
     let mut rng = mutate::Rng::new(seed);
@@ -2168,16 +2175,16 @@ pub async fn fuzz(
     // order feeds the ring) — findings stay reproducible from their
     // recorded program text, and seed-replay tooling (selfcheck/
     // gen-check/detcheck) never uses the ring.
-    let ring = std::sync::Mutex::new((
+    let ring = std::sync::Arc::new(std::sync::Mutex::new((
         std::collections::VecDeque::<String>::new(),
         ahash::AHashSet::<u64>::new(),
-    ));
+    )));
     const RING_CAP: usize = 256;
-    run_pool(
-        corpus,
-        iters,
-        timeout,
-        || {
+    let admit = ring.clone();
+    Source {
+        name: "fuzz",
+        weight,
+        next: Box::new(move || {
             // Mutate a random seed; retry a few times if a mutation chain
             // didn't yield a parseable program, falling back to a raw seed
             // (always valid) so the pool never stalls. `mutate_wrapper`
@@ -2196,8 +2203,8 @@ pub async fn fuzz(
                 }
             }
             seeds[rng.below(seeds.len())].to_string()
-        },
-        |prog, ran| {
+        }),
+        on_agree: Box::new(move |prog, ran| {
             if !ran {
                 return false;
             }
@@ -2207,7 +2214,7 @@ pub async fn fuzz(
             if nodes < 8 || nodes > 600 || !interesting {
                 return false;
             }
-            let mut ring = ring.lock().unwrap();
+            let mut ring = admit.lock().unwrap();
             if !ring.1.insert(sig) {
                 return false;
             }
@@ -2216,9 +2223,8 @@ pub async fn fuzz(
                 ring.0.pop_front();
             }
             true
-        },
-    )
-    .await
+        }),
+    }
 }
 
 /// How many checks to keep in flight — the oracle is mostly I/O/wait
@@ -2258,21 +2264,33 @@ pub async fn generate_campaign(
     corpus: &std::sync::Arc<Corpus>,
     reactive: bool,
 ) -> FuzzStats {
+    let mut src = generate_source(seed, 1.0, reactive);
+    src.name = "";
+    run_pool_multi(corpus, iters, timeout, vec![src])
+        .await
+        .pop()
+        .map(|(_, stats, _)| stats)
+        .unwrap_or_default()
+}
+
+/// Sources B and C: fresh type-directed programs, plain or scheduled.
+/// Neither feeds the mutation ring — they are already exploring by
+/// construction, and admitting them would change what the ring's
+/// novelty counter measures.
+pub fn generate_source(seed: u64, weight: f64, reactive: bool) -> Source<'static> {
     let mut rng = mutate::Rng::new(seed);
-    run_pool(
-        corpus,
-        iters,
-        timeout,
-        || {
+    Source {
+        name: if reactive { "reactive" } else { "generate" },
+        weight,
+        next: Box::new(move || {
             if reactive {
                 generate::reactive::gen_reactive_program(&mut rng)
             } else {
                 generate::gen_program(&mut rng)
             }
-        },
-        |_, _| false,
-    )
-    .await
+        }),
+        on_agree: Box::new(|_, _| false),
+    }
 }
 
 /// What one pool slot concluded about a program.
@@ -2304,6 +2322,56 @@ fn child_exe() -> std::path::PathBuf {
     return std::path::PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]
     return std::env::current_exe().expect("current_exe");
+}
+
+/// CPU (user + system) this process has burned so far.
+///
+/// The soak scheduler's currency. A worker SLOT is not a core: it is one
+/// check in flight, and how much CPU that draws depends on how much of
+/// its life the subject spends blocked. The conversion rate differs per
+/// SOURCE — reactive subjects are compute-saturated while corpus mutants
+/// sit waiting on child startup and timeouts — so three lanes given 85
+/// slots each split a 32-core box 13/19/66 while looking evenly
+/// provisioned. Allocating on measured CPU is the fix; allocating on
+/// slots is the bug.
+pub fn self_cpu() -> Duration {
+    // SAFETY: getrusage writes a POD struct we own; the zeroed value is
+    // a valid rusage and the call cannot fail for RUSAGE_SELF.
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) } != 0 {
+        return Duration::ZERO;
+    }
+    let tv = |t: libc::timeval| {
+        Duration::new(
+            t.tv_sec.max(0) as u64,
+            (t.tv_usec.max(0) as u32).min(999_999) * 1000,
+        )
+    };
+    tv(ru.ru_utime) + tv(ru.ru_stime)
+}
+
+/// A worker child's name for the file it drops its own [`self_cpu`] in,
+/// relative to the sandbox cwd the parent owns and can read after the
+/// child is gone. The child reports its OWN usage rather than the parent
+/// reading rusage at reap time, because tokio reaps asynchronously and
+/// `RUSAGE_CHILDREN` is process-wide — neither can attribute CPU to the
+/// source that asked for the work.
+const CPU_REPORT: &str = "cpu-usage";
+
+/// Called by every worker child arm on its way out.
+pub fn report_self_cpu() {
+    let _ = std::fs::write(CPU_REPORT, self_cpu().as_micros().to_string());
+}
+
+/// Read back what a child reported. Absent (an old binary, a child that
+/// died before reporting) reads as zero: unattributed CPU makes a source
+/// look cheap, which the scheduler self-corrects on the next completion.
+fn child_cpu(sandbox: &std::path::Path) -> Duration {
+    std::fs::read_to_string(sandbox.join(CPU_REPORT))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_micros)
+        .unwrap_or_default()
 }
 
 /// Give a worker child a PARENT-owned sandbox cwd (generated programs
@@ -2351,10 +2419,7 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
                 if limit > 0 {
                     unsafe {
                         cmd.pre_exec(move || {
-                            let rl = libc::rlimit {
-                                rlim_cur: limit,
-                                rlim_max: limit,
-                            };
+                            let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
                             libc::setrlimit(libc::RLIMIT_AS, &rl);
                             Ok(())
                         });
@@ -2682,10 +2747,19 @@ pub async fn detcheck(
     flaps
 }
 
-async fn check_isolated(prog: &str, timeout: Duration) -> PoolResult {
-    use tokio::io::AsyncWriteExt;
+async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration) {
     let mut cmd = tokio::process::Command::new(child_exe());
-    let _sandbox = sandbox_cwd(&mut cmd);
+    let sandbox = sandbox_cwd(&mut cmd);
+    let res = check_isolated_in(prog, timeout, &mut cmd).await;
+    (res, child_cpu(sandbox.path()))
+}
+
+async fn check_isolated_in(
+    prog: &str,
+    timeout: Duration,
+    cmd: &mut tokio::process::Command,
+) -> PoolResult {
+    use tokio::io::AsyncWriteExt;
     cmd.arg("check-one")
         // The pool already provides the concurrency; small children keep
         // total thread count sane at parallelism() in-flight processes.
@@ -2862,39 +2936,120 @@ impl BreakageWindow {
     }
 }
 
-/// Worker pool. Keeps `parallelism()` oracle checks in flight over fresh
-/// programs from `next_prog`. Checks run in ISOLATED child processes by
-/// default (see [`check_isolated`]; `GRAPHIX_FUZZ_INPROC=1` opts back
-/// into in-process for debugging). On a divergence it fires a
-/// bounded-parallel task that minimizes, dedups against `corpus`, and —
-/// if the minimized form is new — writes the `.gx` and prints it
-/// immediately, all WITHOUT stalling the check pool (minimization is ≈80
-/// serial checks; running it inline drained the cores). A crash records
-/// immediately (no minimization — the repro must stay out-of-process).
-/// `iters = None` runs forever (until killed), surfacing new divergences
-/// live; `Some(n)` stops after `n` programs. `next_prog` runs on the
-/// driver task (sequential, deterministic, cheap).
-async fn run_pool(
+/// One work source in a soak: where its programs come from, what it does
+/// with an agreeing result, and the share of the box's CPU it should
+/// draw.
+pub struct Source<'a> {
+    /// Prefix on this source's counter lines; "" for a single-source
+    /// campaign, which keeps the pre-merge log format byte-identical.
+    pub name: &'static str,
+    /// Relative CPU share. Normalized internally, so any positive scale
+    /// works.
+    pub weight: f64,
+    pub next: Box<dyn FnMut() -> String + 'a>,
+    pub on_agree: Box<dyn FnMut(&str, bool) -> bool + 'a>,
+}
+
+/// Per-source accounting. `cpu` is what the source's finished children
+/// actually burned; `inflight` is what it has issued but not yet been
+/// charged for, which the scheduler estimates at the source's own
+/// observed mean so a burst cannot out-run its own feedback and
+/// oscillate.
+#[derive(Default)]
+struct SourceState {
+    cpu: Duration,
+    inflight: usize,
+    done: usize,
+    stats: FuzzStats,
+    pending: Vec<String>,
+    pending_async: Vec<String>,
+}
+
+impl SourceState {
+    /// CPU this source is expected to have drawn once everything it has
+    /// issued lands. `global_mean` seeds a source that has not completed
+    /// anything yet, so the very first picks still spread out.
+    fn projected(&self, global_mean: f64) -> f64 {
+        let mean = if self.done > 0 {
+            self.cpu.as_secs_f64() / self.done as f64
+        } else {
+            global_mean
+        };
+        self.cpu.as_secs_f64() + self.inflight as f64 * mean
+    }
+}
+
+/// Run several sources through ONE pool, dividing the box by measured
+/// CPU rather than by worker slots.
+///
+/// Keeps `parallelism()` oracle checks in flight. Checks run in ISOLATED
+/// child processes by default (see [`check_isolated`];
+/// `GRAPHIX_FUZZ_INPROC=1` opts back into in-process for debugging). On a
+/// divergence it fires a bounded-parallel task that minimizes, dedups
+/// against `corpus`, and — if the minimized form is new — writes the
+/// `.gx` and prints it immediately, all WITHOUT stalling the check pool
+/// (minimization is ≈80 serial checks; running it inline drained the
+/// cores). A crash records immediately (no minimization — the repro must
+/// stay out-of-process). `iters = None` runs forever (until killed),
+/// surfacing new divergences live; `Some(n)` stops after `n` programs
+/// across all sources. Generators run on the driver task (sequential,
+/// deterministic, cheap).
+///
+/// This is the whole reason the soak is one process. Three separate
+/// lane processes could only divide the box through the OS scheduler,
+/// which arbitrates between runnable PROCESSES — so equal worker counts
+/// bought wildly unequal CPU (measured 13/19/66 on a three-lane box,
+/// with the reactive lane taking two thirds while looking evenly
+/// provisioned). Slots are not cores: a slot is one check in flight, and
+/// what that draws depends on how much of its life the subject spends
+/// blocked. Here every child reports its own CPU, each batch is
+/// homogeneous in its source so the charge is exact, and the next batch
+/// goes to whichever source is furthest below its target share.
+pub async fn run_pool_multi<'a>(
     corpus: &std::sync::Arc<Corpus>,
     iters: Option<usize>,
     timeout: Duration,
-    mut next_prog: impl FnMut() -> String,
-    // Called on every agreeing result with the ran flag; returns true
-    // iff the program was admitted to a mutation ring as a NOVEL shape
-    // (counted in `FuzzStats::novel`). Generate lanes pass a no-op.
-    mut on_agree: impl FnMut(&str, bool) -> bool,
-) -> FuzzStats {
+    mut sources: Vec<Source<'a>>,
+) -> Vec<(&'static str, FuzzStats, Duration)> {
     use tokio::task::JoinSet;
     let par = parallelism();
     let isolate = std::env::var_os("GRAPHIX_FUZZ_INPROC").is_none();
     let bsize = if isolate { batch_size() } else { 1 };
-    let mut stats = FuzzStats::default();
     let mut breakage = BreakageWindow::new();
-    let mut checks: JoinSet<Vec<(String, PoolResult)>> = JoinSet::new();
+    let mut checks: JoinSet<(usize, Vec<(String, PoolResult)>, Duration)> =
+        JoinSet::new();
     let mut minims: JoinSet<()> = JoinSet::new();
     let mut launched = 0usize;
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
     let bsize_async = if isolate { batch_size_async() } else { 1 };
+    let mut states: Vec<SourceState> =
+        (0..sources.len()).map(|_| SourceState::default()).collect();
+    let wsum: f64 =
+        sources.iter().map(|s| s.weight.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
+    // Whichever source is furthest below its target share of projected
+    // CPU. With one source this is always 0 and costs nothing.
+    let pick = |sources: &[Source<'a>], states: &[SourceState]| -> usize {
+        if sources.len() == 1 {
+            return 0;
+        }
+        let done: usize = states.iter().map(|s| s.done).sum();
+        let cpu: f64 = states.iter().map(|s| s.cpu.as_secs_f64()).sum();
+        let global_mean = if done > 0 { cpu / done as f64 } else { 1.0 };
+        let proj: Vec<f64> = states.iter().map(|s| s.projected(global_mean)).collect();
+        let total: f64 = proj.iter().sum();
+        let mut best = 0;
+        let mut best_deficit = f64::NEG_INFINITY;
+        for i in 0..sources.len() {
+            let target = sources[i].weight.max(0.0) / wsum;
+            let actual = if total > 0.0 { proj[i] / total } else { 0.0 };
+            let deficit = target - actual;
+            if deficit > best_deficit {
+                best_deficit = deficit;
+                best = i;
+            }
+        }
+        best
+    };
     // Spawn ONE child's worth of work: batch-eligible programs
     // accumulate (across calls, via the per-class `pending` buffers)
     // into a `check-batch` child — pure (Exact) and async
@@ -2904,65 +3059,86 @@ async fn run_pool(
     // pre-batching behavior. Pulls from `next_prog` until something
     // spawns or `iters` runs out (leftover partial batches flush
     // then, so finite runs never strand subjects).
-    let mut spawn_next = |checks: &mut JoinSet<Vec<(String, PoolResult)>>,
-                          pending: &mut Vec<String>,
-                          pending_async: &mut Vec<String>,
-                          launched: &mut usize| {
-        loop {
-            if !want(*launched) {
-                if !pending.is_empty() {
-                    let batch = std::mem::take(pending);
-                    checks.spawn(async move { batch_isolated(batch, timeout).await });
-                } else if !pending_async.is_empty() {
-                    let batch = std::mem::take(pending_async);
-                    checks.spawn(async move { batch_isolated(batch, timeout).await });
+    // A batch is homogeneous in its SOURCE — the buffers live per
+    // source — so the child's reported CPU charges to exactly one
+    // account. Filling costs nothing extra: generation is synchronous
+    // and cheap, so the picked source simply fills its own batch.
+    let spawn_next =
+        |checks: &mut JoinSet<(usize, Vec<(String, PoolResult)>, Duration)>,
+         sources: &mut Vec<Source<'a>>,
+         states: &mut Vec<SourceState>,
+         launched: &mut usize| {
+            loop {
+                if !want(*launched) {
+                    for (si, st) in states.iter_mut().enumerate() {
+                        let buf = if !st.pending.is_empty() {
+                            &mut st.pending
+                        } else if !st.pending_async.is_empty() {
+                            &mut st.pending_async
+                        } else {
+                            continue;
+                        };
+                        let batch = std::mem::take(buf);
+                        st.inflight += batch.len();
+                        checks.spawn(async move {
+                            let (r, cpu) = batch_isolated(batch, timeout).await;
+                            (si, r, cpu)
+                        });
+                        return;
+                    }
+                    return;
                 }
-                return;
-            }
-            let prog = next_prog();
-            *launched += 1;
-            // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
-            // program as it dispatches. Mostly superseded by isolation
-            // (a crasher now records itself), but kept for debugging
-            // the DRIVER process itself.
-            if std::env::var_os("GRAPHIX_FUZZ_ECHO").is_some() {
-                eprintln!("FUZZPROG\t{}", prog.replace('\n', "\\n"));
-            }
-            if !isolate {
-                checks.spawn(async move {
-                    let res = match check_classified(&prog, timeout).await {
-                        (Some(d), _) => PoolResult::Diverge(d),
-                        (None, ran) => PoolResult::Agree { ran },
-                    };
-                    vec![(prog, res)]
-                });
-                return;
-            }
-            let (buf, cap) = match batch_class(&prog) {
-                BatchClass::Pure if bsize > 1 => (&mut *pending, bsize),
-                BatchClass::Async if bsize_async > 1 => {
-                    (&mut *pending_async, bsize_async)
+                let si = pick(sources, states);
+                let prog = (sources[si].next)();
+                *launched += 1;
+                // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
+                // program as it dispatches. Mostly superseded by isolation
+                // (a crasher now records itself), but kept for debugging
+                // the DRIVER process itself.
+                if std::env::var_os("GRAPHIX_FUZZ_ECHO").is_some() {
+                    eprintln!("FUZZPROG\t{}", prog.replace('\n', "\\n"));
                 }
-                _ => {
+                if !isolate {
+                    states[si].inflight += 1;
                     checks.spawn(async move {
-                        vec![(prog.clone(), check_isolated(&prog, timeout).await)]
+                        let res = match check_classified(&prog, timeout).await {
+                            (Some(d), _) => PoolResult::Diverge(d),
+                            (None, ran) => PoolResult::Agree { ran },
+                        };
+                        (si, vec![(prog, res)], Duration::ZERO)
                     });
                     return;
                 }
-            };
-            buf.push(prog);
-            if buf.len() >= cap {
-                let batch = std::mem::take(buf);
-                checks.spawn(async move { batch_isolated(batch, timeout).await });
-                return;
+                let st = &mut states[si];
+                let (buf, cap) = match batch_class(&prog) {
+                    BatchClass::Pure if bsize > 1 => (&mut st.pending, bsize),
+                    BatchClass::Async if bsize_async > 1 => {
+                        (&mut st.pending_async, bsize_async)
+                    }
+                    _ => {
+                        st.inflight += 1;
+                        checks.spawn(async move {
+                            let (r, cpu) = check_isolated(&prog, timeout).await;
+                            (si, vec![(prog, r)], cpu)
+                        });
+                        return;
+                    }
+                };
+                buf.push(prog);
+                if buf.len() >= cap {
+                    let batch = std::mem::take(buf);
+                    st.inflight += batch.len();
+                    checks.spawn(async move {
+                        let (r, cpu) = batch_isolated(batch, timeout).await;
+                        (si, r, cpu)
+                    });
+                    return;
+                }
             }
-        }
-    };
-    let mut pending: Vec<String> = Vec::new();
-    let mut pending_async: Vec<String> = Vec::new();
+        };
     while want(launched) && checks.len() < par {
         let before = checks.len();
-        spawn_next(&mut checks, &mut pending, &mut pending_async, &mut launched);
+        spawn_next(&mut checks, &mut sources, &mut states, &mut launched);
         if checks.len() == before {
             break;
         }
@@ -2978,21 +3154,38 @@ async fn run_pool(
                 // worker slot, and after `par` leaks the pool drained and
                 // a `forever` campaign exited "done" (soak jul04 item 6:
                 // the fuzz campaign bled out nine times overnight).
-                spawn_next(&mut checks, &mut pending, &mut pending_async, &mut launched);
-                if let Ok(results) = res {
+                spawn_next(&mut checks, &mut sources, &mut states, &mut launched);
+                if let Ok((si, results, cpu)) = res {
+                    states[si].cpu += cpu;
+                    states[si].inflight = states[si].inflight.saturating_sub(results.len());
+                    states[si].done += results.len();
                     for (prog, res) in results {
-                    stats.run += 1;
-                    if stats.run % 1000 == 0 {
+                    states[si].stats.run += 1;
+                    if states[si].stats.run % 1000 == 0 {
+                        // Per-source counters, each on its own line, so
+                        // one merged log reads exactly like the three
+                        // lane logs it replaces — plus the number that
+                        // matters for allocation: the share of measured
+                        // CPU this source actually drew.
+                        let total: f64 =
+                            states.iter().map(|s| s.cpu.as_secs_f64()).sum();
+                        let pct = if total > 0.0 {
+                            (states[si].cpu.as_secs_f64() * 100.0 / total).round() as u64
+                        } else {
+                            0
+                        };
+                        let st = &states[si].stats;
                         eprintln!(
-                            "  …{} run, {} divergences, {} crashes, {} in corpus, {} novel shapes",
-                            stats.run, stats.divergences, stats.crashes,
-                            corpus.len(), stats.novel
+                            "  {}…{} run, {} divergences, {} crashes, {} in corpus, \
+                             {} novel shapes, {}% cpu",
+                            sources[si].name, st.run, st.divergences, st.crashes,
+                            corpus.len(), st.novel, pct
                         );
                     }
                     let finding = match res {
                         PoolResult::Agree { ran } => {
-                            if on_agree(&prog, ran) {
-                                stats.novel += 1;
+                            if (sources[si].on_agree)(&prog, ran) {
+                                states[si].stats.novel += 1;
                             }
                             false
                         }
@@ -3010,7 +3203,7 @@ async fn run_pool(
                             {
                                 continue;
                             }
-                            stats.crashes += 1;
+                            states[si].stats.crashes += 1;
                             if corpus.record_crash(&prog, &status) {
                                 println!("CRASH — child {status}");
                                 println!(
@@ -3027,7 +3220,7 @@ async fn run_pool(
                             // value-deterministic async, nothing for
                             // Excluded), so a Diverge from the child is
                             // a real finding at its tier.
-                            stats.divergences += 1;
+                            states[si].stats.divergences += 1;
                             // Bound concurrent minimizations so a regressed
                             // (everything-diverges) run can't pile up
                             // unboundedly.
@@ -3077,7 +3270,11 @@ async fn run_pool(
         }
     }
     while minims.join_next().await.is_some() {}
-    stats
+    sources
+        .iter()
+        .zip(states.into_iter())
+        .map(|(src, st)| (src.name, st.stats, st.cpu))
+        .collect()
 }
 
 #[cfg(test)]

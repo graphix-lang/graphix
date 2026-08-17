@@ -25,6 +25,39 @@ use std::{
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Default soak mix, as CPU shares `fuzz:generate:reactive`.
+///
+/// Weighted by measured yield per CPU-second, not by taste. Over the
+/// five days to 2026-08-17 the three sources produced 14/7/14 findings
+/// while drawing 14%/19%/67% of the box — so per unit of CPU, mutation
+/// is ~4.8x the reactive generator and ~2.7x the plain one. The mix
+/// still funds both generators well past their share of findings,
+/// because they explore shapes mutation cannot reach and the yield
+/// estimate is noisy (14 vs 7 is only ~1.7 sigma).
+const DEFAULT_MIX: &str = "50:25:25";
+
+/// Parse a `fuzz:generate:reactive` CPU-share mix. Shares are relative;
+/// the pool normalizes them.
+fn parse_mix(spec: &str) -> Result<[f64; 3]> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if parts.len() != 3 {
+        bail!("mix must be fuzz:generate:reactive, got {spec:?}");
+    }
+    let mut out = [0.0; 3];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = p
+            .parse::<f64>()
+            .map_err(|_| anyhow::anyhow!("mix component {p:?} is not a number"))?;
+        if out[i] < 0.0 || !out[i].is_finite() {
+            bail!("mix component {p:?} must be finite and non-negative");
+        }
+    }
+    if out.iter().sum::<f64>() <= 0.0 {
+        bail!("mix must have at least one positive share");
+    }
+    Ok(out)
+}
+
 /// Parse an iteration count. `forever`/`inf`/`0` → run forever (`None`);
 /// a number → that many; absent/garbage → a sane default.
 fn parse_iters(arg: Option<&String>, default: usize) -> Option<usize> {
@@ -742,6 +775,8 @@ async fn main() -> Result<()> {
                 let _ = out.flush();
             })
             .await;
+            // What this batch cost, for the source that asked for it.
+            graphix_fuzz::report_self_cpu();
         }
         Some("check-one") => {
             let code = read_stdin()?;
@@ -755,6 +790,7 @@ async fn main() -> Result<()> {
                     (None, true) => 7,
                     (None, false) => 0,
                 };
+            graphix_fuzz::report_self_cpu();
             std::process::exit(status);
         }
         // Hidden: the isolated selfcheck worker (program on stdin;
@@ -861,6 +897,65 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        // A whole campaign in ONE process: all three sources through one
+        // pool, divided by MEASURED CPU. Three lane processes could only
+        // divide a box through the OS scheduler, which arbitrates
+        // between runnable processes, so equal worker counts bought
+        // wildly unequal CPU (13/19/66 measured, reactive taking two
+        // thirds while looking evenly provisioned). Weights are CPU
+        // shares, not slot counts.
+        Some("soak") => {
+            let iters = parse_iters(args.get(2), 100);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let mix = args.get(4).map(String::as_str).unwrap_or(DEFAULT_MIX).to_string();
+            let w = parse_mix(&mix)?;
+            let out = match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
+                Some(p) => std::path::PathBuf::from(p),
+                None => std::env::home_dir()
+                    .map(|h| h.join("tmp/target/fuzz/crashes"))
+                    .unwrap_or_else(|| "fuzz/crashes".into()),
+            };
+            let corpus = Arc::new(Corpus::load(&out));
+            println!(
+                "corpus: {} existing divergences loaded from {}/",
+                corpus.len(),
+                out.display()
+            );
+            let regressions = print_regression().await;
+            let before = corpus.len();
+            println!(
+                "soak: iters={} seed={seed} mix={mix} → {}/",
+                fmt_iters(iters),
+                out.display()
+            );
+            // Per-source seed streams are kept SEPARATE (the same
+            // +1000/+2000 offsets the three lanes used), so a subject
+            // stays reproducible from its source and seed even though
+            // the interleaving is now resource-dependent.
+            let sources = vec![
+                graphix_fuzz::fuzz_source(seed, w[0]),
+                graphix_fuzz::generate_source(seed + 1000, w[1], false),
+                graphix_fuzz::generate_source(seed + 2000, w[2], true),
+            ];
+            let per_source =
+                graphix_fuzz::run_pool_multi(&corpus, iters, campaign_timeout(), sources)
+                    .await;
+            let new = corpus.len() - before;
+            let total: f64 = per_source.iter().map(|(_, _, c)| c.as_secs_f64()).sum();
+            for (name, stats, cpu) in &per_source {
+                let pct =
+                    if total > 0.0 { cpu.as_secs_f64() * 100.0 / total } else { 0.0 };
+                println!(
+                    "done {name}: {} programs, {} divergences, {} crashes, \
+                     {} novel shapes, {:.0}% cpu",
+                    stats.run, stats.divergences, stats.crashes, stats.novel, pct
+                );
+            }
+            println!("{new} new, {} total in corpus", corpus.len());
+            if new > 0 || regressions > 0 {
+                std::process::exit(1);
+            }
+        }
         Some("minimize") => {
             let path = match args.get(2) {
                 Some(p) => p,
@@ -924,6 +1019,7 @@ async fn main() -> Result<()> {
         }
         _ => bail!(
             "usage: graphix-fuzz <check|run|minimize> <file>  |  \
+             graphix-fuzz soak [iters] [seed] [fuzz:generate:reactive]  |  \
              graphix-fuzz <fuzz|generate> [iters] [seed] [--reactive]  |  \
              graphix-fuzz <gen|gen-check> [n] [seed] [--reactive]  |  \
              graphix-fuzz reactive-check [n] [seed]  |  \

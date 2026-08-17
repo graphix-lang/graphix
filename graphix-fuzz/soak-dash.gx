@@ -2,114 +2,154 @@
 //
 //   graphix graphix-fuzz/soak-dash.gx        (ctrl-c to quit)
 //
-// One row per lane: which box, which campaign directory it is soaking,
-// how many subjects that lane has run, and what it has logged —
-// divergences, crashes, and how many of those made it into the
-// campaign corpus. A box that stops answering shows DOWN rather than
-// vanishing, because "no row" and "no lanes" are different facts.
+// One row per box, then one per work SOURCE under it: how many subjects
+// that source has run, what it logged, and the share of the box's CPU it
+// drew. That last column is the one the campaign's mix controls, and the
+// one worth watching — worker counts are not cores, and three
+// equally-provisioned lanes were splitting a box 13/19/66 before anyone
+// measured it.
 //
-// The ssh fan-out lives in soak-collect.sh, spawned here as a child and
-// killed with the dashboard (kill_on_drop). It rewrites a status file
-// every few seconds; this program re-reads it on a timer. Splitting it
-// that way keeps five concurrent ssh sessions out of the reactive
-// graph — the dashboard only ever reads one small local file.
+// Each box is read by one persistent ssh that tails that box's single
+// soak log. There is no collector script any more: the campaign is one
+// process writing one log, so there is one thing to read. A box that
+// stops answering shows DOWN rather than vanishing, because "no row" and
+// "no lanes" are different facts.
 
 use tui;
 use tui::table;
 use tui::block;
 use tui::text;
 
-let status_file = "/tmp/graphix-soak-status";
-let collector = "/home/eric/proj/graphix/graphix-fuzz/soak-collect.sh";
+let hosts = ["ryouko", "hz0", "hz1", "aieka", "katana"];
 
-// Spawned once, at init. Its output goes nowhere: the status file is
-// the channel.
-let child = sys::process::spawn(sys::process::options(
-    #args: [collector, status_file, "10"],
-    #kill_on_drop: true,
-    #stdio: sys::process::stdio(#stdout: `Null, #stderr: `Null),
-    "bash"
-));
+// Runs on the remote box, fed through `bash -s` on stdin rather than as
+// an ssh command line: three of these boxes have fish login shells, and
+// a bash script handed to fish dies on syntax rather than on the network
+// — which reads as "host unreachable" and costs a night of soaking.
+//
+// The last counter line of each source is republished every few seconds.
+// That reduction belongs here, next to the log, not in the dashboard.
+let remote = r'
+d=$(ls -dt ~/tmp/target/fuzz/*/ 2>/dev/null | head -1)
+if [ -z "$d" ]; then while :; do echo "LANE - none 0 0 0 0 0 0"; sleep 5; done; fi
+c=$(basename "$d")
+while :; do
+  tail -n 400 "$d/soak.log" 2>/dev/null | awk -v c="$c" \'
+    / run, / { split($1, a, "…"); last[a[1]] = a[2] " " $3 " " $5 " " $7 " " $10 " " $13 }
+    END { for (k in last) print "LANE " c " " k " " last[k] }\'
+  sleep 5
+done
+';
 
-let tick = sys::time::timer(duration:3.s, true);
-let raw = sys::fs::read_all(tick ~ status_file)$;
-let lines = str::split(#pat: "\n", raw);
-
-// host <name> <campaign> <up|down|nolanes> <lanes>
-// lane <host> <lane> <runs> <div> <crash> <corpus> <shapes>
-// stamp <hh:mm:ss>
-let rows = array::filter_map(lines, |l| select str::split(#pat: " ", l) {
-    [k, host, camp, state, lanes] if k == "host" => `Host((host, camp, state, lanes)),
-    [k, hst, lane, runs, div, crash, corpus, shapes] if k == "lane" =>
-        `Lane((lane, runs, div, crash, corpus)),
-    other => null
-});
-
-let stamp = array::fold(lines, "waiting for first collection", |acc, l|
-    select str::split(#pat: " ", l) {
-        [k, t] if k == "stamp" => t,
-        _ => acc
-    });
-
-// Colour carries the only two things worth seeing from across the
-// room: a box that is down, and a lane that has logged something.
-// The parameter is annotated because the renderers accept `Line`s as
-// well as strings, which leaves the inferred parameter looser than
-// what `rows` actually carries.
-type Entry = [
-    `Host((string, string, string, string)),
-    `Lane((string, string, string, string, string))
-];
-let to_row = |r: Entry| select r {
-    `Host((host, camp, state, lanes)) => row(
-        #style: select state {
-            "up" => style(#fg: `Green),
-            "down" => style(#fg: `Red, #add_modifier: [`Bold]),
-            _ => style(#fg: `Yellow)
-        },
-        [
-            cell(line(host)),
-            cell(line(camp)),
-            cell(line(str::concat(state, " ", lanes, " lanes"))),
-            cell(line("")),
-            cell(line("")),
-            cell(line(""))
-        ]
-    ),
-    `Lane((lane, runs, div, crash, corpus)) => row(
-        #style: select div != "0" || crash != "0" {
-            true => style(#fg: `Red, #add_modifier: [`Bold]),
-            false => style(#fg: `DarkGray)
-        },
-        [
-            cell(line("")),
-            cell(line(str::concat("  ", lane))),
-            cell(line(runs)),
-            cell(line(div)),
-            cell(line(crash)),
-            cell(line(corpus))
-        ]
-    )
+type Box = {
+  host: string,
+  camp: string,
+  lanes: Map<string, Array<string>>,
+  alive: bool
 };
 
+// One box: an ssh that stays up, and the last line seen per source.
+let probe = |host: string| -> Box {
+  let child = sys::process::spawn(sys::process::options(
+    #args: [
+      "-o", "BatchMode=yes",
+      "-o", "ConnectTimeout=10",
+      "-o", "ServerAliveInterval=20",
+      "-o", "ServerAliveCountMax=3",
+      host, "bash -s"
+    ],
+    #stdio: sys::process::stdio(#stdin: `Pipe, #stdout: `Pipe, #stderr: `Null),
+    #kill_on_drop: true,
+    "ssh"
+  ))$;
+  let sin = select child.stdin { null as _ => never(), s => s };
+  let sout = select child.stdout { null as _ => never(), s => s };
+  // Close after the write lands, so the remote bash sees EOF and starts.
+  let wrote = sys::io::write_exact(sin, buffer::from_string(remote))$;
+  sys::io::close(wrote ~ sin)$;
+  // `$`, not `?`: one box's stream failing must not take down the
+  // dashboard. That box stops producing lines, and its ssh exiting
+  // flips it to DOWN — which is what the operator needs to see anyway.
+  let line = sys::io::lines(sout)$;
+  let camp = "-";
+  let lanes = {};
+  select str::split(#pat: " ", line) {
+    [k, c, src, runs, div, crash, corp, novel, cpu] if k == "LANE" => {
+      camp <- c;
+      lanes <- map::insert(line ~ lanes, src, [runs, div, crash, corp, novel, cpu]);
+      null
+    },
+    _ => null
+  };
+  // The ssh exiting is the box going away — a dead probe must say so
+  // rather than freeze on its last good numbers.
+  let alive = true;
+  alive <- sys::process::wait(child.proc)$ ~ false;
+  { host, camp, lanes, alive }
+};
+
+let blank = cell(line(""));
+
+let host_row = |h: Box| row(
+  #style: select h.alive {
+    true => style(#fg: `Green),
+    false => style(#fg: `Red, #add_modifier: [`Bold])
+  },
+  [
+    cell(line(h.host)),
+    cell(line(h.camp)),
+    cell(line(select h.alive { true => "up", false => "DOWN" })),
+    blank, blank, blank, blank
+  ]
+);
+
+// Colour carries the only thing worth seeing from across the room: a
+// source that has logged something.
+let lane_row = |src: string, f: Array<string>| row(
+  #style: select f[1]$ != "0" || f[2]$ != "0" {
+    true => style(#fg: `Red, #add_modifier: [`Bold]),
+    false => style(#fg: `DarkGray)
+  },
+  [
+    blank,
+    cell(line(str::concat("  ", src))),
+    cell(line(f[0]$)),
+    cell(line(f[1]$)),
+    cell(line(f[2]$)),
+    cell(line(f[3]$)),
+    cell(line(f[5]$))
+  ]
+);
+
+let rows = array::flat_map(array::map(hosts, |h| probe(h)), |h|
+  array::push_front(
+    map::fold(h.lanes, [], |acc, (src, f)| array::push(acc, lane_row(src, f))),
+    host_row(h)
+  )
+);
+
 let header = row(
-    #style: style(#fg: `Black, #bg: `Cyan),
-    [
-        cell(line("box")),
-        cell(line("campaign / lane")),
-        cell(line("runs")),
-        cell(line("diverge")),
-        cell(line("crash")),
-        cell(line("corpus"))
-    ]
+  #style: style(#fg: `Black, #bg: `Cyan),
+  [
+    cell(line("box")),
+    cell(line("campaign / source")),
+    cell(line("runs")),
+    cell(line("diverge")),
+    cell(line("crash")),
+    cell(line("corpus")),
+    cell(line("cpu"))
+  ]
 );
 
 block(
-    #border: &`All,
-    #title: &line(str::concat("graphix soak fleet — ", stamp, " — ctrl-c to quit")),
-    &table(
-        #header: &header,
-        #widths: &[`Length(9), `Length(24), `Length(12), `Length(9), `Length(8), `Length(8)],
-        &array::map(rows, |r| &to_row(r))
-    )
+  #border: &`All,
+  #title: &line("graphix soak fleet — ctrl-c to quit"),
+  &table(
+    #header: &header,
+    #widths: &[
+      `Length(9), `Length(24), `Length(12),
+      `Length(9), `Length(8), `Length(8), `Length(6)
+    ],
+    &array::map(rows, |r| &r)
+  )
 )
