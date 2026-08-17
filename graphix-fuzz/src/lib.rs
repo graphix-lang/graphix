@@ -2946,7 +2946,13 @@ pub struct Source<'a> {
     /// Relative CPU share. Normalized internally, so any positive scale
     /// works.
     pub weight: f64,
-    pub next: Box<dyn FnMut() -> String + 'a>,
+    /// Generation runs in its OWN task, not on the driver — hence
+    /// `Send`. One driver doing three sources' generation was the
+    /// merged pool's throughput bug: `mutate_wrapper` parses and
+    /// rewrites an AST per subject, so the fuzz source alone pegged the
+    /// driver at a full core and the pool ran 6 of 24 slots. Three lane
+    /// PROCESSES had hidden this by having three drivers.
+    pub next: Box<dyn FnMut() -> String + Send + 'a>,
     pub on_agree: Box<dyn FnMut(&str, bool) -> bool + 'a>,
 }
 
@@ -2963,6 +2969,13 @@ struct SourceState {
     stats: FuzzStats,
     pending: Vec<String>,
     pending_async: Vec<String>,
+    /// Programs the source's generator task has already produced. The
+    /// driver only pops; it never generates. Refilled by `try_recv`, so
+    /// filling a 64-subject batch is a memory move rather than 64 AST
+    /// rewrites blocking every other dispatch — which is what made
+    /// utilization a sawtooth (a long generation stall, then one child
+    /// landing 64 subjects at once).
+    ready: std::collections::VecDeque<String>,
 }
 
 impl SourceState {
@@ -2977,6 +2990,37 @@ impl SourceState {
         };
         self.cpu.as_secs_f64() + self.inflight as f64 * mean
     }
+}
+
+/// How many programs each source's generator may run ahead. Deep enough
+/// that filling a 64-subject batch is always a memory move, small enough
+/// that a source cannot hoard memory when the pool is busy elsewhere.
+const GEN_BUFFER: usize = 512;
+
+/// Drain whatever the generators have produced into the ready buffers,
+/// then answer which source should actually be issued.
+///
+/// `want` is the scheduler's choice on CPU grounds; it wins whenever it
+/// has work. Otherwise any source with work beats issuing nothing, since
+/// an idle slot serves no target at all — the CPU shares reassert
+/// themselves as soon as the generator catches up.
+fn ready_source(
+    want: usize,
+    states: &mut [SourceState],
+    gens: &mut [tokio::sync::mpsc::Receiver<String>],
+) -> Option<usize> {
+    for (st, rx) in states.iter_mut().zip(gens.iter_mut()) {
+        while st.ready.len() < GEN_BUFFER {
+            match rx.try_recv() {
+                Ok(p) => st.ready.push_back(p),
+                Err(_) => break,
+            }
+        }
+    }
+    if !states[want].ready.is_empty() {
+        return Some(want);
+    }
+    states.iter().position(|st| !st.ready.is_empty())
 }
 
 /// Run several sources through ONE pool, dividing the box by measured
@@ -3005,11 +3049,11 @@ impl SourceState {
 /// blocked. Here every child reports its own CPU, each batch is
 /// homogeneous in its source so the charge is exact, and the next batch
 /// goes to whichever source is furthest below its target share.
-pub async fn run_pool_multi<'a>(
+pub async fn run_pool_multi(
     corpus: &std::sync::Arc<Corpus>,
     iters: Option<usize>,
     timeout: Duration,
-    mut sources: Vec<Source<'a>>,
+    mut sources: Vec<Source<'static>>,
 ) -> Vec<(&'static str, FuzzStats, Duration)> {
     use tokio::task::JoinSet;
     let par = parallelism();
@@ -3024,11 +3068,24 @@ pub async fn run_pool_multi<'a>(
     let bsize_async = if isolate { batch_size_async() } else { 1 };
     let mut states: Vec<SourceState> =
         (0..sources.len()).map(|_| SourceState::default()).collect();
+    // One generator task per source. Bounded, so a source that outruns
+    // the pool blocks in its own task rather than building an unbounded
+    // backlog, and each source's seed stream stays strictly sequential
+    // inside its own task — a subject is still (source, seed)
+    // reproducible.
+    let mut gens: Vec<tokio::sync::mpsc::Receiver<String>> = Vec::new();
+    let mut gen_tasks: JoinSet<()> = JoinSet::new();
+    for src in sources.iter_mut() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(GEN_BUFFER);
+        let mut next = std::mem::replace(&mut src.next, Box::new(String::new));
+        gen_tasks.spawn(async move { while tx.send(next()).await.is_ok() {} });
+        gens.push(rx);
+    }
     let wsum: f64 =
         sources.iter().map(|s| s.weight.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
     // Whichever source is furthest below its target share of projected
     // CPU. With one source this is always 0 and costs nothing.
-    let pick = |sources: &[Source<'a>], states: &[SourceState]| -> usize {
+    let pick = |sources: &[Source<'static>], states: &[SourceState]| -> usize {
         if sources.len() == 1 {
             return 0;
         }
@@ -3065,8 +3122,9 @@ pub async fn run_pool_multi<'a>(
     // and cheap, so the picked source simply fills its own batch.
     let spawn_next =
         |checks: &mut JoinSet<(usize, Vec<(String, PoolResult)>, Duration)>,
-         sources: &mut Vec<Source<'a>>,
+         sources: &mut Vec<Source<'static>>,
          states: &mut Vec<SourceState>,
+         gens: &mut Vec<tokio::sync::mpsc::Receiver<String>>,
          launched: &mut usize| {
             loop {
                 if !want(*launched) {
@@ -3089,7 +3147,20 @@ pub async fn run_pool_multi<'a>(
                     return;
                 }
                 let si = pick(sources, states);
-                let prog = (sources[si].next)();
+                // Refill from the generator, then pop. If the picked
+                // source has nothing ready we do NOT generate inline —
+                // that stall is the whole point of moving generation
+                // off — we take the neediest source that does have
+                // work, and if none does, hand the loop back so a
+                // completion can be reaped while generators catch up.
+                let si = match ready_source(si, states, gens) {
+                    Some(i) => i,
+                    None => return,
+                };
+                let prog = match states[si].ready.pop_front() {
+                    Some(p) => p,
+                    None => return,
+                };
                 *launched += 1;
                 // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
                 // program as it dispatches. Mostly superseded by isolation
@@ -3136,10 +3207,41 @@ pub async fn run_pool_multi<'a>(
                 }
             }
         };
+    // Wait for a generator when nothing is ready. Declining to spawn is
+    // correct (we never generate on the driver) but it must not be
+    // mistaken for "no work left": at t=0 every buffer is empty, and an
+    // unconditional break there exited the campaign having run nothing.
+    async fn await_any(
+        states: &mut [SourceState],
+        gens: &mut [tokio::sync::mpsc::Receiver<String>],
+    ) -> bool {
+        use tokio::sync::mpsc::error::TryRecvError;
+        loop {
+            let mut closed = 0;
+            for (st, rx) in states.iter_mut().zip(gens.iter_mut()) {
+                match rx.try_recv() {
+                    Ok(p) => {
+                        st.ready.push_back(p);
+                        return true;
+                    }
+                    Err(TryRecvError::Disconnected) => closed += 1,
+                    Err(TryRecvError::Empty) => (),
+                }
+            }
+            // Every generator gone means the campaign is genuinely out
+            // of work; otherwise wait briefly and look again. This path
+            // runs only when the pool has outrun generation, which the
+            // buffers make rare.
+            if closed == gens.len() {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
     while want(launched) && checks.len() < par {
         let before = checks.len();
-        spawn_next(&mut checks, &mut sources, &mut states, &mut launched);
-        if checks.len() == before {
+        spawn_next(&mut checks, &mut sources, &mut states, &mut gens, &mut launched);
+        if checks.len() == before && !await_any(&mut states, &mut gens).await {
             break;
         }
     }
@@ -3154,7 +3256,18 @@ pub async fn run_pool_multi<'a>(
                 // worker slot, and after `par` leaks the pool drained and
                 // a `forever` campaign exited "done" (soak jul04 item 6:
                 // the fuzz campaign bled out nine times overnight).
-                spawn_next(&mut checks, &mut sources, &mut states, &mut launched);
+                spawn_next(&mut checks, &mut sources, &mut states, &mut gens, &mut launched);
+                // Never let the pool drain to empty just because the
+                // generators were briefly behind — that would end a
+                // `forever` campaign silently.
+                while checks.is_empty()
+                    && want(launched)
+                    && await_any(&mut states, &mut gens).await
+                {
+                    spawn_next(
+                        &mut checks, &mut sources, &mut states, &mut gens, &mut launched,
+                    );
+                }
                 if let Ok((si, results, cpu)) = res {
                     states[si].cpu += cpu;
                     states[si].inflight = states[si].inflight.saturating_sub(results.len());
