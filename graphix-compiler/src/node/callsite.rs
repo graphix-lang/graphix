@@ -265,7 +265,6 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     Static { apply: Box<dyn Apply<R, E>>, resolved_ftype: FnType, first_update: bool },
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct StaticCallTarget {
     pub definition: LambdaId,
@@ -308,7 +307,6 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub struct CallSite<R: Rt, E: UserEvent> {
@@ -378,9 +376,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         match &self.callee {
             Callee::Static { resolved_ftype, .. } => Some(resolved_ftype),
-            Callee::DynamicUnbound
-            | Callee::DynamicBound { .. }
-            => None,
+            Callee::DynamicUnbound | Callee::DynamicBound { .. } => None,
         }
     }
 
@@ -1294,6 +1290,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if tag.triggers() {
                     arg_fired = true;
                     if tag.is_bottom() {
+                        // A fresh bottom PERSISTS in the store, exactly
+                        // like the clean value below and like the
+                        // GXLambda formal-publish twin (ruled delta 7 /
+                        // STRICT). Poisoning only the cycle-scoped
+                        // overlay left the store holding the last CLEAN
+                        // value, so the next cycle's standing read
+                        // resurrected it: `str::len(v0)` served
+                        // "graphix" to a builtin whose argument had
+                        // bottomed a cycle earlier, and the call fired
+                        // a stale 7 where the kernel stayed bottom
+                        // (aug15b hz0 reactive 000000). Same hole as
+                        // formal-bottom-persists-aug2026, in the
+                        // sibling path.
+                        if ctx.frame_depth == 0 {
+                            ctx.rt.store_insert(
+                                arg.id,
+                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+                            );
+                        }
                         event.variables.insert(
                             arg.id,
                             TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
@@ -1490,7 +1505,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         // real-init arm — R2). An overlay entry here
                         // would SHADOW that init upgrade (overlay reads
                         // precede the store and carry STALE verbatim).
-                        ctx.rt.store_insert_standing(*id, TagValue::stale(tv.value_cloned()));
+                        ctx.rt.store_insert_standing(
+                            *id,
+                            TagValue::stale(tv.value_cloned()),
+                        );
                     } else {
                         // In frames the store is off-limits (R3): the
                         // cycle-scoped overlay entry is the channel —

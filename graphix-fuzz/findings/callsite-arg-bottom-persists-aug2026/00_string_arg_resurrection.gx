@@ -1,0 +1,20 @@
+// aug15b hz0 reactive divergence_000000 (2026-08-16). INTERP-side.
+//
+// `CallSite::update` publishes each argument under the callee's arg id.
+// The CLEAN arm writes the STORE (at depth 0) and the overlay; the
+// BOTTOM arm wrote only the overlay. The overlay is cycle-scoped, so
+// the store kept the last clean value and the NEXT cycle's standing
+// read resurrected it: `str::len(v0)` was handed "graphix" a cycle
+// after v0 bottomed, and the call fired a stale 7 where the kernel
+// stayed bottom.
+//
+// Exactly the hole formal-bottom-persists-aug2026 fixed for the
+// GXLambda formal publish (ruled delta 7 / STRICT: a fresh bottom
+// PERSISTS in the store) — the sibling path never got it. Scalar twins
+// agreed, which is what made it look string-specific; it is not, the
+// string is just what made the resurrected value observable.
+// schedule-v1: cap=144 events=1152; in1=i64:1; in0=i64:1
+{let v0: string = {let cerr0: Error<Any> = never(); catch(e) cerr0 <- e; select in1 {i64:0 => "graphix", v0 => str::concat(str::sprintf("%d")$, "[false]-xyz")}};
+ let v1 = once(in0);
+ let v6: i64 = {let v5 = |v2: string, v3: u8, v4: string| -> u8 v3; select in0 {v6 if str::contains(#part: "a", v0) => str::len(v0), i64:-1 => str::len(v0), v6 => i64:0}};
+ let v7: Array<i64> = []; v7 <- in1 ~ array::push(v7, in1); let v8 = array::len(v7); (v8 + v6)}

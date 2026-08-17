@@ -404,3 +404,46 @@ and paces like the connect it is. Same-cycle would make a deref's value
 depend on where it sits in the program, since a reference stashed on an
 earlier cycle has no edge ordering it against the ByRef.
 Documented in `book/src/udt/references.md`.
+
+## callsite-arg-bottom-persists-aug2026 — WRONG VALUE (interp)
+
+`CallSite::update` publishes each argument under the callee's arg id.
+The CLEAN arm wrote the store (at depth 0) and the cycle-scoped overlay;
+the BOTTOM arm wrote only the overlay. So the store kept the last clean
+value and the next cycle's standing read resurrected it — `str::len(v0)`
+was handed "graphix" a cycle after v0 had bottomed, and the call fired a
+stale 7 where the kernel stayed bottom. Exactly the hole
+`formal-bottom-persists-aug2026` fixed for the GXLambda formal publish
+(ruled delta 7 / STRICT: a fresh bottom PERSISTS in the store); the
+sibling path never got it. 02 is the control that made it look
+shape-specific — routing the same call through a `let` always agreed,
+because the Bind's own bottom publish does persist.
+
+## arithmetic on an abstract — TYPE UNSOUNDNESS (typechecker)
+
+Not a findings dir: the witness is a COMPILE-REJECTION test,
+`lang::functions::arith_rejects_abstract_operand`, with
+`abstract_union_return_is_fine` as the counterpart that must keep
+compiling.
+
+From aug15b hz0 fuzz 000001, and the best find of the campaign — a
+three-line program that type-checked and then handed a LIST to `+`.
+The inner select's arms are `acc` and a List, so the call's type is
+honestly `[i64, <abstract>]`; the outer lambda makes the inner call
+elaborate per call site with the List still abstract. Arithmetic
+constrained the site to `Number`, the instance returned the union, and
+the resulting real mismatch was classified "crossed an abstract
+boundary" and excused — `try_static_resolve` discards the entire static
+resolution on an opaque failure, silently dropping the site's expected
+type. The engines then disagreed about the nonsense (the interp walked
+into the cons cells and produced a tree of parse errors; the kernel
+bottomed).
+
+Fixed in `check_instance_type`: privatizing is a name-preserving view
+swap, so when it leaves an abstract opaque the retry has learned
+nothing — but that is "undecided", not "undecidable". Resolve both sides
+through the abstract REGISTRY, and if the fully-resolved types still
+disagree, re-raise WITHOUT the opaque marker. Genuinely opaque cases (a
+`List` private↔public view mismatch — `list::flat_map`, the
+parameterized-abstract interfaces) keep their latitude, which is what
+the resolve step distinguishes.

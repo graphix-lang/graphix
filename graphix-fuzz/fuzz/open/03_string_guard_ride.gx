@@ -1,3 +1,0 @@
-// schedule-v1: cap=144 events=1152; in1=i64:1; in0=i64:1
-{let v0: string = select in1 {i64:0 => "graphix", v0 => cast<string>(i64:1 / i64:0)$};
- select in0 {v6 if str::contains(#part: "a", v0) => str::len(v0), v6 => i64:0}}

@@ -1,0 +1,7 @@
+// The same class with the select machinery stripped out: a builtin
+// whose string argument is a STANDING bottom, and something else
+// firing. Nothing about guards or arms is needed — just the argument
+// publish.
+// schedule-v1: cap=144 events=1152; in1=i64:1; in0=i64:1
+{let v0: string = select in1 {i64:0 => "graphix", v0 => cast<string>(i64:1 / i64:0)$};
+ str::len(v0) + (in0 - in0)}

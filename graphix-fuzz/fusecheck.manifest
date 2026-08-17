@@ -25,6 +25,9 @@
 1	callee-taint-cache-honor-aug2026/03_string_callee.gx
 1	callee-taint-cache-honor-aug2026/04_ignored_bottom_arg.gx
 2	callee-value-taint-passthrough-aug2026/00_callee_value_bottom_no_ride.gx
+7	callsite-arg-bottom-persists-aug2026/00_string_arg_resurrection.gx
+3	callsite-arg-bottom-persists-aug2026/01_minimal_no_select.gx
+3	callsite-arg-bottom-persists-aug2026/02_let_bound_control.gx
 2	capture-name-alias-jul2026/01_captured_x_reads_fold_element.gx
 0	cast-bottom-composite-aug2026/01_array_bottom_settle.gx
 1	cast-wire-jul2026/00_let_bound_cast.gx

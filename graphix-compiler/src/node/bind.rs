@@ -427,7 +427,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         let r = match super::read_var(ctx, event, &self.id) {
             Some(super::VarRead::Delivered(tv)) => {
                 if dbg {
-                    eprintln!("REF {:?} DELIVERED tag={:?}", self.id, tv.tag());
+                    eprintln!(
+                        "REF {} @{} {:?} DELIVERED tag={:?}",
+                        self.spec,
+                        self.spec.pos,
+                        self.id,
+                        tv.tag()
+                    );
                 }
                 self.resident.set(tv.clone())
             }
@@ -437,14 +443,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 let mut tv = tv.clone();
                 tv.retag(tag);
                 if dbg {
-                    eprintln!("REF {:?} STANDING init={init} tag={:?}", self.id, tag);
+                    eprintln!(
+                        "REF {} @{} {:?} STANDING init={init} tag={:?} val={:?}",
+                        self.spec,
+                        self.spec.pos,
+                        self.id,
+                        tag,
+                        tv.value_cloned()
+                    );
                 }
                 self.resident.set(tv)
             }
             None => {
                 if dbg {
                     eprintln!(
-                        "REF {:?} MISS ride tag={:?}",
+                        "REF {} {:?} MISS ride tag={:?}",
+                        self.spec,
                         self.id,
                         self.resident.tag()
                     );

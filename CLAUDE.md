@@ -54,6 +54,8 @@ cargo build                          # Debug build
 cargo build --release                # Release build (optimized, LTO enabled)
 ```
 
+Do not build this project in release mode unless you must, it takes a very long time.
+
 Build specific crate:
 ```bash
 cargo build -p graphix-shell         # Build shell

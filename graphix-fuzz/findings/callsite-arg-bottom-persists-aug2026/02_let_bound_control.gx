@@ -1,0 +1,8 @@
+// The control that made the bug look shape-specific: binding the call
+// through a `let` first always AGREED, because the Bind's own bottom
+// publish DOES persist to the store. Two publishers for the same value,
+// one poisoning the store and one not.
+// schedule-v1: cap=144 events=1152; in1=i64:1; in0=i64:1
+{let v0: string = select in1 {i64:0 => "graphix", v0 => cast<string>(i64:1 / i64:0)$};
+ let n = str::len(v0);
+ n + (in0 - in0)}

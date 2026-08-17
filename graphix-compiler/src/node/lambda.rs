@@ -334,7 +334,40 @@ fn check_instance_type<R: Rt, E: UserEvent>(
                 })
                 .ok();
             }
-            r
+            // Privatizing is a NAME-PRESERVING view swap; when it
+            // leaves an abstract still opaque the retry has learned
+            // nothing, and the failure stays "undecided" so consumers
+            // keep their existing latitude (a `List` private↔public
+            // mismatch must not become a hard error — list::flat_map
+            // and the parameterized-abstract interfaces live here).
+            //
+            // But undecided is not the same as undecidable. Resolve
+            // BOTH sides through the abstract REGISTRY — the expanding
+            // resolver fusion already uses — and if the fully-resolved
+            // types still disagree, nothing about module opacity can
+            // rescue them: re-raise without the marker so it is not
+            // excused. `try_static_resolve` discards the whole static
+            // resolution on an opaque failure, and that discard was
+            // silently dropping the site's expected type, which is how
+            // `list + 1` compiled — arithmetic constrained the site to
+            // Number, the instance returned `[i64, <abstract>]`, and
+            // the honest mismatch was excused (aug15b hz0 fuzz 000001).
+            r.map_err(|e| {
+                let re = crate::fusion::lowering::resolve_abstract(
+                    &ctx.fusion.abstract_registry,
+                    &expected,
+                    &ctx.env,
+                );
+                let ra = crate::fusion::lowering::resolve_abstract(
+                    &ctx.fusion.abstract_registry,
+                    &actual,
+                    &ctx.env,
+                );
+                match re.check_contains_rigid(&ctx.env, &ra) {
+                    Ok(()) => e,
+                    Err(e2) => anyhow!("{e2:#}"),
+                }
+            })
         }
         result => result,
     }

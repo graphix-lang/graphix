@@ -1697,3 +1697,64 @@ run!(dyncall_seed_backedge, DYNCALL_SEED_BACKEDGE, |v: Result<&Value>| {
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A LIST reached arithmetic (aug15b hz0 fuzz 000001 — a fuzzer find no
+// fixture would have produced). The inner select's arms are `acc` and a
+// List, so the call's type is honestly the union `[i64, <abstract>]`;
+// the outer lambda is what makes the inner call elaborate per call site
+// with the List still ABSTRACT. Arithmetic constrained the site to
+// Number, the instance returned the union, and the resulting mismatch —
+// a real one — was classified "crossed an abstract boundary" and
+// excused: `try_static_resolve` discards the whole static resolution on
+// an opaque failure, which silently dropped the site's expected type.
+// So this compiled, and then the two engines disagreed about what
+// `list + 1` means (the interp walked into the cons cells and produced
+// a tree of parse errors; the kernel bottomed).
+//
+// Fixed in `check_instance_type`: when privatizing leaves an abstract
+// opaque, resolve BOTH sides through the abstract registry, and if the
+// fully-resolved types still disagree, re-raise WITHOUT the opaque
+// marker — nothing about module opacity can rescue them. The
+// still-genuinely-opaque cases (a `List` private↔public view mismatch —
+// `list::flat_map`, the parameterized-abstract interfaces) keep their
+// latitude, which is what the resolve step distinguishes.
+const ARITH_REJECTS_ABSTRACT_OPERAND: &str = r#"
+{
+  let f = |x| {
+    let s = |n, acc| select n {
+      i64:0 => acc,
+      _ => list::from_array([x])
+    };
+    s(i64:100, i64:20)
+  };
+  let v = f("foo");
+  v + i64:1
+}
+"#;
+
+run!(
+    arith_rejects_abstract_operand,
+    ARITH_REJECTS_ABSTRACT_OPERAND,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The counterpart that must KEEP compiling: the same union, with no
+// arithmetic applied to it. The union type itself is legitimate — only
+// using it as a number is not.
+const ABSTRACT_UNION_RETURN_IS_FINE: &str = r#"
+{
+  let f = |x| {
+    let s = |n, acc| select n {
+      i64:0 => acc,
+      _ => list::from_array([x])
+    };
+    s(i64:100, i64:20)
+  };
+  f("foo")
+}
+"#;
+
+run!(abstract_union_return_is_fine, ABSTRACT_UNION_RETURN_IS_FINE, |v: Result<
+    &Value,
+>| matches!(v, Ok(_)));
