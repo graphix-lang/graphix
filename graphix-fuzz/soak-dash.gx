@@ -27,13 +27,24 @@ let hosts = ["ryouko", "hz0", "hz1", "aieka", "katana"];
 // a bash script handed to fish dies on syntax rather than on the network
 // — which reads as "host unreachable" and costs a night of soaking.
 //
+// Liveness is reported by the CAMPAIGN, not by this connection. An ssh
+// that is up says nothing about a soak that has died: the loop below
+// would happily keep re-tailing a log file that stopped growing hours
+// ago, and the dashboard showed `up` with frozen counters — the same
+// class of lie as the lane count this replaced. So each cycle checks
+// the pid the campaign recorded, and the numbers come with a LIVE line
+// that contradicts them when the process is gone.
+//
 // The last counter line of each source is republished every few seconds.
 // That reduction belongs here, next to the log, not in the dashboard.
 let remote = r'
 d=$(ls -dt ~/tmp/target/fuzz/*/ 2>/dev/null | head -1)
-if [ -z "$d" ]; then while :; do echo "LANE - none 0 0 0 0 0 0"; sleep 5; done; fi
+if [ -z "$d" ]; then while :; do echo "LIVE - no"; sleep 5; done; fi
 c=$(basename "$d")
 while :; do
+  pid=$(cat "$d/state/soak.pid" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=yes; else live=no; fi
+  echo "LIVE $c $live"
   tail -n 400 "$d/soak.log" 2>/dev/null | awk -v c="$c" \'
     / run, / { split($1, a, "…"); last[a[1]] = a[2] " " $3 " " $5 " " $7 " " $10 " " $13 }
     END { for (k in last) print "LANE " c " " k " " last[k] }\'
@@ -73,18 +84,27 @@ let probe = |host: string| -> Box {
   let line = sys::io::lines(sout)$;
   let camp = "-";
   let lanes = {};
+  let running = false;
   select str::split(#pat: " ", line) {
     [k, c, src, runs, div, crash, corp, novel, cpu] if k == "LANE" => {
       camp <- c;
       lanes <- map::insert(line ~ lanes, src, [runs, div, crash, corp, novel, cpu]);
       null
     },
+    [k, c, l] if k == "LIVE" => {
+      camp <- c;
+      running <- l == "yes";
+      null
+    },
     _ => null
   };
   // The ssh exiting is the box going away — a dead probe must say so
   // rather than freeze on its last good numbers.
-  let alive = true;
-  alive <- sys::process::wait(child.proc)$ ~ false;
+  // Up means BOTH: this connection is answering AND the campaign it
+  // reports on is actually running.
+  let connected = true;
+  connected <- sys::process::wait(child.proc)$ ~ false;
+  let alive = connected && running;
   { host, camp, lanes, alive }
 };
 
