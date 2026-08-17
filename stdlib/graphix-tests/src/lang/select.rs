@@ -1208,3 +1208,75 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(200)));
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// A pattern's inferred type predicate must not refuse a value because
+// an EARLIER union member already walked it.
+//
+// `Type::is_a_int`'s Ref arm kept a visited set that never popped, and a
+// repeat answered "no match". `Type::Set` is a union tried with `any`,
+// so one member descending into a child and failing is ordinary
+// backtracking — but its leftover entries then answered "no" for every
+// later member over that same child. Here the tuple's two `T`s are the
+// same recursive name, so checking the first pattern poisons the second:
+// NO arm matched, the select produced nothing, and everything downstream
+// went bottom. Since the program's only exit is gated on that value, it
+// sat idle at zero CPU forever — which is why bench/symbolic.gx read as
+// `timeout` in the results table rather than as a wedge.
+//
+// Latent until e86d18c1 made an inferred predicate load-bearing at
+// runtime. A regression here WEDGES rather than fails, so the harness
+// timeout is what turns it back into a test failure.
+const SELECT_RECURSIVE_TYPE_TUPLE_ARMS: &str = r#"
+{
+  type T = [`N(f64), `A(T, T)];
+  let id = |e: T| -> T e;
+  let v = `A(`N(1.0), `N(2.0));
+  select (id(v), id(v)) {
+    (`N(x), `N(y)) => "nn",
+    (a, b) => "other"
+  }
+}
+"#;
+
+run!(
+    select_recursive_type_tuple_arms,
+    SELECT_RECURSIVE_TYPE_TUPLE_ARMS,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other");
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The shape it was found in: two recursive functions over a recursive
+// ADT, where the second's select must re-check nodes the first walked.
+// Deeper than the minimal case above and correspondingly slower to
+// wedge, but it is the actual bench program's core and worth pinning.
+const SELECT_RECURSIVE_ADT_CHAIN: &str = r#"
+{
+  type T = [`N(f64), `V, `A(T, T), `M(T, T)];
+  let rec g = |e: T| -> T select e {
+    `N(_) => `N(0.0),
+    `V => `N(1.0),
+    `A(a, b) => `A(g(a), g(b)),
+    `M(a, b) => `A(`M(g(a), b), `M(a, g(b)))
+  };
+  let rec f = |e: T| -> T select e {
+    `N(x) => `N(x),
+    `V => `V,
+    `A(a, b) => select (f(a), f(b)) {
+      (`N(x), `N(y)) => `N(x + y),
+      (sa, sb) => `A(sa, sb)
+    },
+    `M(a, b) => select (f(a), f(b)) {
+      (`N(x), `N(y)) => `N(x * y),
+      (sa, sb) => `M(sa, sb)
+    }
+  };
+  f(g(`M(`M(`A(`V, `N(1.0)), `V), `V)))
+}
+"#;
+
+run!(
+    select_recursive_adt_chain,
+    SELECT_RECURSIVE_ADT_CHAIN,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(_)));
+    graphix_package_core::testing::FuseExpect::Jit
+);

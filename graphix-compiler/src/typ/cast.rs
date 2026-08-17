@@ -297,15 +297,37 @@ impl Type {
         v: &Value,
     ) -> bool {
         match self {
+            // `hist` is the CURRENT PATH, not a visited set: the entry
+            // comes back out on the way up.
+            //
+            // It exists to stop a name that expands without consuming
+            // value structure (`type T = [T, i64]`) from recursing
+            // forever, and a repeat on the path is exactly that. A
+            // repeat OFF the path is not: `Type::Set` is a union tried
+            // with `any`, so one member descending into a child and
+            // failing is ordinary backtracking, and the next member
+            // must get to check that same child. Left in the set, the
+            // failed branch's entries answered "no match" for every
+            // later member — so a select over a recursive ADT matched
+            // NO arm, produced nothing, and the whole program wedged
+            // idle at zero CPU (bench/symbolic.gx; the wedge needed a
+            // union retry over a node a previous member had already
+            // walked, which is why it turned on depth and shape).
+            //
+            // Latent until e86d18c1 made an inferred pattern predicate
+            // load-bearing at runtime — before that nothing called
+            // `is_a` on these patterns at all.
             Type::Ref(TypeRef { scope, name, .. }) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
                     let t_addr = (scope.as_ref() as *const _ as *const u8).addr()
                         ^ (name.as_ref() as *const _ as *const u8).addr();
                     let v_addr = (v as *const Value).addr();
-                    !hist.contains(&(t_addr, v_addr)) && {
-                        hist.insert((t_addr, v_addr));
-                        t.is_a_int(env, hist, flags, v)
+                    let key = (t_addr, v_addr);
+                    hist.insert(key) && {
+                        let r = t.is_a_int(env, hist, flags, v);
+                        hist.remove(&key);
+                        r
                     }
                 }
             },
