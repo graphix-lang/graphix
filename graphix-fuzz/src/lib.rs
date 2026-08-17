@@ -2150,7 +2150,7 @@ pub async fn fuzz(
     corpus: &std::sync::Arc<Corpus>,
 ) -> FuzzStats {
     // Unnamed: a single-source campaign keeps the pre-merge log format.
-    let mut src = fuzz_source(seed, 1.0);
+    let mut src = fuzz_source(seed, 1.0, gen_tasks());
     src.name = "";
     run_pool_multi(corpus, iters, timeout, vec![src])
         .await
@@ -2160,10 +2160,9 @@ pub async fn fuzz(
 }
 
 /// Source A: mutate the curated seed corpus.
-pub fn fuzz_source(seed: u64, weight: f64) -> Source<'static> {
-    let seeds = corpus::all_seeds();
-    let donors = mutate::donor_pool(&seeds);
-    let mut rng = mutate::Rng::new(seed);
+pub fn fuzz_source(seed: u64, weight: f64, tasks: usize) -> Source<'static> {
+    let seeds = std::sync::Arc::new(corpus::all_seeds());
+    let donors = std::sync::Arc::new(mutate::donor_pool(&seeds));
     // The evolutionary RING (Eric's design, 2026-07-23): agreeing
     // both-modes-ran mutants with a NOVEL AST shape join a bounded
     // pool of mutation ancestors, so the campaign walks outward from
@@ -2184,27 +2183,41 @@ pub fn fuzz_source(seed: u64, weight: f64) -> Source<'static> {
     Source {
         name: "fuzz",
         weight,
-        next: Box::new(move || {
-            // Mutate a random seed; retry a few times if a mutation chain
-            // didn't yield a parseable program, falling back to a raw seed
-            // (always valid) so the pool never stalls. `mutate_wrapper`
-            // preserves (and M3-mutates) schedule headers.
-            for _ in 0..8 {
-                let s = {
-                    let ring = ring.lock().unwrap();
-                    if !ring.0.is_empty() && rng.below(2) == 0 {
-                        ring.0[rng.below(ring.0.len())].clone()
-                    } else {
-                        seeds[rng.below(seeds.len())].to_string()
+        gens: (0..tasks.max(1))
+            .map(|k| {
+                let seeds = seeds.clone();
+                let donors = donors.clone();
+                let ring = ring.clone();
+                // A large odd stride keeps the per-task streams apart.
+                let mut rng = mutate::Rng::new(
+                    seed.wrapping_add((k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+                );
+                let g: Box<dyn FnMut() -> String + Send> = Box::new(move || {
+                    // Mutate a random seed; retry a few times if a mutation
+                    // chain didn't yield a parseable program, falling back to
+                    // a raw seed (always valid) so the pool never stalls.
+                    // `mutate_wrapper` preserves (and M3-mutates) schedule
+                    // headers.
+                    for _ in 0..8 {
+                        let s = {
+                            let ring = ring.lock().unwrap();
+                            if !ring.0.is_empty() && rng.below(2) == 0 {
+                                ring.0[rng.below(ring.0.len())].clone()
+                            } else {
+                                seeds[rng.below(seeds.len())].to_string()
+                            }
+                        };
+                        if let Some(p) = mutate::mutate_wrapper(&s, &donors, &mut rng, 5)
+                        {
+                            return p;
+                        }
                     }
-                };
-                if let Some(p) = mutate::mutate_wrapper(&s, &donors, &mut rng, 5) {
-                    return p;
-                }
-            }
-            seeds[rng.below(seeds.len())].to_string()
-        }),
-        on_agree: Box::new(move |prog, ran| {
+                    seeds[rng.below(seeds.len())].to_string()
+                });
+                g
+            })
+            .collect(),
+        on_agree: Some(Box::new(move |prog, ran| {
             if !ran {
                 return false;
             }
@@ -2223,7 +2236,7 @@ pub fn fuzz_source(seed: u64, weight: f64) -> Source<'static> {
                 ring.0.pop_front();
             }
             true
-        }),
+        })),
     }
 }
 
@@ -2264,7 +2277,7 @@ pub async fn generate_campaign(
     corpus: &std::sync::Arc<Corpus>,
     reactive: bool,
 ) -> FuzzStats {
-    let mut src = generate_source(seed, 1.0, reactive);
+    let mut src = generate_source(seed, 1.0, reactive, gen_tasks());
     src.name = "";
     run_pool_multi(corpus, iters, timeout, vec![src])
         .await
@@ -2277,19 +2290,31 @@ pub async fn generate_campaign(
 /// Neither feeds the mutation ring — they are already exploring by
 /// construction, and admitting them would change what the ring's
 /// novelty counter measures.
-pub fn generate_source(seed: u64, weight: f64, reactive: bool) -> Source<'static> {
-    let mut rng = mutate::Rng::new(seed);
+pub fn generate_source(
+    seed: u64,
+    weight: f64,
+    reactive: bool,
+    tasks: usize,
+) -> Source<'static> {
     Source {
         name: if reactive { "reactive" } else { "generate" },
         weight,
-        next: Box::new(move || {
-            if reactive {
-                generate::reactive::gen_reactive_program(&mut rng)
-            } else {
-                generate::gen_program(&mut rng)
-            }
-        }),
-        on_agree: Box::new(|_, _| false),
+        gens: (0..tasks.max(1))
+            .map(|k| {
+                let mut rng = mutate::Rng::new(
+                    seed.wrapping_add((k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+                );
+                let g: Box<dyn FnMut() -> String + Send> = Box::new(move || {
+                    if reactive {
+                        generate::reactive::gen_reactive_program(&mut rng)
+                    } else {
+                        generate::gen_program(&mut rng)
+                    }
+                });
+                g
+            })
+            .collect(),
+        on_agree: None,
     }
 }
 
@@ -2946,14 +2971,25 @@ pub struct Source<'a> {
     /// Relative CPU share. Normalized internally, so any positive scale
     /// works.
     pub weight: f64,
-    /// Generation runs in its OWN task, not on the driver — hence
-    /// `Send`. One driver doing three sources' generation was the
-    /// merged pool's throughput bug: `mutate_wrapper` parses and
-    /// rewrites an AST per subject, so the fuzz source alone pegged the
-    /// driver at a full core and the pool ran 6 of 24 slots. Three lane
-    /// PROCESSES had hidden this by having three drivers.
-    pub next: Box<dyn FnMut() -> String + Send + 'a>,
-    pub on_agree: Box<dyn FnMut(&str, bool) -> bool + 'a>,
+    /// Generators, run in their OWN tasks rather than on the driver —
+    /// hence `Send` — and more than one, because generation is real
+    /// work rather than bookkeeping: `mutate_wrapper` parses and
+    /// rewrites an AST per subject, which is a whole thread's worth for
+    /// the fuzz source and cannot feed a pool by itself. Three lane
+    /// PROCESSES hid both facts by having three drivers.
+    ///
+    /// Each generator owns a DISJOINT seed stream, so a subject stays
+    /// reproducible as (source, seed); only the interleaving between
+    /// them is nondeterministic, which the ring already was.
+    pub gens: Vec<Box<dyn FnMut() -> String + Send + 'a>>,
+    /// Ring admission, run in its OWN task like generation. `None` is
+    /// "this source has no ring" — the generate sources — which lets the
+    /// driver skip even cloning the program. `shape_stats` PARSES the
+    /// program and walks its AST, so doing this in the result loop cost
+    /// the fuzz source its slots: with generation already moved off, a
+    /// fuzz-only pool still ran 14 of 24 while a reactive-only pool
+    /// (no admitter) ran 24 of 24.
+    pub on_agree: Option<Box<dyn FnMut(&str, bool) -> bool + Send + 'a>>,
 }
 
 /// Per-source accounting. `cpu` is what the source's finished children
@@ -2969,13 +3005,17 @@ struct SourceState {
     stats: FuzzStats,
     pending: Vec<String>,
     pending_async: Vec<String>,
+    /// Ring admissions in flight, and the count the admit task has made.
+    /// `None` when the source has no ring.
+    admit: Option<tokio::sync::mpsc::Sender<(String, bool)>>,
+    novel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Programs the source's generator task has already produced. The
     /// driver only pops; it never generates. Refilled by `try_recv`, so
     /// filling a 64-subject batch is a memory move rather than 64 AST
     /// rewrites blocking every other dispatch — which is what made
     /// utilization a sawtooth (a long generation stall, then one child
     /// landing 64 subjects at once).
-    ready: std::collections::VecDeque<String>,
+    ready: std::collections::VecDeque<(String, BatchClass)>,
 }
 
 impl SourceState {
@@ -2990,6 +3030,15 @@ impl SourceState {
         };
         self.cpu.as_secs_f64() + self.inflight as f64 * mean
     }
+}
+
+/// Generator tasks per source. Generation is CPU work, not bookkeeping,
+/// so one task per source cannot feed a pool: measured at par=24, the
+/// fuzz source held 13 of 24 slots with a single generator while the
+/// cheap reactive generator held all 24. Capped because these compete
+/// with the workers themselves for cores.
+pub fn gen_tasks() -> usize {
+    std::thread::available_parallelism().map(|n| n.get() / 4).unwrap_or(2).clamp(2, 8)
 }
 
 /// How many programs each source's generator may run ahead. Deep enough
@@ -3007,7 +3056,7 @@ const GEN_BUFFER: usize = 512;
 fn ready_source(
     want: usize,
     states: &mut [SourceState],
-    gens: &mut [tokio::sync::mpsc::Receiver<String>],
+    gens: &mut [tokio::sync::mpsc::Receiver<(String, BatchClass)>],
 ) -> Option<usize> {
     for (st, rx) in states.iter_mut().zip(gens.iter_mut()) {
         while st.ready.len() < GEN_BUFFER {
@@ -3073,13 +3122,45 @@ pub async fn run_pool_multi(
     // backlog, and each source's seed stream stays strictly sequential
     // inside its own task — a subject is still (source, seed)
     // reproducible.
-    let mut gens: Vec<tokio::sync::mpsc::Receiver<String>> = Vec::new();
+    let mut gens: Vec<tokio::sync::mpsc::Receiver<(String, BatchClass)>> = Vec::new();
     let mut gen_tasks: JoinSet<()> = JoinSet::new();
-    for src in sources.iter_mut() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(GEN_BUFFER);
-        let mut next = std::mem::replace(&mut src.next, Box::new(String::new));
-        gen_tasks.spawn(async move { while tx.send(next()).await.is_ok() {} });
+    for (i, src) in sources.iter_mut().enumerate() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<(String, BatchClass)>(GEN_BUFFER);
+        for mut next in std::mem::take(&mut src.gens) {
+            let tx = tx.clone();
+            // Classify HERE too. `batch_class` parses the schedule header,
+            // splits the files and scans for the oracle tier — a per-subject
+            // parse whose cost tracks program SIZE, which is why it hurt the
+            // fuzz source (big mutants) and not the generators. It is a pure
+            // function of the text, so it belongs beside generation.
+            gen_tasks.spawn(async move {
+                loop {
+                    let prog = next();
+                    let class = batch_class(&prog);
+                    if tx.send((prog, class)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
         gens.push(rx);
+        // Ring admission likewise. Bounded and try_send'd: an
+        // admission is a heuristic — dropping one when the task is
+        // behind costs a shape in the mutation ring, whereas
+        // stalling the driver costs every source its slots.
+        if let Some(mut admit) = src.on_agree.take() {
+            let (atx, mut arx) = tokio::sync::mpsc::channel::<(String, bool)>(GEN_BUFFER);
+            let novel = states[i].novel.clone();
+            gen_tasks.spawn(async move {
+                while let Some((prog, ran)) = arx.recv().await {
+                    if admit(&prog, ran) {
+                        novel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+            states[i].admit = Some(atx);
+        }
     }
     let wsum: f64 =
         sources.iter().map(|s| s.weight.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
@@ -3124,8 +3205,9 @@ pub async fn run_pool_multi(
         |checks: &mut JoinSet<(usize, Vec<(String, PoolResult)>, Duration)>,
          sources: &mut Vec<Source<'static>>,
          states: &mut Vec<SourceState>,
-         gens: &mut Vec<tokio::sync::mpsc::Receiver<String>>,
-         launched: &mut usize| {
+         gens: &mut Vec<tokio::sync::mpsc::Receiver<(String, BatchClass)>>,
+         launched: &mut usize|
+         -> bool {
             loop {
                 if !want(*launched) {
                     for (si, st) in states.iter_mut().enumerate() {
@@ -3142,9 +3224,9 @@ pub async fn run_pool_multi(
                             let (r, cpu) = batch_isolated(batch, timeout).await;
                             (si, r, cpu)
                         });
-                        return;
+                        return true;
                     }
-                    return;
+                    return true;
                 }
                 let si = pick(sources, states);
                 // Refill from the generator, then pop. If the picked
@@ -3153,13 +3235,22 @@ pub async fn run_pool_multi(
                 // off — we take the neediest source that does have
                 // work, and if none does, hand the loop back so a
                 // completion can be reaped while generators catch up.
+                // Dry: report it and let the caller AWAIT generation,
+                // then come back. Never spawn a partial batch to fill
+                // the gap — at startup every buffer is empty, so that
+                // launched `par` near-empty children which finished
+                // instantly and the pool never built up (5 of 24). And
+                // never just return: that parked the accumulated
+                // programs and shrank the pool by one permanently, which
+                // is why it settled at half `par` no matter how much
+                // work moved off the driver or how many threads it had.
                 let si = match ready_source(si, states, gens) {
                     Some(i) => i,
-                    None => return,
+                    None => return false,
                 };
-                let prog = match states[si].ready.pop_front() {
+                let (prog, class) = match states[si].ready.pop_front() {
                     Some(p) => p,
-                    None => return,
+                    None => return false,
                 };
                 *launched += 1;
                 // Crash forensics: with GRAPHIX_FUZZ_ECHO set, print each
@@ -3178,10 +3269,10 @@ pub async fn run_pool_multi(
                         };
                         (si, vec![(prog, res)], Duration::ZERO)
                     });
-                    return;
+                    return true;
                 }
                 let st = &mut states[si];
-                let (buf, cap) = match batch_class(&prog) {
+                let (buf, cap) = match class {
                     BatchClass::Pure if bsize > 1 => (&mut st.pending, bsize),
                     BatchClass::Async if bsize_async > 1 => {
                         (&mut st.pending_async, bsize_async)
@@ -3192,7 +3283,7 @@ pub async fn run_pool_multi(
                             let (r, cpu) = check_isolated(&prog, timeout).await;
                             (si, vec![(prog, r)], cpu)
                         });
-                        return;
+                        return true;
                     }
                 };
                 buf.push(prog);
@@ -3203,7 +3294,7 @@ pub async fn run_pool_multi(
                         let (r, cpu) = batch_isolated(batch, timeout).await;
                         (si, r, cpu)
                     });
-                    return;
+                    return true;
                 }
             }
         };
@@ -3213,7 +3304,7 @@ pub async fn run_pool_multi(
     // unconditional break there exited the campaign having run nothing.
     async fn await_any(
         states: &mut [SourceState],
-        gens: &mut [tokio::sync::mpsc::Receiver<String>],
+        gens: &mut [tokio::sync::mpsc::Receiver<(String, BatchClass)>],
     ) -> bool {
         use tokio::sync::mpsc::error::TryRecvError;
         loop {
@@ -3238,10 +3329,13 @@ pub async fn run_pool_multi(
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
+    // Keep asking until the slot is genuinely filled. A "not yet" is
+    // generators being briefly behind, never a reason to leave a worker
+    // idle for the rest of the campaign.
     while want(launched) && checks.len() < par {
-        let before = checks.len();
-        spawn_next(&mut checks, &mut sources, &mut states, &mut gens, &mut launched);
-        if checks.len() == before && !await_any(&mut states, &mut gens).await {
+        if !spawn_next(&mut checks, &mut sources, &mut states, &mut gens, &mut launched)
+            && !await_any(&mut states, &mut gens).await
+        {
             break;
         }
     }
@@ -3256,17 +3350,16 @@ pub async fn run_pool_multi(
                 // worker slot, and after `par` leaks the pool drained and
                 // a `forever` campaign exited "done" (soak jul04 item 6:
                 // the fuzz campaign bled out nine times overnight).
-                spawn_next(&mut checks, &mut sources, &mut states, &mut gens, &mut launched);
-                // Never let the pool drain to empty just because the
-                // generators were briefly behind — that would end a
-                // `forever` campaign silently.
-                while checks.is_empty()
-                    && want(launched)
-                    && await_any(&mut states, &mut gens).await
-                {
-                    spawn_next(
+                // Refill to `par`, waiting on generation as needed: a
+                // slot left empty here is a core left idle for the rest
+                // of the campaign.
+                while want(launched) && checks.len() < par {
+                    if !spawn_next(
                         &mut checks, &mut sources, &mut states, &mut gens, &mut launched,
-                    );
+                    ) && !await_any(&mut states, &mut gens).await
+                    {
+                        break;
+                    }
                 }
                 if let Ok((si, results, cpu)) = res {
                     states[si].cpu += cpu;
@@ -3287,6 +3380,9 @@ pub async fn run_pool_multi(
                         } else {
                             0
                         };
+                        states[si].stats.novel = states[si]
+                            .novel
+                            .load(std::sync::atomic::Ordering::Relaxed);
                         let st = &states[si].stats;
                         eprintln!(
                             "  {}…{} run, {} divergences, {} crashes, {} in corpus, \
@@ -3297,8 +3393,8 @@ pub async fn run_pool_multi(
                     }
                     let finding = match res {
                         PoolResult::Agree { ran } => {
-                            if (sources[si].on_agree)(&prog, ran) {
-                                states[si].stats.novel += 1;
+                            if let Some(tx) = &states[si].admit {
+                                let _ = tx.try_send((prog.clone(), ran));
                             }
                             false
                         }
@@ -3386,7 +3482,10 @@ pub async fn run_pool_multi(
     sources
         .iter()
         .zip(states.into_iter())
-        .map(|(src, st)| (src.name, st.stats, st.cpu))
+        .map(|(src, mut st)| {
+            st.stats.novel = st.novel.load(std::sync::atomic::Ordering::Relaxed);
+            (src.name, st.stats, st.cpu)
+        })
         .collect()
 }
 

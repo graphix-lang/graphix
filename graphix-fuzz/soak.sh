@@ -198,6 +198,22 @@ start() {
         exit 2
     }
 
+    # Every in-flight check holds several descriptors (three pipes and a
+    # verdict file), so the default 1024 caps `par` near 200 — and the
+    # campaign does not degrade at the cap, it DIES: the harness treats a
+    # spawn error as broken-environment and aborts, which it did after
+    # passing its gate ("child spawn failed: Too many open files"). The
+    # macOS launcher has raised this from the start.
+    ulimit -n 10240 2>/dev/null || true
+
+    # Every in-flight check holds several descriptors (three pipes and a
+    # verdict file), so the default 1024 caps `par` near 200 — and the
+    # campaign does not degrade at the cap, it DIES: the harness treats a
+    # spawn error as broken-environment and aborts, which it did right
+    # after passing its gate ("child spawn failed: Too many open files").
+    # The macOS launcher has raised this from the start.
+    ulimit -n 10240 2>/dev/null || true
+
     CARGO_TARGET_DIR="$target" cargo build --release -p graphix-fuzz \
         --manifest-path "$repo/Cargo.toml"
     "$binary" regress

@@ -233,6 +233,16 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
+// The driver stays at TWO worker threads, deliberately.
+//
+// It looks wrong — one process coordinating up to `par` children on a
+// 20-core box — and sizing it per-core is a 7.5x THROUGHPUT REGRESSION,
+// measured on hz0 at par=160: 2 threads gave 70% box utilization and
+// 2.59M subjects/120s, 6 threads 56% and 586k, 20 threads 37% and 347k.
+// The work is in the CHILDREN, each with its own runtime; every thread
+// the parent takes is one it steals from them, on a box already
+// oversubscribed 8x. The parent's own job is coordination, which is
+// I/O-bound and fits in two.
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     // `--reactive` selects the reactive (scheduled) generator wherever
@@ -932,10 +942,14 @@ async fn main() -> Result<()> {
             // +1000/+2000 offsets the three lanes used), so a subject
             // stays reproducible from its source and seed even though
             // the interleaving is now resource-dependent.
+            // Generation is parallel per source: one task cannot feed
+            // the pool, and the fuzz source's mutation is the most
+            // expensive of the three.
+            let gt = graphix_fuzz::gen_tasks();
             let sources = vec![
-                graphix_fuzz::fuzz_source(seed, w[0]),
-                graphix_fuzz::generate_source(seed + 1000, w[1], false),
-                graphix_fuzz::generate_source(seed + 2000, w[2], true),
+                graphix_fuzz::fuzz_source(seed, w[0], gt),
+                graphix_fuzz::generate_source(seed + 1000, w[1], false, gt),
+                graphix_fuzz::generate_source(seed + 2000, w[2], true, gt),
             ];
             let per_source =
                 graphix_fuzz::run_pool_multi(&corpus, iters, campaign_timeout(), sources)
