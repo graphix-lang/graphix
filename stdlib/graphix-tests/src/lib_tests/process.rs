@@ -221,3 +221,89 @@ const PROCESS_SPAWN_FAIL: &str = r#"
 run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// `sys::io::lines` frames at the BYTE level, which is the reason it is
+// a builtin rather than a read loop in Graphix. This child writes a
+// line split across two reads ("del" then "ta\n"), a CRLF line, and a
+// trailing fragment with no newline: decoding each read on its own
+// would corrupt the split, and a naive splitter would emit the
+// fragment as a line.
+#[cfg(unix)]
+const IO_LINES: &str = r#"
+{
+  use opt;
+  let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "printf 'alpha\nbeta\r\ngamma\n'; sleep 0.2; printf 'del'; sleep 0.1; printf 'ta\nlast-no-newline'"],
+    #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+    #kill_on_drop: true,
+    "/bin/sh"
+  ))?;
+  let out = opt::ok_or(child.stdout, `Null("stdout"))?;
+  let line = sys::io::lines(out)?;
+  let seen = [];
+  seen <- array::push(line ~ seen, line);
+  // Produce ONCE, complete: the harness asserts on the first update.
+  select array::len(seen) {
+    i64:4 => seen,
+    _ => never()
+  }
+}
+"#;
+
+#[cfg(unix)]
+run!(io_lines, IO_LINES, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            let got: Vec<&str> = a
+                .iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(&**s),
+                    _ => None,
+                })
+                .collect();
+            got == ["alpha", "beta", "gamma", "delta"]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The batched form delivers one event per READ carrying every line that
+// read made available, so the two writes arrive as two arrays rather
+// than five events.
+#[cfg(unix)]
+const IO_LINES_BATCHED: &str = r#"
+{
+  use opt;
+  let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "printf 'a1\na2\na3\n'; sleep 0.2; printf 'b1\nb2\n'"],
+    #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+    #kill_on_drop: true,
+    "/bin/sh"
+  ))?;
+  let out = opt::ok_or(child.stdout, `Null("stdout"))?;
+  let batch = sys::io::lines_batched(out)?;
+  let seen = [];
+  seen <- array::push(batch ~ seen, batch);
+  select array::len(seen) {
+    i64:2 => array::map(seen, |b| str::join(#sep: ",", b)),
+    _ => never()
+  }
+}
+"#;
+
+#[cfg(unix)]
+run!(io_lines_batched, IO_LINES_BATCHED, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            let got: Vec<&str> = a
+                .iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(&**s),
+                    _ => None,
+                })
+                .collect();
+            got == ["a1,a2,a3", "b1,b2"]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

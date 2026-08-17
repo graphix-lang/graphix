@@ -12,6 +12,37 @@ val read: fn(stream: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
 /// if EOF is reached before n bytes have been read.
 val read_exact: fn(stream: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
 
+/// Read `stream` to its end, producing ONE event per complete line with
+/// the newline stripped.
+///
+/// Reads re-arm themselves, so this is the whole "follow a stream"
+/// idiom in one call: a chunk carrying several lines produces several
+/// events, and a chunk that ends mid-line holds the remainder until the
+/// rest arrives, so a line is never split across two events. The final
+/// line is dropped if the stream ends without a newline.
+///
+/// Stops at end of stream. A read error is returned, which also stops
+/// it — a stream that has failed once will not recover, and re-arming
+/// into the same error would spin. The error is a VALUE, like every
+/// other operation in this module: the caller decides whether to
+/// propagate it with `?`, log and drop it with `$`, or match on it.
+///
+/// Lines are framed at the BYTE level and only complete lines are
+/// decoded, so a multi-byte character split across a read boundary
+/// survives. Decoding is lossy, so one line of invalid UTF-8 cannot
+/// take down the stream. A trailing `\r` is stripped.
+val lines: fn(stream: Stream<'a>) -> Result<string, `IOError(string)>;
+
+/// As [lines], but each event carries every line the read made
+/// available, instead of one line per event.
+///
+/// This is the cheaper form and the one to reach for when the consumer
+/// works in batches anyway — a busy stream delivers one event per read
+/// rather than one per line. Framing is identical: a line is never
+/// split across two events, and a partial trailing line is held until
+/// the rest arrives.
+val lines_batched: fn(stream: Stream<'a>) -> Result<Array<string>, `IOError(string)>;
+
 /// Write bytes to the stream. Returns the number of bytes written,
 /// which may be less than the full length of data.
 val write: fn(stream: Stream<'a>, data: bytes) -> Result<u64, `IOError(string)>;
