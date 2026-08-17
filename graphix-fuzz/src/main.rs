@@ -268,8 +268,9 @@ async fn main() -> Result<()> {
     let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none()
         && match args.get(1).map(String::as_str) {
             Some(
-                "check-one" | "check-batch" | "detcheck-one" | "selfcheck-one"
-                | "minimize-one" | "gen-check" | "regress" | "fusecheck" | "leakcheck",
+                "check-one" | "check-batch" | "gen-batch" | "detcheck-one"
+                | "selfcheck-one" | "minimize-one" | "gen-check" | "regress"
+                | "fusecheck" | "leakcheck",
             ) => true,
             Some("check" | "run") => {
                 if let Some(f) = args.get_mut(2) {
@@ -788,6 +789,17 @@ async fn main() -> Result<()> {
             // What this batch cost, for the source that asked for it.
             graphix_fuzz::report_self_cpu();
         }
+        // The aggregator's worker: it is told WHAT to make, not what to
+        // run, so the parent never generates or ships program text.
+        Some("gen-batch") => {
+            let out_path = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("gen-batch requires an output path"))?;
+            let order = graphix_fuzz::WorkOrder::decode(&read_stdin()?)?;
+            let mut out = std::fs::File::create(&out_path)?;
+            graphix_fuzz::run_work_order(&order, campaign_timeout(), &mut out).await;
+        }
         Some("check-one") => {
             let code = read_stdin()?;
             // 0 = agree; 7 = agree AND both modes produced runtime
@@ -942,18 +954,10 @@ async fn main() -> Result<()> {
             // +1000/+2000 offsets the three lanes used), so a subject
             // stays reproducible from its source and seed even though
             // the interleaving is now resource-dependent.
-            // Generation is parallel per source: one task cannot feed
-            // the pool, and the fuzz source's mutation is the most
-            // expensive of the three.
-            let gt = graphix_fuzz::gen_tasks();
-            let sources = vec![
-                graphix_fuzz::fuzz_source(seed, w[0], gt),
-                graphix_fuzz::generate_source(seed + 1000, w[1], false, gt),
-                graphix_fuzz::generate_source(seed + 2000, w[2], true, gt),
-            ];
+            // The parent aggregates; the children generate. Its cost is
+            // per batch and per finding, never per subject.
             let per_source =
-                graphix_fuzz::run_pool_multi(&corpus, iters, campaign_timeout(), sources)
-                    .await;
+                graphix_fuzz::run_aggregator(&corpus, iters, campaign_timeout(), w).await;
             let new = corpus.len() - before;
             let total: f64 = per_source.iter().map(|(_, _, c)| c.as_secs_f64()).sum();
             for (name, stats, cpu) in &per_source {

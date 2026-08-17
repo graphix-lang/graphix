@@ -946,23 +946,26 @@ pub enum BatchClass {
 }
 
 pub fn batch_class(code: &str) -> BatchClass {
-    let clean_files = match schedule::Schedule::parse(code) {
-        Ok((_, body)) => match files::split(body) {
-            Ok((_, files)) => files.is_empty(),
-            Err(_) => false,
-        },
-        Err(_) => false,
-    };
-    // GRAPHIX_FUZZ_BATCH_SYS=1 admits sys::/http:: subjects to async
-    // batches (EXPERIMENT lever — the wait-serialization measurement;
-    // sys::net always stays individual, it blocks by design).
-    let sys_ok = std::env::var_os("GRAPHIX_FUZZ_BATCH_SYS").is_some();
-    if !clean_files
-        || code.contains("sys::net")
-        || (!sys_ok && (code.contains("sys::") || code.contains("http::")))
-    {
-        return BatchClass::Never;
-    }
+    // BATCH FIRST, manage the failure rate — do not preemptively fail
+    // (Eric, 2026-08-17). The batch path already falls back: a subject
+    // the child cannot resolve comes back `Other` and is re-derived
+    // individually, and a batch that dies or stalls re-batches its
+    // unreported tail. So an exclusion here buys nothing the fallback
+    // would not handle, and costs a dedicated process plus a full stdlib
+    // compile for ONE subject.
+    //
+    // That cost was the campaign's dominant expense: with files, sys::
+    // and http:: excluded, ~89 of ~100 live children were individual
+    // re-runs, and a third of generated programs carry files. Batching
+    // them amortizes the ~80ms stdlib init across the whole batch.
+    //
+    // NOTHING is held out, including `sys::net`. Holding it back was the
+    // same preemptive reasoning applied to files and sys:: — justified
+    // by "it blocks by design" rather than by a number, and there is no
+    // way to learn its real cost except to batch it and read the failure
+    // rate (Eric, 2026-08-17). A subject that blocks is reported `Other`
+    // before the child stops, its batch's tail re-batches, and the
+    // `% individual` counter says what it cost.
     match oracle_tier(code) {
         OracleTier::Exact => BatchClass::Pure,
         OracleTier::FinalValues | OracleTier::Excluded => BatchClass::Async,
@@ -1018,6 +1021,7 @@ pub async fn run_batch(
             report(i, BatchVerdict::Other);
             continue;
         }
+        let mut extra: Vec<(String, String)> = Vec::new();
         let tier = oracle_tier(code);
         let (sched, body) = match schedule::Schedule::parse(code) {
             Ok(x) => x,
@@ -1033,9 +1037,20 @@ pub async fn run_batch(
                 continue;
             }
         };
-        if !files.is_empty() {
-            report(i, BatchVerdict::Other);
-            continue;
+        // Files are installed into the SUBJECT'S OWN table rather than
+        // refusing the subject. They used to be excluded because a batch
+        // child reuses one warmed runtime across subjects, so same-named
+        // modules could alias — but a third of generated programs carry
+        // files, and each exclusion cost a dedicated process plus a full
+        // stdlib compile for ONE subject. That was where the box's CPU
+        // went: ~89 of ~100 children were individual re-runs.
+        //
+        // Aliasing here would be invisible to the differential oracle —
+        // both engines would inherit the same wrong module and agree — so
+        // it is pinned by `batched_files_do_not_alias`, which checks
+        // something other than agreement.
+        for (name, text) in &files {
+            extra.push((name.clone(), text.clone()));
         }
         // Subject-unique module name: fresh module, fresh BindIds,
         // fresh everything — no cache aliasing between subjects. The
@@ -1046,10 +1061,17 @@ pub async fn run_batch(
         let modname = format!("t{i}");
         let wrapped = ArcStr::from(format!("let result = {body}"));
         let table = || {
-            AHashMap::from_iter([(
+            let mut t = AHashMap::from_iter([(
                 Path::from(format!("/{modname}.gx")),
                 graphix_compiler::expr::VfsEntry::from(wrapped.clone()),
-            )])
+            )]);
+            for (name, text) in &extra {
+                t.insert(
+                    Path::from(format!("/{name}")),
+                    graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
+                );
+            }
+            t
         };
         swap_i.set(VfsResolver::new(table()));
         swap_j.set(VfsResolver::new(table()));
@@ -1174,6 +1196,180 @@ fn batch_size_async() -> usize {
         .max(1)
 }
 
+/// Which generator a work order asks the child to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Fuzz,
+    Generate,
+    Reactive,
+}
+
+impl SourceKind {
+    pub fn tag(&self) -> &'static str {
+        match self {
+            SourceKind::Fuzz => "fuzz",
+            SourceKind::Generate => "generate",
+            SourceKind::Reactive => "reactive",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "fuzz" => Some(SourceKind::Fuzz),
+            "generate" => Some(SourceKind::Generate),
+            "reactive" => Some(SourceKind::Reactive),
+            _ => None,
+        }
+    }
+}
+
+/// What the parent asks a child to DO, instead of what to run.
+///
+/// The parent used to generate every subject and ship its text down a
+/// pipe, which made its cost per SUBJECT — generate, classify, write —
+/// and pinned its single dispatch task at one core while the box sat at
+/// 70%. An order is a few hundred bytes and covers a whole batch, so the
+/// parent's cost becomes per BATCH and per FINDING, both rare. Generation
+/// happens where the cores are.
+///
+/// `ring` is a small SAMPLE of the mutation ring, not a snapshot: the
+/// evolutionary walk needs ancestors to breed from, but shipping all 256
+/// would reinvent the pipe traffic this exists to delete.
+#[derive(Debug, Clone)]
+pub struct WorkOrder {
+    pub kind: SourceKind,
+    pub seed: u64,
+    pub count: usize,
+    pub ring: Vec<String>,
+}
+
+impl WorkOrder {
+    pub fn encode(&self) -> String {
+        let mut out = format!(
+            "{} {} {} {}\n",
+            self.kind.tag(),
+            self.seed,
+            self.count,
+            self.ring.len()
+        );
+        for p in &self.ring {
+            out.push_str(&format!("{}\n", p.len()));
+            out.push_str(p);
+        }
+        out
+    }
+
+    pub fn decode(input: &str) -> anyhow::Result<Self> {
+        let (head, mut rest) =
+            input.split_once('\n').ok_or_else(|| anyhow::anyhow!("work order: empty"))?;
+        let mut it = head.split_whitespace();
+        let kind = it
+            .next()
+            .and_then(SourceKind::parse)
+            .ok_or_else(|| anyhow::anyhow!("work order: bad source"))?;
+        let seed: u64 = it.next().unwrap_or("0").parse()?;
+        let count: usize = it.next().unwrap_or("0").parse()?;
+        let nring: usize = it.next().unwrap_or("0").parse()?;
+        let mut ring = Vec::with_capacity(nring);
+        for _ in 0..nring {
+            let (len, tail) = rest
+                .split_once('\n')
+                .ok_or_else(|| anyhow::anyhow!("work order: truncated ring header"))?;
+            let len: usize = len.trim().parse()?;
+            if tail.len() < len {
+                anyhow::bail!("work order: truncated ring body");
+            }
+            ring.push(tail[..len].to_string());
+            rest = &tail[len..];
+        }
+        Ok(WorkOrder { kind, seed, count, ring })
+    }
+
+    /// Build the generator this order describes. Seeded from the order,
+    /// so a subject stays reproducible as (kind, seed, index).
+    pub fn generator(&self) -> Box<dyn FnMut() -> String + Send> {
+        let mut rng = mutate::Rng::new(self.seed);
+        match self.kind {
+            SourceKind::Generate => Box::new(move || generate::gen_program(&mut rng)),
+            SourceKind::Reactive => {
+                Box::new(move || generate::reactive::gen_reactive_program(&mut rng))
+            }
+            SourceKind::Fuzz => {
+                let seeds = corpus::all_seeds();
+                let donors = mutate::donor_pool(&seeds);
+                let ring = self.ring.clone();
+                Box::new(move || {
+                    for _ in 0..8 {
+                        let s = if !ring.is_empty() && rng.below(2) == 0 {
+                            ring[rng.below(ring.len())].clone()
+                        } else {
+                            seeds[rng.below(seeds.len())].to_string()
+                        };
+                        if let Some(p) = mutate::mutate_wrapper(&s, &donors, &mut rng, 5)
+                        {
+                            return p;
+                        }
+                    }
+                    seeds[rng.below(seeds.len())].to_string()
+                })
+            }
+        }
+    }
+}
+
+/// The `gen-batch` child body: generate the order's subjects, run them
+/// against one warmed runtime pair, and report back only what the parent
+/// cannot compute for itself.
+///
+/// The report is deliberately asymmetric. A subject that AGREES costs one
+/// short line; its text never leaves the child, which is the entire point
+/// — that text is 99.99% of the bytes and none of the information. Only a
+/// divergence (the parent must re-derive and minimize it) or a
+/// ring-novel shape (the parent owns the ring) sends its program back.
+pub async fn run_work_order(
+    order: &WorkOrder,
+    timeout: Duration,
+    out: &mut impl std::io::Write,
+) {
+    let mut next = order.generator();
+    let progs: Vec<String> = (0..order.count).map(|_| next()).collect();
+    // Ring admission is computed HERE: `shape_stats` parses the program,
+    // and the child has it in hand already.
+    let novel: Vec<Option<(u64, usize, bool)>> =
+        progs.iter().map(|p| mutate::shape_stats(p)).collect();
+    let mut interesting: Vec<usize> = Vec::new();
+    run_batch(&progs, timeout, |i, v| {
+        let tag = match v {
+            BatchVerdict::Agree { ran: true } => "R",
+            BatchVerdict::Agree { ran: false } => "A",
+            BatchVerdict::Other => "O",
+        };
+        let _ = writeln!(out, "V {i} {tag}");
+        if matches!(v, BatchVerdict::Other) {
+            interesting.push(i);
+        } else if matches!(v, BatchVerdict::Agree { ran: true })
+            && let Some((sig, nodes, ok)) = novel[i]
+            && ok
+            && (8..=600).contains(&nodes)
+        {
+            let p = &progs[i];
+            let _ = writeln!(out, "N {sig} {}", p.len());
+            let _ = out.write_all(p.as_bytes());
+            let _ = writeln!(out);
+        }
+        let _ = out.flush();
+    })
+    .await;
+    for i in interesting {
+        let p = &progs[i];
+        let _ = writeln!(out, "P {i} {}", p.len());
+        let _ = out.write_all(p.as_bytes());
+        let _ = writeln!(out);
+    }
+    let _ = writeln!(out, "CPU {}", self_cpu().as_micros());
+    let _ = out.flush();
+}
+
 /// Run a batch of eligible programs through ONE `check-batch` child.
 /// Verdicts come back through a FILE inside the parent-owned sandbox
 /// (stdout is corruptible by the programs under test — the check-one
@@ -1242,6 +1438,113 @@ async fn batch_isolated(
         })
         .collect();
     (out, cpu)
+}
+
+/// What one work order came back with. Everything here is per-BATCH or
+/// per-FINDING; nothing scales with the number of agreeing subjects.
+pub(crate) struct OrderResult {
+    /// Subjects the child ran, and how many of those both engines ran.
+    pub ran: usize,
+    pub agreed_ran: usize,
+    /// Programs the child could not resolve — the parent re-derives
+    /// these through the individual path, which owns the escalation
+    /// ladder and the minimizer.
+    pub suspect: Vec<String>,
+    /// (signature, program) the child judged ring-worthy.
+    pub novel: Vec<(u64, String)>,
+    pub cpu: Duration,
+    pub clean: bool,
+}
+
+/// Issue ONE work order to a child and collect its summary.
+async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
+    use tokio::io::AsyncWriteExt;
+    let mut res = OrderResult {
+        ran: 0,
+        agreed_ran: 0,
+        suspect: Vec::new(),
+        novel: Vec::new(),
+        cpu: Duration::ZERO,
+        clean: false,
+    };
+    let mut cmd = tokio::process::Command::new(child_exe());
+    let sandbox = sandbox_cwd(&mut cmd);
+    let out_path = sandbox.path().join("order-out");
+    cmd.arg("gen-batch")
+        .arg(&out_path)
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
+            std::process::exit(2)
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(order.encode().as_bytes()).await;
+    }
+    // Same progress-based deadline as a check batch: a healthy child
+    // flushes a line per subject, so "the file stopped growing" is the
+    // wedge signal.
+    let stall = timeout * 4 + Duration::from_secs(90);
+    let mut last_len = 0u64;
+    res.clean = loop {
+        tokio::select! {
+            r = child.wait() => break matches!(r, Ok(s) if s.code() == Some(0)),
+            _ = tokio::time::sleep(stall) => {
+                let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+                if len == last_len {
+                    let _ = child.kill().await;
+                    break false;
+                }
+                last_len = len;
+            }
+        }
+    };
+    let Ok(text) = std::fs::read_to_string(&out_path) else { return res };
+    let mut rest = text.as_str();
+    while let Some((line, tail)) = rest.split_once('\n') {
+        rest = tail;
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("V") => {
+                res.ran += 1;
+                if it.nth(1) == Some("R") {
+                    res.agreed_ran += 1;
+                }
+            }
+            Some("N") | Some("P") => {
+                let kind = &line[..1];
+                let sig: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let len: usize = match it.next().and_then(|v| v.parse().ok()) {
+                    Some(n) => n,
+                    None => break,
+                };
+                if rest.len() < len {
+                    break;
+                }
+                let prog = rest[..len].to_string();
+                rest = rest[len..].strip_prefix('\n').unwrap_or(&rest[len..]);
+                if kind == "N" {
+                    res.novel.push((sig, prog));
+                } else {
+                    res.suspect.push(prog);
+                }
+            }
+            Some("CPU") => {
+                if let Some(us) = it.next().and_then(|v| v.parse::<u64>().ok()) {
+                    res.cpu = Duration::from_micros(us);
+                }
+            }
+            _ => (),
+        }
+    }
+    res.cpu += child_cpu(sandbox.path());
+    res
 }
 
 /// Spawn one `check-batch` child over `progs`, returning (clean-exit,
@@ -3070,6 +3373,212 @@ fn ready_source(
         return Some(want);
     }
     states.iter().position(|st| !st.ready.is_empty())
+}
+
+/// The aggregator: issue work ORDERS, aggregate what comes back.
+///
+/// The parent's per-subject cost is gone. It does not generate, classify,
+/// or ship program text; a child is told which generator to run, from
+/// which seed, how many, and with which ring ancestors, and answers with
+/// counts plus the rare interesting program. Everything the parent still
+/// does is per batch (issue an order, charge its CPU) or per finding
+/// (derive a divergence, admit a ring shape), and both are rare.
+///
+/// That is what makes it scale: dispatch was one serial task pinned at
+/// one core, which capped a 20-core box at ~70% no matter how the work
+/// inside it was arranged. Three separate lane processes reached 100% by
+/// having three such tasks; this reaches it by giving the task almost
+/// nothing to do.
+pub async fn run_aggregator(
+    corpus: &std::sync::Arc<Corpus>,
+    iters: Option<usize>,
+    timeout: Duration,
+    weights: [f64; 3],
+) -> Vec<(&'static str, FuzzStats, Duration)> {
+    use tokio::task::JoinSet;
+    const KINDS: [SourceKind; 3] =
+        [SourceKind::Fuzz, SourceKind::Generate, SourceKind::Reactive];
+    /// Ring ancestors per order — a sample, not a snapshot.
+    const RING_SAMPLE: usize = 16;
+    const RING_CAP: usize = 256;
+    let par = parallelism();
+    let bsize = batch_size().max(1);
+    let mut stats = [FuzzStats::default(), FuzzStats::default(), FuzzStats::default()];
+    let mut cpu = [Duration::ZERO; 3];
+    let mut inflight = [0usize; 3];
+    let mut done = [0usize; 3];
+    // The batch FAILURE RATE: subjects a batch child could not resolve,
+    // which the parent re-derives one process each. Batching everything
+    // is only right while this stays small, so it is reported rather
+    // than assumed.
+    let mut suspect = [0usize; 3];
+    let mut seed_ctr = [0u64; 3];
+    let mut launched = 0usize;
+    let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut ring_sigs: ahash::AHashSet<u64> = ahash::AHashSet::default();
+    let mut rng = mutate::Rng::new(0xC0FFEE);
+    let mut orders: JoinSet<(usize, OrderResult)> = JoinSet::new();
+    let mut derive: JoinSet<()> = JoinSet::new();
+    let mut breakage = BreakageWindow::new();
+    let wsum = weights.iter().map(|w| w.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
+    let want = |launched: usize| iters.map_or(true, |n| launched < n);
+    loop {
+        // Keep `par` orders in flight, choosing whichever source is
+        // furthest below its target share of measured CPU.
+        while want(launched) && orders.len() < par {
+            let total_done: usize = done.iter().sum();
+            let total_cpu: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
+            let mean = if total_done > 0 { total_cpu / total_done as f64 } else { 1.0 };
+            let proj: Vec<f64> = (0..3)
+                .map(|i| {
+                    let m = if done[i] > 0 {
+                        cpu[i].as_secs_f64() / done[i] as f64
+                    } else {
+                        mean
+                    };
+                    cpu[i].as_secs_f64() + inflight[i] as f64 * m
+                })
+                .collect();
+            let tot: f64 = proj.iter().sum();
+            let mut si = 0;
+            let mut best = f64::NEG_INFINITY;
+            for i in 0..3 {
+                let target = weights[i].max(0.0) / wsum;
+                let actual = if tot > 0.0 { proj[i] / tot } else { 0.0 };
+                if target - actual > best {
+                    best = target - actual;
+                    si = i;
+                }
+            }
+            if weights[si] <= 0.0 {
+                break;
+            }
+            let count = match iters {
+                Some(n) => bsize.min(n.saturating_sub(launched)),
+                None => bsize,
+            };
+            if count == 0 {
+                break;
+            }
+            let sample: Vec<String> = if KINDS[si] == SourceKind::Fuzz && !ring.is_empty()
+            {
+                (0..RING_SAMPLE.min(ring.len()))
+                    .map(|_| ring[rng.below(ring.len())].clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            seed_ctr[si] += 1;
+            let order = WorkOrder {
+                kind: KINDS[si],
+                // Distinct per (source, order): reproducible without a
+                // shared counter the children would have to agree on.
+                seed: (si as u64 + 1)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(seed_ctr[si]),
+                count,
+                ring: sample,
+            };
+            launched += count;
+            inflight[si] += count;
+            orders.spawn(async move { (si, run_order_child(&order, timeout).await) });
+        }
+        tokio::select! {
+            biased;
+            Some(res) = orders.join_next() => {
+                let Ok((si, r)) = res else { continue };
+                cpu[si] += r.cpu;
+                inflight[si] = inflight[si].saturating_sub(r.ran.max(1));
+                done[si] += r.ran;
+                stats[si].run += r.ran;
+                // Only MUTANTS breed. The children compute novelty for
+                // every source (they have the program in hand), but
+                // admitting generated shapes would change what the ring
+                // is: its 50/50 base-seed mix exists to stop the walk
+                // drifting off the bug-rich curated shapes, and feeding
+                // it fresh random programs is a different experiment.
+                // Worth trying deliberately, not as a side effect.
+                for (sig, prog) in r.novel.into_iter().filter(|_| KINDS[si] == SourceKind::Fuzz) {
+                    if ring_sigs.insert(sig) {
+                        ring.push_back(prog);
+                        stats[si].novel += 1;
+                        if ring.len() > RING_CAP {
+                            ring.pop_front();
+                        }
+                    }
+                }
+                if stats[si].run % 1000 < r.ran.max(1) {
+                    let tot: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
+                    let pct = if tot > 0.0 {
+                        (cpu[si].as_secs_f64() * 100.0 / tot).round() as u64
+                    } else {
+                        0
+                    };
+                    let ipct = if stats[si].run > 0 {
+                        suspect[si] * 100 / stats[si].run
+                    } else {
+                        0
+                    };
+                    eprintln!(
+                        "  {}…{} run, {} divergences, {} crashes, {} in corpus, \
+                         {} novel shapes, {}% cpu, {}% individual",
+                        KINDS[si].tag(), stats[si].run, stats[si].divergences,
+                        stats[si].crashes, corpus.len(), stats[si].novel, pct, ipct
+                    );
+                }
+                // A suspect is derived by the INDIVIDUAL path, which owns
+                // the escalation ladder and the minimizer — the batch
+                // child only ever fast-paths agreement.
+                suspect[si] += r.suspect.len();
+                for prog in r.suspect {
+                    if derive.len() >= par {
+                        let _ = derive.join_next().await;
+                    }
+                    let corpus = corpus.clone();
+                    derive.spawn(async move {
+                        let (res, _) = check_isolated(&prog, timeout).await;
+                        match res {
+                            PoolResult::Agree { .. } => (),
+                            PoolResult::Crash(status) => {
+                                if status.contains("HANG")
+                                    && ["rand::", "sys::", "http::"]
+                                        .iter().any(|m| prog.contains(m))
+                                {
+                                    return;
+                                }
+                                if corpus.record_crash(&prog, &status) {
+                                    println!("CRASH — child {status}");
+                                    println!("    program: {}", prog.replace('\n', "\\n"));
+                                }
+                            }
+                            PoolResult::Diverge(d) => {
+                                let min = minimize_isolated(&prog, timeout)
+                                    .await
+                                    .unwrap_or_else(|| prog.clone());
+                                if corpus.record(&d, &prog, &min) {
+                                    println!("DIVERGENCE — {}", d.bisect());
+                                    println!("    minimized: {min}");
+                                    println!("    interp={:?} jit={:?}", d.interp, d.jit);
+                                }
+                            }
+                        }
+                    });
+                }
+                if breakage.note(!r.clean) {
+                    eprintln!(
+                        "FATAL fuzz harness: {} of the last {} orders came back \
+                         unclean — the environment (or the build) is broken",
+                        breakage.findings, BreakageWindow::LEN,
+                    );
+                    std::process::exit(2);
+                }
+            }
+            Some(_) = derive.join_next() => {}
+            else => break,
+        }
+    }
+    while derive.join_next().await.is_some() {}
+    (0..3).map(|i| (KINDS[i].tag(), stats[i].clone(), cpu[i])).collect()
 }
 
 /// Run several sources through ONE pool, dividing the box by measured
@@ -4997,5 +5506,43 @@ mod trace_probes {
         let r = ctx.rt.trace_wait_idle().await;
         assert!(r.is_err(), "expected an error, got {r:?}");
         ctx.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod batch_files_test {
+    use super::*;
+
+    /// Two subjects, same module NAME, incompatible contents.
+    ///
+    /// The batch child reuses one warmed runtime across subjects, so if
+    /// a subject's files leaked into the next one's compile the second
+    /// would fail to compile and come back `Other`. Both must be
+    /// `Agree`.
+    ///
+    /// This cannot be checked by the differential oracle: an aliased
+    /// module is inherited by BOTH engines, so they would agree with
+    /// each other on the wrong program. The verdict is the observable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn batched_files_do_not_alias() {
+        let a = "{ mod m0; m0::k0 }\n// file-v1: m0.gx\nlet k0 = i64:1\n";
+        let b = "{ mod m0; str::len(m0::k0) }\n// file-v1: m0.gx\nlet k0 = \"xy\"\n";
+        // Both orderings: aliasing in either direction must show up.
+        for progs in
+            [vec![a.to_string(), b.to_string()], vec![b.to_string(), a.to_string()]]
+        {
+            let mut verdicts: Vec<(usize, bool)> = Vec::new();
+            run_batch(&progs, Duration::from_secs(10), |i, v| {
+                verdicts.push((i, matches!(v, BatchVerdict::Agree { .. })));
+            })
+            .await;
+            assert_eq!(verdicts.len(), 2, "both subjects must report");
+            for (i, agreed) in verdicts {
+                assert!(
+                    agreed,
+                    "subject {i} did not agree — files aliased across the batch"
+                );
+            }
+        }
     }
 }
