@@ -3395,9 +3395,22 @@ pub async fn run_aggregator(
     timeout: Duration,
     weights: [f64; 3],
 ) -> Vec<(&'static str, FuzzStats, Duration)> {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     use tokio::task::JoinSet;
     const KINDS: [SourceKind; 3] =
         [SourceKind::Fuzz, SourceKind::Generate, SourceKind::Reactive];
+    // Findings are confirmed in detached `derive` tasks, so the tally has
+    // to cross tasks. Without it the divergence/crash columns sat at 0
+    // while the corpus grew — the dashboard's red flag never fired on the
+    // first live finding (aug17d katana).
+    struct Found {
+        divergences: [AtomicUsize; 3],
+        crashes: [AtomicUsize; 3],
+    }
+    let found = std::sync::Arc::new(Found {
+        divergences: std::array::from_fn(|_| AtomicUsize::new(0)),
+        crashes: std::array::from_fn(|_| AtomicUsize::new(0)),
+    });
     /// Ring ancestors per order — a sample, not a snapshot.
     const RING_SAMPLE: usize = 16;
     const RING_CAP: usize = 256;
@@ -3508,6 +3521,8 @@ pub async fn run_aggregator(
                     }
                 }
                 if stats[si].run % 1000 < r.ran.max(1) {
+                    stats[si].divergences = found.divergences[si].load(Relaxed);
+                    stats[si].crashes = found.crashes[si].load(Relaxed);
                     let tot: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
                     let pct = if tot > 0.0 {
                         (cpu[si].as_secs_f64() * 100.0 / tot).round() as u64
@@ -3535,6 +3550,7 @@ pub async fn run_aggregator(
                         let _ = derive.join_next().await;
                     }
                     let corpus = corpus.clone();
+                    let found = found.clone();
                     derive.spawn(async move {
                         let (res, _) = check_isolated(&prog, timeout).await;
                         match res {
@@ -3546,12 +3562,14 @@ pub async fn run_aggregator(
                                 {
                                     return;
                                 }
+                                found.crashes[si].fetch_add(1, Relaxed);
                                 if corpus.record_crash(&prog, &status) {
                                     println!("CRASH — child {status}");
                                     println!("    program: {}", prog.replace('\n', "\\n"));
                                 }
                             }
                             PoolResult::Diverge(d) => {
+                                found.divergences[si].fetch_add(1, Relaxed);
                                 let min = minimize_isolated(&prog, timeout)
                                     .await
                                     .unwrap_or_else(|| prog.clone());
@@ -3578,6 +3596,10 @@ pub async fn run_aggregator(
         }
     }
     while derive.join_next().await.is_some() {}
+    for i in 0..3 {
+        stats[i].divergences = found.divergences[i].load(Relaxed);
+        stats[i].crashes = found.crashes[i].load(Relaxed);
+    }
     (0..3).map(|i| (KINDS[i].tag(), stats[i].clone(), cpu[i])).collect()
 }
 
