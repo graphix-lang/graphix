@@ -1,0 +1,4 @@
+// The UI idiom: a reference handed to a function, dereferenced inside
+// it. The callee must see the caller's current value, not last
+// cycle's.
+{let x = i64:0; let f = |r: &i64| -> i64 *r; x <- i64:5; (x, f(&x))}

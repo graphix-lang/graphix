@@ -1,0 +1,4 @@
+// Both directions through one reference: the write resolves the chain
+// (it always did) and the read now resolves it too, so they meet in
+// the same cycle instead of one apart.
+{let x = i64:0; let r = &x; *r <- i64:9; (x, *r)}

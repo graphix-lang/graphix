@@ -1,0 +1,7 @@
+// The wart with nothing else in the way: before the fix this read
+// (7, 0) on the cycle x became 7 — the value and a reference to it
+// disagreeing about what x was. Now (0,0) then (7,7).
+{let x = i64:0;
+ let r = &x;
+ x <- i64:7;
+ (x, *r)}

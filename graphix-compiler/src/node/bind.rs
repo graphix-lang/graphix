@@ -228,8 +228,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         };
         if crate::dbgenv::gxdbg_letbind() {
             eprintln!(
-                "LETBIND {} tag={tag:?} published={} fd={} wake_hold={wake_hold} publishing={}",
+                "LETBIND {} tag={tag:?} val={:?} published={} fd={} wake_hold={wake_hold} publishing={}",
                 self.spec.pos,
+                tv.value_cloned(),
                 self.published,
                 ctx.frame_depth,
                 !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom()))
@@ -656,6 +657,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
                 _ => None,
             });
+            // Resolve the reference through the BYREF CHAIN, exactly as
+            // the WRITE path does (`ConnectDeref`). `&x` mints its own
+            // cell and mirrors x into it with a cross-cycle `set_var`,
+            // so reading the cell reports x's PREVIOUS value on every
+            // cycle x changes — `(x, *r)` produced `(7, 0)`. The write
+            // path never had that problem because it resolved to the
+            // referent, and the asymmetry was the whole bug: one side
+            // of the chain was being followed and the other wasn't.
+            // Interest is registered on the resolved id too, so the
+            // deref wakes with the referent instead of a cycle behind
+            // it. Chainless references (`&(a + b)`) have no entry and
+            // keep reading their own cell, which is their only storage.
+            let id = id.map(|id| ctx.env.byref_chain.get(&id).copied().unwrap_or(id));
             if let Some(new_id) = id {
                 if self.id != Some(new_id) {
                     if let Some(old) = self.id {

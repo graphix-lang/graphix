@@ -382,3 +382,25 @@ The depth-trip poison needed an explicit kernel twin once this landed:
 `graphix_depth_tripped` gates the ride, because a trip bottoms the WHOLE
 derivation (Eric 2026-08-14) and the kernel had been getting that for
 free by having no interior ride storage to assemble from.
+
+## deref-reads-the-referent-aug2026 — WRONG VALUE (interp)
+
+`&x` mints its own cell and mirrors x into it with a CROSS-CYCLE
+`set_var`, so reading through the reference reported x's PREVIOUS value
+on every cycle x changed — `(x, *r)` gave `(7, 0)`, a value and a
+reference to it disagreeing about what x was. The write path never had
+the problem: `ConnectDeref` resolves the reference through
+`Env::byref_chain` and writes to the referent. The read path just never
+did the same lookup. One side of the chain was followed and the other
+wasn't, and the asymmetry was the whole bug.
+
+`Deref` now resolves the same way and registers its wake interest on the
+resolved id, so a reference to a NAME reads that name's own channel and
+is ordered exactly as strictly as reading the name.
+
+05 pins the accepted counterpart (Eric, 2026-08-16): `&(expr)` has no
+binding to name, so it makes one — it IS `let tmp = e; tmp <- e; &tmp`
+and paces like the connect it is. Same-cycle would make a deref's value
+depend on where it sits in the program, since a reference stashed on an
+earlier cycle has no edge ordering it against the ByRef.
+Documented in `book/src/udt/references.md`.

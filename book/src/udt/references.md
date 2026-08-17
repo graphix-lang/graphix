@@ -96,3 +96,47 @@ $ graphix test.gx
 
 We were able to pass `v` into `f` by reference and it was able to update it,
 even though the original bind of `v` isn't even in a scope that `f` can see.
+
+## Referencing a Name vs Referencing an Expression
+
+`&` does slightly different things depending on what follows it, and the
+difference is observable in *when* a deref sees an update.
+
+`&v`, where `v` is a binding, is a reference to that binding. Dereferencing it
+reads the binding, so `*r` and `v` always agree — on the same cycle, in the same
+update round.
+
+```graphix
+let v = 0;
+let r = &v;
+v <- 7;
+(v, *r)     // (0, 0) then (7, 7)
+```
+
+`&(a + b)` has no binding to name, so it makes one. The expression's value is
+connected into a fresh cell, which is exactly
+
+```graphix
+let tmp = a + b;
+tmp <- a + b;
+&tmp
+```
+
+and it therefore paces like any other `<-`: the initial value is there
+immediately, and every later update arrives on the *next* cycle.
+
+```graphix
+let a = 2;
+let b = 3;
+let r = &(a + b);
+a <- 10;
+(a + b, *r)   // (5, 5) then (13, 5) then (13, 13)
+```
+
+So a reference to a name is a reference to a place, and a reference to an
+expression is a reference to a value that is being kept up to date for you.
+That the two pace differently is an accepted wart — the alternative is either
+making `&(expr)` illegal, which costs a lot of concision for a construct people
+reach for constantly in UI code, or updating the cell mid-cycle, which would
+make the value a deref sees depend on where it sits in the program rather than
+on what it depends on.

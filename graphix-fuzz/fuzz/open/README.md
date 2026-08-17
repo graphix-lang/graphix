@@ -4,30 +4,13 @@ Confirmed interp/jit divergences with a named root cause and a minimal
 witness, kept OUT of `findings/` because they still diverge — `regress`
 must stay green. Each names what it would take to close.
 
-(01, the recursive-activation cache, is FIXED — per-activation block
-trees, `findings/recursive-activation-blocks-aug2026`.)
+(The other two aug15b items are FIXED: the recursive-activation cache
+became per-activation block trees
+(`findings/recursive-activation-blocks-aug2026`), and the late deref was
+a chain the READ path never followed
+(`findings/deref-reads-the-referent-aug2026`).)
 
 Run one: `graphix-fuzz check graphix-fuzz/fuzz/open/<file>.gx`
-
-## a newly-resolved deref fires one cycle late
-
-WAS 02.
-
-From aug15b aieka reactive 000000. INTERP-side.
-
-`Deref::update` registers its wake interest only once the reference
-VALUE arrives. On the cycle the reference first arrives, the read of the
-target comes back Standing, so the deref produces STALE — with the right
-value, but a tag that does not fire. The delivery shows up as Delivered
-one cycle later, so the fire lands a cycle late and, in the witness, the
-`<-` that consumed it never wrote.
-
-Under organic firing the rule is not in doubt: the reference expression
-is a consumed input, it fired, so the deref must fire. The fix is to
-treat a fired child as making the read fresh. What needs care before
-landing it is PACING — firing a cycle earlier moves the interp relative
-to the JIT, and the oracle compares per-cycle traces, so the JIT's own
-first-fire timing has to be checked against it rather than assumed.
 
 ## a bottomed string dependency rides in the interp, misses in the JIT
 

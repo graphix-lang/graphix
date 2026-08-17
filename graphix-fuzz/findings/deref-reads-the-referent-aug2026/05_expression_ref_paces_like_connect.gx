@@ -1,0 +1,18 @@
+// RULED (Eric, 2026-08-16): `&` means slightly different things after
+// a NAME and after an EXPRESSION, and that is accepted.
+//
+// `&(a + b)` has no binding to name, so it makes one — it is exactly
+// `let tmp = a + b; tmp <- a + b; &tmp`, and it paces like the connect
+// it is: initial value immediately, later updates next cycle. This
+// pin exists so nobody "fixes" it into same-cycle later. Doing that
+// would make the value a deref sees depend on WHERE IT SITS: the cell
+// is written mid-cycle, and a deref that got the reference on an
+// earlier cycle (stashed in a tuple, a struct, a captured formal) has
+// no edge ordering it against the ByRef. Today every reader in a
+// cycle sees the same thing because the write landed before the cycle
+// began.
+//
+// The alternative was making `&(expr)` illegal, which costs too much
+// concision for a construct UI code reaches for constantly.
+// Documented in book/src/udt/references.md.
+{let a = i64:2; let b = i64:3; let r = &(a + b); a <- i64:10; (a + b, *r)}

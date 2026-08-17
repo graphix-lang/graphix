@@ -1,2 +1,0 @@
-// schedule-v1: cap=80 events=640; in0=i64:1
-{let v1 = (&in0, i64:1 / in0); let v3 = {c: *v1.0}; let v4 = i64:0; let v6: i64 = v3.c; v4 <- in0 ~ v4 + v6; v4}

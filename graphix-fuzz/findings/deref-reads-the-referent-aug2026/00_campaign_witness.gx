@@ -1,0 +1,17 @@
+// aug15b aieka reactive divergence_000000 (2026-08-16). INTERP-side.
+//
+// `&x` mints its OWN cell and mirrors x into it with a CROSS-CYCLE
+// `set_var`, so reading through the reference reported x's PREVIOUS
+// value on every cycle x changed. Here the struct field came out
+// `{c: 0}` on the cycle in0 became 1, the connect sampled that, and
+// v4 never moved off 0.
+//
+// The write path never had the problem: `ConnectDeref` resolves the
+// reference through `Env::byref_chain` to the referent and writes
+// THERE. Reading just never did the same lookup — one side of the
+// chain was followed and the other wasn't, and that asymmetry was the
+// whole bug. `Deref` now resolves the same way (registering its wake
+// interest on the resolved id too), so `*r` and `x` agree within a
+// cycle, as `(x, *r)` in 01 shows directly.
+// schedule-v1: cap=80 events=640; in0=i64:1
+{let v1 = (&in0, i64:1 / in0); let v3 = {c: *v1.0}; let v4 = i64:0; let v6: i64 = v3.c; v4 <- in0 ~ v4 + v6; v4}

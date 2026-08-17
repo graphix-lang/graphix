@@ -1,0 +1,5 @@
+// A reference VALUE that switches which binding it names mid-run: the
+// deref must re-resolve (and re-register its interest) against the new
+// referent, and still read same-cycle.
+{let a = i64:1; let b = i64:2; let pick = i64:0; let r = select pick {i64:0 => &a, _ => &b};
+ pick <- i64:1; a <- i64:7; b <- i64:8; (*r, a, b)}

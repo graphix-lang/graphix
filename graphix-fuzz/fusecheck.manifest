@@ -64,6 +64,12 @@
 1	depth-trip-whole-derivation-aug2026/00_retained_ride_in_unwind.gx
 1	depth-trip-whole-derivation-aug2026/01_original_finding.gx
 1	depth-trip-whole-derivation-aug2026/02_guard_ride_blocked.gx
+3	deref-reads-the-referent-aug2026/00_campaign_witness.gx
+1	deref-reads-the-referent-aug2026/01_name_ref_agrees_same_cycle.gx
+1	deref-reads-the-referent-aug2026/02_write_then_read.gx
+1	deref-reads-the-referent-aug2026/03_deref_in_callee.gx
+3	deref-reads-the-referent-aug2026/04_retarget.gx
+2	deref-reads-the-referent-aug2026/05_expression_ref_paces_like_connect.gx
 3	dyncall-apply-unwired-aug2026/00_dbg_spec_lost.gx
 3	dyncall-apply-unwired-aug2026/01_dbg_type_lost_naked_render.gx
 1	dyncall-apply-unwired-aug2026/02_log_scope_lost.gx
