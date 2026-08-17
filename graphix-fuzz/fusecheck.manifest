@@ -51,6 +51,13 @@
 1	crash-triage-jul2026/02_array_init_capacity_overflow.gx
 1	crash-triage-jul2026/03_placeholder_leaf_read.gx
 0	crash-triage-jul2026/04_seq_runaway_range.gx
+0	declared-rtype-open-callee-aug2026/00_campaign_witness.gx
+0	declared-rtype-open-callee-aug2026/01_uncalled_def.gx
+0	declared-rtype-open-callee-aug2026/02_through_struct_field.gx
+0	declared-rtype-open-callee-aug2026/03_through_alias.gx
+0	declared-rtype-open-callee-aug2026/04_called_by_name_always_caught.gx
+1	declared-rtype-open-callee-aug2026/05_expectation_drives_callee.gx
+3	declared-rtype-open-callee-aug2026/06_obligation_is_per_instance.gx
 1	depth-guard-jul2026/01_depth_limit_boundary.gx
 1	depth-guard-jul2026/02_depth_under_limit.gx
 1	depth-guard-jul2026/02_rec_lambda_in_hof_slot.gx

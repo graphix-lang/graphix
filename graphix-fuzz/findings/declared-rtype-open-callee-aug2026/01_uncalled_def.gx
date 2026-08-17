@@ -1,0 +1,17 @@
+// The witness with everything incidental removed. No struct, no union,
+// no fold — one def, never called, whose body reaches its declared
+// return through a call to an open-returning local.
+//
+// `s` infers `-> Array<'n>`; partial, so the cell re-opens. The gate's
+// declared-rtype check finds it unbound, binds it to i64, and passes.
+// The def is accepted; the body delivers an array.
+//
+// Uncalled is the purest form: a def is proven ONLY by its own gate,
+// so nothing downstream can rescue the missed check.
+{
+  let g = |#x: i64| -> i64 {
+    let s = |n| [n];
+    s(x)
+  };
+  i64:1
+}

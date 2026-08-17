@@ -1,0 +1,15 @@
+// The retained obligation must be per-INSTANCE. Two sites of one open
+// callee at different element types: if the constraint leaked across
+// instances, the first site's i64 would poison the second.
+//
+// This is the hazard `unbind_open_tvars` re-opens partial bindings to
+// avoid in the first place (first-writer-wins, with the winner decided
+// by typecheck order), so the weaker form has to preserve it. It does:
+// `reset_tvars` freshens constraints through the same map as bindings,
+// keeping alias topology intact.
+{
+  let s = |n| [n];
+  let a: Array<i64> = s(i64:1);
+  let b: Array<string> = s("two");
+  (a, b)
+}

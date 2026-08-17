@@ -447,3 +447,39 @@ disagree, re-raise WITHOUT the opaque marker. Genuinely opaque cases (a
 `List` private↔public view mismatch — `list::flat_map`, the
 parameterized-abstract interfaces) keep their latitude, which is what
 the resolve step distinguishes.
+
+## declared-rtype-open-callee-aug2026 — TYPE UNSOUNDNESS (typechecker)
+
+From aug16a hz1 fuzz 000000, and the same genus as the abstract-arith
+find above: an ill-typed program compiled, and the two engines then
+disagreed about the garbage (the interp produced the array with a
+runtime tval complaint; the JIT scalar-marshalled it to 0 — the partial
+twin of `any-return-narrowing-aug2026`, which is the same symptom from
+the same cause with `Any` in place of a partial binding).
+
+A declared return type must be PROVEN, not assumed. The def gate checks
+it against the body's type, but a body that ENDS IN A CALL has only
+whatever cell the call site holds at that moment. `|n| [n]` infers
+`-> Array<'n>`; that binding is partial (open interior), so
+`unbind_open_tvars` re-opens it for per-site solving — and used to drop
+the shape on the floor. The gate then found the call cell unbound, bound
+it to the declared type, and reported success having proven nothing.
+
+The proof only ever ran at a STATIC call site, where per-callsite
+elaboration re-drives the callee body (04). So the def's acceptance
+depended on how its callers reached it: by name, caught; uncalled (01),
+through a struct field (02), or through an alias (03), admitted.
+
+Fixed in `unbind_open_tvars`: a partial binding re-opens as a cell
+CONSTRAINT instead of vanishing. That is the fact in its correct weaker
+form — it bounds every later binding rather than being consumed by the
+first writer, and `reset_tvars` already carries constraints into each
+instance through the same freshening map, so per-site solving keeps its
+alias topology (06). The BIND the gate performs is right and stays:
+it is how an expectation propagates inward to select a generic callee's
+instance (05). Only the proof was missing.
+
+Regression tests: `lang::functions::declared_rtype_proven_through_open_callee`
+plus `declared_rtype_drives_open_callee` and
+`open_callee_obligation_is_per_instance` as the counterparts that must
+keep compiling.

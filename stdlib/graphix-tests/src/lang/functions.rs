@@ -1758,3 +1758,78 @@ const ABSTRACT_UNION_RETURN_IS_FINE: &str = r#"
 run!(abstract_union_return_is_fine, ABSTRACT_UNION_RETURN_IS_FINE, |v: Result<
     &Value,
 >| matches!(v, Ok(_)));
+
+// A declared return type must be PROVEN, not merely assumed, when the
+// body reaches it through a call whose callee return is still open.
+//
+// `s` infers `-> Array<'n>`. That binding is partial (open interior), so
+// the def gate re-opens the cell — and it used to drop the fact on the
+// floor. The outer def gate then checked the declared `i64` against the
+// body, reached the call's now-unbound rtype cell, BOUND it to i64, and
+// passed: an ill-typed def, admitted. Nothing later contradicted it,
+// because the only place the callee's real return got proven was a
+// STATIC call site — so calling `g` by name caught it, while an uncalled
+// def, or one reached through a struct field or an alias, sailed
+// through. Both engines then ran the garbage and disagreed (aug16a hz1
+// divergence_000000, the JIT scalar-marshalling the real array to 0 —
+// the partial twin of any-return-narrowing-aug2026).
+//
+// Re-opening now leaves the shape behind as a cell CONSTRAINT, which is
+// the fact in its correct weaker form: it bounds every future binding
+// instead of being consumed by the first writer, and instantiation
+// carries it into each instance through the same freshening map.
+const DECLARED_RTYPE_PROVEN_THROUGH_OPEN_CALLEE: &str = r#"
+{
+  let g = |#x: i64| -> i64 {
+    let s = |n| [n];
+    s(x)
+  };
+  g(#x: i64:4)
+}
+"#;
+
+run!(
+    declared_rtype_proven_through_open_callee,
+    DECLARED_RTYPE_PROVEN_THROUGH_OPEN_CALLEE,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The counterpart that must KEEP compiling, and the reason the binding
+// itself is right: an expectation legitimately propagates INWARD to
+// select a generic callee's instance. Same body, declared honestly.
+const DECLARED_RTYPE_DRIVES_OPEN_CALLEE: &str = r#"
+{
+  let g = |#x: i64| -> Array<i64> {
+    let s = |n| [n];
+    s(x)
+  };
+  g(#x: i64:4)
+}
+"#;
+
+run!(
+    declared_rtype_drives_open_callee,
+    DECLARED_RTYPE_DRIVES_OPEN_CALLEE,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if &**a == [Value::I64(4)])
+);
+
+// The obligation must be per-INSTANCE, not per-def: two sites of one
+// open callee, at different element types. A constraint that leaked
+// across instances (first-writer-wins) would reject the second site —
+// the hazard `unbind_open_tvars` re-opens partial bindings to avoid,
+// which the constraint form has to preserve.
+const OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE: &str = r#"
+{
+  let s = |n| [n];
+  let a: Array<i64> = s(i64:1);
+  let b: Array<string> = s("two");
+  (a, b)
+}
+"#;
+
+run!(
+    open_callee_obligation_is_per_instance,
+    OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE,
+    |v: Result<&Value>| matches!(v, Ok(_))
+);

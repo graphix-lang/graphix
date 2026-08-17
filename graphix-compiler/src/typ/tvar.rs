@@ -988,6 +988,31 @@ impl Type {
                 if let Some(t) = bound
                     && (t == Type::Bottom || t.resolve_tvars().has_unbound())
                 {
+                    // Re-opening frees the binding SLOT; it must not
+                    // erase what the body proved. A partial inference
+                    // is still a fact about SHAPE (`|n| [n]` delivers
+                    // an array, whatever the element), and the
+                    // constraint conjunction is exactly the weaker form
+                    // that fact should take: it survives per-site
+                    // re-solving instead of being consumed by the first
+                    // writer, and `reset_tvars` carries it into every
+                    // instance through the same freshening map, so the
+                    // obligation keeps its alias topology.
+                    //
+                    // Dropping it outright let a consumer bind the
+                    // re-opened cell to something the body cannot
+                    // deliver, with nothing left to contradict it: a
+                    // def-gate rtype check reached the body through an
+                    // unbound call cell, bound it to the DECLARED type
+                    // and passed vacuously, so `|#x: i64| -> i64 {let s
+                    // = |n| [n]; s(x)}` compiled — ill-typed, and the
+                    // engines then disagreed over the garbage (aug16a
+                    // hz1 divergence_000000; the partial twin of the
+                    // Any case below, any-return-narrowing-aug2026).
+                    // Bottom stays vacuous — it bounds nothing.
+                    if t != Type::Bottom {
+                        tv.add_cell_constraint(t);
+                    }
                     tv.unbind()
                 }
             }

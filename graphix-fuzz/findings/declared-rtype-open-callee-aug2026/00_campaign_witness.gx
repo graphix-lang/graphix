@@ -1,0 +1,45 @@
+// aug16a hz1 fuzz divergence_000000 (2026-08-17). TYPECHECKER-side.
+//
+// This program is ill-typed and used to COMPILE. `t.f` is declared
+// `-> i64`, but its body delivers `[i64, Array<i64>]` — the select's
+// two arms disagree, and the union reaches the declared return through
+// a call to the local `s`.
+//
+// The def gate checks the declared rtype against the body's type. A
+// body that ENDS IN A CALL has, at that moment, whatever type cell the
+// call site holds — and `s`'s inferred `-> Array<'n>` is a PARTIAL
+// binding (open interior), which `unbind_open_tvars` re-opens so each
+// site can solve it. Re-opening used to DROP the shape entirely, so the
+// call cell was simply unbound; the declared-rtype check bound it to
+// i64 and reported success. Nothing had been proven.
+//
+// The proof only ever happened at a STATIC call site, where per-callsite
+// elaboration re-drives the callee body. So `f(#x: 4)` by name was
+// caught, while this — a call through a struct FIELD — was not. Both
+// engines then ran the garbage: the interp produced the array with a
+// runtime tval complaint, the JIT scalar-marshalled it to 0.
+//
+// Fixed in `unbind_open_tvars`: a partial binding re-opens as a cell
+// CONSTRAINT rather than vanishing. It bounds every later binding
+// instead of being consumed by the first writer, and `reset_tvars`
+// carries it into each instance through the same freshening map, so
+// per-site solving is untouched.
+{
+  let a = [
+    (i64:1, i64:2),
+    ({
+       type T = {bar: i64, f: fn(#x: i64, #y: i64) -> i64, foo: string};
+       let t: T = {
+         bar: i64:3,
+         f: |#x: i64, #y: i64| {
+           let s = |n, acc| select n {i64:0 => acc, _ => [x]};
+           s(i64:100, i64:20)
+         },
+         foo: "hello world"
+       };
+       let f = t.f;
+       f(#y: i64:3, #x: i64:4)
+     }, i64:1)
+  ];
+  array::fold(a, i64:1, |acc, (k, v)| acc * k)
+}

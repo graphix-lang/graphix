@@ -1,0 +1,19 @@
+// Called, but through a struct FIELD — so the call site cannot resolve
+// statically to the def, per-callsite elaboration never runs, and the
+// body's real return is never proven. The witness's shape, minus the
+// union.
+//
+// Contrast 04: the same def called BY NAME was always rejected, because
+// the static call site re-drives the callee body. That asymmetry is what
+// made the hole look arbitrary — the def's acceptance depended on how
+// its callers happened to reach it.
+{
+  type T = {f: fn(#x: i64) -> i64};
+  let t: T = {
+    f: |#x: i64| {
+      let s = |n| [n];
+      s(x)
+    }
+  };
+  t.f(#x: i64:4)
+}

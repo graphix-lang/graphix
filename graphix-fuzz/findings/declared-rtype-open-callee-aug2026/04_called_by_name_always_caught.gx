@@ -1,0 +1,14 @@
+// The half that ALWAYS worked, kept so the pair stays visible: called by
+// name, the site resolves statically, per-callsite elaboration re-drives
+// `s`'s body against the now-i64 cell, and the mismatch surfaces there.
+//
+// Before the fix this was the ONLY path that caught the error, which is
+// why the bug read as "sometimes ill-typed programs compile". Both
+// engines must still reject it.
+{
+  let g = |#x: i64| -> i64 {
+    let s = |n| [n];
+    s(x)
+  };
+  g(#x: i64:4)
+}

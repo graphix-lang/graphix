@@ -1,0 +1,15 @@
+// The positive counterpart, and the reason the offending BIND is right:
+// an expectation propagating inward is how a generic callee's instance
+// gets selected. Same body as 01/04, declared honestly — the gate binds
+// the open call cell to Array<i64>, `s` instantiates at 'n := i64, and
+// the constraint retained at re-opening (Array<'n>) admits it.
+//
+// A fix that refused to bind an unbound body cell would have killed
+// this. The missing half was the proof, never the bind.
+{
+  let g = |#x: i64| -> Array<i64> {
+    let s = |n| [n];
+    s(x)
+  };
+  g(#x: i64:4)
+}
