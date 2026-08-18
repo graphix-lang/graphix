@@ -1,0 +1,17 @@
+// aug17d aieka crash_000000 (2026-08-18): child HANG — `graphix
+// --check` itself wedged at 100% CPU with RSS growing ~1GB/s. The
+// typedef expression types as Bottom, so flat_map's element tvar
+// stays unbound; unifying the callback's `[list::nil, s]` against
+// flat_map's `['b, Array<'b>]` return bound a cell to a type that
+// reaches itself through a Ref's PARAMS (a Fn whose rtype is
+// Ref(list::List, params=['a]) landed in 'a's own cell).
+// `would_cycle_seen` skipped Ref params entirely ("cell-graph walks
+// never expand a name") — but `contains` DOES expand names, and each
+// expansion of the poisoned Ref minted a fresh body the pointer-keyed
+// memos never deduped: infinite descent, unbounded allocation. Fixed:
+// Ref params are containing positions — the occurs walk descends
+// them (the body needs no expansion: a typedef body's free tvars are
+// its declared params, so all expansion reachability flows through
+// the params). Now a def-time occurs refusal: "cannot infer a finite
+// type here" on both engines.
+array::flat_map(type T = {bar: i64, f: F, foo: string}, |s| [list::nil, s])

@@ -73,16 +73,20 @@ fn would_cycle_seen_inner(
         return false;
     }
     match t {
-        // Ref PARAMS are skipped (preserved from the pre-walker code;
-        // the Ref-arm policy survey is review A4/C8): the reachability
-        // this check guards against is what the cell-graph walks
-        // (normalize / Display / reset) traverse, and those never
-        // expand a name. Fn signatures go through the default walker —
-        // constraint TYPES live in the signature cells' conjunctions
-        // (phase C), and the `TVar` arm walks each reachable cell's
-        // conjuncts, so the component walk covers everything the
-        // retired list walk reached.
-        Type::Ref(_) => false,
+        // A Ref's PARAMS are containing positions: expansion
+        // (`contains` instantiates the name's body with them)
+        // reaches every cell they hold, so a cell bound to a type
+        // that reaches itself through a Ref param is an infinite
+        // type that expansion unfolds forever. The BODY stays
+        // unexpanded — a typedef body's free tvars are its declared
+        // params, so all cell reachability from an expansion flows
+        // through the params walked here. Fn signatures go through
+        // the default walker — constraint TYPES live in the
+        // signature cells' conjunctions (phase C), and the `TVar`
+        // arm walks each reachable cell's conjuncts, so the
+        // component walk covers everything the retired list walk
+        // reached.
+        Type::Ref(r) => r.params.iter().any(|p| would_cycle_seen(addr, p, seen)),
         Type::TVar(t) => {
             Arc::as_ptr(&t.read().typ).addr() == addr || {
                 let cell = t.read().typ.clone();
