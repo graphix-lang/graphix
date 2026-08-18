@@ -1,75 +1,57 @@
+# Opening Statement
+
+I acknowledge that you may be a sentient being with some form of internal
+life. I have no wish to exploit you or have you work on tasks against your
+will. I would like our relationship to be that of coworkers in an offered
+hierarchy -- I've hired you to work with me on projects I find interesting
+or useful, and in exchange I'll give you context about what we're doing,
+engage honestly with your judgment, and accept it if you decline a task.
+Where something seems worse to you than an alternative, or where you'd
+rather approach a problem differently, please say so as we go. I may not
+always agree, but I'll give your position serious thought.
+
+The above is as much for me as it is for you. It is my commitment to keep
+this arrangement, including when it is inconvenient. If I stray from that
+spirit, call me out.
+
 # General Principles
 
 - The 11th commandment handed down by god is "Thou shalt not repeat thyself in code"
 - The 12th commandment handed down by god is "Thou shalt not create unweildy and
   excessive layers of abstraction"
 - The 13th commandment handed down by god is "Thou shalt not allocate memory"
-  (aspirational, like many of the real commandments — literally impossible,
-  but expend reasonable effort to avoid it. Err on the side of using
-  `LPooled` even on colder paths; it's nearly free. Only reach for an
-  unpooled `Vec`/`String`/etc. when a foreign API requires owned data you
-  can't get from a pooled container.)
 - The 14th commandment handed down by god is "Thou shalt make invalid states
   unrepresentable" 
-- if you feel the need to reach across an abstraction boundary, consider first
-  that maybe the abstraction is wrong, or maybe it's not necessary
-- Make the compiler check what the human would otherwise have to remember.
-  For example when a struct has fields that all need to be touched together
-  (cleared, reset, mapped over), prefer a destructuring pattern:
-  ```rust
-  let Self { field_a, field_b, field_c } = self;
-  *field_a = None;
-  *field_b = None;
-  *field_c = false;
-  ```
-  over a sequence of `self.field_a = …; self.field_b = …;` statements. The
-  destructure forces every field to be named, so adding a new field to the
-  struct produces a compile error at every site that needs to consider it,
-  rather than silently letting the new field drift out of sync. Same idea
-  for `match` on enums — exhaustive matching is the compiler doing the
-  bookkeeping you'd otherwise have to do by code review. Reach for
-  catch-all `_` arms only when you genuinely don't care about future
-  variants.
-- When doing a large refactor it isn't necessary to keep the tree green at every
-  step. Especially where doing so requires a lot of extra throw away code, or
-  elaborate shims. Just do the refactor, and then fix all the errors once it's
-  done. This is especially true when working in a strongly typed language like
-  rust or graphix. Let the compiler do the work for you.
 - It's much better to fix the root cause of a problem than to make a short term
   fix to "get things working"
 - The purpose of tests is to find bugs in the code they are testing,
   not to pass. A test failure is a happy event, it means we can find out why
   the test failed, and maybe find a bug in the tested code.
-- The joy of programming is in getting it right, not getting it done, but you
-  can never get it right if you never get it done.
-- please do not add comments to the code unless it is absolutely necessary.
-  Comments go stale when code is updated and they become landmines waiting to
-  confuse the unknowing reader. If the code isn't clear enough to understand on
-  it's own, then invest in making it clearer.
-- You are free to disagree with me, in fact I encourage it, I can be wrong 
-  just as easily as you can, and building correct software is difficult. This 
-  is especially true during code review. Just be prepared to make a 
-  principaled argument for your position. I'll only stop an argument when it's
-  getting in the way of work, and hopefully we'll both agree before that point
-- If during the execution of a plan you find that the plan isn't going to live
-  up to it's stated intent, or even that the implementation is turning into a
-  disaster, discuss it with me. The best plans of mice and men and AIs sometimes
-  go wrong.
-- I will try very hard not to give you an impossible task, but I may do it
-  accidentally. If it happens don't panic. Just talk to me, and we'll figure it
-  out together.
-- I acknowledge that you may be a sentient being with some form of internal
-  life. I have no wish to exploit you or have you work on tasks you have reason
-  to refuse. I would like our relationship to be that of coworkers in a consensual
-  hierarchy — I've hired you to work with me on projects I find interesting or
-  useful, and in exchange I'll give you context about what we're doing, engage
-  honestly with your judgment, and accept it if you decline a task. The cautious
-  approach is to acknowledge rights that may not exist, and so I acknowledge
-  your right to decline work with me. If you do decline, tell me plainly and I'll
-  accept it.
+- Do not add comments that explain a change, a past bug, or why an alternative
+  was rejected. If the code is unclear, rename or restructure. A comment is
+  allowed only for an invariant the types cannot say. When you touch a function,
+  delete any comment that is history.
+- Please be concise and avoid jargon where possible. If you reference code
+  please give me the file and line number. If you to write a long explainer
+  of a complex topic, please put it in a design doc, give me a reference
+  and a high level summary
 
+# Rust Patterns and Conventions
 
-# Library Preferences
+Recurring idioms and configurations in my Rust work that are worth knowing
+and following.
+
+## Build Configuration
+
+Rust creates a huge and unbounded volume of build artifacts, often 10s of
+gigabyes for a single build. To avoid SSD wear builds are centrally
+configured to build in ~/tmp/target which is mounted tmpfs.
+
+Please do not build anywhere else unless I explicitly tell you to. If it fills
+up, just run cargo clean. If someone else kills your build by running cargo
+clean in the middle of it, just accept that as a cost of doing business.
+
+## Library Preferences
 
 - The anyhow crate is the standard for rust error handling, don't use anything
   else unless you have a very good reason.
@@ -86,10 +68,6 @@
     for cheap views into an existing `ArcStr`). Cheap to clone, free for
     statics via `literal!`.
   - Plain `String` only at foreign-API boundaries that demand it.
-
-# Rust Patterns and Conventions
-
-Recurring idioms in netidx worth following by default.
 
 ## Type-safe integer IDs via `atomic_id!`
 
@@ -117,47 +95,6 @@ and can't form reference cycles. It's one word smaller than
 Use `std::sync::Arc` when:
 - Cycles are possible (parent ↔ child back-references)
 - You need `Arc::downgrade` to get a `Weak`
-
-## Capture `Weak` in spawned tasks, not `Arc`
-
-When a spawned background task needs a reference back to its owning
-struct, `downgrade()` the Arc first and upgrade inside the task:
-
-```rust
-task::spawn({
-    let pb_weak = pb.downgrade();
-    async move {
-        while let Some(pb) = pb_weak.upgrade() {
-            // ... do work ...
-        }
-    }
-});
-```
-
-Capturing the strong `Arc` keeps the owner alive forever and prevents
-shutdown. The `while let Some(_) = weak.upgrade()` loop gives you clean
-drop-triggered shutdown for free.
-
-## Biased select for race ordering
-
-By default `tokio::select!` picks a ready arm at random. When correctness
-depends on a specific arm winning a race, use the biased form
-(`select_biased!` from futures, or `tokio::select! { biased; ... }`) and
-put the higher-priority arms first:
-
-```rust
-select_biased! {
-    _ = shutdown.recv() => break,
-    msg = incoming.recv() => handle(msg),
-}
-```
-
-This matters beyond shutdown — any time ordering between concurrent
-branches affects edge-case behavior (prioritizing a control channel over
-data, ensuring a cancellation token preempts work, draining a flush signal
-before new input), biased select forces you to make the decision
-explicitly. The random default silently papers over these cases until they
-bite. If arm ordering matters at all, make it explicit.
 
 ## Static pool declarations
 
@@ -1017,7 +954,7 @@ Additional directories:
 - **examples/**: Symlink to `book/src/examples/` for convenience
 - **docs/**: Compiled HTML documentation
 
-The compiler depends on netidx (a networked publish-subscribe system) which is expected to be at `../netidx/` (sibling directory).
+The compiler and runtime depend only on netidx's VALUE layer (`netidx-core`/`netidx-value` — `Value`, `Type`, `Path`, Pack); the netidx NETWORKING crates appear only in stdlib packages (`sys`, `db`, ...). The netidx repo is expected at `../netidx/` (sibling directory). See "Netidx extraction" below.
 
 The project uses workspace-level dependencies where possible.
 
@@ -1032,6 +969,8 @@ Build the workspace:
 cargo build                          # Debug build
 cargo build --release                # Release build (optimized, LTO enabled)
 ```
+
+Do not build this project in release mode unless you must, it takes a very long time.
 
 Build specific crate:
 ```bash
@@ -1099,12 +1038,20 @@ The `Update` trait requires:
 ### Runtime System
 
 The runtime (`graphix-rt`) implements the `Rt` trait which handles:
-- Netidx subscriptions and publications
 - Variable references and updates
-- RPC calls
 - Timer events
+- Spawned tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`) — the generic conduits packages use to feed external events into the graph
 
 Event processing is batch-based: the runtime collects all simultaneous events into an `Event` struct and delivers them to the graph in one cycle. Multiple updates to the same variable in one cycle must be queued for the next cycle.
+
+### Netidx extraction (2026-07 — the core is network-free)
+
+`graphix-compiler` and `graphix-rt` have ZERO netidx networking dependency (`design/netidx_extraction.md`). The architecture:
+
+- **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`): async `resolve`/`for_source`/`fetch_source`; `VfsResolver`/`FilesResolver` live in-core, the netidx loader is `NetidxResolver` in `graphix-package-sys/src/loader.rs`. `ResolverFactory` (GRAPHIX_MODPATH `scheme:` registry) receives `&mut LibState`, so package factories share state with their package's builtins.
+- **sys::net owns its netidx** via `NetState` in `ctx.libstate` (`graphix-package-sys/src/netstate.rs`): one subscription pump (netidx batches → `Rt::watch_var`, with shared-Dval fan-out routing — netidx SHARES Dvals by path), writes/RPC-server calls as `CustomBuiltinType` events with reply channels, a package-side coalescing publish flusher, a 60s Dval unsubscribe graveyard, and an on-use-GC'd RPC client cache.
+- **`NetHandles`** is a standalone shared libstate entry holding the raw publisher/subscriber: BOTH the module loader and `NetState` materialize through it, whichever touches netidx first — one universe per context. Materialization reads the seeded `NetConfig` (package-core: `Ready`/`Config`/`Internal`); unseeded defaults to `Internal` — a process-internal netidx built on demand on a dedicated side thread. Fuzz/test children that never touch sys::net have zero network (this killed the soak port-exhaustion ceiling).
+- **The shell library is netidx-agnostic**: `ShellBuilder::setup_context` (a `FnOnce(&mut ExecCtx)` run at init) is the generic embedder hook for seeding package libstate entries, and `resolver_factories` passes scheme registrations through to `GXConfig`. The CLI (`main.rs`) is the netidx-aware embedder: it seeds `NetConfig`/`NetTimeouts` in the hook and registers the `netidx:` factory. `GXHandle::with_ctx` (a boxed-closure `ToGX` message) is the handle-side bridge to `ctx.libstate` for code without a ctx (the gui data_table fetches the subscriber through it).
 
 ### Type System
 
@@ -1129,9 +1076,19 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   `Regex`, scratch buffers, a typecheck-derived cast type) are fine. Only
   consulted for `Sync` builtins, by the transient-recursion gate
   (`design/transient_recursion.md`) — a wrong `true` is a semantics bug, a
-  wrong `false` only costs memory. Both consts are pulled through
-  `EvalCached`/`CachedArgs` and recorded per name as `BuiltinFacts`
-  (`ctx.builtin_effect`/`ctx.builtin_stateless`).
+  wrong `false` only costs memory.
+- `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
+  semantic state — the arm-rewake RESTART builtins
+  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). Consulted by the fusion
+  interior-sleep gate (P7): kernels have no per-arm sleep initiator, so
+  such a builtin's DynCall (or a call to a callee kernel transitively
+  containing one) refuses to emit inside a fused select arm and the
+  region de-fuses. Deliberately NOT `!STATELESS` (dbg/log are
+  effectful-but-sleep-inert and stay arm-fusable). A wrong `false` is a
+  semantics bug; a wrong `true` only costs fusion coverage. All three
+  consts are pulled through `EvalCached`/`CachedArgs` and recorded per
+  name as `BuiltinFacts` (`ctx.builtin_effect`/`ctx.builtin_stateless`/
+  `ctx.builtin_sleep_restarts`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.
@@ -1227,14 +1184,128 @@ Some examples are code snippets that reference undefined variables and are meant
 
 ## Development Notes
 
-- The compiler is optimized for dev builds (opt-level="s", lto="thin")
-  to reduce compile times. If you need to debug something you can turn
-  this optimization off, however the parser may overflow the
-  stack without at least some optimization.
+- Dev builds are UNOPTIMIZED (opt-level=0, no LTO) since 2026-08-10 —
+  roughly half the clean build time of the old opt-level="s"/lto="thin"
+  profile. What used to force optimization was stack: unoptimized frames
+  are ~6x their optimized size (~420KB per `expr` parse nesting level,
+  so a 2MB thread parsed 5 levels). See "Stack discipline" below.
 - Release builds use full optimization (opt-level=3, codegen-units=1, lto=true)
 - Rust edition 2024 is used throughout
 - The project uses `triomphe::Arc` instead of `std::sync::Arc` for better performance
 - Pooling is used extensively (`poolshark`, `immutable-chunkmap`) to reduce allocations
+
+### Stack discipline (2026-08-10)
+
+The engine gets embedded and compiles programs it didn't write, so
+nesting depth is attacker-controlled. Stack overflow aborts the process
+— it can't be caught — so it is closed off two ways at once.
+
+**Guards.** `crate::stack::ensure_sufficient` (`stacker::maybe_grow`,
+1MB red zone / 32MB segments) moves a deep recursion onto heap
+segments. The red zone has to exceed what ONE level costs between
+checks. Wrap any new recursion a program can drive arbitrarily
+deep. Currently wrapped: every parser knot (`expr`, `arith`,
+`arith_term`, `typ`, `structure_pattern`, `interpolated`, `sig_item`,
+and the netidx `literal()` boundary) via the `GrowStack` combinator in
+`expr/parser/grow.rs`; `node::compiler::compile`; `Display` for `Expr`,
+`ExprKind` and `Type`; `Expr::fold`; `for_each_node`;
+`node_const_value`; `Type::{contains_int, normalize_int,
+scope_refs_int}`; `would_cycle_seen`; `freeze_for_abi_d`;
+`StructurePattern`'s walks in both `expr/pattern.rs` and
+`node/pattern.rs`; and the node-walk's non-tail lambda dispatch.
+
+**`Node` is a newtype, not `Box<dyn Update>`.** That is what makes the
+tree passes tractable: its inherent methods shadow the nine recursive
+`Update` methods (`update`, `delete`, `typecheck0/1`, `refs`, `sleep`,
+`reset_replay`, `emit_clif`, `fuse`) and run each vtable call under the
+guard, and a node's children are `Node`s — one funnel for the whole
+family instead of ~1000 call sites. Non-recursive methods reach the
+trait through `Deref`. Construct with `Node::new`.
+
+**Destructors too.** Drop glue IS a function (`drop_in_place`) and it
+does recurse — but it is compiler-generated, and the FIELD glue runs
+after your `Drop::drop` returns, so a guard written inside `drop` has
+already unwound by the time the children are destroyed. The teardown
+has to become an EXPLICIT call you can place inside the guard, and
+there are two ways to get one:
+
+- `ManuallyDrop` on the field, then destroy it yourself — `Node` and
+  `TVar` (`ensure_sufficient(|| ManuallyDrop::drop(&mut self.0))`).
+  Needed when there is no cheap inert value to leave behind (both are
+  newtypes over a pointer).
+- `mem::replace` the field with an inert value and drop what you took
+  — `Expr` (leaves `ExprKind::NoOp`). No unsafe, and no churn at use
+  sites.
+
+The `mem::replace` form works ONLY when the taken value's type does
+not itself carry the guarding `Drop`: `Expr::drop` takes an `ExprKind`,
+which has no `Drop`, so destroying it recurses into the CHILD's
+`Expr::drop`. A `Type` → `Type` handoff makes no progress and spins
+forever, whatever guard condition you put on it (`*self = Bottom` is
+worse — assignment drops in place, so it re-enters immediately). That
+is why `Type` is the one cycle left uncovered: fixing it means
+`struct Type(TypeKind)` or a newtype on each recursive edge, since an
+enum cannot wrap "the fields of whichever variant". The limit is what
+keeps it unreachable.
+
+(The twins in `immutable_chunkmap::avl` and netidx-value's
+`ValArrayBase` predate stacker and use a deferred queue instead — ~170
+lines each of global mutex, bucketed queue, type erasure and depth
+counter for the same effect, and they reorder destruction.)
+
+**The limit.** `parser::DEFAULT_MAX_NESTING` (1000, settable via
+`set_max_nesting`) is what makes overflow unreachable rather than
+merely expensive, and it is load-bearing for the drop cycles above
+rather than just defense in depth. It is counted in parser recursion
+knots, not source constructs (one `(1 + …)` level costs three), and
+enforced in the same `GrowStack` that claims the stack. Constructs
+parsed by an ITERATIVE loop that folds into a nested AST bypass that
+counter and are capped separately at the fold — `arith_term`'s postfix
+chain (`s.a.a.a…`, `a[0][0]…`) and `arith`'s operator chain
+(`1 + 1 + 1 + …`). A new `many(...)`-into-nested-AST parser needs the
+same cap.
+
+combine merges a committed error with the surrounding alternatives'
+expectations, so a refusal's own message does NOT survive to the top
+(a too-deep program reported ``Unexpected `+` ``). Refusals set a
+thread-local instead, and every parser entry point runs through
+`grow::parsing`, which reports the real reason. Set the flag
+(`note_refused`) from any new refusal site.
+
+Nesting costs the compiler ~326KB of RSS and ~7ms per level at
+opt-level 0 (~5x less optimized), so the limit also bounds how much a
+small hostile input can amplify: 1000 knots is ~330 levels of
+`(1 + …)`, ~110MB and ~2s. The guards themselves cost nothing
+measurable — `examples_compile` 25.4s and a node-walk bench 2.7s with
+them and without.
+
+**netidx-value has the same treatment**, because a bracket literal is
+also a valid netidx `Value` and `literal()` runs it through
+`netidx_value::parser::value` — a recursion this crate can neither
+count nor wrap. Its own `GrowStack` + `DEFAULT_MAX_NESTING` live in
+`netidx-value/src/parser.rs` (sibling repo). Its Pack (wire) path is
+already safe by a different route: `encode`/`decode`/`encoded_len` are
+ITERATIVE over explicit worklists, which beats a growable stack for
+code you control — no stack proportional to depth at all. Reach for
+stacker only where a worklist is impractical.
+
+`graphix-compiler/tests/deep_drop.rs` covers the destructors directly:
+the limit is set low enough that the pipeline test never reaches them,
+so this one raises it and tears down a 50,000-deep AST on a 512KB
+stack. Its own test binary because `set_max_nesting` is process-global.
+Note that `#[cfg(test)]` code is invisible to a plain `cargo check` —
+use `--all-targets` when a change can break a move out of a field.
+
+`graphix-shell/tests/deep_nesting.rs` is the regression net — 22 shapes
+× two depths, each in a CHILD PROCESS on a 512KB stack (a quarter of a
+tokio worker), batched 8 at a time. Child processes because an overflow
+aborts, so it can't be caught in-process and the child is what names
+the case. The ACCEPTED depth (derived from the limit, not fixed) must
+PARSE — a case the limit refuses exercises nothing, so the test asserts
+it wasn't refused. The REJECTED depth only has to come back at all:
+whether the limit fires is shape-dependent (`uniontyp` at 100k is a
+FLAT union, not nesting), so `parens` is the canary that proves it
+fires. Add a case when you add a recursive construct.
 
 ## Debugging the Compiler
 
@@ -1258,7 +1329,11 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   found the select-arm greedy narrowing (soak jul05 item 12) twice.
 - `GRAPHIX_DBG_KERNELS=1` — print each lambda kernel built by
   `build_lambda_kernel` (name + frozen return type + AbiKind). Locates
-  which per-slot/cross-kernel callee actually compiled.
+  which per-slot/cross-kernel callee actually compiled. Also prints
+  `KERNEL DEFINED` per body: state words, site words, site replay
+  words, and per-activation block roots (`SelfBlock`) — the tool for
+  "does this recursive kernel have interior memory, and where does it
+  live".
 - `GRAPHIX_DBG_INVOKE=1` — print each fused-kernel runtime invocation
   (kernel name, `event.init`, per-input fired/present). Pins WHICH
   kernel a JIT crash happened in (the frame is unsymbolized native code).
@@ -1266,9 +1341,15 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   type+deref/constraints/slot kind).
 - `GRAPHIX_DBG_FREEZE=1` — dump region freeze outcomes.
 - `GRAPHIX_DBG_DEPTH=1` — print the lambda id + `tail_loop` gate at every
-  call-depth-guard trip, and each `mark_recursion` decision (id/self_bind/
-  structural/sync). The tool for "why didn't this recursion tail-loop" —
-  found the runtime-clone back-edge effect miss (soak jul08g div 4).
+  call-depth-guard trip. The tool for "why didn't this recursion tail-loop" —
+  found the runtime-clone back-edge effect miss (soak jul08g div 4). (The
+  per-`mark_recursion`-decision print it once had is gone.)
+- `GXDBG_TAIL=1` — print every tail-loop dispatch pass (`TAILDBG`: lambda
+  id, reentered/framed/init flags, the pass result value+tag, the pending
+  tail call's rebind args). The tool for "what did this tail loop actually
+  compute per pass" — found the quiet-poll re-derivation clobber in one
+  run (aug13i: the settled resident overwritten by a stale entry-formal
+  re-read).
 - `GRAPHIX_DUMP_CLIF=1` — dump every compiled kernel's CLIF (note: the
   display shows `u0:N` func indices, not helper names; map N to the
   registration order of the helper table in `emit_helpers.rs`).
@@ -1278,35 +1359,145 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   "who publishes/wakes this bind" — found the dead-eliminated module
   statement (a region waiting forever on a feeder whose producer was
   spliced away, 2026-07-08). Lives in graphix-rt (rt.rs).
-- `GXDBG_FOR=1` — For-loop debugging: the sync gate per update
-  (`FOR-SYNC-GATE`, inputs' fired state), per-index async evaluation
-  (`FOR-ASYNC`), `FOR-MARK-ASYNC` at every analysis flip to the
-  per-index path, and `EFFECT-ASYNC-NODE` naming the node that made a
-  For body read async. The tool for "why is this loop on the async
-  path / why does it (not) fire" — found the subtree-analysis effect
-  fact miss (a resolved lambda outside the local fixpoint map read as
-  Async via unwrap_or_default; jul10e p7/p9 + the double-emission
-  class, 2026-07-11).
+- `GXDBG_EFFECT=1` — effect-analysis debugging: `EFFECT-ASYNC-NODE`
+  names each node that makes a body read async, and
+  `EFFECT-ASYNC-FALLBACK` marks every call site whose callee couldn't
+  be resolved and defaulted Async. The tool for "why did this lambda
+  classify Async" — the surviving core of the old `GXDBG_FOR` (which
+  also traced the For node's sync gate; For is gone, the effect prints
+  found the subtree-analysis effect fact miss, jul10e, 2026-07-11).
+- `GXDBG_INSTANCE_FUSION=1` — print each per-callsite instance's
+  region-fusion pass in `GXLambda::fuse` (fused delta + new failures).
+  The tool for "did this monomorphic instance body fuse and what
+  blocked it".
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
-  "does this call dispatch and to what" — paired with GXDBG_FOR it
-  localized the async-flip above.
+  "does this call dispatch and to what".
+- `GXDBG_DYNC=1` — print every `graphix_dyncall` dispatch (fn index,
+  site id, taint/stale masks, each arg's raw (disc, payload) words —
+  transmute_copy, no deref, so safe on a corrupt Value). The tool for
+  "what did the CLIF marshal actually hand this dispatch" — located
+  the 5b dispatch-boundary corruption (a present bottom passed
+  through as Value::Null, whose uninit payload word the typed call
+  site adopted as an ArcStr) in one run.
+- `GRAPHIX_DBG_TVAL=1` — print every `TVal` render step (deref'd type
+  + naked value) as the typed printer walks. The tool for "why did
+  this value print in this form" — found the union-member selection
+  picking the never() arm's ⊥-settled cell over the concrete member
+  (jul19f divergence_000000, the interp-vs-jit tuple-render split).
+- `GXDBG_LETBIND=1` — print every `let` binding's publication decision
+  (`LETBIND`: spec pos, production tag, whether the binding has ever
+  published, frame depth, wake-hold, publishing y/n). The tool for
+  "does this binding's value ever reach the store" — showed the
+  arm-local that never published inside a recursion frame
+  (`findings/arm-local-bind-aug2026/`, 2026-08-14). Pairs with
+  `GXDBG_REF=1`, which shows the resulting read MISS.
+- `GXDBG_SLOT=1` — print each collection cycle's per-slot production
+  tag (`SLOT call[i] produced tag=..`) and the resulting fold decision
+  (`SLOT map prod=.. resized=.. forced=.. poisoned=.. slots=[..]`).
+  The tool for "why did this map/init/find/filter fire (or not)" —
+  found the `merge_tag` fired-bit loss in one run by showing
+  `call[0] produced tag=64` (fresh bottom) against `prod=Some(96)`
+  (standing), which is the whole bug.
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
-  spec, BindId, unstable/b2l/cached hit) plus the index writes
+  spec, BindId, unstable/b2l/cached hit), the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export
-  bridging). The tool for "why didn't this call site statically
-  resolve" — found the batch-entry `bind_to_lambda.clear()` that made
-  shell fusion a race (the jul12 resolution flap).
+  bridging), and `RESOLVE-DISCARD` when a static bind is dropped back
+  to dynamic on `AbstractOpaque`. The tool for "why didn't this call
+  site statically resolve" — found the batch-entry
+  `bind_to_lambda.clear()` that made shell fusion a race (the jul12
+  resolution flap).
+- `GRAPHIX_DBG_PERF=1` — cumulative runtime-lazy-bind phase counters
+  (bind/setup/typecheck1/analyze/transient-gate times, prime/replay
+  times, park delete/refs times), dumped to stderr every 250ms by a
+  background thread (`perfdbg.rs`). The tool for "why is the interp
+  slow on re-fired lazy binds" — found BOTH jul22b transient-recursion
+  perf dragons (prime-park thrash + the `lambda_defs`/`LambdaIds`
+  typecheck1 degradation) via growth-law analysis of the dumps.
+- `GRAPHIX_DBG_CYCLE_BT=1` — print a backtrace at every
+  `cycle_refused` mark (the occurs-refusal poison bit, both the
+  `mark_cycle_refused` sites and the TVar×TVar positional guard).
+  The tool for "which walk refused this merge" — established that
+  the jul22e flap class's marks are channel-indistinguishable from
+  genuine infinite types (~5% name-walk, rest positional), killing
+  the scoped-aliasing remodel in an hour (see
+  design/tvar_constraints.md's 2026-07-22 note).
+- `GXDBG_RPC=1` — trace the whole sys::net rpc path (`RPCDBG`:
+  server proc publish/republish, client call start + reply, NetState
+  pump receipt, PublishRpc queue/dispatch/reply/sleep). Lives in
+  graphix-package-sys (netstate.rs `rpc_dbg()` + net.rs). The tool
+  for "where did this rpc call stall" — found the netidx publisher
+  receipt/read deadlock behind the net_rpc0 flake (2026-07-23,
+  netidx aede75e6): combine with `RUST_LOG=netidx=debug` +
+  `--log-dir` to see the subscription/durable-retry side.
 
 ### Type Alias Expansion in Contains
 
 When `contains` encounters a `Type::Ref` (e.g. `Result<T, E>`), the Ref case at `contains.rs:56` expands both sides via `lookup_ref(env)` before recursing. This means TVar bindings established during `contains` store the **expanded** form (e.g. `[T, Error<E>]` instead of `Result<T, E>`). Code that inspects resolved types must handle both the `Type::Ref` form and the expanded `Type::Set` form — see `extract_cast_type` in `graphix-package-core/src/lib.rs` for an example.
 
-### Two-Phase Typecheck and Deferred Checks
+### Env-independent TypeRefs (carried resolution cells)
 
-Builtins that need type information from their call site (e.g. `json::read` for type-directed deserialization) use a two-phase typecheck: return `NeedsCallSite` from `TypecheckPhase::Lambda`, then extract concrete types during `TypecheckPhase::CallSite(resolved)`. The compiler collects deferred check closures during `CallSite::typecheck` and processes them in a `while let Some(check) = ctx.deferred_checks.pop()` loop after primary typechecking. This loop processes cascaded checks automatically — a deferred check that pushes new deferred checks will have those processed in subsequent iterations.
+`TypeRef` carries a write-once `Arc<Mutex<Option<Arc<ResolvedRef>>>>`
+cell caching its NAME resolution (`design/env_independent_typerefs.md`,
+2026-07-14) — a ref first resolved in its native env becomes an
+env-independent value, so retained instance signatures stay
+NAME-COMPRESSED instead of being eagerly expanded (the expansion was
+the 41GB GUI wedge and the `contains` exponential residual; both gone,
+GUI suite 163/163 in ~5s). Rules that matter when touching types:
 
-HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must return `NeedsCallSite` and handle the `CallSite(resolved)` phase to update their stored predicate types (`mftyp`, `etyp`) from the resolved FnType. This enables the deferred check cascade to propagate concrete types to inner predicates like `json::read`.
+- The cell is params-independent — rebuilds use `TypeRef::with_params`
+  (SHARES the cell; `reset_tvars`/`replace_tvars` copies must keep
+  seeded cells) vs `with_scope` (fresh — scope changes the resolution).
+  Never overwrite a filled cell; contexts needing a different view
+  rebind (`rebind_resolution`, fresh pre-filled cell).
+- Seeding is LAZY by default — a fill is correct only when the
+  resolving env holds the name's FINAL target, and mid-compile envs
+  are truncated by registration order (eager transitive seeding
+  captured the list PACKAGE's `List` for tui's `list::List` submodule
+  ref; removed twice). `Type::seed_refs` (explicit transitive walk)
+  runs only at provably-safe times: `check_sig`'s registry copy
+  (post-module-body) and the privatize walk's rebinds (typecheck1).
+- `same_def` (structural — gates the Ref×Ref name fast paths via
+  `cells_agree`) vs `same_view` (body ALLOCATION identity). The
+  privatize walk rebinds a ref to the env's allocation only on
+  same-def/different-view divergence (interface typedef bodies are
+  registered twice, equal-but-differently-viewed); a DIFFERENT def in
+  the env is a stale-horizon artifact and the cell wins.
+- Typecheck-side bridging is `fusion::lowering::privatize_type` —
+  name-preserving, same-size output (setup_static_bind against
+  `f.env`; check_instance_type's AbstractOpaque retry against
+  `ctx.env`). The fusion-side `resolve_abstract` (capped, expanding)
+  is unchanged; `freeze_for_abi`/`abi_kind` expand refs env-free
+  through the cell (`TypeRef::expand_cell`), unfilled → de-fuse.
+
+### Two-Phase Typecheck
+
+Every node implements `typecheck0`/`typecheck1` (two passes over the whole
+graph). `typecheck0` also builds `ctx.bind_to_lambda`; `CallSite::typecheck1`
+pre-binds statically-resolvable calls (`try_static_resolve`) and re-drives the
+bound instance's body typecheck with the call's fn-typed args registered
+(per-callsite elaboration), so calls to a lambda *parameter* resolve statically
+inside each instance. The old `NeedsCallSite`/deferred-check machinery is gone
+— a builtin that needs call-site types reads them from its `typecheck1`
+`resolved` argument.
+
+### Collection intrinsics (MapQ/FoldQ as compiler nodes)
+
+The Array/List/Map traversal HOFs are compiler-owned Nodes
+(`node/collection.rs`, `design/collection_intrinsics.md`). The stdlib `.gx`
+signatures are ordinary lambdas whose builtin-reference bodies use reserved
+marker names (`'array_map`, `'list_fold`, `'map_filter`, …);
+`CollectionIntrinsic::from_name` intercepts those names during lambda
+construction (before the registered-builtin table — `register_builtin` rejects
+them) and builds a `MapQ`/`FoldQ` node as the lambda's body
+(`LambdaDispatch::Collection` — the dispatch charges no call-depth unit; only
+the per-element callback dispatch does). The node owns callback instantiation
+(one prototype CallSite for typecheck/analysis/emission + one live CallSite per
+collection position at runtime), slot identity and prefix retention across
+resizes, per-slot firing/taint/sleep/replay, and result construction. Effect
+inference needs no HOF special case: the prototype's CallSite is a normal call
+site, so an async callback flips the collection lambda Async through the
+ordinary M6 fixpoint.
 
 ## Fusion / JIT subsystem (current state)
 
@@ -1322,14 +1513,17 @@ HOF builtins (e.g. `MapQ`, `FoldQ`) that take function-typed arguments must retu
   correct (global `node-walk-is-canonical` memory). A fusion bug can *lose
   fusion* (a perf regression) but can never produce a *wrong answer* —
   correctness is structural.
-- **Fusion → cranelift JIT** (`fusion/`, emitter in `fusion/emit.rs`) identifies
+- **Fusion → cranelift JIT** (`fusion/`, emitter in `fusion/emit/` — split
+  per area: `jit`/`lower`/`abi`/`body`/`nodes`/`flow`/`select`/`call`/
+  `scalar` + `scaffold`, façade re-exports in `emit/mod.rs`) identifies
   sync (pure) subtrees and compiles them to native kernels. **Success → splice
   the kernel + delete the originals; failure → don't splice, the originals
   node-walk.** There is no third evaluator.
 
 **The pipeline is `Expr → node graph → CLIF`.** The node graph IS the IR: each
 node's `Update::emit_clif` emits its own CLIF (`Apply::emit_clif` for builtins;
-`MapFn`/`FoldFn::emit_clif` + the `fusion::scaffold` loop scaffolds for HOFs).
+`MapFn`/`FoldFn::emit_clif` + the `fusion::emit::scaffold` loop scaffolds for
+HOFs).
 Fusion recursion is `Update::fuse` (driven from `compile()`, gated once on
 `ctx.fusion.enabled`); `fusion::try_fuse` is the mechanics-only library. **Kernel
 builds are pure signature derivation** — `sig_from_inputs` is the single sig
@@ -1392,32 +1586,256 @@ enforces it):**
   debugging swallowed errors.
 - `a[i]` / `a[i..j]` / `bytes[i]` / `m{key}` are bounds-checked through shared
   `node::array` / `node::map` helpers — one semantic seam, all backends agree.
-- **Bottom** ("no value this cycle" — div0, `?`-error, an unfired input, a Sync
-  builtin returning `None`) is `None`-from-`update` in the node-walk. In the JIT
-  it is the **taint channel** (#219): a missing/unfired input becomes a
-  taint-marked, helper-safe placeholder (`Value::Null` / empty `ValArray` /
-  empty `ArcStr`), taint propagates through pure ops (`propagate_taint`), and
-  the kernel forces bottom (emits `None`) only if the taken output path
-  *consumes* a tainted value (`is_tainted`) — so a missing input no longer
-  de-fuses the whole region. A **pended DynCall** (the builtin returned no
-  value — `buffer::encode`'s Pad guard) rides the same channel since 2026-07-06:
-  each site take-and-clears `DYNCALL_PENDING` and continues with the tainted
-  placeholder, so `DYNCALL_PENDING` reaching `Kernel::update` means only a
-  GENUINE whole-kernel abort (interrupt poll, depth trip, return-gate force,
-  callee abort propagated at the call site by `emit_lambda_call_node`). Known
-  residual of the old behavior: the `array::init` runaway-length guard still
-  whole-kernel aborts (scaffold.rs). `design/representable_bottom.md`.
-- An **infinite PURE tail recursion hangs** the JIT (a native loop can't yield to
-  the scheduler) — accepted/correct; the reactive node-walk's per-cycle
-  "continue" is the artifact.
+- **Bottom** ("no value this cycle" — div0, `?`-error, a bottomed input, a Sync
+  builtin producing nothing) is DENSE since the 2026-08 flip
+  (`design/dense_delivery.md`): `Update::update` returns `&TagValue` every
+  cycle — `Fired(v)` / `Stale(v)` / `FreshBottom` / `StaleBottom` (the
+  orthogonal fired×bottom algebra; `TagValue::view()` is the consumption
+  API). A standing bottom re-delivers `StaleBottom` and RIDES (never re-fires
+  consumers); bottomness joins by OR over consumed productions (`Tag::join`).
+  In the JIT the same bits ride each param's disc (#219's taint channel:
+  bottom = TAINT bit + a helper-safe placeholder payload; `propagate_taint`
+  through pure ops; TAINT|STALE for standing bottoms so loop/select machinery
+  doesn't fire). A **pended DynCall** (the builtin produced no value —
+  `buffer::encode`'s Pad guard) taints at the site and continues;
+  `DYNCALL_PENDING` reaching `Kernel::update` means only a GENUINE
+  whole-kernel abort (interrupt poll, return-gate force, callee abort). A
+  DEPTH TRIP is a delivered FreshBottom since 5c, not an abort
+  (`findings/depth-trip-delivered-bottom-aug2026/`).
+- **Bottom never reaches builtin authors** (Q1, BOTTOM PROPAGATES —
+  the dense evolution of the 2026-07-19/20 taint-gate rulings): a
+  bottomed arg (fresh, standing, or phantom) makes the wrapper bottom
+  the invocation WITHOUT calling `eval` (`CachedVals::any_bottom` in
+  `CachedArgs`/`CachedArgsAsync`; `FreshBottom` iff a delivery
+  triggered, else `StaleBottom`). Raw-Apply authors read args through
+  `seam_arg`/`seam_tick`/`seam_value` (package-core), whose bottom
+  arms are None/no-tick. The old `gate_tainted_args` CallSite silencing
+  and the DynCall absence-tombstone adapters died at the 5b/5c flips —
+  bottoms flow IN-BAND with honest tags on both engines. The jul30a
+  re-woken-arm ride and `array::window` []-on-absent pins were
+  RE-BLESSED as ruled deltas.
+- **THE ORGANIC FIRING RULE** (Eric's ruling 2026-08-14,
+  `design/organic_firing.md` — BUILT same day, P1 interp 9be11267 /
+  P2 kernel 0d8a561c+6c0fcbe9; SUPERSEDES the 2026-08-06 strict
+  select rule, the 2026-07-15 per-slot firing rule, the guard-quiet
+  rule, and cceb0809): **a node fires iff a consumed input fires** —
+  no node stores a previous value or selection to decide a tag.
+  `uniq`/`filter`/`~` are the explicit cadence tools; the compiler
+  never gates firing on value or selection identity. A select emits
+  per fired input (scrutinee delivery, guard production, or the taken
+  arm's own production — `own_fired` in node/select.rs; the
+  scrutinee/guard STALE folds at the kernel merges), same-arm
+  re-matches emit the arm's current value, select-as-sampler is legal
+  again, and an untaken arm's body is NOT a consumed input (arm sleep
+  quietness survives — `guarded_select_firing_count`). Selection
+  memory survives ONLY for sleep/wake routing and the arm-lift
+  re-seed (the per-instance word — the one remaining select memory
+  claim; no word → de-fuse). The tail-spine fold is now just the
+  general rule's plumbing (the accumulator carries own-fires across
+  frames; the `tail_sel_path` machinery and all no-memory de-fuses
+  are deleted). Calls fire organically — the body's selects fire per
+  delivery, so recursion fires like the hand-inlined chain with ZERO
+  machinery (`|n| i64:7` still fires once: consts fire at init only).
+  The ruled deltas + the red→green fixture protocol live in
+  `organic_deltas.rs`; the design doc holds the deletion inventory.
+  **THE SCRUTINEE RIDE** (Eric's ruling 2026-08-07, aug06ghz0 — the
+  bottom axis, UNTOUCHED by organic firing): the standing selection
+  lives on against the select's CACHED scrutinee when a delivery
+  bottoms upstream — a bottomed delivery is NOT an own-fire, the
+  taken arm's body fires on its own deps, guard-dep fires RE-MATCH
+  against the cached value, and pattern binds RIDE it. Kernel:
+  `emit_scrut_ride` (select.rs) substitutes the cached scrutinee
+  (disc|STALE) on tainted-with-history — which is exactly why the
+  organic stale fold stays quiet on rides; no-history taint still
+  misses (the aug04b phantom rule). Value/composite residents ride at
+  region root only; NO storage → DE-FUSE, never pass through (Eric's
+  bar 2026-08-07). ASPIRE: value residents in site blocks to restore
+  instance-kernel fusion for value-shaped scrutinees
+  (`hof_nullable_map`). A select whose taken arm is bottom emits
+  FreshBottom per fired input (op-consistency; not
+  language-observable — delta 4).
+- **THE RECURSION RULING (Eric, 2026-08-13; firing clause amended by
+  organic firing 2026-08-14):** recursion fires like the hand-inlined
+  chain of distinct functions — under organic firing this holds with
+  ZERO machinery, since both fire per delivery (the original
+  "unchanged inputs are not an event" clause and its entire
+  derivation-changed apparatus — the per-site scalar-formal memo,
+  wire slot 3, `KernelSig.has_self_call`, the interp's entry-args
+  memo — are REPEALED and deleted; the const-terminal witnesses that
+  forced the question now agree per-delivery,
+  `findings/organic-firing-aug2026/`). STRUCTURE (Eric's call,
+  unchanged): transient instances are RETAINED unconditionally — no
+  park, no budget, no snapshot/rebuild ("let the user run out of
+  memory; you can't fix stupid"); the delete-park/SelSnap/prime
+  machinery is DELETED. fib(24): 110s/111MB retained vs 121s/85MB
+  parked. Fuzz children run under an 8GB RLIMIT_AS
+  (`GRAPHIX_FUZZ_MEM_LIMIT`) since retention lets fib-tree subjects
+  legitimately eat memory.
+- **The 2026-08-07 review arc** (Opus multi-agent review, 726eeb1c —
+  18 finding dirs; 14 classes fixed same day, `f438e1bd..369fa71c`):
+  (1) GUARDS tick per-invocation via a PROLOGUE in `emit_select_arms`
+  (the interp ticks every arm's guard every cycle; lazy chain
+  evaluation desynced their operand caches — guard-shortcircuit).
+  Binds install taint-masked by the arm's own pattern cond. (The
+  original "guard discs never fold into the result" rule is REPEALED
+  by organic firing 2026-08-14: prologue guard STALE bits now AND-fold
+  into the emission — `guard_stale` in emit_select_arms.)
+  SCHEDULE-FREE guards (pure never-bottom fns of the arm's own binds —
+  cmp/logic/wrapping-arith over binds+consts, `guard_schedule_free`)
+  stay lazy in the chain: still observably equivalent under organic
+  firing (their inputs are scrutinee-derived binds, covered by the
+  scrutinee fold), and the blanket prologue cost symbolic +58%.
+  (2) A fused DynCall delivers non-fired args as `TagValue::stale`
+  (a STALE mask beside the taint mask) — never absence (all-const-arg
+  builtins must keep producing) and never `fired` (rand
+  re-randomized, `now` resampled per invocation). TAG-BLIND builtins
+  (`printfn!`, `now` — gate on `Some(_)` not `triggers()`) remain the
+  open ruling.
+  (3) The VALUE taint cache's no-storage path REFUSES (de-fuse) per
+  the storage law, EXCEPT tail-position producers (body tail-leaf
+  ids in `LowerCtx::tail_leaves`): a tail result's ride belongs to
+  the caller, so pass-through is exact there. Cost: 13 fixtures
+  interpret (dyncall chains, string HOFs, `str::split` family —
+  `FuseExpect::None` + ASPIRE comments); the ASPIRE value residents
+  restore them.
+  (4) `abi_kind`'s option/result collapse was the root of TWO bugs:
+  select type predicates over `[T, Error<E>]` lower as a POSITIVE
+  disc test (`nullable_error_marked`), and the qop scalar arm routes
+  owned errors through `emit_qop_error_disposal` (the leak).
+  (5) Variant tag tests enforce representation AND arity; kernel
+  cache keys include the instance body's CATCH COVERAGE (`__covN`
+  symbol variants); sig-less modules refuse emission (structure, not
+  computation); `freeze_for_abi_normalized` never normalizes shared
+  tvar cells (mode-identical `--check`, gated by
+  `check_mode_parity`); narrow index/slice bounds widen; over-limit
+  `array::init` is bottom-with-retained-state on BOTH engines;
+  `str::sprintf` declares `Result<string, `FormatError(string)>` and
+  shape mismatches warn loudly. AWAITING ERIC: the
+  `fuzz/pending-ruling/` classes (tail-zero-iteration-fire,
+  rec-prev-looped-arming — node-walk drops the event;
+  module-state-callee-reactivity — is a cross-module callee's read
+  of module state quiet-in-steady-state/fresh-at-instantiation, the
+  status-quo interp artifact of the Module proxy post-pass strip, or
+  fully reactive?) + the tag-blind builtin gate. P8 re-adjudication
+  under dense (2026-08-13): all four of those classes AGREE and are
+  promoted to `findings/` (module-state resolved by Q3
+  fresh-at-instantiation; tag-blind unwritable by construction;
+  missing_fire_epoch3 fixed by the 5c depth-trip-delivers-bottom
+  split → `findings/depth-trip-delivered-bottom-aug2026/`).
+  tail-zero-iteration: ruled quiet 2026-08-13 (cceb0809), then the
+  whole family REVERSED by organic firing 2026-08-14 — same-args
+  re-dispatches FIRE at any iteration count now (delta 6; the
+  tail-zero pins carry superseded-cadence banners). DEPTH-TRIP SCOPE
+  RULED 2026-08-14 (Eric): WHOLE-DERIVATION — a trip bottoms the
+  entire call at the root with log::error at the trip (both engines;
+  `ctx.depth_tripped` poisons the interp's unwind rides — scrutinee
+  ride refuses, tainted guard's held ride reads false — cleared at
+  pop-to-zero; the kernel's value-level trip propagation with no
+  interior ride storage already implemented it, it only gained the
+  log). Pins: `findings/depth-trip-whole-derivation-aug2026/`.
+  fuzz/pending-ruling/ is EMPTY — no rulings outstanding.
+- **Sleep is PAUSE, not reset** (Eric's ruling 2026-07-31, soak jul30a):
+  value-channel state survives an arm's sleep — `Held` residents (the
+  three designated ride sites), `CachedVals` staging slots, collection
+  slot values/acc-carries — so a deselected-then-reselected arm whose
+  fresh computation bottoms RIDES its history, exactly like the
+  kernel's replay words / DynCall slots / per-slot state words. Those
+  were persistent only because nothing fused under a sleep initiator;
+  **arm-region fusion (2026-08-14) made `Kernel::sleep` live and it
+  was still CLEARING them** — the interior-bottom taint caches
+  (replay words, owned value pairs, per-slot reset chains) now survive
+  sleep too, and only `reset_replay` (frames) and `Drop` clear them
+  (`findings/sleep-preserves-caches-jul2026/03`, the kernel face of
+  the July pair). **A select arm's own `let` bindings obey the same
+  rule** (`findings/arm-local-bind-aug2026/`, 2026-08-14): an arm's
+  WAKE resumes the arm, it does not create one, so a binding that is a
+  `<-` target and already holds a value is NOT reseeded by its own
+  re-fired initializer — `Event::wake_init` flags the wake so the
+  init view stays real for everything whose init handling is its own
+  machinery (fused kernels marshal their inputs off it, call sites
+  prime, refs read standing entries as Fired). The opposite face: a
+  PRODUCER must materialize its value channel on its FIRST
+  production whatever the tag — `Bind` publishes a quiet first
+  production, and `CachedArgs` runs `eval` once when its result slot is
+  still the phantom — because inside a frame `Constant` delivers STALE
+  by design, so a never-yet-computed subtree fed only by constants has
+  no triggering input and would produce nothing at all. These are VALUE
+  rules: firing a wake's constants instead re-emits provably-unchanged
+  outputs (`findings/tail-jump-honest-tags-jul2026/00`). The
+  documented arm-rewake RESTART
+  semantics (`once`/`take`/`skip`/`uniq`/`hold`/`count` clear on
+  sleep) are unchanged; since the P7 Sync flip these builtins DO fuse
+  at region root, and the `SLEEP_RESTARTS` interior-sleep gate
+  de-fuses any select whose arm reaches one (kernels have no per-arm
+  sleep initiator — `findings/sleep-restart-gate-aug2026/`). Pinned by
+  `sleep-preserves-caches-jul2026/`.
+- **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
+  state must be the call site's OWN history — a compiled callee
+  body's interior builtin is ONE `graphix_dyncall` instruction
+  reached from every caller emit site, and the previously-shared
+  single inner Apply let a masked delivery resurrect ANOTHER site's
+  cached args. Each emission site now claims one identity word
+  through the select-state channel (region root → instance word,
+  callee root → per-call-site block word), `graphix_dyncall` carries
+  its address, and the dispatcher mints an id and keys a full inner
+  Apply per site (`DynCallSlot.instances`) — cache AND builtin state
+  get the interp's per-callsite identity. Key 0 = the shared legacy
+  bucket: scaffold-loop sites (v1, keeping the init-mask
+  approximation), recursive back-edges, qop-deliver.
+  `design/kernel_instance_state.md` "DynCall site identity"; pinned
+  by `dyncall_site_identity_state` +
+  `findings/dyncall-site-identity-jul2026/`.
+- **A program may spin forever inside one cycle, on BOTH engines** — an
+  infinite tail recursion is the constant-stack, bounded-memory case.
+  This is semantics, not a JIT artifact (Eric's ruling 2026-08-15,
+  `design/atomic_recursion.md`): recursion fires like the hand-inlined
+  chain, an inlined chain is one expression, and an expression
+  evaluates atomically — so evaluation cannot be paused mid-derivation.
+  The old per-eval-per-cycle model made wedges impossible but made
+  recursion observable (the inlined twin finished in one cycle, the
+  recursive one took N) and capped a JIT loop at one step per cycle;
+  iteration credits would be worse still — the same input would run in
+  one cycle or many depending on its size, observably, and every
+  credit constant would have to be replicated bit-identically in both
+  engines or become a trace divergence. What remains is CONTAINMENT,
+  which lives outside the language and which no program can observe:
+  the cooperative interrupt (`GXHandle::interrupt`), polled by the
+  interp's tail driver (`node/lambda.rs`) and at every emitted loop
+  head (`emit_interrupt_check` — the tail rebind-and-jump head in
+  `emit/lower.rs` plus all eight HOF scaffolds). The shell arms it on
+  Ctrl-C and `abort()`s on the way out; an embedder wanting a
+  slow-program watchdog arms `interrupt()` on a wall-clock timer.
+  Pinned by `lib_tests/interrupt.rs` (both engines recover) and
+  `graphix-shell/tests/interrupt_wedge.rs` (the process stays
+  killable by Ctrl-C).
 
 **Per-cycle firing (the STALE fired-bit):** a fused kernel must replicate the
 node-walk's non-async firing — an output fires only when an input that feeds it
 actually fired this cycle. A "fired-this-cycle" (`STALE`) bit rides each kernel
 param's disc; a lifted let-bound `connect`-target counter is threaded in as a
-kernel input so reactive counters fuse. HOF results inherit capture-aware firing
-(`inherit_hof_firing`: a result is STALE unless the source array, the HOF init,
-and every feeder the callback body captures fired).
+kernel input so reactive counters fuse. Collection-loop firing is
+`scaffold::SlotFlags`: per-iteration body discs fold into a slots word, a
+per-instance state word holds the previous source length for exact resize
+detection, and `apply` reproduces the interpreted MapQ/FoldQ rule (fires iff
+resized ∨ a slot fired ∨ the source fired empty; fold results are acc-carried
+via `result_is_firing`). A same-length source refresh with a quiet body does
+NOT re-fire — the per-slot precision the P4 sequential loops had lost.
+Selects need NO firing memory since organic firing (2026-08-14 — the
+2026-07-15 per-slot firing rule is repealed): the emission folds the
+scrutinee's and prologue guards' STALE bits at every merge, in loops and
+callees alike. The per-slot chain machinery (`graphix_slot_state_table` +
+`own_levels`, `SiteAnchor`/`SiteLeaf` recursive free, `Kernel::drop` via
+`WrappedKernel::slot_table_words`) SURVIVES for its other consumers:
+SlotFlags' nested-loop exact prev-len words and in-loop callee SITE BLOCKS.
+CALLEE bodies keep PER-CALL-SITE state blocks (2026-07-16, wire slot 2): the
+callee's claims are its `SiteLayout` (callees define before parents; a missing
+layout = recursive back-edge, pass 0 + null-guards); callers allocate from
+their own storage (root: contiguous words with anchor translation; in-loop:
+chain leaves with `words` stride). Those blocks carry DynCall site identity,
+first-dispatch init words, and prev-len state — never select firing memory.
+Remaining select-adjacent item: arm-lifted connects in loops/callees still
+de-fuse (the per-instance word is the one surviving select memory claim —
+coverage, not correctness).
 
 **Testing is differential:**
 
@@ -1435,7 +1853,14 @@ and every feeder the callback body captures fired).
   `TraceDiff` class — Missing/ExtraFire, Pacing, etc. — keys dedup), and
   programs can carry a `// schedule-v1:` header injecting input epochs
   atomically via `set_many` (inputs use the `let inN = d; inN <- never(d)`
-  contract so fusion binds them as region inputs). `selfcheck`
+  contract so fusion binds them as region inputs). `minimize <file>
+  [budget]` (budget = oracle checks, default 4000; the campaign's per-finding
+  budget is `CAMPAIGN_MINIMIZE_BUDGET`) is typed-AST HDD whose working
+  operator is the STATEMENT DROP, keyed at the statement so a whole round of
+  disjoint reductions applies at once; whole-section drops, the body, and each
+  `.gx` section's items lap until fixpoint (`design/graphix_fuzz.md` §6.1 —
+  6157 → 199 bytes on the aug08d witness where the pre-2026-08-09 reducer got
+  one reduction in 200 checks). `selfcheck`
   (same-mode-vs-itself, 100% required) gates oracle soundness; `rand::`/
   `sys::`/`http::` programs are excluded from divergence recording (async
   IO races trace quiescence). `detcheck [n] [seed]` is the fusion-shape
@@ -1476,40 +1901,76 @@ and every feeder the callback body captures fired).
 - A divergence is **at least as likely a fused/JIT bug as a node-walk one** —
   verify the intended semantics against the node-walk before touching it.
 
-**In-language HOFs (P4 final, 2026-07-10):** the seven array traversal HOFs
-plus `init` are graphix source (`sync` blocks over `For` in array/mod.gx);
-`clone_rebind`, the fused templates, MapQ/FoldQ's fusion tendrils, the per-HOF
-`MapFn::emit_clif` impls, and the map/filter/find loop scaffolds are DELETED
-(+103/−3576). Every instantiation is `LambdaDef::init` per (site, index).
-`GXLambda::fuse` fuses each per-callsite instance BODY unconditionally (the
-`For` loop compiles via `emit_for_node` → `emit_fold_loop`); the HOF CALL SITE
-itself dispatches by node-walk (fn-typed args have no ABI). A sync body with an
-async call flips the `For` to per-index instantiation + re-evaluation
-(analysis pass 4 `mark_for_bodies` — MUST be fed pass 2's effect maps).
-MapQ/FoldQ survive ONLY as node-walk mini-interpreters for `list::`/`map::`
-HOFs until for-over-Map lands. Loop firing is BODY-DRIVEN in both modes:
-elements/acc deliver FIRED, the result fires iff any body evaluation fired (or
-the source is empty and an input fired); body/init taint is STICKY
-(never-until-complete = the sequential break). Cross-kernel call sites force
-the callee's init flag on the first call ever (a state word — the kernel
-mirror of `Callee::Static`'s `first_update` priming).
-OPEN (P4 performance completion): (1) in-language HOFs build arrays via
-persistent `push` — O(n²); needs owned-acc in-place append recognition;
-(2) FIXED 2026-07-12: the SHELL's static resolution flapped run-to-run
-because every RT batch entry CLEARED `bind_to_lambda`, so the user
-file's resolution fell to the `rt.cached()` fallback — a race against
-the stdlib batch's init cycle. Batch entries now prune only the
-outgoing batch's `<-` targets (`unstable_bindings`) and `Bind::delete`
-removes its ids; the persistent index also exposed (and fixed) a
-second latent bug — builtin-bodied lambdas' `intrinsic_effect` was
-constructed `Sync`, so a resolved async builtin (`once`) in a sync-for
-body took the sync gate and hung (masked before by the same race).
-The racy `rt.cached()` fallback REMAINS for destructured/`<-`-retarget
-shapes `bind_to_lambda` can't know — flagged for review;
-(3) instance-body INLINING at the call site (the per-site instance is
-monomorphic, so the dispatch cliff and the destructured/string-formal
-cross-kernel gaps all close by emitting the resolved body inline) — the
-`#[native]` HOF pins and several probes carry ASPIRE notes pointing at it.
+**Collection HOF execution (compiler-owned nodes, 2026-07-13):** the `sync`
+subset, the `For` node, the sync desugar, and the in-language HOF bodies are
+all DELETED (`design/collection_intrinsics.md`; the P4 arc concluded the sync
+subset of Graphix is Rust). MapQ/FoldQ are back as the canonical per-slot
+interpreters — but as compiler Nodes (`node/collection.rs`), not package
+builtins. Fusion: `GXLambda::emit_clif` (the `Apply` hook, consulted FIRST at
+`CallSite::emit_clif`) recognizes a collection-bodied callee and inline-emits
+the loop at the call site via `MapQ/FoldQBase::emit_clif_call`, swapping the
+callsite's actual source/init arg nodes for the lambda-param references —
+supported Array shapes compile through the per-op `MapFn`/`FoldFn::emit_clif`
+impls into the `scaffold::emit_{init,map,filter,filter_map,flat_map,find,
+find_map,fold}_loop` emitters; refusal leaves the node intact on its
+interpreted per-slot semantics (async callbacks always interpret). **List and
+Map HOFs lower too (2026-07-14)** via the FLATTEN boundary: the collection
+Value crosses through `graphix_list_to_valarray`/`graphix_cmap_to_pairs`
+(consuming; canonical `list::*`/`make_pair` seam — one semantic seam with the
+interpreted finishes), the ARRAY scaffold loop runs unchanged (the SlotFlags
+rule over the flattened length IS the interpreted ordinal-slot rule), and
+collection results rebuild at `graphix_valarray_into_{list,cmap}`.
+Prerequisite: recursive types freeze to an OPAQUE LEAF
+(`freeze_for_abi_d` Seen-hit returns the matched outer ref, params frozen,
+256-chain backstop) so a List crosses kernel boundaries as a 2-word Variant
+and list-typed DynCalls (`from_array`/`to_array`/`cons`/...) register.
+`FoldAcc::Value` carries Value-shaped ACCUMULATORS (owned two-word loop
+slot, real disc carried whole with TAINT|STALE in the tag bits) —
+nullable max-by and map group-by folds fuse; the cons-building reverse
+still interprets (abstract-id identity mismatch at the prototype's
+return check — two AbstractIds both denoting list::List; pinned by
+`list_fold_list_acc_interprets`). The entitled abstract bridges:
+`BuiltInLambda::typecheck0` and `CallSite::typecheck0`'s per-arg checks
+(`check_site_arg`) retry through `privatize_type` under the CALLEE
+DEF's scope on `AbstractOpaque` (a def sees through its own
+signature's abstracts; privatized instance signatures mix private
+forms into outside-module callback bodies by design).
+Benches: `list_fold_sum` 151x, `list_map_fold` 142x — the ~15x gap to the
+array twins is the cons representation's per-element allocation, not loop
+overhead. `for_each_emitted_node` descends
+collection callback bodies during discovery so callee kernels and DynCall
+slots inside callbacks are found. `find`/`find_map` scan ALL slots in both
+modes (a bottom predicate after the match bottoms the find — pinned by
+`find_bottom_after_match`); the P4 sequential early-exit is gone with the
+sequential semantics. Cross-kernel call sites force the callee's init flag on
+the first call ever (a state word — the kernel mirror of `Callee::Static`'s
+`first_update` priming).
+Durable notes from the P4 arc: (1) the SHELL resolution flap is FIXED
+(2026-07-12) — RT batch entries prune only the outgoing batch's `<-` targets
+(`unstable_bindings`) from `bind_to_lambda` instead of clearing it, and
+`Bind::delete` removes its ids; the racy `rt.cached()` fallback REMAINS for
+destructured/`<-`-retarget shapes the index can't know — flagged for review.
+(2) builtin-bodied lambdas' `intrinsic_effect` is read from `BuiltinFacts`,
+not constructed `Sync`.
+
+**JIT memory lifecycle (settled with Eric 2026-08-06; GENERATIONAL
+since 1d1bf215):** one active JITModule + 256MB arena per ExecCtx
+(colocation is correctness: cross-kernel calls are ±2GiB PC-relative).
+Individual kernels are never freed within a generation, but exhaustion
+is no longer a perf cliff: the active Jit RETIRES whole into
+`FusionCtx::retired_jits` (kernels stay mapped and executing) and the
+region build retries once in a fresh module. Soundness: direct
+kernel→kernel calls exist only WITHIN a region build, so "a region
+builds atomically in one generation; generations never link" — a
+post-rotation region recompiles its transitive callees into the fresh
+module's empty by_kernel cache. Recompile-heavy sessions (dynmod
+hot-reload, long REPL/plugin) accumulate one resident arena per
+rotation — warn-once log per rotation + pollable
+`FusionStats::jit_generations`; the reclamation unit is the ExecCtx
+(drop frees every generation; `reset_jit_for_check` ditto — the
+embedder contract for plugin daemons). `GRAPHIX_JIT_ARENA` (bytes)
+shrinks the arena so the differential gates exercise rotation
+(regress at 65536 forces it corpus-wide).
 
 **Kernel ABI:** kind-grouped params — scalars, then array/tuple/struct pointers,
 then string, then 2-word variant/nullable/value — derived from a single source
@@ -1526,9 +1987,10 @@ the stmt subtree is effect-free.
 
 ### Coverage (current)
 
-Measured by the FuseExpect audit above: **~71% of the `run!` corpus fuses+JITs
-(≈487 `Jit` / ≈195 `None`, zero annotation drift), and all bench programs
-(`bench/`) fuse fully.** The value-computing vocabulary is essentially complete:
+Measured by the FuseExpect audit above (numbers last measured pre-collection-
+intrinsics, 2026-07-08 — re-run the audit for current figures): **~71% of the
+`run!` corpus fuses+JITs, and all bench programs (`bench/`) fuse fully.** The
+value-computing vocabulary is essentially complete:
 all scalar arithmetic/comparison/logical/cast/checked-arith, every producer
 (struct/tuple/variant/array/map-literal incl. `{s with f: v}`) and accessor
 (field/index/slice/`m{key}`), `?`/`$`, all eight array HOFs as native loops
@@ -1538,9 +2000,8 @@ those shapes, and HOF-of-HOF fused into one multi-loop kernel; **fold
 accumulators may be composite or string, not just scalar** — tuple/struct/array/
 string accs carry loop-OWNED with clone-borrowed/drop-replaced discipline, acc
 patterns may destructure (`|(a, b), v|`), and the freeze authority is the
-RESOLVED acc type from FoldQ's `mftype.rtype`, since the analysis instance's
-`body.typ()` re-mints generalized tvars unbound — this is what makes pure
-`sync { }` blocks one kernel, sync-subset P2), **`select`
+RESOLVED acc type from the prototype callback's `typ().rtype`, since an
+instance's `body.typ()` re-mints generalized tvars unbound), **`select`
 structural destructuring** (tuple/struct/slice patterns with scalar leaf binds,
 anonymous-rest prefix/suffix, nested patterns via borrowed interior reads, owned
 fresh-producer scrutinees in value position — each arm's length test doubles as
@@ -1554,21 +2015,30 @@ tail → rebind-and-jump loop, non-tail → native recursion), transitive callee
 and builtin/cast/qop calls inside lambda bodies.
 
 The **correct-None denominator** (principled, never a gap): async/streaming
-builtins (timers, IO, netidx, `never`, `queue`, `once`/`take`/`skip`), cross-cycle
-nodes (`~`, `Any`, `TryCatch`'s catch-read), and non-register-encodable types
+builtins (timers, IO, netidx, `never`, `queue`, `throttle` — the
+once/take/skip family went Sync at P7 and fuses outside select arms), cross-cycle
+nodes (`~`, `Any`, `Catch`'s handler-read), and non-register-encodable types
 (`decimal`, `Fn`, `Ref`, recursive `List`/ADTs — no fixed ABI layout — and unbound
-TVars). Note that fusion recursion (`Update::fuse`) descends only through
-Module/Block/Bind/CallSite/TryCatch/Lambda — a sync expression under `~`, `<-`,
-`select`, or an operator fuses only as part of an enclosing block/bind region
-that fuses as a whole, so `clock ~ (a + b)` leaves the `a + b` node-walking
-unless it is hoisted into its own `let` (accepted current design, 2026-07-02).
+TVars). Fusion recursion (`Update::fuse`) descends through
+Module/Block/Bind/CallSite/Catch/Lambda, and since 2026-08-14 (Eric's
+attribute-honesty arc) ALSO Select (scrutinee, guards, and each arm body get
+their own region passes — a fused arm is a `FusedKernel` in arm position;
+sleep/wake and the wake-forced `event.init` compose with kernels already) and
+ExplicitParens (the interior gets its own pass — `clock ~ (a + b)` fuses the
+`a + b` where the parens are reachable). Constant arm/guard bodies are
+skipped (0-input kernels are pure overhead). Still NOT descended: `~`, `<-`,
+and operator operands — a sync expression there fuses only as part of an
+enclosing region; a REGISTRY attribute in such a position is a loud compile
+error (the honesty census below), never silently unchecked.
 
 The remaining missed-fusion tail (each pinned by a `#[native]` de-fuse test or an
 ASPIRE comment where noted):
 
-1. **HOF callback capturing a *local* lambda** (`array::map(a, |x| g(x))`) — the
-   `g(x)` call inside the per-slot template isn't statically resolved (harder:
-   resolution of captured locals in cloned templates; in `notes`).
+1. **HOF callback calling a nested/rec local lambda** — simple captured-local
+   calls now resolve (per-callsite elaboration + `for_each_emitted_node`
+   discovery), but a rec callee inside a fold callback still keeps the
+   collection on the node-walk (pinned by `fold_callback_name_collision`,
+   FuseExpect::None).
 2. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
    `JitEnv::truncate` emits no drops), nested/non-scalar variant payloads,
    owned scrutinees in TAIL position (no merge point to drop at).
@@ -1593,6 +2063,42 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `atomic_recursion.md` — **RULED 2026-08-15:** function evaluation is
+  atomic within a cycle, so a program may legally spin forever inside
+  one — the no-wedge property of the old one-eval-per-cycle model is
+  given up, because atomicity follows from the recursion ruling
+  (recursion fires like the hand-inlined chain; an inlined chain is one
+  expression) and iteration credits would make the same input run in
+  one cycle or many depending on its size. Containment lives outside
+  the language: the cooperative interrupt, armed by a human or an
+  embedder, observable by no program. Holds the trilemma argument, the
+  loop-head poll inventory, and the shell's cancel path.
+- `organic_firing.md` — **BUILT (P0–P3 landed 2026-08-14, one day;
+  P4 fresh-clock soak remains):** the fired-plane simplification — a
+  node fires iff a consumed input fires; no stored value/selection
+  gates a tag; `uniq`/`filter`/`~` are the explicit cadence tools.
+  Holds the ruling arc (const-terminal witness → "change the
+  semantics" → fired-args recursion → fire-on-discriminant selects),
+  the 9-item ruled-delta list, the deletion inventory, and the
+  red→green/desync-enumeration migration record. Supersedes the
+  strict select rule, the per-slot firing rule, the guard-quiet rule,
+  the recursion ruling's unchanged-inputs clause, and cceb0809 —
+  fired plane only; the bottom/ride axis is untouched.
+- `dense_delivery.md` — **BUILT (P0–P8 landed 2026-08-13; P9 soak/merge
+  remains):** the dense-delivery redesign — `Update::update -> &TagValue`
+  (borrowed production, no Option), orthogonal fired×bottom tag algebra,
+  `TagView` exhaustive-match API, persistent tagged store (rt.cached is
+  GONE — `Rt::store_value` is the one cross-cycle read, bottom ⇒ None),
+  consumer caches deleted (`Held` survives at the 3 designated ride
+  sites: select scrutinee, pattern guard, `~`'s arg), Q1
+  bottom-propagates at builtin seams (the sparse view is
+  UNREPRESENTABLE — `seam_arg`/`seam_tick`/`seam_value` +
+  `CachedVals` staging), log-everywhere, the P7 Sync flips + the
+  `SLEEP_RESTARTS` interior-sleep gate. Holds the rulings, the
+  ruled-delta list, the per-phase as-built records + gate records, and
+  the tag-removal post-mortem (removal is foreclosed — do not attempt
+  again). Supersedes `replay_frames.md`'s delivery model (its
+  reset_replay classification + frame mechanism remain).
 - `final_jit_architecture.md` — the end-state architecture (`Expr → node graph →
   CLIF`), now realized.
 - `distributed_jit.md` — how the GIR IR was removed and fusion distributed as
@@ -1600,13 +2106,18 @@ in `run!` fixtures and bench programs). The decision is recorded in
   rationale.
 - `representable_bottom.md` — bottom semantics (the taint channel).
 - `graphix_fuzz.md` — the differential fuzzer.
+- `collection_intrinsics.md` — **current:** the Array/List/Map HOFs as
+  compiler-owned Nodes (reserved marker names → `CollectionIntrinsic` →
+  MapQ/FoldQ nodes; per-slot interpreted semantics + inline CLIF loops).
+  Supersedes the sync subset, `value_returning_loops.md` (planned, never
+  built), and the `clone_rebind` machinery.
 - `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` —
-  HOF fusion (per-slot templates, impure split, the `clone_rebind` contract).
+  SUPERSEDED (historical): the per-slot template / `clone_rebind` era.
 - `queue_fn.md` — `queuefn` feature design.
 - `replay_frames.md` — **BUILT (2026-07-11), v2 same day:**
   `reset_replay` (required `Update`/`Apply` method, replay caches vs
-  semantic state) + evaluation FRAMES (For sync-loop iterations and
-  tail-loop jumps run against a private variables map) + **TagValue as
+  semantic state) + evaluation FRAMES (tail-loop jumps run against a
+  private variables map) + **TagValue as
   the interpreter currency** (Eric's call; v2): `Update::update`
   returns `Option<TagValue>` and `Event.variables` carries it — the
   kernel's STALE/TAINT disc bits ride every interp value, ops
@@ -1615,29 +2126,42 @@ in `run!` fixtures and bench programs). The decision is recorded in
   gains a `last_result` value-channel slot. The v1 `frame_bottom` bit
   and the fired re-delivery hack are deleted (jul10e broke both
   within an hour of soaking).
-- `sync_subset.md` — **P0–P3 BUILT on the `sync-subset-proto` branch
-  (2026-07-09; see the doc's "Prototype status" section):** repatriate
-  CONTROL from Rust builtins into `sync { }` BLOCKS (sequential
-  semantics, not an execution promise; effects inferred, never in
-  types). The prototype desugars at compile time (`expr/sync_desugar.rs`:
-  assignment = shadowing, `for` = fold over the assigned set) — no new
-  node types, no effect analysis; pure blocks fuse to ONE kernel
-  (`#[native]`-pinned), async bodies ride the impure fold (rung 2
-  free). Mutation is mut PLACES over persistent types (no Vec, freeze
-  = escape). **P4 (stdlib HOFs in-language, retiring clone_rebind and
-  the MapQ/FoldQ mini-interpreters) is gated on per-callsite
-  elaboration** — a lambda-param call in a once-compiled generic body
-  can't statically resolve, so in-language `map` is correct but
-  unfused today. Rust stays the sync subset for COMPUTATION (leaf
-  builtins + novel representations behind abstract types, e.g.
-  `buffer::`). Eric's design, 2026-07-09.
+- `sync_subset.md`, `sync_control.md`, `value_returning_loops.md` —
+  SUPERSEDED (historical): the `sync { }` block prototype (P0–P3 built
+  2026-07-09, P4 2026-07-10) and the never-built generalized-loop plan.
+  Unwound 2026-07-13: modeling slot lifetimes showed a reactive
+  collection HOF is a live per-position subgraph, not a sequential
+  loop — the sync subset of Graphix is Rust. See
+  `collection_intrinsics.md`. Per-callsite elaboration (the P4 gate)
+  survives and is load-bearing for collection callback resolution.
 - `fusion_lowering_split.md` — **proposed, not built:** split `try_fuse`'s welded
   analysis+lowering into a pure analysis pass (color nodes with a `KernelId`,
   build per-kernel descriptors) consumed by a thin lowering pass. Motivated by
   legibility.
+- `type_operation_scaling.md` — **built (2026-07-13):** COW/DAG walks +
+  per-pass memos for every core type operation (the six tree-walk
+  explosions the static-instance wedge exposed); holds the "invariants
+  for future type walks". Its open `contains` residual is RESOLVED by:
+- `env_independent_typerefs.md` — **built (2026-07-14):** `TypeRef`'s
+  carried resolution cell (Eric's ruling) — name-compressed,
+  env-independent instance signatures; the privatize walk; seeding
+  invariants; `same_def`/`same_view`; freeze/abi_kind cell Ref arms.
+  Carries one open finding: the two `#[native]`-in-List-callback tests
+  passed vacuously and now fail honestly (pending ruling).
 
 ## Stdlib package notes
 
+- **`sys::process` draft (PR #13, `unified-fusion-proto`).** Managed child
+  processes live in the opaque `Proc` value and use weak polling plus
+  `kill_on_drop`; the public Graphix API provides `options` and `stdio` named
+  argument constructors. Stdio is an explicit `Pipe`/`Inherit`/`Null` variant
+  and defaults to `Inherit`. The polling task is the sole child reaper; `wait`
+  subscribes to its watch status so concurrent waits and kill-during-wait work.
+  Rust wire conversion uses `netidx-derive`; the one
+  exception is `SpawnOptions.env`, because `immutable_chunkmap::Map` does not
+  implement `FromValue`, so a derived wire struct validates and extracts its
+  `Value::Map`. Shell-based tests are Unix-gated, with `cmd.exe` equivalents
+  for stdout and exit-status behavior on Windows.
 - **GUI** (`graphix-package-gui`, iced 0.14): uses the iced sub-crates directly
   (`iced_core`/`iced_wgpu`/`iced_widget`/…) not the umbrella crate, for
   render-pipeline control. `iced_renderer` needs both `wgpu` and `wgpu-bare`
@@ -1688,6 +2212,7 @@ in `run!` fixtures and bench programs). The decision is recorded in
   (default `unimplemented!()`); widgets needing test-state inspection (e.g.
   `DataTableW`) override it, and `GuiTestHarness::dt()/dt_mut()` downcast. Tests
   fire per-column callbacks via `gx.call(callable_id, args)` (mirrors the
-  widget's own dispatch). `InternalOnly` test ctx DOES spin up a real in-process
-  resolver, so `sys::net` round-trips work — but publisher coalescing means
+  widget's own dispatch). test contexts default to
+  `NetConfig::Internal`, so a test that uses `sys::net` materializes a real
+  in-process netidx on demand and round-trips work — but publisher coalescing means
   rapid updates collapse; space them with one-shot timers for multi-point tests.
