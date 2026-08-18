@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f7eb937f.js";
+            window.path_to_searchindex_js = "../searchindex-63955b89.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -189,18 +189,27 @@ println("the struct s is [s]")
 <p>will print</p>
 <pre><code>the struct s is {bar: 42, foo: "I am foo"}
 </code></pre>
-<h2 id="field-names-and-reserved-words"><a class="header" href="#field-names-and-reserved-words">Field Names and Reserved Words</a></h2>
+<h2 id="names-and-reserved-words"><a class="header" href="#names-and-reserved-words">Names and Reserved Words</a></h2>
 <p>Field names may be any lowercase identifier — including reserved words
 like <code>duration</code>, <code>string</code>, or <code>type</code>, which often appear in data
-mirrored from outside. Reserved words still can’t name bindings, so a
-reserved-word field must always use the explicit <code>name: value</code> form:
-shorthand like <code>{duration}</code> refers to a binding named <code>duration</code>, which
-cannot exist.</p>
-<pre><code class="language-graphix">〉let p = { duration: duration:1.5s, string: "label" }
+mirrored from outside. The primitive type names (<code>duration</code>, <code>string</code>,
+<code>i64</code>, …) may also name <em>bindings</em> — <code>let</code> bindings, lambda
+parameters, labeled arguments, and pattern binds — so field shorthand
+and destructuring work with them like any other name. Position always
+disambiguates: after <code>:</code> in an annotation they are types, as a literal
+prefix (<code>duration:1.5s</code>) they are literals, in <code>Type as</code> patterns they
+are type tests, and everywhere a value is expected they are ordinary
+names.</p>
+<pre><code class="language-graphix">〉let duration: duration = duration:1.5s
+〉let p = { duration, string: "label" }
 〉p.duration
 -: duration
 duration:1.5s
 </code></pre>
+<p>Control keywords (<code>let</code>, <code>select</code>, <code>cast</code>, …) and the literal words
+(<code>true</code>, <code>false</code>, <code>null</code>, <code>ok</code>) still can’t name bindings, and so can’t
+be used as field shorthand — write those fields explicitly
+(<code>{ type: v }</code>, <code>x.type</code>).</p>
 <h2 id="field-references"><a class="header" href="#field-references">Field References</a></h2>
 <p>Struct fields can be referenced with the .field notation. That is,</p>
 <pre><code class="language-graphix">〉s.foo

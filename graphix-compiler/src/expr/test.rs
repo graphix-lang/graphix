@@ -140,6 +140,17 @@ fn valid_fname() -> impl Strategy<Value = ArcStr> {
         Just(ArcStr::from("sigs")),
         Just(ArcStr::from("as_thing")),
         Just(ArcStr::from("if_thing")),
+        // type keywords are legal BINDING names (2026-08-18) — mix
+        // them into every name pool so the round trip hunts for
+        // positions we missed
+        Just(ArcStr::from("duration")),
+        Just(ArcStr::from("string")),
+        Just(ArcStr::from("i64")),
+        Just(ArcStr::from("bool")),
+        Just(ArcStr::from("datetime")),
+        Just(ArcStr::from("bytes")),
+        Just(ArcStr::from("f64")),
+        Just(ArcStr::from("decimal")),
     ]
 }
 
@@ -265,13 +276,11 @@ fn typexp() -> impl Strategy<Value = Type> {
                 .prop_map(|t| Type::Tuple(Arc::from(t))),
             (typart(), collection::vec(inner.clone(), (0, 20)))
                 .prop_map(|(tag, typs)| Type::Variant(tag, Arc::from_iter(typs))),
-            collection::vec((field_name(), inner.clone()), (1, 20)).prop_map(
-                |mut t| {
-                    t.sort_by_key(|(n, _)| n.clone());
-                    t.dedup_by_key(|(n, _)| n.clone());
-                    Type::Struct(Arc::from(t))
-                }
-            ),
+            collection::vec((field_name(), inner.clone()), (1, 20)).prop_map(|mut t| {
+                t.sort_by_key(|(n, _)| n.clone());
+                t.dedup_by_key(|(n, _)| n.clone());
+                Type::Struct(Arc::from(t))
+            }),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),

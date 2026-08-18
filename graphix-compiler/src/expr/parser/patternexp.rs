@@ -2,8 +2,8 @@ use crate::{
     expr::{
         Expr, Pattern, StructurePattern,
         parser::{
-            RESERVED, csep, expr, fldname, fname, sep_by_tok, sep_by1_tok, spaces,
-            spaces1, spstring, sptoken, typ, typname,
+            RESERVED_BINDING, csep, expr, fldname, fname, sep_by_tok, sep_by1_tok,
+            spaces, spaces1, spstring, sptoken, typ, typname,
         },
     },
     typ::Type,
@@ -170,7 +170,7 @@ where
                     })
                     .then(|(name, pat)| match pat {
                         Some(pat) => value((name, pat, true)).left(),
-                        None if RESERVED.contains(&name.as_str()) => unexpected_any(
+                        None if RESERVED_BINDING.contains(&name.as_str()) => unexpected_any(
                             "a reserved word field needs the explicit `name: pattern` form",
                         )
                         .right(),

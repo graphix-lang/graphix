@@ -49,6 +49,8 @@ module.exports = grammar({
     [$.array_pattern, $.slice_prefix_pattern],
     [$.primitive_type, $.null],
     [$.primitive_type, $._field_name],
+    [$.primitive_type, $._binding_name],
+    [$._binding_name, $.type_ascription],
     [$._field_name, $.type_ascription],
     [$.connect],
     [$.lambda, $.map_ref],
@@ -70,8 +72,6 @@ module.exports = grammar({
     [$._expression, $.qop],
     [$.lambda, $.qop],
     [$.type_path, $.pattern_bind],
-    [$.pattern_bind, $.type_ascription],
-    [$._typed_value, $.type_ascription],
     [$.string, $.value_string],
     [$.value_string, $.interpolation],
     [$.module],
@@ -166,18 +166,18 @@ module.exports = grammar({
     // Module and use
     module: $ => choice(
       // Bodyless module declaration: mod name
-      seq('mod', field('name', $.identifier)),
+      seq('mod', field('name', $._binding_name)),
       // Static module: mod name { ... }
       seq(
         'mod',
-        field('name', $.identifier),
+        field('name', $._binding_name),
         optional($.signature),
         field('body', $.module_body),
       ),
       // Dynamic module: mod name dynamic { sandbox ...; sig { ... }; source expr }
       seq(
         'mod',
-        field('name', $.identifier),
+        field('name', $._binding_name),
         'dynamic',
         '{',
         field('sandbox', $.sandbox),
@@ -246,7 +246,7 @@ module.exports = grammar({
     sig_bind: $ => seq(
       repeat($.doc_comment),
       'val',
-      field('name', $.identifier),
+      field('name', $._binding_name),
       ':',
       field('type', $._type),
     ),
@@ -254,7 +254,7 @@ module.exports = grammar({
     sig_module: $ => seq(
       repeat($.doc_comment),
       'mod',
-      field('name', $.identifier),
+      field('name', $._binding_name),
     ),
 
     sig_use: $ => seq(
@@ -322,7 +322,7 @@ module.exports = grammar({
       'Any',
     ),
 
-    type_variable: $ => seq("'", $.identifier),
+    type_variable: $ => seq("'", $._binding_name),
 
     array_type: $ => seq('Array', '<', $._type, '>'),
 
@@ -374,13 +374,13 @@ module.exports = grammar({
       $._type,
     ),
 
-    fn_type_label: $ => seq(optional('?'), '#', $.identifier, ':'),
+    fn_type_label: $ => seq(optional('?'), '#', $._binding_name, ':'),
 
     // Positional args in fn types must be named: `name: Type`. The
     // colon disambiguates from a bare type expression.
-    fn_type_arg_name: $ => seq($.identifier, ':'),
+    fn_type_arg_name: $ => seq($._binding_name, ':'),
 
-    fn_type_varg: $ => seq('@', $.identifier, ':', $._type),
+    fn_type_varg: $ => seq('@', $._binding_name, ':', $._type),
 
     throws_clause: $ => seq('throws', $._type),
 
@@ -397,8 +397,8 @@ module.exports = grammar({
     )),
 
     type_path: $ => seq(
-      choice($.type_identifier, $.identifier),
-      repeat(seq('::', choice($.type_identifier, $.identifier))),
+      choice($.type_identifier, $._binding_name),
+      repeat(seq('::', choice($.type_identifier, $._binding_name))),
     ),
 
     type_arguments: $ => seq('<', commaSep1($._type), '>'),
@@ -437,37 +437,37 @@ module.exports = grammar({
     ),
 
     pattern_bind: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
-      field('name', $.identifier),
+      optional(seq(field('all', $._binding_name), '@')),
+      field('name', $._binding_name),
     ),
 
     tuple_pattern: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
+      optional(seq(field('all', $._binding_name), '@')),
       '(',
       commaSep1($.structure_pattern),
       ')',
     ),
 
     array_pattern: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
+      optional(seq(field('all', $._binding_name), '@')),
       '[',
       commaSep($.structure_pattern),
       ']',
     ),
 
     slice_prefix_pattern: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
+      optional(seq(field('all', $._binding_name), '@')),
       '[',
       repeat(seq($.structure_pattern, ',')),
-      optional($.identifier),
+      optional($._binding_name),
       '..',
       ']',
     ),
 
     slice_suffix_pattern: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
+      optional(seq(field('all', $._binding_name), '@')),
       '[',
-      optional($.identifier),
+      optional($._binding_name),
       '..',
       ',',
       commaSep1($.structure_pattern),
@@ -475,14 +475,14 @@ module.exports = grammar({
     ),
 
     variant_pattern: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
+      optional(seq(field('all', $._binding_name), '@')),
       '`',
       $.type_identifier,
       optional(seq('(', commaSep($.structure_pattern), ')')),
     ),
 
     struct_pattern: $ => seq(
-      optional(seq(field('all', $.identifier), '@')),
+      optional(seq(field('all', $._binding_name), '@')),
       '{',
       commaSep($.struct_pattern_field),
       optional('..'),
@@ -532,12 +532,12 @@ module.exports = grammar({
       ),
     ),
 
-    variadic_param: $ => seq('@', $.identifier, optional(seq(':', $._type))),
+    variadic_param: $ => seq('@', $._binding_name, optional(seq(':', $._type))),
 
     labeled_param: $ => prec.left(seq(
       optional('?'),
       '#',
-      $.identifier,
+      $._binding_name,
       optional(seq(':', $._type)),
       optional(seq('=', $._expression)),
     )),
@@ -548,7 +548,7 @@ module.exports = grammar({
     catch_stmt: $ => prec.right(-1, seq(
       'catch',
       '(',
-      field('binding', $.identifier),
+      field('binding', $._binding_name),
       optional(seq(':', $._type)),
       ')',
       field('handler', $._expression),
@@ -600,7 +600,7 @@ module.exports = grammar({
       // External token so it's tried before line_comment can match //
       $._bare_value,
       // Fallback for values that look like identifiers
-      $.identifier,
+      $._binding_name,
     ),
 
 
@@ -654,9 +654,9 @@ module.exports = grammar({
       $._expression,
     ),
 
-    labeled_arg: $ => seq('#', $.identifier, ':'),
+    labeled_arg: $ => seq('#', $._binding_name, ':'),
 
-    labeled_arg_shorthand: $ => seq('#', $.identifier),
+    labeled_arg_shorthand: $ => seq('#', $._binding_name),
 
     // Select (pattern matching)
     select: $ => seq(
@@ -830,12 +830,12 @@ module.exports = grammar({
     reference: $ => $.module_path,
 
     // Builtin reference (e.g., 'array_map)
-    builtin_ref: $ => seq("'", $.identifier),
+    builtin_ref: $ => seq("'", $._binding_name),
 
     module_path: $ => seq(
       optional('/'),
-      $.identifier,
-      repeat(seq('::', $.identifier)),
+      $._binding_name,
+      repeat(seq('::', $._binding_name)),
     ),
 
     // Array
@@ -949,6 +949,20 @@ module.exports = grammar({
 
     // Identifiers
     identifier: $ => /[a-z_][a-zA-Z0-9_]*/,
+
+    // Type-name keywords are legal BINDING names (2026-08-18): let,
+    // params, labeled args, pattern binds, tvar names, module path
+    // segments. Control keywords and literals stay reserved. Aliased so
+    // the node stays an `identifier` for highlighting and queries.
+    _binding_name: $ => choice(
+      $.identifier,
+      alias(choice(
+        'bool', 'string', 'bytes',
+        'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'v32', 'z32',
+        'i64', 'u64', 'v64', 'z64', 'f32', 'f64',
+        'decimal', 'datetime', 'duration',
+      ), $.identifier),
+    ),
 
     // Reserved words are legal as struct FIELD names (2026-08-18), the
     // same relaxation as the reference parser: reserved-ness protects

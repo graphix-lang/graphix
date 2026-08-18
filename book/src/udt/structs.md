@@ -23,21 +23,31 @@ will print
 the struct s is {bar: 42, foo: "I am foo"}
 ```
 
-## Field Names and Reserved Words
+## Names and Reserved Words
 
 Field names may be any lowercase identifier — including reserved words
 like `duration`, `string`, or `type`, which often appear in data
-mirrored from outside. Reserved words still can't name bindings, so a
-reserved-word field must always use the explicit `name: value` form:
-shorthand like `{duration}` refers to a binding named `duration`, which
-cannot exist.
+mirrored from outside. The primitive type names (`duration`, `string`,
+`i64`, …) may also name *bindings* — `let` bindings, lambda
+parameters, labeled arguments, and pattern binds — so field shorthand
+and destructuring work with them like any other name. Position always
+disambiguates: after `:` in an annotation they are types, as a literal
+prefix (`duration:1.5s`) they are literals, in `Type as` patterns they
+are type tests, and everywhere a value is expected they are ordinary
+names.
 
 ```graphix
-〉let p = { duration: duration:1.5s, string: "label" }
+〉let duration: duration = duration:1.5s
+〉let p = { duration, string: "label" }
 〉p.duration
 -: duration
 duration:1.5s
 ```
+
+Control keywords (`let`, `select`, `cast`, …) and the literal words
+(`true`, `false`, `null`, `ok`) still can't name bindings, and so can't
+be used as field shorthand — write those fields explicitly
+(`{ type: v }`, `x.type`).
 
 ## Field References
 

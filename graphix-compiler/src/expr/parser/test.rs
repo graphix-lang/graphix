@@ -1757,11 +1757,62 @@ fn keyword_field_in_structwith() {
     assert_eq!(e.kind, e2.kind);
 }
 
+// ── type keywords as BINDING names (2026-08-18, same day) ──
+// The completion of the field relaxation: `duration`/`string`/… may
+// name bindings (let, params, labeled args, pattern binds), so field
+// shorthand works too. Control keywords and literals stay reserved.
+
 #[test]
-fn keyword_field_shorthand_refused() {
-    assert!(parse_one("{ duration, x: 1 }").is_err());
-    assert!(parse_one("{ s with duration }").is_err());
-    assert!(parse_structure_pattern("{ duration, .. }").is_err());
+fn keyword_bindings_and_shorthand() {
+    assert!(matches!(&parse_one("let duration = 5").unwrap().kind, ExprKind::Bind(_)));
+    let e = parse_one("{ duration, x: 1 }").unwrap();
+    match &e.kind {
+        ExprKind::Struct(st) => {
+            assert_eq!(&*st.args[0].0, "duration");
+            assert!(matches!(&st.args[0].1.kind, ExprKind::Ref { .. }));
+        }
+        k => panic!("expected struct, got {k:?}"),
+    }
+    let e2 = parse_one(&e.to_string()).unwrap();
+    assert_eq!(e.kind, e2.kind);
+    assert!(parse_one("{ s with duration }").is_ok());
+    match parse_structure_pattern("{ duration, .. }").unwrap() {
+        StructurePattern::Struct { binds, .. } => {
+            assert!(
+                matches!(&binds[0].1, StructurePattern::Bind(n) if &**n == "duration")
+            )
+        }
+        p => panic!("expected struct pattern, got {p:?}"),
+    }
+}
+
+#[test]
+fn control_keyword_bindings_still_refused() {
+    assert!(parse_one("let select = 5").is_err());
+    // NB `let true = 5` parses — as a refutable LITERAL-pattern let,
+    // not a binding — so it doesn't belong in this list
+    assert!(parse_one("let cast = 5").is_err());
+    assert!(parse_one("{ true, x: 1 }").is_err());
+    assert!(parse_one("{ s with cast }").is_err());
+    assert!(parse_structure_pattern("{ null, .. }").is_err());
+}
+
+#[test]
+fn type_as_pattern_beats_keyword_bind() {
+    // `duration as d` is a type test; bare `duration` is a bind — the
+    // attempt on `typ() .. as` backtracks cleanly
+    let p = parse_one("select x { duration as d => d, duration => duration }").unwrap();
+    match &p.kind {
+        ExprKind::Select(sel) => {
+            assert!(sel.arms[0].0.type_predicate.is_some());
+            assert!(sel.arms[1].0.type_predicate.is_none());
+            assert!(matches!(
+                &sel.arms[1].0.structure_predicate,
+                StructurePattern::Bind(n) if &**n == "duration"
+            ));
+        }
+        k => panic!("expected select, got {k:?}"),
+    }
 }
 
 #[test]

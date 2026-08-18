@@ -77,14 +77,35 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     )
     .unwrap()
 });
-pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
+/// The primitive TYPE-NAME keywords. Legal as binding and field names
+/// (2026-08-18) — reserved-ness protects the places where they mean a
+/// type (type expressions, typed literals like `duration:1.s`, `Type
+/// as` patterns), and every such place is disambiguated by position or
+/// by the `:`/`as` that must follow. Control keywords, literals, and
+/// the expression forms stay reserved everywhere.
+pub static TYPE_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
-        "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
-        "if", "i8", "u8", "i16", "u16", "u32", "v32", "i32", "z32", "u64", "v64", "i64",
-        "z64", "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
-        "bytes", "null", "_", "?", "fn", "Array", "Map", "any", "Any", "use", "rec",
-        "catch", "try",
+        "i8", "u8", "i16", "u16", "i32", "u32", "v32", "z32", "i64", "u64", "v64", "z64",
+        "f32", "f64", "decimal", "datetime", "duration", "bool", "string", "bytes",
     ])
+});
+
+pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
+    AHashSet::from_iter(
+        [
+            "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
+            "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch", "try",
+        ]
+        .into_iter()
+        .chain(TYPE_KEYWORDS.iter().copied()),
+    )
+});
+
+/// The words refused in BINDING positions (`let`, params, labeled args,
+/// pattern binds, module/val names): everything reserved except the
+/// type-name keywords.
+pub static RESERVED_BINDING: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
+    RESERVED.iter().copied().filter(|s| !TYPE_KEYWORDS.contains(s)).collect()
 });
 
 // sep_by1 but a separator terminator is allowed and mapped to an output value
@@ -284,7 +305,7 @@ where
     I::Range: Range,
 {
     ident(false).then(|s| {
-        if RESERVED.contains(&s.as_str()) {
+        if RESERVED_BINDING.contains(&s.as_str()) {
             unexpected_any("can't use keyword as a function or variable name").left()
         } else {
             value(s).right()
@@ -622,7 +643,10 @@ where
         ),
     )
         .then(|(pos, mut exprs): (_, LPooled<Vec<(ArcStr, Option<Expr>)>>)| {
-            if exprs.iter().any(|(n, e)| e.is_none() && RESERVED.contains(&n.as_str())) {
+            if exprs
+                .iter()
+                .any(|(n, e)| e.is_none() && RESERVED_BINDING.contains(&n.as_str()))
+            {
                 return unexpected_any(
                     "a reserved word field needs the explicit `name: value` form",
                 )
@@ -723,7 +747,7 @@ where
             )| {
                 if exprs
                     .iter()
-                    .any(|(n, e)| e.is_none() && RESERVED.contains(&n.as_str()))
+                    .any(|(n, e)| e.is_none() && RESERVED_BINDING.contains(&n.as_str()))
                 {
                     return unexpected_any(
                         "a reserved word field needs the explicit `name: value` form",
