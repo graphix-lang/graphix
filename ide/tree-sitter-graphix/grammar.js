@@ -48,6 +48,8 @@ module.exports = grammar({
     [$.union_type, $.array_pattern],
     [$.array_pattern, $.slice_prefix_pattern],
     [$.primitive_type, $.null],
+    [$.primitive_type, $._field_name],
+    [$._field_name, $.type_ascription],
     [$.connect],
     [$.lambda, $.map_ref],
     [$.lambda, $.apply],
@@ -69,10 +71,7 @@ module.exports = grammar({
     [$.lambda, $.qop],
     [$.type_path, $.pattern_bind],
     [$.pattern_bind, $.type_ascription],
-    [$._typed_value, $.module_path],
-    [$._typed_value, $._primary_expression],
     [$._typed_value, $.type_ascription],
-    [$.type_ascription, $._primary_expression],
     [$.string, $.value_string],
     [$.value_string, $.interpolation],
     [$.module],
@@ -334,7 +333,7 @@ module.exports = grammar({
     struct_type: $ => seq('{', commaSep($.struct_type_field), '}'),
 
     struct_type_field: $ => seq(
-      field('name', $.identifier),
+      field('name', $._field_name),
       ':',
       field('type', $._type),
     ),
@@ -491,7 +490,7 @@ module.exports = grammar({
     ),
 
     struct_pattern_field: $ => seq(
-      field('name', $.identifier),
+      field('name', $._field_name),
       optional(seq(':', field('pattern', $.structure_pattern))),
     ),
 
@@ -863,7 +862,7 @@ module.exports = grammar({
     // prec.dynamic(1) ensures GLR prefers struct_field over type_ascription
     // when both could match (e.g., {a: "hello"} is a struct, not map with type_ascription)
     struct_field: $ => prec.dynamic(10, seq(
-      field('name', $.identifier),
+      field('name', $._field_name),
       optional(seq(':', field('value', $._expression))),
     )),
 
@@ -900,7 +899,7 @@ module.exports = grammar({
     struct_ref: $ => seq(
       $._primary_expression,
       '.',
-      $.identifier,
+      $._field_name,
     ),
 
     tuple_ref: $ => seq(
@@ -950,6 +949,22 @@ module.exports = grammar({
 
     // Identifiers
     identifier: $ => /[a-z_][a-zA-Z0-9_]*/,
+
+    // Reserved words are legal as struct FIELD names (2026-08-18), the
+    // same relaxation as the reference parser: reserved-ness protects
+    // bindings and type names, and a field is neither. Aliased so the
+    // node stays an `identifier` for highlighting and queries.
+    _field_name: $ => choice(
+      $.identifier,
+      alias(choice(
+        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'type',
+        'fn', 'cast', 'if', 'use', 'rec', 'catch', 'try', 'any',
+        'bool', 'string', 'bytes',
+        'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'v32', 'z32',
+        'i64', 'u64', 'v64', 'z64', 'f32', 'f64',
+        'decimal', 'datetime', 'duration',
+      ), $.identifier),
+    ),
 
     type_identifier: $ => /[A-Z][a-zA-Z0-9_]*/,
   },

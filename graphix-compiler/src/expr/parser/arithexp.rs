@@ -3,7 +3,7 @@ use crate::expr::{
     parser::{
         any, apply_args, array, array_index_suffix, cast, csep, do_block, expr,
         grow::{grow, max_nesting, note_refused},
-        interpolated, literal, map, raw_string, reference, select, spaces, spfname,
+        interpolated, literal, map, raw_string, reference, select, spaces, spfldname,
         sptoken, structure, structwith, variant,
     },
 };
@@ -81,7 +81,7 @@ where
     choice((
         attempt(sptoken('.').with(choice((
             attempt(int::<_, usize>()).map(Post::Index),
-            spfname().map(Post::Field),
+            spfldname().map(Post::Field),
         )))),
         attempt(array_index_suffix()).map(Post::Array),
         attempt(between(sptoken('{'), sptoken('}'), expr())).map(Post::Key),

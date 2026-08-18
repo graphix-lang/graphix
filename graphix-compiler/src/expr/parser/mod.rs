@@ -301,6 +301,30 @@ where
     spaces().with(fname())
 }
 
+/// A struct FIELD name: any lowercase-initial identifier, reserved words
+/// included. Reserved-ness protects bindings and type names; a field is
+/// neither, and mirrors of external data want `duration`/`string`/`bool`
+/// as fields. A keyword field must use the explicit `name: …` form —
+/// shorthand refers to a binding, which a keyword cannot name — enforced
+/// by the callers that accept shorthand.
+fn fldname<I>() -> impl Parser<I, Output = ArcStr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    ident(false)
+}
+
+fn spfldname<I>() -> impl Parser<I, Output = ArcStr>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    spaces().with(fldname())
+}
+
 fn typname<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char>,
@@ -591,13 +615,19 @@ where
             token('{'),
             sptoken('}'),
             spaces().with(sep_by1_tok(
-                (fname(), spaces().with(optional(token(':').with(expr())))),
+                (fldname(), spaces().with(optional(token(':').with(expr())))),
                 csep(),
                 token('}'),
             )),
         ),
     )
         .then(|(pos, mut exprs): (_, LPooled<Vec<(ArcStr, Option<Expr>)>>)| {
+            if exprs.iter().any(|(n, e)| e.is_none() && RESERVED.contains(&n.as_str())) {
+                return unexpected_any(
+                    "a reserved word field needs the explicit `name: value` form",
+                )
+                .left();
+            }
             let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
             if s.len() < exprs.len() {
                 return unexpected_any("struct fields must be unique").left();
@@ -679,7 +709,7 @@ where
             (
                 ref_pexp().skip(space()).skip(spstring("with")).skip(space()),
                 sep_by1_tok(
-                    (spfname(), spaces().with(optional(token(':').with(expr())))),
+                    (spfldname(), spaces().with(optional(token(':').with(expr())))),
                     csep(),
                     token('}'),
                 ),
@@ -691,6 +721,15 @@ where
                 _,
                 (Expr, LPooled<Vec<(ArcStr, Option<Expr>)>>),
             )| {
+                if exprs
+                    .iter()
+                    .any(|(n, e)| e.is_none() && RESERVED.contains(&n.as_str()))
+                {
+                    return unexpected_any(
+                        "a reserved word field needs the explicit `name: value` form",
+                    )
+                    .left();
+                }
                 let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
                 if s.len() < exprs.len() {
                     return unexpected_any("struct fields must be unique").left();

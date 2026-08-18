@@ -1,6 +1,6 @@
 use super::{
     csep, fname, grow::grow, ident, not_prefix, sep_by_tok, sep_by1_tok, spaces, spaces1,
-    spfname, spstring, sptoken, typname,
+    spfldname, spstring, sptoken, typname,
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
@@ -262,7 +262,7 @@ where
     between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok((spfname().skip(sptoken(':')), typ()), csep(), token('}')),
+        sep_by1_tok((spfldname().skip(sptoken(':')), typ()), csep(), token('}')),
     )
     .then(|mut exps: LPooled<Vec<(ArcStr, Type)>>| {
         let s = exps.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();

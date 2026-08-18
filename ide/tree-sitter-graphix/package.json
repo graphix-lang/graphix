@@ -30,5 +30,8 @@
     "test": "tree-sitter test",
     "build": "tree-sitter generate && tree-sitter build",
     "parse": "tree-sitter parse"
+  },
+  "allowScripts": {
+    "tree-sitter-cli@0.24.7": true
   }
 }

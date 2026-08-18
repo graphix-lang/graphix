@@ -147,6 +147,24 @@ fn random_fname() -> impl Strategy<Value = ArcStr> {
     prop_oneof![random_modpart().prop_map(ArcStr::from), valid_fname()]
 }
 
+/// Struct FIELD names may be reserved words (2026-08-18) — mix keywords
+/// in so the round trip exercises the relaxed grammar. Binding and type
+/// names stay `random_fname`.
+fn field_name() -> impl Strategy<Value = ArcStr> {
+    prop_oneof![
+        random_fname(),
+        random_fname(),
+        random_fname(),
+        Just(ArcStr::from("duration")),
+        Just(ArcStr::from("string")),
+        Just(ArcStr::from("i64")),
+        Just(ArcStr::from("bool")),
+        Just(ArcStr::from("datetime")),
+        Just(ArcStr::from("select")),
+        Just(ArcStr::from("cast")),
+    ]
+}
+
 fn tvar() -> impl Strategy<Value = TVar> {
     random_fname().prop_map(|n| TVar::empty_named(n))
 }
@@ -247,7 +265,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                 .prop_map(|t| Type::Tuple(Arc::from(t))),
             (typart(), collection::vec(inner.clone(), (0, 20)))
                 .prop_map(|(tag, typs)| Type::Variant(tag, Arc::from_iter(typs))),
-            collection::vec((random_fname(), inner.clone()), (1, 20)).prop_map(
+            collection::vec((field_name(), inner.clone()), (1, 20)).prop_map(
                 |mut t| {
                     t.sort_by_key(|(n, _)| n.clone());
                     t.dedup_by_key(|(n, _)| n.clone());
@@ -371,7 +389,7 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                 }),
             (
                 option::of(random_fname()),
-                collection::vec((random_fname(), inner.clone()), (1, 10)),
+                collection::vec((field_name(), inner.clone()), (1, 10)),
                 any::<bool>()
             )
                 .prop_map(|(all, mut b, exhaustive)| {
@@ -437,7 +455,7 @@ fn typedef() -> impl Strategy<Value = Expr> {
 
 macro_rules! structref {
     ($inner:expr) => {
-        ($inner, random_fname()).prop_map(|(source, field)| {
+        ($inner, field_name()).prop_map(|(source, field)| {
             ExprKind::StructRef { source: Arc::new(source), field }.to_expr_nopos()
         })
     };
@@ -631,7 +649,7 @@ macro_rules! select {
 
 macro_rules! structure {
     ($inner:expr) => {
-        collection::vec((random_fname(), $inner), (1, 10)).prop_map(|mut a| {
+        collection::vec((field_name(), $inner), (1, 10)).prop_map(|mut a| {
             a.sort_by_key(|(n, _)| n.clone());
             a.dedup_by_key(|(n, _)| n.clone());
             ExprKind::Struct(StructExpr { args: Arc::from_iter(a) }).to_expr_nopos()
@@ -712,7 +730,7 @@ macro_rules! binop {
 
 macro_rules! structwith {
     ($inner:expr) => {
-        ($inner, collection::vec((random_fname(), $inner), (1, 10))).prop_map(
+        ($inner, collection::vec((field_name(), $inner), (1, 10))).prop_map(
             |(source, mut replace)| {
                 let source = Arc::new(source);
                 replace.sort_by_key(|(f, _)| f.clone());

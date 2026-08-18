@@ -1325,7 +1325,7 @@
           "name": "name",
           "content": {
             "type": "SYMBOL",
-            "name": "identifier"
+            "name": "_field_name"
           }
         },
         {
@@ -2708,7 +2708,7 @@
           "name": "name",
           "content": {
             "type": "SYMBOL",
-            "name": "identifier"
+            "name": "_field_name"
           }
         },
         {
@@ -4744,7 +4744,7 @@
             "name": "name",
             "content": {
               "type": "SYMBOL",
-              "name": "identifier"
+              "name": "_field_name"
             }
           },
           {
@@ -5012,7 +5012,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "identifier"
+          "name": "_field_name"
         }
       ]
     },
@@ -5185,6 +5185,169 @@
       "type": "PATTERN",
       "value": "[a-z_][a-zA-Z0-9_]*"
     },
+    "_field_name": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "true"
+              },
+              {
+                "type": "STRING",
+                "value": "false"
+              },
+              {
+                "type": "STRING",
+                "value": "ok"
+              },
+              {
+                "type": "STRING",
+                "value": "null"
+              },
+              {
+                "type": "STRING",
+                "value": "mod"
+              },
+              {
+                "type": "STRING",
+                "value": "let"
+              },
+              {
+                "type": "STRING",
+                "value": "select"
+              },
+              {
+                "type": "STRING",
+                "value": "type"
+              },
+              {
+                "type": "STRING",
+                "value": "fn"
+              },
+              {
+                "type": "STRING",
+                "value": "cast"
+              },
+              {
+                "type": "STRING",
+                "value": "if"
+              },
+              {
+                "type": "STRING",
+                "value": "use"
+              },
+              {
+                "type": "STRING",
+                "value": "rec"
+              },
+              {
+                "type": "STRING",
+                "value": "catch"
+              },
+              {
+                "type": "STRING",
+                "value": "try"
+              },
+              {
+                "type": "STRING",
+                "value": "any"
+              },
+              {
+                "type": "STRING",
+                "value": "bool"
+              },
+              {
+                "type": "STRING",
+                "value": "string"
+              },
+              {
+                "type": "STRING",
+                "value": "bytes"
+              },
+              {
+                "type": "STRING",
+                "value": "i8"
+              },
+              {
+                "type": "STRING",
+                "value": "u8"
+              },
+              {
+                "type": "STRING",
+                "value": "i16"
+              },
+              {
+                "type": "STRING",
+                "value": "u16"
+              },
+              {
+                "type": "STRING",
+                "value": "i32"
+              },
+              {
+                "type": "STRING",
+                "value": "u32"
+              },
+              {
+                "type": "STRING",
+                "value": "v32"
+              },
+              {
+                "type": "STRING",
+                "value": "z32"
+              },
+              {
+                "type": "STRING",
+                "value": "i64"
+              },
+              {
+                "type": "STRING",
+                "value": "u64"
+              },
+              {
+                "type": "STRING",
+                "value": "v64"
+              },
+              {
+                "type": "STRING",
+                "value": "z64"
+              },
+              {
+                "type": "STRING",
+                "value": "f32"
+              },
+              {
+                "type": "STRING",
+                "value": "f64"
+              },
+              {
+                "type": "STRING",
+                "value": "decimal"
+              },
+              {
+                "type": "STRING",
+                "value": "datetime"
+              },
+              {
+                "type": "STRING",
+                "value": "duration"
+              }
+            ]
+          },
+          "named": true,
+          "value": "identifier"
+        }
+      ]
+    },
     "type_identifier": {
       "type": "PATTERN",
       "value": "[A-Z][a-zA-Z0-9_]*"
@@ -5233,6 +5396,14 @@
     [
       "primitive_type",
       "null"
+    ],
+    [
+      "primitive_type",
+      "_field_name"
+    ],
+    [
+      "_field_name",
+      "type_ascription"
     ],
     [
       "connect"
@@ -5303,19 +5474,7 @@
     ],
     [
       "_typed_value",
-      "module_path"
-    ],
-    [
-      "_typed_value",
-      "_primary_expression"
-    ],
-    [
-      "_typed_value",
       "type_ascription"
-    ],
-    [
-      "type_ascription",
-      "_primary_expression"
     ],
     [
       "string",
@@ -5398,6 +5557,5 @@
   "inline": [
     "_expression_inner"
   ],
-  "supertypes": [],
-  "reserved": {}
+  "supertypes": []
 }

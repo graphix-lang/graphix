@@ -2,8 +2,8 @@ use crate::{
     expr::{
         Expr, Pattern, StructurePattern,
         parser::{
-            csep, expr, fname, sep_by_tok, sep_by1_tok, spaces, spaces1, spstring,
-            sptoken, typ, typname,
+            RESERVED, csep, expr, fldname, fname, sep_by_tok, sep_by1_tok, spaces,
+            spaces1, spstring, sptoken, typ, typname,
         },
     },
     typ::Type,
@@ -162,17 +162,21 @@ where
         spaces().with(sep_by1_tok(
             choice((
                 string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
-                fname()
+                fldname()
                     .skip(spaces())
                     .then(|name| {
                         optional(token(':').with(structure_pattern()))
                             .map(move |pat| (name.clone(), pat))
                     })
-                    .map(|(name, pat)| match pat {
-                        Some(pat) => (name, pat, true),
+                    .then(|(name, pat)| match pat {
+                        Some(pat) => value((name, pat, true)).left(),
+                        None if RESERVED.contains(&name.as_str()) => unexpected_any(
+                            "a reserved word field needs the explicit `name: pattern` form",
+                        )
+                        .right(),
                         None => {
                             let pat = StructurePattern::Bind(name.clone());
-                            (name, pat, true)
+                            value((name, pat, true)).left()
                         }
                     }),
             )),

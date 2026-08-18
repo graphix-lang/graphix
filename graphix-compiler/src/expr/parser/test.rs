@@ -1691,3 +1691,83 @@ fn parenthesized_connect_round_trips() {
     let e2 = parse_one(&e.to_string()).unwrap();
     assert_eq!(e.kind, e2.kind);
 }
+
+// ── reserved words as struct FIELD names (2026-08-18) ──
+// Reserved-ness protects bindings and type names; field positions are
+// unambiguous, so keywords are legal there. Shorthand refers to a
+// binding a keyword cannot name, so keyword shorthand stays refused.
+
+#[test]
+fn keyword_field_in_struct_literal() {
+    let e = parse_one("{ duration: 3, string: \"x\" }").unwrap();
+    match &e.kind {
+        ExprKind::Struct(st) => {
+            assert_eq!(&*st.args[0].0, "duration");
+            assert_eq!(&*st.args[1].0, "string");
+        }
+        k => panic!("expected struct, got {k:?}"),
+    }
+    let e2 = parse_one(&e.to_string()).unwrap();
+    assert_eq!(e.kind, e2.kind);
+}
+
+#[test]
+fn keyword_field_in_struct_type() {
+    let t = parse_typexpr("{ duration: duration, i64: i64 }").unwrap();
+    match t {
+        Type::Struct(fields) => {
+            assert_eq!(&*fields[0].0, "duration");
+            assert_eq!(&*fields[1].0, "i64");
+        }
+        t => panic!("expected struct type, got {t:?}"),
+    }
+}
+
+#[test]
+fn keyword_field_access() {
+    let e = parse_one("x.duration.string").unwrap();
+    match &e.kind {
+        ExprKind::StructRef { field, .. } => assert_eq!(&**field, "string"),
+        k => panic!("expected struct ref, got {k:?}"),
+    }
+    let e2 = parse_one(&e.to_string()).unwrap();
+    assert_eq!(e.kind, e2.kind);
+}
+
+#[test]
+fn keyword_field_in_struct_pattern() {
+    let p = parse_structure_pattern("{ duration: d, .. }").unwrap();
+    match p {
+        StructurePattern::Struct { binds, exhaustive, .. } => {
+            assert!(!exhaustive);
+            assert_eq!(&*binds[0].0, "duration");
+        }
+        p => panic!("expected struct pattern, got {p:?}"),
+    }
+}
+
+#[test]
+fn keyword_field_in_structwith() {
+    let e = parse_one("{ s with duration: 9 }").unwrap();
+    match &e.kind {
+        ExprKind::StructWith(sw) => assert_eq!(&*sw.replace[0].0, "duration"),
+        k => panic!("expected struct with, got {k:?}"),
+    }
+    let e2 = parse_one(&e.to_string()).unwrap();
+    assert_eq!(e.kind, e2.kind);
+}
+
+#[test]
+fn keyword_field_shorthand_refused() {
+    assert!(parse_one("{ duration, x: 1 }").is_err());
+    assert!(parse_one("{ s with duration }").is_err());
+    assert!(parse_structure_pattern("{ duration, .. }").is_err());
+}
+
+#[test]
+fn keyword_field_does_not_shadow_literals() {
+    // a block whose first statement is a duration literal must still be
+    // a block — the struct attempt backtracks on `;`
+    let e = parse_one("{ duration:1.0s; 42 }").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Do { .. }), "got {:?}", e.kind);
+}

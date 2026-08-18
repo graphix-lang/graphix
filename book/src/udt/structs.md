@@ -23,6 +23,22 @@ will print
 the struct s is {bar: 42, foo: "I am foo"}
 ```
 
+## Field Names and Reserved Words
+
+Field names may be any lowercase identifier — including reserved words
+like `duration`, `string`, or `type`, which often appear in data
+mirrored from outside. Reserved words still can't name bindings, so a
+reserved-word field must always use the explicit `name: value` form:
+shorthand like `{duration}` refers to a binding named `duration`, which
+cannot exist.
+
+```graphix
+〉let p = { duration: duration:1.5s, string: "label" }
+〉p.duration
+-: duration
+duration:1.5s
+```
+
 ## Field References
 
 Struct fields can be referenced with the .field notation. That is,

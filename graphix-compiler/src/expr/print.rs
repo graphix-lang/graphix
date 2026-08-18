@@ -388,7 +388,8 @@ impl fmt::Display for StructWithExpr {
             match &e.kind {
                 ExprKind::Ref { name: n }
                     if Path::dirname(&**n).is_none()
-                        && Path::basename(&**n) == Some(&**name) =>
+                        && Path::basename(&**n) == Some(&**name)
+                        && !parser::RESERVED.contains(&name.as_str()) =>
                 {
                     write!(f, "{name}")?
                 }
@@ -414,7 +415,8 @@ impl PrettyDisplay for StructWithExpr {
                 match &e.kind {
                     ExprKind::Ref { name: n }
                         if Path::dirname(&**n).is_none()
-                            && Path::basename(&**n) == Some(&**name) =>
+                            && Path::basename(&**n) == Some(&**name)
+                            && !parser::RESERVED.contains(&name.as_str()) =>
                     {
                         write!(buf, "{name}")?
                     }
@@ -442,7 +444,8 @@ impl fmt::Display for StructExpr {
             match &e.kind {
                 ExprKind::Ref { name }
                     if Path::dirname(&**name).is_none()
-                        && Path::basename(&**name) == Some(&**n) =>
+                        && Path::basename(&**name) == Some(&**n)
+                        && !parser::RESERVED.contains(&n.as_str()) =>
                 {
                     write!(f, "{n}")?
                 }
@@ -465,7 +468,8 @@ impl PrettyDisplay for StructExpr {
                 match &e.kind {
                     ExprKind::Ref { name }
                         if Path::dirname(&**name).is_none()
-                            && Path::basename(&**name) == Some(&**n) =>
+                            && Path::basename(&**name) == Some(&**n)
+                            && !parser::RESERVED.contains(&n.as_str()) =>
                     {
                         write!(buf, "{n}")?
                     }
