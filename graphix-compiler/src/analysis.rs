@@ -150,9 +150,13 @@ fn strongly_connected<R: Rt, E: UserEvent>(
         }
         walk.push(root);
         while let Some(id) = walk.pop() {
-            if components.insert(id, component).is_some() {
+            // An already-claimed node is a barrier: the claim it took
+            // under a later finish time IS its SCC, and it must not be
+            // relabeled by a walk that merely reaches it.
+            if components.contains_key(&id) {
                 continue;
             }
+            components.insert(id, component);
             if let Some(next) = reverse.get(&id) {
                 walk.extend(next.iter().copied());
             }

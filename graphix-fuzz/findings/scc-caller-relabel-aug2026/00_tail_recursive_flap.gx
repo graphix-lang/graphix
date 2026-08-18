@@ -1,0 +1,18 @@
+// aug17d hz1 divergence_000000 (2026-08-18): a ~40% per-run compile
+// flap — `#[tail_recursive]` on a genuinely tail-recursive lambda
+// failed with "recurses through a non-tail self-call or mutual
+// recursion", landing on EITHER engine (interp locally, jit on hz1),
+// so the oracle saw CompileErr vs value. Root cause in
+// `analysis::strongly_connected` phase 2 (Kosaraju): the reverse walk
+// claimed nodes with `components.insert(..).is_some()`, which
+// OVERWRITES an already-claimed node's label before noticing the
+// claim — a plain caller was folded into its callee's component, the
+// callee's SCC read size 2, `only_self` failed, and the def's
+// RecursionKind summary froze at Recursive. Which of the two twin rec
+// lambdas got folded depended on hash iteration order of the DFS
+// roots. Fixed: an already-claimed node is a barrier
+// (`contains_key` first — the first claim, made under a later finish
+// time, IS its SCC). The mislabel also marked the plain caller→callee
+// call site as a recursive edge.
+{let a = array::init(i64:1, |x: i64| -> i64 {let rec lp = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => lp(n - i64:1, i64:1 + n)}; lp(i64:500, i64:7) + {#[tail_recursive]
+let rec f = |n: i64, acc: i64| -> i64 select n {i64:0 => acc, _ => f(n - i64:1, acc + n)}; f(i64:10, i64:0)}}); array::fold(a, i64:0, |acc, x| acc + x)}
