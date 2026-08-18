@@ -143,7 +143,7 @@ fn render(o: &Outcome) -> String {
                 format!("Trace({}; stdout=[{}])", epochs.join("; "), t.stdout.join(" | "))
             }
         }
-        Outcome::CompileErr(e) => format!("CompileErr({})", first_line(e)),
+        Outcome::CompileErr(e) => format!("CompileErr({})", e.replace('\n', " | ")),
         Outcome::RuntimeErr(e) => format!("RuntimeErr({})", first_line(e)),
         Outcome::Timeout => "Timeout".to_string(),
     }

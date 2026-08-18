@@ -553,7 +553,7 @@ async fn drive(
     let compiled = bounded!(
         ctx.rt.compile(ArcStr::from(text)),
         Ok(c) => c,
-        Err(e) => return Outcome::CompileErr(format!("{e}"))
+        Err(e) => return Outcome::CompileErr(format!("{e:?}"))
     );
     let eid = compiled.exprs.last().expect("compile returned no exprs").id;
     let mut segs = Vec::with_capacity(1 + sched.epochs.len());
