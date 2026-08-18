@@ -292,6 +292,10 @@ impl ResolvedRef {
         &self.typ
     }
 
+    pub(crate) fn canonical_scope(&self) -> &ModPath {
+        &self.canonical_scope
+    }
+
     /// Same VIEW, not just same definition: body ALLOCATION identity.
     /// [`Self::same_def`]'s structural equality is blind to nested
     /// resolution cells — an interface typedef body is registered

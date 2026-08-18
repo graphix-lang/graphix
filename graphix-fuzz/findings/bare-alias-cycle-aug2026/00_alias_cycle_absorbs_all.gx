@@ -1,0 +1,14 @@
+// aug17d ryouko divergence_000000 (2026-08-18): `type A = B; type B =
+// A` was ACCEPTED, and a binding annotated with the cycle typechecked
+// against everything — contains' coinductive ref-pair memo seeds
+// (ref, T) = true before recursing, and a bare alias cycle closes the
+// loop with no structure ever compared, so the hypothesis is the whole
+// answer. The absorbed element then rode a heterogeneous array into
+// `array::filter(a, |x| x > i64:3)` where the engines' degenerate
+// behaviors split: interp kept every element, jit dropped every
+// element. Fixed at the def site: `Env::deftype` walks bare-Ref
+// bodies via `resolve_pure` (never fills resolution cells) and
+// rejects the def that closes a cycle — "circular type alias".
+// Recursion through a structural body (variant, union, tuple, ...)
+// is untouched; the program is now a CompileErr on both engines.
+{type A = B; type B = A; let t: A = f64:0.; {let a = [true, true, t, true, true, true, true, true]; array::filter(a, |x| x > i64:3)}}

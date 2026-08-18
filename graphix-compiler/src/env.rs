@@ -471,7 +471,45 @@ impl Env {
             typ.record_ide_refs(self, scope);
         }
         let defs = self.typedefs.get_or_default_cow(scope.clone());
-        defs.insert_cow(name.into(), TypeDef { params, typ, doc, pos, ori });
+        defs.insert_cow(
+            name.into(),
+            TypeDef { params, typ: typ.clone(), doc, pos, ori },
+        );
+        // A chain of BARE aliases must not close a cycle: `type A = B;
+        // type B = A` names nothing, and contains' coinductive ref-pair
+        // memo answers true for (cycle, T) before any structure is
+        // compared — a binding annotated with the cycle would typecheck
+        // against everything. Recursion through a structural body
+        // (variant, union, tuple, struct, ...) is untouched: the walk
+        // follows only bodies that are bare `Type::Ref`s, and it runs
+        // at the def that closes the loop (earlier legs stop at the
+        // then-unresolvable forward name). `resolve_pure` because a
+        // def-gate probe must not fill resolution cells at a
+        // mid-compile registration horizon.
+        {
+            let mut seen: LPooled<AHashSet<(CompactString, CompactString)>> =
+                LPooled::take();
+            let scope_str: &str = scope;
+            seen.insert((scope_str.into(), name.into()));
+            let mut cur = typ;
+            while let Type::Ref(tr) = &cur {
+                let Some(r) = tr.resolve_pure(self) else { break };
+                let refname: &str = &tr.name;
+                let base = Path::basename(&refname).unwrap_or(refname);
+                let canon: &str = r.canonical_scope();
+                if !seen.insert((canon.into(), base.into())) {
+                    self.undeftype(scope, name);
+                    bail!(
+                        "circular type alias: {name} refers back to itself \
+                         through a chain of bare aliases; a recursive type \
+                         must recurse through a structural body (variant, \
+                         union, tuple, struct, ...)"
+                    );
+                }
+                let next = r.typ().clone();
+                cur = next;
+            }
+        }
         Ok(())
     }
 
