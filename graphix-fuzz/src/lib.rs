@@ -833,9 +833,44 @@ pub async fn check_classified(
         // divergence_000000), so a pure multiple of a small lane budget
         // under-escalates exactly when the machine is busiest.
         let slow_budget = (timeout * 8).max(Duration::from_secs(60));
+        let cpu_before = self_cpu();
         let slow = run_program(code, Mode::Interp, slow_budget).await;
         if slow.agrees_with_at(&jit, tier) {
             return (None, matches!(&slow, Outcome::Trace(_)));
+        }
+        // Still over budget. CPU burn discriminates the two ways that
+        // happens (Eric's ruling 2026-08-17): a WEDGE sits at ~0% CPU —
+        // its burn is bounded by startup + subject compile, an absolute
+        // cost that cannot grow with the window — while HONEST SLOWNESS
+        // burns whatever the scheduler gives it, seconds of CPU over a
+        // >=60s window even at 10x worker oversubscription (the
+        // per-element lazy-bind gap makes fold(init(500k)) ~1000s of
+        // node-walk against milliseconds of native, and each literal
+        // size minted a fresh corpus slot — aug17d katana
+        // divergence_000000). Seconds of burn is proof of progress:
+        // log it and drop it. A real wedge (symbolic.gx, fixed
+        // 0f4f6573) cannot reach the ceiling and still records. The
+        // delta is process-wide, so it is only meaningful where nothing
+        // else computes during the retry — true in the isolated check
+        // child and the sequential regression walk, the paths that
+        // matter; a concurrent non-isolated pool can only over-count,
+        // which errs toward dropping timeout noise, never toward
+        // recording it. The symmetric jit-timeout branch below gets no
+        // such test: a wedged kernel SPINS, so burn cannot tell it
+        // from a starved-but-progressing child there.
+        if matches!(&slow, Outcome::Timeout) {
+            let burned = self_cpu().saturating_sub(cpu_before);
+            if burned >= Duration::from_secs(5) {
+                eprintln!(
+                    "SLOW — interp burned {:.1}s CPU over a {:.0}s budget without \
+                     finishing; jit's value stands unrefuted; honest slowness, \
+                     not recorded",
+                    burned.as_secs_f64(),
+                    slow_budget.as_secs_f64()
+                );
+                eprintln!("    program: {}", code.replace('\n', "\\n"));
+                return (None, false);
+            }
         }
     }
     // The symmetric direction — jit Timeout against a value-bearing
