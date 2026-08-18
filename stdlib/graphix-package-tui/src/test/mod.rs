@@ -18,13 +18,10 @@
 //! `widget.handle_update`, the same as in production.
 
 use ahash::AHashMap;
-use graphix_compiler::expr::VfsResolver;
 use anyhow::{Context, Result, bail};
 use crossterm::event::Event;
-use graphix_compiler::{
-    BindId,
-    expr::ExprId,
-};
+use graphix_compiler::expr::VfsResolver;
+use graphix_compiler::{BindId, expr::ExprId};
 use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};

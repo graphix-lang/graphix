@@ -1,0 +1,31 @@
+/// One stacked layer: a widget drawn over the base in a cleared,
+/// centered rectangle sized by its constraints.
+type Layer = {
+  child: Tui,
+  width: &Constraint,
+  height: &Constraint,
+  size: &[Size, null]
+};
+
+/// Build a layer. Defaults to 60% of the overlay area in each axis.
+/// `#size` observes the rectangle the layer was actually given, like
+/// `layout::child`'s.
+val layer: fn(
+  ?#width: &Constraint,
+  ?#height: &Constraint,
+  ?#size: &[Size, null],
+  child: Tui
+) -> Layer;
+
+type Overlay = {
+  base: Tui,
+  layers: &Array<Layer>
+};
+
+/// The base widget with a reactive stack of layers drawn over it, in
+/// order — the modal/popup primitive. Each layer is centered, sized by
+/// its constraints, and cleared before it draws, so the base never
+/// bleeds through. Input goes to the TOPMOST layer while any layer is
+/// up and to the base otherwise; an empty `layers` array is just the
+/// base. Push a layer to open a modal, pop it to close.
+val overlay: fn(#layers: &Array<Layer>, base: Tui) -> Tui;

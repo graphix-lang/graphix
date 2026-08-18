@@ -15,7 +15,8 @@ type Tui = [
   `List(list::List),
   `Table(table::Table),
   `Calendar(calendar::Calendar),
-  `Canvas(canvas::Canvas)
+  `Canvas(canvas::Canvas),
+  `Overlay(overlay::Overlay)
 ];
 
 type Color = [
@@ -154,4 +155,5 @@ mod list;
 mod table;
 mod calendar;
 mod canvas;
+mod overlay;
 mod browser;

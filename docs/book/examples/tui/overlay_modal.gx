@@ -1,0 +1,64 @@
+use tui;
+use tui::block;
+use tui::input_handler;
+use tui::overlay;
+use tui::paragraph;
+
+let open = false;
+
+let handle_base = |e: Event| -> [`Stop, `Continue] select e {
+  `Key(k) => select k.kind {
+    `Press => select k.code {
+      c@ `Char("o") => {
+        open <- c ~ true;
+        `Stop
+      },
+      _ => `Continue
+    },
+    _ => `Continue
+  },
+  _ => `Continue
+};
+
+let handle_modal = |e: Event| -> [`Stop, `Continue] select e {
+  `Key(k) => select k.kind {
+    `Press => select k.code {
+      c@ `Esc => {
+        open <- c ~ false;
+        `Stop
+      },
+      _ => `Continue
+    },
+    _ => `Continue
+  },
+  _ => `Continue
+};
+
+let base = input_handler(
+  #handle: &handle_base,
+  &block(
+    #border: &`All,
+    #title: &line("press o to open the modal"),
+    &paragraph(&"base content")
+  )
+);
+
+let modal = layer(
+  #width: &`Percentage(50),
+  #height: &`Percentage(30),
+  input_handler(
+    #handle: &handle_modal,
+    &block(
+      #border: &`All,
+      #title: &line("modal, Esc closes"),
+      &paragraph(&"while this is up, it captures all input")
+    )
+  )
+);
+
+let layers: Array<overlay::Layer> = select open {
+  true => [modal],
+  false => []
+};
+
+overlay(#layers: &layers, base)

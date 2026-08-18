@@ -325,3 +325,124 @@ let result = canvas(
     h.render()?;
     Ok(())
 }
+
+// ── overlay ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn overlay_renders_base_and_layer() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui;
+use tui::overlay;
+use tui::paragraph;
+let base = paragraph(&"BASE CONTENT");
+let modal = layer(paragraph(&"MODAL CONTENT"));
+let result = overlay(#layers: &[modal], base)
+"#,
+    )
+    .await?;
+    let lines = h.render_lines()?;
+    assert!(lines[0].starts_with("BASE CONTENT"), "base missing: {:?}", lines[0]);
+    assert!(
+        lines.iter().any(|l| l.contains("MODAL CONTENT")),
+        "modal missing: {lines:?}"
+    );
+    // the modal is centered, so its content must not be on the base's row
+    assert!(!lines[0].contains("MODAL"), "modal not centered: {:?}", lines[0]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn overlay_empty_layers_is_base() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui;
+use tui::overlay;
+use tui::paragraph;
+let layers: Array<overlay::Layer> = [];
+let result = overlay(#layers: &layers, paragraph(&"JUST BASE"))
+"#,
+    )
+    .await?;
+    let lines = h.render_lines()?;
+    assert!(lines[0].starts_with("JUST BASE"), "base missing: {:?}", lines[0]);
+    assert!(lines.iter().all(|l| !l.contains("MODAL")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn overlay_top_layer_captures_input() -> Result<()> {
+    use crossterm::event::{Event, KeyCode, KeyEvent};
+    use netidx::publisher::Value;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui;
+use tui::input_handler;
+use tui::overlay;
+use tui::paragraph;
+let base_hit = 0;
+let layer_hit = 0;
+let on_base = |e: Event| -> [`Stop, `Continue] select e {
+  k@ `Key(_) => { base_hit <- (k ~ base_hit) + 1; `Stop },
+  _ => `Continue
+};
+let on_layer = |e: Event| -> [`Stop, `Continue] select e {
+  k@ `Key(_) => { layer_hit <- (k ~ layer_hit) + 1; `Stop },
+  _ => `Continue
+};
+let base = input_handler(#handle: &on_base, &paragraph(&"base"));
+let modal = layer(input_handler(#handle: &on_layer, &paragraph(&"modal")));
+let result = overlay(#layers: &[modal], base)
+"#,
+    )
+    .await?;
+    h.watch("test::base_hit").await?;
+    h.watch("test::layer_hit").await?;
+    h.render()?;
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char('x')))).await?;
+    h.drain().await?;
+    assert_eq!(
+        h.get_watched("test::layer_hit"),
+        Some(&Value::I64(1)),
+        "layer missed the key"
+    );
+    assert_eq!(
+        h.get_watched("test::base_hit"),
+        Some(&Value::I64(0)),
+        "base saw a captured key"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn overlay_no_layer_routes_to_base() -> Result<()> {
+    use crossterm::event::{Event, KeyCode, KeyEvent};
+    use netidx::publisher::Value;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui;
+use tui::input_handler;
+use tui::overlay;
+use tui::paragraph;
+let base_hit = 0;
+let on_base = |e: Event| -> [`Stop, `Continue] select e {
+  k@ `Key(_) => { base_hit <- (k ~ base_hit) + 1; `Stop },
+  _ => `Continue
+};
+let layers: Array<overlay::Layer> = [];
+let base = input_handler(#handle: &on_base, &paragraph(&"base"));
+let result = overlay(#layers: &layers, base)
+"#,
+    )
+    .await?;
+    h.watch("test::base_hit").await?;
+    h.render()?;
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char('x')))).await?;
+    h.drain().await?;
+    assert_eq!(
+        h.get_watched("test::base_hit"),
+        Some(&Value::I64(1)),
+        "base missed the key"
+    );
+    Ok(())
+}

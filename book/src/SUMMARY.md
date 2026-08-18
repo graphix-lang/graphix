@@ -76,6 +76,7 @@
     - [input](./ui/tui/input.md)
     - [layout](./ui/tui/layout.md)
     - [list](./ui/tui/list.md)
+    - [overlay](./ui/tui/overlay.md)
     - [scroll](./ui/tui/scroll.md)
     - [sparkline](./ui/tui/sparkline.md)
     - [table](./ui/tui/table.md)

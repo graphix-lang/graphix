@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-549be743.js";
+            window.path_to_searchindex_js = "searchindex-f7eb937f.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-962d620f.js"></script>
+        <script src="toc-e4e99a5c.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -7727,9 +7727,112 @@ list(#selected: &amp;0, &amp;items)
 <li><a href="#the-tabs-widget">tabs</a> - For switching between different lists</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="the-overlay-widget"><a class="header" href="#the-overlay-widget">The Overlay Widget</a></h1>
+<p>The <code>overlay</code> widget draws a reactive stack of layers over a base widget —
+the modal and popup primitive. Each layer is centered, sized by its
+constraints, and cleared before it draws, so the base never bleeds
+through. While any layer is up, the topmost layer captures <strong>all</strong>
+input; when the layers array is empty, the overlay is just its base.
+Open a modal by pushing a layer, close it by popping it — in practice,
+by deriving the layers array from your state with <code>select</code>.</p>
+<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
+<pre><code class="language-graphix">val layer: fn(
+  ?#width: &amp;Constraint,
+  ?#height: &amp;Constraint,
+  ?#size: &amp;[Size, null],
+  child: Tui
+) -&gt; Layer;
+
+val overlay: fn(#layers: &amp;Array&lt;Layer&gt;, base: Tui) -&gt; Tui;
+</code></pre>
+<h2 id="parameters-11"><a class="header" href="#parameters-11">Parameters</a></h2>
+<h3 id="layer"><a class="header" href="#layer">layer</a></h3>
+<ul>
+<li><strong>width</strong> - Horizontal size of the layer, as a layout <code>Constraint</code>
+(default <code>`Percentage(60)</code>)</li>
+<li><strong>height</strong> - Vertical size (default <code>`Percentage(60)</code>)</li>
+<li><strong>size</strong> - Observes the rectangle the layer was actually given, like
+<code>layout::child</code>’s</li>
+<li><strong>child</strong> - The widget drawn in the layer</li>
+</ul>
+<h3 id="overlay"><a class="header" href="#overlay">overlay</a></h3>
+<ul>
+<li><strong>layers</strong> - The stack of layers, drawn in order; the last is topmost
+and captures input</li>
+<li><strong>base</strong> - The widget under the stack</li>
+</ul>
+<h2 id="example-4"><a class="header" href="#example-4">Example</a></h2>
+<p>A modal opened with <code>o</code> and closed with <code>Esc</code>. While it is up, its
+input handler sees every key; the base handler sees none.</p>
+<pre><code class="language-graphix">use tui;
+use tui::block;
+use tui::input_handler;
+use tui::overlay;
+use tui::paragraph;
+
+let open = false;
+
+let handle_base = |e: Event| -&gt; [`Stop, `Continue] select e {
+  `Key(k) =&gt; select k.kind {
+    `Press =&gt; select k.code {
+      c@ `Char("o") =&gt; {
+        open &lt;- c ~ true;
+        `Stop
+      },
+      _ =&gt; `Continue
+    },
+    _ =&gt; `Continue
+  },
+  _ =&gt; `Continue
+};
+
+let handle_modal = |e: Event| -&gt; [`Stop, `Continue] select e {
+  `Key(k) =&gt; select k.kind {
+    `Press =&gt; select k.code {
+      c@ `Esc =&gt; {
+        open &lt;- c ~ false;
+        `Stop
+      },
+      _ =&gt; `Continue
+    },
+    _ =&gt; `Continue
+  },
+  _ =&gt; `Continue
+};
+
+let base = input_handler(
+  #handle: &amp;handle_base,
+  &amp;block(
+    #border: &amp;`All,
+    #title: &amp;line("press o to open the modal"),
+    &amp;paragraph(&amp;"base content")
+  )
+);
+
+let modal = layer(
+  #width: &amp;`Percentage(50),
+  #height: &amp;`Percentage(30),
+  input_handler(
+    #handle: &amp;handle_modal,
+    &amp;block(
+      #border: &amp;`All,
+      #title: &amp;line("modal, Esc closes"),
+      &amp;paragraph(&amp;"while this is up, it captures all input")
+    )
+  )
+);
+
+let layers: Array&lt;overlay::Layer&gt; = select open {
+  true =&gt; [modal],
+  false =&gt; []
+};
+
+overlay(#layers: &amp;layers, base)
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-scrollbar-widget"><a class="header" href="#the-scrollbar-widget">The Scrollbar Widget</a></h1>
 <p>The <code>scrollbar</code> widget adds a visual scrollbar indicator to scrollable content, making it clear when content extends beyond the visible area and showing the current scroll position.</p>
-<h2 id="interface-16"><a class="header" href="#interface-16">Interface</a></h2>
+<h2 id="interface-17"><a class="header" href="#interface-17">Interface</a></h2>
 <pre><code class="language-graphix">type ScrollbarOrientation = [
   `VerticalRight,
   `VerticalLeft,
@@ -7755,7 +7858,7 @@ val scrollbar: fn(
   a: &amp;Tui
 ) -&gt; Tui;
 </code></pre>
-<h2 id="parameters-11"><a class="header" href="#parameters-11">Parameters</a></h2>
+<h2 id="parameters-12"><a class="header" href="#parameters-12">Parameters</a></h2>
 <ul>
 <li><strong>position</strong> (required) - Current scroll position (typically the Y offset)</li>
 <li><strong>content_length</strong> - Total length of the content (auto-detected if not specified)</li>
@@ -7878,7 +7981,7 @@ scrollbar(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-sparkline-widget"><a class="header" href="#the-sparkline-widget">The Sparkline Widget</a></h1>
 <p>The <code>sparkline</code> widget renders compact inline charts perfect for dashboards and status displays. It shows data trends in minimal space, with support for color-coded bars based on thresholds.</p>
-<h2 id="interface-17"><a class="header" href="#interface-17">Interface</a></h2>
+<h2 id="interface-18"><a class="header" href="#interface-18">Interface</a></h2>
 <pre><code class="language-graphix">type RenderDirection = [
   `LeftToRight,
   `RightToLeft
@@ -7903,7 +8006,7 @@ val sparkline: fn(
   a: &amp;Array&lt;[SparklineBar, f64, null]&gt;
 ) -&gt; Tui;
 </code></pre>
-<h2 id="parameters-12"><a class="header" href="#parameters-12">Parameters</a></h2>
+<h2 id="parameters-13"><a class="header" href="#parameters-13">Parameters</a></h2>
 <h3 id="sparkline"><a class="header" href="#sparkline">sparkline</a></h3>
 <ul>
 <li><strong>max</strong> - Maximum value for scaling (auto-scales if not specified)</li>
@@ -8040,7 +8143,7 @@ sparkline(#max: &amp;100, &amp;data)
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-table-widget"><a class="header" href="#the-table-widget">The Table Widget</a></h1>
 <p>The <code>table</code> widget displays structured data in rows and columns with support for selection, scrolling, and custom styling. It’s ideal for data grids, process monitors, file listings, and any tabular data display.</p>
-<h2 id="interface-18"><a class="header" href="#interface-18">Interface</a></h2>
+<h2 id="interface-19"><a class="header" href="#interface-19">Interface</a></h2>
 <pre><code class="language-graphix">type Cell = {
   content: Line,
   style: [Style, null]
@@ -8085,7 +8188,7 @@ val table: fn(
   a: &amp;Array&lt;&amp;Row&gt;
 ) -&gt; Tui;
 </code></pre>
-<h2 id="parameters-13"><a class="header" href="#parameters-13">Parameters</a></h2>
+<h2 id="parameters-14"><a class="header" href="#parameters-14">Parameters</a></h2>
 <ul>
 <li><strong>header</strong> - Row object for the table header</li>
 <li><strong>selected</strong> - Index of the currently selected row</li>
@@ -8282,7 +8385,7 @@ table(#header: &amp;header, &amp;rows)
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-tabs-widget"><a class="header" href="#the-tabs-widget">The Tabs Widget</a></h1>
 <p>The <code>tabs</code> widget creates a tabbed interface for organizing content into multiple switchable panels. Each tab has a title displayed in the tab bar and associated content that’s shown when the tab is selected.</p>
-<h2 id="interface-19"><a class="header" href="#interface-19">Interface</a></h2>
+<h2 id="interface-20"><a class="header" href="#interface-20">Interface</a></h2>
 <pre><code class="language-graphix">val tabs: fn(
   ?#divider: &amp;[Span, null],
   ?#highlight_style: &amp;[Style, null],
@@ -8294,7 +8397,7 @@ table(#header: &amp;header, &amp;rows)
   a: &amp;Array&lt;(Line, Tui)&gt;
 ) -&gt; Tui;
 </code></pre>
-<h2 id="parameters-14"><a class="header" href="#parameters-14">Parameters</a></h2>
+<h2 id="parameters-15"><a class="header" href="#parameters-15">Parameters</a></h2>
 <ul>
 <li><strong>selected</strong> - Index of the currently selected tab (0-indexed)</li>
 <li><strong>highlight_style</strong> - Style for the selected tab title</li>
@@ -9058,7 +9161,7 @@ val slider_style: fn(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-widget-1"><a class="header" href="#the-text-widget-1">The Text Widget</a></h1>
 <p>The <code>text</code> widget displays a string with optional styling. It is the most basic display widget and the foundation for showing any textual content in a GUI application. Font size, color, font family, weight, style, sizing, and alignment are all configurable through labeled arguments.</p>
-<h2 id="interface-20"><a class="header" href="#interface-20">Interface</a></h2>
+<h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
 <pre><code class="language-graphix">val text: fn(
   ?#size: &amp;[f64, null],
   ?#color: &amp;[Color, null],
@@ -9070,7 +9173,7 @@ val slider_style: fn(
   s: &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-15"><a class="header" href="#parameters-15">Parameters</a></h2>
+<h2 id="parameters-16"><a class="header" href="#parameters-16">Parameters</a></h2>
 <ul>
 <li><strong>size</strong> - Font size in pixels. Defaults to the theme’s standard text size when null.</li>
 <li><strong>color</strong> - Text color as a <code>Color</code> struct with <code>r</code>, <code>g</code>, <code>b</code>, <code>a</code> fields, each a float from 0.0 to 1.0. Defaults to the theme’s text color when null.</li>
@@ -9124,7 +9227,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-button-widget"><a class="header" href="#the-button-widget">The Button Widget</a></h1>
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
-<h2 id="interface-21"><a class="header" href="#interface-21">Interface</a></h2>
+<h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
 <pre><code class="language-graphix">val button: fn(
   ?#on_press: fn(a: null) -&gt; Any,
   ?#width: &amp;Length,
@@ -9134,7 +9237,7 @@ mod icon;
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-16"><a class="header" href="#parameters-16">Parameters</a></h2>
+<h2 id="parameters-17"><a class="header" href="#parameters-17">Parameters</a></h2>
 <ul>
 <li><strong><code>#on_press</code></strong> – Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button renders but does nothing when clicked.</li>
 <li><strong><code>#width</code></strong> – Width of the button. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
@@ -9187,7 +9290,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-input-widget"><a class="header" href="#the-text-input-widget">The Text Input Widget</a></h1>
 <p>A single-line text field for user input. The widget displays the current value via a reference and reports changes through callbacks. Supports placeholder text, password masking, and custom sizing.</p>
-<h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
+<h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
 <pre><code class="language-graphix">val text_input: fn(
   ?#placeholder: &amp;string,
   ?#on_input: fn(s: string) -&gt; Any,
@@ -9201,7 +9304,7 @@ let col = column(
   s: &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-17"><a class="header" href="#parameters-17">Parameters</a></h2>
+<h2 id="parameters-18"><a class="header" href="#parameters-18">Parameters</a></h2>
 <ul>
 <li><strong><code>#placeholder</code></strong> – Hint text displayed when the field is empty. Shown in a lighter style and disappears once the user begins typing.</li>
 <li><strong><code>#on_input</code></strong> – Callback invoked on every keystroke. Receives the full current text as a <code>string</code>. Typically used with <code>&lt;-</code> to update state: <code>#on_input: |v| name &lt;- v</code>.</li>
@@ -9247,7 +9350,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-text-editor-widget"><a class="header" href="#the-text-editor-widget">The Text Editor Widget</a></h1>
 <p>A multi-line text editing area for longer-form content. Unlike <code>text_input</code>, which handles a single line, <code>text_editor</code> supports multiple lines of text with scrolling. It reports the full content string on every edit.</p>
-<h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
+<h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
 <pre><code class="language-graphix">val text_editor: fn(
   ?#placeholder: &amp;string,
   ?#on_edit: fn(s: string) -&gt; Any,
@@ -9260,7 +9363,7 @@ let col = column(
   s: &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-18"><a class="header" href="#parameters-18">Parameters</a></h2>
+<h2 id="parameters-19"><a class="header" href="#parameters-19">Parameters</a></h2>
 <ul>
 <li><strong><code>#placeholder</code></strong> – Hint text displayed when the editor is empty.</li>
 <li><strong><code>#on_edit</code></strong> – Callback invoked on every edit. Receives the full content as a <code>string</code>. Use with <code>&lt;-</code> to keep state in sync: <code>#on_edit: |v| content &lt;- v</code>.</li>
@@ -9310,7 +9413,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-checkbox-widget"><a class="header" href="#the-checkbox-widget">The Checkbox Widget</a></h1>
 <p>A checkbox with an optional text label. Displays a checked or unchecked box and reports toggles through a callback. Useful for boolean settings and multi-select scenarios.</p>
-<h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
+<h2 id="interface-25"><a class="header" href="#interface-25">Interface</a></h2>
 <pre><code class="language-graphix">val checkbox: fn(
   ?#label: &amp;string,
   ?#on_toggle: fn(flag: bool) -&gt; Any,
@@ -9321,7 +9424,7 @@ let col = column(
   flag: &amp;bool
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-19"><a class="header" href="#parameters-19">Parameters</a></h2>
+<h2 id="parameters-20"><a class="header" href="#parameters-20">Parameters</a></h2>
 <ul>
 <li><strong><code>#label</code></strong> – Text displayed next to the checkbox. If omitted, the checkbox renders without a label.</li>
 <li><strong><code>#on_toggle</code></strong> – Callback invoked when the checkbox is clicked. Receives the new boolean state (<code>true</code> if now checked, <code>false</code> if unchecked). Typically: <code>#on_toggle: |v| checked &lt;- v</code>.</li>
@@ -9366,7 +9469,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-toggler-widget"><a class="header" href="#the-toggler-widget">The Toggler Widget</a></h1>
 <p>A toggle switch with an optional text label. Functionally identical to a checkbox but rendered as a sliding toggle, which is often a better visual fit for on/off settings like enabling features or connectivity options.</p>
-<h2 id="interface-25"><a class="header" href="#interface-25">Interface</a></h2>
+<h2 id="interface-26"><a class="header" href="#interface-26">Interface</a></h2>
 <pre><code class="language-graphix">val toggler: fn(
   ?#label: &amp;string,
   ?#on_toggle: fn(flag: bool) -&gt; Any,
@@ -9377,7 +9480,7 @@ let col = column(
   flag: &amp;bool
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-20"><a class="header" href="#parameters-20">Parameters</a></h2>
+<h2 id="parameters-21"><a class="header" href="#parameters-21">Parameters</a></h2>
 <ul>
 <li><strong><code>#label</code></strong> – Text displayed next to the toggle switch. If omitted, the toggler renders without a label.</li>
 <li><strong><code>#on_toggle</code></strong> – Callback invoked when the toggle is flipped. Receives the new boolean state. Typically: <code>#on_toggle: |v| enabled &lt;- v</code>.</li>
@@ -9420,7 +9523,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-radio-widget"><a class="header" href="#the-radio-widget">The Radio Widget</a></h1>
 <p>A radio button for single-select choices within a group. Each <code>radio</code> widget represents one option. When the currently selected value matches this radio’s value, the button is filled. Clicking an unselected radio triggers the <code>#on_select</code> callback.</p>
-<h2 id="interface-26"><a class="header" href="#interface-26">Interface</a></h2>
+<h2 id="interface-27"><a class="header" href="#interface-27">Interface</a></h2>
 <pre><code class="language-graphix">val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;'a,
@@ -9432,7 +9535,7 @@ let col = column(
   x: &amp;'a
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-21"><a class="header" href="#parameters-21">Parameters</a></h2>
+<h2 id="parameters-22"><a class="header" href="#parameters-22">Parameters</a></h2>
 <ul>
 <li><strong><code>#label</code></strong> (required) – Text displayed next to the radio button. Unlike most labeled arguments in GUI widgets, this one is <strong>not optional</strong> – every radio button must have a label.</li>
 <li><strong><code>#selected</code></strong> – Reference to the currently selected value. When this value equals the positional value, the radio button appears filled. Pass the same reference to every radio in the group so they stay in sync.</li>
@@ -9485,7 +9588,7 @@ let col = column(
 <p>Graphix provides three related widgets for numeric values within a range: <code>slider</code> (horizontal), <code>vertical_slider</code>, and <code>progress_bar</code> (display-only).</p>
 <h2 id="slider"><a class="header" href="#slider">Slider</a></h2>
 <p>A horizontal slider that lets the user select a floating-point value by dragging a handle along a track.</p>
-<h3 id="interface-27"><a class="header" href="#interface-27">Interface</a></h3>
+<h3 id="interface-28"><a class="header" href="#interface-28">Interface</a></h3>
 <pre><code class="language-graphix">val slider: fn(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
@@ -9498,7 +9601,7 @@ let col = column(
   x: &amp;f64
 ) -&gt; Widget
 </code></pre>
-<h3 id="parameters-22"><a class="header" href="#parameters-22">Parameters</a></h3>
+<h3 id="parameters-23"><a class="header" href="#parameters-23">Parameters</a></h3>
 <ul>
 <li><strong><code>#min</code></strong> – Minimum value of the range. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#max</code></strong> – Maximum value of the range. Defaults to <code>100.0</code>.</li>
@@ -9623,7 +9726,7 @@ let value = 50.0;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-pick-list-widget"><a class="header" href="#the-pick-list-widget">The Pick List Widget</a></h1>
 <p>A dropdown menu that lets the user select one option from a list of strings. Clicking the widget opens a dropdown; selecting an item closes it and triggers the callback.</p>
-<h2 id="interface-28"><a class="header" href="#interface-28">Interface</a></h2>
+<h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
 <pre><code class="language-graphix">val pick_list: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: fn(s: string) -&gt; Any,
@@ -9634,7 +9737,7 @@ let value = 50.0;
   a: &amp;Array&lt;string&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-23"><a class="header" href="#parameters-23">Parameters</a></h2>
+<h2 id="parameters-24"><a class="header" href="#parameters-24">Parameters</a></h2>
 <ul>
 <li><strong><code>#selected</code></strong> – Reference to the currently selected value, or <code>null</code> if nothing is selected. When <code>null</code>, the placeholder text is shown instead.</li>
 <li><strong><code>#on_select</code></strong> – Callback invoked when the user picks an item. Receives the selected string. Typically: <code>#on_select: |v| choice &lt;- v</code>.</li>
@@ -9680,7 +9783,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-combo-box-widget"><a class="header" href="#the-combo-box-widget">The Combo Box Widget</a></h1>
 <p>A searchable dropdown that combines a text input with a dropdown list. As the user types, the options are filtered to match. This is useful when the list of options is long and the user needs to find a specific item quickly.</p>
-<h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
+<h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
 <pre><code class="language-graphix">val combo_box: fn(
   ?#selected: &amp;[string, null],
   ?#on_select: fn(s: string) -&gt; Any,
@@ -9690,7 +9793,7 @@ let col = column(
   a: &amp;Array&lt;string&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-24"><a class="header" href="#parameters-24">Parameters</a></h2>
+<h2 id="parameters-25"><a class="header" href="#parameters-25">Parameters</a></h2>
 <ul>
 <li><strong><code>#selected</code></strong> – Reference to the currently selected value, or <code>null</code> if nothing is selected.</li>
 <li><strong><code>#on_select</code></strong> – Callback invoked when the user selects an item from the filtered list. Receives the selected string.</li>
@@ -9735,7 +9838,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-column-widget"><a class="header" href="#the-column-widget">The Column Widget</a></h1>
 <p>The <code>column</code> widget arranges child widgets vertically from top to bottom. It is one of the primary layout containers, along with <code>row</code>.</p>
-<h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
+<h2 id="interface-31"><a class="header" href="#interface-31">Interface</a></h2>
 <pre><code class="language-graphix">val column: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
@@ -9745,7 +9848,7 @@ let col = column(
   a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-25"><a class="header" href="#parameters-25">Parameters</a></h2>
+<h2 id="parameters-26"><a class="header" href="#parameters-26">Parameters</a></h2>
 <ul>
 <li><strong>spacing</strong> — vertical space between child widgets in pixels</li>
 <li><strong>padding</strong> — space around the column’s edges (see <a href="#types">Types</a> for <code>Padding</code> variants)</li>
@@ -9791,7 +9894,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-row-widget"><a class="header" href="#the-row-widget">The Row Widget</a></h1>
 <p>The <code>row</code> widget arranges child widgets horizontally from left to right. It is one of the primary layout containers, along with <code>column</code>.</p>
-<h2 id="interface-31"><a class="header" href="#interface-31">Interface</a></h2>
+<h2 id="interface-32"><a class="header" href="#interface-32">Interface</a></h2>
 <pre><code class="language-graphix">val row: fn(
   ?#spacing: &amp;f64,
   ?#padding: &amp;Padding,
@@ -9801,7 +9904,7 @@ mod icon;
   a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-26"><a class="header" href="#parameters-26">Parameters</a></h2>
+<h2 id="parameters-27"><a class="header" href="#parameters-27">Parameters</a></h2>
 <ul>
 <li><strong>spacing</strong> — horizontal space between child widgets in pixels</li>
 <li><strong>padding</strong> — space around the row’s edges</li>
@@ -9858,7 +9961,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-container-widget"><a class="header" href="#the-container-widget">The Container Widget</a></h1>
 <p>The <code>container</code> widget wraps a single child widget, providing padding and alignment control. Use it to position content within a fixed or flexible region.</p>
-<h2 id="interface-32"><a class="header" href="#interface-32">Interface</a></h2>
+<h2 id="interface-33"><a class="header" href="#interface-33">Interface</a></h2>
 <pre><code class="language-graphix">val container: fn(
   ?#padding: &amp;Padding,
   ?#width: &amp;Length,
@@ -9868,7 +9971,7 @@ mod icon;
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-27"><a class="header" href="#parameters-27">Parameters</a></h2>
+<h2 id="parameters-28"><a class="header" href="#parameters-28">Parameters</a></h2>
 <ul>
 <li><strong>padding</strong> — space between the container’s edges and its child</li>
 <li><strong>width</strong> — container width (<code>Fill</code>, <code>Shrink</code>, <code>Fixed(px)</code>, or <code>FillPortion(n)</code>)</li>
@@ -9925,7 +10028,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-scrollable-widget"><a class="header" href="#the-scrollable-widget">The Scrollable Widget</a></h1>
 <p>The <code>scrollable</code> widget wraps content that may exceed the available space, providing scroll bars to navigate. It supports vertical, horizontal, or bidirectional scrolling.</p>
-<h2 id="interface-33"><a class="header" href="#interface-33">Interface</a></h2>
+<h2 id="interface-34"><a class="header" href="#interface-34">Interface</a></h2>
 <pre><code class="language-graphix">val scrollable: fn(
   ?#direction: &amp;ScrollDirection,
   ?#on_scroll: fn(a: {x: f64, y: f64}) -&gt; Any,
@@ -9934,7 +10037,7 @@ mod icon;
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-28"><a class="header" href="#parameters-28">Parameters</a></h2>
+<h2 id="parameters-29"><a class="header" href="#parameters-29">Parameters</a></h2>
 <ul>
 <li><strong>direction</strong> — scroll direction: <code>Vertical</code> (default), <code>Horizontal</code>, or <code>Both</code></li>
 <li><strong>on_scroll</strong> — callback receiving the scroll offset as <code>{x, y}</code> when the user scrolls</li>
@@ -9993,14 +10096,14 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-stack-widget"><a class="header" href="#the-stack-widget">The Stack Widget</a></h1>
 <p>The <code>stack</code> widget layers children on top of each other. The first child is drawn at the bottom, and each subsequent child is drawn on top. This is useful for overlays, watermarks, or layered visual effects.</p>
-<h2 id="interface-34"><a class="header" href="#interface-34">Interface</a></h2>
+<h2 id="interface-35"><a class="header" href="#interface-35">Interface</a></h2>
 <pre><code class="language-graphix">val stack: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-29"><a class="header" href="#parameters-29">Parameters</a></h2>
+<h2 id="parameters-30"><a class="header" href="#parameters-30">Parameters</a></h2>
 <ul>
 <li><strong>width</strong> — stack width</li>
 <li><strong>height</strong> — stack height</li>
@@ -10059,19 +10162,19 @@ mod icon;
 <p>Space and rules are layout utilities for controlling whitespace and adding visual dividers between widgets.</p>
 <h2 id="space"><a class="header" href="#space">Space</a></h2>
 <p>The <code>space</code> widget creates empty space with configurable dimensions. Use it to push widgets apart within a row or column.</p>
-<h3 id="interface-35"><a class="header" href="#interface-35">Interface</a></h3>
+<h3 id="interface-36"><a class="header" href="#interface-36">Interface</a></h3>
 <pre><code class="language-graphix">val space: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length
 ) -&gt; Widget
 </code></pre>
-<h3 id="parameters-30"><a class="header" href="#parameters-30">Parameters</a></h3>
+<h3 id="parameters-31"><a class="header" href="#parameters-31">Parameters</a></h3>
 <ul>
 <li><strong>width</strong> — horizontal size of the space</li>
 <li><strong>height</strong> — vertical size of the space</li>
 </ul>
 <p>A common pattern is <code>space(#width: &amp;</code>Fill)` to push items to opposite ends of a row.</p>
-<h3 id="example-4"><a class="header" href="#example-4">Example</a></h3>
+<h3 id="example-5"><a class="header" href="#example-5">Example</a></h3>
 <pre><code class="language-graphix">use gui;
 use gui::text;
 use gui::column;
@@ -10168,7 +10271,7 @@ mod icon;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-canvas-widget-1"><a class="header" href="#the-canvas-widget-1">The Canvas Widget</a></h1>
 <p>The <code>canvas</code> widget provides a low-level 2D drawing surface for custom graphics. You supply an array of shapes – lines, circles, rectangles, arcs, curves, text labels, and arbitrary paths – and the canvas renders them in order. This makes it suitable for diagrams, visualizations, procedural art, and anything that doesn’t fit into the standard widget set.</p>
-<h2 id="interface-36"><a class="header" href="#interface-36">Interface</a></h2>
+<h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
 <pre><code class="language-graphix">type PathSegment = [
   `MoveTo({x: f64, y: f64}),
   `LineTo({x: f64, y: f64}),
@@ -10245,7 +10348,7 @@ val canvas: fn(
   a: &amp;Array&lt;CanvasShape&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-31"><a class="header" href="#parameters-31">Parameters</a></h2>
+<h2 id="parameters-32"><a class="header" href="#parameters-32">Parameters</a></h2>
 <ul>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
@@ -10388,7 +10491,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-chart-widget-1"><a class="header" href="#the-chart-widget-1">The Chart Widget</a></h1>
 <p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart (within the same mode — you cannot mix e.g. bar and pie).</p>
-<h2 id="interface-37"><a class="header" href="#interface-37">Interface</a></h2>
+<h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
 <pre><code class="language-graphix">type SeriesStyle = {
   color: [Color, null],
   label: [string, null],
@@ -11032,7 +11135,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-image--svg-widgets"><a class="header" href="#the-image--svg-widgets">The Image &amp; SVG Widgets</a></h1>
 <p>The <code>image</code> widget displays raster images from files, raw bytes, or pixel buffers. The <code>svg</code> widget renders Scalable Vector Graphics from files or inline XML. Both support sizing and content fitting controls.</p>
-<h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
+<h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
 <h3 id="image"><a class="header" href="#image">image</a></h3>
 <pre><code class="language-graphix">type ImageSource = [
   string,
@@ -11055,7 +11158,7 @@ val image: fn(
   s: &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-32"><a class="header" href="#parameters-32">Parameters</a></h2>
+<h2 id="parameters-33"><a class="header" href="#parameters-33">Parameters</a></h2>
 <p>Both widgets share the same labeled arguments:</p>
 <ul>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
@@ -11153,7 +11256,7 @@ let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-tooltip-widget"><a class="header" href="#the-tooltip-widget">The Tooltip Widget</a></h1>
 <p>The <code>tooltip</code> widget displays a popup hint when the user hovers over a child widget. The tooltip content is itself a widget, allowing rich formatted tips.</p>
-<h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
+<h2 id="interface-40"><a class="header" href="#interface-40">Interface</a></h2>
 <pre><code class="language-graphix">val tooltip: fn(
   #tip: &amp;Widget,
   ?#position: &amp;TooltipPosition,
@@ -11161,7 +11264,7 @@ let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-33"><a class="header" href="#parameters-33">Parameters</a></h2>
+<h2 id="parameters-34"><a class="header" href="#parameters-34">Parameters</a></h2>
 <ul>
 <li><strong>tip</strong> — (required) the tooltip content widget, typically <code>text(...)</code>. This is a required labeled argument.</li>
 <li><strong>position</strong> — where the tooltip appears relative to the child: <code>Top</code>, <code>Bottom</code>, <code>Left</code>, <code>Right</code>, or <code>FollowCursor</code></li>
@@ -11210,7 +11313,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-mouse-area-widget"><a class="header" href="#the-mouse-area-widget">The Mouse Area Widget</a></h1>
 <p>The <code>mouse_area</code> widget wraps a child and captures mouse events within its bounds. Use it to add click, hover, and movement tracking to any widget.</p>
-<h2 id="interface-40"><a class="header" href="#interface-40">Interface</a></h2>
+<h2 id="interface-41"><a class="header" href="#interface-41">Interface</a></h2>
 <pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
@@ -11222,7 +11325,7 @@ val mouse_area: fn(
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-34"><a class="header" href="#parameters-34">Parameters</a></h2>
+<h2 id="parameters-35"><a class="header" href="#parameters-35">Parameters</a></h2>
 <ul>
 <li><strong>on_press</strong> — called when a mouse button is pressed inside the area. Receives a <code>MouseButton</code> variant (<code>`Left</code>, <code>`Right</code>, or <code>`Middle</code>).</li>
 <li><strong>on_release</strong> — called when a mouse button is released inside the area. Receives a <code>MouseButton</code> variant.</li>
@@ -11289,7 +11392,7 @@ let position = "---";
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-keyboard-area-widget"><a class="header" href="#the-keyboard-area-widget">The Keyboard Area Widget</a></h1>
 <p>The <code>keyboard_area</code> widget wraps a child and captures keyboard events. Use it to build keyboard-driven interactions like shortcuts, navigation, or text handling.</p>
-<h2 id="interface-41"><a class="header" href="#interface-41">Interface</a></h2>
+<h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
 <pre><code class="language-graphix">type KeyEvent = {
   key: string,
   modifiers: { shift: bool, ctrl: bool, alt: bool, logo: bool },
@@ -11310,7 +11413,7 @@ val keyboard_area: fn(
 <li><strong>text</strong> — the text produced by the key press (empty for non-character keys)</li>
 <li><strong>repeat</strong> — <code>true</code> if this is an auto-repeat event from holding the key</li>
 </ul>
-<h2 id="parameters-35"><a class="header" href="#parameters-35">Parameters</a></h2>
+<h2 id="parameters-36"><a class="header" href="#parameters-36">Parameters</a></h2>
 <ul>
 <li><strong>on_key_press</strong> — called with a <code>KeyEvent</code> when a key is pressed</li>
 <li><strong>on_key_release</strong> — called with a <code>KeyEvent</code> when a key is released</li>
@@ -11369,7 +11472,7 @@ let mod_name = "None";
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-clipboard-module"><a class="header" href="#the-clipboard-module">The Clipboard Module</a></h1>
 <p>The <code>clipboard</code> module provides functions for reading from and writing to the system clipboard. Unlike other GUI components, clipboard is a plain module of functions, not a widget constructor.</p>
-<h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
+<h2 id="interface-43"><a class="header" href="#interface-43">Interface</a></h2>
 <pre><code class="language-graphix">type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 
@@ -11453,7 +11556,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-grid-widget"><a class="header" href="#the-grid-widget">The Grid Widget</a></h1>
 <p>A layout container that arranges child widgets in a grid with a fixed number of columns. Items wrap to the next row automatically.</p>
-<h2 id="interface-43"><a class="header" href="#interface-43">Interface</a></h2>
+<h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
 <pre><code class="language-graphix">type GridColumns = [`Fixed(i64), `Fluid(f64)];
 type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
 
@@ -11465,7 +11568,7 @@ val grid: fn(
   a: &amp;Array&lt;Widget&gt;
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-36"><a class="header" href="#parameters-36">Parameters</a></h2>
+<h2 id="parameters-37"><a class="header" href="#parameters-37">Parameters</a></h2>
 <ul>
 <li><strong><code>#spacing</code></strong> – Space in pixels between grid cells, applied both horizontally and vertically. Defaults to <code>0.0</code>.</li>
 <li><strong><code>#columns</code></strong> – How columns are determined. <code>`Fixed(n)</code> uses exactly <code>n</code> columns. <code>`Fluid(min_width)</code> calculates the column count so each column is at least <code>min_width</code> pixels wide. Defaults to <code>`Fixed(3)</code>.</li>
@@ -11524,13 +11627,13 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-qr-code-widget"><a class="header" href="#the-qr-code-widget">The QR Code Widget</a></h1>
 <p>Encodes a string as a QR code image. The QR code updates reactively when the input string changes.</p>
-<h2 id="interface-44"><a class="header" href="#interface-44">Interface</a></h2>
+<h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
 <pre><code class="language-graphix">val qr_code: fn(
   ?#cell_size: &amp;[f64, null],
   s: &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-37"><a class="header" href="#parameters-37">Parameters</a></h2>
+<h2 id="parameters-38"><a class="header" href="#parameters-38">Parameters</a></h2>
 <ul>
 <li><strong><code>#cell_size</code></strong> – Size in pixels of each cell in the QR code matrix, or <code>null</code> for the default size. Larger values produce a bigger QR code image.</li>
 <li><strong>positional <code>&amp;string</code></strong> – The data to encode. Any valid string will be encoded into the QR code.</li>
@@ -11573,7 +11676,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-markdown-widget"><a class="header" href="#the-markdown-widget">The Markdown Widget</a></h1>
 <p>Renders a markdown string as rich text with support for headings, bold, italic, lists, code blocks, and clickable links.</p>
-<h2 id="interface-45"><a class="header" href="#interface-45">Interface</a></h2>
+<h2 id="interface-46"><a class="header" href="#interface-46">Interface</a></h2>
 <pre><code class="language-graphix">val markdown: fn(
   ?#on_link: fn(s: string) -&gt; Any,
   ?#spacing: &amp;[f64, null],
@@ -11582,7 +11685,7 @@ let col = column(
   s: &amp;string
 ) -&gt; Widget
 </code></pre>
-<h2 id="parameters-38"><a class="header" href="#parameters-38">Parameters</a></h2>
+<h2 id="parameters-39"><a class="header" href="#parameters-39">Parameters</a></h2>
 <ul>
 <li><strong><code>#on_link</code></strong> – Callback invoked when the user clicks a link in the rendered markdown. Receives the URL as a <code>string</code>. If omitted, links are displayed but not interactive.</li>
 <li><strong><code>#spacing</code></strong> – Vertical space in pixels between markdown elements (paragraphs, headings, lists), or <code>null</code> for the default spacing.</li>
@@ -11640,7 +11743,7 @@ let col = column(
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-table-widget-1"><a class="header" href="#the-table-widget-1">The Table Widget</a></h1>
 <p>Displays data in rows and columns with configurable headers, alignment, and separators. Tables are built from <code>TableColumn</code> definitions and a 2D array of row widgets.</p>
-<h2 id="interface-46"><a class="header" href="#interface-46">Interface</a></h2>
+<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
 <pre><code class="language-graphix">type TableColumn = {
   header: &amp;Widget,
   width: &amp;Length,
@@ -11738,7 +11841,7 @@ every column whose <code>source</code> is <code>`Netidx</code>. Non-absolute row
 render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>string</code> or
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
-<h2 id="interface-47"><a class="header" href="#interface-47">Interface</a></h2>
+<h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
 <pre><code class="language-graphix">type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 
@@ -12749,7 +12852,7 @@ widgets, no netidx subscriptions.</li>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="menus"><a class="header" href="#menus">Menus</a></h1>
 <p>The <code>menu</code> module provides menu bars and context menus. Both are built from the same <code>MenuItem</code> building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.</p>
-<h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
+<h2 id="interface-49"><a class="header" href="#interface-49">Interface</a></h2>
 <pre><code class="language-graphix">type Shortcut;
 
 val shortcut: fn(

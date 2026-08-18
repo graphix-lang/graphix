@@ -1,0 +1,8 @@
+let layer = |
+  #width: &Constraint = &`Percentage(60),
+  #height: &Constraint = &`Percentage(60),
+  #size: &[Size, null] = &null,
+  child: Tui
+| -> Layer { child, width, height, size };
+
+let overlay = |#layers: &Array<Layer>, base: Tui| -> Tui `Overlay({ base, layers })

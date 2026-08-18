@@ -60,6 +60,7 @@ mod input_handler;
 mod layout;
 mod line_gauge;
 mod list;
+mod overlay;
 mod paragraph;
 mod scrollbar;
 mod sparkline;
@@ -385,6 +386,7 @@ fn compile<X: GXExt>(gx: GXHandle<X>, source: Value) -> CompRes {
             (s, v) if &s == "List" => ListW::compile(gx, v).await,
             (s, v) if &s == "Tabs" => tabs::TabsW::compile(gx, v).await,
             (s, v) if &s == "Canvas" => canvas::CanvasW::compile(gx, v).await,
+            (s, v) if &s == "Overlay" => overlay::OverlayW::compile(gx, v).await,
             (s, v) if &s == "InputHandler" => InputHandlerW::compile(gx, v).await,
             (s, v) => bail!("invalid widget type `{s}({v})"),
         }
