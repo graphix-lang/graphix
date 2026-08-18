@@ -1300,3 +1300,26 @@ in `run!` fixtures and bench programs). The decision is recorded in
   `NetConfig::Internal`, so a test that uses `sys::net` materializes a real
   in-process netidx on demand and round-trips work — but publisher coalescing means
   rapid updates collapse; space them with one-shot timers for multi-point tests.
+
+## The admin-TUI dogfood campaign (2026-08-18)
+
+The netidx-admin ratatui TUI (~11.2k lines, sibling repo
+`netidx-tools/src/admin/tui/`) is being rewritten in Graphix via
+`graphix-package-netidx-admin` — which lives in the NETIDX repo (the
+first real external package; it versions with netidx-admin, and it
+dogfoods the package manager's external path). Design doc + findings
+log: `../netidx/design/graphix-admin.md` and
+`graphix-admin-findings.md`.
+
+**The PRIMARY objective is finding and fixing Graphix problems; the
+TUI is secondary** (Eric's ruling). No workarounds: an awkward idiom,
+slow compile, bad diagnostic, or missing capability means stop, log a
+finding, fix it here (or consciously accept it), then continue — and
+never quietly move decision/presentation logic into the package's Rust
+layer because Graphix was painful. Known prerequisite work in THIS
+repo: graphix-package-tui has no modal/overlay widget (blocks the
+first TUI phase) and no terminal suspend/resume for privileged
+`sudo`/`$EDITOR` handoff (blocks the last). The program will be the
+largest `.gx` ever by 20-50x (current record: 209 lines) — measure
+`--check` time at every size milestone; the typechecker-must-be-instant
+rule applies.
