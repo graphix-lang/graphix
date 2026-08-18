@@ -13,7 +13,14 @@
 // soak log. There is no collector script any more: the campaign is one
 // process writing one log, so there is one thing to read. A box that
 // stops answering shows DOWN rather than vanishing, because "no row" and
-// "no lanes" are different facts.
+// "no lanes" are different facts — and a dead ssh is RETRIED, because a
+// dropped connection says nothing about the box (a dashboard left open
+// overnight showed DOWN forever after one network blip).
+//
+// The corpus count is a BOX fact, not a lane fact: one deduplicated
+// on-disk corpus per campaign, shared by every source. It lives on the
+// host row — showing it per lane made one finding light up every lane.
+// diverge / crash are per-source and stay on the lane rows.
 
 use tui;
 use tui::table;
@@ -64,9 +71,15 @@ type Box = {
   alive: bool
 };
 
-// One box: an ssh that stays up, and the last line seen per source.
+// One box: an ssh that reconnects when it dies, and the last line seen
+// per source.
 let probe = |host: string| -> Box {
-  let child = sys::process::spawn(sys::process::options(
+  // Respawn the ssh whenever the previous one exits. The exit itself is
+  // the trigger, throttled so a fast-failing connection (bad DNS, auth)
+  // retries at most every 5s; a host that is genuinely down paces
+  // itself on ConnectTimeout anyway.
+  let attempt = 0;
+  let child = sys::process::spawn(attempt ~ sys::process::options(
     #args: [
       "-o", "BatchMode=yes",
       "-o", "ConnectTimeout=10",
@@ -84,8 +97,8 @@ let probe = |host: string| -> Box {
   let wrote = sys::io::write_exact(sin, buffer::from_string(remote))$;
   sys::io::close(wrote ~ sin)$;
   // `$`, not `?`: one box's stream failing must not take down the
-  // dashboard. That box stops producing lines, and its ssh exiting
-  // flips it to DOWN — which is what the operator needs to see anyway.
+  // dashboard. That box stops producing lines until its ssh exits and
+  // the respawn brings a fresh stream.
   let line = sys::io::lines(sout)$;
   let camp = "-";
   let lanes = {};
@@ -103,33 +116,49 @@ let probe = |host: string| -> Box {
     },
     _ => null
   };
-  // The ssh exiting is the box going away — a dead probe must say so
-  // rather than freeze on its last good numbers.
+  // The ssh exiting is the connection going away — say DOWN rather than
+  // freeze on the last good numbers — and is also the respawn trigger.
+  // A fresh child flips it back as soon as the spawn lands.
   // Up means BOTH: this connection is answering AND the campaign it
   // reports on is actually running.
-  let connected = true;
-  connected <- sys::process::wait(child.proc)$ ~ false;
+  let connected = false;
+  connected <- child ~ true;
+  let exited = sys::process::wait(child.proc)$;
+  connected <- exited ~ false;
+  attempt <- throttle(#rate: duration:5.s, exited ~ (attempt + 1));
   let alive = connected && running;
   { host, camp, lanes, alive }
 };
 
 let blank = cell(line(""));
 
-let host_row = |h: Box| row(
-  #style: select h.alive {
-    true => style(#fg: `Green),
-    false => style(#fg: `Red, #add_modifier: [`Bold])
-  },
-  [
-    cell(line(h.host)),
-    cell(line(h.camp)),
-    cell(line(select h.alive { true => "up", false => "DOWN" })),
-    blank, blank, blank, blank
-  ]
-);
+// The box-wide corpus count, read off any lane's republished line (every
+// lane carries the same value). "-" until the first lane reports.
+let box_corpus = |h: Box| map::fold(h.lanes, "-", |acc, (_, f)| f[3]$);
+
+let host_row = |h: Box| {
+  let corpus = box_corpus(h);
+  row(
+    #style: select h.alive {
+      false => style(#fg: `Red, #add_modifier: [`Bold]),
+      true => select corpus != "0" && corpus != "-" {
+        true => style(#fg: `Yellow, #add_modifier: [`Bold]),
+        false => style(#fg: `Green)
+      }
+    },
+    [
+      cell(line(h.host)),
+      cell(line(h.camp)),
+      cell(line(select h.alive { true => "up", false => "DOWN" })),
+      blank, blank,
+      cell(line(corpus)),
+      blank
+    ]
+  )
+};
 
 // Colour carries the only thing worth seeing from across the room: a
-// source that has logged something.
+// source that has logged something of its own.
 let lane_row = |src: string, f: Array<string>| row(
   #style: select f[1]$ != "0" || f[2]$ != "0" {
     true => style(#fg: `Red, #add_modifier: [`Bold]),
@@ -141,7 +170,7 @@ let lane_row = |src: string, f: Array<string>| row(
     cell(line(f[0]$)),
     cell(line(f[1]$)),
     cell(line(f[2]$)),
-    cell(line(f[3]$)),
+    blank,
     cell(line(f[5]$))
   ]
 );
