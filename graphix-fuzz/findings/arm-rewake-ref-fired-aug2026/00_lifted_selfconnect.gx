@@ -1,0 +1,15 @@
+// aug17d hz0 divergence_000000, minimized further (2026-08-18): a
+// select arm holding a lifted self-connect (`let s = 10; s <- s; s`)
+// is taken, deselected (m=0), then RE-taken — the interp re-arms the
+// loop on the arm wake and spins forever (its refs read standing
+// store entries as Fired under the forced init view, R2, so the
+// connect's RHS fires and reschedules), while the kernel's re-taken
+// arm read the feeder param's honest STALE disc, the connect never
+// re-armed, and the region went quiet after one emission. Fixed in
+// `emit_ref_node`: under a select arm's `init_override` (becoming-
+// selected / re-selected), a ref of a standing untainted binding
+// reads with STALE cleared — the in-kernel twin of the node-walk's
+// wake-init store read. Sustained selection ([1,3]) and root-level
+// self-connects already agreed; only the deselect-then-rewake path
+// lost the cadence.
+{let x = array::iter([i64:1, i64:2, i64:3]); let m = x % i64:2; let sel = select m {i64:0 => i64:0, _ => {let s = i64:10; s <- s; s}}; sel}
