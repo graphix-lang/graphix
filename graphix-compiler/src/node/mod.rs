@@ -1268,16 +1268,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
         let mut up = rhs_fired;
-        let src = event.variables.get(&self.src_id).and_then(|tv| {
+        let as_bind = |tv: &TagValue| {
             tv.with_value(|v| match v {
                 Value::U64(id) => Some(BindId::from(*id)),
                 _ => None,
             })
-        });
-        if let Some(id) = src {
-            if let Some(target_id) = ctx.env.byref_chain.get(&id) {
-                self.target_id = Some(*target_id);
-                up = true;
+        };
+        if let Some(tv) = event.variables.get(&self.src_id) {
+            if let Some(id) = as_bind(tv) {
+                if let Some(target_id) = ctx.env.byref_chain.get(&id) {
+                    self.target_id = Some(*target_id);
+                    up = true;
+                }
+            }
+        } else if self.target_id.is_none() {
+            // A lazily-created instance (a runtime callable's first
+            // dispatch) inits on a cycle AFTER the reference value was
+            // delivered — the standing store is the only place it
+            // still lives. Resolving from it is the write-side twin of
+            // Deref's standing read; acquiring a target counts as the
+            // retarget that forces a write.
+            if let Some(read) = super::node::read_var(ctx, event, &self.src_id) {
+                let tv = match read {
+                    VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
+                };
+                if let Some(id) = as_bind(tv) {
+                    if let Some(target_id) = ctx.env.byref_chain.get(&id) {
+                        self.target_id = Some(*target_id);
+                        up = true;
+                    }
+                }
             }
         }
         if up {

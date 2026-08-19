@@ -1001,10 +1001,9 @@ impl Type {
                     // in the residue and the bind closes a cycle.
                     let own_cell = match m {
                         Self::TVar(mtv) => s0.iter().any(|c| match c {
-                            Self::TVar(ctv) => Arc::ptr_eq(
-                                &ctv.read().typ,
-                                &mtv.read().typ,
-                            ),
+                            Self::TVar(ctv) => {
+                                Arc::ptr_eq(&ctv.read().typ, &mtv.read().typ)
+                            }
                             _ => false,
                         }),
                         _ => false,
