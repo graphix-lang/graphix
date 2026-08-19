@@ -1008,7 +1008,9 @@ impl ExprKind {
             }
             any_nl
         }
-        // One literal part of a triple template. A `"` prints bare
+        // One literal part of a triple template. Brackets are PLAIN
+        // CONTENT in templates (splices are the marked thing, `\[e]`),
+        // so they print bare. A `"` prints bare
         // unless it would touch another quote (within the part, the
         // next part's first char, or the closing delimiter) — those
         // print `\"` so no unescaped `"""` can form. The very first

@@ -210,29 +210,37 @@ it.
 String literals may span multiple lines; the newlines become part of
 the string.
 
-### Triple Quoted Strings
+### Triple Quoted Strings (Templates)
 
-A string delimited by `"""` is identical to a normal string — the same
-escapes, the same interpolation — except that a bare `"` is legal
-content. That makes it the natural form for templates: blocks of text
-or code containing quotes, with reactive values spliced in.
+A string delimited by `"""` is the TEMPLATE form: literal text is the
+common case there, so the marking flips relative to a normal string.
+Bare `"`, `[`, and `]` are all plain content, and interpolation is the
+marked thing — a splice is written `\[expr]`. That makes templates the
+natural home for blocks of quoted or bracket-heavy text — embedded
+code, shell, TUI layouts — with reactive values spliced in:
 
 ```graphix
 let name = "world";
 let page = """
-say "hello" to [name]
-'single quotes' and "double quotes" both fine
-value = [1 + 1]
+say "hello" to \[name]
+keys: [a]pprove · [d]eny
+shell embeds verbatim: [ -z "$d" ] && x=$1
+value = \[1 + 1]
 """
 ```
+
+The rule is a symmetric inversion, easy to remember: **in strings,
+interpolation is bare and literal brackets are marked; in templates,
+brackets are bare and interpolation is marked.**
 
 One newline immediately after the opening `"""` is stripped, so the
 template's first line does not have to share a line with the
 delimiter. The content ends at the first unescaped `"""`; to include a
 literal `"""`, escape one of the quotes (`\"""`), and a `"` that would
 touch the closing delimiter must likewise be escaped (`"""ends in \""""`).
-Because interpolation is live, `\[` and `\]` still escape literal
-brackets.
+The other escapes (`\n`, `\t`, `\\`, `\"`) work as in normal strings;
+`\]` is an error (a bare `]` is always writable), and a literal
+backslash-then-bracket is `\\[`.
 
 ### Raw Strings
 

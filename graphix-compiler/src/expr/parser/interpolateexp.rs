@@ -72,12 +72,42 @@ parser! {
                     value(Intp::Lit(pos, s)).left()
                 }
             });
-        // Triple-quoted form: IDENTICAL to the normal form — same
-        // escapes, same interpolation — except a bare `"` is legal
+        // Triple-quoted TEMPLATE form: literal text is the common case
+        // there, so the marking flips — brackets are plain content and
+        // the SPLICE is marked, `\[expr]`. Everything else matches the
+        // normal form's escapes minus the bracket escapes (`\]` is an
+        // error; bare `]` is always writable). A bare `"` is legal
         // (content ends at the FIRST unescaped `"""`; a quote that
         // would begin the terminator is written `\"`), and one newline
         // immediately after the opener is stripped (so the template's
         // first line needn't share the opener's line).
+        let splice_part = || attempt(string("\\["))
+            .with(expr())
+            .skip(sptoken(']'))
+            .map(Intp::Expr);
+        // A raw run of template content: anything but `"` (terminator
+        // check) and `\\` (escape or splice). Brackets are content.
+        let triple_run = || (
+            position(),
+            combine::many1::<String, _, _>(combine::satisfy(|c| {
+                c != '"' && c != '\\'
+            })),
+        )
+            .map(|(pos, s)| Intp::Lit(pos, s));
+        // The template escape set: the normal form's minus the bracket
+        // escapes — `\]` is an error (bare `]` is always writable) and
+        // `\[` belongs to the splice arm above.
+        let triple_escape = || attempt(token('\\').with(choice((
+            token('n').map(|_| '\n'),
+            token('r').map(|_| '\r'),
+            token('t').map(|_| '\t'),
+            token('0').map(|_| '\0'),
+            token('"').map(|_| '"'),
+            token('\\').map(|_| '\\'),
+        ))))
+            .map(|c| c)
+            .and(position())
+            .map(|(c, pos)| Intp::Lit(pos, String::from(c)));
         let triple = (
             position(),
             between(
@@ -86,8 +116,9 @@ parser! {
                 (
                     optional(attempt(string("\r\n")).or(string("\n"))),
                     many(choice((
-                        interp_part(),
-                        chunk_part(),
+                        splice_part(),
+                        triple_escape(),
+                        triple_run(),
                         attempt((
                             position(),
                             token('"').skip(not_followed_by(string("\"\""))),

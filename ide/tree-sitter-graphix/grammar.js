@@ -825,20 +825,37 @@ module.exports = grammar({
     // Entirely scanned externally (the hash count is dynamic).
     raw_string: $ => $._raw_string,
 
-    // Triple-quoted interpolating string: identical to `string` except
-    // bare quotes are legal content (the external content token stops
-    // only at \, [, ] or the closing """), and one newline straight
-    // after the opener is stripped by the compiler (lexically it is
-    // just content here).
+    // Triple-quoted TEMPLATE string: literal text is the common case,
+    // so the marking flips — brackets are plain content (the external
+    // content token stops only at backslash or the closing """) and
+    // the SPLICE is marked: \[expr]. Its escape set drops the bracket
+    // escapes (\] is an error; \[ belongs to the splice), and one
+    // newline straight after the opener is stripped by the compiler
+    // (lexically it is just content here).
     triple_string: $ => seq(
       '"""',
       repeat(choice(
-        $.escape_sequence,
+        $.template_escape,
         alias($._triple_content, $.string_content),
-        $.interpolation,
+        $.template_splice,
       )),
       '"""',
     ),
+
+    template_splice: $ => seq(
+      '\\[',
+      $._expression,
+      ']',
+    ),
+
+    template_escape: $ => token.immediate(seq(
+      '\\',
+      choice(
+        /[\\"nrt0]/,
+        /x[0-9a-fA-F]{2}/,
+        /u\{[0-9a-fA-F]+\}/,
+      ),
+    )),
 
     // Reference
     reference: $ => $.module_path,

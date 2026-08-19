@@ -4507,7 +4507,7 @@
             "members": [
               {
                 "type": "SYMBOL",
-                "name": "escape_sequence"
+                "name": "template_escape"
               },
               {
                 "type": "ALIAS",
@@ -4520,7 +4520,7 @@
               },
               {
                 "type": "SYMBOL",
-                "name": "interpolation"
+                "name": "template_splice"
               }
             ]
           }
@@ -4530,6 +4530,52 @@
           "value": "\"\"\""
         }
       ]
+    },
+    "template_splice": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "\\["
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_expression"
+        },
+        {
+          "type": "STRING",
+          "value": "]"
+        }
+      ]
+    },
+    "template_escape": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "\\"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "PATTERN",
+                "value": "[\\\\\"nrt0]"
+              },
+              {
+                "type": "PATTERN",
+                "value": "x[0-9a-fA-F]{2}"
+              },
+              {
+                "type": "PATTERN",
+                "value": "u\\{[0-9a-fA-F]+\\}"
+              }
+            ]
+          }
+        ]
+      }
     },
     "reference": {
       "type": "SYMBOL",

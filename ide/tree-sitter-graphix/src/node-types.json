@@ -7226,6 +7226,165 @@
     }
   },
   {
+    "type": "template_splice",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "catch_stmt",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
+          "named": true
+        },
+        {
+          "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "throws_clause",
     "named": true,
     "fields": {},
@@ -7309,15 +7468,15 @@
       "required": false,
       "types": [
         {
-          "type": "escape_sequence",
-          "named": true
-        },
-        {
-          "type": "interpolation",
-          "named": true
-        },
-        {
           "type": "string_content",
+          "named": true
+        },
+        {
+          "type": "template_escape",
+          "named": true
+        },
+        {
+          "type": "template_splice",
           "named": true
         }
       ]
@@ -8841,6 +9000,10 @@
     "named": false
   },
   {
+    "type": "\\[",
+    "named": false
+  },
+  {
     "type": "]",
     "named": false
   },
@@ -8994,6 +9157,10 @@
   },
   {
     "type": "string_content",
+    "named": true
+  },
+  {
+    "type": "template_escape",
     "named": true
   },
   {

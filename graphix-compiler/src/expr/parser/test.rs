@@ -101,8 +101,9 @@ fn raw_string() {
 
 #[test]
 fn triple_string() {
-    // Identical to the normal form — same escapes, same interpolation
-    // — except bare `"` is legal and one newline straight after the
+    // The TEMPLATE form: literal text is the common case, so the
+    // marking flips — brackets are plain content, the splice is
+    // `\[expr]`. Bare `"` is legal, one newline straight after the
     // opener is stripped.
     let cases: &[(&str, &str)] = &[
         ("\"\"\"say \"hi\" and 'hi'\"\"\"", "say \"hi\" and 'hi'"),
@@ -110,7 +111,10 @@ fn triple_string() {
         ("\"\"\"\\nreal leading newline\"\"\"", "\nreal leading newline"),
         ("\"\"\"\"\"\"", ""),
         ("\"\"\"a \"\" b \\\"\"\" c\"\"\"", "a \"\" b \"\"\" c"),
-        ("\"\"\"esc \\[lit\\] ok\"\"\"", "esc [lit] ok"),
+        // Brackets are literal content — no escapes needed or allowed.
+        ("\"\"\"keys: [a]pprove [x] done\"\"\"", "keys: [a]pprove [x] done"),
+        // An escaped backslash then a bracket: literal `\[`, not a splice.
+        ("\"\"\"lit \\\\[nope] end\"\"\"", "lit \\[nope] end"),
     ];
     for (src, want) in cases {
         let p = Value::String((*want).into());
@@ -120,11 +124,19 @@ fn triple_string() {
             "case: {src}"
         );
     }
-    // Interpolation stays live inside triple quotes.
-    let e = parse_one("\"\"\"v = [x]\"\"\"").unwrap();
+    // The marked splice is live interpolation.
+    let e = parse_one("\"\"\"v = \\[x]\"\"\"").unwrap();
     assert!(matches!(&e.kind, ExprKind::StringInterpolate { .. }), "{e:?}");
+    // Bare brackets are NOT interpolation in templates.
+    let e = parse_one("\"\"\"v = [x]\"\"\"").unwrap();
+    assert!(
+        matches!(&e.kind, ExprKind::Constant(Value::String(s)) if &**s == "v = [x]"),
+        "{e:?}"
+    );
     // A content quote may not touch the closing delimiter unescaped.
     assert!(parse_one("\"\"\"x\"\"\"\"").is_err());
+    // `\]` is an error in templates — bare `]` is always writable.
+    assert!(parse_one("\"\"\"a \\] b\"\"\"").is_err());
 }
 
 // ── retained comments ──

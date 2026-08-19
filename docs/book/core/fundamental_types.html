@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-09db1113.js";
+            window.path_to_searchindex_js = "../searchindex-c2032993.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -344,25 +344,32 @@ it.</p>
 </code></pre>
 <p>String literals may span multiple lines; the newlines become part of
 the string.</p>
-<h3 id="triple-quoted-strings"><a class="header" href="#triple-quoted-strings">Triple Quoted Strings</a></h3>
-<p>A string delimited by <code>"""</code> is identical to a normal string — the same
-escapes, the same interpolation — except that a bare <code>"</code> is legal
-content. That makes it the natural form for templates: blocks of text
-or code containing quotes, with reactive values spliced in.</p>
+<h3 id="triple-quoted-strings-templates"><a class="header" href="#triple-quoted-strings-templates">Triple Quoted Strings (Templates)</a></h3>
+<p>A string delimited by <code>"""</code> is the TEMPLATE form: literal text is the
+common case there, so the marking flips relative to a normal string.
+Bare <code>"</code>, <code>[</code>, and <code>]</code> are all plain content, and interpolation is the
+marked thing — a splice is written <code>\[expr]</code>. That makes templates the
+natural home for blocks of quoted or bracket-heavy text — embedded
+code, shell, TUI layouts — with reactive values spliced in:</p>
 <pre><code class="language-graphix">let name = "world";
 let page = """
-say "hello" to [name]
-'single quotes' and "double quotes" both fine
-value = [1 + 1]
+say "hello" to \[name]
+keys: [a]pprove · [d]eny
+shell embeds verbatim: [ -z "$d" ] &amp;&amp; x=$1
+value = \[1 + 1]
 """
 </code></pre>
+<p>The rule is a symmetric inversion, easy to remember: <strong>in strings,
+interpolation is bare and literal brackets are marked; in templates,
+brackets are bare and interpolation is marked.</strong></p>
 <p>One newline immediately after the opening <code>"""</code> is stripped, so the
 template’s first line does not have to share a line with the
 delimiter. The content ends at the first unescaped <code>"""</code>; to include a
 literal <code>"""</code>, escape one of the quotes (<code>\"""</code>), and a <code>"</code> that would
 touch the closing delimiter must likewise be escaped (<code>"""ends in \""""</code>).
-Because interpolation is live, <code>\[</code> and <code>\]</code> still escape literal
-brackets.</p>
+The other escapes (<code>\n</code>, <code>\t</code>, <code>\\</code>, <code>\"</code>) work as in normal strings;
+<code>\]</code> is an error (a bare <code>]</code> is always writable), and a literal
+backslash-then-bracket is <code>\\[</code>.</p>
 <h3 id="raw-strings"><a class="header" href="#raw-strings">Raw Strings</a></h3>
 <p>A raw string is written <code>r"…"</code>, or with hashes — <code>r#"…"#</code>,
 <code>r##"…"##</code>, and so on — exactly as in Rust. There are NO escapes and

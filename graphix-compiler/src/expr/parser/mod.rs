@@ -62,7 +62,7 @@ mod test;
 mod patternexp;
 use patternexp::{pattern, structure_pattern};
 
-fn escape_generic(c: char) -> bool {
+pub(super) fn escape_generic(c: char) -> bool {
     c.is_control()
 }
 

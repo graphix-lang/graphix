@@ -259,12 +259,13 @@ bool tree_sitter_graphix_external_scanner_scan(
   }
 
   if (valid_symbols[TRIPLE_CONTENT]) {
-    // Content of a triple-quoted string: like STRING_CONTENT but a
-    // quote is ordinary content unless it begins the closing """.
+    // Content of a triple-quoted TEMPLATE: brackets are ordinary
+    // content (the splice is the marked thing, \[expr]); stop only at
+    // backslash, and at a quote that begins the closing """.
     bool has = false;
     while (lexer->lookahead != 0) {
       int32_t c = lexer->lookahead;
-      if (c == '\\' || c == '[' || c == ']') break;
+      if (c == '\\') break;
       if (c == '"') {
         // Peek: two more quotes end the string. Anything shorter is
         // content — mark_end only advances past CONFIRMED content, so
