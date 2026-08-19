@@ -30,7 +30,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.graphix",
-                    "match": "\\b(select|if|try|catch)\\b"
+                    "match": "\\b(select|if|catch)\\b"
                 },
                 {
                     "name": "keyword.other.graphix",
@@ -53,6 +53,15 @@
         "strings": {
             "patterns": [
                 {
+                    "name": "string.quoted.triple.graphix",
+                    "begin": "\"\"\"",
+                    "end": "\"\"\"",
+                    "patterns": [
+                        { "include": "#template-splice" },
+                        { "include": "#escape-sequence" }
+                    ]
+                },
+                {
                     "name": "string.quoted.double.graphix",
                     "begin": "\"",
                     "end": "\"",
@@ -62,9 +71,9 @@
                     ]
                 },
                 {
-                    "name": "string.quoted.single.raw.graphix",
-                    "begin": "r'",
-                    "end": "'"
+                    "name": "string.quoted.raw.graphix",
+                    "begin": "r(#*)\"",
+                    "end": "\"\\1"
                 }
             ]
         },
@@ -74,6 +83,20 @@
                     "name": "constant.character.escape.graphix",
                     "match": "\\\\([\\\\\"nrt0\\[\\]]|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]+\\})"
                 }
+            ]
+        },
+        "template-splice": {
+            "name": "meta.interpolation.graphix",
+            "begin": "\\\\\\[",
+            "end": "\\]",
+            "beginCaptures": {
+                "0": { "name": "punctuation.special.interpolation.begin.graphix" }
+            },
+            "endCaptures": {
+                "0": { "name": "punctuation.special.interpolation.end.graphix" }
+            },
+            "patterns": [
+                { "include": "$self" }
             ]
         },
         "interpolation": {

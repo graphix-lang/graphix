@@ -6,7 +6,6 @@
 [
   "select"
   "if"
-  "try"
   "catch"
 ] @keyword.control
 
@@ -93,8 +92,12 @@
 (labeled_arg_shorthand) @variable.parameter
 (variadic_param) @variable.parameter
 
+; `self` inside a use group names the prefix itself.
+(use_group "self" @keyword)
+
 ; -- Variables ------------------------------------------------------
 (pattern_bind name: (identifier) @variable)
+(catch_stmt binding: (identifier) @variable)
 (reference (module_path (identifier) @variable))
 
 ; Module path: the FIRST identifier is a namespace; subsequent ones
@@ -149,12 +152,19 @@
 (string)              @string
 (value_string)        @string
 (raw_string)          @string
+(triple_string)       @string
 (string_content)      @string
 (value_string_content) @string
-(raw_string_content)  @string
 
 (escape_sequence) @constant.character.escape
+(template_escape) @constant.character.escape
 
+; A normal string marks the interpolation; a triple-quoted template
+; marks the splice instead, so both delimiters get the same color.
 (interpolation
   "[" @punctuation.special
+  "]" @punctuation.special)
+
+(template_splice
+  "\\[" @punctuation.special
   "]" @punctuation.special)

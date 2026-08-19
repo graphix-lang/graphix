@@ -103,6 +103,30 @@ npm run generate
 npm test
 ```
 
+## Changing the language syntax
+
+Six integrations render Graphix, and they fail differently: the
+tree-sitter ones die LOUD (one stale node name and the editor shows no
+colors at all — the whole query is refused), the regex ones die quiet
+(the new form is simply uncolored). Both were true after the
+2026-08-18 string/use changes, so the checklist is:
+
+1. `tree-sitter-graphix/grammar.js` (+ `src/scanner.c` for anything the
+   internal lexer can't express), then `npm run generate`.
+2. `tree-sitter-graphix/queries/*.scm` — the CANONICAL queries. Helix,
+   Zed and Neovim all read these files (the first two by symlink), so
+   there is one copy to edit.
+3. `editors/emacs/graphix-mode.el` — its queries capture font-lock
+   faces, so they're written separately in elisp.
+4. `editors/vim/syntax/graphix.vim` and
+   `editors/vscode/syntaxes/graphix.tmLanguage.json` — regex
+   highlighters, no grammar to check them against.
+
+The gate for 1–3 is `cargo test -p graphix-compiler queries_compile`
+(every query compiles against the built grammar) plus the ts-compat
+proptests in the same module (the grammar parses what the compiler
+parses). 4 has no gate; check it by eye.
+
 ## Architecture
 
 ```

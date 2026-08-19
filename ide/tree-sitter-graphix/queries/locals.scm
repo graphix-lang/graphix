@@ -4,7 +4,7 @@
 (do_block) @local.scope
 (select) @local.scope
 (match_arm) @local.scope
-(try_catch) @local.scope
+(catch_stmt) @local.scope
 
 ; Definitions
 (let_binding
@@ -20,7 +20,7 @@
     (pattern_bind
       name: (identifier) @local.definition)))
 
-(try_catch
+(catch_stmt
   binding: (identifier) @local.definition)
 
 (type_def

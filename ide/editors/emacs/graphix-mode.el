@@ -132,7 +132,7 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 1: keywords
      :language 'graphix
      :feature 'keyword
-     '(["mod" "use" "let" "rec" "type" "fn" "select" "if" "try" "catch"
+     '(["mod" "use" "let" "rec" "type" "fn" "select" "if" "catch"
         "cast" "any" "with" "where" "throws" "as"] @font-lock-keyword-face)
 
      ;; Level 1: strings
@@ -140,9 +140,12 @@ Falls back to this mode when tree-sitter is not available.
      :feature 'string
      '((string) @font-lock-string-face
        (raw_string) @font-lock-string-face
+       (triple_string) @font-lock-string-face
+       (value_string) @font-lock-string-face
        (string_content) @font-lock-string-face
-       (raw_string_content) @font-lock-string-face
-       (escape_sequence) @font-lock-escape-face)
+       (value_string_content) @font-lock-string-face
+       (escape_sequence) @font-lock-escape-face
+       (template_escape) @font-lock-escape-face)
 
      ;; Level 2: types
      :language 'graphix
@@ -155,7 +158,7 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 2: functions
      :language 'graphix
      :feature 'function
-     '((apply function: (reference (module_path (identifier) @font-lock-function-name-face)))
+     '((apply (reference (module_path (identifier) @font-lock-function-name-face)))
        (builtin_ref (identifier) @font-lock-function-name-face))
 
      ;; Level 2: constants
@@ -227,7 +230,9 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'interpolation
      '((interpolation "[" @font-lock-misc-punctuation-face
-                      "]" @font-lock-misc-punctuation-face)))
+                      "]" @font-lock-misc-punctuation-face)
+       (template_splice "\\[" @font-lock-misc-punctuation-face
+                        "]" @font-lock-misc-punctuation-face)))
     "Tree-sitter font-lock rules for Graphix.")
 
   (defvar graphix--treesit-indent-rules

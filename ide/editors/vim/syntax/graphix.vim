@@ -7,7 +7,7 @@ if exists('b:current_syntax')
 endif
 
 " Keywords
-syntax keyword graphixKeyword let rec mod use type fn select if try catch cast any with where throws as
+syntax keyword graphixKeyword let rec mod use type fn select if catch cast any with where throws as
 
 " Built-in constants
 syntax keyword graphixConstant true false null ok
@@ -36,17 +36,29 @@ syntax match graphixNumber /\<0[xX][0-9a-fA-F_]\+\>/
 syntax match graphixNumber /\<0[oO][0-7_]\+\>/
 syntax match graphixNumber /\<0[bB][01_]\+\>/
 
-" Strings
+" Strings. Later definitions win at the same position, so the triple
+" quoted template comes last — otherwise the plain string region would
+" claim the first two quotes of its opener.
 syntax region graphixString start=/"/ skip=/\\\\\|\\"/ end=/"/ contains=graphixEscape,graphixInterpolation
-syntax region graphixRawString start=/r"/ end=/"/
+" Raw: r"..." with 0..N hashes; the terminator must match the opener's
+" hash count, hence the \z( ) backreference.
+syntax region graphixRawString start=/r\z(#*\)"/ end=/"\z1/
+" Template: brackets and quotes are content, the SPLICE is marked.
+syntax region graphixTripleString start=/"""/ end=/"""/ contains=graphixTemplateSplice,graphixTemplateEscape
 
 " Escape sequences
-syntax match graphixEscape /\\[nrt\\'"0]/ contained
+syntax match graphixEscape /\\[nrt\\"0[\]]/ contained
 syntax match graphixEscape /\\x[0-9a-fA-F]\{2}/ contained
 syntax match graphixEscape /\\u{[0-9a-fA-F]\+}/ contained
 
 " String interpolation [expr]
 syntax region graphixInterpolation start=/\[/ end=/\]/ contained contains=TOP
+
+" Template splice \[expr] — the marked thing inside a triple-quoted string
+syntax region graphixTemplateSplice start=/\\\[/ end=/\]/ contained contains=TOP
+syntax match graphixTemplateEscape /\\[nrt\\"0]/ contained
+syntax match graphixTemplateEscape /\\x[0-9a-fA-F]\{2}/ contained
+syntax match graphixTemplateEscape /\\u{[0-9a-fA-F]\+}/ contained
 
 " Comments
 syntax match graphixComment /\/\/.*$/ contains=graphixTodo
@@ -67,6 +79,9 @@ highlight default link graphixOperator Operator
 highlight default link graphixNumber Number
 highlight default link graphixString String
 highlight default link graphixRawString String
+highlight default link graphixTripleString String
+highlight default link graphixTemplateEscape SpecialChar
+highlight default link graphixTemplateSplice Special
 highlight default link graphixEscape SpecialChar
 highlight default link graphixInterpolation Special
 highlight default link graphixComment Comment

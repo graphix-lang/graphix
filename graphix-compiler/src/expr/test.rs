@@ -1785,6 +1785,105 @@ mod tree_sitter_compat {
         None
     }
 
+    /// The editor query files are part of the grammar's contract: a
+    /// stale node name doesn't degrade one rule, it makes the whole
+    /// query fail to compile and the editor shows NO colors at all.
+    #[test]
+    fn queries_compile() {
+        const QUERIES: [(&str, &str); 3] = [
+            (
+                "highlights.scm",
+                include_str!("../../../ide/tree-sitter-graphix/queries/highlights.scm"),
+            ),
+            (
+                "locals.scm",
+                include_str!("../../../ide/tree-sitter-graphix/queries/locals.scm"),
+            ),
+            (
+                "indents.scm",
+                include_str!("../../../ide/tree-sitter-graphix/queries/indents.scm"),
+            ),
+        ];
+        let lang: tree_sitter::Language = tree_sitter_graphix::LANGUAGE.into();
+        for (name, src) in QUERIES {
+            if let Err(e) = tree_sitter::Query::new(&lang, src) {
+                panic!("{name} does not compile against the grammar: {e}")
+            }
+        }
+        // The emacs mode embeds its queries in elisp instead of loading
+        // the files above (its captures are font-lock faces), so it rots
+        // separately and needs the same gate.
+        let el = include_str!("../../../ide/editors/emacs/graphix-mode.el");
+        let queries = emacs_queries(el);
+        assert!(queries.len() > 10, "found only {} emacs queries", queries.len());
+        for (feature, src) in queries {
+            if let Err(e) = tree_sitter::Query::new(&lang, &src) {
+                panic!("graphix-mode.el: the {feature} query does not compile: {e}")
+            }
+        }
+    }
+
+    /// The tree-sitter queries embedded in the emacs mode: each is the
+    /// form following a `:feature 'name` keyword — a quoted list, or a
+    /// string where the elisp reader would choke on a query operator.
+    fn emacs_queries(src: &str) -> Vec<(String, String)> {
+        let mut res = vec![];
+        let mut rest = src;
+        while let Some(i) = rest.find(":feature '") {
+            rest = &rest[i + ":feature '".len()..];
+            let end = rest.find(|c: char| !c.is_alphanumeric() && c != '-').unwrap();
+            let feature = rest[..end].to_string();
+            rest = &rest[end..];
+            // skip whitespace and comment lines to the query form
+            loop {
+                rest = rest.trim_start();
+                if rest.starts_with(";;") {
+                    rest = &rest[rest.find('\n').unwrap()..];
+                } else {
+                    break;
+                }
+            }
+            let (body, len) = match rest.as_bytes()[0] {
+                b'\'' => {
+                    let (b, n) = balanced(&rest[1..]);
+                    (b.to_string(), n + 1)
+                }
+                b'"' => {
+                    let n = rest[1..].find('"').unwrap();
+                    (rest[1..1 + n].to_string(), n + 2)
+                }
+                c => panic!("{feature}: unexpected query form starting {:?}", c as char),
+            };
+            res.push((feature, body));
+            rest = &rest[len..];
+        }
+        res
+    }
+
+    /// The text of the parenthesized form at the head of `s`, and how
+    /// many bytes of `s` it spans. Elisp strings can hold parens.
+    fn balanced(s: &str) -> (&str, usize) {
+        let b = s.as_bytes();
+        assert_eq!(b[0], b'(');
+        let (mut depth, mut instr, mut i) = (0, false, 0);
+        while i < b.len() {
+            match b[i] {
+                b'\\' if instr => i += 1,
+                b'"' => instr = !instr,
+                b'(' if !instr => depth += 1,
+                b')' if !instr => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (&s[..=i], i + 1);
+                    }
+                }
+                _ => (),
+            }
+            i += 1;
+        }
+        panic!("unbalanced form: {}", &s[..s.len().min(80)])
+    }
+
     fn assert_ts_parses(source: &str) {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
