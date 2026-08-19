@@ -5207,10 +5207,6 @@
               },
               {
                 "type": "STRING",
-                "value": "bytes"
-              },
-              {
-                "type": "STRING",
                 "value": "i8"
               },
               {

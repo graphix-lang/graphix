@@ -148,7 +148,6 @@ fn valid_fname() -> impl Strategy<Value = ArcStr> {
         Just(ArcStr::from("i64")),
         Just(ArcStr::from("bool")),
         Just(ArcStr::from("datetime")),
-        Just(ArcStr::from("bytes")),
         Just(ArcStr::from("f64")),
         Just(ArcStr::from("decimal")),
     ]
@@ -173,6 +172,8 @@ fn field_name() -> impl Strategy<Value = ArcStr> {
         Just(ArcStr::from("datetime")),
         Just(ArcStr::from("select")),
         Just(ArcStr::from("cast")),
+        // field-only: `bytes` can't bind (base64-payload ambiguity)
+        Just(ArcStr::from("bytes")),
     ]
 }
 

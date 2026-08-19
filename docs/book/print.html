@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-63955b89.js";
+            window.path_to_searchindex_js = "searchindex-259beb53.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -2398,7 +2398,11 @@ duration:1.5s
 <p>Control keywords (<code>let</code>, <code>select</code>, <code>cast</code>, …) and the literal words
 (<code>true</code>, <code>false</code>, <code>null</code>, <code>ok</code>) still can’t name bindings, and so can’t
 be used as field shorthand — write those fields explicitly
-(<code>{ type: v }</code>, <code>x.type</code>).</p>
+(<code>{ type: v }</code>, <code>x.type</code>). <code>bytes</code> is the one primitive that also can’t
+bind: its literal payload is base64, whose alphabet overlaps
+identifiers, so an annotated <code>let bytes: T = v</code> would be ambiguous with
+a literal pattern — as a field, <code>{ bytes: v }</code> and <code>x.bytes</code> work like
+any other.</p>
 <h2 id="field-references"><a class="header" href="#field-references">Field References</a></h2>
 <p>Struct fields can be referenced with the .field notation. That is,</p>
 <pre><code class="language-graphix">〉s.foo

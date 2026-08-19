@@ -47,7 +47,11 @@ duration:1.5s
 Control keywords (`let`, `select`, `cast`, …) and the literal words
 (`true`, `false`, `null`, `ok`) still can't name bindings, and so can't
 be used as field shorthand — write those fields explicitly
-(`{ type: v }`, `x.type`).
+(`{ type: v }`, `x.type`). `bytes` is the one primitive that also can't
+bind: its literal payload is base64, whose alphabet overlaps
+identifiers, so an annotated `let bytes: T = v` would be ambiguous with
+a literal pattern — as a field, `{ bytes: v }` and `x.bytes` work like
+any other.
 
 ## Field References
 

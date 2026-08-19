@@ -1822,3 +1822,16 @@ fn keyword_field_does_not_shadow_literals() {
     let e = parse_one("{ duration:1.0s; 42 }").unwrap();
     assert!(matches!(&e.kind, ExprKind::Do { .. }), "got {:?}", e.kind);
 }
+
+#[test]
+fn bytes_binds_nowhere_but_fields_work() {
+    // `bytes:` is the base64-payload literal prefix — an annotated bind
+    // would be ambiguous with a literal pattern, so `bytes` stays
+    // unbindable (the 32k round-trip hunt's find)
+    assert!(parse_one("let bytes = 3").is_err());
+    assert!(parse_one("{ bytes, x: 1 }").is_err());
+    let e = parse_one("{ bytes: 1 }").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Struct(_)));
+    let e = parse_one("x.bytes").unwrap();
+    assert!(matches!(&e.kind, ExprKind::StructRef { .. }));
+}

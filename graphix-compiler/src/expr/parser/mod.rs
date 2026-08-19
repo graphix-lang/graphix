@@ -77,16 +77,23 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// The primitive TYPE-NAME keywords. Legal as binding and field names
-/// (2026-08-18) — reserved-ness protects the places where they mean a
-/// type (type expressions, typed literals like `duration:1.s`, `Type
-/// as` patterns), and every such place is disambiguated by position or
-/// by the `:`/`as` that must follow. Control keywords, literals, and
-/// the expression forms stay reserved everywhere.
+/// The primitive TYPE-NAME keywords legal as binding names (2026-08-18)
+/// — reserved-ness protects the places where they mean a type (type
+/// expressions, typed literals like `duration:1.s`, `Type as`
+/// patterns), and every such place is disambiguated by position or by
+/// the `:`/`as` that must follow. Control keywords, literals, and the
+/// expression forms stay reserved everywhere. `bytes` is the one
+/// primitive that CANNOT bind: its literal payload is base64, whose
+/// alphabet overlaps identifiers and admits short/empty payloads, so an
+/// annotated bind (`let bytes: T = v`) is genuinely ambiguous with a
+/// refutable literal-pattern let — the 32k round-trip hunt's find. It
+/// remains a legal FIELD name (fields never meet the literal grammar).
+/// NB `bytes` must stay in RESERVED even though it can't bind — it is
+/// still a type name.
 pub static TYPE_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
         "i8", "u8", "i16", "u16", "i32", "u32", "v32", "z32", "i64", "u64", "v64", "z64",
-        "f32", "f64", "decimal", "datetime", "duration", "bool", "string", "bytes",
+        "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
     ])
 });
 
@@ -94,6 +101,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter(
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
+            "bytes",
             "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch", "try",
         ]
         .into_iter()

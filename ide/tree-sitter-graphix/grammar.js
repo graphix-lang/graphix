@@ -956,8 +956,10 @@ module.exports = grammar({
     // the node stays an `identifier` for highlighting and queries.
     _binding_name: $ => choice(
       $.identifier,
+      // no 'bytes': its literal payload is base64 (identifier-alphabet),
+      // so it cannot bind — field name only
       alias(choice(
-        'bool', 'string', 'bytes',
+        'bool', 'string',
         'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'v32', 'z32',
         'i64', 'u64', 'v64', 'z64', 'f32', 'f64',
         'decimal', 'datetime', 'duration',
