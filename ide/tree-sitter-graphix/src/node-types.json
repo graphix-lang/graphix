@@ -6283,11 +6283,19 @@
     "named": true,
     "fields": {
       "path": {
-        "multiple": false,
+        "multiple": true,
         "required": true,
         "types": [
           {
+            "type": "::",
+            "named": false
+          },
+          {
             "type": "module_path",
+            "named": true
+          },
+          {
+            "type": "use_group",
             "named": true
           }
         ]
@@ -8422,15 +8430,42 @@
     "named": true,
     "fields": {
       "path": {
-        "multiple": false,
+        "multiple": true,
         "required": true,
         "types": [
           {
+            "type": "::",
+            "named": false
+          },
+          {
             "type": "module_path",
+            "named": true
+          },
+          {
+            "type": "use_group",
             "named": true
           }
         ]
       }
+    }
+  },
+  {
+    "type": "use_group",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "module_path",
+          "named": true
+        },
+        {
+          "type": "use_group",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -9141,6 +9176,10 @@
   },
   {
     "type": "select",
+    "named": false
+  },
+  {
+    "type": "self",
     "named": false
   },
   {

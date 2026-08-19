@@ -812,7 +812,7 @@
           "name": "path",
           "content": {
             "type": "SYMBOL",
-            "name": "module_path"
+            "name": "_use_tree"
           }
         }
       ]
@@ -829,8 +829,115 @@
           "name": "path",
           "content": {
             "type": "SYMBOL",
-            "name": "module_path"
+            "name": "_use_tree"
           }
+        }
+      ]
+    },
+    "_use_tree": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "use_group"
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "module_path"
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "::"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "use_group"
+                    }
+                  ]
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "use_group": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "self"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "_use_tree"
+                }
+              ]
+            },
+            {
+              "type": "REPEAT",
+              "content": {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ","
+                  },
+                  {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "STRING",
+                        "value": "self"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "_use_tree"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ","
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": "}"
         }
       ]
     },
@@ -5523,6 +5630,9 @@
     }
   ],
   "conflicts": [
+    [
+      "module_path"
+    ],
     [
       "_expression",
       "map_ref"

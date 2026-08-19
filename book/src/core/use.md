@@ -2,6 +2,19 @@
 
 Use allows you to bring names in modules into your current scope so they can be used without prefixing.
 
+Several uses sharing a prefix can be grouped, exactly as in Rust:
+
+```graphix
+use tui::{list, block, text};
+use sys::{time, net};
+```
+
+is the same as writing each `use` on its own line. Groups nest
+(`use a::{b::{c, d}, e}`), a trailing comma is allowed, and `self`
+inside a group names the prefix itself: `use sys::{self, net}` is
+`use sys` plus `use sys::net`. The same syntax works in `.gxi`
+interface files.
+
 ```graphix
 sys::net::subscribe(...); // call subscribe in the sys::net module
 use sys::net;

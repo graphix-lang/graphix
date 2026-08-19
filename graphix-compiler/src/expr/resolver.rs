@@ -335,7 +335,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     enum ItemKind<'a> {
         Module(&'a ArcStr),
         TypeDef(&'a TypeDefExpr),
-        Use(&'a ModPath),
+        Use(&'a Arc<[ModPath]>),
     }
     impl<'a> PartialEq for Item<'a> {
         fn eq(&self, other: &Self) -> bool {
@@ -374,7 +374,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     value: ModuleKind::Unresolved { from_interface: true },
                 },
                 ItemKind::TypeDef(td) => ExprKind::TypeDef(td.clone()),
-                ItemKind::Use(m) => ExprKind::Use { name: m.clone() },
+                ItemKind::Use(m) => ExprKind::Use { names: Arc::clone(m) },
             };
             let ori = self.ori.cloned().unwrap_or_else(crate::expr::get_origin);
             Expr { id: ExprId::new(), ori, pos: self.pos, kind, dec: None }
@@ -402,7 +402,9 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                         SigKind::Bind(v) => after_bind.insert(&v.name, name),
                         SigKind::Module(m) => after_mod.insert(m, name),
                         SigKind::TypeDef(td) => after_td.insert(&td.name, name),
-                        SigKind::Use(n) => after_use.insert(n, name),
+                        SigKind::Use(n) => {
+                            n.iter().map(|p| after_use.insert(p, name)).last().flatten()
+                        }
                     };
                 }
             }
@@ -434,9 +436,9 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             };
             in_sig.shift_remove(&probe);
         }
-        if let ExprKind::Use { name } = &e.kind {
+        if let ExprKind::Use { names } = &e.kind {
             let probe = Item {
-                kind: ItemKind::Use(name),
+                kind: ItemKind::Use(names),
                 pos: SourcePosition::default(),
                 ori: None,
             };
@@ -487,8 +489,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     continue;
                 }
             }
-            Some(ExprKind::Use { name }) => {
-                if let Some(name) = after_use.remove(name)
+            Some(ExprKind::Use { names }) => {
+                if let Some(name) = names.iter().find_map(|n| after_use.remove(n))
                     && in_sig.shift_remove(&name)
                 {
                     res.push(name.synth());

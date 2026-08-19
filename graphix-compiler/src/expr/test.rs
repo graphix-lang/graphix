@@ -182,7 +182,13 @@ fn tvar() -> impl Strategy<Value = TVar> {
 }
 
 fn random_modpath() -> impl Strategy<Value = ModPath> {
-    collection::vec(random_modpart(), (1, 5)).prop_map(ModPath::from_iter)
+    // `self` is special inside use groups (the enclosing prefix), so a
+    // literal `self` segment would print/reparse asymmetrically.
+    collection::vec(
+        random_modpart().prop_filter("self is special in use", |s| s != "self"),
+        (1, 5),
+    )
+    .prop_map(ModPath::from_iter)
 }
 
 fn typath() -> impl Strategy<Value = ModPath> {
@@ -451,7 +457,8 @@ fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
 }
 
 fn usestmt() -> impl Strategy<Value = Expr> {
-    modpath().prop_map(|name| ExprKind::Use { name }.to_expr_nopos())
+    collection::vec(modpath(), 1..4)
+        .prop_map(|names| ExprKind::Use { names: Arc::from_iter(names) }.to_expr_nopos())
 }
 
 fn typedef() -> impl Strategy<Value = Expr> {
@@ -800,12 +807,14 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
                 _ => unreachable!(),
             }
         ),
-        (modpath(), option::of(arcstr())).prop_map(|(path, doc)| SigItem {
-            kind: SigKind::Use(path),
-            doc: Doc(doc),
-            pos: Default::default(),
-            ori: None,
-        }),
+        (collection::vec(modpath(), 1..4), option::of(arcstr())).prop_map(
+            |(paths, doc)| SigItem {
+                kind: SigKind::Use(Arc::from_iter(paths)),
+                doc: Doc(doc),
+                pos: Default::default(),
+                ori: None,
+            }
+        ),
         (random_fname(), option::of(arcstr())).prop_map(|(name, doc)| SigItem {
             kind: SigKind::Module(name),
             doc: Doc(doc),
@@ -1481,8 +1490,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             exprs0.len() == exprs1.len()
                 && exprs0.iter().zip(exprs1.iter()).all(|(v0, v1)| check(v0, v1))
         }
-        (ExprKind::Use { name: name0 }, ExprKind::Use { name: name1 }) => {
-            dbg!(name0 == name1)
+        (ExprKind::Use { names: names0 }, ExprKind::Use { names: names1 }) => {
+            dbg!(names0 == names1)
         }
         (ExprKind::Bind(b0), ExprKind::Bind(b1)) => {
             let BindExpr { rec: r0, pattern: p0, value: value0, typ: typ0 } = &**b0;

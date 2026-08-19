@@ -462,7 +462,7 @@ pub(crate) use read_prod;
 pub struct Use {
     spec: Expr,
     scope: Scope,
-    name: ModPath,
+    names: Arc<[ModPath]>,
 }
 
 impl Use {
@@ -470,26 +470,28 @@ impl Use {
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         scope: &Scope,
-        name: &ModPath,
+        names: &Arc<[ModPath]>,
     ) -> Result<Node<R, E>> {
-        ctx.env
-            .use_in_scope(scope, name)
-            .map_err(|e| anyhow!("{e:?}"))
-            .with_context(|| ErrorContext(spec.clone()))?;
-        if ctx.env.lsp_mode {
-            let canonical = ctx
-                .env
-                .canonical_modpath(&scope.lexical, name)
-                .unwrap_or_else(|| name.clone());
-            ctx.env.push_module_reference(ModuleRefSite {
-                pos: spec.pos,
-                ori: spec.ori.clone(),
-                name: name.clone(),
-                canonical,
-                def_ori: None,
-            });
+        for name in names.iter() {
+            ctx.env
+                .use_in_scope(scope, name)
+                .map_err(|e| anyhow!("{e:?}"))
+                .with_context(|| ErrorContext(spec.clone()))?;
+            if ctx.env.lsp_mode {
+                let canonical = ctx
+                    .env
+                    .canonical_modpath(&scope.lexical, name)
+                    .unwrap_or_else(|| name.clone());
+                ctx.env.push_module_reference(ModuleRefSite {
+                    pos: spec.pos,
+                    ori: spec.ori.clone(),
+                    name: name.clone(),
+                    canonical,
+                    def_ori: None,
+                });
+            }
         }
-        Ok(Node::new(Self { spec, scope: scope.clone(), name: name.clone() }))
+        Ok(Node::new(Self { spec, scope: scope.clone(), names: Arc::clone(names) }))
     }
 }
 
@@ -513,7 +515,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Use {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.env.stop_use_in_scope(&self.scope, &self.name);
+        for name in self.names.iter() {
+            ctx.env.stop_use_in_scope(&self.scope, name);
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

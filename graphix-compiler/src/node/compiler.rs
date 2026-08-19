@@ -128,9 +128,14 @@ fn compile_kind<R: Rt, E: UserEvent>(
 ) -> Result<Node<R, E>> {
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
-        ExprKind::ExplicitParens(s) => {
-            ExplicitParens::compile(ctx, flags, spec.clone(), (**s).clone(), scope, top_id)
-        }
+        ExprKind::ExplicitParens(s) => ExplicitParens::compile(
+            ctx,
+            flags,
+            spec.clone(),
+            (**s).clone(),
+            scope,
+            top_id,
+        ),
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
             let scope = scope.append(&format_compact!("do{}", spec.id.inner()));
@@ -225,7 +230,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                 ),
             }
         }
-        ExprKind::Use { name } => Use::compile(ctx, spec.clone(), scope, name),
+        ExprKind::Use { names } => Use::compile(ctx, spec.clone(), scope, names),
         ExprKind::Connect { name, value, deref: true } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }

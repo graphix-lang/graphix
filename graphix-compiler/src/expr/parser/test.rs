@@ -931,7 +931,8 @@ fn module() {
 
 #[test]
 fn usemodule() {
-    let exp = ExprKind::Use { name: ModPath::from(["foo"]) }.to_expr_nopos();
+    let exp = ExprKind::Use { names: triomphe::Arc::from_iter([ModPath::from(["foo"])]) }
+        .to_expr_nopos();
     let s = r#"use foo"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
@@ -1895,4 +1896,41 @@ fn bytes_binds_nowhere_but_fields_work() {
     assert!(matches!(&e.kind, ExprKind::Struct(_)));
     let e = parse_one("x.bytes").unwrap();
     assert!(matches!(&e.kind, ExprKind::StructRef { .. }));
+}
+
+#[test]
+fn use_groups() {
+    // Grouped use expands to the same AST as the ungrouped statements;
+    // the parser accepts both, the printer regroups.
+    let cases: &[(&str, &[&[&str]])] = &[
+        ("use a", &[&["a"]]),
+        ("use a::b", &[&["a", "b"]]),
+        ("use a::{b, c}", &[&["a", "b"], &["a", "c"]]),
+        ("use a::{b, c::d}", &[&["a", "b"], &["a", "c", "d"]]),
+        ("use a::{self, b}", &[&["a"], &["a", "b"]]),
+        ("use a::{b::{c, d}, e}", &[&["a", "b", "c"], &["a", "b", "d"], &["a", "e"]]),
+        ("use {a, b::c}", &[&["a"], &["b", "c"]]),
+        ("use a::{b, c,}", &[&["a", "b"], &["a", "c"]]),
+    ];
+    for (src, want) in cases {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Use { names } = &e.kind else {
+            panic!("not a use: {src} -> {e:?}")
+        };
+        assert_eq!(names.len(), want.len(), "case: {src}");
+        for (n, w) in names.iter().zip(want.iter()) {
+            assert_eq!(n, *w, "case: {src}");
+        }
+        // print-parse round trip through the GROUPED printer
+        let printed = e.to_string();
+        let e2 = parse_one(&printed).unwrap();
+        let ExprKind::Use { names: names2 } = &e2.kind else {
+            panic!("reparse not a use: {printed}")
+        };
+        assert_eq!(names, names2, "roundtrip: {src} -> {printed}");
+    }
+    // Refusals: empty groups, top-level self.
+    assert!(parse_one("use a::{}").is_err());
+    assert!(parse_one("use self").is_err());
+    assert!(parse_one("use {self}").is_err());
 }

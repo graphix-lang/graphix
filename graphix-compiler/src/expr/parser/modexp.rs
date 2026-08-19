@@ -1,6 +1,6 @@
 use super::{
-    csep, doc_comment, expr, grow::grow, leading_comments, modpath, sep_by1_tok, spaces,
-    spfname, spmodpath, spstring, sptoken, typ, typedef,
+    csep, doc_comment, expr, fname, grow::grow, leading_comments, modpath, sep_by1_tok,
+    spaces, spfname, spstring, sptoken, typ, typedef,
 };
 use crate::expr::{
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
@@ -12,8 +12,9 @@ use combine::{
     parser::char::{space, string},
     position,
     stream::{Range, position::SourcePosition},
-    token,
+    token, unexpected_any, value,
 };
+use netidx_core::path::Path;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -45,10 +46,23 @@ parser! {
                             SigItem { doc: doc.clone(), kind: SigKind::Bind(BindSig { name, typ }), pos, ori: ori.clone() }
                         }
                     }),
-                string("use").with(space()).with(modpath()).map({
+                string("use").with(space()).with(use_tree()).then(|names: Vec<Vec<ArcStr>>| {
+                    if names.iter().any(|n| n.is_empty()) {
+                        unexpected_any("`self` outside a use group").left()
+                    } else {
+                        value(names).right()
+                    }
+                }).map({
                     let doc = doc.clone();
                     let ori = ori.clone();
-                    move |path| SigItem { doc: doc.clone(), kind: SigKind::Use(path), pos, ori: ori.clone() }
+                    move |mut names| SigItem {
+                        doc: doc.clone(),
+                        kind: SigKind::Use(Arc::from_iter(
+                            names.drain(..).map(|n| ModPath(Path::from_iter(n))),
+                        )),
+                        pos,
+                        ori: ori.clone(),
+                    }
                 }),
                 string("mod").with(space()).with(spfname().skip(spaces())).map({
                     let doc = doc.clone();
@@ -149,12 +163,69 @@ where
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
 }
 
+parser! {
+    /// One element of a use tree, yielding the path SUFFIXES it
+    /// denotes as segment lists: a plain path (`a::b`), a path ending
+    /// in a group (`a::{b, c::d}` — nesting allowed), a bare group
+    /// (`{a, b}` — what the printer emits when several names share no
+    /// prefix), or `self` (the enclosing prefix itself — an empty
+    /// suffix, rejected at top level where there is no prefix).
+    fn use_tree[I]()(I) -> Vec<Vec<ArcStr>>
+    where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
+    {
+        grow(choice((
+            between(
+                sptoken('{'),
+                sptoken('}'),
+                spaces().with(sep_by1_tok(use_tree(), csep(), token('}'))),
+            )
+            .then(|mut groups: LPooled<Vec<Vec<Vec<ArcStr>>>>| {
+                let flat: Vec<Vec<ArcStr>> = groups.drain(..).flatten().collect();
+                if flat.is_empty() {
+                    unexpected_any("empty use group").left()
+                } else {
+                    value(flat).right()
+                }
+            }),
+            (
+                spaces().with(fname()),
+                optional(attempt(spstring("::").with(use_tree()))),
+            )
+                .map(|(seg, tail): (ArcStr, _)| match tail {
+                    None if &*seg == "self" => vec![vec![]],
+                    None => vec![vec![seg]],
+                    Some(sufs) => sufs
+                        .into_iter()
+                        .map(|mut suf| {
+                            suf.insert(0, seg.clone());
+                            suf
+                        })
+                        .collect(),
+                }),
+        )))
+    }
+}
+
 pub(super) fn use_module<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), attempt(string("use").with(space())).with(spmodpath()))
-        .map(|(pos, name)| ExprKind::Use { name }.to_expr(pos))
+    (position(), attempt(string("use").with(space())).with(use_tree()))
+        .then(|(pos, names)| {
+            if names.iter().any(|n| n.is_empty()) {
+                unexpected_any("`self` outside a use group").left()
+            } else {
+                value((pos, names)).right()
+            }
+        })
+        .map(|(pos, mut names): (_, Vec<Vec<ArcStr>>)| {
+            ExprKind::Use {
+                names: Arc::from_iter(
+                    names.drain(..).map(|n| ModPath(Path::from_iter(n))),
+                ),
+            }
+            .to_expr(pos)
+        })
 }

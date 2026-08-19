@@ -174,7 +174,7 @@ pub enum SigKind {
     TypeDef(TypeDefExpr),
     Bind(BindSig),
     Module(ArcStr),
-    Use(ModPath),
+    Use(Arc<[ModPath]>),
 }
 
 #[derive(Debug, Clone, Pack)]
@@ -299,7 +299,7 @@ pub enum ExprKind {
     Module { name: ArcStr, value: ModuleKind },
     ExplicitParens(Arc<Expr>),
     Do { exprs: Arc<[Expr]> },
-    Use { name: ModPath },
+    Use { names: Arc<[ModPath]> },
     Bind(Arc<BindExpr>),
     Ref { name: ModPath },
     Connect { name: ModPath, value: Arc<Expr>, deref: bool },
@@ -642,7 +642,7 @@ impl Expr {
         match &self.kind {
             ExprKind::Constant(_)
             | ExprKind::NoOp
-            | ExprKind::Use { name: _ }
+            | ExprKind::Use { names: _ }
             | ExprKind::Ref { name: _ }
             | ExprKind::TypeDef(_) => init,
             ExprKind::ExplicitParens(e) => e.fold(init, f),

@@ -1,9 +1,9 @@
 use super::Sig;
 use crate::{
     expr::{
-        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
-        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefExpr,
-        parser,
+        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModPath,
+        ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
+        TypeDefExpr, parser,
     },
     typ::Type,
 };
@@ -297,7 +297,7 @@ impl fmt::Display for SigItem {
             SigKind::TypeDef(td) => write!(f, "{td}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
             SigKind::Module(name) => write!(f, "mod {name}"),
-            SigKind::Use(path) => write!(f, "use {path}"),
+            SigKind::Use(names) => write_use_names(f, names),
         }
     }
 }
@@ -309,7 +309,10 @@ impl PrettyDisplay for SigItem {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
-            SigKind::Use(path) => writeln!(buf, "use {path}"),
+            SigKind::Use(names) => {
+                write_use_names(buf, names)?;
+                writeln!(buf)
+            }
         }
     }
 }
@@ -921,6 +924,61 @@ impl PrettyDisplay for ExprKind {
     }
 }
 
+/// Print a use statement's names in GROUPED form: a single path plain
+/// (`use a::b`), several grouped under their longest common prefix
+/// (`use a::{b, c::d}`, a name equal to the prefix rendering as
+/// `self`), and prefixless groups bare (`use {a, b}` — the degenerate
+/// hand-built case; the parser accepts it). The parser accepts both
+/// grouped and ungrouped input; printing always regroups.
+fn write_use_names<W: fmt::Write>(f: &mut W, names: &[ModPath]) -> fmt::Result {
+    use netidx_core::path::Path;
+    write!(f, "use ")?;
+    if names.len() == 1 {
+        return write!(f, "{}", names[0]);
+    }
+    let segs: Vec<Vec<&str>> =
+        names.iter().map(|n| Path::parts(&n.0).collect()).collect();
+    let mut lcp = 0;
+    'lcp: loop {
+        let Some(first) = segs.first().and_then(|s| s.get(lcp)) else {
+            break;
+        };
+        for s in segs[1..].iter() {
+            if s.get(lcp) != Some(first) {
+                break 'lcp;
+            }
+        }
+        lcp += 1;
+    }
+    for (i, part) in segs[0][..lcp].iter().enumerate() {
+        if i > 0 {
+            write!(f, "::")?;
+        }
+        write!(f, "{part}")?;
+    }
+    if lcp > 0 {
+        write!(f, "::")?;
+    }
+    write!(f, "{{")?;
+    for (i, sg) in segs.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        let suffix = &sg[lcp..];
+        if suffix.is_empty() {
+            write!(f, "self")?;
+        } else {
+            for (j, part) in suffix.iter().enumerate() {
+                if j > 0 {
+                    write!(f, "::")?;
+                }
+                write!(f, "{part}")?;
+            }
+        }
+    }
+    write!(f, "}}")
+}
+
 impl fmt::Display for ExprKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
@@ -1063,9 +1121,7 @@ impl ExprKind {
                 let deref = if *deref { "*" } else { "" };
                 write!(f, "{deref}{name} <- {value}")
             }
-            ExprKind::Use { name } => {
-                write!(f, "use {name}")
-            }
+            ExprKind::Use { names } => write_use_names(f, names),
             ExprKind::Ref { name } => {
                 write!(f, "{name}")
             }

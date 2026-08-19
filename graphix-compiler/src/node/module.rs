@@ -42,20 +42,22 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                     });
                 }
             }
-            SigKind::Use(name) => {
-                env.use_in_scope(scope, name)?;
-                mod_env.use_in_scope(scope, name)?;
-                if env.lsp_mode {
-                    let canonical = env
-                        .canonical_modpath(&scope.lexical, name)
-                        .unwrap_or_else(|| name.clone());
-                    env.push_module_reference(ModuleRefSite {
-                        pos: si.pos,
-                        ori: si_ori.clone(),
-                        name: name.clone(),
-                        canonical,
-                        def_ori: None,
-                    });
+            SigKind::Use(names) => {
+                for name in names.iter() {
+                    env.use_in_scope(scope, name)?;
+                    mod_env.use_in_scope(scope, name)?;
+                    if env.lsp_mode {
+                        let canonical = env
+                            .canonical_modpath(&scope.lexical, name)
+                            .unwrap_or_else(|| name.clone());
+                        env.push_module_reference(ModuleRefSite {
+                            pos: si.pos,
+                            ori: si_ori.clone(),
+                            name: name.clone(),
+                            canonical,
+                            def_ori: None,
+                        });
+                    }
                 }
             }
             SigKind::Bind(BindSig { name, typ }) => {

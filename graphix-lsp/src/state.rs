@@ -1194,8 +1194,15 @@ impl ServerState {
                 SigKind::Module(name) => {
                     (name.to_string(), lsp_types::SymbolKind::MODULE, None)
                 }
-                SigKind::Use(path) => {
-                    (format!("use {path}"), lsp_types::SymbolKind::NAMESPACE, None)
+                SigKind::Use(names) => {
+                    let mut label = String::from("use ");
+                    for (i, n) in names.iter().enumerate() {
+                        if i > 0 {
+                            label.push_str(", ");
+                        }
+                        label.push_str(&n.to_string());
+                    }
+                    (label, lsp_types::SymbolKind::NAMESPACE, None)
                 }
             };
             let line = si.pos.line.saturating_sub(1).max(0) as u32;

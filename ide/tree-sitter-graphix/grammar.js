@@ -42,6 +42,7 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
+    [$.module_path],
     [$._expression, $.map_ref],
     [$._expression, $.lambda],
     [$._expression, $.apply],
@@ -262,12 +263,25 @@ module.exports = grammar({
     sig_use: $ => seq(
       repeat($.doc_comment),
       'use',
-      field('path', $.module_path),
+      field('path', $._use_tree),
     ),
 
     use: $ => seq(
       'use',
-      field('path', $.module_path),
+      field('path', $._use_tree),
+    ),
+
+    // A use tree: a path, a path ending in a group, or a bare group.
+    // `self` inside a group names the enclosing prefix itself.
+    _use_tree: $ => choice(
+      $.use_group,
+      seq($.module_path, optional(seq('::', $.use_group))),
+    ),
+
+    use_group: $ => seq(
+      '{',
+      commaSep1(choice('self', $._use_tree)),
+      '}',
     ),
 
     // Type definitions
