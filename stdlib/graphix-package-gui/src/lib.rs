@@ -147,7 +147,7 @@ graphix_derive::defpackage! {
     ],
     is_custom => |gx, env, e| {
         if let Some(typ) = e.typ.with_deref(|t| t.cloned())
-            && typ != Type::Bottom
+            && !typ.all_bottom()
             && typ != Type::Any
         {
             GUITYP.contains(env, &typ).unwrap_or(false)

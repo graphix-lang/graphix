@@ -1153,6 +1153,21 @@ impl Type {
         }
     }
 
+    /// True when the type can never produce a value: `Bottom`, or a
+    /// union whose every member (through bound tvar chains) is. An
+    /// unbound tvar is NOT provably bottom. Used by display claiming
+    /// (`is_custom`) — a never-producing expression vacuously unifies
+    /// with any display type, so `contains` alone over-claims it.
+    pub fn all_bottom(&self) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            self.with_deref(|t| match t {
+                Some(Type::Bottom) => true,
+                Some(Type::Set(s)) => s.iter().all(|t| t.all_bottom()),
+                _ => false,
+            })
+        })
+    }
+
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {
         match self {
             Self::Bottom
