@@ -30,6 +30,7 @@ graphix-package = { version = "0.9.0", path = "../../graphix-package" }
 graphix-package-core = { version = "0.9.0", path = "../graphix-package-core" }
 graphix-package-sys = { version = "0.9.0", path = "../graphix-package-sys" }
 graphix-package-array = { version = "0.9.0", path = "../graphix-package-array" }
+graphix-package-str = { version = "0.9.0", path = "../graphix-package-str" }
 graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
 log = { workspace = true }
 netidx = { workspace = true }
@@ -43,7 +44,6 @@ triomphe = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 graphix-package-map = { version = "0.9.0", path = "../graphix-package-map" }
-graphix-package-str = { version = "0.9.0", path = "../graphix-package-str" }
 poolshark = { workspace = true }
 
 [build-dependencies]
