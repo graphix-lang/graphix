@@ -1,0 +1,18 @@
+// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9
+// bisect: (none on the fixed compiler — machinery pin)
+// The callable-route matrix pin (2026-08-19): dispatches the handler
+// through GXHandle::compile_callable (route B) as well as the
+// in-language injection route, comparing engine pairs per route and
+// the route pair at finals strength. Keeps the embedder dispatch
+// path — the one every GUI/TUI handler takes, previously zero fuzz
+// coverage — exercised by every regress run.
+{ let o = m0::observe; o }
+// file-v1: m0.gx
+type St = { value: i64, cursor: i64 };
+let state: St = { value: 0, cursor: 0 };
+let inner = |st: &St, x: i64| -> null select x {
+  0 => null,
+  n => { let s = n ~ *st; *st <- { value: s.value + n, cursor: s.cursor + 1 }; null }
+};
+let handler = |x: i64| -> null inner(&state, x);
+let observe = state

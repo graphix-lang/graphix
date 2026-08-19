@@ -1,0 +1,31 @@
+// schedule-v1: cap=64 events=512; in0=i64:7; in0=i64:9
+// bisect: twin invariant violated (pin for the ConnectDeref
+// silent-write class, fixed 9f9e01d0)
+// Found by hand while building the callable-v1/twin oracles
+// (2026-08-19): a write through a `&` parameter inside a select arm
+// the driver's init call leaves asleep resolved its ConnectDeref
+// target only from event.variables — by the first real dispatch the
+// reference value was standing-only and every write dropped SILENTLY,
+// in BOTH engines and BOTH routes identically. Every pairwise
+// comparison agreed on the wrong answer; only the in-program twin
+// verdict (ref-param route vs capture route) can see it: on the
+// broken compiler the finals settle on `TwinDiverged with the
+// ref-route state frozen at zero.
+{ let r = m0::handler(in0); m0::verdict }
+// file-v1: m0.gx
+type St = { value: i64, cursor: i64 };
+let sa: St = { value: 0, cursor: 0 };
+let sb: St = { value: 0, cursor: 0 };
+let inner_ref = |st: &St, x: i64| -> null select x {
+  0 => null,
+  n => { let s = n ~ *st; *st <- { value: s.value + n, cursor: s.cursor + 1 }; null }
+};
+let inner_cap = |x: i64| -> null select x {
+  0 => null,
+  n => { let s = n ~ sb; sb <- { value: s.value + n, cursor: s.cursor + 1 }; null }
+};
+let handler = |x: i64| -> null { let a = inner_ref(&sa, x); let b = inner_cap(x); null };
+let verdict = select (sa, sb) {
+  (a, b) if a == b => `Ok(a),
+  (a, b) => `TwinDiverged((a, b))
+}

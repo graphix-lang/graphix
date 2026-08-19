@@ -19,6 +19,7 @@
 //! empty-trace agreement, resolved at runtime quiescence rather than by
 //! waiting out a timeout.
 
+pub mod callable;
 pub mod corpus;
 pub mod files;
 pub mod generate;
@@ -36,7 +37,7 @@ use graphix_compiler::{
 use graphix_package::Package;
 use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
 use graphix_rt::{GXEvent, NoExt};
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
 use std::{future, time::Duration};
 use tokio::sync::mpsc;
@@ -73,6 +74,19 @@ impl Mode {
     }
 }
 
+/// How a `callable-v1` program's dispatch epochs are delivered (see
+/// [`callable::CallSpec`]). Programs with no callable header behave
+/// identically on both routes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Injections on the driver's argument bindings — the in-language
+    /// call, driven by the schedule machinery verbatim.
+    InLanguage,
+    /// `GXHandle::compile_callable` + `Callable::call` — the embedder
+    /// path every GUI/TUI handler dispatch takes.
+    Dispatch,
+}
+
 /// The result of running one program under one mode.
 #[derive(Debug, Clone)]
 pub enum Outcome {
@@ -91,11 +105,29 @@ pub enum Outcome {
     Timeout,
 }
 
-/// Strip tvar numbers (`'_6070` -> `'_N`) so fresh-counter drift
-/// between two independent compiles neither hides nor fakes a
-/// diagnostic difference (the same normalization as graphix-shell's
-/// check_mode_parity gate).
+/// Strip tvar numbers (`'_6070` -> `'_N`) and abstract-type ids
+/// (`<abstract#12>` -> `<abstract#N>`) so fresh-counter drift between
+/// two independent compiles neither hides nor fakes a diagnostic
+/// difference (the tvar half is the same normalization as
+/// graphix-shell's check_mode_parity gate; the abstract half covers
+/// `Type::Abstract`'s display, whose process-global id interleaves
+/// between two CONCURRENT compiles — it flaked selfcheck's CompileErr
+/// comparison on the list-recursion seed, 2026-08-19).
 fn normalize_diag(s: &str) -> String {
+    let s = {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("<abstract#") {
+            out.push_str(&rest[..i]);
+            out.push_str("<abstract#N");
+            let tail = &rest[i + "<abstract#".len()..];
+            let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
+            rest = &tail[end..];
+        }
+        out.push_str(rest);
+        out
+    };
+    let s = s.as_str();
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -202,7 +234,18 @@ impl Outcome {
 /// test harness, and avoiding cranelift codegen-context poisoning across
 /// programs).
 pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
-    run_program_with_stats(code, mode, timeout).await.0
+    run_program_routed(code, mode, Route::InLanguage, timeout).await
+}
+
+/// [`run_program`] on a chosen dispatch [`Route`] (identical for
+/// programs with no `callable-v1` header).
+pub async fn run_program_routed(
+    code: &str,
+    mode: Mode,
+    route: Route,
+    timeout: Duration,
+) -> Outcome {
+    run_program_with_stats_routed(code, mode, route, timeout).await.0
 }
 
 /// Compile `code` (a wrapper, as [`run_program`]) under `mode` WITHOUT
@@ -342,6 +385,15 @@ pub async fn run_program_with_stats(
     mode: Mode,
     timeout: Duration,
 ) -> (Outcome, FusionStats) {
+    run_program_with_stats_routed(code, mode, Route::InLanguage, timeout).await
+}
+
+pub async fn run_program_with_stats_routed(
+    code: &str,
+    mode: Mode,
+    route: Route,
+    timeout: Duration,
+) -> (Outcome, FusionStats) {
     // A malformed schedule header is a COMPILE-class reject in every
     // mode (agreement) — a generator/minimizer bug surfaces in
     // gen-check, never as a phantom divergence.
@@ -354,7 +406,16 @@ pub async fn run_program_with_stats(
             );
         }
     };
-    let (body, files) = match files::split(body) {
+    let (spec, body_owned) = match callable::CallSpec::parse(body) {
+        Ok(x) => x,
+        Err(e) => {
+            return (
+                Outcome::CompileErr(format!("callable header: {e}")),
+                FusionStats::default(),
+            );
+        }
+    };
+    let (body, files) = match files::split(&body_owned) {
         Ok(x) => x,
         Err(e) => {
             return (
@@ -403,9 +464,18 @@ pub async fn run_program_with_stats(
     };
     let tier = oracle_tier(code);
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let mut outcome =
-        drive(&ctx, &mut rx, &sched, &files::mod_decls(&files), "test", tier, timeout)
-            .await;
+    let mut outcome = drive(
+        &ctx,
+        &mut rx,
+        &sched,
+        spec.as_ref(),
+        route,
+        &files::mod_decls(&files),
+        "test",
+        tier,
+        timeout,
+    )
+    .await;
     // Attach the captured print output — Exact tier only (effect
     // emissions are as deterministic as the values there; FinalValues
     // pacing legitimately varies fire counts). Sorted: within-cycle
@@ -445,6 +515,8 @@ async fn drive(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     sched: &schedule::Schedule,
+    spec: Option<&callable::CallSpec>,
+    route: Route,
     mods: &str,
     modname: &str,
     tier: OracleTier,
@@ -549,7 +621,9 @@ async fn drive(
     // Injected-input decls sit at the compile text's TOP LEVEL (the D4
     // contract; see `schedule::Schedule::decls`), before the module
     // wrap, where `compile_ref_by_name` can reach them from root.
-    let text = format!("{}{mods}{{ mod {modname}; {modname}::result }}", sched.decls());
+    let cdecls = spec.map(|c| c.decls()).unwrap_or_default();
+    let text =
+        format!("{}{mods}{cdecls}{{ mod {modname}; {modname}::result }}", sched.decls());
     let compiled = bounded!(
         ctx.rt.compile(ArcStr::from(text)),
         Ok(c) => c,
@@ -595,7 +669,130 @@ async fn drive(
         }
         segs.push(wait_settled!());
     }
+    // Dispatch epochs (callable-v1). Both routes append one traced
+    // epoch per dispatch AFTER the schedule's own, so the two routes'
+    // traces align epoch-for-epoch.
+    if let Some(c) = spec {
+        match route {
+            Route::InLanguage => {
+                let mut arefs: AHashMap<String, graphix_rt::Ref<NoExt>> = AHashMap::new();
+                for (name, _, _) in c.args() {
+                    let scope = graphix_compiler::Scope::root();
+                    let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
+                    let r = bounded!(
+                        ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
+                        Ok(r) => r,
+                        Err(e) => {
+                            return Outcome::RuntimeErr(format!(
+                                "callable arg {name}: {e}"
+                            ));
+                        }
+                    );
+                    arefs.insert(name, r);
+                }
+                for ep in &c.epochs {
+                    let sets: Vec<(graphix_compiler::BindId, Value)> = ep
+                        .iter()
+                        .map(|(name, v)| (arefs[name.as_str()].bid, v.clone()))
+                        .collect();
+                    if let Err(e) = ctx.rt.set_many(sets) {
+                        return Outcome::RuntimeErr(format!("set_many: {e}"));
+                    }
+                    segs.push(wait_settled!());
+                }
+            }
+            Route::Dispatch => {
+                let scope = graphix_compiler::Scope::root();
+                let path = graphix_compiler::expr::ModPath::from(c.handler.split("::"));
+                let r = bounded!(
+                    ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Outcome::RuntimeErr(format!(
+                            "handler {}: {e}",
+                            c.handler
+                        ));
+                    }
+                );
+                let lambda = match r.last.clone() {
+                    Some(v) => v,
+                    None => {
+                        return Outcome::RuntimeErr(format!(
+                            "handler {} has no value",
+                            c.handler
+                        ));
+                    }
+                };
+                let cb = bounded!(
+                    ctx.rt.compile_callable(lambda),
+                    Ok(cb) => cb,
+                    Err(e) => {
+                        return Outcome::RuntimeErr(format!("compile_callable: {e}"));
+                    }
+                );
+                // The embedder timeline has CYCLES between building
+                // the callable and the first dispatch (a UI renders
+                // before the first key) — and the lazy-instance bug
+                // geometry needs them: dispatched back-to-back, a
+                // reference delivered at the callable's init can still
+                // reach the instance and a resolution bug never
+                // fires (the ConnectDeref pin needed the same gap).
+                for _ in 0..3 {
+                    bounded!(
+                        ctx.rt.compile(ArcStr::from("i64:0")),
+                        Ok(_) => (),
+                        Err(e) => {
+                            return Outcome::RuntimeErr(format!("gap compile: {e}"));
+                        }
+                    );
+                }
+                for ep in &c.epochs {
+                    let args =
+                        ValArray::from_iter_exact(ep.iter().map(|(_, v)| v.clone()));
+                    bounded!(
+                        cb.call(args),
+                        Ok(()) => (),
+                        Err(e) => {
+                            return Outcome::RuntimeErr(format!("dispatch: {e}"));
+                        }
+                    );
+                    segs.push(wait_settled!());
+                }
+            }
+        }
+    }
     Outcome::Trace(trace::Trace::from_segments(&segs, eid))
+}
+
+/// The reserved metamorphic-twin poison tag: a generated twin program
+/// compares its equivalent write routes in-program and settles any
+/// epoch on a `` `TwinDiverged(..) `` value when they disagree. The
+/// scan walks each epoch's FINAL value (transient mid-epoch skew while
+/// writes land is not a violation; the settled value is), through
+/// composites. The tag is reserved by the generator contract — no
+/// other program may produce it.
+pub const TWIN_TAG: &str = "TwinDiverged";
+
+fn value_has_tag(v: &Value, tag: &str) -> bool {
+    match v {
+        Value::String(s) => &**s == tag,
+        Value::Array(a) => a.iter().any(|v| value_has_tag(v, tag)),
+        Value::Error(e) => value_has_tag(e, tag),
+        Value::Map(m) => {
+            m.into_iter().any(|(k, v)| value_has_tag(k, tag) || value_has_tag(v, tag))
+        }
+        _ => false,
+    }
+}
+
+/// Scan an outcome for a settled twin violation.
+fn twin_violation(o: &Outcome) -> bool {
+    match o {
+        Outcome::Trace(t) => {
+            t.final_values().iter().any(|v| v.is_some_and(|v| value_has_tag(v, TWIN_TAG)))
+        }
+        _ => false,
+    }
 }
 
 /// Which comparison strength a program's oracle runs at, decided from
@@ -749,6 +946,32 @@ pub struct Divergence {
     pub interp: Outcome,
     pub jit: Outcome,
     pub tier: OracleTier,
+    pub pair: Pair,
+}
+
+/// Which two runs a [`Divergence`] compares. `Engine` is the classic
+/// node-walk-vs-JIT check; the other two exist only for `callable-v1`
+/// programs (see [`callable`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pair {
+    /// node-walk vs fused+JIT, in-language route (`interp`/`jit`
+    /// fields hold exactly that).
+    Engine,
+    /// node-walk vs fused+JIT, embedder-dispatch route.
+    EngineDispatch,
+    /// in-language route vs embedder-dispatch route, node-walk engine
+    /// (`interp` holds the in-language outcome, `jit` the dispatch
+    /// outcome). Compared at final-values strength — route pacing is
+    /// not contractual, the per-epoch settled value is.
+    Route,
+    /// A metamorphic twin program violated its own invariant: an
+    /// in-program comparison of two equivalent write routes settled on
+    /// a `` `TwinDiverged `` value. Detected within a SINGLE run —
+    /// both fields hold the offending outcome — so it catches bugs
+    /// that break every engine and route identically (the ConnectDeref
+    /// silent-write class broke ALL FOUR runs the same way; every
+    /// pairwise comparison agreed on the wrong answer).
+    Twin,
 }
 
 impl Divergence {
@@ -771,10 +994,35 @@ impl Divergence {
                 "asymmetric timeout (interp exceeded 8x budget; JIT produced a value — \
                  verify the node-walk terminates and agrees before reading this as a JIT bug)"
             }
-            _ => match self.tier {
-                OracleTier::FinalValues => "fusion/JIT bug (final values, interp != jit)",
-                _ => "fusion/JIT bug (interp != jit)",
+            _ => match (self.pair, self.tier) {
+                (Pair::Twin, _) => {
+                    "twin invariant violated (equivalent write routes diverged \
+                     in-program — a single-run finding, no cross-run comparison)"
+                }
+                (Pair::Route, _) => {
+                    "route bug (in-language call != embedder-callable dispatch, interp)"
+                }
+                (Pair::EngineDispatch, OracleTier::FinalValues) => {
+                    "fusion/JIT bug on the dispatch route (final values, interp != jit)"
+                }
+                (Pair::EngineDispatch, _) => {
+                    "fusion/JIT bug on the dispatch route (interp != jit)"
+                }
+                (Pair::Engine, OracleTier::FinalValues) => {
+                    "fusion/JIT bug (final values, interp != jit)"
+                }
+                (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
             },
+        }
+    }
+
+    /// Human labels for the two outcome fields, by pair.
+    pub fn labels(&self) -> (&'static str, &'static str) {
+        match self.pair {
+            Pair::Engine => ("interp", "jit"),
+            Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
+            Pair::Route => ("in-language", "dispatch"),
+            Pair::Twin => ("trace", "trace"),
         }
     }
 }
@@ -798,6 +1046,9 @@ pub async fn check_classified(
     timeout: Duration,
 ) -> (Option<Divergence>, bool) {
     let tier = oracle_tier(code);
+    if callable::has_header(code) {
+        return check_callable(code, tier, timeout).await;
+    }
     // The two evaluators must agree, or it's a divergence. Each mode
     // spins up its own runtime, so run them concurrently — `join!`
     // overlaps their (mostly I/O-bound) execution on one task.
@@ -807,6 +1058,25 @@ pub async fn check_classified(
     );
     if tier == OracleTier::Excluded {
         return (None, false);
+    }
+    // A metamorphic twin violation is a SINGLE-RUN finding — checked
+    // before agreement, which is the whole point: a bug breaking both
+    // engines identically AGREES on the wrong answer (the ConnectDeref
+    // silent-write class did). Confirmed by one rerun.
+    for (o, mode) in [(&interp, Mode::Interp), (&jit, Mode::Jit)] {
+        if twin_violation(o) {
+            let again = run_program(code, mode, timeout).await;
+            if twin_violation(&again) {
+                let d = Divergence {
+                    code: code.to_string(),
+                    interp: o.clone(),
+                    jit: o.clone(),
+                    tier,
+                    pair: Pair::Twin,
+                };
+                return (Some(d), false);
+            }
+        }
     }
     if interp.agrees_with_at(&jit, tier) {
         let ran =
@@ -900,7 +1170,194 @@ pub async fn check_classified(
     if !interp.agrees_with_at(&interp2, tier) {
         return (None, false);
     }
-    (Some(Divergence { code: code.to_string(), interp, jit, tier }), false)
+    (
+        Some(Divergence {
+            code: code.to_string(),
+            interp,
+            jit,
+            tier,
+            pair: Pair::Engine,
+        }),
+        false,
+    )
+}
+
+/// The callable-v1 check matrix: four runs (two engines x two
+/// routes), three comparisons — each route's engine pair at the
+/// program's tier, then the ROUTE pair (node-walk engine) at
+/// final-values strength (route pacing is not contractual; the
+/// per-epoch settled value is). Records the first divergence in that
+/// order. A timeout-involved disagreement retries once at 4x and
+/// drops with a log if unresolved — the full escalation ladder is an
+/// engine-pair tool; noise here errs toward dropping. Every recorded
+/// divergence survives a same-pair rerun (the nondeterminism guard).
+/// `ran` is always false: callable programs stay out of the mutation
+/// ring until mutation learns to preserve their header (the AST
+/// round-trip drops comments).
+async fn check_callable(
+    code: &str,
+    tier: OracleTier,
+    timeout: Duration,
+) -> (Option<Divergence>, bool) {
+    let (ia, ja, ib, jb) = tokio::join!(
+        run_program_routed(code, Mode::Interp, Route::InLanguage, timeout),
+        run_program_routed(code, Mode::Jit, Route::InLanguage, timeout),
+        run_program_routed(code, Mode::Interp, Route::Dispatch, timeout),
+        run_program_routed(code, Mode::Jit, Route::Dispatch, timeout),
+    );
+    if tier == OracleTier::Excluded {
+        return (None, false);
+    }
+    // Twin violations first — single-run findings (see the engine-pair
+    // check's comment), scanned on every (mode, route) run.
+    for (o, mode, route) in [
+        (&ia, Mode::Interp, Route::InLanguage),
+        (&ja, Mode::Jit, Route::InLanguage),
+        (&ib, Mode::Interp, Route::Dispatch),
+        (&jb, Mode::Jit, Route::Dispatch),
+    ] {
+        if twin_violation(o) {
+            let again = run_program_routed(code, mode, route, timeout).await;
+            if twin_violation(&again) {
+                let d = Divergence {
+                    code: code.to_string(),
+                    interp: o.clone(),
+                    jit: o.clone(),
+                    tier,
+                    pair: Pair::Twin,
+                };
+                return (Some(d), false);
+            }
+        }
+    }
+    async fn settle<F: Fn(&Outcome, &Outcome) -> bool>(
+        code: &str,
+        m1: Mode,
+        r1: Route,
+        m2: Mode,
+        r2: Route,
+        a: Outcome,
+        b: Outcome,
+        agrees: F,
+        timeout: Duration,
+    ) -> Option<(Outcome, Outcome)> {
+        if agrees(&a, &b) {
+            return None;
+        }
+        if matches!(a, Outcome::Timeout) || matches!(b, Outcome::Timeout) {
+            let big = (timeout * 4).max(Duration::from_secs(60));
+            let a2 = run_program_routed(code, m1, r1, big).await;
+            let b2 = run_program_routed(code, m2, r2, big).await;
+            if agrees(&a2, &b2) {
+                return None;
+            }
+            if matches!(a2, Outcome::Timeout) || matches!(b2, Outcome::Timeout) {
+                eprintln!(
+                    "callable check: timeout-involved disagreement at 4x — dropped"
+                );
+                return None;
+            }
+            let a3 = run_program_routed(code, m1, r1, big).await;
+            if !agrees(&a2, &a3) {
+                return None;
+            }
+            let b3 = run_program_routed(code, m2, r2, big).await;
+            if !agrees(&b2, &b3) {
+                return None;
+            }
+            return Some((a2, b2));
+        }
+        // Nondeterminism guard: each side must agree with itself.
+        let a2 = run_program_routed(code, m1, r1, timeout).await;
+        if !agrees(&a, &a2) {
+            return None;
+        }
+        let b2 = run_program_routed(code, m2, r2, timeout).await;
+        if !agrees(&b, &b2) {
+            return None;
+        }
+        Some((a, b))
+    }
+    fn route_agrees(a: &Outcome, b: &Outcome) -> bool {
+        match (a, b) {
+            (Outcome::Trace(x), Outcome::Trace(y)) => x.agrees_final(y),
+            _ => a.agrees_with(b),
+        }
+    }
+    let tier_cmp = |a: &Outcome, b: &Outcome| a.agrees_with_at(b, tier);
+    // The dispatch route's cycle offsets are not comparable at Exact
+    // strength: the gap compiles and callable dispatch take an engine-
+    // and run-dependent number of cycles, so only per-epoch settled
+    // values are contractual there (same rationale as the route pair).
+    let finals_cmp =
+        |a: &Outcome, b: &Outcome| a.agrees_with_at(b, OracleTier::FinalValues);
+    if let Some((a, b)) = settle(
+        code,
+        Mode::Interp,
+        Route::InLanguage,
+        Mode::Jit,
+        Route::InLanguage,
+        ia.clone(),
+        ja,
+        tier_cmp,
+        timeout,
+    )
+    .await
+    {
+        let d = Divergence {
+            code: code.to_string(),
+            interp: a,
+            jit: b,
+            tier,
+            pair: Pair::Engine,
+        };
+        return (Some(d), false);
+    }
+    if let Some((a, b)) = settle(
+        code,
+        Mode::Interp,
+        Route::Dispatch,
+        Mode::Jit,
+        Route::Dispatch,
+        ib.clone(),
+        jb,
+        finals_cmp,
+        timeout,
+    )
+    .await
+    {
+        let d = Divergence {
+            code: code.to_string(),
+            interp: a,
+            jit: b,
+            tier,
+            pair: Pair::EngineDispatch,
+        };
+        return (Some(d), false);
+    }
+    if let Some((a, b)) = settle(
+        code,
+        Mode::Interp,
+        Route::InLanguage,
+        Mode::Interp,
+        Route::Dispatch,
+        ia,
+        ib,
+        route_agrees,
+        timeout,
+    )
+    .await
+    {
+        let d = Divergence {
+            code: code.to_string(),
+            interp: a,
+            jit: b,
+            tier,
+            pair: Pair::Route,
+        };
+        return (Some(d), false);
+    }
+    (None, false)
 }
 
 /// A module resolver whose target can be swapped between compiles —
@@ -981,6 +1438,12 @@ pub enum BatchClass {
 }
 
 pub fn batch_class(code: &str) -> BatchClass {
+    // Callable programs need the route matrix — the batch child only
+    // drives the in-language route, so a batch "agree" would silently
+    // skip the whole point of the mode.
+    if callable::has_header(code) {
+        return BatchClass::Never;
+    }
     // BATCH FIRST, manage the failure rate — do not preemptively fail
     // (Eric, 2026-08-17). The batch path already falls back: a subject
     // the child cannot resolve comes back `Other` and is re-derived
@@ -1113,8 +1576,28 @@ pub async fn run_batch(
         // The subject's OWN tier drives both runs — FinalValues gets
         // its settle grace rounds exactly as the individual path does.
         let (interp, jit) = tokio::join!(
-            drive(&ctx_i, &mut rx_i, &sched, "", &modname, tier, timeout),
-            drive(&ctx_j, &mut rx_j, &sched, "", &modname, tier, timeout),
+            drive(
+                &ctx_i,
+                &mut rx_i,
+                &sched,
+                None,
+                Route::InLanguage,
+                "",
+                &modname,
+                tier,
+                timeout
+            ),
+            drive(
+                &ctx_j,
+                &mut rx_j,
+                &sched,
+                None,
+                Route::InLanguage,
+                "",
+                &modname,
+                tier,
+                timeout
+            ),
         );
         let poisoned = matches!(interp, Outcome::Timeout | Outcome::RuntimeErr(_))
             || matches!(jit, Outcome::Timeout | Outcome::RuntimeErr(_));
@@ -1175,6 +1658,8 @@ pub async fn run_batch(
                     &ctx_i,
                     &mut rx_i,
                     &probe_sched,
+                    None,
+                    Route::InLanguage,
                     "",
                     &probe_name,
                     OracleTier::Exact,
@@ -1184,6 +1669,8 @@ pub async fn run_batch(
                     &ctx_j,
                     &mut rx_j,
                     &probe_sched,
+                    None,
+                    Route::InLanguage,
                     "",
                     &probe_name,
                     OracleTier::Exact,
@@ -1672,8 +2159,10 @@ async fn run_batch_child(
 /// a different bug B (e.g. morphing a missing-fire bug into a value bug).
 fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     let td = match (&d.interp, &d.jit) {
-        (Outcome::Trace(a), Outcome::Trace(b)) => match d.tier {
-            OracleTier::FinalValues => a.first_final_difference(b),
+        (Outcome::Trace(a), Outcome::Trace(b)) => match (d.pair, d.tier) {
+            (Pair::Route, _) | (_, OracleTier::FinalValues) => {
+                a.first_final_difference(b)
+            }
             _ => a.first_difference(b),
         },
         _ => None,
@@ -1705,12 +2194,23 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
     let Ok((mut sched, body)) = schedule::Schedule::parse(code) else {
         return (code.to_string(), 1);
     };
-    let Ok((body, mut files)) = files::split(body) else {
+    let Ok((cspec, body_owned)) = callable::CallSpec::parse(body) else {
+        return (code.to_string(), 1);
+    };
+    let Ok((body, mut files)) = files::split(&body_owned) else {
         return (code.to_string(), 1);
     };
     let mut current = match mutate::parse(body) {
         Some(e) => e,
         None => return (code.to_string(), 1),
+    };
+    // The callable header rides every candidate verbatim (dropping it
+    // can only lose the route/dispatch machinery a callable finding
+    // needs — the bucket check would reject the candidate anyway;
+    // epoch-level callable reductions are future work).
+    let reattach = |text: String| match &cspec {
+        Some(c) => c.render(&text),
+        None => text,
     };
     let mut calls = 1;
     // Phase 1 — schedule reductions.
@@ -1721,7 +2221,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                 break 'sched;
             }
             calls += 1;
-            if let Some(d) = check(&cand.render(&body_text), timeout).await {
+            if let Some(d) = check(&reattach(cand.render(&body_text)), timeout).await {
                 if bucket(&d) == target {
                     sched = cand;
                     continue 'sched; // restart from the smaller schedule
@@ -1745,7 +2245,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
     // sections, which are most of a multi-file finding's bytes once the
     // body is down.
     while calls < budget {
-        let before = sched.render(&files::render(&current.to_string(), &files));
+        let before = reattach(sched.render(&files::render(&current.to_string(), &files)));
         // Drop each module's section pair, then each interface alone
         // (no .gxi = everything public — the divergence often survives
         // the simpler layout).
@@ -1756,7 +2256,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                     break 'files;
                 }
                 calls += 1;
-                let text = sched.render(&files::render(&body_text, &cand));
+                let text = reattach(sched.render(&files::render(&body_text, &cand)));
                 if let Some(d) = check(&text, timeout).await
                     && bucket(&d) == target
                 {
@@ -1778,7 +2278,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                 &|e| {
                     let body = e.to_string();
                     mutate::parse(&body)?;
-                    Some(sched.render(&files::render(&body, files)))
+                    Some(reattach(sched.render(&files::render(&body, files))))
                 },
                 &target,
                 timeout,
@@ -1803,7 +2303,7 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
                         mutate::parse_items(&text)?;
                         let mut fs = files.to_vec();
                         fs[i].1 = text;
-                        Some(sched.render(&files::render(&body, &fs)))
+                        Some(reattach(sched.render(&files::render(&body, &fs))))
                     },
                     &target,
                     timeout,
@@ -1814,11 +2314,12 @@ pub async fn minimize(code: &str, timeout: Duration, budget: usize) -> (String, 
             };
             files[i].1 = mutate::render_items(&reduced);
         }
-        if sched.render(&files::render(&current.to_string(), &files)) == before {
+        if reattach(sched.render(&files::render(&current.to_string(), &files))) == before
+        {
             break; // every subject is at a fixpoint
         }
     }
-    (sched.render(&files::render(&current.to_string(), &files)), calls)
+    (reattach(sched.render(&files::render(&current.to_string(), &files))), calls)
 }
 
 /// One reduction of an AST: either replace a node, or drop a statement
@@ -2387,8 +2888,9 @@ impl Corpus {
                 c
             }
         }
+        let (la, lb) = d.labels();
         let body = format!(
-            "// bisect: {}\n// interp: {}\n// jit:    {}\n\
+            "// bisect: {}\n// {la}: {}\n// {lb}: {}\n\
              // mutant: {}\n// minimized:\n{}\n",
             d.bisect(),
             clip(format!("{:?}", d.interp)),
@@ -2807,10 +3309,18 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
 pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
     let tier = oracle_tier(prog);
     let mut bad = Vec::new();
-    for mode in [Mode::Interp, Mode::Jit] {
+    let routes: &[Route] = if callable::has_header(prog) {
+        &[Route::InLanguage, Route::Dispatch]
+    } else {
+        &[Route::InLanguage]
+    };
+    for (mode, &route) in [Mode::Interp, Mode::Jit]
+        .into_iter()
+        .flat_map(|m| routes.iter().map(move |r| (m, r)))
+    {
         let (a, b) = tokio::join!(
-            run_program(prog, mode, timeout),
-            run_program(prog, mode, timeout),
+            run_program_routed(prog, mode, route, timeout),
+            run_program_routed(prog, mode, route, timeout),
         );
         if !a.agrees_with_at(&b, tier) {
             // The confirm pair runs at 4x, and a TIMEOUT on one side is
@@ -2826,8 +3336,8 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
             // as `run_regression`'s sequential retry: never let a
             // budget artifact become a semantic verdict.
             let big = timeout * 4;
-            let a2 = run_program(prog, mode, big).await;
-            let b2 = run_program(prog, mode, big).await;
+            let a2 = run_program_routed(prog, mode, route, big).await;
+            let b2 = run_program_routed(prog, mode, route, big).await;
             if a2.agrees_with_at(&b2, tier) {
                 continue;
             }
@@ -2837,9 +3347,11 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
                 bad.push("inconclusive");
                 continue;
             }
-            bad.push(match mode {
-                Mode::Interp => "interp",
-                Mode::Jit => "jit",
+            bad.push(match (mode, route) {
+                (Mode::Interp, Route::InLanguage) => "interp",
+                (Mode::Jit, Route::InLanguage) => "jit",
+                (Mode::Interp, Route::Dispatch) => "interp-dispatch",
+                (Mode::Jit, Route::Dispatch) => "jit-dispatch",
             });
         }
     }

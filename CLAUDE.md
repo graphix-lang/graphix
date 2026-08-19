@@ -937,7 +937,18 @@ coverage, not correctness).
   `TraceDiff` class — Missing/ExtraFire, Pacing, etc. — keys dedup), and
   programs can carry a `// schedule-v1:` header injecting input epochs
   atomically via `set_many` (inputs use the `let inN = d; inN <- never(d)`
-  contract so fusion binds them as region inputs). `minimize <file>
+  contract so fusion binds them as region inputs). Since 2026-08-19 the oracle also runs the **callable-v1 route matrix**
+  (a header names a module handler; the runner drives one artifact through
+  the in-language injection route AND `GXHandle::compile_callable` dispatch —
+  engine pairs per route, dispatch pair + route pair at finals strength) and
+  the **metamorphic twin scan** (generated modules write state through
+  equivalent routes — `&`-param / capture / nested-`&` — and settle a
+  reserved `` `TwinDiverged `` verdict when they disagree; scanned on every
+  run's finals, so a bug that breaks every engine and route IDENTICALLY —
+  the ConnectDeref silent-write class 9f9e01d0, invisible to any pairwise
+  comparison — is a single-run finding). Twins ride the reactive lane (15%);
+  callable programs never batch and never enter the mutation ring.
+  `design/graphix_fuzz.md` §14. `minimize <file>
   [budget]` (budget = oracle checks, default 4000; the campaign's per-finding
   budget is `CAMPAIGN_MINIMIZE_BUDGET`) is typed-AST HDD whose working
   operator is the STATEMENT DROP, keyed at the statement so a whole round of

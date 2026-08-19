@@ -686,3 +686,67 @@ tail to 12 — schedule length is the axis pointed at the cross-epoch
 residual classes), with the trace budgets SCALED per schedule
 (max_cycles += 16/epoch, max_events += 128/epoch; budgets ride the
 header as data, so a cap mismatch stays a real divergence).
+
+## §14 Route equivalence + metamorphic twins (2026-08-19)
+
+Two oracle extensions born from the ConnectDeref silent-write bug
+(fixed 9f9e01d0): a `*st <- v` through a `&` parameter, inside a
+select arm the init leaves asleep, dropped every write — in BOTH
+engines identically, so the differential oracle was structurally
+blind to it (both compared runs shared the failing node). The class
+was found by a tui-package harness test, not the fuzzer; Eric's
+directive: make the fuzzer able to see it.
+
+**callable-v1 (the route matrix).** The embedder dispatch path
+(`GXHandle::compile_callable` + `Callable::call` — how every GUI/TUI
+handler is driven) had zero fuzz coverage. A `// callable-v1:
+handler=m0::handler; cx0=i64:7; …` header (parse/render in
+`callable.rs`, the schedule discipline exactly) names a handler
+living in a `file-v1` module (module bindings are what
+`compile_ref_by_name` reaches from root; the body's block scopes
+under an anonymous `do<ExprId>`). The RUNNER synthesizes the driver —
+arg decls per the D4 contract plus an in-language call with each arg
+`skip(#n:1, …)`-gated so the canonical-default init never dispatches
+— and drives the ONE text artifact on two routes: **in-language**
+(dispatch epochs as `set_many` injections, the schedule machinery
+verbatim) and **dispatch** (`compile_callable` + `call` per epoch,
+with 3 gap compiles first — the embedder timeline has cycles between
+building a handler and the first event, and the lazy-instance bug
+geometry needs them). `check` runs the 2×2 matrix: engine pairs per
+route (the dispatch pair at FINALS strength — gap compiles and
+dispatch machinery make cycle offsets engine- and run-dependent
+there), then the route pair (interp) at finals. `Divergence` carries
+which pair (`Pair::{Engine, EngineDispatch, Route}`); callable
+programs never batch (the batch child only drives one route) and
+never enter the mutation ring (`ran=false`; mutation preserves the
+header via the same split/reattach as the schedule, but module
+internals don't mutate yet).
+
+**Twins (the symmetric-bug oracle).** The route matrix could NOT
+have caught the motivating bug: it broke both routes identically —
+every pairwise comparison agreed on the wrong answer (the callable
+seed on the unfixed compiler: four runs, all `{0,0}`-frozen, AGREE).
+The oracle that sees a symmetric bug is the program itself:
+`generate::twin` emits handler modules whose state is written through
+SEVERAL equivalent routes (`&`-param, capture, `&`-param through a
+nested call) from the same dispatch cycle, with an in-program verdict
+that settles on the reserved `` `TwinDiverged `` tag when they
+disagree. `check` scans every run's per-epoch FINALS for the tag
+(transient intra-cycle skew never reaches a final) — a violation is a
+single-run finding (`Pair::Twin`), recorded after one confirming
+rerun, no cross-run comparison involved. On the unfixed compiler the
+twin seed goes red in every mode; `findings/callable-route-aug2026/`
+pins it (and the dispatch-matrix machinery) into every regress run.
+Twins ride the reactive generation lane (15%), half schedule-form,
+half callable-form — the callable form puts the twin invariant on the
+embedder route too.
+
+En route: the pure-language face of 9f9e01d0 turned out to be
+generator-reachable all along (an injected input driving a call whose
+callee writes through `&` in a sleeping select arm — the twin seed's
+schedule form IS that shape); what was missing was never vocabulary
+alone, it was an oracle that survives symmetry. Also fixed:
+`normalize_diag` now strips `<abstract#N>` ids (process-global,
+interleaving under concurrent compiles — flaked selfcheck's
+CompileErr comparison), and the abstract-predicate refusal prints the
+type as WRITTEN instead of the raw id.

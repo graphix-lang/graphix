@@ -1004,11 +1004,27 @@ async fn main() -> Result<()> {
             let code = code.trim();
             match cmd {
                 "run" => {
-                    for mode in [Mode::Interp, Mode::Jit] {
-                        let (o, stats) =
-                            graphix_fuzz::run_program_with_stats(code, mode, timeout())
-                                .await;
-                        println!("{mode:?}: {}", render(&o));
+                    let routes: &[graphix_fuzz::Route] =
+                        if graphix_fuzz::callable::has_header(code) {
+                            &[
+                                graphix_fuzz::Route::InLanguage,
+                                graphix_fuzz::Route::Dispatch,
+                            ]
+                        } else {
+                            &[graphix_fuzz::Route::InLanguage]
+                        };
+                    for (mode, &route) in [Mode::Interp, Mode::Jit]
+                        .into_iter()
+                        .flat_map(|m| routes.iter().map(move |r| (m, r)))
+                    {
+                        let (o, stats) = graphix_fuzz::run_program_with_stats_routed(
+                            code,
+                            mode,
+                            route,
+                            timeout(),
+                        )
+                        .await;
+                        println!("{mode:?}/{route:?}: {}", render(&o));
                         // Stats are compile-time fusion counters; only the
                         // fusing modes have anything to say.
                         if !matches!(mode, Mode::Interp) {
