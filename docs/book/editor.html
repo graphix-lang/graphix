@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c48aeca2.js";
+            window.path_to_searchindex_js = "searchindex-27e99b8b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -287,25 +287,31 @@ file will route to <code>graphix-ts-mode</code> automatically.</p>
 <code>lsp-mode</code> registration; the LSP command is the same.</p>
 <h2 id="helix"><a class="header" href="#helix">Helix</a></h2>
 <p>Helix has no plugin system, so language support has to be added by
-copying queries into your runtime path and appending blocks to
+putting queries into your runtime path and appending blocks to
 <code>languages.toml</code>. The repo ships a script that does both:</p>
 <pre><code class="language-bash">cd ide/editors/helix
 ./install.sh
 </code></pre>
 <p>The script:</p>
 <ol>
-<li>Copies tree-sitter queries to
-<code>~/.config/helix/runtime/queries/graphix/</code>.</li>
+<li>Links the tree-sitter queries into
+<code>~/.config/helix/runtime/queries/graphix/</code> (<code>--copy</code> copies them
+instead, for a checkout you won’t keep).</li>
 <li>Appends <code>[[language]]</code>, <code>[language-server.graphix-lsp]</code>, and
 <code>[[grammar]]</code> blocks to <code>~/.config/helix/languages.toml</code> (idempotent
 — it skips if a graphix entry already exists).</li>
 <li>Runs <code>helix --grammar fetch &amp;&amp; helix --grammar build</code> to compile
 the parser.</li>
 </ol>
-<p>Re-running the script is safe; it overwrites the queries (so updates
-land) but leaves your <code>languages.toml</code> alone after the first install.</p>
-<p>To verify, open a <code>.gx</code> file and run <code>:tree-sitter-scopes</code>,
-<code>:lsp-restart</code>, or <code>helix --health graphix</code>.</p>
+<p>Re-running the script is safe; it replaces the query links (so updates
+land) but leaves your <code>languages.toml</code> alone after the first install.
+Re-run it after pulling a grammar change — the queries name grammar
+nodes, and the compiled grammar is the half that doesn’t track your
+checkout.</p>
+<p>To verify, open a <code>.gx</code> file and run <code>:tree-sitter-scopes</code> or
+<code>:lsp-restart</code>. Note that <code>helix --health graphix</code> only checks that the
+query files exist; if coloring is missing entirely, the reason is in
+<code>~/.cache/helix/helix.log</code>.</p>
 <p>If you’re hacking on the grammar locally, edit the <code>[[grammar]]</code> block
 in your <code>languages.toml</code> to point at your checkout instead of the git
 URL. See <code>ide/editors/helix/README.md</code> for the exact form.</p>

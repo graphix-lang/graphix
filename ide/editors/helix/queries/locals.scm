@@ -1,1 +1,0 @@
-../../../tree-sitter-graphix/queries/locals.scm

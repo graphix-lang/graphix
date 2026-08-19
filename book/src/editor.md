@@ -161,7 +161,7 @@ file will route to `graphix-ts-mode` automatically.
 ## Helix
 
 Helix has no plugin system, so language support has to be added by
-copying queries into your runtime path and appending blocks to
+putting queries into your runtime path and appending blocks to
 `languages.toml`. The repo ships a script that does both:
 
 ```bash
@@ -171,19 +171,25 @@ cd ide/editors/helix
 
 The script:
 
-1. Copies tree-sitter queries to
-   `~/.config/helix/runtime/queries/graphix/`.
+1. Links the tree-sitter queries into
+   `~/.config/helix/runtime/queries/graphix/` (`--copy` copies them
+   instead, for a checkout you won't keep).
 2. Appends `[[language]]`, `[language-server.graphix-lsp]`, and
    `[[grammar]]` blocks to `~/.config/helix/languages.toml` (idempotent
    — it skips if a graphix entry already exists).
 3. Runs `helix --grammar fetch && helix --grammar build` to compile
    the parser.
 
-Re-running the script is safe; it overwrites the queries (so updates
+Re-running the script is safe; it replaces the query links (so updates
 land) but leaves your `languages.toml` alone after the first install.
+Re-run it after pulling a grammar change — the queries name grammar
+nodes, and the compiled grammar is the half that doesn't track your
+checkout.
 
-To verify, open a `.gx` file and run `:tree-sitter-scopes`,
-`:lsp-restart`, or `helix --health graphix`.
+To verify, open a `.gx` file and run `:tree-sitter-scopes` or
+`:lsp-restart`. Note that `helix --health graphix` only checks that the
+query files exist; if coloring is missing entirely, the reason is in
+`~/.cache/helix/helix.log`.
 
 If you're hacking on the grammar locally, edit the `[[grammar]]` block
 in your `languages.toml` to point at your checkout instead of the git

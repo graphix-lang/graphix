@@ -32,16 +32,25 @@ Then:
 
 The script:
 
-1. Copies the queries in `queries/` to
-   `~/.config/helix/runtime/queries/graphix/`.
+1. Links `../../tree-sitter-graphix/queries/*.scm` into
+   `~/.config/helix/runtime/queries/graphix/`. Pass `--copy` to copy
+   them instead — appropriate only when the checkout is temporary,
+   since a copy stops tracking the grammar the queries were written
+   against.
 2. Appends the language and grammar blocks from `languages.toml` to your
    `~/.config/helix/languages.toml`. If a graphix entry is already
    present, it leaves the file alone.
 3. Runs `helix --grammar fetch && helix --grammar build` to compile the
    tree-sitter parser.
 
-Re-running is safe — step 1 overwrites queries (so updates land), step 2
-is idempotent.
+Re-running is safe — step 1 replaces the links, step 2 is idempotent.
+
+Queries and grammar are one unit: a query names grammar nodes, and
+tree-sitter refuses a whole query file over a single node the grammar
+doesn't have — which Helix shows as no syntax coloring at all. Linking
+keeps the queries current with the checkout, so what can still fall
+behind is the COMPILED grammar. After pulling a grammar change, re-run
+the script (or at least `helix --grammar build`).
 
 ## Grammar source: local checkout vs git
 
@@ -68,7 +77,14 @@ Open a `.gx` file and:
 - `<C-x>` — completions menu while typing.
 
 `helix --health graphix` reports the status of the parser, queries, and
-LSP server.
+LSP server — but it only checks that the query files EXIST. It prints
+✓ for a query that fails to compile, so when the colors vanish, the
+real message is in `~/.cache/helix/helix.log`:
+
+```
+helix_core::syntax [ERROR] Failed to compile highlights for 'graphix':
+  invalid node type "..."
+```
 
 ## What's in the queries
 
