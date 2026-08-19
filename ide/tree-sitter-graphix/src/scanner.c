@@ -108,7 +108,17 @@ bool tree_sitter_graphix_external_scanner_scan(
   // we know we're in error recovery — bail out.
   if (valid_symbols[ERROR_SENTINEL]) return false;
 
-  if (valid_symbols[RAW_STRING]) {
+  // The raw-string probe must not run while a string-content token is
+  // valid: content and RAW_STRING are co-valid only in the merged
+  // string/value_string body state after '[', where the language says
+  // whitespace and a bare `r` ARE content (ascribed and pattern strings
+  // never interpolate) — and every refusal path below returns false,
+  // which starves the content scan entirely (`error:"[ x"` lexed the x
+  // as an identifier and the whole value_string errored). The genuine
+  // interpolation reading (struct fields, plain strings) lives in its
+  // own GLR version whose state has no content token valid.
+  if (valid_symbols[RAW_STRING] &&
+      !valid_symbols[STRING_CONTENT] && !valid_symbols[TRIPLE_CONTENT]) {
     // r"..." with 0..N hashes: r#"..."#, r##"..."##, ... Content is
     // VERBATIM (no escapes); it ends at the FIRST '"' followed by the
     // opener's hash count. Returning false restores the lexer
