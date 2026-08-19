@@ -46,9 +46,13 @@
     ;; Comments: // to end of line
     (modify-syntax-entry ?/ ". 12b" table)
     (modify-syntax-entry ?\n "> b" table)
-    ;; Strings
+    ;; Strings. Only `"` — `'` opens a type variable ('a) or a builtin
+    ;; reference ('array_map), and `\`` opens a variant (`Foo); making
+    ;; either a string delimiter would swallow the rest of the buffer
+    ;; up to the next one, and invites electric-pair to close it.
     (modify-syntax-entry ?\" "\"" table)
-    (modify-syntax-entry ?\' "\"" table)
+    (modify-syntax-entry ?\' "_" table)
+    (modify-syntax-entry ?\` "_" table)
     ;; Brackets
     (modify-syntax-entry ?\( "()" table)
     (modify-syntax-entry ?\) ")(" table)

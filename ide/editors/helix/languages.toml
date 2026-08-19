@@ -15,6 +15,15 @@ auto-format = false
 injection-regex = "graphix"
 roots = ["Cargo.toml", ".git"]
 
+# Helix pairs ' and ` by default. In Graphix they open a type variable
+# ('a), a builtin reference ('array_map) and a variant (`Foo) — none of
+# which ever close — so naming the pairs we DO want drops those two.
+[language.auto-pairs]
+'(' = ')'
+'{' = '}'
+'[' = ']'
+'"' = '"'
+
 [language-server.graphix-lsp]
 command = "graphix"
 args = ["lsp"]
