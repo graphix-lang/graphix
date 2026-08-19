@@ -27,7 +27,7 @@ use tui::table;
 use tui::block;
 use tui::text;
 
-let hosts = ["ryouko", "hz0", "hz1", "aieka", "katana"];
+let hosts = ["ryouko", "hz0", "aieka", "katana"];
 
 // Runs on the remote box, fed through `bash -s` on stdin rather than as
 // an ssh command line: three of these boxes have fish login shells, and
@@ -64,10 +64,19 @@ while :; do
 done
 ';
 
+type Lane = {
+  runs: string,
+  div: string,
+  crash: string,
+  corp: string,
+  novel: string,
+  cpu: string
+};
+
 type Box = {
   host: string,
   camp: string,
-  lanes: Map<string, Array<string>>,
+  lanes: Map<string, Lane>,
   alive: bool
 };
 
@@ -105,13 +114,13 @@ let probe = |host: string| -> Box {
   let running = false;
   select str::split(#pat: " ", line) {
     [k, c, src, runs, div, crash, corp, novel, cpu] if k == "LANE" => {
-      camp <- c;
-      lanes <- map::insert(line ~ lanes, src, [runs, div, crash, corp, novel, cpu]);
+      camp <- uniq(c);
+      lanes <- map::insert(line ~ lanes, src, {runs, div, crash, corp, novel, cpu});
       null
     },
     [k, c, l] if k == "LIVE" => {
-      camp <- c;
-      running <- l == "yes";
+      camp <- uniq(c);
+      running <- uniq(l == "yes");
       null
     },
     _ => null
@@ -134,7 +143,7 @@ let blank = cell(line(""));
 
 // The box-wide corpus count, read off any lane's republished line (every
 // lane carries the same value). "-" until the first lane reports.
-let box_corpus = |h: Box| map::fold(h.lanes, "-", |acc, (_, f)| f[3]$);
+let box_corpus = |h: Box| map::fold(h.lanes, "-", |acc, (_, f)| f.corp);
 
 let host_row = |h: Box| {
   let corpus = box_corpus(h);
@@ -159,19 +168,19 @@ let host_row = |h: Box| {
 
 // Colour carries the only thing worth seeing from across the room: a
 // source that has logged something of its own.
-let lane_row = |src: string, f: Array<string>| row(
-  #style: select f[1]$ != "0" || f[2]$ != "0" {
+let lane_row = |src: string, f: Lane| row(
+  #style: select f.div != "0" || f.crash != "0" {
     true => style(#fg: `Red, #add_modifier: [`Bold]),
     false => style(#fg: `DarkGray)
   },
   [
     blank,
     cell(line(str::concat("  ", src))),
-    cell(line(f[0]$)),
-    cell(line(f[1]$)),
-    cell(line(f[2]$)),
+    cell(line(f.runs)),
+    cell(line(f.div)),
+    cell(line(f.crash)),
     blank,
-    cell(line(f[5]$))
+    cell(line(f.cpu))
   ]
 );
 
