@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-259beb53.js";
+            window.path_to_searchindex_js = "searchindex-9732f144.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -1619,48 +1619,34 @@ select a {
 `VWall
 `Ok(23, 32)
 </code></pre>
-<p>You might be tempted to replace <code>y: _</code> with <code>..</code> as it would be shorter.
-Unfortunately this will confuse the type checker, because the Graphix type system
-is structural saying <code>{x, ..}</code> without any other information could match ANY
-struct with a field called <code>x</code>. This is currently too much for the type checker
-to handle,</p>
-<pre><code>$ graphix test.gx
-Error: in file "test.gx"
-
-Caused by:
-    pattern {x: '_1040} will never match {x: i64, y: i64}, unused match cases
-</code></pre>
-<p>The error is slightly confusing at first, until you understand that since we
-don’t know the type of <code>{x, ..}</code> we don’t think it will match the argument type,
-and therefore the match case is unused. This actually saves us a lot of trouble
-here, because the last match is exhaustive, if we didn’t check for unused match
-cases this program would compile, but it wouldn’t work. You can easily fix this
-by naming the type, and for larger structs it’s often worth it if you only need
-a few fields.</p>
-<pre><code class="language-graphix">type T = {x: i64, y: i64};
-let a = {x: 54, y: 23};
+<p>You can replace <code>y: _</code> with <code>..</code> — a partial pattern names only the
+fields it needs, and the type checker completes the rest from the
+scrutinee’s type:</p>
+<pre><code class="language-graphix">let a = {x: 54, y: 23};
 a &lt;- {x: 21, y: 88};
 a &lt;- {x: 5, y: 42};
 a &lt;- {x: 23, y: 32};
 select a {
-  T as {x, ..} if (x &lt; 10) || (x &gt; 50) =&gt; `VWall,
-  T as {y, ..} if (y &lt; 10) || (y &gt; 40)  =&gt; `HWall,
+  {x, ..} if (x &lt; 10) || (x &gt; 50) =&gt; `VWall,
+  {y, ..} if (y &lt; 10) || (y &gt; 40)  =&gt; `HWall,
   {x, y} =&gt; `Ok(x, y)
 }
 </code></pre>
-<p>Here since we’ve included the type pattern <code>T</code> in our partial patterns the
-program compiles and runs.</p>
 <pre><code>$ graphix test.gx
 `VWall
 `HWall
 `VWall
 `Ok(23, 32)
 </code></pre>
-<p>Note that we never told the compiler that <code>a</code> is of
-type <code>T</code>. In fact <code>T</code> is just an alias for <code>{x: i64, y: i64}</code> which is the type
-of <code>a</code>. We could in fact write our patterns without the alias,</p>
-<p><code>{x: i64, y: i64} as {x, ..} if (x &lt; 10) || (x &gt; 50) =&gt; `VWall</code></p>
-<p>The type alias just makes the code less verbose without changing the semantics.</p>
+<p>This works at any nesting depth — a partial pattern inside a variant
+payload (<code>`Event({id, ..})</code>) completes against that payload’s type.
+The one case that still needs help is a scrutinee union in which
+SEVERAL struct members carry all the named fields: the pattern is
+ambiguous, and the compiler asks you to annotate the member you mean:</p>
+<pre><code class="language-graphix">S as {x, ..} if (x &lt; 10) || (x &gt; 50) =&gt; `VWall
+</code></pre>
+<p>Any type in scope (or an inline structural type,
+<code>{x: i64, y: i64} as {x, ..}</code>) works as the annotation.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
 <pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;

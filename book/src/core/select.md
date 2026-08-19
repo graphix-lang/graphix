@@ -229,43 +229,21 @@ $ graphix test.gx
 `Ok(23, 32)
 ```
 
-You might be tempted to replace `y: _` with `..` as it would be shorter.
-Unfortunately this will confuse the type checker, because the Graphix type system
-is structural saying `{x, ..}` without any other information could match ANY
-struct with a field called `x`. This is currently too much for the type checker
-to handle,
-
-```
-$ graphix test.gx
-Error: in file "test.gx"
-
-Caused by:
-    pattern {x: '_1040} will never match {x: i64, y: i64}, unused match cases
-```
-
-The error is slightly confusing at first, until you understand that since we
-don't know the type of `{x, ..}` we don't think it will match the argument type,
-and therefore the match case is unused. This actually saves us a lot of trouble
-here, because the last match is exhaustive, if we didn't check for unused match
-cases this program would compile, but it wouldn't work. You can easily fix this
-by naming the type, and for larger structs it's often worth it if you only need
-a few fields.
+You can replace `y: _` with `..` — a partial pattern names only the
+fields it needs, and the type checker completes the rest from the
+scrutinee's type:
 
 ```graphix
-type T = {x: i64, y: i64};
 let a = {x: 54, y: 23};
 a <- {x: 21, y: 88};
 a <- {x: 5, y: 42};
 a <- {x: 23, y: 32};
 select a {
-  T as {x, ..} if (x < 10) || (x > 50) => `VWall,
-  T as {y, ..} if (y < 10) || (y > 40)  => `HWall,
+  {x, ..} if (x < 10) || (x > 50) => `VWall,
+  {y, ..} if (y < 10) || (y > 40)  => `HWall,
   {x, y} => `Ok(x, y)
 }
 ```
-
-Here since we've included the type pattern `T` in our partial patterns the
-program compiles and runs.
 
 ```
 $ graphix test.gx
@@ -275,13 +253,18 @@ $ graphix test.gx
 `Ok(23, 32)
 ```
 
-Note that we never told the compiler that `a` is of
-type `T`. In fact `T` is just an alias for `{x: i64, y: i64}` which is the type
-of `a`. We could in fact write our patterns without the alias,
+This works at any nesting depth — a partial pattern inside a variant
+payload (`` `Event({id, ..}) ``) completes against that payload's type.
+The one case that still needs help is a scrutinee union in which
+SEVERAL struct members carry all the named fields: the pattern is
+ambiguous, and the compiler asks you to annotate the member you mean:
 
-```{x: i64, y: i64} as {x, ..} if (x < 10) || (x > 50) => `VWall```
+```graphix
+S as {x, ..} if (x < 10) || (x > 50) => `VWall
+```
 
-The type alias just makes the code less verbose without changing the semantics.
+Any type in scope (or an inline structural type,
+`{x: i64, y: i64} as {x, ..}`) works as the annotation.
 
 ### Variant Patterns
 

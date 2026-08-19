@@ -47,6 +47,87 @@ pub enum StructPatternNode {
 }
 
 impl StructPatternNode {
+    /// Re-derive the struct binders' field INDEXES from a COMPLETED
+    /// type predicate. A partial pattern compiles against its inferred
+    /// (fields-it-names-only) type, so its indexes point into the wrong
+    /// layout once the select typecheck completes the predicate from
+    /// the scrutinee; nothing else about the compiled pattern depends
+    /// on the layout. Positions the completion didn't touch re-derive
+    /// to the same indexes. Bind ids and sub-patterns are untouched.
+    pub(super) fn realign(&mut self, env: &Env, typ: &Type) -> Result<()> {
+        match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
+            Self::Struct { binds, all: _ } => {
+                let elts = typ.with_deref(|t| match t {
+                    Some(t @ Type::Ref(_)) => {
+                        t.lookup_ref(env).ok().and_then(|t| match t {
+                            Type::Struct(elts) => Some(elts.clone()),
+                            _ => None,
+                        })
+                    }
+                    Some(Type::Struct(elts)) => Some(elts.clone()),
+                    _ => None,
+                });
+                let elts = match elts {
+                    Some(elts) => elts,
+                    None => return Ok(()),
+                };
+                for (name, index, sub) in binds.iter_mut() {
+                    match elts.iter().position(|(n, _)| n == name) {
+                        Some(i) => {
+                            *index = i;
+                            sub.realign(env, &elts[i].1)?
+                        }
+                        None => bail!("no such struct field {name} in {typ}"),
+                    }
+                }
+                Ok(())
+            }
+            Self::Variant { binds, all: _, tag: _ } => {
+                let ts = typ.with_deref(|t| match t {
+                    Some(Type::Variant(_, ts)) => Some(ts.clone()),
+                    _ => None,
+                });
+                if let Some(ts) = ts {
+                    if ts.len() == binds.len() {
+                        for (b, t) in binds.iter_mut().zip(ts.iter()) {
+                            b.realign(env, t)?
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Self::Slice { tuple: true, binds, all: _ } => {
+                let ts = typ.with_deref(|t| match t {
+                    Some(Type::Tuple(ts)) => Some(ts.clone()),
+                    _ => None,
+                });
+                if let Some(ts) = ts {
+                    if ts.len() == binds.len() {
+                        for (b, t) in binds.iter_mut().zip(ts.iter()) {
+                            b.realign(env, t)?
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Self::Slice { tuple: false, binds, all: _ }
+            | Self::SlicePrefix { prefix: binds, all: _, .. }
+            | Self::SliceSuffix { suffix: binds, all: _, .. } => {
+                let et = typ.with_deref(|t| match t {
+                    Some(Type::Array(et)) => Some(et.clone()),
+                    _ => None,
+                });
+                if let Some(et) = et {
+                    for b in binds.iter_mut() {
+                        b.realign(env, &et)?
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         type_predicate: &Type,
@@ -761,6 +842,44 @@ impl StructPatternNode {
     }
 }
 
+/// Does `t` mention an abstract type at any position a runtime type
+/// check would have to verify? Refs are expanded through the env;
+/// pathological depth answers true (refusing is the conservative
+/// direction — this gates a compile error, not a match).
+fn mentions_abstract(env: &Env, t: &Type, depth: usize) -> bool {
+    if depth > 64 {
+        return true;
+    }
+    t.with_deref(|t| match t {
+        None => false,
+        Some(t) => match t {
+            Type::Abstract { .. } => true,
+            Type::Ref(_) => match t.lookup_ref(env) {
+                Ok(t) => mentions_abstract(env, &t, depth + 1),
+                Err(_) => false,
+            },
+            Type::Set(s) | Type::Tuple(s) | Type::Variant(_, s) => {
+                s.iter().any(|t| mentions_abstract(env, t, depth + 1))
+            }
+            Type::Struct(fs) => {
+                fs.iter().any(|(_, t)| mentions_abstract(env, t, depth + 1))
+            }
+            Type::Array(t) | Type::ByRef(t) | Type::Error(t) => {
+                mentions_abstract(env, t, depth + 1)
+            }
+            Type::Map { key, value } => {
+                mentions_abstract(env, key, depth + 1)
+                    || mentions_abstract(env, value, depth + 1)
+            }
+            Type::Bottom
+            | Type::Any
+            | Type::Primitive(_)
+            | Type::Fn(_)
+            | Type::TVar(_) => false,
+        },
+    })
+}
+
 #[derive(Debug)]
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
@@ -810,6 +929,23 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Variant(_, _)
             | Type::Struct(_)
             | Type::Ref(TypeRef { .. }) => (),
+        }
+        // An EXPLICIT predicate is the user's claim, checked strictly at
+        // runtime — and an abstract type's representation is hidden, so
+        // the check can never succeed (`is_a` refuses to claim what it
+        // can't verify; matching by carrier id would claim wrong
+        // parameterizations and can't see hidden non-Abstract reps).
+        // Accepting the pattern made a guaranteed-dead arm the wildcard
+        // silently won — the exact class the typechecker exists to
+        // refuse. Found by the netidx-admin dogfood campaign
+        // (2026-08-18).
+        if explicit && mentions_abstract(&ctx.env, &type_predicate, 0) {
+            bail!(
+                "can't match on the abstract type {type_predicate}: its \
+                 representation is hidden, so runtime dispatch cannot verify \
+                 it. Dissect a result union with `?` or `$`, or use an \
+                 accessor exported by the type's module"
+            )
         }
         let structure_predicate = StructPatternNode::compile(
             ctx,

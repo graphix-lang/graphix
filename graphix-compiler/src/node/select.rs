@@ -2,7 +2,7 @@ use super::{Held, compiler::compile, pattern::StructPatternNode};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
-    expr::{Expr, ExprId, Pattern},
+    expr::{Expr, ExprId, ExprKind, Pattern},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     node::pattern::PatternNode,
@@ -281,11 +281,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         None
                     }
                 } else {
-                    let tag = if t.is_fired() || own_fired {
-                        Tag::FIRED
-                    } else {
-                        Tag::STALE
-                    };
+                    let tag =
+                        if t.is_fired() || own_fired { Tag::FIRED } else { Tag::STALE };
                     $v.map(|v| TagValue::tagged(v, tag))
                 }
             }};
@@ -521,6 +518,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         self.arg.node.typecheck0(ctx)?;
+        // A PARTIAL struct pattern (`{x, ..}`) infers a type carrying
+        // only its named fields — an exact struct that could never
+        // match the real member. Now that the scrutinee is typed, the
+        // rest of the fields are known: complete each inferred
+        // predicate against the scrutinee (at any nesting depth)
+        // before any coverage math or runtime dispatch reads it.
+        // Explicit predicates are the user's claim and stay untouched.
+        if let ExprKind::Select(se) = &self.spec.kind {
+            let scrut = self.arg.node.typ().clone();
+            for ((pat, _), (spec_pat, _)) in self.arms.iter_mut().zip(se.arms.iter()) {
+                if !pat.explicit_type_predicate {
+                    if let Some(t) = spec_pat
+                        .structure_predicate
+                        .complete_type_predicate(&ctx.env, &pat.type_predicate, &scrut)?
+                    {
+                        pat.structure_predicate.realign(&ctx.env, &t)?;
+                        pat.type_predicate = t;
+                    }
+                }
+            }
+        }
         let mut rtype = Type::Primitive(BitFlags::empty());
         let mut mtype = Type::Primitive(BitFlags::empty());
         let mut itype = Type::Primitive(BitFlags::empty());

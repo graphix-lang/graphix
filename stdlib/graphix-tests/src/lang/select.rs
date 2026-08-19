@@ -1280,3 +1280,100 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(_)));
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// ── partial struct patterns infer from the scrutinee (2026-08-18) ──
+// `{x, ..}` used to infer an exact one-field struct that could never
+// match (and, worse, computed field indexes into the wrong layout).
+// The select typecheck now completes the inferred predicate from the
+// scrutinee member and realigns the compiled binder's indexes.
+
+const SELECT_PARTIAL_STRUCT: &str = r#"
+{
+  type S = { x: i64, y: string };
+  let v: S = { x: 1, y: "z" };
+  select v { { x, .. } => x }
+}
+"#;
+
+run!(
+    select_partial_struct,
+    SELECT_PARTIAL_STRUCT,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The realign regression: `y` names the SECOND field of the member, so
+// an un-realigned binder reads slot 0 (`x = 1`) instead of "z".
+const SELECT_PARTIAL_IN_VARIANT: &str = r#"
+{
+  type E = [`A({ x: i64, y: string }), `B({ x: i64, z: i64 }), `C];
+  let v: E = `A({ x: 1, y: "z" });
+  select v {
+    `A({ y, .. }) => y,
+    `B({ z, .. }) => "[z]",
+    `C => "c"
+  }
+}
+"#;
+
+run!(
+    select_partial_in_variant,
+    SELECT_PARTIAL_IN_VARIANT,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "z");
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+const SELECT_PARTIAL_UNION_MEMBER: &str = r#"
+{
+  type S = { x: i64, y: string };
+  let v: [S, i64] = { x: 1, y: "z" };
+  select v { { x, .. } => x, i64 as n => n }
+}
+"#;
+
+run!(
+    select_partial_union_member,
+    SELECT_PARTIAL_UNION_MEMBER,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// One binder holds one index layout, so a partial matching several
+// union members must be annotated — refused with a teaching error.
+const SELECT_PARTIAL_AMBIGUOUS: &str = r#"
+{
+  type S = { x: i64, y: string };
+  type T = { x: i64, z: i64 };
+  let v: [S, T] = { x: 1, y: "a" };
+  select v { { x, .. } => x }
+}
+"#;
+
+run!(
+    select_partial_ambiguous_refused,
+    SELECT_PARTIAL_AMBIGUOUS,
+    |v: Result<&Value>| {
+        matches!(&v, Err(e) if format!("{e:#}").contains("matches more than one member"))
+    };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// ── explicit abstract type predicates are refused (2026-08-18) ──
+// The runtime can never verify a hidden representation, so the arm was
+// a typechecker-accepted dead arm the wildcard silently won. Refused at
+// compile with the `?`/`$` guidance instead.
+const SELECT_ABSTRACT_PREDICATE: &str = r#"
+{
+  let v = 42;
+  select v { sys::io::Stream<`Pipe> as s => 0, _ => 1 }
+}
+"#;
+
+run!(
+    select_abstract_predicate_refused,
+    SELECT_ABSTRACT_PREDICATE,
+    |v: Result<&Value>| {
+        matches!(&v, Err(e) if format!("{e:#}").contains("representation is hidden"))
+    };
+    graphix_package_core::testing::FuseExpect::None
+);
