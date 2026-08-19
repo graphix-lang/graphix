@@ -1377,3 +1377,45 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::None
 );
+
+// ── a union-typed arm plus a never() arm returns the declared union
+// (2026-08-19) ── the produced union's member that is (or contains)
+// the signature's own tvar cell must be covered reflexively by the
+// declared set; the bare-tvar residue arm instead captured it and the
+// occurs check refused `'r := ['r, ...]`. Found by the netidx-admin
+// package's `result` ceremony accessor.
+const SELECT_UNION_RETURN_NEVER_ARM: &str = r#"
+{
+  type Ev<'a> = [`Q(i64), `Done(['a, `E(string)])];
+  let f = |e: Ev<'r>| -> ['r, `E(string)] select e {
+    `Done(r) => r,
+    _ => never()
+  };
+  f(`Done(42))
+}
+"#;
+
+run!(
+    select_union_return_never_arm,
+    SELECT_UNION_RETURN_NEVER_ARM,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(42)));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The bare-cell face of the same bug: the produced union carries the
+// signature's `'r` cell itself as a member (plus never()'s fresh
+// tvar), and the coverage walk must recognize its own cell rather
+// than binding through it.
+const SELECT_UNION_PARAM_NEVER_ARM: &str = r#"
+{
+  let f = |x: ['r, i64]| -> ['r, i64] select 0 { 0 => x, _ => never() };
+  f("a")
+}
+"#;
+
+run!(
+    select_union_param_never_arm,
+    SELECT_UNION_PARAM_NEVER_ARM,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a");
+    graphix_package_core::testing::FuseExpect::Jit
+);

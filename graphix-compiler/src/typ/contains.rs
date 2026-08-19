@@ -971,7 +971,7 @@ impl Type {
             // (radio's `#selected: &['a, null]` against a 3-variant
             // union) could never typecheck at ANY site (task #47;
             // single-site repro, predates jul12).
-            (Self::Set(s0), Self::Set(s1))
+            (t0 @ Self::Set(s0), Self::Set(s1))
                 if s0.iter().any(
                     |m| matches!(m, Self::TVar(tv) if tv.read().typ.read().typ.is_none()),
                 ) =>
@@ -980,6 +980,38 @@ impl Type {
                 let bare = |t0: &&Self| matches!(t0, Self::TVar(tv) if tv.read().typ.read().typ.is_none());
                 let mut residue: LPooled<Vec<Type>> = LPooled::take();
                 for m in s1.iter() {
+                    // An rhs member equal (after deref) to the WHOLE
+                    // lhs set is covered reflexively — the verdict the
+                    // whole-set-equality arm gives, reached there by
+                    // recursion in the general arm below. As residue it
+                    // would bind the bare tvar to a set containing its
+                    // own cell, which the occurs check refuses.
+                    if m.with_deref(|md| matches!(md, Some(md) if t0 == md)) {
+                        if flags.contains(ContainsFlags::InitTVars) {
+                            let mut known = LPooled::take();
+                            t0.alias_tvars(&mut known);
+                            m.alias_tvars(&mut known);
+                        }
+                        continue;
+                    }
+                    // An rhs member that IS one of the lhs's own tvar
+                    // cells is covered reflexively too — the coverage
+                    // loop below skips bare lhs members (they must not
+                    // capture greedily), so without this the cell lands
+                    // in the residue and the bind closes a cycle.
+                    let own_cell = match m {
+                        Self::TVar(mtv) => s0.iter().any(|c| match c {
+                            Self::TVar(ctv) => Arc::ptr_eq(
+                                &ctv.read().typ,
+                                &mtv.read().typ,
+                            ),
+                            _ => false,
+                        }),
+                        _ => false,
+                    };
+                    if own_cell {
+                        continue;
+                    }
                     let mut covered = false;
                     for c in s0.iter().filter(|c| !bare(c)) {
                         if c.contains_int(probe, env, hist, m)? {
