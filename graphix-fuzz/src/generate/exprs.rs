@@ -658,7 +658,7 @@ fn try_str_builtin(
                 let s = gen_typed(ctx, rng, &GenType::Str, d);
                 // Raw string: `[...]` in a plain literal is
                 // INTERPOLATION.
-                return Some(format!("re::is_match(#pat: r'{pat}', {s})$"));
+                return Some(format!("re::is_match(#pat: r\"{pat}\", {s})$"));
             }
             let (f, lbl) =
                 [("contains", "part"), ("starts_with", "pfx"), ("ends_with", "sfx")]
@@ -722,7 +722,7 @@ fn try_str_builtin(
         GenType::Array(e) if **e == GenType::Str => {
             let pat = pick(rng, &["a", ",", "[0-9]"]);
             let src = gen_typed(ctx, rng, &GenType::Str, d);
-            Some(format!("re::split(#pat: r'{pat}', {src})$"))
+            Some(format!("re::split(#pat: r\"{pat}\", {src})$"))
         }
         _ => None,
     }

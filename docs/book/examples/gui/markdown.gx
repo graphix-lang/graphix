@@ -5,7 +5,7 @@ use gui::markdown;
 use gui::column;
 mod icon;
 
-let content = r'# Markdown Demo
+let content = r"# Markdown Demo
 
 This is **bold** and this is *italic*.
 
@@ -14,7 +14,7 @@ This is **bold** and this is *italic*.
 - Fifth item
 
 Here is a [link](https://graphix.dev) you can click.
-';
+";
 
 let col = column(
     #spacing: &20.0,

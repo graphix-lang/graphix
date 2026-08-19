@@ -9,14 +9,14 @@ use crate::{
 use ahash::AHashSet;
 use arcstr::{ArcStr, literal};
 use combine::{
-    EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, eof,
-    look_ahead, many, none_of, not_followed_by, optional,
+    EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, count_min_max,
+    eof, look_ahead, many, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
         range::{take_while, take_while1},
     },
-    position, sep_by1,
+    position, satisfy, sep_by1,
     stream::{
         Range,
         position::{self, SourcePosition},
@@ -28,8 +28,7 @@ use escaping::Escape;
 use netidx_core::path::Path;
 use netidx_value::Value;
 use netidx_value::parser::{
-    VAL_ESC, VAL_MUST_ESC, escaped_string, not_prefix, sep_by_tok, sep_by1_tok,
-    value as parse_value,
+    VAL_ESC, VAL_MUST_ESC, not_prefix, sep_by_tok, sep_by1_tok, value as parse_value,
 };
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
@@ -101,8 +100,8 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter(
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
-            "bytes",
-            "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch", "try",
+            "bytes", "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch",
+            "try",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -566,22 +565,37 @@ where
         })
 }
 
+/// Rust-style raw strings: `r"…"`, `r#"…"#`, `r##"…"##`, … — NO
+/// escapes at all (that is the point: every string is representable by
+/// choosing enough hashes; the old `r'…'` form's `\'` escape made the
+/// two-character sequence `\'` itself unrepresentable). The content
+/// ends at the FIRST `"` followed by the opener's hash count. No
+/// interpolation, no newline stripping — verbatim.
 fn raw_string<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    static MUST_ESC: [char; 2] = ['\\', '\''];
-    static ESC: LazyLock<Escape> =
-        LazyLock::new(|| Escape::new('\\', &MUST_ESC, &[], None).unwrap());
-    (
-        position(),
-        between(attempt(string("r\'")), token('\''), escaped_string(&MUST_ESC, &ESC)),
-    )
-        .map(|(pos, s): (_, String)| {
-            ExprKind::Constant(Value::String(s.into())).to_expr(pos)
+    (position(), attempt((token('r'), many::<String, _, _>(token('#')), token('"'))))
+        .then(|(pos, (_, hashes, _)): (_, (_, String, _))| {
+            let n = hashes.len();
+            (
+                many::<String, _, _>(choice((
+                    satisfy(|c| c != '"'),
+                    attempt(
+                        token('"').skip(not_followed_by(
+                            count_min_max::<Vec<char>, _, _>(n, n, token('#'))
+                                .map(|_| "raw string terminator"),
+                        )),
+                    ),
+                ))),
+                token('"'),
+                count_min_max::<Vec<char>, _, _>(n, n, token('#')),
+            )
+                .map(move |(s, _, _): (String, _, _)| (pos, s))
         })
+        .map(|(pos, s)| ExprKind::Constant(Value::String(s.into())).to_expr(pos))
 }
 
 fn select<I>() -> impl Parser<I, Output = Expr>

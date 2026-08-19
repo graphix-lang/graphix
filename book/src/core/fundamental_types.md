@@ -207,6 +207,52 @@ it.
 "this is a string with a [ and a ] but it isn't an interpolation"
 ```
 
+String literals may span multiple lines; the newlines become part of
+the string.
+
+### Triple Quoted Strings
+
+A string delimited by `"""` is identical to a normal string — the same
+escapes, the same interpolation — except that a bare `"` is legal
+content. That makes it the natural form for templates: blocks of text
+or code containing quotes, with reactive values spliced in.
+
+```graphix
+let name = "world";
+let page = """
+say "hello" to [name]
+'single quotes' and "double quotes" both fine
+value = [1 + 1]
+"""
+```
+
+One newline immediately after the opening `"""` is stripped, so the
+template's first line does not have to share a line with the
+delimiter. The content ends at the first unescaped `"""`; to include a
+literal `"""`, escape one of the quotes (`\"""`), and a `"` that would
+touch the closing delimiter must likewise be escaped (`"""ends in \""""`).
+Because interpolation is live, `\[` and `\]` still escape literal
+brackets.
+
+### Raw Strings
+
+A raw string is written `r"…"`, or with hashes — `r#"…"#`,
+`r##"…"##`, and so on — exactly as in Rust. There are NO escapes and
+no interpolation: the content is verbatim, ending at the first `"`
+followed by the opener's hash count. Any string at all can be written
+by choosing enough hashes. This is the form for embedding scripts,
+regexes, or other bracket- and backslash-heavy text:
+
+```graphix
+let pat = r"[\[\]0-9]+";
+let script = r#"
+awk '{ print "field:", $1 }'
+"#
+```
+
+Raw strings do not strip any newlines: the content is exactly what is
+between the delimiters.
+
 ## Any
 
 The `Any` type is a type that unifies with any other type, it corresponds to the

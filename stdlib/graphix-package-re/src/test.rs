@@ -3,7 +3,7 @@ use graphix_package_core::run;
 use netidx::subscriber::Value;
 
 const RE_IS_MATCH: &str = r#"
-  re::is_match(#pat:r'[\\[\\]0-9]+', r'foo[0]')
+  re::is_match(#pat:r"[\[\]0-9]+", r"foo[0]")
 "#;
 
 run!(re_is_match, RE_IS_MATCH, |v: Result<&Value>| {
@@ -14,7 +14,7 @@ run!(re_is_match, RE_IS_MATCH, |v: Result<&Value>| {
 });
 
 const RE_FIND: &str = r#"
-  re::find(#pat:r'foo', r'foobarfoobazfoo')
+  re::find(#pat:r"foo", r"foobarfoobazfoo")
 "#;
 
 run!(re_find, RE_FIND, |v: Result<&Value>| {
@@ -30,7 +30,7 @@ run!(re_find, RE_FIND, |v: Result<&Value>| {
 });
 
 const RE_CAPTURES: &str = r#"
-  re::captures(#pat:r'(fo)ob', r'foobarfoobazfoo')
+  re::captures(#pat:r"(fo)ob", r"foobarfoobazfoo")
 "#;
 
 run!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
@@ -54,7 +54,7 @@ run!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const RE_SPLIT: &str = r#"
-  re::split(#pat:r',\\s*', r'foo, bar, baz')
+  re::split(#pat:r",\s*", r"foo, bar, baz")
 "#;
 
 run!(re_split, RE_SPLIT, |v: Result<&Value>| {
@@ -70,7 +70,7 @@ run!(re_split, RE_SPLIT, |v: Result<&Value>| {
 });
 
 const RE_SPLITN: &str = r#"
-  re::splitn(#pat:r',\\s*', #limit:2, r'foo, bar, baz')
+  re::splitn(#pat:r",\s*", #limit:2, r"foo, bar, baz")
 "#;
 
 run!(re_splitn, RE_SPLITN, |v: Result<&Value>| {

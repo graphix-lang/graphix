@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9732f144.js";
+            window.path_to_searchindex_js = "searchindex-09db1113.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -821,6 +821,41 @@ it.</p>
 -: string
 "this is a string with a [ and a ] but it isn't an interpolation"
 </code></pre>
+<p>String literals may span multiple lines; the newlines become part of
+the string.</p>
+<h3 id="triple-quoted-strings"><a class="header" href="#triple-quoted-strings">Triple Quoted Strings</a></h3>
+<p>A string delimited by <code>"""</code> is identical to a normal string — the same
+escapes, the same interpolation — except that a bare <code>"</code> is legal
+content. That makes it the natural form for templates: blocks of text
+or code containing quotes, with reactive values spliced in.</p>
+<pre><code class="language-graphix">let name = "world";
+let page = """
+say "hello" to [name]
+'single quotes' and "double quotes" both fine
+value = [1 + 1]
+"""
+</code></pre>
+<p>One newline immediately after the opening <code>"""</code> is stripped, so the
+template’s first line does not have to share a line with the
+delimiter. The content ends at the first unescaped <code>"""</code>; to include a
+literal <code>"""</code>, escape one of the quotes (<code>\"""</code>), and a <code>"</code> that would
+touch the closing delimiter must likewise be escaped (<code>"""ends in \""""</code>).
+Because interpolation is live, <code>\[</code> and <code>\]</code> still escape literal
+brackets.</p>
+<h3 id="raw-strings"><a class="header" href="#raw-strings">Raw Strings</a></h3>
+<p>A raw string is written <code>r"…"</code>, or with hashes — <code>r#"…"#</code>,
+<code>r##"…"##</code>, and so on — exactly as in Rust. There are NO escapes and
+no interpolation: the content is verbatim, ending at the first <code>"</code>
+followed by the opener’s hash count. Any string at all can be written
+by choosing enough hashes. This is the form for embedding scripts,
+regexes, or other bracket- and backslash-heavy text:</p>
+<pre><code class="language-graphix">let pat = r"[\[\]0-9]+";
+let script = r#"
+awk '{ print "field:", $1 }'
+"#
+</code></pre>
+<p>Raw strings do not strip any newlines: the content is exactly what is
+between the delimiters.</p>
 <h2 id="any"><a class="header" href="#any">Any</a></h2>
 <p>The <code>Any</code> type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
@@ -11219,11 +11254,11 @@ use gui::image;
 use gui::column;
 mod icon;
 
-let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"&gt;
+let svg_content = r##"&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"&gt;
   &lt;circle cx="100" cy="100" r="80" fill="#4a9eff" opacity="0.8"/&gt;
   &lt;circle cx="100" cy="100" r="50" fill="#ff6b6b" opacity="0.8"/&gt;
   &lt;circle cx="100" cy="100" r="25" fill="#ffd93d" opacity="0.9"/&gt;
-&lt;/svg&gt;';
+&lt;/svg&gt;"##;
 
 [&amp;window(
     #icon: &amp;icon::icon,
@@ -11701,7 +11736,7 @@ use gui::markdown;
 use gui::column;
 mod icon;
 
-let content = r'# Markdown Demo
+let content = r"# Markdown Demo
 
 This is **bold** and this is *italic*.
 
@@ -11710,7 +11745,7 @@ This is **bold** and this is *italic*.
 - Fifth item
 
 Here is a [link](https://graphix.dev) you can click.
-';
+";
 
 let col = column(
     #spacing: &amp;20.0,

@@ -945,9 +945,112 @@ impl ExprKind {
             }
             write!(f, "{close}")
         }
+        // Multiline strings print in the form a human would write them:
+        // a constant with newlines as a raw string (`r#"…"#`, verbatim
+        // — hash count one past the longest `#` run following any `"`
+        // in the content), an interpolation with newlines as a
+        // triple-quoted template. Content with control characters
+        // other than \n/\t (raw) or \n/\t/\r/\0 (triple) keeps the
+        // escaped single-line form — escapes are the only readable
+        // spelling for those anyway. Both forms reparse to the
+        // identical AST (adjacent literal parts merge in the parser).
+        fn raw_printable(s: &str) -> bool {
+            s.contains('\n')
+                && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+        }
+        fn raw_hashes(s: &str) -> usize {
+            let mut n = 0;
+            let mut run: Option<usize> = None;
+            for c in s.chars() {
+                match (c, &mut run) {
+                    ('"', _) => run = Some(0),
+                    ('#', Some(r)) => {
+                        *r += 1;
+                        n = n.max(*r);
+                    }
+                    _ => {
+                        if let Some(r) = run.take() {
+                            n = n.max(r);
+                        }
+                    }
+                }
+            }
+            if let Some(r) = run {
+                n = n.max(r);
+            }
+            if s.contains('"') { n + 1 } else { 0 }
+        }
+        fn write_raw(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+            let n = raw_hashes(s);
+            write!(f, "r")?;
+            for _ in 0..n {
+                write!(f, "#")?;
+            }
+            write!(f, "\"{s}\"")?;
+            for _ in 0..n {
+                write!(f, "#")?;
+            }
+            Ok(())
+        }
+        fn triple_printable(args: &[Expr]) -> bool {
+            let mut any_nl = false;
+            for a in args {
+                if let ExprKind::Constant(Value::String(s)) = &a.kind {
+                    if s.contains('\n') {
+                        any_nl = true;
+                    }
+                    if s.chars().any(|c| {
+                        c.is_control() && c != '\n' && c != '\t' && c != '\r' && c != '\0'
+                    }) {
+                        return false;
+                    }
+                }
+            }
+            any_nl
+        }
+        // One literal part of a triple template. A `"` prints bare
+        // unless it would touch another quote (within the part, the
+        // next part's first char, or the closing delimiter) — those
+        // print `\"` so no unescaped `"""` can form. The very first
+        // content char must not be a real newline (the parser strips
+        // one there), so it prints as the `\n` escape.
+        fn write_triple_lit(
+            f: &mut fmt::Formatter<'_>,
+            s: &str,
+            first_content: bool,
+            next_starts_quote: bool,
+            is_final: bool,
+        ) -> fmt::Result {
+            let chars: Vec<char> = s.chars().collect();
+            for (i, c) in chars.iter().enumerate() {
+                let last = i + 1 == chars.len();
+                match c {
+                    '\\' => write!(f, "\\\\")?,
+                    '[' => write!(f, "\\[")?,
+                    ']' => write!(f, "\\]")?,
+                    '\t' => write!(f, "\\t")?,
+                    '\r' => write!(f, "\\r")?,
+                    '\0' => write!(f, "\\0")?,
+                    '\n' if i == 0 && first_content => write!(f, "\\n")?,
+                    '\n' => writeln!(f)?,
+                    '"' => {
+                        let touches = chars.get(i + 1) == Some(&'"')
+                            || (last && next_starts_quote)
+                            || (last && is_final);
+                        if touches { write!(f, "\\\"")? } else { write!(f, "\"")? }
+                    }
+                    c => write!(f, "{c}")?,
+                }
+            }
+            Ok(())
+        }
         match self {
-            ExprKind::Constant(v @ Value::String(_)) => {
-                v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
+            ExprKind::Constant(v @ Value::String(s)) => {
+                if raw_printable(s) {
+                    write_raw(f, s)
+                } else {
+                    v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
+                }
             }
             ExprKind::NoOp => Ok(()),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),
@@ -1037,19 +1140,46 @@ impl ExprKind {
                 Some(t) => write!(f, "catch({}: {t}) {}", c.bind, c.handler),
             },
             ExprKind::StringInterpolate { args } => {
-                write!(f, "\"")?;
-                for s in args.iter() {
-                    match &s.kind {
-                        ExprKind::Constant(Value::String(s)) if s.len() > 0 => {
-                            let es = parser::GRAPHIX_ESC.escape(&*s);
-                            write!(f, "{es}",)?;
-                        }
-                        s => {
-                            write!(f, "[{s}]")?;
+                if triple_printable(args) {
+                    write!(f, "\"\"\"")?;
+                    for (idx, a) in args.iter().enumerate() {
+                        match &a.kind {
+                            ExprKind::Constant(Value::String(s)) if s.len() > 0 => {
+                                let next_starts_quote =
+                                    args.get(idx + 1).is_some_and(|n| {
+                                        matches!(
+                                            &n.kind,
+                                            ExprKind::Constant(Value::String(t))
+                                                if t.starts_with('"')
+                                        )
+                                    });
+                                write_triple_lit(
+                                    f,
+                                    s,
+                                    idx == 0,
+                                    next_starts_quote,
+                                    idx + 1 == args.len(),
+                                )?;
+                            }
+                            other => write!(f, "[{other}]")?,
                         }
                     }
+                    write!(f, "\"\"\"")
+                } else {
+                    write!(f, "\"")?;
+                    for s in args.iter() {
+                        match &s.kind {
+                            ExprKind::Constant(Value::String(s)) if s.len() > 0 => {
+                                let es = parser::GRAPHIX_ESC.escape(&*s);
+                                write!(f, "{es}",)?;
+                            }
+                            s => {
+                                write!(f, "[{s}]")?;
+                            }
+                        }
+                    }
+                    write!(f, "\"")
                 }
-                write!(f, "\"")
             }
             ExprKind::ArrayRef { source, i } => {
                 if prints_as_bare_postfix(source) {

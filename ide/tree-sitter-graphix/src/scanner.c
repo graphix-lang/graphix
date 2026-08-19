@@ -4,6 +4,8 @@ enum TokenType {
   STRING_CONTENT,
   VALUE_EXTENSION,
   BARE_VALUE,
+  RAW_STRING,
+  TRIPLE_CONTENT,
   ERROR_SENTINEL,
 };
 
@@ -23,6 +25,61 @@ static int consume_value_chars(TSLexer *lexer) {
     count++;
   }
   return count;
+}
+
+// The VALUE_EXTENSION consume loop, shared with the raw-string probe's
+// fallback (a non-raw `r` is a valid extension prefix already consumed).
+static void scan_value_extension_tail(TSLexer *lexer) {
+  while (true) {
+    int32_t c = lexer->lookahead;
+    if (is_value_char(c)) {
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+    } else if (c == '.') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead == '.') {
+        break;
+      }
+      lexer->mark_end(lexer);
+    } else if (c == '-') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead >= '0' && lexer->lookahead <= '9') {
+        lexer->mark_end(lexer);
+      } else {
+        break;
+      }
+    } else if (c == ':') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead >= '0' && lexer->lookahead <= '9') {
+        lexer->mark_end(lexer);
+      } else {
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+}
+
+// BARE_VALUE pattern 3 with the first ident char already consumed:
+// ident chars until a special char commits, anything else refuses.
+static bool scan_bare_ident_tail(TSLexer *lexer) {
+  while (true) {
+    int32_t c = lexer->lookahead;
+    if (c == '=' || c == '+' || c == '/') {
+      lexer->advance(lexer, false);
+      consume_value_chars(lexer);
+      lexer->mark_end(lexer);
+      lexer->result_symbol = BARE_VALUE;
+      return true;
+    }
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '_') {
+      lexer->advance(lexer, false);
+    } else {
+      return false;
+    }
+  }
 }
 
 void *tree_sitter_graphix_external_scanner_create(void) {
@@ -51,6 +108,76 @@ bool tree_sitter_graphix_external_scanner_scan(
   // we know we're in error recovery — bail out.
   if (valid_symbols[ERROR_SENTINEL]) return false;
 
+  if (valid_symbols[RAW_STRING]) {
+    // r"..." with 0..N hashes: r#"..."#, r##"..."##, ... Content is
+    // VERBATIM (no escapes); it ends at the FIRST '"' followed by the
+    // opener's hash count. Returning false restores the lexer
+    // (including skipped whitespace), so an identifier starting with
+    // 'r' falls through to the internal lexer. Externals run BEFORE
+    // whitespace skipping, so skip it here or the probe only ever
+    // sees the space in `= r"…"`.
+    bool skipped_ws = false;
+    while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
+           lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+      lexer->advance(lexer, true);
+      skipped_ws = true;
+    }
+    if (lexer->lookahead == 'r') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead == '#' || lexer->lookahead == '"') {
+        int hashes = 0;
+        while (lexer->lookahead == '#') {
+          lexer->advance(lexer, false);
+          hashes++;
+        }
+        if (lexer->lookahead == '"') {
+          lexer->advance(lexer, false);
+          while (lexer->lookahead != 0) {
+            if (lexer->lookahead == '"') {
+              lexer->advance(lexer, false);
+              int seen = 0;
+              while (seen < hashes && lexer->lookahead == '#') {
+                lexer->advance(lexer, false);
+                seen++;
+              }
+              if (seen == hashes) {
+                lexer->mark_end(lexer);
+                lexer->result_symbol = RAW_STRING;
+                return true;
+              }
+              // Not the terminator — the quote and hashes were content.
+              continue;
+            }
+            lexer->advance(lexer, false);
+          }
+        }
+        return false;
+      }
+      // A non-raw `r`: the consumed char is a valid PREFIX of the
+      // value-extension and bare-value tokens, so continue as those
+      // when they're valid here (returning false instead would kill
+      // them — `bytes:ricx…AO=` misparsed the moment `r` became a raw
+      // opener). Adjacency tokens never follow skipped whitespace.
+      if (!skipped_ws && valid_symbols[VALUE_EXTENSION]) {
+        lexer->result_symbol = VALUE_EXTENSION;
+        lexer->mark_end(lexer);
+        scan_value_extension_tail(lexer);
+        return true;
+      }
+      if (!skipped_ws && valid_symbols[BARE_VALUE]) {
+        return scan_bare_ident_tail(lexer);
+      }
+      return false;
+    }
+    if (skipped_ws) {
+      // Whitespace consumed: the adjacency tokens below would misread
+      // the post-whitespace char as adjacent. Refuse — exactly what
+      // they did when they saw the whitespace themselves.
+      return false;
+    }
+    // No whitespace, not `r` — fall through to the other symbols.
+  }
+
   if (valid_symbols[VALUE_EXTENSION]) {
     // Greedily consume adjacent value characters after a literal in type
     // ascription context. This runs BEFORE whitespace is consumed, so if
@@ -67,40 +194,7 @@ bool tree_sitter_graphix_external_scanner_scan(
 
     lexer->result_symbol = VALUE_EXTENSION;
     lexer->mark_end(lexer);
-
-    while (true) {
-      int32_t c = lexer->lookahead;
-      if (is_value_char(c)) {
-        lexer->advance(lexer, false);
-        lexer->mark_end(lexer);
-      } else if (c == '.') {
-        // Consume '.' only if not followed by another '.' (preserve '..' range)
-        lexer->advance(lexer, false);
-        if (lexer->lookahead == '.') {
-          break;
-        }
-        lexer->mark_end(lexer);
-      } else if (c == '-') {
-        // Consume '-' only if followed by a digit (datetime like 2024-01-01)
-        lexer->advance(lexer, false);
-        if (lexer->lookahead >= '0' && lexer->lookahead <= '9') {
-          lexer->mark_end(lexer);
-        } else {
-          break;
-        }
-      } else if (c == ':') {
-        // Consume ':' only if followed by a digit (datetime like 00:00:00)
-        lexer->advance(lexer, false);
-        if (lexer->lookahead >= '0' && lexer->lookahead <= '9') {
-          lexer->mark_end(lexer);
-        } else {
-          break;
-        }
-      } else {
-        break;
-      }
-    }
-
+    scan_value_extension_tail(lexer);
     return true;
   }
 
@@ -161,6 +255,44 @@ bool tree_sitter_graphix_external_scanner_scan(
       }
     }
 
+    return false;
+  }
+
+  if (valid_symbols[TRIPLE_CONTENT]) {
+    // Content of a triple-quoted string: like STRING_CONTENT but a
+    // quote is ordinary content unless it begins the closing """.
+    bool has = false;
+    while (lexer->lookahead != 0) {
+      int32_t c = lexer->lookahead;
+      if (c == '\\' || c == '[' || c == ']') break;
+      if (c == '"') {
+        // Peek: two more quotes end the string. Anything shorter is
+        // content — mark_end only advances past CONFIRMED content, so
+        // returning here leaves the terminator for the parser.
+        lexer->mark_end(lexer);
+        lexer->advance(lexer, false);
+        if (lexer->lookahead != '"') {
+          has = true;
+          lexer->mark_end(lexer);
+          continue;
+        }
+        lexer->advance(lexer, false);
+        if (lexer->lookahead != '"') {
+          has = true;
+          lexer->mark_end(lexer);
+          continue;
+        }
+        // A full """ — stop before it (mark_end already set).
+        break;
+      }
+      has = true;
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+    }
+    if (has) {
+      lexer->result_symbol = TRIPLE_CONTENT;
+      return true;
+    }
     return false;
   }
 

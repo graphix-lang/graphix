@@ -367,14 +367,14 @@ pub(super) fn gen_dynamic_module(
     // a raw string recognizes, and a generated body can contain BOTH
     // characters (the escaped-bracket string-interp shape emits `\[`,
     // which an unescaped raw string rejects as a parse error).
-    // Backslashes first, so the quote escape's own backslash isn't
-    // doubled.
-    let src =
-        src.trim_end().trim_end_matches(';').replace('\\', "\\\\").replace('\'', "\\'");
+    // Counted-hash raw strings are verbatim — no escaping at all;
+    // one hash suffices unless the source itself contains `"#`.
+    let src = src.trim_end().trim_end_matches(';');
+    let hashes = if src.contains("\"#") { "##" } else { "#" };
     let status = ctx.fresh();
     let mut stmts = vec![format!(
         "let {status} = mod {dname} dynamic {{ sandbox whitelist {whitelist}; \
-         sig {{ {} }}; source r'{src}' }}",
+         sig {{ {} }}; source r{hashes}\"{src}\"{hashes} }}",
         sig.trim_end().trim_end_matches(';')
     )];
     // Consume ONE public fn through the status gate; the result enters

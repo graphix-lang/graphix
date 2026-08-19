@@ -44,7 +44,7 @@ let hosts = ["ryouko", "hz0", "aieka", "katana"];
 //
 // The last counter line of each source is republished every few seconds.
 // That reduction belongs here, next to the log, not in the dashboard.
-let remote = r'
+let remote = r#"
 while :; do
   # Re-resolve the campaign EVERY cycle. Binding it once at connect time
   # meant a probe kept watching whichever campaign existed when it
@@ -57,12 +57,12 @@ while :; do
   pid=$(cat "$d/state/soak.pid" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=yes; else live=no; fi
   echo "LIVE $c $live"
-  tail -n 400 "$d/soak.log" 2>/dev/null | awk -v c="$c" \'
+  tail -n 400 "$d/soak.log" 2>/dev/null | awk -v c="$c" '
     / run, / { split($1, a, "…"); last[a[1]] = a[2] " " $3 " " $5 " " $7 " " $10 " " $13 }
-    END { for (k in last) print "LANE " c " " k " " last[k] }\'
+    END { for (k in last) print "LANE " c " " k " " last[k] }'
   sleep 5
 done
-';
+"#;
 
 type Lane = {
   runs: string,

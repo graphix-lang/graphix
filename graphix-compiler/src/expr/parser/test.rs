@@ -73,9 +73,58 @@ fn escaped_string() {
 
 #[test]
 fn raw_string() {
-    let s = r#"r'[]asd[[][]askj'"#;
-    let p = Value::String(literal!(r#"[]asd[[][]askj"#));
-    assert_eq!(ExprKind::Constant(p).to_expr_nopos(), parse_one(&s).unwrap());
+    // No escapes at all: brackets, backslashes, and quotes (with
+    // enough hashes) pass through verbatim.
+    let cases: &[(&str, &str)] = &[
+        (r####"r"[]asd[[][]askj""####, "[]asd[[][]askj"),
+        (r####"r"no hashes""####, "no hashes"),
+        (r####"r#"has "quotes" and \back\"#"####, r#"has "quotes" and \back\"#),
+        (r####"r##"contains "# inside"##"####, r##"contains "# inside"##),
+        ("r#\"multi\nline\"#", "multi\nline"),
+        (r####"r#"ends with quote""#"####, r#"ends with quote""#),
+        (r####"r#"\'"#"####, r"\'"),
+    ];
+    for (src, want) in cases {
+        let p = Value::String((*want).into());
+        assert_eq!(
+            ExprKind::Constant(p).to_expr_nopos(),
+            parse_one(src).unwrap(),
+            "case: {src}"
+        );
+    }
+    // A quote followed by MORE hashes than the opener is a terminator
+    // plus stray hashes — an error, exactly Rust's rule.
+    assert!(parse_one(r####"r#"x"##"####).is_err());
+    // The retired r'…' form no longer parses.
+    assert!(parse_one("r'old form'").is_err());
+}
+
+#[test]
+fn triple_string() {
+    // Identical to the normal form — same escapes, same interpolation
+    // — except bare `"` is legal and one newline straight after the
+    // opener is stripped.
+    let cases: &[(&str, &str)] = &[
+        ("\"\"\"say \"hi\" and 'hi'\"\"\"", "say \"hi\" and 'hi'"),
+        ("\"\"\"\nfirst\nsecond\"\"\"", "first\nsecond"),
+        ("\"\"\"\\nreal leading newline\"\"\"", "\nreal leading newline"),
+        ("\"\"\"\"\"\"", ""),
+        ("\"\"\"a \"\" b \\\"\"\" c\"\"\"", "a \"\" b \"\"\" c"),
+        ("\"\"\"esc \\[lit\\] ok\"\"\"", "esc [lit] ok"),
+    ];
+    for (src, want) in cases {
+        let p = Value::String((*want).into());
+        assert_eq!(
+            ExprKind::Constant(p).to_expr_nopos(),
+            parse_one(src).unwrap(),
+            "case: {src}"
+        );
+    }
+    // Interpolation stays live inside triple quotes.
+    let e = parse_one("\"\"\"v = [x]\"\"\"").unwrap();
+    assert!(matches!(&e.kind, ExprKind::StringInterpolate { .. }), "{e:?}");
+    // A content quote may not touch the closing delimiter unescaped.
+    assert!(parse_one("\"\"\"x\"\"\"\"").is_err());
 }
 
 // ── retained comments ──

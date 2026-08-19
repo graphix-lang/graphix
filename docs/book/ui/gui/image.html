@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-9732f144.js";
+            window.path_to_searchindex_js = "../../searchindex-09db1113.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -261,11 +261,11 @@ use gui::image;
 use gui::column;
 mod icon;
 
-let svg_content = r'&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"&gt;
+let svg_content = r##"&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"&gt;
   &lt;circle cx="100" cy="100" r="80" fill="#4a9eff" opacity="0.8"/&gt;
   &lt;circle cx="100" cy="100" r="50" fill="#ff6b6b" opacity="0.8"/&gt;
   &lt;circle cx="100" cy="100" r="25" fill="#ffd93d" opacity="0.9"/&gt;
-&lt;/svg&gt;';
+&lt;/svg&gt;"##;
 
 [&amp;window(
     #icon: &amp;icon::icon,

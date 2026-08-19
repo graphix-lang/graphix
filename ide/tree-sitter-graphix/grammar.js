@@ -19,6 +19,8 @@ module.exports = grammar({
     $._string_content,
     $._value_extension,  // greedy value chars after a literal in type ascription
     $._bare_value,       // bare values like base64 (external to beat line_comment on //)
+    $._raw_string,       // r"..." / r#"..."# / r##"..."## — counted hashes, verbatim
+    $._triple_content,   // triple-string content: bare quotes legal, stops at \ [ ] or """
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
@@ -580,7 +582,7 @@ module.exports = grammar({
     type_ascription: $ => seq(
       choice($.identifier, $.primitive_type),
       ':',
-      choice($._typed_value, $.string, $.value_string, $.raw_string),
+      choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
     ),
 
     // Non-string values that can appear after the colon in type ascription.
@@ -719,6 +721,7 @@ module.exports = grammar({
       $.reference,
       $.builtin_ref,
       $.string,
+      $.triple_string,
       $.raw_string,
       $.type_ascription,
       $.array,
@@ -818,13 +821,24 @@ module.exports = grammar({
       ']',
     ),
 
-    raw_string: $ => seq(
-      "r'",
-      optional($.raw_string_content),
-      "'",
-    ),
+    // Rust-style raw string: r"..." with 0..N hashes (r#"..."#, ...).
+    // Entirely scanned externally (the hash count is dynamic).
+    raw_string: $ => $._raw_string,
 
-    raw_string_content: $ => token.immediate(/[^']*/),
+    // Triple-quoted interpolating string: identical to `string` except
+    // bare quotes are legal content (the external content token stops
+    // only at \, [, ] or the closing """), and one newline straight
+    // after the opener is stripped by the compiler (lexically it is
+    // just content here).
+    triple_string: $ => seq(
+      '"""',
+      repeat(choice(
+        $.escape_sequence,
+        alias($._triple_content, $.string_content),
+        $.interpolation,
+      )),
+      '"""',
+    ),
 
     // Reference
     reference: $ => $.module_path,

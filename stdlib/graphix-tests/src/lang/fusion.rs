@@ -54,7 +54,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
-        .load(Source::Internal(ArcStr::from("re::is_match(#pat:r'a', \"abc\")?\n")))
+        .load(Source::Internal(ArcStr::from("re::is_match(#pat:r\"a\", \"abc\")?\n")))
         .await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));

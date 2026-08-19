@@ -505,13 +505,13 @@ fn dyn_reload(
                 // bodies held nothing but a lambda def).
                 let k = 1 + rng.below(5) as i64;
                 format!(
-                    "r'let f = |{p}: i64| -> i64 {body}; \
+                    "r#\"let f = |{p}: i64| -> i64 {body}; \
                      let q = f(i64:{k}) * i64:5; \
                      let z = array::len([q, q + i64:1, f(i64:{k} + i64:2)]); \
-                     let w = q + z'"
+                     let w = q + z\"#"
                 )
             } else {
-                format!("r'let f = |{p}: i64| -> i64 {body}'")
+                format!("r#\"let f = |{p}: i64| -> i64 {body}\"#")
             }
         })
         .collect();

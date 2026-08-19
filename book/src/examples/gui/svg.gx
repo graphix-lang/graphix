@@ -4,11 +4,11 @@ use gui::image;
 use gui::column;
 mod icon;
 
-let svg_content = r'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+let svg_content = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
   <circle cx="100" cy="100" r="80" fill="#4a9eff" opacity="0.8"/>
   <circle cx="100" cy="100" r="50" fill="#ff6b6b" opacity="0.8"/>
   <circle cx="100" cy="100" r="25" fill="#ffd93d" opacity="0.9"/>
-</svg>';
+</svg>"##;
 
 [&window(
     #icon: &icon::icon,

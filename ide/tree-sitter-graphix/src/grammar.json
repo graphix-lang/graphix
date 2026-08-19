@@ -3267,6 +3267,10 @@
             },
             {
               "type": "SYMBOL",
+              "name": "triple_string"
+            },
+            {
+              "type": "SYMBOL",
               "name": "value_string"
             },
             {
@@ -4200,6 +4204,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "triple_string"
+        },
+        {
+          "type": "SYMBOL",
           "name": "raw_string"
         },
         {
@@ -4482,36 +4490,46 @@
       ]
     },
     "raw_string": {
+      "type": "SYMBOL",
+      "name": "_raw_string"
+    },
+    "triple_string": {
       "type": "SEQ",
       "members": [
         {
           "type": "STRING",
-          "value": "r'"
+          "value": "\"\"\""
         },
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "raw_string_content"
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
+          "type": "REPEAT",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "escape_sequence"
+              },
+              {
+                "type": "ALIAS",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_triple_content"
+                },
+                "named": true,
+                "value": "string_content"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "interpolation"
+              }
+            ]
+          }
         },
         {
           "type": "STRING",
-          "value": "'"
+          "value": "\"\"\""
         }
       ]
-    },
-    "raw_string_content": {
-      "type": "IMMEDIATE_TOKEN",
-      "content": {
-        "type": "PATTERN",
-        "value": "[^']*"
-      }
     },
     "reference": {
       "type": "SYMBOL",
@@ -5643,6 +5661,14 @@
     {
       "type": "SYMBOL",
       "name": "_bare_value"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_raw_string"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_triple_content"
     },
     {
       "type": "SYMBOL",
