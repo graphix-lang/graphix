@@ -219,7 +219,7 @@ impl Schedule {
 /// The v1 injectable scalar set: i64, f64, bool. Rendering must
 /// round-trip exactly (Rust's shortest-roundtrip float formatting;
 /// `NaN`/`inf` parse back via `f64::from_str`).
-fn render_value(v: &Value) -> String {
+pub(crate) fn render_value(v: &Value) -> String {
     match v {
         Value::I64(n) => format!("i64:{n}"),
         Value::F64(f) => format!("f64:{f}"),
@@ -228,7 +228,7 @@ fn render_value(v: &Value) -> String {
     }
 }
 
-fn parse_value(lit: &str) -> Result<Value, String> {
+pub(crate) fn parse_value(lit: &str) -> Result<Value, String> {
     let (t, l) = lit.split_once(':').ok_or_else(|| format!("bad literal `{lit}`"))?;
     match t {
         "i64" => l.parse().map(Value::I64).map_err(|e| format!("bad i64 `{l}`: {e}")),
@@ -238,7 +238,7 @@ fn parse_value(lit: &str) -> Result<Value, String> {
     }
 }
 
-fn value_kind(v: &Value) -> u8 {
+pub(crate) fn value_kind(v: &Value) -> u8 {
     match v {
         Value::I64(_) => 0,
         Value::F64(_) => 1,
@@ -247,7 +247,7 @@ fn value_kind(v: &Value) -> u8 {
     }
 }
 
-fn canonical(v: &Value) -> (&'static str, Value) {
+pub(crate) fn canonical(v: &Value) -> (&'static str, Value) {
     match v {
         Value::I64(_) => ("i64", Value::I64(0)),
         Value::F64(_) => ("f64", Value::F64(0.0)),

@@ -940,8 +940,18 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // refuse. Found by the netidx-admin dogfood campaign
         // (2026-08-18).
         if explicit && mentions_abstract(&ctx.env, &type_predicate, 0) {
+            // Name the type as the USER wrote it (the unresolved spec
+            // form): the resolved Type renders an Abstract as its raw
+            // process-global id — useless to the reader, and unstable
+            // across concurrent compiles (it flaked selfcheck's
+            // CompileErr comparison, 2026-08-19).
+            let written = spec
+                .type_predicate
+                .as_ref()
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| type_predicate.to_string());
             bail!(
-                "can't match on the abstract type {type_predicate}: its \
+                "can't match on the abstract type {written}: its \
                  representation is hidden, so runtime dispatch cannot verify \
                  it. Dissect a result union with `?` or `$`, or use an \
                  accessor exported by the type's module"

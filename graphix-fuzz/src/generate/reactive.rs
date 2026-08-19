@@ -43,6 +43,12 @@ pub struct ReactiveStats {
 /// Generate one reactive WRAPPER (schedule header + body) with the
 /// default profile.
 pub fn gen_reactive_program(rng: &mut Rng) -> String {
+    // A slice of the reactive lane carries metamorphic twin programs
+    // (schedule- or callable-form) — the symmetric-bug and embedder-
+    // dispatch coverage (see `generate::twin`).
+    if rng.below(100) < 15 {
+        return super::twin::gen_twin_program(rng);
+    }
     gen_reactive_stats(&GenCfg::default(), rng).0
 }
 

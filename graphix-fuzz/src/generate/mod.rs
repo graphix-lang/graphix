@@ -33,6 +33,7 @@ mod funcs;
 mod modules;
 mod patterns;
 pub mod reactive;
+pub mod twin;
 mod types;
 
 pub use types::GenType;
