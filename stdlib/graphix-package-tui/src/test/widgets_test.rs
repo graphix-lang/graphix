@@ -446,3 +446,71 @@ let result = overlay(#layers: &layers, base)
     );
     Ok(())
 }
+
+// ── line_edit ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn line_edit_types_moves_and_deletes() -> Result<()> {
+    use crossterm::event::{Event, KeyCode, KeyEvent};
+    use netidx::publisher::Value;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui;
+use tui::input_handler;
+use tui::line_edit;
+use tui::text;
+let ed = line_edit::state("");
+let v = ed.value;
+let cur = ed.cursor;
+let handle = |e: Event| -> [`Stop, `Continue] line_edit::handle(&ed, e);
+let result = input_handler(#handle: &handle, &text(&[line_edit::view(&ed)]))
+"#,
+    )
+    .await?;
+    h.watch("test::v").await?;
+    h.watch("test::cur").await?;
+    h.render()?;
+    for c in ['h', 'i', '!'] {
+        h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char(c)))).await?;
+    }
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("hi!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(3)));
+    // Left over the '!' then backspace deletes the 'i'.
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Left))).await?;
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Backspace))).await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("h!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(1)));
+    // Home then a character prepends.
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Home))).await?;
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Char('X')))).await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("Xh!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(1)));
+    // End then Delete is a no-op at the boundary.
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::End))).await?;
+    h.dispatch_event(Event::Key(KeyEvent::from(KeyCode::Delete))).await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("Xh!")));
+    assert_eq!(h.get_watched("test::cur"), Some(&Value::I64(3)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn line_edit_masks_secrets() -> Result<()> {
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui;
+use tui::line_edit;
+use tui::text;
+let ed = line_edit::state("abc");
+let result = text(&[line_edit::view(#mask: "*", &ed)])
+"#,
+    )
+    .await?;
+    let lines = h.render_lines()?;
+    assert!(lines[0].contains("***"), "mask missing: {:?}", lines[0]);
+    assert!(!lines[0].contains("abc"), "secret leaked: {:?}", lines[0]);
+    Ok(())
+}

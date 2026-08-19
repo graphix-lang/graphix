@@ -139,7 +139,14 @@ impl FromValue for ModifierV {
             for s in o {
                 match &*s {
                     "Bold" => m |= Modifier::BOLD,
+                    "Dim" => m |= Modifier::DIM,
                     "Italic" => m |= Modifier::ITALIC,
+                    "Underlined" => m |= Modifier::UNDERLINED,
+                    "SlowBlink" => m |= Modifier::SLOW_BLINK,
+                    "RapidBlink" => m |= Modifier::RAPID_BLINK,
+                    "Reversed" => m |= Modifier::REVERSED,
+                    "Hidden" => m |= Modifier::HIDDEN,
+                    "CrossedOut" => m |= Modifier::CROSSED_OUT,
                     s => bail!("invalid modifier {s}"),
                 }
             }

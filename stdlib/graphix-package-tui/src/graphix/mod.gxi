@@ -43,7 +43,14 @@ type Color = [
 
 type Modifier = [
   `Bold,
-  `Italic
+  `Dim,
+  `Italic,
+  `Underlined,
+  `SlowBlink,
+  `RapidBlink,
+  `Reversed,
+  `Hidden,
+  `CrossedOut
 ];
 
 type Alignment = [
@@ -156,4 +163,5 @@ mod table;
 mod calendar;
 mod canvas;
 mod overlay;
+mod line_edit;
 mod browser;

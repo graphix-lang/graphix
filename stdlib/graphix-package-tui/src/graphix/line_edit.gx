@@ -1,0 +1,111 @@
+let state = |initial: string| -> State {
+    value: initial,
+    cursor: str::len(initial)
+};
+
+let handle = |st: &State, e: input_handler::Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            c@ `Char(ch) => {
+                let s = c ~ *st;
+                let n = str::len(s.value);
+                *st <- {
+                    value: "[str::sub(#start:0, #len:s.cursor, s.value)$][ch][str::sub(#start:s.cursor, #len:n - s.cursor, s.value)$]",
+                    cursor: s.cursor + 1
+                };
+                `Stop
+            },
+            c@ `Backspace => {
+                let s = c ~ *st;
+                let n = str::len(s.value);
+                select s.cursor {
+                    cur if cur > 0 => *st <- {
+                        value: "[str::sub(#start:0, #len:cur - 1, s.value)$][str::sub(#start:cur, #len:n - cur, s.value)$]",
+                        cursor: cur - 1
+                    },
+                    _ => never()
+                };
+                `Stop
+            },
+            c@ `Delete => {
+                let s = c ~ *st;
+                let n = str::len(s.value);
+                select s.cursor {
+                    cur if cur < n => *st <- {
+                        s with value: "[str::sub(#start:0, #len:cur, s.value)$][str::sub(#start:cur + 1, #len:n - cur - 1, s.value)$]"
+                    },
+                    _ => never()
+                };
+                `Stop
+            },
+            c@ `Left => {
+                let s = c ~ *st;
+                *st <- { s with cursor: max(0, s.cursor - 1) };
+                `Stop
+            },
+            c@ `Right => {
+                let s = c ~ *st;
+                *st <- { s with cursor: min(str::len(s.value), s.cursor + 1) };
+                `Stop
+            },
+            c@ `Home => {
+                let s = c ~ *st;
+                *st <- { s with cursor: 0 };
+                `Stop
+            },
+            c@ `End => {
+                let s = c ~ *st;
+                *st <- { s with cursor: str::len(s.value) };
+                `Stop
+            },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+let view = |
+    #mask: [string, null] = null,
+    #style: [Style, null] = null,
+    #focused: bool = true,
+    st: &State
+| -> Line {
+    let s = *st;
+    let shown = select mask {
+        null as _ => s.value,
+        m => {
+            let n = str::len(s.value);
+            select n {
+                0 => "",
+                _ => str::join(#sep: "", array::init(n, |_| m))
+            }
+        }
+    };
+    let base = select style {
+        null as _ => tui::style(),
+        st => st
+    };
+    let cursor_style = tui::style(#add_modifier: [`Reversed]);
+    select focused {
+        false => line(#style: base, shown),
+        true => {
+            let n = str::len(shown);
+            let cur = min(s.cursor, n);
+            let before = str::sub(#start: 0, #len: cur, shown)$;
+            let at = select cur {
+                c if c < n => str::sub(#start: c, #len: 1, shown)$,
+                _ => " "
+            };
+            let after = select cur {
+                c if c < n => str::sub(#start: c + 1, #len: n - c - 1, shown)$,
+                _ => ""
+            };
+            line(#style: base, [
+                span(before),
+                span(#style: cursor_style, at),
+                span(after)
+            ])
+        }
+    }
+};
