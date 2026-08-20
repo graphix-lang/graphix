@@ -1,0 +1,11 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// Found by soak aug18a (katana divergence_000003), 2026-08-20,
+// campaign binary 1b1778b3. interp: quiet (the argument bottoms —
+// the connect block's value is bottom — so f never dispatches and
+// nothing fires). jit: `…capped` with ZERO events — the same
+// dead-eliminated write-only `let` (see 01), here inside a self-call
+// argument: the baked id written per activation, 256 deep, queued
+// one write per cycle forever. Same fix as 01; the recursive-body
+// and collection-loop lift gates in emit_connect_node stand behind
+// it for the shapes where the let survives.
+{let rec f = |n: i64| -> i64 n + f(n + {let s = i64:0; s <- i64:0}); f(i64:0)}

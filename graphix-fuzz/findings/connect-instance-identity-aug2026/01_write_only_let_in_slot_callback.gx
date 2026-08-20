@@ -1,0 +1,18 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// Found by soak aug18a (hz0 divergence_000003), 2026-08-19, campaign
+// binary 1b1778b3. The jit trace was `…capped` with the SAME single
+// event: an invisible spinner — one worked cycle per slot, tripping
+// the fuzzer's 64-cycle deadline at n >= 63 (n=60 passed, n=63
+// capped; MAX_CYCLES = 64).
+//
+// Root cause chain: `Connect::refs` reports only the RHS (a connect
+// must not self-subscribe), so the write-only `let s` looked dead to
+// the emitter's dead-statement scan and was eliminated; the connect
+// then found neither an env local nor a lift and fell through to the
+// external-iconst path — ONE baked BindId written by every slot of
+// the inlined callback, while the interp binds one `s` per slot.
+// Same-var writes queue one per cycle (the runtime rule), hence one
+// worked cycle per slot. Fixed by counting connect TARGETS as
+// liveness references in the dead scan; the alive let then hits the
+// non-lifted kernel-local guard and the region node-walks.
+list::init(i64:100, |i| {let s = i64:0; s <- i64:100; i64:3})

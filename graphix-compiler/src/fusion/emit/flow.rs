@@ -184,6 +184,31 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
                     alive = true;
                 }
             });
+            // A connect TARGET is a delivery destination, not a read —
+            // `Refs` deliberately doesn't carry it (a connect must not
+            // self-subscribe), so the suffix scan above misses it.
+            // A write-only `let` is NOT dead: it is the seed of a
+            // written variable, and eliminating it drops the target
+            // out of the env so the connect falls through to the
+            // external-iconst path with ONE baked id — every slot of
+            // an inlined callback then wrote the same variable while
+            // the interp binds per slot (aug18a class 3).
+            if !alive {
+                for later in &children[i + 1..] {
+                    fusion::for_each_node(later, &mut |n| {
+                        if let NodeView::Connect(c) = n.view() {
+                            bound.with_bound(|id| {
+                                if id == c.id {
+                                    alive = true;
+                                }
+                            });
+                        }
+                    });
+                    if alive {
+                        break;
+                    }
+                }
+            }
             !alive
         } else {
             true

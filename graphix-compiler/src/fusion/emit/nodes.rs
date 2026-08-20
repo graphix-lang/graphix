@@ -543,6 +543,32 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
              read-after-write unsafe, node-walks"
         ));
     }
+    // A lifted target's identity word is per-INSTANCE — one word, one
+    // BindId. The interp binds per SLOT inside a collection callback
+    // and per ACTIVATION inside a recursive body, so in either context
+    // the single word aliases every incarnation onto one variable:
+    // same-var writes queue one per cycle, each delivery re-invokes
+    // the kernel, and the loop/recursion re-writes — n slots burned n
+    // worked cycles (aug18a list::init face) and an in-recursion
+    // connect spun forever (katana divergence_000003). No per-slot /
+    // per-activation identity storage → de-fuse, never share (the
+    // storage law).
+    if cx.is_lifted(bind_id) {
+        if cx.ctx.loop_depth.get() > 0 {
+            return Err(anyhow!(
+                "emit_clif: lifted connect target inside a collection \
+                 loop — the interp binds per slot, one instance word \
+                 cannot; node-walks"
+            ));
+        }
+        if cx.ctx.self_call.is_some() || cx.ctx.tail.loop_head.is_some() {
+            return Err(anyhow!(
+                "emit_clif: lifted connect target in a recursive body — \
+                 the interp binds per activation, one instance word \
+                 cannot; node-walks"
+            ));
+        }
+    }
     // Marshal the RHS to an OWNED `(disc, payload)` Value of any shape; a
     // scalar's `(disc, payload)` is already its Value wire form (payload
     // widened to i64). `set_var` consumes the payload (or drops it on the

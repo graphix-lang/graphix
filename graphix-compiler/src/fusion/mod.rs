@@ -251,6 +251,17 @@ pub struct FusionCtx {
     /// map are treated as `Async` + stateful (the conservative
     /// defaults), always correct.
     pub builtin_facts: ahash::AHashMap<&'static str, crate::effects::BuiltinFacts>,
+    /// True while a region pass runs in ARM POSITION (`Select::fuse`'s
+    /// guard/body descents). An arm kernel's inputs marshal off the
+    /// select's wake-forced `event.init`, so a lifted connect target's
+    /// constant seed reads FIRED on every (re)wake — the interp's
+    /// `Bind` publishes a QUIET first production there, so the interp
+    /// never starts the write loop the kernel then spins forever
+    /// (aug18a class 3, the `ep <- ep` arm face: one write per cycle
+    /// to the 64-cycle deadline). No arm-accurate seed tag → no lift:
+    /// `collect_lifted_connect_targets` returns empty under this flag
+    /// and a connect-bearing arm de-fuses via the non-lifted guard.
+    pub(crate) arm_region: std::sync::atomic::AtomicBool,
 }
 
 impl FusionCtx {
@@ -267,6 +278,7 @@ impl FusionCtx {
             abstract_registry: kernel_abi::AbstractRegistry::default(),
             top_id: None,
             builtin_facts: ahash::AHashMap::default(),
+            arm_region: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -398,6 +410,10 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> LPooled<nohash::IntSet<BindId>> {
+    // ARM-position regions never lift — see `FusionCtx::arm_region`.
+    if ctx.fusion.arm_region.load(std::sync::atomic::Ordering::Relaxed) {
+        return LPooled::take();
+    }
     // A `let` INSIDE a select arm lifts like any other: the node-walk
     // RE-SEEDS it on every arm wake (unselected arms sleep; a re-taken
     // arm updates under `event.init = true`), and the value-position
@@ -1137,6 +1153,14 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let mut lifted_ord: Vec<BindId> = lifted.iter().copied().collect();
     lifted_ord.sort_unstable();
     sig.lifted = lifted_ord;
+    // PER-INSTANCE identity for the lifted targets: mint a fresh
+    // BindId per target for THIS splice. The sig's `lifted` list keeps
+    // the compile-time ids (slot layout, `is_lifted` checks); the
+    // instance's state words and feeder refs carry the minted ids, so
+    // two instances of the same body (a lambda-body region compiled
+    // per apply) get two variables — the interp's per-instance binds
+    // (aug18a class 3).
+    let minted: Vec<BindId> = sig.lifted.iter().map(|_| BindId::new()).collect();
     let kernel = std::sync::Arc::new(sig);
     // The compile attempt: entry binds the declared params, then the
     // body is emitted by `emit_clif` recursion from the root. Any Err
@@ -1225,7 +1249,15 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let feeder_top = ctx.fusion.top_id.unwrap_or(source_id);
     let feeders: Box<[Node<R, E>]> = inputs
         .iter()
-        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
+        .map(|fv| {
+            let id = kernel
+                .lifted
+                .iter()
+                .position(|l| *l == fv.bind_id)
+                .map(|k| minted[k])
+                .unwrap_or(fv.bind_id);
+            genn::reference::<R, E>(ctx, id, fv.typ.clone(), feeder_top)
+        })
         .collect();
     match builder::FusedKernel::<R, E>::new(
         ctx,
@@ -1234,6 +1266,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         kernel,
         Some(wrapped),
         feeders,
+        &minted,
         Scope::root(),
         source_id,
     ) {

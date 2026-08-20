@@ -1,0 +1,12 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// Found by soak aug18a (hz0 divergence_000002), 2026-08-19, campaign
+// binary 1b1778b3. Identical 5-event traces, jit `…capped`: the arm
+// region fused with `ep` LIFTED, and the lifted seed reads FIRED
+// under the arm's wake-forced init view — the interp's `Bind`
+// publishes a QUIET first production there, so the interp never
+// writes ep at all while the kernel wrote it once per cycle forever
+// (ep <- ep self-feeds: write -> delivery -> feeder fires ->
+// re-write). No arm-accurate seed tag exists, so ARM-POSITION region
+// passes never lift (`FusionCtx::arm_region`); a connect-bearing arm
+// de-fuses via the non-lifted guard and node-walks.
+{let x = array::iter([i64:1, i64:9223372036854775807, i64:3, i64:2]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => {let ep = i64:0; ep <- ep; let in0 = select ep {i64:2 => i64:1, _ => i64:0}; let in1 = select ep {i64:1 => true, _ => false}; let v0 = i64:1 - in0; i64:9}, _ => i64:2}, _ => f(n - i64:1)}; f(i64:3)}

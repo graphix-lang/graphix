@@ -733,16 +733,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // Constant bodies are skipped: a 0-input kernel wrapping a
         // literal is pure dispatch overhead (the CallSite::fuse rule).
         crate::fusion::fuse(&mut self.arg.node, ctx)?;
-        for (pat, body) in self.arms.iter_mut() {
-            if let Some(g) = &mut pat.guard {
-                if !matches!(g.node.view(), NodeView::Constant(_)) {
-                    crate::fusion::fuse(&mut g.node, ctx)?;
+        // Arm/guard passes run in ARM POSITION: the flag keeps
+        // `collect_lifted_connect_targets` from lifting there (the
+        // wake-forced init view re-fires a lifted seed the interp's
+        // Bind keeps quiet — see `FusionCtx::arm_region`). Restored
+        // even on Err so sibling passes aren't poisoned.
+        let prev_arm = ctx
+            .fusion
+            .arm_region
+            .swap(true, std::sync::atomic::Ordering::Relaxed);
+        let res = (|| {
+            for (pat, body) in self.arms.iter_mut() {
+                if let Some(g) = &mut pat.guard {
+                    if !matches!(g.node.view(), NodeView::Constant(_)) {
+                        crate::fusion::fuse(&mut g.node, ctx)?;
+                    }
+                }
+                if !matches!(body.view(), NodeView::Constant(_)) {
+                    crate::fusion::fuse(body, ctx)?;
                 }
             }
-            if !matches!(body.view(), NodeView::Constant(_)) {
-                crate::fusion::fuse(body, ctx)?;
-            }
-        }
-        Ok(None)
+            Ok(None)
+        })();
+        ctx.fusion.arm_region.store(prev_arm, std::sync::atomic::Ordering::Relaxed);
+        res
     }
 }

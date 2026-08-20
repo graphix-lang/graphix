@@ -1249,6 +1249,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         kernel: Arc<KernelSig>,
         n_args: usize,
         wrapped: Arc<WrappedKernel>,
+        lifted_ids: &[BindId],
         scope: Scope,
         top_id: ExprId,
     ) -> ::anyhow::Result<Self> {
@@ -1270,8 +1271,17 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         let arg_layout = build_arg_layout(&kernel);
         let mut state = vec![0u64; wrapped.state_words].into_boxed_slice();
         // The reserved head words carry the lifted connect targets'
-        // BindIds (KernelSig::lifted).
-        for (i, id) in kernel.lifted.iter().enumerate() {
+        // BindIds — the PER-INSTANCE ids the splice minted, parallel to
+        // `KernelSig::lifted` (which keeps the compile-time ids for
+        // slot layout only). Seeding the sig's own ids here made every
+        // instance of a multi-instance body (a lambda-body region
+        // compiled per apply — a MapQ slot callback, a retained rec
+        // activation) write ONE shared variable while the interp binds
+        // per instance (aug18a class 3: n same-var writes queued one
+        // per cycle burned n worked cycles, and an in-recursion
+        // connect spun forever).
+        debug_assert_eq!(lifted_ids.len(), kernel.lifted.len());
+        for (i, id) in lifted_ids.iter().enumerate() {
             state[i] = id.inner();
         }
         // The parent's OWN call-site block, when its body was compiled

@@ -4,7 +4,7 @@
 //! [`Kernel`].
 
 use crate::{
-    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
+    Apply, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
     expr::{Expr, ExprId},
     fusion::{emit::WrappedKernel, kernel::Kernel, kernel_abi::KernelSig},
     typ::Type,
@@ -44,6 +44,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         kernel: StdArc<KernelSig>,
         wrapped: Option<StdArc<WrappedKernel>>,
         feeders: Box<[Node<R, E>]>,
+        lifted_ids: &[BindId],
         scope: Scope,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
@@ -62,7 +63,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ));
             }
         };
-        let inner = Kernel::new(ctx, kernel, n_args, wrapped, scope, top_id)?;
+        let inner = Kernel::new(ctx, kernel, n_args, wrapped, lifted_ids, scope, top_id)?;
         Ok(Node::new(Self { spec, typ, feeders, inner }))
     }
 
