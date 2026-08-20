@@ -166,6 +166,70 @@ class witness, the drop-the-`rec` twin, and both depth-1 twins —
 produce the identical trace `[1,1,1]` + FreshBottom, on both engines.
 No shape-dependence remains.
 
+## Ruling 1a — THE CONSULTED-GUARD RULE (Eric, 2026-08-20, built same day)
+
+**A select consults arms top-down: structure/type first, guard
+second. A consulted guard whose CURRENT channel is bottom makes the
+selection UNDECIDABLE — the chain stops (no flip, no wake, no arm
+body; selection state holds) and the select bottoms, whatever else
+fired. Guards of structure-failed arms and of arms below the stop or
+take point are IRRELEVANT — they neither fire nor bottom the select.**
+
+Eric's framing: `select a { [x, y] => x + y, [x, y, tail..] if
+x / y == 0 => f(tail), _ => 42 }` — with y = 0 the select bottoms
+UNLESS the array is a pair; a normal programmer expects arm 1's match
+to make arm 2's guard irrelevant. "If the programmer has guards, and
+they bottom, it makes the select undecidable when it happens — we
+have to bottom."
+
+Refinements over the morning's build:
+
+- **"Consumed" is chain-scoped**, restoring the first draft's reading
+  and correcting the all-armed-guards over-breadth: guards tick every
+  cycle (jul19b — evaluation), but only CONSULTED productions are
+  consumed, on both planes (organic delta 2's guard-fire emission
+  narrows to consulted guards; the existing fixtures' guards are all
+  always-consulted, so nothing re-blessed).
+- **Sound-beats-bottom no longer applies to guards.** A sound
+  scrutinee fire cannot rescue a consulted bottom guard by riding a
+  held verdict — a previous delivery's verdict cannot route this one
+  (the same argument that killed the mid-loop cross-iteration ride,
+  applied uniformly). The scrutinee axis is untouched: aug06ghz0's
+  selection survival + body-driven fires under a bottomed scrutinee
+  stand, and a ridden fresh-bottom scrutinee still emits FreshBottom
+  when nothing sound fired.
+- **The guard-ride machinery is DELETED, both engines** — the interp's
+  held-bool serve in `arm_match` (né `is_match`) and the kernel's
+  guard-prologue taint cache. Selection survival across a guard
+  bottom is the chain-stop itself (selection state untouched), not a
+  ridden verdict. This supersedes the aug13b ride MECHANISM; the
+  pin's observables (no phantom wildcard flip, no manufactured
+  count) are preserved exactly. The depth-trip `guard_ride_blocked`
+  bit went with it (a bottom-channel guard now stops the chain —
+  strictly more aligned with whole-derivation-bottoms than the old
+  local false-read).
+- **A standing consulted bottom keeps the select bottom** until the
+  guard recovers — the interp stores the consulted mask from the last
+  re-match (`Select::consulted`) so quiet cycles honor it; the kernel
+  re-runs its chain every invocation and needs no memory. The taken
+  path needs no bottom override at all: a taken arm's consulted
+  guards are all sound by construction.
+
+**Item 2 (the mid-loop guard-bottom residue) DISSOLVES**: with no
+verdict-serving anywhere, a mid-loop iteration's bottom guard bottoms
+the derivation on both engines — no cross-iteration ride to sever, no
+loop-head cache zeroing. The tail and native twins of the witness
+shape now agree at `[101, 1]` (w14/w15), and Eric's example behaves
+verbatim: the pair emits 3, the triple bottoms — both engines.
+
+Kernel shape (fusion/emit/select.rs): the prologue keeps per-guard
+evaluation and stores `(eff, gbot, gs_sound, gfire)`; the chain folds
+the sound/fired planes into cranelift Variables AT each consultation
+point (control flow scopes them for free) and branches
+bottom-channel guards to the shared undet block, whose freshness
+reads the fired-plane accumulator. `SelFires.bfired` carries only the
+scrutinee axis now.
+
 ## Ruling 2 — STATE MULTIPLICITY = ACTIVATION MULTIPLICITY
 
 **State has the multiplicity of activations. Non-tail recursion
@@ -333,19 +397,17 @@ chapter), class 6 (diagnostic-only).
   (003fa7d6); degrade doors verified closed and made loud; the audit
   flushed out and fixed the forward-edge DEFINITION-ORDER hole
   (topological order, pin 05); corpus 417.
+- P3a ✅ THE CONSULTED-GUARD RULE (Ruling 1a) built both engines —
+  guard rides deleted, chain-scoped consumption, undecidable-bottoms;
+  item 2 dissolved; pin 05 re-blessed to [101,1]; gates green with
+  zero fixture flips.
 - P4 ⬜ soak on the amended binary.
 
-## Named open residue (mid-loop guard bottoms)
+## Former open residue (mid-loop guard bottoms) — RESOLVED
 
-A tail-loop iteration whose guard input derives from the FORMAL and
-bottoms only for some iterations' values (`10 / n > 1` at n=0): the
-kernel's guard cache words are shared across iterations within an
-invocation (Ruling 2's one-state reading), so iteration i−1's sound
-cond can serve iteration i's bottom; the interp's frames clear per
-pass, so the same pass hits UNDETERMINED and bottoms. Both faces are
-defensible under the rulings (one-state vs derivation-scoped
-transients) and the divergence predates this arc (the old interp
-fell to the wildcard there). Left for the soak to surface concrete
-witnesses; adjudicate with Ruling 2's frame — likely verdict: the
-kernel's one-state reading is the ruled one and the interp's
-per-pass clear is the deviation, but a real witness decides it.
+Resolved by Ruling 1a: with the guard ride deleted there is no
+verdict to serve across iterations (or across cycles), so the
+tail-loop and native twins agree — the iteration where the guard
+bottoms bottoms the derivation. The "likely verdict" this section
+used to carry (kernel one-state) was wrong; Eric's undecidability
+framing settles it the other way, and simpler.

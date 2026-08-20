@@ -27,7 +27,7 @@ use poolshark::local::LPooled;
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        const_stale_gate, emit_scalar_taint_cache, emit_scalar_taint_cache_claimed,
+        const_stale_gate, emit_scalar_taint_cache_claimed,
         emit_value_taint_cache_borrowed, is_tainted, is_untainted, prim_to_value_disc,
         propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
@@ -1027,16 +1027,17 @@ fn emit_composite_pattern_cond(
 /// installed and MUST leave the block terminated (jump or return).
 /// `mark` is the env state to truncate back to after the body.
 /// The select's own-fire summary handed to each arm emitter (THE
-/// BOTTOM-OUT RULE, design/activation_state.md). `sound_stale` is the
-/// AND of every prologue guard's SOUND-plane STALE bit (a tainted
-/// production reads quiet here whatever its firing) — the organic
-/// fired-emission upgrade. `bfired` (i8 bool) is true when a consumed
-/// input fired as a FRESH BOTTOM this invocation (the pre-ride
-/// scrutinee delivery or any prologue guard): a result still stale
-/// after the sound folds must then emit the bottom that arrived —
-/// TAINT fresh — never the ridden value (`hold` is the explicit
-/// tool). The interp twin is `own_sound`/`own_bottom` in
-/// node/select.rs.
+/// CONSULTED-GUARD RULE, design/activation_state.md, Eric
+/// 2026-08-20). `sound_stale` is the AND of the CONSULTED guards'
+/// sound-plane STALE bits — read from the chain-position accumulator
+/// at the arm's point, so structure-failed arms and arms below the
+/// taken one contribute nothing — the organic fired-emission
+/// upgrade. A taken arm's consulted guards are all SOUND by
+/// construction (a bottom-channel guard stops the chain at the undet
+/// path), so `bfired` (i8 bool) carries only the SCRUTINEE axis: a
+/// ridden fresh-bottom delivery, whose still-stale result must emit
+/// the bottom that arrived (`hold` is the explicit tool). The interp
+/// twin is `scoped`/`own_bottom` in node/select.rs.
 #[derive(Clone, Copy)]
 pub(super) struct SelFires {
     pub(super) sound_stale: Option<ClifValue>,
@@ -1110,10 +1111,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // `guard_stale` — the organic-firing guard fold handed to the arm
     // emitters (a fired or fresh-bottom guard production fires the
     // select; a StaleBottom or quiet one doesn't).
-    let mut guard_vals: smallvec::SmallVec<[Option<(ClifValue, ClifValue)>; 8]> =
-        smallvec::smallvec![None; n];
-    let mut guard_stale: Option<ClifValue> = None;
-    let mut guard_bf: Option<ClifValue> = None;
+    // Per prologue guard: (eff = sound-true verdict, gbot = the
+    // guard's CURRENT channel is bottom, gs_sound = sound-plane STALE
+    // bits, gfire = fired-plane STALE bit). The CONSULTED folds
+    // happen along the CHAIN below (control flow scopes them —
+    // structure-failed arms and arms below the stop point never
+    // execute their consultation), into `acc_sound`/`acc_fires`.
+    let mut guard_vals: smallvec::SmallVec<
+        [Option<(ClifValue, ClifValue, ClifValue, ClifValue)>; 8],
+    > = smallvec::smallvec![None; n];
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
         // A schedule-free guard needs no prologue slot: its value at
@@ -1163,81 +1169,38 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         };
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
-        // THE GUARD RIDE (aug13b divergence_000000): a bottomed guard
-        // re-matches against its last good value — the interp's
-        // `Held` keeps the value on a bottom production and `is_match`
-        // reads it back, so `0 if m == 0` with m bottoming (MIN % -1)
-        // holds the standing selection QUIET instead of failing the
-        // arm and firing a phantom becoming-selected on the wildcard.
-        // An op-site ride like the interior-bottom cache it reuses:
-        // substitute the cached boolean on tainted-with-history; a
-        // no-history taint passes through and the mask below reads it
-        // false (the interp's `unwrap_or(false)` phantom rule).
-        // Claim-refused contexts (callee-body loops — mandelbrot's
-        // formal-reading escape guard) degrade to the unwrapped mask,
-        // the same documented residual as every other op-site there;
-        // the value-scrutinee DE-FUSE bar does not apply to guard
-        // op-sites.
-        // THE BOTTOM-OUT RULE (design/activation_state.md) splits the
-        // fold by soundness, both read off the PRE-RIDE disc:
-        // - SOUND plane: a tainted production is quiet whatever its
-        //   firing (TAINT >> 1 == STALE, so or-ing the shifted taint
-        //   bit stales it) — only sound guard fires upgrade the
-        //   emission to fired;
-        // - BOTTOM fires (TAINT set, STALE clear) accumulate into
-        //   `guard_bf`: they still fire the select, but the emission
-        //   is FreshBottom, never the ridden arm value (the old
-        //   single pre-ride fold fired the CACHED value on a bottomed
-        //   guard delivery — the class-5 manufactured 4th value).
+        // THE CONSULTED-GUARD RULE (design/activation_state.md, Eric
+        // 2026-08-20): there is NO guard ride — a consulted guard
+        // whose CURRENT channel is bottom makes the selection
+        // undecidable and the chain stops at it (the undet path
+        // below), whatever verdict a previous delivery had. The old
+        // aug13b held-bool cache is deleted; its observable (no
+        // phantom flip, no manufactured value) is preserved by the
+        // stop keeping selection state untouched. Planes off the RAW
+        // disc: gs_sound stales tainted productions
+        // (TAINT >> 1 == STALE); gfire is the fired plane (sound or
+        // bottom — freshness of an undetermined outcome).
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
         let gt = cx.b.ins().band_imm(gcv.disc, TAINT);
         let gts = cx.b.ins().ushr_imm(gt, 1);
         let gs_sound = cx.b.ins().bor(gs, gts);
-        guard_stale = Some(match guard_stale {
-            None => gs_sound,
-            Some(a) => cx.b.ins().band(a, gs_sound),
-        });
-        let gtsbits = cx.b.ins().band_imm(gcv.disc, TAINT | STALE);
-        let gbf = cx.b.ins().icmp_imm(IntCC::Equal, gtsbits, TAINT);
-        guard_bf = Some(match guard_bf {
-            None => gbf,
-            Some(a) => cx.b.ins().bor(a, gbf),
-        });
-        let gcv = emit_scalar_taint_cache(cx, PrimType::Bool, gcv);
-        // Post-ride still tainted = no history served: the arm's
-        // match is UNDETERMINABLE (the chain routes it to
-        // `emit_undet` below — unknown, not false).
-        let undet = is_tainted(cx.b, gcv.disc);
+        let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         cx.env.truncate(gmark);
-        guard_vals[i] = Some((eff, undet));
+        guard_vals[i] = Some((eff, gbot, gs_sound, gs));
     }
-    let bfired = match (scrut_bfired, guard_bf) {
-        (None, None) => None,
-        (Some(a), None) | (None, Some(a)) => Some(a),
-        (Some(a), Some(b)) => Some(cx.b.ins().bor(a, b)),
-    };
-    let fires = SelFires { sound_stale: guard_stale, bfired };
-    // Freshness of an UNDETERMINED outcome: fresh iff anything fired
-    // this invocation — the post-ride scrutinee, the sound guard
-    // plane, or a fresh-bottom fire (the interp's
-    // `own_sound || own_bottom` at the undetermined return).
-    let undet_stale = {
-        let ss = cx.b.ins().band_imm(sdisc, STALE);
-        let st = match guard_stale {
-            Some(gs) => cx.b.ins().band(ss, gs),
-            None => ss,
-        };
-        match bfired {
-            Some(bf) => {
-                let z = cx.b.ins().iconst(types::I64, 0);
-                let stale = cx.b.ins().iconst(types::I64, STALE);
-                let bfs = cx.b.ins().select(bf, z, stale);
-                cx.b.ins().band(st, bfs)
-            }
-            None => st,
-        }
+    // The CONSULTED accumulators (cranelift Variables — their value
+    // at any read is the fold over exactly the consultation points
+    // control flow executed): sound-plane and fired-plane STALE bits,
+    // both STALE-set identities.
+    let (acc_sound, acc_fires) = {
+        let sv = cx.b.declare_var(types::I64);
+        let fv = cx.b.declare_var(types::I64);
+        let init = cx.b.ins().iconst(types::I64, STALE);
+        cx.b.def_var(sv, init);
+        cx.b.def_var(fv, init);
+        (sv, fv)
     };
     let mut undet_bl: Option<Block> = None;
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
@@ -1294,34 +1257,42 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let mark = cx.env.mark();
         install_arm_binds(cx, &binds, scrut, None)?;
         if let Some(g) = &pat.guard {
-            let (eff, undet) = match guard_vals[i] {
+            let eff = match guard_vals[i] {
                 // Prologue-computed: a guard with interior state, a
                 // possible bottom, or an external read must tick every
                 // invocation (select-guard-shortcircuit-aug2026).
-                Some((eff, undet)) => (eff, Some(undet)),
+                // This is the arm's CONSULTATION point — fold its
+                // planes into the accumulators (control flow scopes
+                // the fold to consulted arms), then THE
+                // CONSULTED-GUARD RULE: a bottom channel makes the
+                // selection undecidable — the chain stops (no
+                // selection recorded, no arm body run) and the undet
+                // path emits the bottom.
+                Some((eff, gbot, gs_sound, gfire)) => {
+                    let cur = cx.b.use_var(acc_sound);
+                    let n = cx.b.ins().band(cur, gs_sound);
+                    cx.b.def_var(acc_sound, n);
+                    let cur = cx.b.use_var(acc_fires);
+                    let n = cx.b.ins().band(cur, gfire);
+                    cx.b.def_var(acc_fires, n);
+                    let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
+                    let cont = cx.b.create_block();
+                    cx.b.ins().brif(gbot, ub, &[], cont, &[]);
+                    cx.b.switch_to_block(cont);
+                    cx.b.seal_block(cont);
+                    eff
+                }
                 // Schedule-free (see the prologue's classifier): emit
                 // lazily with the matched binds in scope — pure and
-                // never-bottom, so no undetermined case exists.
+                // never-bottom, so no undetermined case and no fold
+                // (its fires are scrutinee-derived, covered by the
+                // scrutinee fold).
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
                     let valid = is_untainted(cx.b, gcv.disc);
-                    (cx.b.ins().band(gcv.payload, valid), None)
+                    cx.b.ins().band(gcv.payload, valid)
                 }
             };
-            // THE BOTTOM-OUT RULE: a bottomed guard with NO history
-            // is UNKNOWN, not false — the chain cannot soundly pass
-            // or fail this arm, so it stops: no selection recorded,
-            // no arm body run, and the emission is the bottom that
-            // arrived (the old unwrapped mask read it false and the
-            // wildcard fired a phantom selection flip — the probe
-            // twins' `[1,1,1,2]`).
-            if let Some(u) = undet {
-                let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
-                let cont = cx.b.create_block();
-                cx.b.ins().brif(u, ub, &[], cont, &[]);
-                cx.b.switch_to_block(cont);
-                cx.b.seal_block(cont);
-            }
             let body_blk = cx.b.create_block();
             cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
             cx.b.switch_to_block(body_blk);
@@ -1342,6 +1313,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // refuses stateful builtins while any select ARM body is on
         // the emission stack — see `LowerCtx::arm_depth`.
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() + 1);
+        // The arm's own-fire summary, read AT ITS POINT: the sound
+        // accumulator holds exactly the consulted guards above and
+        // including this arm; a taken arm's consulted guards are all
+        // sound by construction (bottoms stopped the chain), so
+        // `bfired` carries only the scrutinee axis.
+        let fires =
+            SelFires { sound_stale: Some(cx.b.use_var(acc_sound)), bfired: scrut_bfired };
         let arm_res = emit_arm(cx, body, mark, fires);
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
         arm_res?;
@@ -1368,6 +1346,25 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     if let Some(ub) = undet_bl {
         cx.b.switch_to_block(ub);
         cx.b.seal_block(ub);
+        // Freshness of the UNDECIDABLE outcome: fresh iff a consumed
+        // input fired — the post-ride scrutinee, any consulted
+        // guard's production (the stopping guard included — folded at
+        // its consultation point before the jump), or a ridden
+        // fresh-bottom scrutinee delivery.
+        let undet_stale = {
+            let ss = cx.b.ins().band_imm(sdisc, STALE);
+            let af = cx.b.use_var(acc_fires);
+            let st = cx.b.ins().band(ss, af);
+            match scrut_bfired {
+                Some(bf) => {
+                    let z = cx.b.ins().iconst(types::I64, 0);
+                    let stale = cx.b.ins().iconst(types::I64, STALE);
+                    let bfs = cx.b.ins().select(bf, z, stale);
+                    cx.b.ins().band(st, bfs)
+                }
+                None => st,
+            }
+        };
         emit_undet(cx, undet_stale)?;
     }
     Ok(())

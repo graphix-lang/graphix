@@ -1,0 +1,12 @@
+// THE CONSULTED-GUARD RULE (Ruling 1a, Eric 2026-08-20) — the
+// ruling's canonical example, verbatim: a select consults arms
+// top-down, structure first, guard second; a consulted guard whose
+// current channel is bottom makes the selection UNDECIDABLE and the
+// select bottoms; guards of structure-failed or below-the-taken-arm
+// arms are irrelevant. "If the programmer has guards, and they
+// bottom, it makes the select undecidable when it happens — we have
+// to bottom."
+// The PAIR: arm 1 matches structurally, so arm 2's guard (3/0,
+// bottom) is never consulted — emits x + y = 3. No ride, no
+// manufactured bottom.
+{let rec f = |a: Array<i64>| -> i64 select a {[x, y] => x + y, [x, y, tail..] if x / y == i64:0 => f(tail), _ => i64:42}; f([i64:3, i64:0])}

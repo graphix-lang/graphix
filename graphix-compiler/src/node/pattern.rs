@@ -880,20 +880,21 @@ fn mentions_abstract(env: &Env, t: &Type, depth: usize) -> bool {
     })
 }
 
+/// See [`PatternNode::arm_match`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ArmMatch {
+    NoStruct,
+    GuardFalse,
+    GuardBottom,
+    Matched,
+}
+
 #[derive(Debug)]
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
     pub structure_predicate: StructPatternNode,
     pub guard: Option<Held<R, E>>,
-    /// The guard's held ride is BLOCKED this cycle (Eric's
-    /// whole-derivation depth-trip ruling, 2026-08-14): set by
-    /// `update` when a depth-trip unwind is in flight and the guard's
-    /// production is tainted — `is_match` then reads the guard FALSE
-    /// (the no-history phantom rule) instead of riding the held bool,
-    /// exactly the kernel's tainted-guard mask. Outside an unwind a
-    /// bottomed guard keeps THE GUARD RIDE (aug13b).
-    guard_ride_blocked: bool,
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
@@ -976,7 +977,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             type_predicate,
             structure_predicate,
             guard,
-            guard_ride_blocked: false,
         })
     }
 
@@ -1021,10 +1021,12 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
 
     /// Tick the guard (a live node that must see every cycle) and
     /// return its production tag (`None` = no guard). The caller
-    /// splits the fired plane: a sound guard fire drives re-match and
-    /// a fired emission; a BOTTOM guard fire drives re-match but the
-    /// emission is the bottom that arrived (THE BOTTOM-OUT RULE,
-    /// design/activation_state.md).
+    /// reads the fired plane off the tag and the CHANNEL bottomness
+    /// off `guard.tag` — THE CONSULTED-GUARD RULE
+    /// (design/activation_state.md, Eric 2026-08-20): a consulted
+    /// guard whose current channel is bottom makes the selection
+    /// undecidable and the select bottoms; there is no held-verdict
+    /// ride, so the depth-trip ride block is gone with it.
     pub(super) fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1032,23 +1034,20 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> Option<Tag> {
         match &mut self.guard {
             None => None,
-            Some(g) => {
-                let tag = g.update(ctx, event);
-                self.guard_ride_blocked =
-                    ctx.control.trip_poisoned() && g.tag.is_tainted();
-                Some(tag)
-            }
+            Some(g) => Some(g.update(ctx, event)),
         }
     }
 
-    /// Three-valued: `Some(true)`/`Some(false)` are definitive;
-    /// `None` means the arm's guard is UNDETERMINABLE this cycle — a
-    /// bottomed guard with no held value (THE BOTTOM-OUT RULE,
-    /// design/activation_state.md: a tainted guard is unknown, not
-    /// false — falling through to the wildcard invented a selection
-    /// flip from a bottom). The select stops the chain on `None`:
-    /// selection holds, the emission is the bottom that arrived.
-    pub(super) fn is_match(&self, env: &Env, v: &Value) -> Option<bool> {
+    /// One arm's consultation verdict — THE CONSULTED-GUARD RULE
+    /// (design/activation_state.md, Eric 2026-08-20). `NoStruct` = the
+    /// type/structure test failed, the guard was NOT consulted (its
+    /// productions are irrelevant to this select). `GuardBottom` = the
+    /// structure matched and the guard's CURRENT channel is bottom —
+    /// the selection is undecidable, the chain stops, the select
+    /// bottoms (no held-verdict ride: a previous delivery's verdict
+    /// cannot route this one). `GuardFalse`/`Matched` are definitive
+    /// sound verdicts.
+    pub(super) fn arm_match(&self, env: &Env, v: &Value) -> ArmMatch {
         // The type predicate holds whether it was WRITTEN or INFERRED.
         // Skipping the inferred one treated the structural test as a
         // sufficient proxy for the type, and it is not: a tuple and an
@@ -1083,23 +1082,21 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             self.type_predicate.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         };
         if !(typed && self.structure_predicate.is_match(v)) {
-            return Some(false);
+            return ArmMatch::NoStruct;
         }
         match &self.guard {
-            None => Some(true),
-            // Depth-trip unwind: the whole derivation bottoms at the
-            // root, so the local read stays the ruled FALSE (pinned by
-            // depth-trip-whole-derivation-aug2026) — not Unknown.
-            Some(_) if self.guard_ride_blocked => Some(false),
-            Some(g) => match g.value.as_ref().and_then(|v| v.clone().get_as::<bool>()) {
-                Some(b) => Some(b),
-                // No held bool. A bottomed guard channel is UNKNOWN;
-                // a valueless non-bottom guard keeps the legacy
-                // non-match (a sound guard of non-bool type is a type
-                // error upstream).
-                None if g.tag.is_bottom() => None,
-                None => Some(false),
-            },
+            None => ArmMatch::Matched,
+            Some(g) => {
+                if g.tag.is_bottom() {
+                    return ArmMatch::GuardBottom;
+                }
+                match g.value.as_ref().and_then(|v| v.clone().get_as::<bool>()) {
+                    Some(true) => ArmMatch::Matched,
+                    // A sound non-bool guard is a type error upstream;
+                    // read it as the legacy non-match.
+                    Some(false) | None => ArmMatch::GuardFalse,
+                }
+            }
         }
     }
 

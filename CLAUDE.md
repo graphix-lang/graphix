@@ -726,9 +726,18 @@ enforces it):**
   bottom axis, UNTOUCHED by organic firing; NARROWED 2026-08-20 by
   `design/activation_state.md`, BUILT same day — THE BOTTOM-OUT RULE:
   held state serves selection survival, re-matching, and operand
-  service, never the cycle's output bottomness; a production OR-joins
-  the bottomness of every delivery consumed, `hold` is the explicit
-  tool, and the ride's re-emission face is deleted. Companion ruling:
+  service, never the cycle's output bottomness; `hold` is the
+  explicit tool, and the ride's re-emission face is deleted. Refined
+  same day by THE CONSULTED-GUARD RULE (Ruling 1a): a select
+  consults arms top-down (structure first, guard second); a
+  consulted guard whose CURRENT channel is bottom makes the
+  selection UNDECIDABLE — the chain stops, selection state holds,
+  the select bottoms whatever else fired; guards of structure-failed
+  or below-the-stop arms are irrelevant on both planes. The GUARD
+  RIDES are DELETED on both engines (the aug13b held-bool mechanism
+  is superseded — its observables survive via the chain-stop), and
+  the mid-loop guard-bottom residue dissolved with them (tail and
+  native twins agree). Companion ruling:
   STATE MULTIPLICITY = ACTIVATION MULTIPLICITY — non-tail recursion
   is an activation per level, a tail loop is ONE activation reusing
   its one state, collection slots are activations): the standing selection

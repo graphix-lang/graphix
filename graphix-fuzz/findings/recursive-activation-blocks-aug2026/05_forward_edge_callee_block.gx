@@ -6,16 +6,18 @@
 // references g before f (the shielding select's arm), so discovery
 // records [g, f], the reversal defined f FIRST, f's g-call found no
 // SiteLayout, and the old silent-0 fallback ran g's activations
-// below f's recursion with NO interior memory — g's guard ride cache
-// never stored, so when m goes bottom (epochs 3-4) the sound
-// scrutinee re-match found no history and bottomed where the
-// interp's retained instance rode its held selection:
-//   interp: [101, 1, 1, 1]   jit (pre-fix): [101, 1]
-// Fixed by TOPOLOGICAL definition order over the recorded static
-// call edges (emit/jit.rs) — the only layout legitimately missing at
-// a caller's definition is now its OWN (self-calls, resolved through
-// the site_desc cell), and emit_site_block Errs loudly if the
-// invariant breaks instead of passing 0. f must be NON-tail here
-// (`+ i64:0`): the tail twin's frames clear the ride per pass on the
-// interp too (the mid-loop residue, a separate chapter).
+// below f's recursion with NO interior memory. Fixed by TOPOLOGICAL
+// definition order over the recorded static call edges (emit/jit.rs);
+// emit_site_block now Errs loudly instead of passing 0.
+//
+// TRACE HISTORY: at fix time the ruled trace was [101,1,1,1] (the
+// interp's retained instance rode g's held guard verdict over the
+// bottomed m at epochs 3-4, pre-fix jit [101,1]). THE
+// CONSULTED-GUARD RULE (Eric, same day — a consulted guard whose
+// channel is bottom makes the selection undecidable; no held-verdict
+// ride) re-blessed it to [101, 1] on BOTH engines: epochs 3-4 bottom
+// because g's consulted guard channel is bottom, however sound the
+// scrutinee fire. The pin now guards the ORDERING (g defines first,
+// f carves real blocks — de-fuse would show as a FuseExpect drift in
+// dyncall_seed_backedge) and the consulted-bottom trace.
 {let x = array::iter([i64:1, i64:2, i64:0, i64:0]); let m = x / x / i64:3; let g = |k: i64| -> i64 select k - k {i64:0 if m == i64:0 => i64:1, _ => i64:2}; let rec f = |n: i64| -> i64 select n {i64:0 => g(n), _ => f(n - i64:1) + i64:0}; select x {i64:1 => g(i64:5), _ => i64:0} * i64:100 + f(x - x + i64:1)}
