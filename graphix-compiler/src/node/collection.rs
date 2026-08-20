@@ -789,7 +789,11 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             let tv = self.slots[i].call.update(ctx, event).clone();
             let tag = tv.tag();
             if crate::dbgenv::gxdbg_slot() {
-                eprintln!("SLOT call[{i}] produced tag={} fresh={}", tag.bits(), i >= old_len);
+                eprintln!(
+                    "SLOT call[{i}] produced tag={} fresh={}",
+                    tag.bits(),
+                    i >= old_len
+                );
             }
             // Only TRIGGERING slot productions fold into the firing
             // decision; a stale ride is the slot's value channel and
@@ -861,16 +865,14 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             Some(tag) => tag,
             None => {
                 return if poisoned {
-                    self.resident
-                        .set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM))
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM))
                 } else {
                     self.resident.ride()
                 };
             }
         };
         if tag.is_tainted() || poisoned {
-            let t =
-                if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
+            let t = if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
             return self.resident.set(TagValue::tagged(Value::Null, t));
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
@@ -1280,8 +1282,11 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // init substituted for a poisoned production, aug14f
                 // window_div0).
                 if let Some(slot) = self.slots.first() {
-                    let poison =
-                        if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
+                    let poison = if tag.triggers() {
+                        Tag::FRESH_BOTTOM
+                    } else {
+                        Tag::STALE_BOTTOM
+                    };
                     event
                         .variables
                         .insert(slot.acc_id, TagValue::tagged(Value::Null, poison));
@@ -1374,10 +1379,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     prev_slot_bottom
                 };
                 if incoming_bottom {
-                    event.variables.insert(
-                        acc_id,
-                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-                    );
+                    event
+                        .variables
+                        .insert(acc_id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
                 } else {
                     let seed = if i == 0 {
                         self.init.clone()

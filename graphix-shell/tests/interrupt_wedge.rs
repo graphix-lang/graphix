@@ -76,7 +76,8 @@ fn spawn(path: &std::path::Path, no_fusion: bool) -> Child {
 }
 
 fn interrupt_frees_process(program: &str, no_fusion: bool, label: &str) {
-    let dir = std::env::temp_dir().join(format!("gx-wedge-{}-{}", std::process::id(), label));
+    let dir =
+        std::env::temp_dir().join(format!("gx-wedge-{}-{}", std::process::id(), label));
     fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join("wedge.gx");
     fs::write(&path, program).expect("write program");
@@ -85,7 +86,10 @@ fn interrupt_frees_process(program: &str, no_fusion: bool, label: &str) {
     // exited, the program isn't wedging and the test proves nothing.
     thread::sleep(Duration::from_secs(6));
     let alive = child.try_wait().expect("try_wait").is_none();
-    assert!(alive, "{label}: program exited on its own — it is not a wedge, so this test is vacuous");
+    assert!(
+        alive,
+        "{label}: program exited on its own — it is not a wedge, so this test is vacuous"
+    );
     // Two signals, mirroring a user: the first cancels the in-flight
     // computation, the second (if the loop re-entered) exits.
     sigint(&child);

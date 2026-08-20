@@ -476,7 +476,6 @@ pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue 
     b.ins().band_imm(disc, !(TAINT | STALE))
 }
 
-
 // ─── Env: name → Variable lookup ─────────────────────────────────
 
 /// What a [`Local`]'s `payload` word means and how it is owned/dropped

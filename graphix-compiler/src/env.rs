@@ -471,10 +471,7 @@ impl Env {
             typ.record_ide_refs(self, scope);
         }
         let defs = self.typedefs.get_or_default_cow(scope.clone());
-        defs.insert_cow(
-            name.into(),
-            TypeDef { params, typ: typ.clone(), doc, pos, ori },
-        );
+        defs.insert_cow(name.into(), TypeDef { params, typ: typ.clone(), doc, pos, ori });
         // A chain of BARE aliases must not close a cycle: `type A = B;
         // type B = A` names nothing, and contains' coinductive ref-pair
         // memo answers true for (cycle, T) before any structure is

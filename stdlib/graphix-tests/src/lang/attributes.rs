@@ -5,8 +5,8 @@
 // compile-time checks registered beside `#[native]` (lib.rs); a
 // failed assertion is a compile error, surfaced here as `Err(_)`.
 
-use graphix_package_core::run;
 use anyhow::Result;
+use graphix_package_core::run;
 use netidx::publisher::Value;
 
 const TAIL_RECURSIVE_OK: &str = r#"
