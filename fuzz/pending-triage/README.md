@@ -1,65 +1,30 @@
-# pending-triage — EMPTY
+# pending-triage
 
-Nothing is parked, and nothing awaits a ruling.
+## The aug18a arc (2026-08-20) — 3 fixed, 3 open
 
-## The aug14f arc, closed 2026-08-15
+The fleet round on campaign aug18a (hz0/aieka/katana/ryouko, campaign
+binary 1b1778b3, the organic-firing P4 soak): 12 divergences, 6
+classes. Fixed and committed same day:
 
-The round itself (~240M subjects, five boxes, 25 findings) plus an
-audit of every historical finding still sitting on the boxes and in
-`graphix-fuzz/fuzz/crashes/`.
+1. **framed-formal-seed** (c4fa9407) — a framed dispatch seeds its
+   quiet args every pass; the fold-in-rec-arm that never published.
+2. **trip-poison-extent** (6df2ec60) — one shared depth-trip poison
+   bit with pop-to-zero extent; the kernel rode across trips (and
+   refused legal rides past the root).
+3. **connect-instance-identity** (e05a6c8b) — connect-target liveness
+   in dead-elim, per-instance minted lifted ids, loop/rec/arm lift
+   gates; the write-only-let spinner family.
 
-**Nine engine bugs fixed:**
+Open, each parked here with mechanism located and a design question:
 
-1. kernel-result bottom persist (835542d2)
-2. kernel frame-init const fire (c8794f0f)
-3. in-frame formal init view (43e6af90)
-4. key-0 dyncall fired-plane leak (45c5a4fb)
-5. MapQ standing-bottom remint (561fb39a)
-6. FoldQ standing-init acc poison + resize seed (f439b849)
-7. collection `merge_tag` fired-bit loss (c84e573b)
-8. the shell never armed the cooperative interrupt, so a wedged
-   program made the process unkillable by Ctrl-C (11db44b0)
-9. array slice patterns matched TUPLE values — a type error, and the
-   interp's unsoundest bug of the round: it bound leaves at the wrong
-   type and emitted a value that violated the arm's own type
-   (`findings/slice-pattern-tuple-type-aug2026/`)
-
-**Two rulings:** atomic recursion (`design/atomic_recursion.md`) and
-seed-applies-once inside a call argument — both closing witnesses
-rather than opening work.
-
-**Three gates repaired**, all the same disease — a budget artifact
-treated as a semantic verdict:
-
-* `regress` false-greened over broken pins under load; non-ran
-  agreements now retry sequentially at 4x (78b9003e).
-* `selfcheck` reported load-induced Timeout/Trace flips as
-  nondeterminism; the confirm pair now runs at 4x and a Timeout is
-  counted as INCONCLUSIVE, reported, never failed on.
-* `jit_generated_sweep` read a Timeout in one mode as a divergence
-  (only inside the full workspace run, which is ~13x slower than
-  solo); it re-checks at 4x and reports what it skipped.
-
-**Two backlogs audited to zero:** the 22 crash artifacts (none
-reproduces — see `graphix-fuzz/fuzz/crashes/README.md`) and 2363
-unique historical findings from all five boxes (2 still diverged; both
-are fixed above, and 7 more are the known-benign fib
-asymmetric-timeout class).
-
-## Working notes for the next batch
-
-* Gate on a CHECK-based sweep of `graphix-fuzz/findings/` when a change
-  touches bottom/firing semantics — regress alone false-greened once.
-* Before matching one engine to the other, grep `findings/` for a
-  ruling covering the seam.
-* A Timeout is not a value. Any gate that compares one against a value
-  is measuring its own budget; escalate and report, never fail.
-* "pending-triage is empty" is not "nothing is open" — the boxes and
-  the crashes directory are separate backlogs.
-* Tools: `GXDBG_SLOT` (collection per-slot productions + fold
-  decision), `GXDBG_CS`/`GXDBG_REF` (dispatch/read pair),
-  `GXDBG_LETBIND` (bind publication).
-* Refuted leads: dynamic modules; "struct/array just de-fuse"; one
-  cause for the extra-fire symptom (it was two); `array::window` in the
-  fold class; the ref-write-wake reading of the MapQ remint; the
-  depth-limit reading of the non-termination witness.
+4. **class4_slot_state_survives_empty.gx** — kernel per-slot state
+   survives a shrink-to-zero resize (the loop-body-emitted chain
+   ensures never run on an empty generation). Fix = prewalk-based
+   preheader ensures.
+5. **class5_tail_entry_ride.gx** — tail-loop kernels refuse the entry
+   scrutinee ride / guard-held state the interp serves from standing
+   formals. Fix = first-pass-gated entry ride + per-instance entry
+   history.
+6. **class6_compile_err_detail.gx** — mode-divergent tvar-bound
+   rendering in a typecheck error (a fusion-phase stdlib-compile walk
+   binds a shared cell). Diagnostic-only.

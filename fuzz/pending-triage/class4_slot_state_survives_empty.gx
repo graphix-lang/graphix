@@ -1,0 +1,34 @@
+// OPEN — aug18a class 4 (katana divergence_000000). Mechanism located,
+// fix is emission surgery awaiting design sign-off.
+//
+//   interp: Trace([1:i64:2 2:i64:0 3:i64:2])   (canonical)
+//   jit:    Trace([1:i64:2 2:i64:0 3:i64:4])
+//
+// x iterates 2,0,2. On the shrink to 0 the interp DELETES the slots
+// (collection.rs slot.delete) so the regrow builds fresh `count`
+// state (1+1=2); the kernel's per-slot site-chain state survives and
+// the counts continue (2+2=4). The negative-size face in the soak
+// finding is a red herring — plain 0 reproduces.
+//
+// Root cause: every slot-chain ensure/truncate (`graphix_slot_state_
+// table`/`_blocks`) for IN-LOOP call sites and DynCall cache pairs is
+// emitted per-iteration INSIDE the loop body (emit_site_block,
+// claim_slot_cache_words) — a zero-length loop never runs them, so a
+// shrink-to-zero never truncates and the regrow sees no length
+// change. Guarded-select tables don't have this hole at their own
+// level (open_slot_tables ensures them in the always-executed
+// preheader), but nested levels do (an OUTER len-0 epoch skips the
+// inner preheader entirely).
+//
+// Fix direction (needs Eric): every loop level that a chain threads
+// must run that level's ensure whenever the level's preheader runs —
+// i.e. claims made during body emission need their partial chains
+// emitted into each enclosing loop's always-executed block. Cranelift
+// forbids out-of-order block filling (switch_to_block asserts the
+// current block is filled), so the mechanism is a PREWALK: extend the
+// guarded_select_sites prewalk to enumerate in-loop DynCall sites and
+// callee call sites, pre-claim their anchors in open_slot_tables, and
+// have body emission look the claims up (exactly how select sites
+// already work). Fallback for prewalk misses: claim-at-emission as
+// today, plus a debug assert to catch drift.
+{let x = array::iter([i64:2, i64:0, i64:2]); array::fold(array::init(x, |i| i), i64:0, |acc, e| acc + count(e))}

@@ -1,0 +1,32 @@
+// OPEN — aug18a class 5 (katana divergence_000001, hand-reduced).
+// Mechanism located, fix is instance-state design awaiting sign-off.
+//
+//   interp: Trace([1:i64:1 2:i64:1 3:i64:1 4:i64:1])   (ruled — rides)
+//   jit:    Trace([1:i64:1 2:i64:1 3:i64:1])
+//
+// m = x/x/3 bottoms at epoch 4 (0/0). The interp rides: the formal's
+// standing store entry serves the select's cached scrutinee, the
+// tainted guard's held selection reads true, the arm re-emits 1. The
+// kernel's TAIL-position select deliberately skips emit_scrut_ride in
+// tail-loop bodies ("the interp has no history to ride either — its
+// reset_replay runs per framed pass"), so the tainted entry scrutinee
+// takes the early tainted-return and the dispatch bottoms.
+//
+// That justification is out of date: per-PASS reset is real, but the
+// ENTRY pass of a fresh derivation reads STANDING store formals (the
+// wake/init view rules), so the interp rides CROSS-CYCLE at the entry
+// boundary while never riding cross-ITERATION. The kernel needs the
+// same split: ride only on the first pass of an invocation (a
+// first-pass flag cleared at each tail jump preserves the jul10h
+// severing rule), against per-instance entry-history storage. The
+// inner guard (`m == i64:0` over a bottomed capture) needs held-
+// selection state in tail bodies too — "recursive bodies claim no
+// state" currently refuses both. Same instance-state chapter as
+// class 4. NOTE: value-position twins of this shape already work
+// (drop the `rec` and it agrees) — it is exactly the tail emitter's
+// storage refusal.
+//
+// De-fuse is NOT a cheap out here: the natural gate (tail select +
+// guard over a non-scrutinee capture) would catch the 120-185x bench
+// kernels' `n if n < limit` guards.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:0]); let m = x / x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n)}; f(m)}
