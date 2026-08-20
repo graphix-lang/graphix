@@ -21,10 +21,13 @@ Open, each parked here with mechanism located and a design question:
    survives a shrink-to-zero resize (the loop-body-emitted chain
    ensures never run on an empty generation). Fix = prewalk-based
    preheader ensures.
-5. **class5_tail_entry_ride.gx** — tail-loop kernels refuse the entry
-   scrutinee ride / guard-held state the interp serves from standing
-   formals. Fix = first-pass-gated entry ride + per-instance entry
-   history.
+5. **class5_tail_entry_ride.gx** — RULED 2026-08-20 and INVERTED
+   (design/activation_state.md): the kernel's `[1,1,1]` is the ruled
+   trace — held state never determines output bottomness (bottom in,
+   bottom out), and state multiplicity = activation multiplicity
+   (tail loop = ONE activation). Fix = interp amendment, not kernel
+   storage; probe twins class5_probe_{native,tail}_depth1.gx are the
+   red fixtures. Not yet built.
 6. **class6_compile_err_detail.gx** — mode-divergent tvar-bound
    rendering in a typecheck error (a fusion-phase stdlib-compile walk
    binds a shared cell). Diagnostic-only.

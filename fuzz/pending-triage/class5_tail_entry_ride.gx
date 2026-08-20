@@ -1,32 +1,23 @@
-// OPEN — aug18a class 5 (katana divergence_000001, hand-reduced).
-// Mechanism located, fix is instance-state design awaiting sign-off.
+// RULED 2026-08-20 — aug18a class 5 (katana divergence_000001,
+// hand-reduced). See design/activation_state.md. NOT YET BUILT.
 //
-//   interp: Trace([1:i64:1 2:i64:1 3:i64:1 4:i64:1])   (ruled — rides)
-//   jit:    Trace([1:i64:1 2:i64:1 3:i64:1])
+//   interp: Trace([1:i64:1 2:i64:1 3:i64:1 4:i64:1])
+//   jit:    Trace([1:i64:1 2:i64:1 3:i64:1])   <-- THE RULED TRACE
 //
-// m = x/x/3 bottoms at epoch 4 (0/0). The interp rides: the formal's
-// standing store entry serves the select's cached scrutinee, the
-// tainted guard's held selection reads true, the arm re-emits 1. The
-// kernel's TAIL-position select deliberately skips emit_scrut_ride in
-// tail-loop bodies ("the interp has no history to ride either — its
-// reset_replay runs per framed pass"), so the tainted entry scrutinee
-// takes the early tainted-return and the dispatch bottoms.
+// The finding INVERTED under adjudication. m bottoms at epoch 4
+// (0/0); the interp's 4th value is the ride machinery re-emitting
+// the arm's cached value on a cycle whose only fresh input was a
+// bottom — an unruled composition of organic firing (fire per guard
+// production) and ride substitution (held guard replaces the
+// bottomed one). Eric's ruling (THE BOTTOM-OUT RULE): held state
+// serves selection survival, re-matching, and operand service —
+// never the cycle's output bottomness; a production OR-joins the
+// bottomness of every delivery consumed. Bottom in, bottom out;
+// `hold` is the explicit tool. The kernel's tail-position storage
+// refusal (jul10h severing) was accidentally CORRECT all along.
 //
-// That justification is out of date: per-PASS reset is real, but the
-// ENTRY pass of a fresh derivation reads STANDING store formals (the
-// wake/init view rules), so the interp rides CROSS-CYCLE at the entry
-// boundary while never riding cross-ITERATION. The kernel needs the
-// same split: ride only on the first pass of an invocation (a
-// first-pass flag cleared at each tail jump preserves the jul10h
-// severing rule), against per-instance entry-history storage. The
-// inner guard (`m == i64:0` over a bottomed capture) needs held-
-// selection state in tail bodies too — "recursive bodies claim no
-// state" currently refuses both. Same instance-state chapter as
-// class 4. NOTE: value-position twins of this shape already work
-// (drop the `rec` and it agrees) — it is exactly the tail emitter's
-// storage refusal.
-//
-// De-fuse is NOT a cheap out here: the natural gate (tail select +
-// guard over a non-scrutinee capture) would catch the 120-185x bench
-// kernels' `n if n < limit` guards.
+// Fix = interp amendment (delete the ride re-emission face), not
+// kernel entry-history storage. The parked per-instance
+// entry-ride/guard-held design is dead. Companion probes:
+// class5_probe_native_depth1.gx / class5_probe_tail_depth1.gx.
 {let x = array::iter([i64:1, i64:2, i64:3, i64:0]); let m = x / x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n)}; f(m)}

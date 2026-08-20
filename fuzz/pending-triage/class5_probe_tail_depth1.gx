@@ -1,0 +1,10 @@
+// Probe twin (2026-08-20, drove the activation_state.md ruling):
+// guard at depth 1, TAIL recursion. Current both engines:
+// [1,1,1,2] — the framed pass has no held state and the tainted
+// guard FALLS THROUGH to `_` at epoch 4. Wrong under the ruling on
+// its own axis: a tainted guard is UNKNOWN, not false — taking the
+// wildcard invents a selection flip from a bottom. Ruled trace:
+// [1,1,1] + FreshBottom, selection holds. Red fixture for the P1
+// amendment (interp change 2) and the kernel's masked-to-false
+// guard path (change 3).
+{let x = array::iter([i64:1, i64:2, i64:3, i64:0]); let m = x / x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; f(x - x + i64:1)}

@@ -723,7 +723,15 @@ enforces it):**
   The ruled deltas + the red→green fixture protocol live in
   `organic_deltas.rs`; the design doc holds the deletion inventory.
   **THE SCRUTINEE RIDE** (Eric's ruling 2026-08-07, aug06ghz0 — the
-  bottom axis, UNTOUCHED by organic firing): the standing selection
+  bottom axis, UNTOUCHED by organic firing; NARROWED 2026-08-20 by
+  `design/activation_state.md`, not yet built — THE BOTTOM-OUT RULE:
+  held state serves selection survival, re-matching, and operand
+  service, never the cycle's output bottomness; a production OR-joins
+  the bottomness of every delivery consumed, `hold` is the explicit
+  tool, and the ride's re-emission face is deleted. Companion ruling:
+  STATE MULTIPLICITY = ACTIVATION MULTIPLICITY — non-tail recursion
+  is an activation per level, a tail loop is ONE activation reusing
+  its one state, collection slots are activations): the standing selection
   lives on against the select's CACHED scrutinee when a delivery
   bottoms upstream — a bottomed delivery is NOT an own-fire, the
   taken arm's body fires on its own deps, guard-dep fires RE-MATCH
@@ -1158,6 +1166,20 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `activation_state.md` — **RULED 2026-08-20, NOT YET BUILT:** the
+  bottom-out rule (held state never determines output bottomness;
+  bottom in, bottom out; bottoms sticky on the value plane; `hold` is
+  the explicit tool) + state multiplicity = activation multiplicity
+  (per-level for non-tail recursion, ONE reused state for a tail
+  loop — the Scheme move extended from space to state, forced by
+  constant-space tail loops; self-tail only, mutual tail recursion
+  falls to the per-level clause). Settles aug18a class 5 INVERTED
+  (the kernel's tail-position storage refusal was correct; the fix
+  is an interp amendment), names the kernel key-0 recursive
+  back-edge bucket a Ruling-2 bug, narrows aug06ghz0/aug13b to what
+  their pins demand. Holds the probe-twin evidence (three
+  strategy-dependent traces for one function), the compliance
+  inventory, and the build plan.
 - `atomic_recursion.md` — **RULED 2026-08-15:** function evaluation is
   atomic within a cycle, so a program may legally spin forever inside
   one — the no-wedge property of the old one-eval-per-cycle model is
