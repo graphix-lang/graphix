@@ -1028,7 +1028,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             None => false,
             Some(g) => {
                 let up = g.update_triggers(ctx, event);
-                self.guard_ride_blocked = ctx.depth_tripped && g.tag.is_tainted();
+                self.guard_ride_blocked = ctx.control.trip_poisoned() && g.tag.is_tainted();
                 up
             }
         }

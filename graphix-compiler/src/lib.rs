@@ -175,6 +175,19 @@ pub struct Control {
     /// invocation and reports the kernel's spec. Node-walk trips
     /// report directly and never set this.
     depth_trip: AtomicBool,
+    /// The WHOLE-DERIVATION trip poison (Eric's ruling 2026-08-14),
+    /// shared by both evaluators like the depth counter itself: set at
+    /// ANY trip (node-walk or kernel), cleared when the shared depth
+    /// pops to zero — the tripped derivation's root. While set, no
+    /// ride between the trip and the root may assemble a partial value
+    /// out of history; beyond the root the delivered bottom is an
+    /// ordinary bottom. One bit for both engines because a derivation
+    /// interleaves them: a node-walk-residue trip inside a kernel
+    /// invocation must poison the kernel's scrutinee ride (aug18a
+    /// class 2, ride-too-narrow face), and a kernel trip that unwinds
+    /// to depth 0 within its own region must NOT poison a top-level
+    /// select in the same region (the ride-too-wide face).
+    trip_poison: AtomicBool,
 }
 
 impl Default for Control {
@@ -190,7 +203,21 @@ impl Control {
             depth: AtomicU32::new(0),
             max_depth: AtomicU32::new(DEFAULT_MAX_CALL_DEPTH),
             depth_trip: AtomicBool::new(false),
+            trip_poison: AtomicBool::new(false),
         }
+    }
+
+    /// Record a depth trip on the whole-derivation poison — see the
+    /// `trip_poison` field. Both evaluators' trip sites call this;
+    /// `depth_pop` clears it when the derivation's root unwinds.
+    pub fn set_trip_poison(&self) {
+        self.trip_poison.store(true, Ordering::Relaxed);
+    }
+
+    /// Is a depth trip unwinding right now (trip seen, root not yet
+    /// unwound)? Read by every ride site in both evaluators.
+    pub fn trip_poisoned(&self) -> bool {
+        self.trip_poison.load(Ordering::Relaxed)
     }
 
     /// Record that a JIT-side lambda dispatch hit the depth limit —
@@ -261,7 +288,12 @@ impl Control {
     }
 
     pub fn depth_pop(&self) {
-        self.depth.fetch_sub(1, Ordering::Relaxed);
+        if self.depth.fetch_sub(1, Ordering::Relaxed) == 1 {
+            // The derivation's root has unwound: the trip poison ends
+            // here — beyond the root a delivered bottom is an ordinary
+            // bottom (standing rules apply).
+            self.trip_poison.store(false, Ordering::Relaxed);
+        }
     }
 
     /// The current non-tail call depth (0 = no recursive dispatch in
@@ -276,6 +308,7 @@ impl Control {
     /// spurious limit).
     pub fn depth_reset(&self) {
         self.depth.store(0, Ordering::Relaxed);
+        self.trip_poison.store(false, Ordering::Relaxed);
     }
 
     /// The non-tail call-depth limit (see [`DEFAULT_MAX_CALL_DEPTH`]).
@@ -1828,16 +1861,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dispatch saves/resets it on entry and applies it in the
     /// result-tag derivation (`node/lambda.rs`).
     pub(crate) tail_scrut_fired: bool,
-    /// A call-depth trip is UNWINDING (Eric's whole-derivation ruling
-    /// 2026-08-14): set when a dispatch trips the limit and mints its
-    /// FreshBottom, cleared when the derivation's ROOT dispatch pops
-    /// the depth back to 0. While set, the designated value rides
-    /// (the select scrutinee ride, guard-held selections over
-    /// triggering bottoms) REFUSE — the entire derivation bottoms at
-    /// the root instead of assembling partial values from stale
-    /// fragments mid-unwind (fuzz depth-trip-unwind-scope witnesses;
-    /// the kernel's abort-to-root is the model).
-    pub(crate) depth_tripped: bool,
     /// Pending definition assertions (see [`DefAssertion`]): stamped at
     /// compile, verified and removed at `analysis::analyze`'s tail once the
     /// asserted definition is reached by the analysis. Persistent across
@@ -1914,7 +1937,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_depth: 0,
             frame_init: false,
             tail_scrut_fired: false,
-            depth_tripped: false,
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),

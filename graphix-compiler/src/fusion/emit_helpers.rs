@@ -632,20 +632,27 @@ safe fn graphix_depth_push() -> i8 {
                 // Native code can't push an `RtDiagnostic` — flag the
                 // trip on the Control; `FusedKernel::update` takes it
                 // after the invocation and reports the kernel's spec.
-                unsafe { (*p).set_depth_trip() };
+                // The whole-derivation poison is the separate shared
+                // bit, cleared by depth_pop at pop-to-zero.
+                unsafe {
+                    (*p).set_depth_trip();
+                    (*p).set_trip_poison();
+                }
             }
             i8::from(ok)
         }
     })
 }
 
-/// Is a call-depth trip unwinding right now? The kernel twin of the
-/// interp's `ctx.depth_tripped`: a trip bottoms the WHOLE derivation
-/// (Eric's ruling 2026-08-14), so no ride between the trip and the
-/// derivation's root may assemble a partial value out of history. The
-/// flag is set at the trip (`graphix_depth_push`) and taken by
-/// `Kernel::update` after the invocation, which is exactly the extent
-/// of one derivation.
+/// Is a call-depth trip unwinding right now? Reads the SHARED
+/// whole-derivation poison (Eric's ruling 2026-08-14): set at any
+/// trip on either evaluator, cleared when the shared depth pops to
+/// zero — the tripped derivation's root. Reading the kernel-local
+/// diagnostic latch here had the wrong extent both ways (aug18a
+/// class 2): it survived past the tripped call's root within a
+/// region (a top-level select's legal ride was refused), and a
+/// node-walk-residue trip inside the invocation never set it (the
+/// fused select rode across the trip).
 safe fn graphix_depth_tripped() -> i8 {
     INTERRUPT_PTR.with(|c| {
         let p = c.get();
@@ -653,7 +660,7 @@ safe fn graphix_depth_tripped() -> i8 {
             0
         } else {
             // SAFETY: see `graphix_interrupted`.
-            i8::from(unsafe { (*p).peek_depth_trip() })
+            i8::from(unsafe { (*p).trip_poisoned() })
         }
     })
 }
@@ -683,7 +690,10 @@ safe fn graphix_depth_enter(bound: i64) -> i8 {
             // SAFETY: see `graphix_interrupted`.
             let ok = unsafe { (*p).depth_push() };
             if !ok {
-                unsafe { (*p).set_depth_trip() };
+                unsafe {
+                    (*p).set_depth_trip();
+                    (*p).set_trip_poison();
+                }
             }
             i8::from(ok)
         }

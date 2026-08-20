@@ -578,8 +578,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                     // Whole-derivation bottom (Eric's ruling
                     // 2026-08-14): poison the unwind — no ride may
                     // assemble a partial value between here and the
-                    // derivation's root (cleared at pop-to-zero).
-                    ctx.depth_tripped = true;
+                    // derivation's root. The poison is the CONTROL's
+                    // shared bit (both evaluators trip and ride
+                    // against the same derivation), cleared by
+                    // depth_pop at pop-to-zero.
+                    ctx.control.set_trip_poison();
                     return self
                         .resident
                         .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
@@ -884,13 +887,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             MapEntry::Vacant(_) => unreachable!("active_lambdas underflow"),
         }
         if depth_pushed {
+            // depth_pop clears the shared trip poison at pop-to-zero —
+            // the derivation's root.
             ctx.control.depth_pop();
-            if ctx.control.depth() == 0 {
-                // The derivation's root has unwound: the trip poison
-                // ends here — beyond the root the delivered bottom is
-                // an ordinary bottom (standing rules apply).
-                ctx.depth_tripped = false;
-            }
         }
         // Lend the body result — tag riding in the value — to the
         // owning CallSite through the resident. Bottom is a DELIVERED

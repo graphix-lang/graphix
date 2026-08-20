@@ -1,0 +1,15 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// The mirror face of 01, and here the JIT was wrong the OTHER way:
+// with the select at TOP level, the tripped call g(x-1) unwinds to
+// depth 0 before the select's ride runs — the trip's derivation ends
+// at that root, the delivered bottom is an ordinary bottom, and the
+// ruled behavior is to RIDE (the interp did). The kernel's old
+// diagnostic-latch peek survived the whole invocation, so it refused
+// the legal ride and stayed quiet at epoch 3.
+//
+//   interp: Trace([2:false 3:false 4:false])  (ruled)
+//   jit:    Trace([2:false 4:false])          (before the fix)
+//
+// Same fix as 01: the shared poison clears at pop-to-zero, so by the
+// time the region-root select rides, the poison is gone.
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let m = x; let rec g = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - g(n - i64:1)}; select g(x - i64:1) {i64:0 if m == i64:0 => true, _ => false}}

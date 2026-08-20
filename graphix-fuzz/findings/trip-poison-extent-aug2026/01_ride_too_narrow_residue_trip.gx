@@ -1,0 +1,21 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// The JIT was the wrong one: it emitted an extra arm value at epoch 3
+// by riding the cached scrutinee ACROSS a depth trip.
+// Found by soak aug18a (hz0 divergence_000001 + aieka
+// divergence_000000 — two boxes, same class), 2026-08-19, campaign
+// binary 1b1778b3. Hand-reduced (count() dropped, arms made distinct).
+//
+//   interp: Trace([2:false 4:false])          (ruled — poison refuses)
+//   jit:    Trace([2:false 3:false 4:false])  (before the fix)
+//
+// x iterates 0,2,0,4; g(x-1) at x=0 is unbounded descent → depth
+// trip. The rec-in-block scrutinee de-fuses to node-walk residue,
+// whose trip set only the interp's ctx.depth_tripped — the fused
+// select's ride check peeked the KERNEL's diagnostic latch and saw
+// nothing (ride-too-narrow face). The fix: ONE shared trip-poison bit
+// on Control, set by any trip on either evaluator, cleared when the
+// SHARED depth counter pops to zero (the tripped derivation's root —
+// the interp's exact discipline); graphix_depth_tripped reads it.
+// The kernel-only diagnostic latch survives separately for the
+// FusedKernel log.
+{let x = array::iter([i64:0, i64:2, i64:0, i64:4]); let m = x; let f = |k| select {let rec g = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - g(n - i64:1)}; g(x - i64:1)} {i64:0 if m == i64:0 => true, _ => false}; f(x)}

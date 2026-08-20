@@ -151,7 +151,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // ruling 2026-08-14): the tripped derivation must bottom at
         // its root, so no ride may launder a stale fragment out of it
         // — the kernel's abort-to-root is the model.
-        let ride = bottomed && !ctx.depth_tripped && arg.value.is_some();
+        let ride = bottomed && !ctx.control.trip_poisoned() && arg.value.is_some();
         // "The scrutinee has a bindable value view this cycle": a
         // value-bearing production, or the ride.
         let arg_up = !bottomed || ride;
