@@ -42,7 +42,6 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
-    [$.module_path],
     [$._expression, $.map_ref],
     [$._expression, $.lambda],
     [$._expression, $.apply],
@@ -275,7 +274,22 @@ module.exports = grammar({
     // `self` inside a group names the enclosing prefix itself.
     _use_tree: $ => choice(
       $.use_group,
-      seq($.module_path, optional(seq('::', $.use_group))),
+      $.use_path,
+    ),
+
+    // The `::` iteration is INLINE rather than $.module_path: reusing
+    // module_path would force a reduce-vs-extend decision at every
+    // `::` (does the path continue, or end here with `:: use_group`
+    // next?), forking a GLR version per segment. Enough segments
+    // overflow tree-sitter's version cap and condense culls the REAL
+    // reading — `{a: error:"[", b: use a::b::c::d::e::f::g::h}` parsed
+    // as one ERROR. Inlined, both continuations shift the `::` first
+    // and the next token (name vs `{`) decides deterministically.
+    use_path: $ => seq(
+      optional('/'),
+      $._binding_name,
+      repeat(seq('::', $._binding_name)),
+      optional(seq('::', $.use_group)),
     ),
 
     use_group: $ => seq(

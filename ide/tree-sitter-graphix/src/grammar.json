@@ -842,32 +842,64 @@
           "name": "use_group"
         },
         {
-          "type": "SEQ",
+          "type": "SYMBOL",
+          "name": "use_path"
+        }
+      ]
+    },
+    "use_path": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "CHOICE",
           "members": [
             {
-              "type": "SYMBOL",
-              "name": "module_path"
+              "type": "STRING",
+              "value": "/"
             },
             {
-              "type": "CHOICE",
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_binding_name"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "::"
+              },
+              {
+                "type": "SYMBOL",
+                "name": "_binding_name"
+              }
+            ]
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
               "members": [
                 {
-                  "type": "SEQ",
-                  "members": [
-                    {
-                      "type": "STRING",
-                      "value": "::"
-                    },
-                    {
-                      "type": "SYMBOL",
-                      "name": "use_group"
-                    }
-                  ]
+                  "type": "STRING",
+                  "value": "::"
                 },
                 {
-                  "type": "BLANK"
+                  "type": "SYMBOL",
+                  "name": "use_group"
                 }
               ]
+            },
+            {
+              "type": "BLANK"
             }
           ]
         }
@@ -5630,9 +5662,6 @@
     }
   ],
   "conflicts": [
-    [
-      "module_path"
-    ],
     [
       "_expression",
       "map_ref"

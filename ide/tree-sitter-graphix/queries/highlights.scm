@@ -101,8 +101,11 @@
 (reference (module_path (identifier) @variable))
 
 ; Module path: the FIRST identifier is a namespace; subsequent ones
-; remain @variable / @function from the rules above.
+; remain @variable / @function from the rules above. use_path is the
+; use-tree twin of module_path (its `::` chain is inlined so the
+; parser never forks per segment).
 (module_path . (identifier) @namespace)
+(use_path . (identifier) @namespace)
 
 ; Module / type definitions
 (module name: (identifier) @namespace)
@@ -114,7 +117,7 @@
 (sig_bind name: (identifier) @variable)
 (sig_type_def name: (type_identifier) @type)
 (sig_module name: (identifier) @namespace)
-(sig_use path: (module_path . (identifier) @namespace))
+(sig_use path: (use_path . (identifier) @namespace))
 
 ; -- Struct fields --------------------------------------------------
 (struct_field         name: (identifier) @variable.other.member)
