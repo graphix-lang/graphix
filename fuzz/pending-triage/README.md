@@ -17,10 +17,12 @@ classes. Fixed and committed same day:
 
 Open, each parked here with mechanism located and a design question:
 
-4. **class4_slot_state_survives_empty.gx** — kernel per-slot state
-   survives a shrink-to-zero resize (the loop-body-emitted chain
-   ensures never run on an empty generation). Fix = prewalk-based
-   preheader ensures.
+4. **class 4 — CLOSED** (2026-08-20): THE SHRINK-TO-ZERO RULE —
+   always-executed loop-EXIT re-ensures (TruncRec records propagating
+   outward per frame) truncate every in-loop chain when its level
+   shrinks; no prewalk needed. Pins:
+   findings/slot-shrink-truncate-aug2026/ (three faces: DynCall
+   pairs, nested levels, callee site blocks).
 5. **class 5 — CLOSED** (2026-08-20): ruled AND built same day —
    THE BOTTOM-OUT RULE (design/activation_state.md; ruled with
    state-multiplicity=activation-multiplicity). The finding INVERTED
@@ -31,6 +33,8 @@ Open, each parked here with mechanism located and a design question:
    doc: the mid-loop guard-bottom residue (the back-edge bucket
    AUDITED CLOSED 2026-08-20 — covered by 003fa7d6's per-activation
    trees; degrade doors unreachable and now loud).
-6. **class6_compile_err_detail.gx** — mode-divergent tvar-bound
-   rendering in a typecheck error (a fusion-phase stdlib-compile walk
-   binds a shared cell). Diagnostic-only.
+6. **class 6 — CLOSED** (2026-08-20): NOT a fusion leak — both modes
+   flapped identically in isolation; `constrain_known` (+2 sibling
+   walks) drained a name-keyed AHashMap in per-process hash order.
+   Fixed by (name, TVarId) sorts; pin:
+   findings/constrain-order-diag-aug2026/.

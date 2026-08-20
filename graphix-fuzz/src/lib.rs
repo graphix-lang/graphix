@@ -3318,11 +3318,23 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
         .into_iter()
         .flat_map(|m| routes.iter().map(move |r| (m, r)))
     {
+        // The dispatch route's cycle offsets are not comparable at
+        // Exact strength even against ITSELF: the gap compiles and
+        // callable dispatch take a run-dependent number of cycles
+        // (async pacing), so only per-epoch settled values are
+        // contractual — the same rationale (and the same tier) as
+        // check_callable's dispatch-pair comparison. Without this the
+        // gate flagged perfectly value-deterministic callable twins
+        // as flaky on cycle-index jitter (2026-08-20).
+        let route_tier = match route {
+            Route::Dispatch if tier == OracleTier::Exact => OracleTier::FinalValues,
+            _ => tier,
+        };
         let (a, b) = tokio::join!(
             run_program_routed(prog, mode, route, timeout),
             run_program_routed(prog, mode, route, timeout),
         );
-        if !a.agrees_with_at(&b, tier) {
+        if !a.agrees_with_at(&b, route_tier) {
             // The confirm pair runs at 4x, and a TIMEOUT on one side is
             // read as a budget artifact rather than a verdict: a
             // Timeout is not a value, so comparing it against one
@@ -3338,7 +3350,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
             let big = timeout * 4;
             let a2 = run_program_routed(prog, mode, route, big).await;
             let b2 = run_program_routed(prog, mode, route, big).await;
-            if a2.agrees_with_at(&b2, tier) {
+            if a2.agrees_with_at(&b2, route_tier) {
                 continue;
             }
             if matches!(a2, Outcome::Timeout) || matches!(b2, Outcome::Timeout) {

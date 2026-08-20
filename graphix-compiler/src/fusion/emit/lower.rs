@@ -241,6 +241,7 @@ pub(super) fn compile_into_function(
             self_blocks: std::cell::RefCell::new(Vec::new()),
         },
         slot_tables: std::cell::RefCell::new(Vec::new()),
+        closed_frame: std::cell::RefCell::new(None),
         callee_layouts,
         lazy_site_leaves,
         loop_depth: std::cell::Cell::new(0),
@@ -466,6 +467,40 @@ pub(crate) enum SelWord {
 /// `open_slot_tables` reads them to emit the directory chain that
 /// anchors its own per-slot tables (one owning level per enclosing
 /// frame).
+/// One in-loop state-chain claim that must be re-ensured in ALWAYS-
+/// EXECUTED blocks (THE SHRINK-TO-ZERO RULE, aug18a class 4): the
+/// chain's per-iteration ensure never runs on a zero-length epoch, so
+/// each enclosing loop's EXIT block re-ensures the chain at that
+/// loop's level (`BodyCx::emit_slot_truncates`) — a shrink truncates
+/// there and frees the dropped subtrees, exactly when the interp
+/// deletes the slots. Records propagate outward frame by frame.
+#[derive(Clone)]
+pub(crate) struct TruncRec {
+    pub(super) anchor: TruncAnchor,
+    /// Directory levels above the claim's own loop (its claim-time
+    /// enclosing count).
+    pub(super) n_dirs: u32,
+    pub(super) leaf: TruncLeaf,
+    /// The baked `SiteLeaf` address passed at every level (0 = none).
+    pub(super) leaf_ptr: i64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TruncAnchor {
+    /// Instance-state word at this byte offset.
+    State(i32),
+    /// Per-call-site block word (base may be 0 — null-guarded).
+    Site(i32),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TruncLeaf {
+    /// `graphix_slot_state_table` leaf of `len * stride` words.
+    Table { stride: u32 },
+    /// `graphix_slot_state_blocks` leaf (SiteLeaf-described blocks).
+    Blocks,
+}
+
 pub(crate) struct SlotTableFrame {
     pub(super) depth: u32,
     /// The loop's slot-ordinal induction variable.
@@ -480,6 +515,9 @@ pub(crate) struct SlotTableFrame {
     /// kernel invocation) and whether the table is null-GUARDED (a
     /// callee loop's chain rides the possibly-0 site block).
     pub(super) tables: Vec<(ExprId, ClifValue, bool)>,
+    /// In-loop chain claims made during this frame's body — each
+    /// enclosing exit re-ensures them ([`TruncRec`]).
+    pub(super) pending: Vec<TruncRec>,
 }
 
 /// One state-word CHANNEL: a base pointer, a claim counter, and the
@@ -613,6 +651,12 @@ pub(crate) struct LowerCtx<'a> {
     /// consults the top frame for its per-slot word (see
     /// [`BodyCx::slot_select_word`]).
     pub(super) slot_tables: std::cell::RefCell<Vec<SlotTableFrame>>,
+    /// The frame `close_slot_tables` just popped, held for the loop
+    /// emitter's `emit_slot_truncates` call in the ALWAYS-EXECUTED
+    /// exit block (THE SHRINK-TO-ZERO RULE — see [`TruncRec`]).
+    /// (depth, len, src_disc, records).
+    pub(super) closed_frame:
+        std::cell::RefCell<Option<(u32, ClifValue, ClifValue, Vec<TruncRec>)>>,
     /// The kernel's lifted connect targets, sorted — slot `i`'s id
     /// lives in state word `i`. `emit_connect_node` loads its write
     /// target from there instead of an `iconst` (per-instance

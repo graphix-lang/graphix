@@ -1,0 +1,14 @@
+// FIXED — aug18a class 6 (aieka divergence_000001; the ryouko face
+// was the same flap). Both modes REJECT this program; the diagnostic
+// detail flapped: `within Array<'a: i64>` vs `Array<'a: unbound>`,
+// nondeterministically — 4-vs-2 out of 6 IN THE SAME MODE, so the
+// dossier's fusion-phase-leak hypothesis was wrong: the oracle was
+// catching two runs of per-process nondeterminism on opposite sides.
+// Root cause: `FnType::constrain_known` (and two sibling walks)
+// drained a name-keyed AHashMap — ahash's per-process seed made the
+// constraint-recording order random, and the order lands in cell
+// constraint lists that the lazily-formatted TypeMismatch renders at
+// print time. Fixed by sorting the drains by (name, TVarId) — the
+// deterministic pattern the contains.rs settle walk already used.
+// Post-fix both modes render `'a: unbound`, 12/12 stable per mode.
+{let a = [i64:0, i64:1, i64:100, i64:3, i64:4, i64:5, i64:6]; {let f = |a, b| array::group(count(array::iter(a)), |n, _| n == i64:4); f(i64:1, f64:2.5)}}

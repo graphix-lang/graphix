@@ -615,7 +615,12 @@ impl FnType {
     pub(crate) fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
         let key = self as *const Self as usize;
         if Self::walking(|w| w.insert(key)) {
-            for tv in self.sig_tvars().values() {
+            let mut tvs: LPooled<Vec<(ArcStr, TVar)>> =
+                self.sig_tvars().drain().collect();
+            tvs.sort_by(|a, b| {
+                a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
+            });
+            for (_, tv) in tvs.drain(..) {
                 for tc in tv.cell_constraints() {
                     f(&tc);
                 }
@@ -646,7 +651,16 @@ impl FnType {
     pub fn constrain_known(&self, closed_only: bool) {
         let mut known = LPooled::take();
         self.collect_tvars(&mut known);
-        for (_, tv) in known.drain() {
+        // DETERMINISTIC order (the class-6 flap, 2026-08-20): the
+        // name-keyed AHashMap drains in per-process hash order, and
+        // the recording order lands in cell constraint lists and
+        // downstream diagnostics — sort by (name, id) like the settle
+        // walk in contains.rs.
+        let mut known: LPooled<Vec<(ArcStr, TVar)>> = known.drain().collect();
+        known.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
+        });
+        for (_, tv) in known.drain(..) {
             // clone the binding OUT of the cell guards before acting —
             // add_cell_constraint write-locks the same cell (lock
             // discipline, see CLAUDE.md emit contracts)
@@ -1122,7 +1136,12 @@ impl FnType {
         // impl inferred at f64 slipped under a fn(i64) -> i64 sig
         // (dynamic_module1, 2026-07-12). Every conjunct must admit
         // the signature's concrete choice.
-        for tv in impl_fn.sig_tvars().values() {
+        let mut impl_tvs: LPooled<Vec<(ArcStr, TVar)>> =
+            impl_fn.sig_tvars().drain().collect();
+        impl_tvs.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
+        });
+        for (_, tv) in impl_tvs.drain(..) {
             match tvar_map.get(&tv.inner_addr()).cloned() {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {

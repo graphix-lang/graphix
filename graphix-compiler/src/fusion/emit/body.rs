@@ -32,7 +32,9 @@ use super::{
         CompositeSource, drop_owned_composites, emit_drop_local, emit_pending_cleanup,
     },
     flow::emit_body_tail,
-    lower::{LowerCtx, SelWord, SiteLayout, SlotTableFrame},
+    lower::{
+        LowerCtx, SelWord, SiteLayout, SlotTableFrame, TruncAnchor, TruncLeaf, TruncRec,
+    },
     nodes::emit_owned_value_operand_node,
     scalar::scalar_to_payload_i64,
 };
@@ -618,6 +620,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         src_disc: ClifValue,
         idx_var: Variable,
     ) -> Result<()> {
+        debug_assert!(
+            self.ctx.closed_frame.borrow().is_none(),
+            "a closed frame's slot truncates were never emitted"
+        );
         let depth = self.ctx.loop_depth.get() + 1;
         // (len, src_disc, idx_var) of each enclosing loop,
         // outermost first. Every open loop pushed a frame, so the
@@ -633,6 +639,13 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         };
         let n_dirs = enclosing.len();
         let mut tables = Vec::new();
+        // Records for the always-executed exit re-ensures (THE
+        // SHRINK-TO-ZERO RULE, [`TruncRec`]): the leaf re-ensure at
+        // this frame's own exit is an idempotent no-op next to the
+        // preheader's, but the records propagate outward so every
+        // ENCLOSING level truncates on ITS exit — an outer len-0
+        // epoch skips this preheader entirely.
+        let mut pending: Vec<TruncRec> = Vec::new();
         for id in sites {
             let anchor = if n_dirs == 0 {
                 self.claim_state_word()
@@ -641,6 +654,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             };
             let entry = match anchor {
                 Some(off) => {
+                    pending.push(TruncRec {
+                        anchor: TruncAnchor::State(off),
+                        n_dirs: n_dirs as u32,
+                        leaf: TruncLeaf::Table { stride: 1 },
+                        leaf_ptr: 0,
+                    });
                     self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                         rel: (off / 8) as u32,
                         own_levels: n_dirs as u32,
@@ -660,6 +679,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 // (the no-memory semantics, [`SelWord::Guarded`]).
                 None => match self.claim_site_anchor(n_dirs as u32, None) {
                     Some(off) => {
+                        pending.push(TruncRec {
+                            anchor: TruncAnchor::Site(off),
+                            n_dirs: n_dirs as u32,
+                            leaf: TruncLeaf::Table { stride: 1 },
+                            leaf_ptr: 0,
+                        });
                         let base = self.site_ptr();
                         let word_addr = self.b.ins().iadd_imm(base, off as i64);
                         let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
@@ -698,6 +723,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             len,
             src_disc,
             tables,
+            pending,
         });
         Ok(())
     }
@@ -741,6 +767,124 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub(crate) fn close_slot_tables(&mut self) {
         let popped = self.ctx.slot_tables.borrow_mut().pop();
         debug_assert!(popped.is_some(), "close_slot_tables without an open frame");
+        // Stash for the emitter's `emit_slot_truncates` call in the
+        // always-executed exit block (THE SHRINK-TO-ZERO RULE). An
+        // existing stash is overwritten silently — that happens only
+        // on error-propagation paths, where the whole kernel is
+        // discarded.
+        if let Some(f) = popped {
+            *self.ctx.closed_frame.borrow_mut() =
+                Some((f.depth, f.len, f.src_disc, f.pending));
+        }
+    }
+
+    /// Emit the closed frame's chain re-ensures in the CURRENT block —
+    /// called by every scaffold loop emitter right after switching to
+    /// its always-executed `loop_exit` (THE SHRINK-TO-ZERO RULE,
+    /// aug18a class 4): an in-body chain ensure never runs on a
+    /// zero-length epoch, so the exit re-ensures each recorded chain
+    /// at THIS frame's level — walking the still-open enclosing
+    /// directories (their preheader-defined lens/ordinals dominate
+    /// this block) and ensuring level `depth` with this frame's len,
+    /// which truncates on a shrink and frees the dropped subtrees
+    /// (`own` levels), exactly when the interp deletes the slots.
+    /// Records then propagate to the enclosing frame so ITS exit
+    /// re-ensures the next level out; at depth 1 the chain is fully
+    /// covered and the records drop.
+    pub(crate) fn emit_slot_truncates(&mut self) -> Result<()> {
+        let Some((depth, len, src_disc, recs)) =
+            self.ctx.closed_frame.borrow_mut().take()
+        else {
+            debug_assert!(false, "emit_slot_truncates without a closed frame");
+            return Ok(());
+        };
+        if recs.is_empty() {
+            return Ok(());
+        }
+        let k = depth as usize;
+        let dirs: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
+            let frames = self.ctx.slot_tables.borrow();
+            debug_assert_eq!(frames.len(), k - 1, "closed frame depth out of sync");
+            frames.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
+        };
+        let table_helper = self.helper("graphix_slot_state_table")?;
+        let valid = emit_untainted_i64(self.b, src_disc);
+        for r in recs.iter() {
+            let leaf_ptr = self.b.ins().iconst(types::I64, r.leaf_ptr);
+            // The anchor's word address; a site anchor's base may be 0
+            // (a back-edge activation) — branch around the walk.
+            let (word0, guard) = match r.anchor {
+                TruncAnchor::State(off) => {
+                    let sp = self.state_ptr();
+                    (self.b.ins().iadd_imm(sp, off as i64), None)
+                }
+                TruncAnchor::Site(off) => {
+                    let base = self.site_ptr();
+                    (self.b.ins().iadd_imm(base, off as i64), Some(base))
+                }
+            };
+            let (walk_bl, done_bl) = match guard {
+                Some(base) => {
+                    let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                    let walk = self.b.create_block();
+                    let done = self.b.create_block();
+                    self.b.ins().brif(has, walk, &[], done, &[]);
+                    self.b.switch_to_block(walk);
+                    self.b.seal_block(walk);
+                    (Some(walk), Some(done))
+                }
+                None => (None, None),
+            };
+            let n_dirs = r.n_dirs as usize;
+            // Walk the still-open directory levels 1..k-1 (indexing by
+            // their CURRENT ordinals — live at this exit), then ensure
+            // level k: a directory when k <= n_dirs (this frame's len,
+            // owning the levels below), the LEAF when k == n_dirs + 1.
+            let mut word = word0;
+            for (j, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
+                let fvalid = emit_untainted_i64(self.b, *fdisc);
+                let own = self.b.ins().iconst(types::I64, (n_dirs - j) as i64);
+                let call = self
+                    .b
+                    .ins()
+                    .call(table_helper, &[word, *flen, fvalid, own, leaf_ptr]);
+                let dir = self.b.inst_results(call)[0];
+                let i = self.b.use_var(*fidx);
+                let o = self.b.ins().ishl_imm(i, 3);
+                word = self.b.ins().iadd(dir, o);
+            }
+            if k <= n_dirs {
+                let own = self.b.ins().iconst(types::I64, (n_dirs - (k - 1)) as i64);
+                self.b.ins().call(table_helper, &[word, len, valid, own, leaf_ptr]);
+            } else {
+                debug_assert_eq!(k, n_dirs + 1, "trunc record deeper than its claim");
+                match r.leaf {
+                    TruncLeaf::Table { stride } => {
+                        let words = self.b.ins().imul_imm(len, stride as i64);
+                        let own0 = self.b.ins().iconst(types::I64, 0);
+                        self.b
+                            .ins()
+                            .call(table_helper, &[word, words, valid, own0, leaf_ptr]);
+                    }
+                    TruncLeaf::Blocks => {
+                        let blocks_helper = self.helper("graphix_slot_state_blocks")?;
+                        self.b.ins().call(blocks_helper, &[word, len, valid, leaf_ptr]);
+                    }
+                }
+            }
+            if let (Some(_), Some(done)) = (walk_bl, done_bl) {
+                self.b.ins().jump(done, &[]);
+                self.b.switch_to_block(done);
+                self.b.seal_block(done);
+            }
+        }
+        if k > 1 {
+            let mut frames = self.ctx.slot_tables.borrow_mut();
+            if let Some(f) = frames.last_mut() {
+                f.pending.extend(recs);
+            }
+        }
+        Ok(())
     }
 
     /// The address of THIS slot's per-slot state word for the site at
@@ -811,6 +955,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             leaf: None,
             reset: true,
         });
+        // Exit-block re-ensure record (THE SHRINK-TO-ZERO RULE): this
+        // per-iteration ensure never runs on a len-0 epoch.
+        if let Some(f) = self.ctx.slot_tables.borrow_mut().last_mut() {
+            f.pending.push(TruncRec {
+                anchor: TruncAnchor::State(off),
+                n_dirs: enclosing.len() as u32,
+                leaf: TruncLeaf::Table { stride: 2 },
+                leaf_ptr: 0,
+            });
+        }
         let sp = self.state_ptr();
         let word_addr = self.b.ins().iadd_imm(sp, off as i64);
         let len2 = self.b.ins().ishl_imm(len, 1);

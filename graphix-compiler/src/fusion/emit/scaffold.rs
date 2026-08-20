@@ -981,6 +981,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, n)?;
     Ok((finalize_buf(cx, buf)?, flags, n_disc))
 }
@@ -1030,6 +1031,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
@@ -1121,6 +1123,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
@@ -1214,6 +1217,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
@@ -1287,6 +1291,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
@@ -1590,6 +1595,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     drop_owned_src(cx, &arr)?;
     let payload = cx.b.use_var(acc_var);
@@ -1694,6 +1700,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     let disc = cx.b.use_var(result_disc_var);
     let payload = cx.b.use_var(result_payload_var);
@@ -1777,6 +1784,7 @@ where
     cx.b.seal_block(loop_header);
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
+    cx.emit_slot_truncates()?;
     emit_depth_unit_exit(cx, len)?;
     let disc = cx.b.use_var(result_disc_var);
     let payload = cx.b.use_var(result_payload_var);

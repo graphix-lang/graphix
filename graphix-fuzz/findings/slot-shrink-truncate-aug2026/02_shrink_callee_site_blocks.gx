@@ -1,0 +1,19 @@
+// FIXED — aug18a class 4 (katana divergence_000000): kernel per-slot
+// state survived a SHRINK-TO-ZERO resize. Every in-loop chain ensure
+// (DynCall cache pairs, per-slot call-site blocks, select-table
+// directory levels below an outer loop) was emitted per-iteration
+// INSIDE the loop body, so a zero-length epoch never ran the
+// truncate and the regrow saw no length change — per-slot count
+// state continued where the interp's slot.delete built fresh.
+// THE SHRINK-TO-ZERO RULE (Ruling 2's slots-are-activations applied):
+// each loop's ALWAYS-EXECUTED exit block re-ensures every chain
+// claimed within its body at its own level (`TruncRec` records,
+// close_slot_tables stash → emit_slot_truncates, propagating outward
+// frame by frame), truncating exactly when the interp deletes the
+// slot activations. No prewalk: the exit block is as always-executed
+// as the preheader the parked plan wanted, and close time has every
+// record naturally.
+// Face 3 — per-slot callee site blocks: the in-loop call-site chain
+// truncates on shrink so the regrown slots get fresh callee
+// instances. Pre-fix interp [2,0,2] / jit [2,0,4].
+{let x = array::iter([i64:2, i64:0, i64:2]); let g = |k: i64| -> i64 count(k); array::fold(array::init(x, |i| g(i)), i64:0, |acc: i64, e: i64| acc + e)}

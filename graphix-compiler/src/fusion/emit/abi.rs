@@ -223,14 +223,6 @@ pub(super) fn taint_if(
 /// Stateless fallback (scaffold loops, unhonored callers): the
 /// unwrapped result — the pre-existing conflation, a documented
 /// residual.
-pub(super) fn emit_scalar_taint_cache(
-    cx: &mut BodyCx,
-    prim: PrimType,
-    cv: CompiledExpr,
-) -> CompiledExpr {
-    emit_scalar_taint_cache_claimed(cx, prim, cv).unwrap_or(cv)
-}
-
 /// [`emit_scalar_taint_cache`] with the claim outcome surfaced: `None`
 /// when no storage channel is available (callee-body loops, unclaimed
 /// contexts) and the result would have passed through unwrapped.

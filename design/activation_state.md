@@ -401,7 +401,18 @@ chapter), class 6 (diagnostic-only).
   guard rides deleted, chain-scoped consumption, undecidable-bottoms;
   item 2 dissolved; pin 05 re-blessed to [101,1]; gates green with
   zero fixture flips.
-- P4 ⬜ soak on the amended binary.
+- P3b ✅ THE SHRINK-TO-ZERO RULE (aug18a class 4 — Ruling 2's
+  slots-are-activations enforced in kernels): every in-loop state
+  chain (DynCall cache pairs, per-slot callee site blocks,
+  select-table directory levels) re-ensures in each enclosing loop's
+  ALWAYS-EXECUTED exit block (`TruncRec` records, close-time stash →
+  `emit_slot_truncates`, propagating outward), so a shrink-to-zero
+  truncates exactly when the interp deletes the slot activations. No
+  prewalk — the exit block is as always-executed as the preheader the
+  parked plan wanted, and close time has every record naturally.
+  Pins: findings/slot-shrink-truncate-aug2026/ (three faces, all
+  red→green verified).
+- P4 ⬜ soak on the amended binary (fleet deploy next).
 
 ## Former open residue (mid-loop guard bottoms) — RESOLVED
 

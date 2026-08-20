@@ -841,6 +841,27 @@ fn emit_site_block(
         cx.ctx.lazy_site_leaves.borrow_mut().push(l.clone());
         Some(l)
     };
+    // Exit-block re-ensure record (THE SHRINK-TO-ZERO RULE, aug18a
+    // class 4): this chain's per-iteration ensure never runs on a
+    // len-0 epoch, so every enclosing loop's exit re-ensures it at
+    // its level (`BodyCx::emit_slot_truncates`) — a shrink truncates
+    // the per-slot call-site blocks exactly when the interp deletes
+    // the slot instances.
+    let trunc_rec = |anchor| {
+        use crate::fusion::emit::lower::{TruncLeaf, TruncRec};
+        TruncRec {
+            anchor,
+            n_dirs: n_dirs as u32,
+            leaf: match &leaf_rt {
+                None => TruncLeaf::Table { stride: layout.words },
+                Some(_) => TruncLeaf::Blocks,
+            },
+            leaf_ptr: leaf_rt
+                .as_ref()
+                .map(|l| std::sync::Arc::as_ptr(l) as *const u8 as i64)
+                .unwrap_or(0),
+        }
+    };
     let anchor = match cx.claim_state_word_loop_invariant() {
         Some(off) => {
             cx.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
@@ -849,11 +870,20 @@ fn emit_site_block(
                 leaf: leaf_rt.clone(),
                 reset: false,
             });
+            if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
+                f.pending
+                    .push(trunc_rec(crate::fusion::emit::lower::TruncAnchor::State(off)));
+            }
             let sp = cx.state_ptr();
             SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
         }
         None => match cx.claim_site_anchor(n_dirs as u32, leaf_rt.clone()) {
             Some(off) => {
+                if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
+                    f.pending.push(trunc_rec(
+                        crate::fusion::emit::lower::TruncAnchor::Site(off),
+                    ));
+                }
                 let base = cx.site_ptr();
                 let addr = cx.b.ins().iadd_imm(base, off as i64);
                 SelWord::Guarded { base, addr }
