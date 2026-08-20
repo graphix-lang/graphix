@@ -873,7 +873,26 @@ enforces it):**
   Apply per site (`DynCallSlot.instances`) — cache AND builtin state
   get the interp's per-callsite identity. Key 0 = the shared legacy
   bucket: scaffold-loop sites (v1, keeping the init-mask
-  approximation), recursive back-edges, qop-deliver.
+  approximation) and qop-deliver. (Recursive back-edges LEFT the
+  bucket 2026-08-16, 003fa7d6: a self-call roots a lazily-grown
+  per-ACTIVATION block tree — `graphix_site_child_block`, size from
+  the callee's `site_desc` cell, one root per self-call SITE so
+  sibling calls get separate trees; free and reset walks traverse it.
+  The 2026-08-20 audit (design/activation_state.md) verified Ruling-2
+  compliance: ride/routing state per depth is real and pinned
+  (findings/recursive-activation-blocks-aug2026/); per-depth
+  SLEEP_RESTARTS builtin state is structurally unreachable in kernels
+  (the P7 arm gate de-fuses every rec-body stateful shape loudly —
+  pins 03/04 hold the interp contract); every degrade door is closed
+  (in-loop self-call = mutual edge de-fuse, self-as-callback =
+  occurs-check error, aliased self de-fuses; the silent-0 fallbacks
+  in `emit_site_block` now Err). The audit also flushed out and fixed
+  the FORWARD-EDGE definition-order hole: reverse-declaration order
+  broke callees-first on sibling discovery, so a callee could define
+  after its caller and run below a recursion with no interior memory
+  — now a TOPOLOGICAL order over the recorded call edges
+  (emit/jit.rs; red witness pin 05, interp [101,1,1,1] vs jit
+  [101,1]).)
   `design/kernel_instance_state.md` "DynCall site identity"; pinned
   by `dyncall_site_identity_state` +
   `findings/dyncall-site-identity-jul2026/`.

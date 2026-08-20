@@ -1,0 +1,10 @@
+// NOTE (vacuity, 2026-08-20): de-fuses today via the SLEEP_RESTARTS
+// arm gate (see 03) — pins the interp multiplicity contract; becomes
+// a kernel pin if the gate is ever relaxed.
+// The SIBLING face (audit witness, 2026-08-20): two self-call SITES
+// in one body root two separate activation trees — depth is not
+// identity (claim_self_block_word is per-site). Distinct count
+// instances behind f(n-1) and f(n-2): f(2) = 10c + c = 11k →
+// [11, 22, 33]. Aliasing the siblings through one root would fold
+// the counters together.
+{let x = array::iter([i64:1, i64:2, i64:3]); let rec f = |n: i64| -> i64 select n {i64:0 => count(x), i64:1 => count(x) * i64:10, _ => f(n - i64:1) + f(n - i64:2)}; f(x - x + i64:2)}

@@ -1,0 +1,19 @@
+// NOTE (vacuity, 2026-08-20): this program's f de-fuses TODAY — the
+// P7 SLEEP_RESTARTS gate refuses count-in-arm shapes, and recursion
+// puts every arm under the dispatch select, so per-depth BUILTIN
+// state is structurally unreachable in kernels (safely: loud
+// de-fuse, never silent sharing). Both modes run the interp here;
+// the pin's value is the INTERP multiplicity contract plus becoming
+// a real kernel pin the day the gate is relaxed.
+// The STATE face of the per-activation block tree (audit witness,
+// 2026-08-20, design/activation_state.md Ruling 2): a stateful
+// builtin below a native self-call keeps ONE INSTANCE PER DEPTH,
+// persistent across cycles — the interp's retained instance tree.
+// Three distinct count(x) instances (depths 2, 1, 0) each accumulate
+// per cycle: f = c + 10c + 10c = 21k → [21, 42, 63]. A shared
+// (key-0-style) instance or a fresh-per-activation degrade produces
+// different arithmetic, so the trace pins the multiplicity exactly.
+// The DynCall site words live in the depth's child block
+// (graphix_site_child_block, 003fa7d6), giving per-depth dispatch
+// identity with no extra machinery.
+{let x = array::iter([i64:1, i64:2, i64:3]); let rec f = |n: i64| -> i64 select n {i64:0 => count(x), _ => f(n - i64:1) + count(x) * i64:10}; f(x - x + i64:2)}

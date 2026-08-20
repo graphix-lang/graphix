@@ -253,11 +253,51 @@ Changes (1–3 BUILT 2026-08-20; 4 open):
    `sel_fires` scope stack, innermost-first) turn a still-stale
    result with a fresh-bottom consumed fire into TAINT fresh, the
    payload untouched (valid under TAINT, ownership exact).
-4. **kernel: the key-0 shared legacy bucket for recursive back-edges**
-   (`fusion/emit/call.rs`) violates Ruling 2 for native recursion —
-   a stateful builtin below a recursive back-edge shares one state
-   across all depths where the interp keeps per-depth state. Fix:
-   per-depth state or de-fuse. Gets its own finding dir when built.
+4. **kernel: recursive back-edge state — AUDITED 2026-08-20; the tree
+   was already built, and the audit found + fixed a REAL adjacent
+   hole.** The per-depth mechanism landed 2026-08-16 (003fa7d6, "give
+   a recursive activation its own memory"): a self-call roots a
+   lazily-grown per-ACTIVATION block tree (`graphix_site_child_block`;
+   size read at runtime from the callee's `site_desc` cell — a
+   self-call's own layout isn't final mid-emission; one root per
+   self-call SITE so sibling calls get separate trees;
+   `free_self_block_tree`/`reset_self_block_tree` walk it; honor
+   headers ride down). The doc's original "key-0 bucket" framing was
+   stale comments plus a probe misread (the depth-1 substitution was
+   depth-1's OWN child-block history — correct behavior).
+
+   Audit results:
+   - RIDE/routing state per depth: real and pinned (003fa7d6's own
+     pins 00–02 + the bottom-out probe family).
+   - BUILTIN (SLEEP_RESTARTS) state per depth: structurally
+     UNREACHABLE in kernels — recursion dispatches through a select,
+     so every stateful builtin in a rec body sits under an arm, and
+     the P7 interior-sleep gate (direct `arm_depth` check + the
+     deferred `self_backedge_in_arm && saw_restart_reach` check)
+     de-fuses every such shape LOUDLY. Safe by construction; coverage
+     cost only. Pins 03/04 carry the interp multiplicity contract and
+     become kernel pins if the gate is ever relaxed (their first
+     drafts claimed kernel evidence — vacuous, headers corrected).
+   - Every degrade door is closed: a callback-mediated in-loop
+     self-call is a MUTUAL static edge (loud de-fuse at the
+     CallSite), passing the rec fn as its own callback is an
+     occurs-check type error, aliased self-calls (`let g = f`)
+     de-fuse undiscovered, mutual `let rec` is inexpressible, and
+     `emit_site_block`'s silent-0 fallbacks now Err (a future shape
+     that reaches them loses fusion, never correctness).
+   - **The REAL hole the audit flushed out (via the loud Err failing
+     the dyncall_seed_backedge fixture): kernel DEFINITION order.**
+     Reverse-declaration-order approximated callees-first and broke
+     on SIBLING discovery — a callee discovered before its caller at
+     the same scan level (`g(..) ..; f calls g`) defined AFTER it,
+     the caller found no `SiteLayout`, and the old silent 0 ran the
+     callee's activations below the recursion with no interior
+     memory. Red witness: interp `[101,1,1,1]` vs jit `[101,1]` (the
+     callee's guard ride never stored; bottoms where the interp's
+     retained instance rode). Fixed with a TOPOLOGICAL definition
+     order over the recorded static call edges (emit/jit.rs,
+     deterministic: declaration-position-sorted edges, DFS
+     postorder). Pin: recursive-activation-blocks-aug2026/05.
 5. **Pin re-adjudication.** Expected traces containing MANUFACTURED
    values (a value emitted on a cycle whose only fresh input was a
    bottom) flip to one-fewer-value; expected traces whose emissions
@@ -289,7 +329,10 @@ chapter), class 6 (diagnostic-only).
   family. Two build-time findings folded back into Ruling 1's fine
   print: the per-fire formulation (sound beats bottom within one
   scope) and the nesting/scope-stack composition.
-- P3 ⬜ key-0 back-edge finding + fix-or-defuse (change 4).
+- P3 ✅ back-edge audit (change 4): the tree was already built
+  (003fa7d6); degrade doors verified closed and made loud; the audit
+  flushed out and fixed the forward-edge DEFINITION-ORDER hole
+  (topological order, pin 05); corpus 417.
 - P4 ⬜ soak on the amended binary.
 
 ## Named open residue (mid-loop guard bottoms)

@@ -768,15 +768,76 @@ fn compile_kernel_with_callees_inner(
     // `discover_lambda_calls` records a body for every callee it
     // returns; the check guards the invariant rather than a known
     // path.
-    // Definition order is REVERSED (deepest-discovered callees first,
-    // the parent last): a caller's body emission reads its callees'
-    // per-call-site state-block layouts ([`SiteLayout`], recorded at
-    // definition) to size the blocks it supplies. A callee whose
-    // layout is still missing at the caller's definition is a
-    // recursive back-edge (self-calls, mutual-recursion cycles) — the
-    // call site passes 0 and the callee's null-guards degrade to the
-    // no-memory semantics (fresh transient activation).
-    for (k, base, layout) in to_define.iter().rev() {
+    // Definition order is TOPOLOGICAL over the recorded static call
+    // edges, callees before callers: a caller's body emission reads
+    // its callees' per-call-site state-block layouts ([`SiteLayout`],
+    // recorded at definition) to size the blocks it supplies. The old
+    // reverse-declaration-order approximation broke on sibling
+    // discovery: a callee discovered BEFORE its caller at the same
+    // scan level (`g("bb") + f(2)` with f's body calling g) defined
+    // AFTER it, the caller's site-block emission found no layout, and
+    // the callee's activations inside the caller ran with no interior
+    // memory — a silent Ruling-2 multiplicity hole
+    // (design/activation_state.md, 2026-08-20; the
+    // dyncall_seed_backedge fixture pinned the crash face). The only
+    // layout legitimately missing at a caller's definition is now its
+    // OWN (self-calls — resolved at runtime through the `site_desc`
+    // cell); mutual cycles refuse upstream, and `emit_site_block`
+    // Errs loudly if either invariant breaks. Edges are sorted by
+    // declaration position and the walk is over declaration order —
+    // fully deterministic (#19 detcheck).
+    let def_order: Vec<usize> = {
+        use std::collections::BTreeMap;
+        let mut pos: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut by_ptr: BTreeMap<usize, smallvec::SmallVec<[usize; 2]>> = BTreeMap::new();
+        for (i, (k, _, _)) in to_define.iter().enumerate() {
+            let ptr = std::sync::Arc::as_ptr(k) as usize;
+            pos.entry(ptr).or_insert(i);
+            by_ptr.entry(ptr).or_default().push(i);
+        }
+        let edges_of = |p: usize| -> smallvec::SmallVec<[usize; 8]> {
+            let mut out: smallvec::SmallVec<[usize; 8]> = emitters
+                .get(&p)
+                .and_then(|e| e.spec.lambda_call_sites)
+                .map(|m| {
+                    m.values()
+                        .map(|info| kernel_abi::kernel_key(&info.kernel))
+                        .filter(|q| *q != p && pos.contains_key(q))
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.sort_by_key(|q| pos[q]);
+            out.dedup();
+            out
+        };
+        let mut done: BTreeMap<usize, ()> = BTreeMap::new();
+        let mut order: Vec<usize> = Vec::with_capacity(to_define.len());
+        for (k, _, _) in to_define.iter() {
+            let root = std::sync::Arc::as_ptr(k) as usize;
+            if done.contains_key(&root) {
+                continue;
+            }
+            done.insert(root, ());
+            let mut stack: Vec<(usize, smallvec::SmallVec<[usize; 8]>, usize)> =
+                vec![(root, edges_of(root), 0)];
+            while let Some((ptr, es, i)) = stack.pop() {
+                if i < es.len() {
+                    let q = es[i];
+                    stack.push((ptr, es, i + 1));
+                    if !done.contains_key(&q) {
+                        done.insert(q, ());
+                        stack.push((q, edges_of(q), 0));
+                    }
+                } else {
+                    order.extend(by_ptr.get(&ptr).into_iter().flatten().copied());
+                }
+            }
+        }
+        debug_assert_eq!(order.len(), to_define.len());
+        order
+    };
+    for ti in def_order {
+        let (k, base, layout) = &to_define[ti];
         let ptr = std::sync::Arc::as_ptr(k) as usize;
         // The emitter is keyed by pointer identity (it's the same body
         // regardless of base); the `fn_index_offset` it carries (== base)

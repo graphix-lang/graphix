@@ -3444,7 +3444,15 @@ pub fn normalize_clif(s: &str) -> String {
             let mut rest = line;
             'outer: loop {
                 let mut best: Option<(usize, &str)> = None;
-                for pat in ["ExprId(", "u0:", "kir_", "lambda#"] {
+                // `<abstract#` and `'_`: a CompileErr subject's stderr
+                // carries its diagnostic, whose abstract ids and tvar
+                // ids drift between fresh children (the class-6 genus
+                // — concurrent stdlib compile interleaves the
+                // process-global counters), which flapped detcheck on
+                // abstract-opaque-overtag-jul2026/01 (2026-08-20).
+                // Same first-seen canonicalization as the oracle's
+                // `normalize_diag`.
+                for pat in ["ExprId(", "u0:", "kir_", "lambda#", "<abstract#", "'_"] {
                     if let Some(pos) = rest.find(pat) {
                         if best.map_or(true, |(b, _)| pos < b) {
                             best = Some((pos, pat));

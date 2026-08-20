@@ -28,8 +28,9 @@ Open, each parked here with mechanism located and a design question:
    re-emission face is deleted, the kernel's value-position folds
    and undetermined-guard chain match). Pins moved to
    findings/bottom-out-aug2026/. Open follow-ons live in the design
-   doc: the key-0 back-edge bucket (Ruling 2) and the mid-loop
-   guard-bottom residue.
+   doc: the mid-loop guard-bottom residue (the back-edge bucket
+   AUDITED CLOSED 2026-08-20 — covered by 003fa7d6's per-activation
+   trees; degrade doors unreachable and now loud).
 6. **class6_compile_err_detail.gx** — mode-divergent tvar-bound
    rendering in a typecheck error (a fusion-phase stdlib-compile walk
    binds a shared cell). Diagnostic-only.

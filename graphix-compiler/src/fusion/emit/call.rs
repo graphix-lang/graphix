@@ -651,9 +651,28 @@ fn emit_site_block(
         // rides missed where the interp's rode
         // (fuzz/open/01_recursive_activation_cache.gx).
         None => {
-            let Some(off) = (if is_self { cx.claim_self_block_word() } else { None })
-            else {
-                return Ok(cx.b.ins().iconst(types::I64, 0));
+            // Non-self edges without a layout are mutual-recursion
+            // cycles, refused upstream (`is_recursive_edge` bails at
+            // the CallSite before this path) — reaching here is a
+            // routing bug, and passing 0 would run the callee with no
+            // interior memory (a silent Ruling-2 divergence, the
+            // wrong failure direction). De-fuse loudly instead; same
+            // for a self-call whose per-activation block root can't
+            // be claimed (in-loop scaffold contexts — today those
+            // shapes are unreachable: a callback-mediated self-call
+            // is a mutual edge and self-as-callback is an occurs-
+            // check error; if a future shape gets here it LOSES
+            // FUSION, never correctness — the 2026-08-20 audit,
+            // design/activation_state.md).
+            if !is_self {
+                return Err(anyhow!(
+                    "emit_clif: non-self recursive edge reached site-block                      emission — mutual cycles refuse at the call site"
+                ));
+            }
+            let Some(off) = cx.claim_self_block_word() else {
+                return Err(anyhow!(
+                    "emit_clif: no per-activation block root for a self-call                      (in-loop context) — de-fuse"
+                ));
             };
             let base = cx.site_ptr();
             let word = cx.b.ins().iadd_imm(base, off as i64);
