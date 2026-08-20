@@ -28,8 +28,8 @@
 //   9     -> chain_matches_rec (below): chain-equivalence restored,
 //            both per-delivery
 
-use anyhow::Result;
 use super::dense_deltas::{as_i64s, run_delta};
+use anyhow::Result;
 
 // ── Delta 1: a scrutinee re-fire on the same arm EMITS ──
 //
@@ -61,9 +61,11 @@ async fn same_arm_refire_emits_jit() -> Result<()> {
 //
 // Const scrutinee (fires once at init); the guard reads g = x % 2,
 // which fires per x delivery; the guard verdict never changes the
-// selection. Pre-flip: count [1, 2] (the init emission plus g's FIRST
-// delivery making the guard evaluable; later g fires are quiet).
-// Post-flip: every guard-dep fire emits; count [1, 2, 3, 4].
+// selection. Every guard-dep fire emits (organic firing) — and the
+// INIT-PHANTOM guard bottoms the init cycle (activation_state.md,
+// 2026-08-20: a never-produced guard is unknown, not false — the old
+// init emission took the wildcard on an invented false), so the
+// count is [1, 2, 3]: one per guard fire, none at init.
 const GUARD_FIRE: &str = r#"{
   let x = array::iter([i64:1, i64:2, i64:3]);
   let g = x % i64:2;
@@ -72,7 +74,7 @@ const GUARD_FIRE: &str = r#"{
 
 async fn guard_fire_emits(fusion_disabled: bool) -> Result<()> {
     let (values, _) = run_delta(GUARD_FIRE, fusion_disabled).await?;
-    assert_eq!(as_i64s(&values), vec![1, 2, 3, 4]);
+    assert_eq!(as_i64s(&values), vec![1, 2, 3]);
     Ok(())
 }
 

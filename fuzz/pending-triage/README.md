@@ -21,13 +21,15 @@ Open, each parked here with mechanism located and a design question:
    survives a shrink-to-zero resize (the loop-body-emitted chain
    ensures never run on an empty generation). Fix = prewalk-based
    preheader ensures.
-5. **class5_tail_entry_ride.gx** — RULED 2026-08-20 and INVERTED
-   (design/activation_state.md): the kernel's `[1,1,1]` is the ruled
-   trace — held state never determines output bottomness (bottom in,
-   bottom out), and state multiplicity = activation multiplicity
-   (tail loop = ONE activation). Fix = interp amendment, not kernel
-   storage; probe twins class5_probe_{native,tail}_depth1.gx are the
-   red fixtures. Not yet built.
+5. **class 5 — CLOSED** (2026-08-20): ruled AND built same day —
+   THE BOTTOM-OUT RULE (design/activation_state.md; ruled with
+   state-multiplicity=activation-multiplicity). The finding INVERTED
+   (the kernel's tail refusal was right; the interp's ride
+   re-emission face is deleted, the kernel's value-position folds
+   and undetermined-guard chain match). Pins moved to
+   findings/bottom-out-aug2026/. Open follow-ons live in the design
+   doc: the key-0 back-edge bucket (Ruling 2) and the mid-loop
+   guard-bottom residue.
 6. **class6_compile_err_detail.gx** — mode-divergent tvar-bound
    rendering in a typecheck error (a fusion-phase stdlib-compile walk
    binds a shared cell). Diagnostic-only.

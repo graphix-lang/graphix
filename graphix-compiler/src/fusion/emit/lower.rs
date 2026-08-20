@@ -201,6 +201,7 @@ pub(super) fn compile_into_function(
         callee_refs,
         helper_refs,
         init_override: std::cell::Cell::new(None),
+        sel_fires: std::cell::RefCell::new(Vec::new()),
         arm_depth: std::cell::Cell::new(0),
         saw_restart_reach: std::cell::Cell::new(false),
         self_backedge_in_arm: std::cell::Cell::new(false),
@@ -650,6 +651,21 @@ pub(crate) struct LowerCtx<'a> {
     /// outside arm bodies (and inside arms of stateless-context
     /// selects, which refuse arm-lifted binds instead).
     pub(super) init_override: std::cell::Cell<Option<ClifValue>>,
+    /// THE BOTTOM-OUT RULE (design/activation_state.md): the
+    /// compile-time stack of enclosing TAIL-position selects' own-fire
+    /// summaries, innermost last — `(sound_stale, bfired)`, this
+    /// select's post-ride scrutinee STALE bit ANDed with its prologue
+    /// guards' sound-plane bits, and the fresh-bottom-fire bool.
+    /// `emit_kernel_return` applies levels INNERMOST-FIRST: fold the
+    /// level's sound stales, then a still-stale result with the
+    /// level's `bfired` set becomes TAINT fresh — the bottom that
+    /// arrived, never the ridden value (the interp twin is each
+    /// select's `own_sound`/`own_bottom`, which compose by nesting
+    /// through arm productions). Per-CURRENT-iteration by
+    /// construction (the SSA values re-compute each loop pass) —
+    /// bottom fires are never loop-carried, unlike the sound
+    /// accumulator variable above.
+    pub(super) sel_fires: std::cell::RefCell<Vec<(ClifValue, Option<ClifValue>)>>,
     /// Depth of select-ARM body emission currently in progress (the
     /// shared `emit_select_arms` driver increments around each arm
     /// body). Load-bearing for the interior-sleep gate (P7): a

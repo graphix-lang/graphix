@@ -137,7 +137,12 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let Self { selected, arg, arms, typ: _, spec: _, tail_position, resident } = self;
-        let mut pat_up = false;
+        // The fired plane, split by soundness (THE BOTTOM-OUT RULE,
+        // design/activation_state.md): a SOUND guard fire drives
+        // re-match and a fired emission; a BOTTOM guard fire drives
+        // re-match but the emission is the bottom that arrived.
+        let mut pat_sound = false;
+        let mut pat_bottom = false;
         let arg_prod = arg.update(ctx, event);
         let bottomed = arg.tag.is_tainted();
         // THE SCRUTINEE RIDE (Eric's ruling 2026-08-07, aug06ghz0):
@@ -199,11 +204,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     pat.bind_event(ctx, event, arg, bind_tag);
                 }
             }
-            pat_up |= pat.update(ctx, event);
+            if let Some(t) = pat.update(ctx, event) {
+                if t.triggers() {
+                    if t.is_bottom() { pat_bottom = true } else { pat_sound = true }
+                }
+            }
             if bind_guard {
                 pat.unbind_event(event);
             }
         }
+        let pat_up = pat_sound || pat_bottom;
         // ORGANIC FIRING (Eric's ruling 2026-08-14,
         // design/organic_firing.md): the select's own fired inputs — a
         // triggering VALUE delivery of the scrutinee or a triggering
@@ -213,7 +223,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // on value or selection identity. The bottom/ride axis is
         // untouched: a bottomed scrutinee delivery rides (selection
         // continuity) and is not an own-fire.
-        let own_fired = (!bottomed && arg_prod.triggers()) || pat_up;
+        let own_sound = (!bottomed && arg_prod.triggers()) || pat_sound;
+        let own_bottom = (bottomed && arg_prod.triggers()) || pat_bottom;
         // Fold a tail-spine select's own fires into the dispatch-wide
         // accumulator (the kernel's `tail_scrut_stale`, applied at
         // every `emit_kernel_return`). The arms terminate individually
@@ -225,13 +236,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // passes fold too: a dispatch whose previous cycle didn't loop
         // runs its first pass unframed, and that pass's entry delivery
         // is iteration 1's disc.
-        if own_fired && tail_position.load(Ordering::Relaxed) {
+        // SOUND own-fires only: the dispatch-level fold upgrades a
+        // stale final emission to Fired(value), which a bottom fire
+        // must never do (bottom-out — a bottom fire's emission is the
+        // select's own FreshBottom, which propagates as the result).
+        if own_sound && tail_position.load(Ordering::Relaxed) {
             ctx.tail_scrut_fired = true;
         }
         // A NO-HISTORY bottomed scrutinee can't be matched (nothing to
         // ride — the aug04b phantom rule): the whole select bottoms. A
         // triggering delivery is a fresh bottom; a standing one rides
         // the resident.
+        // A NO-HISTORY bottom select CONSULTS no guards (there is no
+        // value view to match against), so their productions are not
+        // consumed — the settled bottom stays quiet on unrelated
+        // guard fires (the aug13l select-miss-standing-fresh ruling;
+        // re-minting fresh here clobbered a same-cycle ref-write
+        // every epoch). Only the scrutinee delivery is consumed.
         if bottomed && !ride {
             return if arg_prod.triggers() {
                 resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
@@ -264,26 +285,31 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 (t, v)
             }};
         }
-        // THE ORGANIC EMISSION: the arm's production tag joined with
-        // the select's own fires. A fired input (scrutinee delivery,
-        // guard production, or the arm's own body) fires the emission
-        // of the taken arm's current value; a bottom arm is FreshBottom
-        // when anything fired (op-consistency: an op with a
-        // standing-bottom operand also mints FreshBottom when
-        // triggered) and rides otherwise.
+        // THE ORGANIC EMISSION under THE BOTTOM-OUT RULE
+        // (design/activation_state.md): a SOUND fired input (sound
+        // scrutinee delivery, sound guard production, or the arm's own
+        // sound body fire) fires the emission of the taken arm's
+        // current value; when EVERY fired consumed input is a bottom,
+        // held state may keep the selection but never a value — the
+        // emission is FreshBottom (the arm's cached value is not
+        // re-emitted; `hold` is the explicit tool). A bottom arm is
+        // FreshBottom when anything fired (op-consistency) and rides
+        // otherwise.
         macro_rules! emit {
             ($t:expr, $v:expr) => {{
                 let t: Tag = $t;
                 if t.is_bottom() {
-                    if t.triggers() || own_fired {
+                    if t.triggers() || own_sound || own_bottom {
                         Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else {
                         None
                     }
+                } else if t.is_fired() || own_sound {
+                    $v.map(|v| TagValue::tagged(v, Tag::FIRED))
+                } else if own_bottom {
+                    Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 } else {
-                    let tag =
-                        if t.is_fired() || own_fired { Tag::FIRED } else { Tag::STALE };
-                    $v.map(|v| TagValue::tagged(v, tag))
+                    $v.map(|v| TagValue::tagged(v, Tag::STALE))
                 }
             }};
         }
@@ -316,11 +342,43 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 emit!(t, v)
             })
         } else {
+            // The chain is three-valued: an arm whose guard is
+            // UNDETERMINABLE (bottomed, no held value) stops it —
+            // arms below cannot be soundly reached, so the selection
+            // outcome is unknown. Outer `None` = undeterminable;
+            // `Some(None)` = definitively no arm matches.
             let sel = match arg.value.as_ref() {
-                None => None,
-                Some(v) => arms.iter().enumerate().find_map(|(i, (pat, _))| {
-                    if pat.is_match(&ctx.env, v) { Some(i) } else { None }
-                }),
+                None => Some(None),
+                Some(v) => {
+                    let mut out = Some(None);
+                    for (i, (pat, _)) in arms.iter().enumerate() {
+                        match pat.is_match(&ctx.env, v) {
+                            Some(true) => {
+                                out = Some(Some(i));
+                                break;
+                            }
+                            Some(false) => (),
+                            None => {
+                                out = None;
+                                break;
+                            }
+                        }
+                    }
+                    out
+                }
+            };
+            let Some(sel) = sel else {
+                // BOTTOM-OUT: the selection decision consumed a
+                // bottomed guard it could not resolve. No flip, no
+                // wake, no sleep — selection holds for future cycles;
+                // the emission is the bottom that arrived (fresh if
+                // anything fired this cycle, standing otherwise).
+                let t = if own_sound || own_bottom {
+                    Tag::FRESH_BOTTOM
+                } else {
+                    Tag::STALE_BOTTOM
+                };
+                return resident.set(TagValue::tagged(Value::Null, t));
             };
             match (sel, selected.get()) {
                 (Some(i), Some(j)) if i == j => {
@@ -397,7 +455,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     event.init = init;
                     event.wake_init = wake;
                     // The wake emission is the SAME organic rule: a
-                    // genuine wake always has `own_fired` set (the
+                    // genuine wake always has an own-fire set (the
                     // depth-0 flow driver only re-matches on a
                     // triggering delivery or a guard fire), so
                     // becoming-selected emits FIRED — while a framed
@@ -417,6 +475,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         };
         match out {
             Some(tv) => resident.set(tv),
+            // A consumed fresh bottom with nothing else to emit
+            // bottoms the cycle (bottom in, bottom out) — e.g. a
+            // deselected select receiving a fresh-bottom delivery.
+            None if own_bottom => {
+                resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            }
             // quiet / deselected-to-nothing: the select's value
             // channel re-surfaces its last emission
             None => resident.ride(),
@@ -738,10 +802,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // wake-forced init view re-fires a lifted seed the interp's
         // Bind keeps quiet — see `FusionCtx::arm_region`). Restored
         // even on Err so sibling passes aren't poisoned.
-        let prev_arm = ctx
-            .fusion
-            .arm_region
-            .swap(true, std::sync::atomic::Ordering::Relaxed);
+        let prev_arm =
+            ctx.fusion.arm_region.swap(true, std::sync::atomic::Ordering::Relaxed);
         let res = (|| {
             for (pat, body) in self.arms.iter_mut() {
                 if let Some(g) = &mut pat.guard {

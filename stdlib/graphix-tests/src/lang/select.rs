@@ -792,6 +792,13 @@ run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value
 // m fires per x delivery, so the select emits 5 times (init + 4 guard
 // fires) on both engines — the old selection-memory cadence (4) and
 // the per-instance state word that produced it are gone.
+// THE INIT-PHANTOM GUARD (activation_state.md, 2026-08-20): a guard
+// that has NEVER produced (its deps deliver after init) is UNKNOWN,
+// not false — the old `unwrap_or(false)` took the wildcard at init;
+// under the bottom-out rule the chain stops undetermined and the
+// select bottoms until the guard first becomes evaluable. Every
+// fixture in this family loses exactly its init emission (5 → 4,
+// 55 → 44): the count starts at the guard's first sound fire.
 const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -805,11 +812,12 @@ const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Result<
     &Value,
 >| {
-    matches!(v, Ok(Value::I64(5)))
+    matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Delta 2 inside a collection loop: the slot's select emits per guard
-// fire (5 = init + 4), no per-slot selection memory involved — the
+// fire (4; the init-phantom guard bottoms the init cycle), no
+// per-slot selection memory involved — the
 // structural context survives as organic-cadence coverage.
 const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
 {
@@ -824,12 +832,13 @@ const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
 run!(
     guarded_select_in_loop_selection_memory,
     GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2, two slots with different stable selections: both slots
-// emit per guard fire now (5 = init + 4) — under organic firing
+// emit per guard fire now (4 — the init-phantom guard bottoms the
+// init cycle) — under organic firing
 // per-slot independence is trivially exact because there is no
 // selection memory to alias.
 const GUARDED_SELECT_PER_SLOT_INDEPENDENCE: &str = r#"
@@ -844,12 +853,13 @@ const GUARDED_SELECT_PER_SLOT_INDEPENDENCE: &str = r#"
 run!(
     guarded_select_per_slot_independence,
     GUARDED_SELECT_PER_SLOT_INDEPENDENCE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2 across a source resize (1 → 2 mid-run): emissions follow
-// deliveries through the regrow on both engines (5 total).
+// deliveries through the regrow on both engines (4 total — the
+// init-phantom guard bottoms the init cycle).
 const GUARDED_SELECT_SLOT_TABLE_RESIZE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -865,12 +875,13 @@ const GUARDED_SELECT_SLOT_TABLE_RESIZE: &str = r#"
 run!(
     guarded_select_slot_table_resize,
     GUARDED_SELECT_SLOT_TABLE_RESIZE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2 two loops deep: per-delivery emission through nested loops
-// (5 = init + 4 guard fires), no state chain involved.
+// (4 guard fires; the init-phantom guard bottoms the init cycle),
+// no state chain involved.
 const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -884,12 +895,12 @@ const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
 run!(
     guarded_select_nested_loop_selection_memory,
     GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2, four slot pairs with different stable selections ((i+j)
-// parity): all emit per guard fire (5 = init + 4).
+// parity): all emit per guard fire (4; init-phantom bottoms init).
 const GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -902,12 +913,13 @@ const GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE: &str = r#"
 run!(
     guarded_select_nested_per_pair_independence,
     GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2 with ragged inner lengths + an outer resize mid-run:
-// per-delivery emission through the reshape (5 total).
+// per-delivery emission through the reshape (4 total; init-phantom
+// bottoms init).
 const GUARDED_SELECT_NESTED_RAGGED_RESIZE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -923,11 +935,11 @@ const GUARDED_SELECT_NESTED_RAGGED_RESIZE: &str = r#"
 run!(
     guarded_select_nested_ragged_resize,
     GUARDED_SELECT_NESTED_RAGGED_RESIZE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 at loop depth 3 (5 = init + 4 guard fires).
+// Delta 2 at loop depth 3 (4 guard fires; init-phantom bottoms init).
 const GUARDED_SELECT_TRIPLE_NESTED: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -941,7 +953,7 @@ const GUARDED_SELECT_TRIPLE_NESTED: &str = r#"
 run!(
     guarded_select_triple_nested,
     GUARDED_SELECT_TRIPLE_NESTED,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
@@ -958,11 +970,12 @@ const GUARDED_SELECT_IN_CALLEE: &str = r#"
 "#;
 
 run!(guarded_select_in_callee, GUARDED_SELECT_IN_CALLEE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(5)))
+    matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Delta 2, one compiled callee at two call sites with different
-// stable selections: both sites emit per guard fire (55 = 5*10 + 5).
+// stable selections: both sites emit per guard fire (44 = 4*10 + 4;
+// init-phantom bottoms init).
 const GUARDED_SELECT_CALLEE_TWO_SITES: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -977,12 +990,12 @@ const GUARDED_SELECT_CALLEE_TWO_SITES: &str = r#"
 run!(
     guarded_select_callee_two_sites,
     GUARDED_SELECT_CALLEE_TWO_SITES,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(55))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(44))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2, a callee called inside a loop (two slots, different stable
-// selections): per-delivery emission (5).
+// selections): per-delivery emission (4; init-phantom bottoms init).
 const GUARDED_SELECT_CALLEE_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -996,12 +1009,12 @@ const GUARDED_SELECT_CALLEE_IN_LOOP: &str = r#"
 run!(
     guarded_select_callee_in_loop,
     GUARDED_SELECT_CALLEE_IN_LOOP,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2, a callee whose own body has a loop-select, called at root:
-// per-delivery emission (5).
+// per-delivery emission (4; init-phantom bottoms init).
 const GUARDED_SELECT_CALLEE_INTERNAL_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1015,12 +1028,13 @@ const GUARDED_SELECT_CALLEE_INTERNAL_LOOP: &str = r#"
 run!(
     guarded_select_callee_internal_loop,
     GUARDED_SELECT_CALLEE_INTERNAL_LOOP,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2, the deep composition — a callee with an internal
-// loop-select, called from inside a loop: per-delivery emission (5).
+// loop-select, called from inside a loop: per-delivery emission (4;
+// init-phantom bottoms init).
 const GUARDED_SELECT_CALLEE_LOOP_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1035,13 +1049,13 @@ const GUARDED_SELECT_CALLEE_LOOP_IN_LOOP: &str = r#"
 run!(
     guarded_select_callee_loop_in_loop,
     GUARDED_SELECT_CALLEE_LOOP_IN_LOOP,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Delta 2 inside a TAIL-RECURSIVE callee: the interior select's guard
 // fires per delivery and the emission rides out through the loop
-// (5 = init + 4) — no site-block selection words.
+// (4; init-phantom bottoms init) — no site-block selection words.
 const GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1058,7 +1072,7 @@ const GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE: &str = r#"
 run!(
     guarded_select_in_tail_recursive_callee,
     GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
@@ -1121,9 +1135,11 @@ run!(select_arm_local_persists_fold, SELECT_ARM_LOCAL_PERSISTS_FOLD, |v: Result<
 // A GUARD reading a CAPTURE inside a rec callee's TAIL select.
 // Delta 2 on the tail spine, capture-driven guard: every m fire
 // emits (the old sequence had a quiet same-selection cycle; organic
-// emits it — [2, 1, 1] with the final 2 still in group's open
-// bucket). The jul17c capture-flip fire now flows through the
-// prologue guard fold instead of final-selection memory.
+// emits it; the init-phantom guard bottoms the init cycle
+// (activation_state.md), so the sequence is [1, 1, 2] with the
+// final 2 in group's open bucket). The jul17c capture-flip fire
+// flows through the prologue guard fold instead of final-selection
+// memory.
 const TAIL_SELECT_GUARD_CAPTURE_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1143,7 +1159,7 @@ run!(
         match v {
             Ok(Value::Array(a)) => {
                 a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-                    == vec![2, 1, 1]
+                    == vec![1, 1, 2]
             }
             _ => false,
         }

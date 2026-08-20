@@ -1,0 +1,9 @@
+// FIXED — the ruling's probe twin: guard at depth 1, TAIL
+// recursion. Pre-fix both engines [1,1,1,2]: the framed pass had no
+// held state and the tainted guard FELL THROUGH to `_` — a selection
+// flip invented from a bottom (a tainted guard is unknown, not
+// false). Now the chain stops UNDETERMINED (interp three-valued
+// is_match None; kernel undet block — no record, no arm body) and
+// the production is the bottom that arrived. Ruled trace both
+// engines: [1,1,1] + FreshBottom. design/activation_state.md.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:0]); let m = x / x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; f(x - x + i64:1)}

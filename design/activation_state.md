@@ -1,10 +1,11 @@
 # Activation state and the bottom-out rule
 
-> **RULED 2026-08-20 (Eric), NOT YET BUILT.** Two rulings derived
-> together from the aug18a class-5 finding; they jointly settle it and
-> replace its parked fix. This doc holds the derivation, the precise
-> rules, the compliance inventory (what each engine already gets
-> right, what changes), and the build plan.
+> **RULED 2026-08-20 (Eric); Ruling 1 BUILT same day (interp + kernel,
+> P0–P2).** Two rulings derived together from the aug18a class-5
+> finding; they jointly settle it and replace its parked fix. This doc
+> holds the derivation, the precise rules, the compliance inventory,
+> and the as-built record. Open: the key-0 back-edge chapter (P3) and
+> the named mid-loop residue at the end.
 
 ## Provenance
 
@@ -103,18 +104,55 @@ Precisely:
   are the explicit tools on the fired plane. The compiler never does
   it silently. (This is the value-plane twin of the organic-firing
   philosophy.)
-- "Consumed" for a select: the scrutinee delivery, every guard the
-  match chain evaluated (arms above and including the taken one), and
-  the taken arm's production. Deliberate harsh case: a bottomed guard
-  on a NON-taken arm above the taken one poisons the cycle's emission
-  even though the selection (via held re-match) and the taken arm's
-  value are sound — the selection DECISION consumed a bottom.
-  Sleeping untaken arms below are not consumed.
+- **The per-fire formulation** (the buildable statement, refined at
+  build time — the first draft's unconditional "any consumed bottom
+  poisons" contradicted aug06ghz0's survival by treating guards and
+  scrutinees asymmetrically): a select's emission is the taken arm's
+  current production, re-tagged fresh, whenever any consumed input
+  fires SOUND (a sound scrutinee delivery, a sound guard production,
+  or the arm's own sound body fire — sound beats bottom within one
+  select's scope); when EVERY fired consumed input this cycle is a
+  bottom, the emission is FreshBottom regardless of the arm's
+  standing value. "Consumed" = the scrutinee delivery, every armed
+  guard's production (both engines tick ALL guards every cycle —
+  jul19b / the kernel prologue — so a below-the-taken-arm guard's
+  fire is a consumed fire too, sound or bottom), and the taken arm's
+  production. Sleeping arm BODIES are not consumed. Neither are the
+  guards of a NO-HISTORY bottom select: with no value view there is
+  no chain to consult, so only the scrutinee delivery is consumed
+  and the settled bottom stays QUIET on unrelated guard fires — the
+  aug13l select-miss-standing-fresh ruling holds (the first build
+  fired that early return on guard fires and re-created aug13l on
+  the interp side; the corpus caught it).
+- **THE INIT-PHANTOM GUARD** (surfaced by the fixture gate): a guard
+  that has NEVER produced — its deps deliver after init — is the
+  same knowledge state as a bottomed guard, so it is UNKNOWN too.
+  The old engines read it false (`unwrap_or(false)` / the kernel
+  mask) and took the wildcard at init — an invented selection. Now
+  the select bottoms until the guard first becomes evaluable: a
+  guarded select loses its init emission when the guard's deps
+  deliver post-init (organic delta 2's counts drop by one; 16
+  fixtures re-blessed). The explicit tool for a startup default is
+  initializing the guard's source (`let enabled = false;
+  enabled <- …`), not a silent invented false.
 - A tainted guard is UNKNOWN, not false. The probe's tail twin taking
   `_` on a tainted guard (`[1,1,1,2]`) invented a selection flip from
-  a bottom — wrong under this rule. Selection HOLDS (or, with no
-  held selection, no arm becomes selected); the production bottoms
-  either way.
+  a bottom — wrong under this rule. With held history the selection
+  rides (routing only); with NO history the chain is UNDETERMINED at
+  that arm: it stops, no selection is recorded, no arm body runs, and
+  the production bottoms (fresh iff anything fired this cycle).
+- **Nesting composes through arm productions**: an inner select whose
+  only fires were bottoms emits FreshBottom, which the outer select
+  consumes as a fired-bottom arm production — the outer's own sound
+  fires do NOT resurrect it (its value chain IS the bottom). In the
+  kernel's flattened tail spine this required a compile-time scope
+  stack (`LowerCtx::sel_fires`, applied innermost-first at every
+  `emit_kernel_return`) because the single loop-carried accumulator
+  conflated the two selects' scopes — the outer scrutinee's sound
+  fire upgraded a result the inner guard's bottom should have
+  poisoned. Bottom fires are per-CURRENT-iteration by construction
+  (SSA values recompute each loop pass), never loop-carried; the
+  cross-iteration sound accumulator (jul21g) is untouched.
 - What SURVIVES of the ride rulings: everything their pins actually
   demand. Selection survival (no teardown, no phantom flip on a
   bottomed delivery), cached-operand service (pattern binds serve the
@@ -188,22 +226,33 @@ Already correct (no change):
   simply CORRECT, not an approximation. The class-5 kernel trace
   `[1,1,1]` is the ruled trace.
 
-Changes required:
+Changes (1–3 BUILT 2026-08-20; 4 open):
 
-1. **interp: delete the ride re-emission face.** A select whose
-   consumed delivery bottomed produces FreshBottom; selection holds;
-   cached-operand service and body-driven fires unchanged. Sites:
-   the `ride` path in `node/select.rs` (emission), the guard held
-   read in `node/pattern.rs` (`is_match`'s Held serve — keep for
-   re-match, stop it determining emission soundness).
-2. **interp: tainted-guard-no-history must not take the wildcard**
-   (the `[1,1,1,2]` fall-through in framed passes). Unknown ≠ false:
-   no selection flip, production bottoms.
-3. **kernel: value-position ride sites** (`emit_scrut_ride`, the
-   guard-prologue taint cache in `fusion/emit/select.rs`): KEEP the
-   substitution for re-match/routing, change the emission fold so a
-   consumed bottomed delivery taints the production. Same fix as (2)
-   where the kernel's masked-to-false guard path invents `_`.
+1. **interp: the ride re-emission face deleted** (node/select.rs):
+   the fired plane split into `own_sound`/`own_bottom`
+   (`PatternNode::update` returns the guard's production tag), the
+   `emit!` fold emits FreshBottom on all-bottom fires, the
+   no-history early return fires on guard fires too, and
+   `tail_scrut_fired` folds SOUND fires only.
+2. **interp: three-valued `is_match`** (node/pattern.rs):
+   `Option<bool>` — a bottomed guard with no held bool is `None`
+   (undetermined); the select's chain stops there with no flip, no
+   wake, no sleep, and a bottom production (fresh iff anything
+   fired). The depth-trip `guard_ride_blocked` read stays the ruled
+   FALSE.
+3. **kernel: the emission folds mirror it**
+   (fusion/emit/{select,flow,body,lower}.rs): the guard prologue
+   splits sound-plane stales (a tainted production reads quiet —
+   `TAINT >> 1 == STALE`) from fresh-bottom fires; `SelFires`
+   carries both to every arm emitter; the pre-ride scrutinee
+   bottomness is captured before `emit_scrut_ride`; a
+   post-ride-still-tainted guard routes the chain to a shared
+   UNDETERMINED block (per-shape bottom via
+   `emit_select_bottom_value`, no record, no arm body); the
+   value-position merge fold and `emit_kernel_return` (via the
+   `sel_fires` scope stack, innermost-first) turn a still-stale
+   result with a fresh-bottom consumed fire into TAINT fresh, the
+   payload untouched (valid under TAINT, ownership exact).
 4. **kernel: the key-0 shared legacy bucket for recursive back-edges**
    (`fusion/emit/call.rs`) violates Ruling 2 for native recursion —
    a stateful builtin below a recursive back-edge shares one state
@@ -231,13 +280,29 @@ was right; the interp sheds machinery instead.
 Untouched: aug18a class 4 (slot-state chain ensures — a different
 chapter), class 6 (diagnostic-only).
 
-## Build plan
+## Build record / remaining
 
-- P0: land this doc; commit the probe twins beside the class-5
-  dossier as red fixtures with expected ruled traces.
-- P1: interp amendment (changes 1+2), red→green on the probes; full
-  corpus run, re-adjudicate flips (change 5).
-- P2: kernel value-position emission fold (change 3), differential
-  green.
-- P3: key-0 back-edge finding + fix-or-defuse (change 4).
-- P4: doc narrowing (change 6); soak on the amended binary.
+- P0 ✅ doc + probe twins committed (7a74fe00).
+- P1 ✅ interp amendment — all four probe shapes converge on the
+  ruled `[1,1,1]` + FreshBottom.
+- P2 ✅ kernel emission folds — differential AGREE across the probe
+  family. Two build-time findings folded back into Ruling 1's fine
+  print: the per-fire formulation (sound beats bottom within one
+  scope) and the nesting/scope-stack composition.
+- P3 ⬜ key-0 back-edge finding + fix-or-defuse (change 4).
+- P4 ⬜ soak on the amended binary.
+
+## Named open residue (mid-loop guard bottoms)
+
+A tail-loop iteration whose guard input derives from the FORMAL and
+bottoms only for some iterations' values (`10 / n > 1` at n=0): the
+kernel's guard cache words are shared across iterations within an
+invocation (Ruling 2's one-state reading), so iteration i−1's sound
+cond can serve iteration i's bottom; the interp's frames clear per
+pass, so the same pass hits UNDETERMINED and bottoms. Both faces are
+defensible under the rulings (one-state vs derivation-scoped
+transients) and the divergence predates this arc (the old interp
+fell to the wildcard there). Left for the soak to surface concrete
+witnesses; adjudicate with Ruling 2's frame — likely verdict: the
+kernel's one-state reading is the ruled one and the interp's
+per-pass clear is the deviation, but a real witness decides it.

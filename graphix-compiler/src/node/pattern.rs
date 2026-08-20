@@ -1,5 +1,5 @@
 use crate::{
-    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, TagValue, UserEvent,
+    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue, UserEvent,
     env::Env,
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
@@ -1019,22 +1019,36 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
+    /// Tick the guard (a live node that must see every cycle) and
+    /// return its production tag (`None` = no guard). The caller
+    /// splits the fired plane: a sound guard fire drives re-match and
+    /// a fired emission; a BOTTOM guard fire drives re-match but the
+    /// emission is the bottom that arrived (THE BOTTOM-OUT RULE,
+    /// design/activation_state.md).
     pub(super) fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
-    ) -> bool {
+    ) -> Option<Tag> {
         match &mut self.guard {
-            None => false,
+            None => None,
             Some(g) => {
-                let up = g.update_triggers(ctx, event);
-                self.guard_ride_blocked = ctx.control.trip_poisoned() && g.tag.is_tainted();
-                up
+                let tag = g.update(ctx, event);
+                self.guard_ride_blocked =
+                    ctx.control.trip_poisoned() && g.tag.is_tainted();
+                Some(tag)
             }
         }
     }
 
-    pub(super) fn is_match(&self, env: &Env, v: &Value) -> bool {
+    /// Three-valued: `Some(true)`/`Some(false)` are definitive;
+    /// `None` means the arm's guard is UNDETERMINABLE this cycle — a
+    /// bottomed guard with no held value (THE BOTTOM-OUT RULE,
+    /// design/activation_state.md: a tainted guard is unknown, not
+    /// false — falling through to the wildcard invented a selection
+    /// flip from a bottom). The select stops the chain on `None`:
+    /// selection holds, the emission is the bottom that arrived.
+    pub(super) fn is_match(&self, env: &Env, v: &Value) -> Option<bool> {
         // The type predicate holds whether it was WRITTEN or INFERRED.
         // Skipping the inferred one treated the structural test as a
         // sufficient proxy for the type, and it is not: a tuple and an
@@ -1068,17 +1082,25 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         } else {
             self.type_predicate.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         };
-        typed
-            && self.structure_predicate.is_match(v)
-            && match &self.guard {
-                None => true,
-                Some(_) if self.guard_ride_blocked => false,
-                Some(g) => g
-                    .value
-                    .as_ref()
-                    .and_then(|v| v.clone().get_as::<bool>())
-                    .unwrap_or(false),
-            }
+        if !(typed && self.structure_predicate.is_match(v)) {
+            return Some(false);
+        }
+        match &self.guard {
+            None => Some(true),
+            // Depth-trip unwind: the whole derivation bottoms at the
+            // root, so the local read stays the ruled FALSE (pinned by
+            // depth-trip-whole-derivation-aug2026) — not Unknown.
+            Some(_) if self.guard_ride_blocked => Some(false),
+            Some(g) => match g.value.as_ref().and_then(|v| v.clone().get_as::<bool>()) {
+                Some(b) => Some(b),
+                // No held bool. A bottomed guard channel is UNKNOWN;
+                // a valueless non-bottom guard keeps the legacy
+                // non-match (a sound guard of non-bool type is a type
+                // error upstream).
+                None if g.tag.is_bottom() => None,
+                None => Some(false),
+            },
+        }
     }
 
     pub(super) fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

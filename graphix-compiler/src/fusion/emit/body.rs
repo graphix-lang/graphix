@@ -25,7 +25,7 @@ use netidx_value::Value;
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
+        CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, emit_untainted_i64,
         propagate_flags, scalar_disc, value_disc,
     },
     call::{
@@ -1248,6 +1248,31 @@ pub(super) fn emit_kernel_return(
         cx.b.ins().call(f, &[t3, acc]);
     }
     {
+        // THE BOTTOM-OUT RULE (design/activation_state.md): apply the
+        // enclosing tail-selects' own-fire scopes INNERMOST-FIRST —
+        // fold the level's sound stales, then a still-stale result
+        // with the level's fresh-bottom fire set becomes TAINT fresh
+        // (the bottom that arrived, payload untouched: valid under
+        // TAINT, ownership exact). This reproduces the interp's
+        // per-select `own_sound`/`own_bottom` nesting, where an inner
+        // select's bottom becomes the outer's arm production BEFORE
+        // the outer's own sound fires are consulted.
+        let levels: smallvec::SmallVec<[(ClifValue, Option<ClifValue>); 4]> =
+            cx.ctx.sel_fires.borrow().iter().rev().copied().collect();
+        for (sound, bf) in levels {
+            cv.disc = fold_stale(cx.b, cv.disc, sound);
+            if let Some(bf) = bf {
+                let sbit = cx.b.ins().band_imm(cv.disc, STALE);
+                let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
+                let ov = cx.b.ins().band(quiet, bf);
+                let d_bot = cx.b.ins().band_imm(cv.disc, !STALE);
+                let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
+                cv.disc = cx.b.ins().select(ov, d_bot, cv.disc);
+            }
+        }
+        // The loop-carried accumulator (cross-ITERATION sound fires —
+        // a fired loop-head scrutinee in any pass upgrades a stale
+        // final result) folds last, outermost.
         let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
         cv.disc = fold_stale(cx.b, cv.disc, acc);
     }

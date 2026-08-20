@@ -383,6 +383,16 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // kernels (the 120-185x family) fusing — the storage claim is
     // refused there for the same reason the interp clears (one block
     // cannot sever iteration i−1 from iteration i, the jul10h rule).
+    // Capture the delivery's fresh-bottomness BEFORE the (possible)
+    // ride masks it to a quiet stale (THE BOTTOM-OUT RULE,
+    // design/activation_state.md). In the loop-head case a tainted
+    // scrutinee early-returns below and never reaches the arms, so
+    // the bit is dynamically false on every arms path there.
+    let scrut_bfired = {
+        let d = scrut.disc();
+        let ts = cx.b.ins().band_imm(d, TAINT | STALE);
+        Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
+    };
     let scrut = if cx.ctx.tail.loop_head.is_some() {
         scrut
     } else {
@@ -440,17 +450,36 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         scrut,
         scrut_kind,
         &scrut_typ,
-        &mut |cx, body, mark, guard_stale| {
+        scrut_bfired,
+        &mut |cx, body, mark, fires| {
             arm_index.set(arm_index.get() + 1);
-            // A prologue guard's fire is one of this select's own
-            // fires (organic firing): fold it into the accumulator on
-            // the taken arm's path, beside the scrutinee fold above.
-            if let Some(gs) = guard_stale {
+            // A prologue guard's SOUND fire is one of this select's
+            // own fires (organic firing): fold it into the
+            // accumulator on the taken arm's path, beside the
+            // scrutinee fold above. Bottom fires accumulate
+            // separately (THE BOTTOM-OUT RULE): `emit_kernel_return`
+            // turns a still-stale result with a fresh-bottom
+            // consumed fire into TAINT fresh — the bottom that
+            // arrived, never the ridden value.
+            if let Some(gs) = fires.sound_stale {
                 let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
                 let n = cx.b.ins().band(cur, gs);
                 cx.b.def_var(cx.ctx.tail.scrut_stale, n);
             }
-            emit_body_tail(cx, body, ret)?;
+            // This select's own-fire scope for the returns inside its
+            // arm (`LowerCtx::sel_fires` — innermost-first at
+            // `emit_kernel_return`): sound = the post-ride scrutinee's
+            // STALE bit ANDed with the prologue guards' sound plane;
+            // bottom fires are per-CURRENT-iteration, never
+            // loop-carried.
+            let sound_lvl = match fires.sound_stale {
+                Some(gs) => cx.b.ins().band(scrut_stale_bit, gs),
+                None => scrut_stale_bit,
+            };
+            cx.ctx.sel_fires.borrow_mut().push((sound_lvl, fires.bfired));
+            let arm_res = emit_body_tail(cx, body, ret);
+            cx.ctx.sel_fires.borrow_mut().pop();
+            arm_res?;
             // The arm terminated; pop its binds for the next arm's
             // compile-time scope. (Arm binds are scalars — no drops.)
             cx.env.truncate(mark);
@@ -459,6 +488,17 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         // Unreachable (scrutinee forced valid → exhaustive matches); a
         // terminator is still required.
         &mut |cx| emit_kernel_bottom(cx),
+        // UNDETERMINED (THE BOTTOM-OUT RULE): a bottomed guard with no
+        // history stops the chain — return the bottom that arrived,
+        // with the outcome's freshness.
+        &mut |cx, stale_bits| {
+            let mut ph = emit_elem_placeholder(cx, ret)?;
+            let d = cx.b.ins().band_imm(ph.disc, !STALE);
+            let d = cx.b.ins().bor(d, stale_bits);
+            let d = cx.b.ins().bor_imm(d, TAINT);
+            ph.disc = d;
+            emit_kernel_return(cx, ret, ph, CompositeSource::Owned)
+        },
     )
 }
 

@@ -1,0 +1,10 @@
+// FIXED — the ruling's probe twin: guard at depth 1, NATIVE
+// recursion (`+ i64:0` defeats the tail loop). Pre-fix interp
+// [1,1,1,1] (the depth-1 retained instance rode its held guard
+// selection and re-emitted); pre-fix jit matched via the guard
+// taint-cache ride + the flat tail accumulator conflating the inner
+// select's bottom with the outer scrutinee's sound fire. Both faces
+// fixed (interp emit! split; kernel SelFires + the sel_fires scope
+// stack applied innermost-first at emit_kernel_return). Ruled trace
+// both engines: [1,1,1] + FreshBottom. design/activation_state.md.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:0]); let m = x / x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1) + i64:0}; f(x - x + i64:1)}

@@ -372,6 +372,14 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     };
     let (scrut, scrut_kind, scrut_typ, scrut_drop) =
         classify_select_scrutinee(cx, sel, true)?;
+    // Capture the delivery's fresh-bottomness BEFORE the ride masks
+    // it to a quiet stale (THE BOTTOM-OUT RULE: the ride serves
+    // re-match and operands, never the emission's bottomness).
+    let scrut_bfired = {
+        let d = scrut.disc();
+        let ts = cx.b.ins().band_imm(d, TAINT | STALE);
+        Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
+    };
     let scrut = emit_scrut_ride(cx, scrut)?;
     // Every merge shape phis (disc, payload) — the scrutinee's taint
     // rides the disc into every arm result, so there's no separate
@@ -465,7 +473,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut,
         scrut_kind,
         &scrut_typ,
-        &mut |cx, body, mark, guard_stale| {
+        scrut_bfired,
+        &mut |cx, body, mark, fires| {
             let idx = arm_index.get();
             arm_index.set(idx + 1);
             emit_select_value_arm(
@@ -476,10 +485,13 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 merge,
                 scrut_disc,
                 sel_state.map(|addr| (addr, idx)),
-                guard_stale,
+                fires,
             )
         },
         &mut |cx| emit_select_miss_value(cx, merge_shape, merge, scrut_disc),
+        &mut |cx, stale_bits| {
+            emit_select_bottom_value(cx, merge_shape, merge, stale_bits)
+        },
     )?;
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);
@@ -543,6 +555,20 @@ fn emit_select_miss_value(
     merge: Block,
     scrut_disc: ClifValue,
 ) -> Result<()> {
+    let s = cx.b.ins().band_imm(scrut_disc, STALE);
+    emit_select_bottom_value(cx, merge_shape, merge, s)
+}
+
+/// Jump to the merge with a drop-safe tainted bottom whose freshness
+/// is the caller's `stale_bits` (0 = fresh). The miss trap passes the
+/// scrutinee's STALE bit; the UNDETERMINED path (THE BOTTOM-OUT RULE)
+/// passes the combined own-fire staleness.
+fn emit_select_bottom_value(
+    cx: &mut BodyCx,
+    merge_shape: SelectMerge,
+    merge: Block,
+    stale_bits: ClifValue,
+) -> Result<()> {
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(p) => {
             let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
@@ -579,8 +605,7 @@ fn emit_select_miss_value(
             (d, s)
         }
     };
-    let s = cx.b.ins().band_imm(scrut_disc, STALE);
-    let disc = cx.b.ins().bor(disc, s);
+    let disc = cx.b.ins().bor(disc, stale_bits);
     cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
     Ok(())
 }
@@ -1001,28 +1026,46 @@ fn emit_composite_pattern_cond(
 /// emission; it runs in the matched block with the arm's binds
 /// installed and MUST leave the block terminated (jump or return).
 /// `mark` is the env state to truncate back to after the body.
+/// The select's own-fire summary handed to each arm emitter (THE
+/// BOTTOM-OUT RULE, design/activation_state.md). `sound_stale` is the
+/// AND of every prologue guard's SOUND-plane STALE bit (a tainted
+/// production reads quiet here whatever its firing) — the organic
+/// fired-emission upgrade. `bfired` (i8 bool) is true when a consumed
+/// input fired as a FRESH BOTTOM this invocation (the pre-ride
+/// scrutinee delivery or any prologue guard): a result still stale
+/// after the sound folds must then emit the bottom that arrived —
+/// TAINT fresh — never the ridden value (`hold` is the explicit
+/// tool). The interp twin is `own_sound`/`own_bottom` in
+/// node/select.rs.
+#[derive(Clone, Copy)]
+pub(super) struct SelFires {
+    pub(super) sound_stale: Option<ClifValue>,
+    pub(super) bfired: Option<ClifValue>,
+}
+
 pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    // (cx, arm body, env mark, guard_stale): guard_stale is the AND of
-    // every prologue-evaluated guard's STALE bit — ORGANIC FIRING
-    // (design/organic_firing.md): a guard production's fire is one of
-    // the select's own fires and folds into the emission. None when no
-    // guard took a prologue slot (schedule-free guards' inputs are
-    // scrutinee-derived binds, covered by the scrutinee fold).
-    emit_arm: &mut dyn FnMut(
-        &mut BodyCx,
-        &Node<R, E>,
-        usize,
-        Option<ClifValue>,
-    ) -> Result<()>,
+    // The PRE-RIDE scrutinee delivery's fresh-bottomness (i8 bool),
+    // captured by the caller before `emit_scrut_ride` masks it to a
+    // quiet stale — the ride serves re-match and operands, never the
+    // emission's bottomness (THE BOTTOM-OUT RULE).
+    scrut_bfired: Option<ClifValue>,
+    // (cx, arm body, env mark, fires): see [`SelFires`].
+    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, SelFires) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
     // scrutinee): value position jumps to the merge with a tainted
     // bottom; tail position sets pending and exits.
     emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
+    // The UNDETERMINED handler (THE BOTTOM-OUT RULE): a bottomed
+    // guard with NO history is unknown, not false — the chain stops
+    // without recording a selection or running an arm, and this emits
+    // the bottom that arrived. The argument is the outcome's STALE
+    // bits (0 = fresh: something fired this invocation).
+    emit_undet: &mut dyn FnMut(&mut BodyCx, ClifValue) -> Result<()>,
 ) -> Result<()> {
     // A TAINTED (missing) scrutinee makes NO selection — the node-walk
     // runs no ARM BODY at all (`Select::update`'s destructuring-
@@ -1067,9 +1110,10 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // `guard_stale` — the organic-firing guard fold handed to the arm
     // emitters (a fired or fresh-bottom guard production fires the
     // select; a StaleBottom or quiet one doesn't).
-    let mut guard_vals: smallvec::SmallVec<[Option<ClifValue>; 8]> =
+    let mut guard_vals: smallvec::SmallVec<[Option<(ClifValue, ClifValue)>; 8]> =
         smallvec::smallvec![None; n];
     let mut guard_stale: Option<ClifValue> = None;
+    let mut guard_bf: Option<ClifValue> = None;
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
         // A schedule-free guard needs no prologue slot: its value at
@@ -1134,22 +1178,68 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // the same documented residual as every other op-site there;
         // the value-scrutinee DE-FUSE bar does not apply to guard
         // op-sites.
-        // The organic fold reads the PRE-RIDE disc: a FreshBottom
-        // guard delivery is a triggering production (the interp's
-        // pat_up counts it — guard-bottom-ride pin, the ride holds
-        // the SELECTION, not the firing), while the ride's
-        // substituted disc|STALE below would read it quiet.
+        // THE BOTTOM-OUT RULE (design/activation_state.md) splits the
+        // fold by soundness, both read off the PRE-RIDE disc:
+        // - SOUND plane: a tainted production is quiet whatever its
+        //   firing (TAINT >> 1 == STALE, so or-ing the shifted taint
+        //   bit stales it) — only sound guard fires upgrade the
+        //   emission to fired;
+        // - BOTTOM fires (TAINT set, STALE clear) accumulate into
+        //   `guard_bf`: they still fire the select, but the emission
+        //   is FreshBottom, never the ridden arm value (the old
+        //   single pre-ride fold fired the CACHED value on a bottomed
+        //   guard delivery — the class-5 manufactured 4th value).
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
+        let gt = cx.b.ins().band_imm(gcv.disc, TAINT);
+        let gts = cx.b.ins().ushr_imm(gt, 1);
+        let gs_sound = cx.b.ins().bor(gs, gts);
         guard_stale = Some(match guard_stale {
-            None => gs,
-            Some(a) => cx.b.ins().band(a, gs),
+            None => gs_sound,
+            Some(a) => cx.b.ins().band(a, gs_sound),
+        });
+        let gtsbits = cx.b.ins().band_imm(gcv.disc, TAINT | STALE);
+        let gbf = cx.b.ins().icmp_imm(IntCC::Equal, gtsbits, TAINT);
+        guard_bf = Some(match guard_bf {
+            None => gbf,
+            Some(a) => cx.b.ins().bor(a, gbf),
         });
         let gcv = emit_scalar_taint_cache(cx, PrimType::Bool, gcv);
+        // Post-ride still tainted = no history served: the arm's
+        // match is UNDETERMINABLE (the chain routes it to
+        // `emit_undet` below — unknown, not false).
+        let undet = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         cx.env.truncate(gmark);
-        guard_vals[i] = Some(eff);
+        guard_vals[i] = Some((eff, undet));
     }
+    let bfired = match (scrut_bfired, guard_bf) {
+        (None, None) => None,
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (Some(a), Some(b)) => Some(cx.b.ins().bor(a, b)),
+    };
+    let fires = SelFires { sound_stale: guard_stale, bfired };
+    // Freshness of an UNDETERMINED outcome: fresh iff anything fired
+    // this invocation — the post-ride scrutinee, the sound guard
+    // plane, or a fresh-bottom fire (the interp's
+    // `own_sound || own_bottom` at the undetermined return).
+    let undet_stale = {
+        let ss = cx.b.ins().band_imm(sdisc, STALE);
+        let st = match guard_stale {
+            Some(gs) => cx.b.ins().band(ss, gs),
+            None => ss,
+        };
+        match bfired {
+            Some(bf) => {
+                let z = cx.b.ins().iconst(types::I64, 0);
+                let stale = cx.b.ins().iconst(types::I64, STALE);
+                let bfs = cx.b.ins().select(bf, z, stale);
+                cx.b.ins().band(st, bfs)
+            }
+            None => st,
+        }
+    };
+    let mut undet_bl: Option<Block> = None;
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
         let is_last = i == n - 1;
         // A composite structural pattern (tuple/struct/slice) stages its
@@ -1204,21 +1294,34 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let mark = cx.env.mark();
         install_arm_binds(cx, &binds, scrut, None)?;
         if let Some(g) = &pat.guard {
-            // A bottom guard (tainted disc) means the arm does NOT
-            // match.
-            let eff = match guard_vals[i] {
+            let (eff, undet) = match guard_vals[i] {
                 // Prologue-computed: a guard with interior state, a
                 // possible bottom, or an external read must tick every
                 // invocation (select-guard-shortcircuit-aug2026).
-                Some(eff) => eff,
+                Some((eff, undet)) => (eff, Some(undet)),
                 // Schedule-free (see the prologue's classifier): emit
-                // lazily with the matched binds in scope.
+                // lazily with the matched binds in scope — pure and
+                // never-bottom, so no undetermined case exists.
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
                     let valid = is_untainted(cx.b, gcv.disc);
-                    cx.b.ins().band(gcv.payload, valid)
+                    (cx.b.ins().band(gcv.payload, valid), None)
                 }
             };
+            // THE BOTTOM-OUT RULE: a bottomed guard with NO history
+            // is UNKNOWN, not false — the chain cannot soundly pass
+            // or fail this arm, so it stops: no selection recorded,
+            // no arm body run, and the emission is the bottom that
+            // arrived (the old unwrapped mask read it false and the
+            // wildcard fired a phantom selection flip — the probe
+            // twins' `[1,1,1,2]`).
+            if let Some(u) = undet {
+                let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
+                let cont = cx.b.create_block();
+                cx.b.ins().brif(u, ub, &[], cont, &[]);
+                cx.b.switch_to_block(cont);
+                cx.b.seal_block(cont);
+            }
             let body_blk = cx.b.create_block();
             cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
             cx.b.switch_to_block(body_blk);
@@ -1239,7 +1342,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // refuses stateful builtins while any select ARM body is on
         // the emission stack — see `LowerCtx::arm_depth`.
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() + 1);
-        let arm_res = emit_arm(cx, body, mark, guard_stale);
+        let arm_res = emit_arm(cx, body, mark, fires);
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
         arm_res?;
         match fail {
@@ -1262,6 +1365,11 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     cx.b.switch_to_block(miss_bl);
     cx.b.seal_block(miss_bl);
     emit_miss(cx)?;
+    if let Some(ub) = undet_bl {
+        cx.b.switch_to_block(ub);
+        cx.b.seal_block(ub);
+        emit_undet(cx, undet_stale)?;
+    }
     Ok(())
 }
 
@@ -1775,7 +1883,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     // the arm is taken structurally but the node-walk made no
     // selection. NEVER folds into the emission — organic firing.
     sel_state: Option<(SelWord, usize)>,
-    guard_stale: Option<ClifValue>,
+    fires: SelFires,
 ) -> Result<()> {
     use NodeView;
     let body_frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
@@ -1934,8 +2042,27 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     let d = propagate_stale(cx.b, d, &[disc]);
     let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
     let d = fold_stale(cx.b, d, scrut_stale);
-    let d = match guard_stale {
+    let d = match fires.sound_stale {
         Some(gs) => fold_stale(cx.b, d, gs),
+        None => d,
+    };
+    // THE BOTTOM-OUT RULE (design/activation_state.md): when every
+    // fired consumed input this invocation was a bottom — the result
+    // is still stale after the sound folds but a fresh-bottom fire
+    // happened — the emission is the bottom that arrived: TAINT
+    // fresh. The payload stays as computed (valid under TAINT,
+    // ownership exact — the merge's consumers drop it like any arm
+    // payload); the interp twin is the `own_bottom` branch of
+    // node/select.rs's `emit!`.
+    let d = match fires.bfired {
+        Some(bf) => {
+            let sbit = cx.b.ins().band_imm(d, STALE);
+            let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
+            let ov = cx.b.ins().band(quiet, bf);
+            let d_bot = cx.b.ins().band_imm(d, !STALE);
+            let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
+            cx.b.ins().select(ov, d_bot, d)
+        }
         None => d,
     };
     cx.env.truncate(mark);

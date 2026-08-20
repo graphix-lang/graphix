@@ -724,7 +724,7 @@ enforces it):**
   `organic_deltas.rs`; the design doc holds the deletion inventory.
   **THE SCRUTINEE RIDE** (Eric's ruling 2026-08-07, aug06ghz0 — the
   bottom axis, UNTOUCHED by organic firing; NARROWED 2026-08-20 by
-  `design/activation_state.md`, not yet built — THE BOTTOM-OUT RULE:
+  `design/activation_state.md`, BUILT same day — THE BOTTOM-OUT RULE:
   held state serves selection survival, re-matching, and operand
   service, never the cycle's output bottomness; a production OR-joins
   the bottomness of every delivery consumed, `hold` is the explicit
@@ -1166,7 +1166,9 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
-- `activation_state.md` — **RULED 2026-08-20, NOT YET BUILT:** the
+- `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
+  day** (interp own_sound/own_bottom split + three-valued is_match;
+  kernel SelFires/undetermined chain/sel_fires scope stack): the
   bottom-out rule (held state never determines output bottomness;
   bottom in, bottom out; bottoms sticky on the value plane; `hold` is
   the explicit tool) + state multiplicity = activation multiplicity
@@ -1177,9 +1179,15 @@ in `run!` fixtures and bench programs). The decision is recorded in
   (the kernel's tail-position storage refusal was correct; the fix
   is an interp amendment), names the kernel key-0 recursive
   back-edge bucket a Ruling-2 bug, narrows aug06ghz0/aug13b to what
-  their pins demand. Holds the probe-twin evidence (three
-  strategy-dependent traces for one function), the compliance
-  inventory, and the build plan.
+  their pins demand. Build-time refinements folded into the ruling's
+  fine print: the per-fire formulation (sound beats bottom within one
+  select's scope), nesting composes through arm productions (the
+  kernel's sel_fires scope stack), no-history bottom selects consult
+  no guards (aug13l holds), and THE INIT-PHANTOM GUARD (a
+  never-produced guard is unknown, not false — guarded selects bottom
+  at init until the guard is evaluable; 16 fixtures re-blessed).
+  Open: the key-0 back-edge chapter and the mid-loop guard-bottom
+  residue. Pins: findings/bottom-out-aug2026/.
 - `atomic_recursion.md` — **RULED 2026-08-15:** function evaluation is
   atomic within a cycle, so a program may legally spin forever inside
   one — the no-wedge property of the old one-eval-per-cycle model is

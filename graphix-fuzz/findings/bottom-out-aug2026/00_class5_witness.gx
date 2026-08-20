@@ -1,0 +1,12 @@
+// FIXED — aug18a class 5 (katana divergence_000001), the finding
+// that drove THE BOTTOM-OUT RULE (design/activation_state.md, Eric
+// 2026-08-20): held state serves selection survival, re-matching,
+// and operand service — never the cycle's output bottomness. m
+// bottoms at epoch 4 (0/0); the interp's old 4th value was the ride
+// machinery re-emitting the arm's cached value on a cycle whose only
+// fresh input was a bottom (organic guard-fire × ride substitution —
+// an unruled composition). The kernel's tail-position storage
+// refusal produced the ruled trace all along. Fixed by the interp
+// amendment (own_sound/own_bottom split, node/select.rs) — both
+// engines now: [1,1,1] + FreshBottom.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:0]); let m = x / x / i64:3; let rec f = |n: i64| -> i64 select n {i64:0 => select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n)}; f(m)}
