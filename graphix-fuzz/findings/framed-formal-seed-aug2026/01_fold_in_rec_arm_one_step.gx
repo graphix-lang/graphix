@@ -1,0 +1,26 @@
+// bisect: divergence (interp != jit) — FIXED, kept as regress pin.
+// The INTERP was the wrong one: Trace([]) — it never emitted anything,
+// not even the initial derivation's value.
+// Found by soak aug18a (hz0 fuzz divergence_000000 + aieka fuzz
+// divergence_000002 — two boxes, same class), 2026-08-19/20, campaign
+// binary 1b1778b3. Hand-reduced from the fuzzer's minimized form to the
+// single ingredient below.
+//
+//   interp: Trace([])                 (before the fix)
+//   jit:    Trace([1:i64:2 2:i64:8])  (2x^2 per x delivery — correct)
+//
+// The ingredient is the TRANSIENT STEP: f(i64:1) takes the `_` arm, so
+// the base arm's fold is FIRST dispatched inside a tail-loop FRAME.
+//   f(i64:0) entry (base arm unframed)      agrees
+//   base arm body `x * i64:2` (no fold)     agrees
+//   rec without select (fold is the body)   agrees
+//
+// Root cause: GXLambda::update's quiet-arg formal seed was one-shot
+// (first_dispatch) and R3 keeps frames out of the store, so a first
+// dispatch inside a frame seeded the pass-scoped frame map and died
+// with it; later passes rebind only TRIGGERING args. The fold's
+// callback formal (a lambda literal — fires once, ever) then read
+// phantom forever and the slot call sites dispatched kind=none. The
+// fix seeds quiet args on EVERY framed dispatch (stale — the value
+// channel; the firing plane is untouched).
+{let x = array::iter([i64:1, i64:2]); let rec f = |n| select n {i64:0 => array::fold([x, x], i64:0, |a, b| a + b * b), _ => f(i64:0)}; f(i64:1)}

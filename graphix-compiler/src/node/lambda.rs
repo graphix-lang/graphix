@@ -406,7 +406,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // standing store entry for later quiet cycles (R3: frames
             // never write the store). Triggering productions take the
             // normal publish below.
-            if first && !tag.triggers() && !tag.is_bottom() {
+            //
+            // Inside a frame the seed must run on EVERY dispatch, not
+            // just the first: R3 means no framed publication ever
+            // reaches the store, and the frame map is pass-scoped —
+            // a first dispatch that happens inside a frame consumes
+            // the one-shot seed into a map that dies with the pass,
+            // and later passes rebind only triggering args. A formal
+            // whose arg fires once ever (a callback lambda literal)
+            // then reads phantom forever — the fold in a rec arm
+            // reached through a tail step dispatched its slots with
+            // kind=none for the life of the program (aug18a class 1).
+            if (first || ctx.frame_depth > 0) && !tag.triggers() && !tag.is_bottom() {
                 let v = tv.value_cloned();
                 let store = ctx.frame_depth == 0;
                 pat.bind(&v, &mut |id, v| {
