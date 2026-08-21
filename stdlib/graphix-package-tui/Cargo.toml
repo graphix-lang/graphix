@@ -37,6 +37,7 @@ graphix-rt = { version = "0.9.0", path = "../../graphix-rt" }
 log = { workspace = true }
 netidx = { workspace = true }
 netidx-core = { workspace = true }
+poolshark = { workspace = true }
 ratatui = { workspace = true }
 smallvec = { workspace = true }
 time = { workspace = true }
@@ -46,7 +47,6 @@ triomphe = { workspace = true }
 [dev-dependencies]
 env_logger = { workspace = true }
 graphix-package-map = { version = "0.9.0", path = "../graphix-package-map" }
-poolshark = { workspace = true }
 
 [build-dependencies]
 graphix-ast-pack = { path = "../../graphix-ast-pack" }
