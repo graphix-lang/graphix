@@ -1,6 +1,6 @@
-use tui;
-use tui::list;
-use tui::text;
+use tui::*;
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];

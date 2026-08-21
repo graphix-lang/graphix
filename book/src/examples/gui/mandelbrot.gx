@@ -3,10 +3,10 @@
 // as a rust builtin and leaving everything else in graphix. This example
 // exists to show that it is possible, if not performant, to do this kind of
 // calculation in graphix
-use gui;
-use gui::canvas;
-use array;
-use sys::time;
+use gui::*;
+use gui::canvas::{self, *};
+use array::*;
+use sys::time::{self, *};
 
 let start = cast<f64>(sys::time::now(once(null)))$;
 let w = 100;

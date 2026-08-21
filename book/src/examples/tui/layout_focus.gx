@@ -1,8 +1,8 @@
-use tui;
-use tui::layout;
-use tui::text;
-use tui::input_handler;
-use tui::block;
+use tui::*;
+use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+use tui::block::{self, *};
 
 let focused = 0;
 

@@ -1,7 +1,7 @@
-use tui;
-use tui::sparkline;
-use tui::block;
-use tui::text;
+use tui::*;
+use tui::sparkline::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let data = {
     let clock = sys::time::timer(duration:0.3s, true);

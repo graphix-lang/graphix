@@ -1,5 +1,5 @@
-use sys::io;
-use sys::tcp;
+use sys::io::{self, *};
+use sys::tcp::{self, *};
 
 /// Upgrade a TCP stream to a TLS client connection.
 val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: io::Stream<`Tcp>) -> Result<io::Stream<`Tls>, `TLSError(string)>;

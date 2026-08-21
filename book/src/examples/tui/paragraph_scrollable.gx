@@ -1,8 +1,8 @@
-use tui;
-use tui::paragraph;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+use tui::*;
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let long_text = "I have got a lovely bunch of coconuts. Very long text continues here. More text. Even more text. This is a very long paragraph that will need scrolling to see all of it.";
 let scroll_y = 0;

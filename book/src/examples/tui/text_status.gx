@@ -1,5 +1,5 @@
-use tui;
-use tui::text;
+use tui::*;
+use tui::text::{self, *};
 
 let make_status = |level, msg| select level {
     `Error => line([

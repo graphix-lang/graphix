@@ -1,6 +1,6 @@
-use tui;
-use tui::tabs;
-use tui::text;
+use tui::*;
+use tui::tabs::{self, *};
+use tui::text::{self, *};
 
 let unread_count = 5;
 

@@ -1,7 +1,7 @@
-use tui;
-use tui::calendar;
-use tui::block;
-use tui::text;
+use tui::*;
+use tui::calendar::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let today = date(2024, 5, 15);
 

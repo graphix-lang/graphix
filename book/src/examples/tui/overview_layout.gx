@@ -1,6 +1,6 @@
-use tui;
-use tui::layout;
-use tui::text;
+use tui::*;
+use tui::layout::{self, *};
+use tui::text::{self, *};
 
 let selected_pane = 0;
 let sidebar = text(&"Sidebar");

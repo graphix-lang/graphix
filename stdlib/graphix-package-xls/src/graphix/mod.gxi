@@ -1,4 +1,4 @@
-use sys::io;
+use sys::io::{self, *};
 
 /// List sheet names in a workbook.
 val sheets: fn(input: [bytes, Stream<'a>]) -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]>;

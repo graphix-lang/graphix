@@ -1,7 +1,7 @@
-use tui;
-use tui::layout;
-use tui::text;
-use tui::block;
+use tui::*;
+use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::block::{self, *};
 
 let header = block(#border:&`All, &text(&"Header"));
 let content = block(#border:&`All, &text(&"Main Content"));

@@ -1,6 +1,6 @@
-use tui;
-use tui::browser;
-use tui::input_handler;
+use tui::*;
+use tui::browser::{self, *};
+use tui::input_handler::{self, *};
 
 let path = "/";
 let selected_path: string = never();

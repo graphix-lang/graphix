@@ -1,7 +1,7 @@
-use tui;
-use tui::scrollbar;
-use tui::list;
-use tui::text;
+use tui::*;
+use tui::scrollbar::{self, *};
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let items = [
     line("Item 1"),

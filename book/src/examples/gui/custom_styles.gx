@@ -1,13 +1,13 @@
-use gui;
-use gui::style;
-use gui::text;
-use gui::button;
-use gui::text_input;
-use gui::slider;
-use gui::toggler;
-use gui::container;
-use gui::column;
-use gui::rule;
+use gui::*;
+use gui::style::{self, *};
+use gui::text::{self, *};
+use gui::button::{self, *};
+use gui::text_input::{self, *};
+use gui::slider::{self, *};
+use gui::toggler::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
+use gui::rule::{self, *};
 mod icon;
 
 let palette = {

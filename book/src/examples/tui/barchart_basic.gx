@@ -1,5 +1,5 @@
-use tui;
-use tui::barchart;
+use tui::*;
+use tui::barchart::{self, *};
 
 let bar1 = bar(
     #style: &style(#fg: `Cyan),

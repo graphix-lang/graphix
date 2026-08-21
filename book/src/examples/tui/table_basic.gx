@@ -1,5 +1,5 @@
-use tui;
-use tui::table;
+use tui::*;
+use tui::table::{self, *};
 
 let header = row([
     cell(line("Name")),

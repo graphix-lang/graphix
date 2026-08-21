@@ -1,8 +1,8 @@
-use tui;
-use tui::sparkline;
-use tui::block;
-use tui::text;
-use tui::layout;
+use tui::*;
+use tui::sparkline::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
 
 let cpu_data = [50., 60., 55., 70., 65.];
 let mem_data = [30., 35., 40., 38., 42.];

@@ -1,8 +1,8 @@
-use tui;
-use tui::block;
-use tui::input_handler;
-use tui::overlay;
-use tui::paragraph;
+use tui::*;
+use tui::block::{self, *};
+use tui::input_handler::{self, *};
+use tui::overlay::{self, *};
+use tui::paragraph::{self, *};
 
 let open = false;
 

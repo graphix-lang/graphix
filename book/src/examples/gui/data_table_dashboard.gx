@@ -1,18 +1,18 @@
-use gui;
-use gui::data_table;
-use gui::row;
-use gui::column;
-use gui::text;
-use gui::text_input;
-use gui::pick_list;
-use core::math;
-use array;
-use opt;
-use re;
-use str;
-use sys;
-use sys::net;
-use sys::time;
+use gui::*;
+use gui::data_table::{self, *};
+use gui::row::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::pick_list::{self, *};
+use core::math::{self, *};
+use array::*;
+use opt::*;
+use re::*;
+use str::*;
+use sys::*;
+use sys::net::{self, *};
+use sys::time::{self, *};
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:

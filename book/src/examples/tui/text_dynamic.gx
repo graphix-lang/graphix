@@ -1,5 +1,5 @@
-use tui;
-use tui::text;
+use tui::*;
+use tui::text::{self, *};
 
 let count = count(sys::time::timer(duration:1.s, true));
 

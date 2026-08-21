@@ -1,10 +1,10 @@
-use tui;
-use tui::gauge;
-use tui::text;
-use core::math;
-use sys;
-use sys::net;
-use sys::time;
+use tui::*;
+use tui::gauge::{self, *};
+use tui::text::{self, *};
+use core::math::{self, *};
+use sys::*;
+use sys::net::{self, *};
+use sys::time::{self, *};
 
 // Self-contained: publish a simulated temperature reading once a
 // second, then subscribe to it for display. Drop the publish to

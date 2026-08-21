@@ -1,5 +1,5 @@
-use sys;
-use tui::table;
+use sys::*;
+use tui::table::{self, *};
 
 type MoveCursor = [
     `Left(i64),

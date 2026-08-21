@@ -1,6 +1,6 @@
-use tui;
-use tui::table;
-use tui::text;
+use tui::*;
+use tui::table::{self, *};
+use tui::text::{self, *};
 
 let make_cpu_cell = |cpu| {
     let s = select cpu {

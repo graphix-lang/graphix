@@ -1,11 +1,11 @@
-use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use core::math;
-use sys;
-use sys::net;
-use sys::time;
+use gui::*;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use core::math::{self, *};
+use sys::*;
+use sys::net::{self, *};
+use sys::time::{self, *};
 mod icon;
 
 // Four rows, each publishing a cpu value that updates once a second

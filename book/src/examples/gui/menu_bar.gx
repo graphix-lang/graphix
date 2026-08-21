@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::menu;
-use gui::column;
+use gui::*;
+use gui::text::{self, *};
+use gui::menu::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let file_menu = menu::menu(

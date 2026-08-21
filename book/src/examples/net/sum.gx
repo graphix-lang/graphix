@@ -1,4 +1,4 @@
-use sys;
+use sys::*;
 
 let table = net::list_table("/local/bench")$;
 let columns = array::filter(table.columns, |c| c != "sum");

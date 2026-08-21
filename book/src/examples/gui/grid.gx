@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::grid;
-use gui::container;
-use gui::column;
+use gui::*;
+use gui::text::{self, *};
+use gui::grid::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let item = |label| container(

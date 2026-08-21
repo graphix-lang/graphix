@@ -1,5 +1,5 @@
-use tui;
-use tui::sparkline;
+use tui::*;
+use tui::sparkline::{self, *};
 
 let data = [10.0, 25.0, 40.0, 55.0, 70.0, 85.0, 100.0];
 

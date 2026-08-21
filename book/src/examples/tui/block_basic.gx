@@ -1,6 +1,6 @@
-use tui;
-use tui::block;
-use tui::paragraph;
+use tui::*;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let content = paragraph(&"Hello, World!");
 

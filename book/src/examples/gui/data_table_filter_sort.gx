@@ -1,16 +1,16 @@
-use gui;
-use gui::data_table;
-use gui::row;
-use gui::column;
-use gui::text;
-use gui::text_input;
-use gui::pick_list;
-use array;
-use opt;
-use re;
-use str;
-use sys;
-use sys::net;
+use gui::*;
+use gui::data_table::{self, *};
+use gui::row::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::pick_list::{self, *};
+use array::*;
+use opt::*;
+use re::*;
+use str::*;
+use sys::*;
+use sys::net::{self, *};
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls

@@ -1,6 +1,6 @@
-use tui;
-use tui::scrollbar;
-use tui::paragraph;
+use tui::*;
+use tui::scrollbar::{self, *};
+use tui::paragraph::{self, *};
 
 let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
 let position = 0;

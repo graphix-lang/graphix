@@ -1,4 +1,4 @@
-use sys::io;
+use sys::io::{self, *};
 
 /// An opaque handle to a managed child process.
 type Proc;

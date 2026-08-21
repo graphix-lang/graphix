@@ -1,5 +1,5 @@
-use tui;
-use tui::barchart;
+use tui::*;
+use tui::barchart::{self, *};
 
 let make_colored_bar = |label, value| {
     let color = select value {

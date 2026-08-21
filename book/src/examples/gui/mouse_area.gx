@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::mouse_area;
-use gui::container;
-use gui::column;
+use gui::*;
+use gui::text::{self, *};
+use gui::mouse_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let status = "Move the mouse over the box";
