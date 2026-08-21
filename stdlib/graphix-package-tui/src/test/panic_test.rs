@@ -12,7 +12,7 @@
 //! we've clamped it on our side. A test that FAILS means a clamp is
 //! still missing.
 
-use super::TuiTestHarness;
+use crate::testing::TuiTestHarness;
 use anyhow::Result;
 
 // ── gauge / line_gauge ───────────────────────────────────────────────

@@ -14,7 +14,7 @@
 //! - Panic-input regression tests live alongside the smoke test for
 //!   the same widget so the failure mode is documented in one place.
 
-use super::TuiTestHarness;
+use crate::testing::TuiTestHarness;
 use anyhow::Result;
 
 // ── text ─────────────────────────────────────────────────────────────

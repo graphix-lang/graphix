@@ -69,6 +69,9 @@ mod tabs;
 mod text;
 mod validate;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 #[cfg(test)]
 mod test;
 
