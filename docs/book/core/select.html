@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-27e99b8b.js";
+            window.path_to_searchindex_js = "../searchindex-cc586931.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -328,6 +328,24 @@ fields <code>foo</code> and <code>bar</code>, binding <code>hd</code> to the arr
 </li>
 </ul>
 <p>Structure patterns (all of the different types) can be nested to any depth.</p>
+<p>Slice patterns count toward exhaustiveness by LENGTH: a set of
+unguarded slice arms whose element patterns are all binds or <code>_</code>
+covers the array when their lengths cover every possible length —
+which needs a head or tail (rest) pattern for the unbounded lengths,
+plus an exact-length arm for each length below the rest pattern’s
+minimum. So this select is exhaustive with no wildcard arm:</p>
+<pre><code class="language-graphix">select a {
+  [] =&gt; `Empty,
+  [x, tl..] =&gt; `Cons(x, tl)
+}
+</code></pre>
+<p>An arm carrying a guard, or an element pattern that can refute (a
+literal, a variant, a nested slice), only matches SOME arrays of its
+length, so it claims no coverage — the error says so when that is why
+a select falls short. Note also that a slice arm covers only arrays
+of its own inferred (or written) element type: if the scrutinee is a
+union of differently-typed arrays, each array member needs the whole
+length ladder to check out against every slice arm’s type.</p>
 <h3 id="tuple-patterns"><a class="header" href="#tuple-patterns">Tuple Patterns</a></h3>
 <p>Tuple patterns allow you to match tuples. Compared to slice patterns they are
 fairly simple. You must specify every field of the tuple, you can choose to bind

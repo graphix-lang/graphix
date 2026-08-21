@@ -384,6 +384,167 @@ run!(select_suffix_exact_len, SELECT_SUFFIX_EXACT_LEN, |v: Result<&Value>| {
 });
 
 // =============================================================================
+// Slice-pattern LENGTH coverage (2026-08-21, from the admin-TUI
+// campaign's fingerprint chunker): unguarded array-slice arms whose
+// element patterns match anything jointly cover an array scrutinee
+// when their lengths cover ℕ — `[]` + a rest form needs no wildcard.
+// The claim is per scrutinee array member, and every pool arm's type
+// predicate must contain the member (runtime dispatch is type-gated
+// per arm, so a differently-typed slice arm is a hole, not coverage).
+//
+// ASPIRE: Jit (currently None) on the lambda-wrapped value fixtures —
+// the select sits in an instance kernel where a composite scrutinee
+// has no ride storage ("no scrutinee-ride storage — de-fuse"; the
+// value-residents-in-site-blocks ASPIRE restores them).
+// `select_slice_cover_fused` pins the region-root form natively.
+
+// The region-root form: a wildcard-less slice-covered select fuses
+// (the final arm's miss trap is dead code under the new coverage).
+const SELECT_SLICE_COVER_FUSED: &str = r#"
+{
+  let a = [7, 8, 9];
+  select a {
+    [x, ..] => x,
+    [] => -1
+  }
+}
+"#;
+
+run!(select_slice_cover_fused, SELECT_SLICE_COVER_FUSED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+});
+
+const SELECT_SLICE_COVER_SUFFIX: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [init.., last] => last
+  };
+  f([7, 8, 9]) * 10 + f([])
+}
+"#;
+
+run!(select_slice_cover_suffix, SELECT_SLICE_COVER_SUFFIX, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(90)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const SELECT_SLICE_COVER_PREFIX: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [x, ..] => x,
+    [] => -1
+  };
+  f([7, 8, 9]) * 10 + f([])
+}
+"#;
+
+run!(select_slice_cover_prefix, SELECT_SLICE_COVER_PREFIX, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(69)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// An exact-length ladder under the rest form: 0 and 1 by exact arms,
+// [2, ∞) by the rest arm.
+const SELECT_SLICE_COVER_LADDER: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [a] => a,
+    [a, b, rest..] => a + b + array::len(rest)
+  };
+  f([]) + f([5]) + f([1, 2, 3, 4])
+}
+"#;
+
+run!(select_slice_cover_ladder, SELECT_SLICE_COVER_LADDER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(10)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// The pool covers the ARRAY member; the null member still needs its
+// own arm — and has one.
+const SELECT_SLICE_COVER_UNION: &str = r#"
+{
+  let f = |xs: [Array<i64>, null]| -> i64 select xs {
+    null as _ => -1,
+    [] => 0,
+    [init.., last] => last
+  };
+  f(null) + f([]) + f([1, 2, 3])
+}
+"#;
+
+run!(select_slice_cover_union, SELECT_SLICE_COVER_UNION, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A hole in the length ladder refuses (and the message names the
+// hole): [] + [a, b, rest..] leaves length 1 uncovered.
+const SELECT_SLICE_HOLE: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [a, b, rest..] => a + b
+  };
+  f([1, 2, 3])
+}
+"#;
+
+run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Exact-length arms alone cover finitely many lengths — never ℕ.
+const SELECT_SLICE_NO_REST: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [a] => a
+  };
+  f([1])
+}
+"#;
+
+run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A guard makes an arm's coverage conditional — it claims nothing.
+const SELECT_SLICE_GUARDED_REST: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [x, rest..] if x > 0 => x
+  };
+  f([1])
+}
+"#;
+
+run!(
+    select_slice_guarded_rest_rejected,
+    SELECT_SLICE_GUARDED_REST,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// A refutable ELEMENT pattern only matches some arrays of its length —
+// the arm claims nothing.
+const SELECT_SLICE_REFUTABLE_ELEM: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [0, rest..] => 1
+  };
+  f([1])
+}
+"#;
+
+run!(
+    select_slice_refutable_elem_rejected,
+    SELECT_SLICE_REFUTABLE_ELEM,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// =============================================================================
 // Phase 5 — NESTED structural select patterns (scalar leaf binds) fuse:
 // the intermediate composite reads are BORROWED interior pointers (the
 // root scrutinee is pinned borrowed across the arm chain and values are

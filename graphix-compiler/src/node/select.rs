@@ -143,6 +143,40 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 }
 
+/// Collect every ARRAY member of `t` (through refs, bound tvars, and
+/// set nesting) — the types slice-pattern length coverage can claim.
+/// `depth` caps pathological ref chains; hitting the cap just stops
+/// collecting (missing members can only make exhaustiveness stricter).
+fn array_members(
+    env: &crate::env::Env,
+    t: &Type,
+    out: &mut smallvec::SmallVec<[Type; 4]>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 64 {
+        return Ok(());
+    }
+    match t {
+        Type::Array(_) => out.push(t.clone()),
+        Type::Set(ts) => {
+            for t in ts.iter() {
+                array_members(env, t, out, depth + 1)?
+            }
+        }
+        Type::Ref(_) => {
+            let t = t.lookup_ref(env)?;
+            array_members(env, &t, out, depth + 1)?
+        }
+        Type::TVar(_) => {
+            if let Some(t) = t.with_deref(|t| t.cloned()) {
+                array_members(env, &t, out, depth + 1)?
+            }
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let Self {
@@ -688,13 +722,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // fed the scrutinee's own not-yet-bound cell it burned that
         // instead.
         let mut wildcard = false;
+        // Unguarded array-slice arms whose element sub-patterns match
+        // anything claim LENGTH coverage — `(k, exact, predicate)`:
+        // the arm matches every array (of its predicate's type) of
+        // length == k (`exact`) or >= k (a rest form). Pooled after
+        // the loop: if the claimed lengths cover ℕ, the pool covers
+        // each scrutinee array member that EVERY pool arm's type
+        // predicate contains (dispatch is type-gated per arm, so one
+        // differently-typed arm is a runtime hole, not coverage).
+        let mut slice_pool: smallvec::SmallVec<[(usize, bool, Type); 8]> =
+            smallvec::SmallVec::new();
+        let (mut guarded_slice, mut refutable_slice) = (false, false);
         for (pat, _) in self.arms.iter_mut() {
             let inferred_irrefutable = !pat.explicit_type_predicate
                 && pat.structure_predicate.matches_anything();
             match &mut pat.guard {
                 // The guard's OWN typecheck0 runs in the second loop,
                 // after the bind narrowing — see the note there.
-                Some(_) => (),
+                Some(_) => {
+                    guarded_slice |= pat.structure_predicate.is_array_slice();
+                }
                 None => {
                     if inferred_irrefutable {
                         wildcard = true;
@@ -709,6 +756,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                             mtype = mtype
                                 .union(&ctx.env, &Type::Primitive(Typ::Bool.into()))?;
                         }
+                    } else if let Some((k, exact)) =
+                        pat.structure_predicate.array_len_coverage()
+                    {
+                        slice_pool.push((k, exact, pat.type_predicate.clone()));
+                    } else if pat.structure_predicate.is_array_slice() {
+                        refutable_slice = true;
                     }
                 }
             }
@@ -742,9 +795,79 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     anyhow!("missing match cases {e}")
                 })
             })?;
-            mtype.check_contains(&ctx.env, &self.arg.node.typ()).map_err(|e| {
+            // Resolve the slice pool AFTER the itype check (it narrows
+            // an under-constrained scrutinee) and BEFORE the mtype
+            // check (coverage joins that union). A pool whose lengths
+            // fall short doesn't contribute; the note says which
+            // length is the hole, since the mtype error alone can't.
+            let mut slice_note = String::new();
+            if !slice_pool.is_empty() {
+                let rest =
+                    slice_pool.iter().filter(|(_, e, _)| !e).map(|(k, _, _)| *k).min();
+                match rest {
+                    None => {
+                        slice_note = " (the slice arms cover finitely many \
+                                      lengths — an array scrutinee also needs a \
+                                      rest pattern or a wildcard)"
+                            .into()
+                    }
+                    Some(rest) => {
+                        let hole = (0..rest)
+                            .find(|n| !slice_pool.iter().any(|(k, e, _)| *e && k == n));
+                        match hole {
+                            Some(n) => {
+                                slice_note = format!(
+                                    " (the slice arms leave array length {n} \
+                                     uncovered)"
+                                )
+                            }
+                            None => {
+                                let mut members: smallvec::SmallVec<[Type; 4]> =
+                                    smallvec::SmallVec::new();
+                                array_members(
+                                    &ctx.env,
+                                    self.arg.node.typ(),
+                                    &mut members,
+                                    0,
+                                )?;
+                                for m in members {
+                                    let mut all = true;
+                                    for (_, _, p) in slice_pool.iter() {
+                                        if !p.contains(&ctx.env, &m)? {
+                                            all = false;
+                                            break;
+                                        }
+                                    }
+                                    if all {
+                                        mtype = mtype.union(&ctx.env, &m)?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if refutable_slice {
+                slice_note.push_str(
+                    " (a slice arm with refutable element patterns — literals, \
+                     variants, nested slices — cannot establish length coverage)",
+                );
+            }
+            if guarded_slice {
+                slice_note
+                    .push_str(" (a guarded slice arm cannot establish length coverage)");
+            }
+            let scrut = self.arg.node.typ().clone();
+            mtype.check_contains(&ctx.env, &scrut).map_err(|e| {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    anyhow!("missing match cases {e}")
+                    if mtype == Type::Primitive(BitFlags::empty()) {
+                        anyhow!(
+                            "missing match cases: no unguarded arm irrefutably \
+                             covers {scrut}{slice_note}"
+                        )
+                    } else {
+                        anyhow!("missing match cases {e}{slice_note}")
+                    }
                 })
             })?;
         }

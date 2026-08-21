@@ -189,6 +189,28 @@ The following kinds of slice patterns are supported,
 
 Structure patterns (all of the different types) can be nested to any depth.
 
+Slice patterns count toward exhaustiveness by LENGTH: a set of
+unguarded slice arms whose element patterns are all binds or `_`
+covers the array when their lengths cover every possible length —
+which needs a head or tail (rest) pattern for the unbounded lengths,
+plus an exact-length arm for each length below the rest pattern's
+minimum. So this select is exhaustive with no wildcard arm:
+
+```graphix
+select a {
+  [] => `Empty,
+  [x, tl..] => `Cons(x, tl)
+}
+```
+
+An arm carrying a guard, or an element pattern that can refute (a
+literal, a variant, a nested slice), only matches SOME arrays of its
+length, so it claims no coverage — the error says so when that is why
+a select falls short. Note also that a slice arm covers only arrays
+of its own inferred (or written) element type: if the scrutinee is a
+union of differently-typed arrays, each array member needs the whole
+length ladder to check out against every slice arm's type.
+
 ### Tuple Patterns
 
 Tuple patterns allow you to match tuples. Compared to slice patterns they are

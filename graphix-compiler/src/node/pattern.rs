@@ -766,6 +766,46 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.matches_anything_inner())
     }
 
+    /// Shape test only — an array slice pattern of any element
+    /// refutability. For exhaustiveness diagnostics: a slice arm that
+    /// carries a guard or refutable elements claims no coverage, and
+    /// the refusal should say why.
+    pub fn is_array_slice(&self) -> bool {
+        matches!(
+            self,
+            Self::Slice { tuple: false, .. }
+                | Self::SlicePrefix { .. }
+                | Self::SliceSuffix { .. }
+        )
+    }
+
+    /// The pattern's array-length coverage claim, for select's slice
+    /// exhaustiveness: `Some((k, exact))` when this is an array slice
+    /// pattern that STRUCTURALLY matches every array of length == k
+    /// (`exact: true`) or >= k (a rest form) — i.e. every element
+    /// sub-pattern matches anything. The TYPE half of the claim (the
+    /// arm's predicate gates dispatch too) is the caller's to verify.
+    pub fn array_len_coverage(&self) -> Option<(usize, bool)> {
+        match self {
+            Self::Slice { tuple: false, all: _, binds }
+                if binds.iter().all(|p| p.matches_anything()) =>
+            {
+                Some((binds.len(), true))
+            }
+            Self::SlicePrefix { all: _, prefix, tail: _ }
+                if prefix.iter().all(|p| p.matches_anything()) =>
+            {
+                Some((prefix.len(), false))
+            }
+            Self::SliceSuffix { all: _, head: _, suffix }
+                if suffix.iter().all(|p| p.matches_anything()) =>
+            {
+                Some((suffix.len(), false))
+            }
+            _ => None,
+        }
+    }
+
     fn matches_anything_inner(&self) -> bool {
         match &self {
             Self::Bind(_) | Self::Ignore => true,
