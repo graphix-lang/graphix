@@ -1385,10 +1385,21 @@ TUI is secondary** (Eric's ruling). No workarounds: an awkward idiom,
 slow compile, bad diagnostic, or missing capability means stop, log a
 finding, fix it here (or consciously accept it), then continue — and
 never quietly move decision/presentation logic into the package's Rust
-layer because Graphix was painful. Known prerequisite work in THIS
-repo: graphix-package-tui has no modal/overlay widget (blocks the
-first TUI phase) and no terminal suspend/resume for privileged
-`sudo`/`$EDITOR` handoff (blocks the last). The program will be the
-largest `.gx` ever by 20-50x (current record: 209 lines) — measure
-`--check` time at every size milestone; the typechecker-must-be-instant
-rule applies.
+layer because Graphix was painful. Prerequisite work in THIS repo:
+overlay/modal widget DONE, line_edit DONE, TuiTestHarness public
+(`graphix_package_tui::testing`, feature `testing`) DONE; terminal
+suspend/resume for privileged `sudo`/`$EDITOR` handoff still open
+(blocks the last phase). Phase D is underway: the shared modal
+question pump + a live harness-driven connect round trip landed
+2026-08-21 (netidx b1447c60; tui/mod.gx ~360 lines is the largest
+single `.gx` yet; milestone row: 909 lines, reg 417ms / pump call
+site 593ms, dev build). Open graphix findings from that slice (see
+the findings log): def-site/use-site TYPE-name resolution asymmetry
+(consumer-side instance elaboration sees neither the defining
+module's `use` aliases nor its private types — the def site accepts
+spellings the use site can't resolve), slice patterns carry no
+select-exhaustiveness credit (and the refusal renders the empty set
+type as `[]`), and reserved-word parse diagnostics at package scale
+(position lands on the enclosing statement, cause buried in the
+combine merge). Measure `--check` time at every size milestone; the
+typechecker-must-be-instant rule applies.
