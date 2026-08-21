@@ -779,31 +779,40 @@ impl StructPatternNode {
         )
     }
 
+    /// The LENGTH RANGE of an array slice pattern — `Some((k, exact))`:
+    /// it can only match arrays of length == k (`exact: true`) or
+    /// >= k (a rest form) — regardless of whether its element
+    /// sub-patterns can refute. The dead-arm walk's shape test: an arm
+    /// whose whole range is already matched by earlier covering arms
+    /// can never run.
+    pub fn array_len_range(&self) -> Option<(usize, bool)> {
+        match self {
+            Self::Slice { tuple: false, all: _, binds } => Some((binds.len(), true)),
+            Self::SlicePrefix { all: _, prefix, tail: _ } => Some((prefix.len(), false)),
+            Self::SliceSuffix { all: _, head: _, suffix } => Some((suffix.len(), false)),
+            _ => None,
+        }
+    }
+
     /// The pattern's array-length coverage claim, for select's slice
-    /// exhaustiveness: `Some((k, exact))` when this is an array slice
-    /// pattern that STRUCTURALLY matches every array of length == k
-    /// (`exact: true`) or >= k (a rest form) — i.e. every element
+    /// exhaustiveness: the length range, but only when the pattern
+    /// STRUCTURALLY matches every array in it — i.e. every element
     /// sub-pattern matches anything. The TYPE half of the claim (the
     /// arm's predicate gates dispatch too) is the caller's to verify.
     pub fn array_len_coverage(&self) -> Option<(usize, bool)> {
-        match self {
-            Self::Slice { tuple: false, all: _, binds }
-                if binds.iter().all(|p| p.matches_anything()) =>
-            {
-                Some((binds.len(), true))
+        let all_cover = match self {
+            Self::Slice { tuple: false, all: _, binds } => {
+                binds.iter().all(|p| p.matches_anything())
             }
-            Self::SlicePrefix { all: _, prefix, tail: _ }
-                if prefix.iter().all(|p| p.matches_anything()) =>
-            {
-                Some((prefix.len(), false))
+            Self::SlicePrefix { all: _, prefix, tail: _ } => {
+                prefix.iter().all(|p| p.matches_anything())
             }
-            Self::SliceSuffix { all: _, head: _, suffix }
-                if suffix.iter().all(|p| p.matches_anything()) =>
-            {
-                Some((suffix.len(), false))
+            Self::SliceSuffix { all: _, head: _, suffix } => {
+                suffix.iter().all(|p| p.matches_anything())
             }
-            _ => None,
-        }
+            _ => false,
+        };
+        if all_cover { self.array_len_range() } else { None }
     }
 
     fn matches_anything_inner(&self) -> bool {

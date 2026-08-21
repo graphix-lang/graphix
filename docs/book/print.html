@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-cc586931.js";
+            window.path_to_searchindex_js = "searchindex-830d5da5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -1664,6 +1664,13 @@ a select falls short. Note also that a slice arm covers only arrays
 of its own inferred (or written) element type: if the scrutinee is a
 union of differently-typed arrays, each array member needs the whole
 length ladder to check out against every slice arm’s type.</p>
+<p>Dead-arm checking is length-precise in the same way: an arm whose
+every matchable length is already matched by earlier covering slice
+arms can never run and is refused — <code>[init.., y]</code> after <code>[x, tl..]</code>
+is dead (both match every non-empty array), and a <code>_</code> behind a
+complete ladder like the one above is dead exactly as it would be
+behind a full variant set. Order exact-length arms above the rest
+arm that subsumes them.</p>
 <h3 id="tuple-patterns"><a class="header" href="#tuple-patterns">Tuple Patterns</a></h3>
 <p>Tuple patterns allow you to match tuples. Compared to slice patterns they are
 fairly simple. You must specify every field of the tuple, you can choose to bind

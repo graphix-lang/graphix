@@ -211,6 +211,14 @@ of its own inferred (or written) element type: if the scrutinee is a
 union of differently-typed arrays, each array member needs the whole
 length ladder to check out against every slice arm's type.
 
+Dead-arm checking is length-precise in the same way: an arm whose
+every matchable length is already matched by earlier covering slice
+arms can never run and is refused — `[init.., y]` after `[x, tl..]`
+is dead (both match every non-empty array), and a `_` behind a
+complete ladder like the one above is dead exactly as it would be
+behind a full variant set. Order exact-length arms above the rest
+arm that subsumes them.
+
 ### Tuple Patterns
 
 Tuple patterns allow you to match tuples. Compared to slice patterns they are

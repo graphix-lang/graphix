@@ -177,6 +177,29 @@ fn array_members(
     Ok(())
 }
 
+/// Do lengths `exacts ∪ [rest, ∞)` cover every array length? Complete
+/// coverage needs a rest bound with every length below it exact.
+fn lens_complete(exacts: &[usize], rest: Option<usize>) -> bool {
+    match rest {
+        None => false,
+        Some(r) => (0..r).all(|n| exacts.contains(&n)),
+    }
+}
+
+/// Is the length range `== k` (`exact`) / `>= k` (rest form) entirely
+/// inside `exacts ∪ [rest, ∞)`?
+fn range_covered(k: usize, exact: bool, exacts: &[usize], rest: Option<usize>) -> bool {
+    let covered = |n: usize| rest.is_some_and(|r| n >= r) || exacts.contains(&n);
+    if exact {
+        covered(k)
+    } else {
+        match rest {
+            None => false,
+            Some(r) => (k..r.max(k)).all(covered),
+        }
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let Self {
@@ -926,8 +949,42 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 ntype = ntype.diff(&ctx.env, &pat.type_predicate)?;
             }
         }
+        // The dead-arm walk: `atype` is the residual scrutinee — what
+        // can still reach each arm — and an arm that could match none
+        // of it is refused. Coverage subtracts LENGTH-precisely for
+        // array members (the mirror of the exhaustiveness pool above)
+        // and for the bool literal pair, so a wildcard behind a
+        // complete slice ladder or behind `true`+`false` is dead, the
+        // same as behind a full variant set. Slice-shaped arms also
+        // die by RANGE: an arm whose every matchable length is already
+        // matched by earlier covering arms can never run, whatever its
+        // guard or element patterns say.
         let mut atype = self.arg.node.typ().clone().normalize();
+        let mut members: smallvec::SmallVec<[Type; 4]> = smallvec::SmallVec::new();
+        array_members(&ctx.env, &atype, &mut members, 0)?;
+        struct Cov {
+            m: Type,
+            exacts: smallvec::SmallVec<[usize; 8]>,
+            rest: Option<usize>,
+            done: bool,
+        }
+        let mut covered: smallvec::SmallVec<[Cov; 4]> = members
+            .drain(..)
+            .map(|m| Cov {
+                m,
+                exacts: smallvec::SmallVec::new(),
+                rest: None,
+                done: false,
+            })
+            .collect();
+        let (mut saw_t, mut saw_f) = (false, false);
         for (pat, _) in self.arms.iter() {
+            if atype == Type::Primitive(BitFlags::empty()) {
+                bail!(
+                    "unreachable arm: the earlier arms already cover the whole \
+                     scrutinee, unused match cases"
+                )
+            }
             if !&pat.type_predicate.could_match(&ctx.env, &atype)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(
@@ -936,6 +993,51 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         atype
                     )
                 })?
+            }
+            if let Some((k, exact)) = pat.structure_predicate.array_len_range() {
+                let mut any = false;
+                let mut all = true;
+                for c in covered.iter() {
+                    if pat.type_predicate.could_match(&ctx.env, &c.m)? {
+                        any = true;
+                        all &= range_covered(k, exact, &c.exacts, c.rest);
+                    }
+                }
+                if any && all {
+                    bail!(
+                        "unreachable arm: every array length this slice pattern \
+                         can match is covered by earlier arms, unused match cases"
+                    )
+                }
+                if pat.guard.is_none()
+                    && pat.structure_predicate.array_len_coverage().is_some()
+                {
+                    for c in covered.iter_mut() {
+                        if !c.done && pat.type_predicate.contains(&ctx.env, &c.m)? {
+                            if exact {
+                                if !c.exacts.contains(&k) {
+                                    c.exacts.push(k)
+                                }
+                            } else {
+                                c.rest = Some(c.rest.map_or(k, |r| r.min(k)))
+                            }
+                            if lens_complete(&c.exacts, c.rest) {
+                                c.done = true;
+                                atype = atype.diff(&ctx.env, &c.m)?;
+                            }
+                        }
+                    }
+                }
+            }
+            if pat.guard.is_none()
+                && let StructPatternNode::Literal(Value::Bool(b)) =
+                    &pat.structure_predicate
+            {
+                saw_t |= *b;
+                saw_f |= !*b;
+                if saw_t && saw_f {
+                    atype = atype.diff(&ctx.env, &Type::Primitive(Typ::Bool.into()))?;
+                }
             }
             if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
                 atype = atype.diff(&ctx.env, &pat.type_predicate)?;

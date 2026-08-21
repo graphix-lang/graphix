@@ -525,6 +525,106 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
+// Deadness is length-precise too (Eric's call — no dead arms, ever):
+// a wildcard behind a complete slice ladder is unreachable, exactly
+// like a wildcard behind a full variant set.
+const SELECT_SLICE_DEAD_WILDCARD: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [] => 0,
+    [x, ..] => x,
+    _ => -1
+  };
+  f([1])
+}
+"#;
+
+run!(
+    select_slice_dead_wildcard_rejected,
+    SELECT_SLICE_DEAD_WILDCARD,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// A slice arm whose whole length range is matched by earlier covering
+// arms can never run: [init.., y] is [1, ∞), all taken by [x, rest..].
+const SELECT_SLICE_DEAD_SHADOW: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [x, rest..] => x,
+    [init.., y] => y,
+    _ => 0
+  };
+  f([1])
+}
+"#;
+
+run!(
+    select_slice_dead_shadow_rejected,
+    SELECT_SLICE_DEAD_SHADOW,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The bool literal pair subtracts like a full variant set: a trailing
+// wildcard after `true` + `false` is dead.
+const SELECT_BOOL_DEAD_WILDCARD: &str = r#"
+{
+  let f = |x: bool| -> i64 select x {
+    true => 1,
+    false => 0,
+    _ => 2
+  };
+  f(true)
+}
+"#;
+
+run!(
+    select_bool_dead_wildcard_rejected,
+    SELECT_BOOL_DEAD_WILDCARD,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The live side of the line: a PARTIAL ladder keeps its wildcard (the
+// empty array still needs it), and a refutable-element arm neither
+// dies (its lengths aren't covered yet where it stands) nor blocks
+// the arms below it from completing coverage.
+const SELECT_SLICE_PARTIAL_WILDCARD_LIVE: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [x, ..] => x,
+    _ => -1
+  };
+  f([7]) * 10 + f([])
+}
+"#;
+
+run!(
+    select_slice_partial_wildcard_live,
+    SELECT_SLICE_PARTIAL_WILDCARD_LIVE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(69))) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+const SELECT_SLICE_REFUT_THEN_COVER_LIVE: &str = r#"
+{
+  let f = |xs: Array<i64>| -> i64 select xs {
+    [0, ..] => -1,
+    [x, ..] => x,
+    [] => 0
+  };
+  f([0, 5]) * 100 + f([7]) * 10 + f([])
+}
+"#;
+
+run!(
+    select_slice_refut_then_cover_live,
+    SELECT_SLICE_REFUT_THEN_COVER_LIVE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(-30))) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
 // A refutable ELEMENT pattern only matches some arrays of its length —
 // the arm claims nothing.
 const SELECT_SLICE_REFUTABLE_ELEM: &str = r#"
