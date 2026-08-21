@@ -1194,7 +1194,7 @@ impl ServerState {
                 SigKind::Module(name) => {
                     (name.to_string(), lsp_types::SymbolKind::MODULE, None)
                 }
-                SigKind::Use(names) => {
+                SigKind::Use { names, .. } => {
                     let mut label = String::from("use ");
                     for (i, n) in names.iter().enumerate() {
                         if i > 0 {
@@ -1331,7 +1331,7 @@ impl ServerState {
                         SigKind::Module(name) => {
                             (name.to_string(), lsp_types::SymbolKind::MODULE)
                         }
-                        SigKind::Use(_) => continue,
+                        SigKind::Use { .. } => continue,
                     };
                     push(name, kind, si.pos.line, si.pos.column, &mut out);
                 }

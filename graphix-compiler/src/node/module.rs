@@ -42,13 +42,17 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                     });
                 }
             }
-            SigKind::Use(names) => {
-                for name in names.iter() {
-                    env.use_in_scope(scope, name)?;
-                    mod_env.use_in_scope(scope, name)?;
+            SigKind::Use { reexport, names } => {
+                if *reexport {
+                    bail!("re-exports (`pub use`) are not yet supported")
+                }
+                for item in names.iter() {
+                    let name = super::use_item_open_path(item)?;
+                    env.use_in_scope(scope, &name)?;
+                    mod_env.use_in_scope(scope, &name)?;
                     if env.lsp_mode {
                         let canonical = env
-                            .canonical_modpath(&scope.lexical, name)
+                            .canonical_modpath(&scope.lexical, &name)
                             .unwrap_or_else(|| name.clone());
                         env.push_module_reference(ModuleRefSite {
                             pos: si.pos,
@@ -249,7 +253,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 )
             }
             SigKind::Module(_)
-            | SigKind::Use(_)
+            | SigKind::Use { .. }
             | SigKind::TypeDef(TypeDefExpr { .. }) => false,
         };
         if missing {

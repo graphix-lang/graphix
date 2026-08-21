@@ -230,7 +230,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
                 ),
             }
         }
-        ExprKind::Use { names } => Use::compile(ctx, spec.clone(), scope, names),
+        ExprKind::Use { reexport, names } => {
+            Use::compile(ctx, spec.clone(), scope, *reexport, names)
+        }
         ExprKind::Connect { name, value, deref: true } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::{
         ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
-        StructurePattern,
+        StructurePattern, UseItem,
     },
     typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
@@ -931,8 +931,11 @@ fn module() {
 
 #[test]
 fn usemodule() {
-    let exp = ExprKind::Use { names: triomphe::Arc::from_iter([ModPath::from(["foo"])]) }
-        .to_expr_nopos();
+    let exp = ExprKind::Use {
+        reexport: false,
+        names: triomphe::Arc::from_iter([UseItem::plain(ModPath::from(["foo"]))]),
+    }
+    .to_expr_nopos();
     let s = r#"use foo"#;
     assert_eq!(exp, parse_one(s).unwrap());
 }
@@ -1914,17 +1917,18 @@ fn use_groups() {
     ];
     for (src, want) in cases {
         let e = parse_one(src).unwrap();
-        let ExprKind::Use { names } = &e.kind else {
+        let ExprKind::Use { reexport: false, names } = &e.kind else {
             panic!("not a use: {src} -> {e:?}")
         };
         assert_eq!(names.len(), want.len(), "case: {src}");
         for (n, w) in names.iter().zip(want.iter()) {
-            assert_eq!(n, *w, "case: {src}");
+            assert_eq!(&n.path, *w, "case: {src}");
+            assert_eq!(n.rename, None, "case: {src}");
         }
         // print-parse round trip through the GROUPED printer
         let printed = e.to_string();
         let e2 = parse_one(&printed).unwrap();
-        let ExprKind::Use { names: names2 } = &e2.kind else {
+        let ExprKind::Use { reexport: false, names: names2 } = &e2.kind else {
             panic!("reparse not a use: {printed}")
         };
         assert_eq!(names, names2, "roundtrip: {src} -> {printed}");
@@ -1933,4 +1937,71 @@ fn use_groups() {
     assert!(parse_one("use a::{}").is_err());
     assert!(parse_one("use self").is_err());
     assert!(parse_one("use {self}").is_err());
+}
+
+#[test]
+fn use_new_grammar() {
+    // The module-system grammar (design/module_system.md P1): renames,
+    // globs, keyword path roots, pub use — as (path segments, rename).
+    let cases: &[(&str, &[(&[&str], Option<&str>)])] = &[
+        ("use a::b as c", &[(&["a", "b"], Some("c"))]),
+        ("use a::{b as c, d}", &[(&["a", "b"], Some("c")), (&["a", "d"], None)]),
+        ("use a::{self as b, c}", &[(&["a"], Some("b")), (&["a", "c"], None)]),
+        ("use a::*", &[(&["a", "*"], None)]),
+        ("use a::{*, b}", &[(&["a", "*"], None), (&["a", "b"], None)]),
+        ("use a::{b::*, c}", &[(&["a", "b", "*"], None), (&["a", "c"], None)]),
+        ("use self::a", &[(&["self", "a"], None)]),
+        ("use super::a", &[(&["super", "a"], None)]),
+        ("use super::super::a::b", &[(&["super", "super", "a", "b"], None)]),
+        ("use package::a::b", &[(&["package", "a", "b"], None)]),
+        ("use super::*", &[(&["super", "*"], None)]),
+        (
+            "use package::{a, b as c}",
+            &[(&["package", "a"], None), (&["package", "b"], Some("c"))],
+        ),
+        ("use {self::a, super::b}", &[(&["self", "a"], None), (&["super", "b"], None)]),
+    ];
+    for (src, want) in cases {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Use { reexport: false, names } = &e.kind else {
+            panic!("not a use: {src} -> {e:?}")
+        };
+        assert_eq!(names.len(), want.len(), "case: {src}");
+        for (n, (wp, wr)) in names.iter().zip(want.iter()) {
+            assert_eq!(&n.path, *wp, "case: {src}");
+            assert_eq!(n.rename.as_deref(), *wr, "case: {src}");
+        }
+        let printed = e.to_string();
+        let e2 = parse_one(&printed).unwrap();
+        let ExprKind::Use { reexport: false, names: names2 } = &e2.kind else {
+            panic!("reparse not a use: {printed}")
+        };
+        assert_eq!(names, names2, "roundtrip: {src} -> {printed}");
+    }
+    // pub use parses, carries the flag, and round trips
+    let e = parse_one("pub use a::b").unwrap();
+    let ExprKind::Use { reexport: true, names } = &e.kind else {
+        panic!("not a pub use: {e:?}")
+    };
+    assert_eq!(&names[0].path, &["a", "b"]);
+    let printed = e.to_string();
+    assert_eq!(parse_one(&printed).unwrap().kind, e.kind);
+    // Positional refusals.
+    assert!(parse_one("use a::self::b").is_err(), "self mid-path");
+    assert!(parse_one("use a::super::b").is_err(), "super mid-path");
+    assert!(parse_one("use a::package::b").is_err(), "package mid-path");
+    assert!(parse_one("use super").is_err(), "bare super");
+    assert!(parse_one("use package").is_err(), "bare package");
+    assert!(parse_one("use super::{self}").is_err(), "keyword-only via group self");
+    assert!(parse_one("use a::* as b").is_err(), "renamed glob");
+    assert!(parse_one("use a::{b, c} as d").is_err(), "renamed group");
+    // Path keywords are reserved as ordinary identifiers.
+    assert!(parse_one("let package = 5").is_err(), "package binds");
+    assert!(parse_one("let super = 5").is_err(), "super binds");
+    assert!(parse_one("let pub = 5").is_err(), "pub binds");
+    // Expression paths accept the roots (resolution is P2's job).
+    let e = parse_one("super::a::b").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Ref { name } if name == &["super", "a", "b"]));
+    let e = parse_one("package::a(1)").unwrap();
+    assert!(matches!(&e.kind, ExprKind::Apply { .. }));
 }

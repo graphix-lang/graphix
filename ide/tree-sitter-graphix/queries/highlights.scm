@@ -92,8 +92,16 @@
 (labeled_arg_shorthand) @variable.parameter
 (variadic_param) @variable.parameter
 
-; `self` inside a use group names the prefix itself.
-(use_group "self" @keyword)
+; The path-root keywords: `self` (also group-self), `super`,
+; `package`, and the glob marker.
+(use_path "self" @keyword)
+(use_path "super" @keyword)
+(use_path "package" @keyword)
+(use_path "as" @keyword)
+(module_path "self" @keyword)
+(module_path "super" @keyword)
+(module_path "package" @keyword)
+(use_glob) @operator
 
 ; -- Variables ------------------------------------------------------
 (pattern_bind name: (identifier) @variable)

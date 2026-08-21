@@ -4,6 +4,7 @@ use super::{
 };
 use crate::expr::{
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
+    UseItem,
     parser::{semisep, spaces1},
 };
 use arcstr::ArcStr;
@@ -15,6 +16,7 @@ use combine::{
     token, unexpected_any, value,
 };
 use netidx_core::path::Path;
+use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -46,20 +48,12 @@ parser! {
                             SigItem { doc: doc.clone(), kind: SigKind::Bind(BindSig { name, typ }), pos, ori: ori.clone() }
                         }
                     }),
-                string("use").with(space()).with(use_tree()).then(|names: Vec<Vec<ArcStr>>| {
-                    if names.iter().any(|n| n.is_empty()) {
-                        unexpected_any("`self` outside a use group").left()
-                    } else {
-                        value(names).right()
-                    }
-                }).map({
+                (use_intro(), use_items()).map({
                     let doc = doc.clone();
                     let ori = ori.clone();
-                    move |mut names| SigItem {
+                    move |(reexport, names)| SigItem {
                         doc: doc.clone(),
-                        kind: SigKind::Use(Arc::from_iter(
-                            names.drain(..).map(|n| ModPath(Path::from_iter(n))),
-                        )),
+                        kind: SigKind::Use { reexport, names },
                         pos,
                         ori: ori.clone(),
                     }
@@ -163,14 +157,67 @@ where
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
 }
 
+/// A use-tree path segment: an ordinary name, or one of the path
+/// keywords (`self`/`super`/`package` — leading-position rules are
+/// enforced by [`check_use_items`] on the assembled path, where the
+/// refusal can say what is wrong; `fname` refuses the bare keywords
+/// everywhere else).
+fn use_segment<I>() -> impl Parser<I, Output = ArcStr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(string("self").skip(not_prefix())).map(|_| arcstr::literal!("self")),
+        attempt(string("super").skip(not_prefix())).map(|_| arcstr::literal!("super")),
+        attempt(string("package").skip(not_prefix()))
+            .map(|_| arcstr::literal!("package")),
+        fname(),
+    ))
+}
+
+/// The positional rules for one assembled use path (segments +
+/// optional rename). Returns the refusal message, or None if legal.
+fn check_use_item(segs: &[ArcStr], rename: &Option<ArcStr>) -> Option<&'static str> {
+    if segs.is_empty() {
+        return Some("`self` outside a use group");
+    }
+    // the leading keyword run: one self/package, or N supers
+    let lead = match &*segs[0] {
+        "self" | "package" => 1,
+        "super" => segs.iter().take_while(|s| &***s == "super").count(),
+        _ => 0,
+    };
+    if lead == segs.len() {
+        return Some("a use path must name something below self/super/package");
+    }
+    for (i, s) in segs.iter().enumerate().skip(lead) {
+        match &**s {
+            "self" | "super" | "package" => {
+                return Some("self/super/package are only legal leading a path");
+            }
+            "*" if i != segs.len() - 1 => {
+                return Some("a glob must be the last segment of a use path");
+            }
+            _ => (),
+        }
+    }
+    if segs.last().map(|s| &**s) == Some("*") && rename.is_some() {
+        return Some("a glob import cannot be renamed");
+    }
+    None
+}
+
 parser! {
     /// One element of a use tree, yielding the path SUFFIXES it
-    /// denotes as segment lists: a plain path (`a::b`), a path ending
-    /// in a group (`a::{b, c::d}` — nesting allowed), a bare group
-    /// (`{a, b}` — what the printer emits when several names share no
-    /// prefix), or `self` (the enclosing prefix itself — an empty
+    /// denotes as (segment list, rename) pairs: a plain path (`a::b`),
+    /// a path ending in a group (`a::{b, c::d}` — nesting allowed), a
+    /// bare group (`{a, b}` — what the printer emits when several
+    /// names share no prefix), a glob leaf (`*`), a renamed leaf
+    /// (`b as c`), or `self` (the enclosing prefix itself — an empty
     /// suffix, rejected at top level where there is no prefix).
-    fn use_tree[I]()(I) -> Vec<Vec<ArcStr>>
+    fn use_tree[I]()(I) -> Vec<(Vec<ArcStr>, Option<ArcStr>)>
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow(choice((
@@ -179,31 +226,87 @@ parser! {
                 sptoken('}'),
                 spaces().with(sep_by1_tok(use_tree(), csep(), token('}'))),
             )
-            .then(|mut groups: LPooled<Vec<Vec<Vec<ArcStr>>>>| {
-                let flat: Vec<Vec<ArcStr>> = groups.drain(..).flatten().collect();
+            .then(|mut groups: LPooled<Vec<Vec<(Vec<ArcStr>, Option<ArcStr>)>>>| {
+                let flat: Vec<(Vec<ArcStr>, Option<ArcStr>)> =
+                    groups.drain(..).flatten().collect();
                 if flat.is_empty() {
                     unexpected_any("empty use group").left()
                 } else {
                     value(flat).right()
                 }
             }),
+            spaces()
+                .with(token('*'))
+                .map(|_| vec![(vec![arcstr::literal!("*")], None)]),
             (
-                spaces().with(fname()),
+                spaces().with(use_segment()),
                 optional(attempt(spstring("::").with(use_tree()))),
+                optional(attempt(
+                    spaces1().with(string("as")).with(spaces1()).with(fname()),
+                )),
             )
-                .map(|(seg, tail): (ArcStr, _)| match tail {
-                    None if &*seg == "self" => vec![vec![]],
-                    None => vec![vec![seg]],
-                    Some(sufs) => sufs
-                        .into_iter()
-                        .map(|mut suf| {
-                            suf.insert(0, seg.clone());
-                            suf
-                        })
-                        .collect(),
+                .then(|(seg, tail, rename): (ArcStr, _, Option<ArcStr>)| {
+                    match (tail, rename) {
+                        (Some(_), Some(_)) => unexpected_any(
+                            "`as` renames a single imported name, not a group",
+                        )
+                        .left(),
+                        (None, rename) if &*seg == "self" => {
+                            value(vec![(vec![], rename)]).right()
+                        }
+                        (None, rename) => value(vec![(vec![seg], rename)]).right(),
+                        (Some(sufs), None) => {
+                            let sufs: Vec<(Vec<ArcStr>, Option<ArcStr>)> = sufs;
+                            value(
+                                sufs.into_iter()
+                                    .map(|(mut suf, rename)| {
+                                        suf.insert(0, seg.clone());
+                                        (suf, rename)
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                            .right()
+                        }
+                    }
                 }),
         )))
     }
+}
+
+/// Parse a full use declaration's items (after the `use` keyword),
+/// enforcing the positional rules, and assemble [`UseItem`]s.
+fn use_items<I>() -> impl Parser<I, Output = Arc<[UseItem]>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    use_tree().then(|items: Vec<(Vec<ArcStr>, Option<ArcStr>)>| {
+        for (segs, rename) in items.iter() {
+            if let Some(msg) = check_use_item(segs, rename) {
+                return unexpected_any(msg).left();
+            }
+        }
+        value(Arc::from_iter(items.into_iter().map(|(segs, rename)| UseItem {
+            path: ModPath(Path::from_iter(segs)),
+            rename,
+        })))
+        .right()
+    })
+}
+
+/// The `use` / `pub use` introducer. Yields the reexport flag.
+fn use_intro<I>() -> impl Parser<I, Output = bool>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(string("pub").skip(spaces1()).skip(string("use")).skip(space()))
+            .map(|_| true),
+        attempt(string("use").with(space())).map(|_| false),
+    ))
 }
 
 pub(super) fn use_module<I>() -> impl Parser<I, Output = Expr>
@@ -212,20 +315,6 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), attempt(string("use").with(space())).with(use_tree()))
-        .then(|(pos, names)| {
-            if names.iter().any(|n| n.is_empty()) {
-                unexpected_any("`self` outside a use group").left()
-            } else {
-                value((pos, names)).right()
-            }
-        })
-        .map(|(pos, mut names): (_, Vec<Vec<ArcStr>>)| {
-            ExprKind::Use {
-                names: Arc::from_iter(
-                    names.drain(..).map(|n| ModPath(Path::from_iter(n))),
-                ),
-            }
-            .to_expr(pos)
-        })
+    (position(), use_intro(), use_items())
+        .map(|(pos, reexport, names)| ExprKind::Use { reexport, names }.to_expr(pos))
 }

@@ -456,9 +456,39 @@ fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
         .to_expr_nopos()
 }
 
+/// One use item across the whole grammar space: optional keyword lead
+/// (`self`/`package`/`super` chain), plain segments, an optional final
+/// glob, an optional rename (never on a glob — the parser refuses it).
+fn use_item() -> impl Strategy<Value = UseItem> {
+    let lead = prop_oneof![
+        4 => Just(Vec::new()),
+        1 => Just(vec![ArcStr::from("self")]),
+        1 => Just(vec![ArcStr::from("package")]),
+        1 => (1..3usize).prop_map(|n| vec![ArcStr::from("super"); n]),
+    ];
+    let glob = prop_oneof![4 => Just(false), 1 => Just(true)];
+    (lead, collection::vec(random_fname(), 1..4), glob, option::of(random_fname()))
+        .prop_map(|(lead, segs, glob, rename)| {
+            let mut parts = lead;
+            parts.extend(segs);
+            if glob {
+                parts.push(ArcStr::from("*"));
+            }
+            UseItem {
+                path: ModPath::from_iter(parts),
+                rename: if glob { None } else { rename },
+            }
+        })
+}
+
+fn reexport() -> impl Strategy<Value = bool> {
+    prop_oneof![7 => Just(false), 1 => Just(true)]
+}
+
 fn usestmt() -> impl Strategy<Value = Expr> {
-    collection::vec(modpath(), 1..4)
-        .prop_map(|names| ExprKind::Use { names: Arc::from_iter(names) }.to_expr_nopos())
+    (reexport(), collection::vec(use_item(), 1..4)).prop_map(|(reexport, names)| {
+        ExprKind::Use { reexport, names: Arc::from_iter(names) }.to_expr_nopos()
+    })
 }
 
 fn typedef() -> impl Strategy<Value = Expr> {
@@ -807,9 +837,9 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
                 _ => unreachable!(),
             }
         ),
-        (collection::vec(modpath(), 1..4), option::of(arcstr())).prop_map(
-            |(paths, doc)| SigItem {
-                kind: SigKind::Use(Arc::from_iter(paths)),
+        (reexport(), collection::vec(use_item(), 1..4), option::of(arcstr())).prop_map(
+            |(reexport, paths, doc)| SigItem {
+                kind: SigKind::Use { reexport, names: Arc::from_iter(paths) },
                 doc: Doc(doc),
                 pos: Default::default(),
                 ori: None,
@@ -1282,9 +1312,17 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
                 SigItem { kind: SigKind::TypeDef(td1), doc: d1, .. },
             ) => check_typedef(td0, td1) && d0 == d1,
             (
-                SigItem { kind: SigKind::Use(path0), doc: d0, .. },
-                SigItem { kind: SigKind::Use(path1), doc: d1, .. },
-            ) => path0 == path1 && d0 == d1,
+                SigItem {
+                    kind: SigKind::Use { reexport: r0, names: path0 },
+                    doc: d0,
+                    ..
+                },
+                SigItem {
+                    kind: SigKind::Use { reexport: r1, names: path1 },
+                    doc: d1,
+                    ..
+                },
+            ) => r0 == r1 && path0 == path1 && d0 == d1,
             (
                 SigItem { kind: SigKind::Module(n0), doc: d0, .. },
                 SigItem { kind: SigKind::Module(n1), doc: d1, .. },
@@ -1490,8 +1528,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             exprs0.len() == exprs1.len()
                 && exprs0.iter().zip(exprs1.iter()).all(|(v0, v1)| check(v0, v1))
         }
-        (ExprKind::Use { names: names0 }, ExprKind::Use { names: names1 }) => {
-            dbg!(names0 == names1)
+        (
+            ExprKind::Use { reexport: r0, names: names0 },
+            ExprKind::Use { reexport: r1, names: names1 },
+        ) => {
+            dbg!(r0 == r1 && names0 == names1)
         }
         (ExprKind::Bind(b0), ExprKind::Bind(b1)) => {
             let BindExpr { rec: r0, pattern: p0, value: value0, typ: typ0 } = &**b0;

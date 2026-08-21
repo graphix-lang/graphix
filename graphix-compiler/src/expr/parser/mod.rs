@@ -10,7 +10,8 @@ use ahash::AHashSet;
 use arcstr::{ArcStr, literal};
 use combine::{
     EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, count_min_max,
-    eof, look_ahead, many, none_of, not_followed_by, optional,
+    eof, look_ahead, many, many1, none_of, not_followed_by, optional,
+    parser::token::produce,
     parser::{
         char::{space, string},
         combinator::recognize,
@@ -101,12 +102,20 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "bytes", "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch",
-            "try",
+            "try", "self", "super", "package", "pub",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
     )
 });
+
+/// The path-root keywords (design/module_system.md): legal only as the
+/// LEADING segment(s) of a path — `self::x`, `super::super::x`,
+/// `package::a::b` — and refused everywhere else an identifier could
+/// appear (they are in [`RESERVED`]). `super` may repeat as a prefix;
+/// `self` and `package` may not.
+pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
+    LazyLock::new(|| AHashSet::from_iter(["self", "super", "package"]));
 
 /// The words refused in BINDING positions (`let`, params, labeled args,
 /// pattern binds, module/val names): everything reserved except the
@@ -368,14 +377,49 @@ where
     })
 }
 
+/// A path's optional keyword ROOT (design/module_system.md): `self::`,
+/// `package::`, or a chain of `super::`s. Yields the keyword segments
+/// consumed (empty when the path starts with an ordinary name). Each
+/// alternative is attempted WITH its following `::`, so an identifier
+/// that merely starts with a keyword (`packaged`) backtracks cleanly
+/// to `fname` — which itself refuses the bare keywords, keeping them
+/// leading-only.
+fn path_root<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(string("package").with(string("::"))).map(|_| {
+            let mut v: LPooled<Vec<ArcStr>> = LPooled::take();
+            v.push(literal!("package"));
+            v
+        }),
+        attempt(string("self").with(string("::"))).map(|_| {
+            let mut v: LPooled<Vec<ArcStr>> = LPooled::take();
+            v.push(literal!("self"));
+            v
+        }),
+        many1::<LPooled<Vec<_>>, _, _>(
+            attempt(string("super").with(string("::"))).map(|_| literal!("super")),
+        ),
+        produce(|| LPooled::take()),
+    ))
+}
+
 pub(crate) fn modpath<I>() -> impl Parser<I, Output = ModPath>
 where
     I: RangeStream<Token = char>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    sep_by1(fname(), string("::"))
-        .map(|mut v: LPooled<Vec<ArcStr>>| ModPath(Path::from_iter(v.drain(..))))
+    (path_root(), sep_by1(fname(), string("::"))).map(
+        |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+            root.extend(v.drain(..));
+            ModPath(Path::from_iter(root.drain(..)))
+        },
+    )
 }
 
 fn spmodpath<I>() -> impl Parser<I, Output = ModPath>

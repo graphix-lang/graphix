@@ -168,13 +168,51 @@ pub struct BindSig {
     pub typ: Type,
 }
 
+/// One imported name in a `use` declaration: the path as written —
+/// leading `self`/`super`/`package` keywords and a final `*` glob are
+/// encoded as literal path segments (all four are reserved words, so
+/// no real segment collides) — plus the optional `as` rename.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash, Pack)]
+#[pack(unwrapped)]
+pub struct UseItem {
+    pub path: ModPath,
+    pub rename: Option<ArcStr>,
+}
+
+impl UseItem {
+    pub fn plain(path: ModPath) -> Self {
+        Self { path, rename: None }
+    }
+
+    /// The final segment is the glob marker.
+    pub fn is_glob(&self) -> bool {
+        Path::basename(&self.path.0) == Some("*")
+    }
+
+    /// The leading `self`/`super`/`package` keyword, if any.
+    pub fn leading_keyword(&self) -> Option<&str> {
+        Path::parts(&self.path.0)
+            .next()
+            .filter(|s| matches!(*s, "self" | "super" | "package"))
+    }
+}
+
+impl fmt::Display for UseItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.rename {
+            None => write!(f, "{}", self.path),
+            Some(n) => write!(f, "{} as {n}", self.path),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub enum SigKind {
     TypeDef(TypeDefExpr),
     Bind(BindSig),
     Module(ArcStr),
-    Use(Arc<[ModPath]>),
+    Use { reexport: bool, names: Arc<[UseItem]> },
 }
 
 #[derive(Debug, Clone, Pack)]
@@ -299,7 +337,7 @@ pub enum ExprKind {
     Module { name: ArcStr, value: ModuleKind },
     ExplicitParens(Arc<Expr>),
     Do { exprs: Arc<[Expr]> },
-    Use { names: Arc<[ModPath]> },
+    Use { reexport: bool, names: Arc<[UseItem]> },
     Bind(Arc<BindExpr>),
     Ref { name: ModPath },
     Connect { name: ModPath, value: Arc<Expr>, deref: bool },
@@ -642,7 +680,7 @@ impl Expr {
         match &self.kind {
             ExprKind::Constant(_)
             | ExprKind::NoOp
-            | ExprKind::Use { names: _ }
+            | ExprKind::Use { .. }
             | ExprKind::Ref { name: _ }
             | ExprKind::TypeDef(_) => init,
             ExprKind::ExplicitParens(e) => e.fold(init, f),

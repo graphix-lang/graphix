@@ -1,9 +1,9 @@
 use super::Sig;
 use crate::{
     expr::{
-        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModPath,
-        ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
-        TypeDefExpr, parser,
+        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
+        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefExpr,
+        UseItem, parser,
     },
     typ::Type,
 };
@@ -297,7 +297,7 @@ impl fmt::Display for SigItem {
             SigKind::TypeDef(td) => write!(f, "{td}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
             SigKind::Module(name) => write!(f, "mod {name}"),
-            SigKind::Use(names) => write_use_names(f, names),
+            SigKind::Use { reexport, names } => write_use_names(f, *reexport, names),
         }
     }
 }
@@ -309,8 +309,8 @@ impl PrettyDisplay for SigItem {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
-            SigKind::Use(names) => {
-                write_use_names(buf, names)?;
+            SigKind::Use { reexport, names } => {
+                write_use_names(buf, *reexport, names)?;
                 writeln!(buf)
             }
         }
@@ -930,19 +930,31 @@ impl PrettyDisplay for ExprKind {
 /// `self`), and prefixless groups bare (`use {a, b}` — the degenerate
 /// hand-built case; the parser accepts it). The parser accepts both
 /// grouped and ungrouped input; printing always regroups.
-fn write_use_names<W: fmt::Write>(f: &mut W, names: &[ModPath]) -> fmt::Result {
+fn write_use_names<W: fmt::Write>(
+    f: &mut W,
+    reexport: bool,
+    names: &[UseItem],
+) -> fmt::Result {
     use netidx_core::path::Path;
+    if reexport {
+        write!(f, "pub ")?;
+    }
     write!(f, "use ")?;
     if names.len() == 1 {
         return write!(f, "{}", names[0]);
     }
     let segs: Vec<Vec<&str>> =
-        names.iter().map(|n| Path::parts(&n.0).collect()).collect();
+        names.iter().map(|n| Path::parts(&n.path.0).collect()).collect();
     let mut lcp = 0;
     'lcp: loop {
         let Some(first) = segs.first().and_then(|s| s.get(lcp)) else {
             break;
         };
+        // never absorb a glob's `*` into the prefix: an empty suffix
+        // prints as `self`, which is not a glob
+        if *first == "*" {
+            break;
+        }
         for s in segs[1..].iter() {
             if s.get(lcp) != Some(first) {
                 break 'lcp;
@@ -960,7 +972,7 @@ fn write_use_names<W: fmt::Write>(f: &mut W, names: &[ModPath]) -> fmt::Result {
         write!(f, "::")?;
     }
     write!(f, "{{")?;
-    for (i, sg) in segs.iter().enumerate() {
+    for (i, (sg, item)) in segs.iter().zip(names.iter()).enumerate() {
         if i > 0 {
             write!(f, ", ")?;
         }
@@ -974,6 +986,9 @@ fn write_use_names<W: fmt::Write>(f: &mut W, names: &[ModPath]) -> fmt::Result {
                 }
                 write!(f, "{part}")?;
             }
+        }
+        if let Some(n) = &item.rename {
+            write!(f, " as {n}")?;
         }
     }
     write!(f, "}}")
@@ -1121,7 +1136,7 @@ impl ExprKind {
                 let deref = if *deref { "*" } else { "" };
                 write!(f, "{deref}{name} <- {value}")
             }
-            ExprKind::Use { names } => write_use_names(f, names),
+            ExprKind::Use { reexport, names } => write_use_names(f, *reexport, names),
             ExprKind::Ref { name } => {
                 write!(f, "{name}")
             }

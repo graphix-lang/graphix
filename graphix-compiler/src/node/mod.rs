@@ -458,6 +458,30 @@ macro_rules! read_prod {
 }
 pub(crate) use read_prod;
 
+/// Bridge a [`UseItem`] onto the CURRENT (open-style) resolver: a glob
+/// `m::*` is exactly the old `use m` (open `m`'s items), so it maps to
+/// the opened module path; a plain module path keeps the old open
+/// semantics unchanged. The forms only the module-system TABLE can
+/// express (renames, `self`/`super`/`package` roots) refuse until it
+/// lands (design/module_system.md P2).
+pub(crate) fn use_item_open_path(item: &crate::expr::UseItem) -> Result<ModPath> {
+    if item.rename.is_some() {
+        bail!("use renames land with the module-system table (P2)")
+    }
+    if let Some(kw) = item.leading_keyword() {
+        bail!("`{kw}::` paths land with the module-system table (P2)")
+    }
+    if item.is_glob() {
+        use netidx_core::path::Path;
+        match Path::dirname(&item.path.0).filter(|d| Path::parts(d).next().is_some()) {
+            Some(d) => Ok(ModPath(Path::from(arcstr::ArcStr::from(d)))),
+            None => bail!("a glob needs a path prefix"),
+        }
+    } else {
+        Ok(item.path.clone())
+    }
+}
+
 #[derive(Debug)]
 pub struct Use {
     spec: Expr,
@@ -470,8 +494,16 @@ impl Use {
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         scope: &Scope,
-        names: &Arc<[ModPath]>,
+        reexport: bool,
+        items: &Arc<[crate::expr::UseItem]>,
     ) -> Result<Node<R, E>> {
+        if reexport {
+            bail!("re-exports (`pub use`) are not yet supported")
+        }
+        let names: Arc<[ModPath]> = items
+            .iter()
+            .map(|i| use_item_open_path(i).with_context(|| ErrorContext(spec.clone())))
+            .collect::<Result<_>>()?;
         for name in names.iter() {
             ctx.env
                 .use_in_scope(scope, name)
@@ -491,7 +523,7 @@ impl Use {
                 });
             }
         }
-        Ok(Node::new(Self { spec, scope: scope.clone(), names: Arc::clone(names) }))
+        Ok(Node::new(Self { spec, scope: scope.clone(), names }))
     }
 }
 

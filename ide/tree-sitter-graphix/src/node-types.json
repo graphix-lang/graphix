@@ -6287,6 +6287,10 @@
         "required": true,
         "types": [
           {
+            "type": "use_glob",
+            "named": true
+          },
+          {
             "type": "use_group",
             "named": true
           },
@@ -8430,6 +8434,10 @@
         "required": true,
         "types": [
           {
+            "type": "use_glob",
+            "named": true
+          },
+          {
             "type": "use_group",
             "named": true
           },
@@ -8442,13 +8450,22 @@
     }
   },
   {
+    "type": "use_glob",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "use_group",
     "named": true,
     "fields": {},
     "children": {
       "multiple": true,
-      "required": false,
+      "required": true,
       "types": [
+        {
+          "type": "use_glob",
+          "named": true
+        },
         {
           "type": "use_group",
           "named": true
@@ -8463,13 +8480,28 @@
   {
     "type": "use_path",
     "named": true,
-    "fields": {},
+    "fields": {
+      "rename": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "use_glob",
           "named": true
         },
         {
@@ -9178,6 +9210,14 @@
     "named": false
   },
   {
+    "type": "package",
+    "named": false
+  },
+  {
+    "type": "pub",
+    "named": false
+  },
+  {
     "type": "rec",
     "named": false
   },
@@ -9208,6 +9248,10 @@
   {
     "type": "string_content",
     "named": true
+  },
+  {
+    "type": "super",
+    "named": false
   },
   {
     "type": "template_escape",

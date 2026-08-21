@@ -261,21 +261,29 @@ module.exports = grammar({
 
     sig_use: $ => seq(
       repeat($.doc_comment),
+      optional('pub'),
       'use',
       field('path', $._use_tree),
     ),
 
     use: $ => seq(
+      optional('pub'),
       'use',
       field('path', $._use_tree),
     ),
 
-    // A use tree: a path, a path ending in a group, or a bare group.
-    // `self` inside a group names the enclosing prefix itself.
+    // A use tree: a path (optionally renamed, optionally ending in a
+    // group or glob), a bare group, or a bare glob. `self` names the
+    // enclosing prefix itself; `self`/`super`/`package` are also the
+    // path-root keywords (positional rules live in the real parser —
+    // this grammar is permissive).
     _use_tree: $ => choice(
       $.use_group,
+      $.use_glob,
       $.use_path,
     ),
+
+    use_glob: $ => '*',
 
     // The `::` iteration is INLINE rather than $.module_path: reusing
     // module_path would force a reduce-vs-extend decision at every
@@ -284,17 +292,28 @@ module.exports = grammar({
     // overflow tree-sitter's version cap and condense culls the REAL
     // reading — `{a: error:"[", b: use a::b::c::d::e::f::g::h}` parsed
     // as one ERROR. Inlined, both continuations shift the `::` first
-    // and the next token (name vs `{`) decides deterministically.
+    // and the next token (name vs `{` vs `*`) decides deterministically.
     use_path: $ => seq(
       optional('/'),
+      $._use_segment,
+      repeat(seq('::', $._use_segment)),
+      optional(choice(
+        seq('::', $.use_group),
+        seq('::', $.use_glob),
+        seq('as', field('rename', $._binding_name)),
+      )),
+    ),
+
+    _use_segment: $ => choice(
       $._binding_name,
-      repeat(seq('::', $._binding_name)),
-      optional(seq('::', $.use_group)),
+      'self',
+      'super',
+      'package',
     ),
 
     use_group: $ => seq(
       '{',
-      commaSep1(choice('self', $._use_tree)),
+      commaSep1($._use_tree),
       '}',
     ),
 
@@ -891,10 +910,18 @@ module.exports = grammar({
     // Builtin reference (e.g., 'array_map)
     builtin_ref: $ => seq("'", $._binding_name),
 
+    // Expression/type paths accept the path-root keywords
+    // (design/module_system.md): `self::x`, `super::super::x`,
+    // `package::a::b`. Positional rules live in the real parser.
     module_path: $ => seq(
       optional('/'),
-      $._binding_name,
-      repeat(seq('::', $._binding_name)),
+      choice(
+        seq(
+          choice('self', 'package', seq('super', repeat(seq('::', 'super')))),
+          repeat1(seq('::', $._binding_name)),
+        ),
+        seq($._binding_name, repeat(seq('::', $._binding_name))),
+      ),
     ),
 
     // Array
