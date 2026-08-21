@@ -4,7 +4,6 @@
 )]
 use ahash::AHashSet;
 use anyhow::{Result, bail};
-use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
     UserEvent,
@@ -393,8 +392,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
         match from {
             [_, _] => {
                 let typ = resolved.unwrap_or(typ);
-                let scope =
-                    scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
+                let scope = scope.append_block("fn", LambdaId::new().inner());
                 let n_typ = Type::Primitive(Typ::I64.into());
                 let etyp = typ.args[0].typ.clone();
                 let mftyp = match &typ.args[1].typ {

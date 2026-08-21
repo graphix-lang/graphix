@@ -5,7 +5,6 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use compact_str::format_compact;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, LambdaId,
@@ -707,8 +706,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
         match from {
             [_, _, _, _, _] => {
                 let typ = resolved.unwrap_or(typ);
-                let scope =
-                    scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
+                let scope = scope.append_block("fn", LambdaId::new().inner());
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
                 let pid = BindId::new();

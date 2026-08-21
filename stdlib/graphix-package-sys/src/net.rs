@@ -590,8 +590,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
         match from {
             [_, _, _] => {
                 let typ = resolved.unwrap_or(typ);
-                let scope =
-                    scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
+                let scope = scope.append_block("fn", LambdaId::new().inner());
                 let pid = BindId::new();
                 let mftyp = match &typ.args[0].typ {
                     Type::Fn(ft) => ft.clone(),
@@ -882,8 +881,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         match from {
             [_, _, _, _] => {
                 let typ = resolved.unwrap_or(typ);
-                let scope =
-                    scope.append(&format_compact!("fn{}", LambdaId::new().inner()));
+                let scope = scope.append_block("fn", LambdaId::new().inner());
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
                 let pid = BindId::new();

@@ -16,7 +16,6 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
-use compact_str::format_compact;
 use enumflags2::BitFlags;
 use log::error;
 use netidx_core::pack::Pack;
@@ -1332,7 +1331,7 @@ impl Lambda {
             })
             .collect::<Result<LPooled<Vec<_>>>>()?;
         let original_scope = scope.clone();
-        let scope = scope.append(&format_compact!("fn{}", id.0));
+        let scope = scope.append_block("fn", id.0);
         let def_scope = scope.clone();
         let env = ctx.env.clone();
         let def_env = ctx.env.clone();

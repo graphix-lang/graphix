@@ -26,7 +26,6 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Context, Result, bail};
-use compact_str::format_compact;
 use enumflags2::BitFlags;
 
 /// Every per-kind `compile` recurses back through here, so this is the
@@ -138,7 +137,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ),
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
-            let scope = scope.append(&format_compact!("do{}", spec.id.inner()));
+            let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)
         }
         ExprKind::Array { args } => {

@@ -2085,9 +2085,44 @@ impl Scope {
         }
     }
 
+    /// Append a generated block-scope component (do/fn/sel/ca level).
+    pub fn append_block(&self, kind: &str, id: u64) -> Self {
+        self.append(block_component(kind, id).as_str())
+    }
+
     pub fn root() -> Self {
         Self { lexical: ModPath::root(), dynamic: ModPath::root() }
     }
+}
+
+/// Format a generated block-scope component. The `#` prefix marks it
+/// as a non-module level: identifiers cannot start with `#`, so a
+/// scope path structurally records where the enclosing module ends —
+/// [`mod_root`] strips trailing marked components.
+pub fn block_component(kind: &str, id: u64) -> CompactString {
+    compact_str::format_compact!("#{kind}{id}")
+}
+
+/// True iff `part` is a generated block-scope component rather than
+/// a module name.
+pub fn is_block_component(part: &str) -> bool {
+    part.starts_with('#')
+}
+
+/// The module root of a lexical scope path: the path minus trailing
+/// generated block components.
+pub fn mod_root(mut scope: &str) -> &str {
+    use netidx_core::path::Path;
+    while let Some(base) = Path::basename(scope) {
+        if !is_block_component(base) {
+            break;
+        }
+        match Path::dirname(scope) {
+            Some(d) => scope = d,
+            None => return "/",
+        }
+    }
+    scope
 }
 
 /// compile the expression into a node graph in the specified context
