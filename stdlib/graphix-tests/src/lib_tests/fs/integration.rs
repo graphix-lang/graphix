@@ -30,7 +30,7 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
     {dir: temp_path, file: write_result ~ file_path}
   };
 
-  use sys::fs::watch;
+  use sys::fs::watch::{self, *};
   let w = create(null)?;
   let handle = watch(#interest: [`Established, `Modify], w, paths.dir)?;
   let watch_path = path(handle);
@@ -55,7 +55,7 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
     {dir: temp_path, file: write_result ~ file_path}
   };
 
-  use sys::fs::watch;
+  use sys::fs::watch::{self, *};
   let w = create(null)?;
   let handle = watch(#interest: [`Established, `Modify, `Create], w, paths.dir)?;
   let watch_path = path(handle);

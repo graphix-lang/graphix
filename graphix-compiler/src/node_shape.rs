@@ -392,12 +392,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         // `Contains` descend through a kernel into what feeds it).
         V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
         // True leaves — no child nodes.
-        V::Ref(_)
-        | V::Constant(_)
-        | V::Use(_)
-        | V::TypeDef(_)
-        | V::Nop(_)
-        | V::Lambda(_) => {}
+        V::Ref(_) | V::Constant(_) | V::TypeDef(_) | V::Nop(_) | V::Lambda(_) => {}
         // Binops returned above via the first match.
         V::Add(_)
         | V::Sub(_)

@@ -4,7 +4,7 @@ use netidx::subscriber::Value;
 
 // write + seek + read round-trip
 const WRITE_SEEK_READ: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
 
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "test.txt");
@@ -25,7 +25,7 @@ run!(test_write_seek_read, WRITE_SEEK_READ, |v: Result<&Value>| {
 
 // write_exact + read_exact round-trip
 const WRITE_EXACT_READ_EXACT: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
 
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "test2.txt");
@@ -45,7 +45,7 @@ run!(test_write_exact_read_exact, WRITE_EXACT_READ_EXACT, |v: Result<&Value>| {
 
 // open non-existent with Read mode expects error
 const OPEN_NONEXISTENT: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   open(`Read, "/this/does/not/exist/at/all.txt")
 }"#;
 
@@ -55,7 +55,7 @@ run!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
 
 // fstat after write (flush required — macOS doesn't update metadata until flush)
 const FSTAT_AFTER_WRITE: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
 
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "fstat.txt");
@@ -75,7 +75,7 @@ run!(test_fstat_after_write, FSTAT_AFTER_WRITE, |v: Result<&Value>| {
 
 // truncate
 const TRUNCATE_TEST: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
 
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "trunc.txt");
@@ -107,7 +107,7 @@ run!(test_truncate, TRUNCATE_TEST, |v: Result<&Value>| {
 // CLAUDE.md gotcha: "to sequence execution use ~ on the arguments, not on
 // the whole function".
 const CREATE_NEW_EXISTING: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
 
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "existing.txt");

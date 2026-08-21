@@ -7,6 +7,7 @@ use gui::*;
 use gui::canvas::{self, *};
 use array::*;
 use sys::time::{self, *};
+use gui::window;
 
 let start = cast<f64>(sys::time::now(once(null)))$;
 let w = 100;

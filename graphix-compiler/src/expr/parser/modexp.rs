@@ -1,6 +1,6 @@
 use super::{
     csep, doc_comment, expr, fname, grow::grow, leading_comments, modpath, sep_by1_tok,
-    spaces, spfname, spstring, sptoken, typ, typedef,
+    spaces, spfname, spstring, sptoken, typ, typedef, typname,
 };
 use crate::expr::{
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
@@ -173,7 +173,12 @@ where
         attempt(string("super").skip(not_prefix())).map(|_| arcstr::literal!("super")),
         attempt(string("package").skip(not_prefix()))
             .map(|_| arcstr::literal!("package")),
+        // values/modules are lowercase, types uppercase — a use
+        // imports every kind sharing the name, so both are legal
+        // segments (an uppercase INTERIOR refuses at resolution:
+        // no module is uppercase)
         fname(),
+        typname(),
     ))
 }
 
@@ -242,7 +247,10 @@ parser! {
                 spaces().with(use_segment()),
                 optional(attempt(spstring("::").with(use_tree()))),
                 optional(attempt(
-                    spaces1().with(string("as")).with(spaces1()).with(fname()),
+                    spaces1()
+                        .with(string("as"))
+                        .with(spaces1())
+                        .with(choice((fname(), typname()))),
                 )),
             )
                 .then(|(seg, tail, rename): (ArcStr, _, Option<ArcStr>)| {

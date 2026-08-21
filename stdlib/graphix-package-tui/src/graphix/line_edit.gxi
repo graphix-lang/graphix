@@ -1,3 +1,4 @@
+use super::*;
 /// A single-line text editor's state: the text and the cursor's
 /// character position within it (0 ..= str::len(value)).
 type State = { value: string, cursor: i64 };

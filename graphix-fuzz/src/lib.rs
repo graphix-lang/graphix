@@ -304,7 +304,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         }
     };
     let (tx, _rx) = mpsc::channel(64);
-    let wrapped = format!("let result = {body}");
+    let wrapped = format!("use super::*; let result = {body}");
     let mut tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
@@ -425,7 +425,7 @@ pub async fn run_program_with_stats_routed(
         }
     };
     let (tx, mut rx) = mpsc::channel(64);
-    let wrapped = format!("let result = {body}");
+    let wrapped = format!("use super::*; let result = {body}");
     let mut tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
         graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
@@ -5871,7 +5871,9 @@ mod trace_probes {
         let (tx, rx) = mpsc::channel(1024);
         let tbl = AHashMap::from_iter([(
             Path::from("/test.gx"),
-            graphix_compiler::expr::VfsEntry::from(ArcStr::from(program.to_string())),
+            graphix_compiler::expr::VfsEntry::from(ArcStr::from(format!(
+                "use super::*; {program}"
+            ))),
         )]);
         let resolver = VfsResolver::new(tbl);
         let ctx =

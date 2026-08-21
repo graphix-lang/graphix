@@ -260,7 +260,7 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
             emit_let_node(cx, name, bind_id, &bind.node)?;
         }
         // Compile-time-only declarations — nothing to emit.
-        NodeView::Nop(_) | NodeView::TypeDef(_) | NodeView::Use(_) => {}
+        NodeView::Nop(_) | NodeView::TypeDef(_) => {}
         // Expression statement — evaluate, discard the result. A
         // discarded may-bottom scalar is fine — the bottom is never
         // consumed. Owned non-scalar results are dropped: discarding is

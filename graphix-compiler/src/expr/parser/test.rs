@@ -1960,6 +1960,16 @@ fn use_new_grammar() {
             &[(&["package", "a"], None), (&["package", "b"], Some("c"))],
         ),
         ("use {self::a, super::b}", &[(&["self", "a"], None), (&["super", "b"], None)]),
+        // type names (uppercase) are legal segments and rename targets
+        (
+            "use super::{Client, Response}",
+            &[(&["super", "Client"], None), (&["super", "Response"], None)],
+        ),
+        ("use a::B as C", &[(&["a", "B"], Some("C"))]),
+        ("use gui::style::{Palette, StyleSheet}", &[
+            (&["gui", "style", "Palette"], None),
+            (&["gui", "style", "StyleSheet"], None),
+        ]),
     ];
     for (src, want) in cases {
         let e = parse_one(src).unwrap();

@@ -453,6 +453,89 @@ for value initialization order.
    (missing `use super::…`, etc.) until green.
 4. Book examples migrated + hand-tightened; fuzzer generator vocab.
 
+## P2/P4 as-built deviations (branch `module-system`, 2026-08-22)
+
+The flip is BUILT and the whole workspace is green on it (compiler
+152, graphix-tests 2028, gui 163, tui 69, fuzz 57, lsp 29, examples
++ shell suites; vendor tests excluded until the netidx release).
+Deltas from the plan above, each cheap to revise:
+
+1. **The package-shadow refusal is DROPPED** — superseded by
+   precedence: own decl → explicit import → glob → package prelude →
+   core prelude, first hit wins, kind-filtered (path roots consult
+   only module-kind entries, so `let array = …` never breaks
+   `array::len` — Rust's locals-don't-block-paths rule). The refusal
+   proved untenable against the tree's own API surface: `tui::list`
+   is a stdlib module named like the list package, and examples
+   `use tui::list`. Importing a package under its own name is a
+   no-op (the prelude already provides it). **[REVISES the answered
+   open point 1 — flagged for review.]**
+2. **Decl/import collision is asymmetric**: a `use` colliding with
+   an existing same-scope declaration errors at the import; a
+   declaration AFTER an import shadows it silently — `let`
+   re-binding is idiomatic graphix and own-first precedence makes it
+   well-defined. The REPL compiles with `CFlag::ReplaceImports`
+   (re-`use` shadows, like `let` re-binding).
+3. **Kind fallthrough**: an explicit import covers only the kinds
+   its target has; a kind-miss falls through to globs. Load-bearing
+   for the widget-module pattern (`use gui::text::{self, *}`: the
+   module name is the explicit entry, the same-named val arrives by
+   glob).
+4. **`super` is scope-relative with a root-aware guard**: one
+   `super` from module M anchors at the SCOPE dirname(M) — which in
+   a loaded script is the file's top-level block, so `use super::x`
+   reaches script-level `let`s — and resolves along that anchor's
+   chain. A depth-1 user module's parent is the root scope (the
+   program IS the package); climbing above `/` or a registered
+   package's root errors. Check mode (statements at root) and load
+   mode (the `#do` wrapper) agree.
+5. **Headers passes**: `compile_block_children` pre-registers a
+   block's `mod` NAMES before compiling children (declaration order
+   carries no visibility meaning; `predeclared_mods` keeps the
+   duplicate-module guard honest), and `bind_sig` pre-registers sig
+   `mod` items the same way. The private-env snapshot additionally
+   gets the module's own path inserted (it predates `bind_sig`, and
+   submodules resolve package-rooted paths through it).
+6. **The package prelude gates at the DESCENT, not the root**:
+   `package_roots` membership alone answers the leading segment — a
+   sandboxed dynamic-module env may keep `/sys/net` without `/sys`.
+7. **Use segments accept type names** (values/modules are lowercase,
+   types uppercase; an uppercase interior refuses at resolution),
+   ditto `as` targets. P1's `fname`-only segments couldn't spell
+   `use super::{Client, Response}` — found by the stdlib itself.
+8. **Deferred-existence imports**: every module segment of a use
+   path validates eagerly (headers make forward `mod`s visible); the
+   terminal name may not exist yet (`use self::sub::x` before
+   `mod sub;`) — the entry is stored and re-checked when the
+   enclosing top-level statement finishes compiling, so a typo'd
+   import still errors, at the right position.
+9. **`Env.names` is the table** (`imports: name → ImportEntry
+   {scope, name, chain}` + glob source list per scope), a global
+   registry exempt from the lexical swap exactly as designed;
+   `super`-anchored entries carry `chain: true` (the anchor may be a
+   block level whose items live across its chain), and a
+   `super::*` glob expands to one source per chain level at use
+   time. Glob ambiguity (two globs providing one name) errors at
+   first use naming both sources — it immediately caught two REAL
+   latent collisions the old walk resolved silently by search
+   order: `window` (gui widget vs array::window) and `Table`
+   (gui::data_table vs sys::net) in the data-table examples.
+10. **Finding 1 was load-bearing inside the stdlib**: gui's own
+    `mod.gxi` referenced `Palette`/`StyleSheet` bare with no import
+    — under open semantics those refs resolved through whatever the
+    CONSUMER happened to open. Now spelled
+    `use self::style::{Palette, StyleSheet};` at the def site.
+    `resolve_pure` logs structural resolution errors before mapping
+    them to `None`, so an ambiguity can't masquerade as "undefined
+    type".
+11. **Migration mechanics**: stdlib submodules got a mechanical
+    `use super::*;` (they were already ordered for the old implicit
+    rule; explicit tightening is the arc-end pass), inline test
+    fixtures the `{self, *}` spellings, and the fuzz harness
+    prepends `use super::*; ` (same line — subject positions
+    preserved) to `/test.gx` so generated subjects keep reading
+    schedule-injected inputs across the module boundary.
+
 ## Open questions (collected)
 
 1. Package-name shadowing: refuse (recommended) vs allow + `::x`

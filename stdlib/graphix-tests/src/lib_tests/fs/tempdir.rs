@@ -6,7 +6,7 @@ use std::path::Path;
 // Test basic tempdir creation with null trigger
 // Use fs::is_dir to verify the directory was actually created
 const TEMPDIR_BASIC: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let temp = tempdir::create(null)?;
   sys::fs::is_dir(tempdir::path(temp))
 }"#;
@@ -21,7 +21,7 @@ run!(test_tempdir_basic, TEMPDIR_BASIC, |v: Result<&Value>| {
 // Test tempdir creation with explicit parent directory
 // Verify both parent and child are directories using fs::is_dir
 const TEMPDIR_WITH_IN: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let parent = tempdir::create(null)?;
   let child = tempdir::create(#in: tempdir::path(parent), null)?;
   sys::fs::is_dir(tempdir::path(child))
@@ -37,7 +37,7 @@ run!(test_tempdir_with_in, TEMPDIR_WITH_IN, |v: Result<&Value>| {
 // Test tempdir with prefix
 // Verify it's a directory using fs::is_dir and check the prefix format
 const TEMPDIR_WITH_PREFIX: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let temp = tempdir::create(#name: `Prefix("myprefix_"), null)?;
   is_dir(tempdir::path(temp))
 }"#;
@@ -63,7 +63,7 @@ run!(test_tempdir_with_prefix, TEMPDIR_WITH_PREFIX, |v: Result<&Value>| {
 // Test tempdir with suffix
 // Verify it's a directory using fs::is_dir and check the suffix format
 const TEMPDIR_WITH_SUFFIX: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let temp = tempdir::create(#name: `Suffix("_mysuffix"), null)?;
   is_dir(tempdir::path(temp))
 }"#;
@@ -89,7 +89,7 @@ run!(test_tempdir_with_suffix, TEMPDIR_WITH_SUFFIX, |v: Result<&Value>| {
 // Test tempdir with both parent dir and prefix
 // Verify it's a directory using fs::is_dir and check the prefix format
 const TEMPDIR_WITH_IN_AND_PREFIX: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let parent = tempdir::create(null)?;
   let child = tempdir::create(#in: tempdir::path(parent), #name: `Prefix("test_"), null)?;
   is_dir(tempdir::path(child))
@@ -116,7 +116,7 @@ run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Va
 // Test tempdir with both parent dir and suffix
 // Verify it's a directory using fs::is_dir and check the suffix format
 const TEMPDIR_WITH_IN_AND_SUFFIX: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let parent = tempdir::create(null)?;
   let child = tempdir::create(#in: tempdir::path(parent), #name: `Suffix("_test"), null)?;
   is_dir(tempdir::path(child))
@@ -151,7 +151,7 @@ run!(test_tempdir_invalid_parent, TEMPDIR_INVALID_PARENT, |v: Result<&Value>| {
 // Test using tempdir for write/read cycle
 // Verify directory, write, read, and file existence using fs functions
 const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
-  use sys::fs;
+  use sys::fs::{self, *};
   let temp = tempdir::create(null)?;
   let temp_path = tempdir::path(temp);
   let verified_temp = is_dir(temp_path)?;

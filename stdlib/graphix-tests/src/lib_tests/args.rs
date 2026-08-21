@@ -44,7 +44,7 @@ fn map_get<'a>(m: &'a CMap<Value, Value, 32>, key: &str) -> Option<&'a Value> {
 
 const PARSE_DEFAULTS: &str = r#"
 {
-    use args;
+    use args::*;
     args::parse(
         args::command(
             #name: "test",
@@ -84,7 +84,7 @@ async fn parse_defaults() -> Result<()> {
 
 const PARSE_FLAGS: &str = r#"
 {
-    use args;
+    use args::*;
     args::parse(
         args::command(
             #name: "test",
@@ -116,7 +116,7 @@ async fn parse_flags() -> Result<()> {
 
 const PARSE_OPTIONS: &str = r#"
 {
-    use args;
+    use args::*;
     args::parse(
         args::command(
             #name: "test",
@@ -170,7 +170,7 @@ async fn parse_option_default() -> Result<()> {
 
 const PARSE_SUBCOMMANDS: &str = r#"
 {
-    use args;
+    use args::*;
     args::parse(
         args::command(
             #name: "test",
@@ -213,7 +213,7 @@ async fn parse_subcommands() -> Result<()> {
 
 const PARSE_ERROR: &str = r#"
 {
-    use args;
+    use args::*;
     args::parse(
         args::command(
             #name: "test",

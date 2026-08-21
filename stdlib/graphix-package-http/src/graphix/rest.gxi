@@ -1,4 +1,5 @@
 use array::*;
+use super::{Client, Response, request};
 
 /// GET with JSON Accept header and optional bearer auth.
 val get: fn(

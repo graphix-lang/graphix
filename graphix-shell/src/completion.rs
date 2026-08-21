@@ -117,7 +117,7 @@ impl Completer for BComplete {
                     CompletionContext::ArgLbl { span, function, arg: part } => {
                         let function = ModPath::from_iter(function.split("::"));
                         if let Some((_, b)) =
-                            self.0.lookup_bind(&ModPath::root(), &function)
+                            self.0.lookup_bind(&ModPath::root(), &function).ok().flatten()
                         {
                             if let Type::Fn(ft) = &b.typ {
                                 for arg in ft.args.iter() {

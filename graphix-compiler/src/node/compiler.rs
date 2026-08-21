@@ -1,9 +1,10 @@
 use super::{
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
-    TypeDef, Use,
+    TypeDef,
     array::{Array, ArrayRef, ArraySlice},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
+    compile_use,
     data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
     error::Qop,
     lambda::Lambda,
@@ -170,7 +171,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Module { name, value } => {
             let scope = scope.append(&name);
-            if ctx.env.modules.contains(&scope.lexical) {
+            if !ctx.predeclared_mods.remove(&scope.lexical)
+                && ctx.env.modules.contains(&scope.lexical)
+            {
                 bail!("duplicate module definition {}", scope.lexical)
             }
             if ctx.env.lsp_mode {
@@ -193,6 +196,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                     bail!("external modules are not allowed in this context")
                 }
                 ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
+                    ctx.env.modules.insert_cow(scope.lexical.clone());
                     let res = Block::compile(
                         ctx,
                         flags,
@@ -203,7 +207,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
                         exprs,
                     )
                     .with_context(|| spec.ori.clone())?;
-                    ctx.env.modules.insert_cow(scope.lexical.clone());
                     Ok(res)
                 }
                 ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
@@ -230,7 +233,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             }
         }
         ExprKind::Use { reexport, names } => {
-            Use::compile(ctx, spec.clone(), scope, *reexport, names)
+            compile_use(ctx, flags, spec.clone(), scope, *reexport, names)
         }
         ExprKind::Connect { name, value, deref: true } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)

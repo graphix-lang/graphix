@@ -1361,7 +1361,7 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     let env = ctx.rt.get_env().await?;
     let scope = Scope::root();
     let arr_id = env
-        .lookup_bind(&scope.lexical, &ModPath::from_iter(["arr"]))
+        .lookup_bind(&scope.lexical, &ModPath::from_iter(["arr"]))?
         .ok_or_else(|| anyhow::anyhow!("arr not in scope"))?
         .1
         .id;

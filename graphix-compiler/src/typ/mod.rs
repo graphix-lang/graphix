@@ -203,10 +203,12 @@ impl<H: IsoPoolable> RefHist<H> {
             Type::Ref(tr) => {
                 let def_addr = match tr.resolved() {
                     Some(r) => Arc::as_ptr(&r).addr(),
-                    None => match env.lookup_typedef(&tr.scope, &tr.name) {
-                        Some(def) => (def as *const TypeDef).addr(),
-                        None => return None,
-                    },
+                    None => {
+                        match env.lookup_typedef(&tr.scope, &tr.name).ok().flatten() {
+                            Some(def) => (def as *const TypeDef).addr(),
+                            None => return None,
+                        }
+                    }
                 };
                 let params = &tr.params;
                 let entries = self.ref_ids.entry(def_addr).or_default();
@@ -481,7 +483,7 @@ impl TypeRef {
     /// reads or writes the cell. The privatize walk uses it to detect
     /// a cell/env view divergence without disturbing the shared cell.
     pub(crate) fn resolve_pure(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
-        env.find_visible(&self.scope, &self.name, |s, n| {
+        env.resolve_visible(&self.scope, &self.name, crate::env::NameNs::Type, |s, n| {
             env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
                 Arc::new(ResolvedRef {
                     canonical_scope: ModPath(netidx_core::path::Path::from(
@@ -494,6 +496,14 @@ impl TypeRef {
                 })
             })
         })
+        .map_err(|e| {
+            // resolution failures surface as UnresolvableRef at the
+            // consumer; without this, a structural error (ambiguous
+            // glob) would masquerade as "undefined type"
+            log::warn!("resolving type `{}` in `{}`: {e:#}", self.name, self.scope)
+        })
+        .ok()
+        .flatten()
     }
 
     /// Resolve this ref's name in `env` and fill the cell (write-once)
@@ -1015,14 +1025,23 @@ impl Type {
         match self {
             Type::Ref(tr) => {
                 if let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) {
-                    let resolved = env.find_visible(&tr.scope, &tr.name, |s, n| {
-                        env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
-                            let canonical = ModPath(netidx_core::path::Path::from(
-                                arcstr::ArcStr::from(s),
-                            ));
-                            (canonical, d.pos, d.ori.clone())
-                        })
-                    });
+                    let resolved = env
+                        .resolve_visible(
+                            &tr.scope,
+                            &tr.name,
+                            crate::env::NameNs::Type,
+                            |s, n| {
+                                env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
+                                    let canonical =
+                                        ModPath(netidx_core::path::Path::from(
+                                            arcstr::ArcStr::from(s),
+                                        ));
+                                    (canonical, d.pos, d.ori.clone())
+                                })
+                            },
+                        )
+                        .ok()
+                        .flatten();
                     let (canonical_scope, def_pos, def_ori) = match resolved {
                         Some((s, dp, do_)) => (s, dp, do_),
                         None => (

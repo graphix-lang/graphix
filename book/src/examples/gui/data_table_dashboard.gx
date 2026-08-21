@@ -13,6 +13,8 @@ use str::*;
 use sys::*;
 use sys::net::{self, *};
 use sys::time::{self, *};
+use gui::data_table::Table;
+use gui::window;
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:

@@ -11,6 +11,8 @@ use re::*;
 use str::*;
 use sys::*;
 use sys::net::{self, *};
+use gui::data_table::Table;
+use gui::window;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls

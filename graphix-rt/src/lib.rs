@@ -988,7 +988,7 @@ impl<X: GXExt> GXHandle<X> {
         name: &ModPath,
     ) -> Result<Ref<X>> {
         let id = env
-            .lookup_bind(&scope.lexical, name)
+            .lookup_bind(&scope.lexical, name)?
             .ok_or_else(|| anyhow!("no such value {name} in scope {}", scope.lexical))?
             .1
             .id;

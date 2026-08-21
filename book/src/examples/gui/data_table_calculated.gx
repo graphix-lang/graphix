@@ -5,6 +5,7 @@ use gui::text::{self, *};
 use str::*;
 use sys::*;
 use sys::net::{self, *};
+use gui::data_table::Table;
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its

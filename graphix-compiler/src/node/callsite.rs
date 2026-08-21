@@ -53,7 +53,7 @@ fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
     if args.iter().any(|(label, _)| label.is_none()) {
         return Ok(());
     }
-    let Some((_, bind)) = ctx.env.lookup_bind(&scope.lexical, path) else {
+    let Some((_, bind)) = ctx.env.lookup_bind(&scope.lexical, path).ok().flatten() else {
         return Ok(());
     };
     let key = (bind.scope.clone(), bind.name.clone());

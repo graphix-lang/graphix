@@ -249,7 +249,7 @@ impl<X: GXExt> Shell<X> {
         }
         let mut flags = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
-            Mode::Repl => BitFlags::empty(),
+            Mode::Repl => CFlag::ReplaceImports.into(),
         };
         flags.insert(self.enable_flags);
         flags.remove(self.disable_flags);

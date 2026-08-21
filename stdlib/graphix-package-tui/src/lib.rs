@@ -471,7 +471,7 @@ fn is_ctrl_c(e: &Event) -> bool {
 
 fn get_id(env: &Env, name: &ModPath) -> Result<BindId> {
     Ok(env
-        .lookup_bind(&ModPath::root(), name)
+        .lookup_bind(&ModPath::root(), name)?
         .ok_or_else(|| anyhow!("could not find {name}"))?
         .1
         .id)

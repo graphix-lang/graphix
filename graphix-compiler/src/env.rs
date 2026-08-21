@@ -1,10 +1,11 @@
 use crate::{
-    BindId, Scope,
+    BindId,
     expr::{ExprId, ModPath, Origin, Sandbox},
     ide::{
         Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite,
     },
+    mod_root,
     typ::{TVar, Type},
 };
 use ahash::{AHashMap, AHashSet};
@@ -74,14 +75,92 @@ pub struct TypeDef {
     pub ori: Arc<Origin>,
 }
 
+/// One explicit import: the imported name (the map key in
+/// [`ScopeNames::imports`], which differs from `name` under `as`)
+/// resolves to `name` in the module at `scope`.
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    /// canonical scope the item was imported from
+    pub scope: ModPath,
+    /// the item's own name there
+    pub name: CompactString,
+    /// the import's anchor is a keyword root (`self`/`super`): the
+    /// redirect walks `scope` up to its module root instead of
+    /// consulting `scope` alone, because the anchor of a `super`
+    /// import may be a block level (a script file's top level) whose
+    /// items live across the block chain.
+    pub chain: bool,
+    /// Position/origin of the `use`, for diagnostics and IDE tooling.
+    pub pos: SourcePosition,
+    pub ori: Arc<Origin>,
+}
+
+/// A scope's explicit namespace: what its `use` declarations
+/// imported. Lives in [`Env::names`], keyed by the scope path.
+#[derive(Debug, Clone, Default)]
+pub struct ScopeNames {
+    pub imports: Map<CompactString, ImportEntry>,
+    /// Glob (`use m::*`) source modules, in declaration order.
+    pub globs: Arc<Vec<ModPath>>,
+}
+
+/// Which namespace a resolution serves. Path INTERIORS are always
+/// module-kind; the terminal name's kind decides which preludes
+/// apply: values and types get the core prelude, modules get the
+/// package prelude (registered package names as path roots) and then
+/// the core prelude (core's public submodules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameNs {
+    Value,
+    Type,
+    Module,
+}
+
+/// True if scope `s` is `prefix` itself or a path descendant of it.
+pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
+    if prefix == "/" || s == prefix {
+        return true;
+    }
+    if !s.starts_with(prefix) {
+        return false;
+    }
+    // Avoid matching e.g. `/tu` as a prefix of `/tui`.
+    s.as_bytes().get(prefix.len()).copied() == Some(b'/')
+}
+
+/// Iterate the lexical levels of `from` from innermost to the
+/// enclosing module root, inclusive.
+pub(crate) fn chain_levels(from: &str) -> impl Iterator<Item = &str> {
+    let root = mod_root(from);
+    let mut cur = Some(from);
+    iter::from_fn(move || {
+        let c = cur?;
+        cur = if c == root { None } else { Some(Path::dirname(c).unwrap_or("/")) };
+        Some(c)
+    })
+}
+
+const MAX_IMPORT_DEPTH: usize = 32;
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: Map<BindId, Bind>,
     pub byref_chain: Map<BindId, BindId>,
     pub binds: Map<ModPath, Map<CompactString, BindId>>,
-    pub used: Map<ModPath, Arc<Vec<ModPath>>>,
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
+    /// Every scope's explicit namespace (imports + globs), keyed by
+    /// the scope path. NOT part of the lexical env: scope paths are
+    /// globally unique, so this is a per-context registry of every
+    /// module and block's import table — it survives the module
+    /// privacy swap (`restore_lexical_env` keeps it from `self`),
+    /// which is what lets deferred resolution consult the DEFINING
+    /// module's table long after that module finished compiling.
+    pub names: Map<ModPath, ScopeNames>,
+    /// Registered package names — the package prelude: usable as
+    /// module path roots from anywhere. Populated by package
+    /// registration; survives the lexical swap like `names`.
+    pub package_roots: Set<ArcStr>,
     /// Installed catch handlers by DYNAMIC scope path: the handler's
     /// error-variable bind and the TOP the handler node lives under
     /// (cross-top deliveries must take the `set_var` path).
@@ -120,7 +199,8 @@ impl Env {
             by_id,
             binds,
             byref_chain,
-            used,
+            names,
+            package_roots: _,
             modules,
             typedefs,
             catch,
@@ -131,7 +211,7 @@ impl Env {
         *by_id = Map::new();
         *binds = Map::new();
         *byref_chain = Map::new();
-        *used = Map::new();
+        *names = Map::new();
         *modules = Set::new();
         *typedefs = Map::new();
         *catch = Map::new();
@@ -145,15 +225,19 @@ impl Env {
     // introduced inside the restored region. The `ide` sink is
     // preserved on `self` so any pushes that happened inside the
     // restored region accumulate alongside the rest of the check.
+    // `names` and `package_roots` are global registries keyed by
+    // globally-unique scope paths, not lexical state — always kept
+    // from `self`.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
         Self {
             binds: other.binds,
-            used: other.used,
             modules: other.modules,
             typedefs: other.typedefs,
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
+            names: self.names.clone(),
+            package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
             ide: self.ide.clone(),
@@ -163,13 +247,14 @@ impl Env {
     pub(super) fn restore_lexical_env_mut(&self, other: &mut Self) -> Self {
         Self {
             binds: mem::take(&mut other.binds),
-            used: mem::take(&mut other.used),
             modules: mem::take(&mut other.modules),
             typedefs: mem::take(&mut other.typedefs),
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
-            ide_binds: self.ide_binds.clone(),
             byref_chain: self.byref_chain.clone(),
+            names: self.names.clone(),
+            package_roots: self.package_roots.clone(),
+            ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
             ide: self.ide.clone(),
         }
@@ -308,45 +393,259 @@ impl Env {
         }
     }
 
-    pub fn find_visible<T, F: FnMut(&str, &str) -> Option<T>>(
+    /// The current package root of `scope`: `/pkg` when the first
+    /// path component names a registered package, else `/` (user
+    /// programs — the program is the package).
+    pub fn package_root<'a>(&self, scope: &'a str) -> &'a str {
+        match Path::parts(scope).next() {
+            Some(first) if self.package_roots.contains(first) => {
+                &scope[..1 + first.len()]
+            }
+            _ => "/",
+        }
+    }
+
+    /// The scope `k` levels of `super` above the module enclosing
+    /// `scope`. One `super` from module M is the SCOPE surrounding
+    /// M's declaration (which may be a block level — a script file's
+    /// top level); further `super`s iterate dirname∘mod_root. Errors
+    /// when a step would climb above the package root — the root
+    /// scope for user programs (the program is the package), `/pkg`
+    /// for registered packages.
+    pub fn super_anchor<'a>(&self, scope: &'a str, k: usize) -> Result<&'a str> {
+        let mut anchor = scope;
+        for _ in 0..k {
+            let m = mod_root(anchor);
+            let at_root = m == "/"
+                || (Path::dirname(m).is_none()
+                    && Path::basename(m)
+                        .map(|b| self.package_roots.contains(b))
+                        .unwrap_or(false));
+            if at_root {
+                bail!("`super` goes above the package root")
+            }
+            anchor = Path::dirname(m).unwrap_or("/");
+        }
+        Ok(anchor)
+    }
+
+    /// Consult one lexical level for `n`: the level's own
+    /// declarations (via `f`), then — iff `origin` is inside the
+    /// level's module (imports are private to their module and its
+    /// descendants) — its explicit imports (redirected, following
+    /// the target level's own imports in turn) and its globs (a glob
+    /// provides the source module's OWN names only; two globs
+    /// providing the same name is an error at use).
+    fn lookup_at<T>(
         &self,
-        scope: &ModPath,
-        name: &ModPath,
-        mut f: F,
-    ) -> Option<T> {
-        let mut buf = CompactString::from("");
-        let name_scope = Path::dirname(&**name);
-        let name = Path::basename(&**name).unwrap_or("");
-        for scope in Path::dirnames(&**scope).rev() {
-            let used = self.used.get(scope);
-            let used = iter::once(scope)
-                .chain(used.iter().flat_map(|s| s.iter().map(|p| &***p)));
-            for scope in used {
-                let scope = name_scope
-                    .map(|ns| {
-                        buf.clear();
-                        buf.push_str(scope);
-                        if let Some(Path::SEP) = buf.chars().next_back() {
-                            buf.pop();
-                        }
-                        buf.push_str(ns);
-                        buf.as_str()
-                    })
-                    .unwrap_or(scope);
-                if let Some(res) = f(scope, name) {
-                    return Some(res);
+        origin: &str,
+        level: &str,
+        n: &str,
+        depth: usize,
+        f: &mut impl FnMut(&str, &str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        if let Some(t) = f(level, n) {
+            return Ok(Some(t));
+        }
+        if !scope_is_under(origin, mod_root(level)) {
+            return Ok(None);
+        }
+        let Some(sn) = self.names.get(level) else { return Ok(None) };
+        if depth > MAX_IMPORT_DEPTH {
+            bail!("import chain too deep resolving `{n}` (import cycle?)")
+        }
+        if let Some(e) = sn.imports.get(n) {
+            let hit = if e.chain {
+                self.chain_lookup(origin, &e.scope, &e.name, depth + 1, f)?
+            } else {
+                self.lookup_at(origin, &e.scope, &e.name, depth + 1, f)?
+            };
+            if let Some(t) = hit {
+                return Ok(Some(t));
+            }
+            // an import covers only the kinds its target has; a
+            // kind-miss falls through to globs (the widget-module
+            // pattern: `use gui::text::{self, *}` imports the module
+            // name AND glob-provides the same-named val inside it)
+        }
+        let mut found: Option<(usize, T)> = None;
+        for (i, g) in sn.globs.iter().enumerate() {
+            if let Some(t) = f(g, n) {
+                match &found {
+                    None => found = Some((i, t)),
+                    Some((j, _)) => bail!(
+                        "`{n}` is ambiguous: both `{}` and `{g}` provide it; \
+                         import one explicitly",
+                        sn.globs[*j]
+                    ),
                 }
             }
         }
-        None
+        Ok(found.map(|(_, t)| t))
+    }
+
+    /// [`Self::lookup_at`] over every level from `from` up to its
+    /// module root, inclusive.
+    fn chain_lookup<T>(
+        &self,
+        origin: &str,
+        from: &str,
+        n: &str,
+        depth: usize,
+        f: &mut impl FnMut(&str, &str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        for level in chain_levels(from) {
+            if let Some(t) = self.lookup_at(origin, level, n, depth, f)? {
+                return Ok(Some(t));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolve the single segment `seg` as a MODULE from `scope`:
+    /// the lexical chain (own submodules, module imports, glob-
+    /// provided modules), then the package prelude, then the core
+    /// prelude. Returns the canonical module scope.
+    fn resolve_module_seg(&self, scope: &str, seg: &str) -> Result<Option<ModPath>> {
+        let mut f = |lvl: &str, n: &str| {
+            let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
+            if self.modules.contains(&p) { Some(p) } else { None }
+        };
+        if let Some(p) = self.chain_lookup(scope, scope, seg, 0, &mut f)? {
+            return Ok(Some(p));
+        }
+        // package_roots alone answers here — a sandboxed env may keep
+        // `/sys/net` without `/sys`, so the DESCENT is what gates,
+        // not the root
+        if self.package_roots.contains(seg) {
+            return Ok(Some(ModPath(Path::root().append(seg))));
+        }
+        Ok(f("/core", seg))
+    }
+
+    /// One qualified-path descent step: resolve `seg` as a module
+    /// within the module at `cur` — its own submodules always, its
+    /// module imports/globs iff `origin` is inside it.
+    fn descend_step(
+        &self,
+        origin: &str,
+        cur: &str,
+        seg: &str,
+    ) -> Result<Option<ModPath>> {
+        let mut f = |lvl: &str, n: &str| {
+            let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
+            if self.modules.contains(&p) { Some(p) } else { None }
+        };
+        self.lookup_at(origin, cur, seg, 0, &mut f)
+    }
+
+    /// The resolution core: resolve `name`, written at `scope`, per
+    /// the explicit-import rules — `f` is consulted with candidate
+    /// `(module_scope, base_name)` pairs in precedence order and the
+    /// first `Some` wins; a `None` from `f` means "no item of my
+    /// kind there" and resolution continues (so an import whose
+    /// target lacks the wanted kind falls through). Errors are
+    /// structural: an ambiguous glob name, a `super` past the root,
+    /// a missing interior module, a keyword in a non-leading
+    /// position.
+    pub fn resolve_visible<T>(
+        &self,
+        scope: &ModPath,
+        name: &ModPath,
+        ns: NameNs,
+        mut f: impl FnMut(&str, &str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        let parts: LPooled<Vec<&str>> = Path::parts(&**name).collect();
+        let Some((&base, _)) = parts.split_last() else { return Ok(None) };
+        let n_super = parts.iter().take_while(|s| **s == "super").count();
+        let lead = match parts[0] {
+            "self" | "package" => 1,
+            "super" => n_super,
+            _ => 0,
+        };
+        if lead == parts.len() {
+            bail!("a path must name something below self/super/package")
+        }
+        if let Some(kw) =
+            parts[lead..].iter().find(|s| matches!(**s, "self" | "super" | "package"))
+        {
+            bail!("`{kw}` is only legal leading a path")
+        }
+        let interior = &parts[lead..parts.len() - 1];
+        // keyword-rooted or qualified: resolve the module context,
+        // then the terminal name at that module (with imports/globs
+        // visible iff we are inside it — lookup_at gates that)
+        let anchor: &str = match parts[0] {
+            "self" => mod_root(scope),
+            "super" => self.super_anchor(scope, n_super)?,
+            "package" => self.package_root(scope),
+            _ if parts.len() == 1 => {
+                // bare name: the lexical chain, then the preludes
+                if let Some(t) = self.chain_lookup(scope, scope, base, 0, &mut f)? {
+                    return Ok(Some(t));
+                }
+                if ns == NameNs::Module && self.package_roots.contains(base) {
+                    if let Some(t) = f("/", base) {
+                        return Ok(Some(t));
+                    }
+                }
+                return Ok(f("/core", base));
+            }
+            first => {
+                // qualified: the first segment resolves as a module
+                // through the chain and preludes
+                match self.resolve_module_seg(scope, first)? {
+                    Some(m) => {
+                        let m = self.descend(scope, m, &interior[1..])?;
+                        return self.lookup_at(scope, &m, base, 0, &mut f);
+                    }
+                    None => return Ok(None),
+                }
+            }
+        };
+        // keyword-rooted path: `super::x` resolves along the anchor's
+        // own chain (a super anchor may be a block level); self and
+        // package anchors are module roots, where the chain is one
+        // level. No preludes — keyword roots are explicit.
+        if interior.is_empty() {
+            return self.chain_lookup(scope, anchor, base, 0, &mut f);
+        }
+        let first = match self.chain_lookup(
+            scope,
+            anchor,
+            interior[0],
+            0,
+            &mut |lvl: &str, n: &str| {
+                let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
+                if self.modules.contains(&p) { Some(p) } else { None }
+            },
+        )? {
+            Some(m) => m,
+            None => bail!("no module `{}` in `{anchor}`", interior[0]),
+        };
+        let m = self.descend(scope, first, &interior[1..])?;
+        self.lookup_at(scope, &m, base, 0, &mut f)
+    }
+
+    /// Walk `segs` down from module `cur`, erroring on a missing
+    /// step.
+    fn descend(&self, origin: &ModPath, cur: ModPath, segs: &[&str]) -> Result<ModPath> {
+        let mut m = cur;
+        for seg in segs {
+            match self.descend_step(origin, &m, seg)? {
+                Some(next) => m = next,
+                None => bail!("no module `{seg}` in `{m}`"),
+            }
+        }
+        Ok(m)
     }
 
     pub fn lookup_bind(
         &self,
         scope: &ModPath,
         name: &ModPath,
-    ) -> Option<(&ModPath, &Bind)> {
-        self.find_visible(scope, name, |scope, name| {
+    ) -> Result<Option<(&ModPath, &Bind)>> {
+        self.resolve_visible(scope, name, NameNs::Value, |scope, name| {
             self.binds.get_full(scope).and_then(|(scope, vars)| {
                 vars.get(name)
                     .and_then(|bid| self.by_id.get(bid).map(|bind| (scope, bind)))
@@ -354,9 +653,24 @@ impl Env {
         })
     }
 
-    pub fn lookup_typedef(&self, scope: &ModPath, name: &ModPath) -> Option<&TypeDef> {
-        self.find_visible(scope, name, |scope, name| {
+    pub fn lookup_typedef(
+        &self,
+        scope: &ModPath,
+        name: &ModPath,
+    ) -> Result<Option<&TypeDef>> {
+        self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
             self.typedefs.get(scope).and_then(|m| m.get(name))
+        })
+    }
+
+    pub fn canonical_modpath(
+        &self,
+        scope: &ModPath,
+        name: &ModPath,
+    ) -> Result<Option<ModPath>> {
+        self.resolve_visible(scope, name, NameNs::Module, |scope, name| {
+            let p = ModPath(Path::from(ArcStr::from(scope)).append(name));
+            if self.modules.contains(&p) { Some(p) } else { None }
         })
     }
 
@@ -378,8 +692,8 @@ impl Env {
         part: &ModPath,
     ) -> Vec<(CompactString, BindId)> {
         let mut res = vec![];
-        self.find_visible(scope, part, |scope, part| {
-            if let Some(vars) = self.binds.get(scope) {
+        let scan = |res: &mut Vec<(CompactString, BindId)>, level: &str, part: &str| {
+            if let Some(vars) = self.binds.get(level) {
                 let r = vars.range::<str, _>((Bound::Included(part), Bound::Unbounded));
                 for (name, bind) in r {
                     if name.starts_with(part) {
@@ -387,8 +701,50 @@ impl Env {
                     }
                 }
             }
-            None::<()>
-        });
+        };
+        match Path::dirname(&**part) {
+            None => {
+                let part = Path::basename(&**part).unwrap_or("");
+                for level in chain_levels(scope) {
+                    scan(&mut res, level, part);
+                    if let Some(sn) = self.names.get(level) {
+                        for (name, e) in &sn.imports {
+                            if name.starts_with(part) {
+                                let find = |lvl: &str| {
+                                    self.binds
+                                        .get(lvl)
+                                        .and_then(|v| v.get(&e.name))
+                                        .copied()
+                                };
+                                let id = if e.chain {
+                                    chain_levels(&e.scope).find_map(find)
+                                } else {
+                                    find(&e.scope)
+                                };
+                                if let Some(id) = id {
+                                    res.push((name.clone(), id));
+                                }
+                            }
+                        }
+                        for g in sn.globs.iter() {
+                            scan(&mut res, g, part);
+                        }
+                    }
+                }
+                scan(&mut res, "/core", part);
+            }
+            Some(_) => {
+                // qualified partial: resolve the module prefix, scan
+                // its own names
+                let part_base = Path::basename(&**part).unwrap_or("");
+                let prefix = ModPath(Path::from(ArcStr::from(
+                    Path::dirname(&**part).unwrap_or("/"),
+                )));
+                if let Ok(Some(m)) = self.canonical_modpath(scope, &prefix) {
+                    scan(&mut res, &m, part_base);
+                }
+            }
+        }
         res
     }
 
@@ -401,27 +757,130 @@ impl Env {
         part: &ModPath,
     ) -> Vec<ModPath> {
         let mut res = vec![];
-        self.find_visible(scope, part, |scope, part| {
-            let p = ModPath(Path::from(ArcStr::from(scope)).append(part));
+        let scan = |res: &mut Vec<ModPath>, level: &str, part: &str| {
+            let p = ModPath(Path::from(ArcStr::from(level)).append(part));
             for m in self.modules.range((Bound::Included(p.clone()), Bound::Unbounded)) {
                 if m.0.starts_with(&*p.0) {
-                    if let Some(m) = m.strip_prefix(scope) {
+                    if let Some(m) = m.strip_prefix(level) {
                         if !m.trim().is_empty() {
                             res.push(ModPath(Path::from(ArcStr::from(m))));
                         }
                     }
                 }
             }
-            None::<()>
-        });
+        };
+        match Path::dirname(&**part) {
+            None => {
+                let part = Path::basename(&**part).unwrap_or("");
+                for level in chain_levels(scope) {
+                    scan(&mut res, level, part);
+                    if let Some(sn) = self.names.get(level) {
+                        for (name, _) in &sn.imports {
+                            if name.starts_with(part) {
+                                res.push(ModPath(Path::root().append(name)));
+                            }
+                        }
+                        for g in sn.globs.iter() {
+                            scan(&mut res, g, part);
+                        }
+                    }
+                }
+                for p in self.package_roots.into_iter() {
+                    if p.starts_with(part) {
+                        res.push(ModPath(Path::root().append(p.as_str())));
+                    }
+                }
+                scan(&mut res, "/core", part);
+            }
+            Some(dir) => {
+                let part_base = Path::basename(&**part).unwrap_or("");
+                let prefix = ModPath(Path::from(ArcStr::from(dir)));
+                if let Ok(Some(m)) = self.canonical_modpath(scope, &prefix) {
+                    scan(&mut res, &m, part_base);
+                }
+            }
+        }
         res
     }
 
-    pub fn canonical_modpath(&self, scope: &ModPath, name: &ModPath) -> Option<ModPath> {
-        self.find_visible(scope, name, |scope, name| {
-            let p = ModPath(Path::from(ArcStr::from(scope)).append(name));
-            if self.modules.contains(&p) { Some(p) } else { None }
-        })
+    /// Install one explicit import at `scope`. Errors on a duplicate
+    /// import or a same-scope declaration of the same name, unless
+    /// `replace` (the REPL: a re-`use` shadows). Identical re-imports
+    /// are idempotent (a `.gxi` use applies to the impl too, and the
+    /// impl may spell it again).
+    pub fn import(
+        &mut self,
+        scope: &ModPath,
+        key: &str,
+        entry: ImportEntry,
+        replace: bool,
+    ) -> Result<()> {
+        if !replace {
+            if let Some(e) = self.names.get(scope).and_then(|sn| sn.imports.get(key)) {
+                if e.scope == entry.scope && e.name == entry.name {
+                    return Ok(());
+                }
+                bail!(
+                    "`{key}` is already imported here (from `{}`); \
+                     rename one (`use ... as ...`)",
+                    e.scope
+                )
+            }
+            let declared =
+                self.binds.get(scope).map(|v| v.get(key).is_some()).unwrap_or(false)
+                    || self
+                        .typedefs
+                        .get(scope)
+                        .map(|v| v.get(key).is_some())
+                        .unwrap_or(false);
+            if declared {
+                bail!("`{key}` is already defined in this scope; use `as` to rename")
+            }
+        }
+        let sn = self.names.get_or_default_cow(scope.clone());
+        sn.imports.insert_cow(key.into(), entry);
+        Ok(())
+    }
+
+    /// Register a glob (`use m::*`) source module at `scope`.
+    /// Idempotent.
+    pub fn import_glob(&mut self, scope: &ModPath, src: ModPath) {
+        let sn = self.names.get_or_default_cow(scope.clone());
+        let globs = Arc::make_mut(&mut sn.globs);
+        if !globs.contains(&src) {
+            globs.push(src)
+        }
+    }
+
+    /// True iff an import target currently names something (any
+    /// kind), following the chain rule for keyword-anchored entries.
+    pub fn import_target_exists(&self, e: &ImportEntry) -> bool {
+        let check = |lvl: &str| {
+            self.binds.get(lvl).map(|v| v.get(&e.name).is_some()).unwrap_or(false)
+                || self
+                    .typedefs
+                    .get(lvl)
+                    .map(|v| v.get(&e.name).is_some())
+                    .unwrap_or(false)
+                || self
+                    .modules
+                    .contains(&ModPath(Path::from(ArcStr::from(lvl)).append(&e.name)))
+        };
+        if e.chain { chain_levels(&e.scope).any(check) } else { check(&e.scope) }
+    }
+
+    /// Drop every import table at `scope` or any descendant. Used
+    /// when a dynamic module recompiles (its `use`s re-register from
+    /// the fresh source) and by the LSP scope scrub.
+    pub fn clear_names_under(&mut self, scope: &ModPath) {
+        let stale: LPooled<Vec<ModPath>> = (&self.names)
+            .into_iter()
+            .filter(|(s, _)| scope_is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*stale {
+            self.names.remove_cow(s);
+        }
     }
 
     pub fn deftype(
@@ -530,24 +989,10 @@ impl Env {
     /// Returns the number of (scope, name) entries removed across binds
     /// and typedefs.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
-        fn is_under(s: &ModPath, prefix: &ModPath) -> bool {
-            // Both come from netidx Path. A scope is under `prefix`
-            // if it equals prefix or starts with `prefix + "/"`.
-            let s: &str = s;
-            let p: &str = prefix;
-            if s == p {
-                return true;
-            }
-            if !s.starts_with(p) {
-                return false;
-            }
-            // Avoid matching e.g. `/tu` as a prefix of `/tui`.
-            s.as_bytes().get(p.len()).copied() == Some(b'/')
-        }
         let mut removed = 0;
         let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
             .into_iter()
-            .filter(|(s, _)| is_under(s, scope))
+            .filter(|(s, _)| scope_is_under(s, scope))
             .map(|(s, _)| s.clone())
             .collect();
         for s in &*bind_scopes {
@@ -564,7 +1009,7 @@ impl Env {
         }
         let type_scopes: LPooled<Vec<ModPath>> = (&self.typedefs)
             .into_iter()
-            .filter(|(s, _)| is_under(s, scope))
+            .filter(|(s, _)| scope_is_under(s, scope))
             .map(|(s, _)| s.clone())
             .collect();
         for s in &*type_scopes {
@@ -573,22 +1018,18 @@ impl Env {
             }
             self.typedefs.remove_cow(s);
         }
-        let used_scopes: LPooled<Vec<ModPath>> = (&self.used)
+        self.clear_names_under(scope);
+        let mod_scopes: LPooled<Vec<ModPath>> = (&self.modules)
             .into_iter()
-            .filter(|(s, _)| is_under(s, scope))
-            .map(|(s, _)| s.clone())
+            .filter(|s| scope_is_under(s, scope))
+            .cloned()
             .collect();
-        for s in &*used_scopes {
-            self.used.remove_cow(s);
-        }
-        let mod_scopes: LPooled<Vec<ModPath>> =
-            (&self.modules).into_iter().filter(|s| is_under(s, scope)).cloned().collect();
         for s in &*mod_scopes {
             self.modules.remove_cow(s);
         }
         let catch_scopes: LPooled<Vec<ModPath>> = (&self.catch)
             .into_iter()
-            .filter(|(s, _)| is_under(s, scope))
+            .filter(|(s, _)| scope_is_under(s, scope))
             .map(|(s, _)| s.clone())
             .collect();
         for s in &*catch_scopes {
@@ -634,12 +1075,6 @@ impl Env {
         self.by_id.get_mut_cow(id).unwrap()
     }
 
-    /// make the specified name an alias for `id`
-    pub fn alias_variable(&mut self, scope: &ModPath, name: &str, id: BindId) {
-        let binds = self.binds.get_or_default_cow(scope.clone());
-        binds.insert_cow(CompactString::from(name), id);
-    }
-
     pub fn unbind_variable(&mut self, id: BindId) {
         if let Some(b) = self.by_id.remove_cow(&id) {
             if let Some(binds) = self.binds.get_mut_cow(&b.scope) {
@@ -650,23 +1085,56 @@ impl Env {
             }
         }
     }
+}
 
-    pub fn use_in_scope(&mut self, scope: &Scope, name: &ModPath) -> Result<()> {
-        match self.canonical_modpath(&scope.lexical, name) {
-            None => bail!("use {name}: no such module {name} in scope {}", scope.lexical),
-            Some(_) => {
-                let used = self.used.get_or_default_cow(scope.lexical.clone());
-                Ok(Arc::make_mut(used).push(name.clone()))
-            }
-        }
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::is_block_component;
+
+    #[test]
+    fn mod_root_strips_marked() {
+        assert_eq!(mod_root("/m/tui/#do1/#fn7"), "/m/tui");
+        assert_eq!(mod_root("/#do1"), "/");
+        assert_eq!(mod_root("/#do1/foo"), "/#do1/foo");
+        assert_eq!(mod_root("/"), "/");
+        assert_eq!(mod_root("/a/b"), "/a/b");
+        assert!(is_block_component("#do1"));
+        assert!(!is_block_component("do1"));
     }
 
-    pub fn stop_use_in_scope(&mut self, scope: &Scope, name: &ModPath) {
-        if let Some(used) = self.used.get_mut_cow(&scope.lexical) {
-            Arc::make_mut(used).retain(|n| n != name);
-            if used.is_empty() {
-                self.used.remove_cow(&scope.lexical);
-            }
-        }
+    #[test]
+    fn chain_stops_at_module_root() {
+        let levels: Vec<&str> = chain_levels("/m/tui/#do1/#fn7").collect();
+        assert_eq!(levels, vec!["/m/tui/#do1/#fn7", "/m/tui/#do1", "/m/tui"]);
+        let levels: Vec<&str> = chain_levels("/#do1").collect();
+        assert_eq!(levels, vec!["/#do1", "/"]);
+        let levels: Vec<&str> = chain_levels("/").collect();
+        assert_eq!(levels, vec!["/"]);
+    }
+
+    #[test]
+    fn super_anchor_walks() {
+        let mut env = Env::default();
+        assert_eq!(env.super_anchor("/a/b/c", 1).unwrap(), "/a/b");
+        assert_eq!(env.super_anchor("/a/b/c", 2).unwrap(), "/a");
+        // a user program's depth-1 module: the parent is the root
+        // scope, which IS the user package's root
+        assert_eq!(env.super_anchor("/a", 1).unwrap(), "/");
+        assert!(env.super_anchor("/a", 2).is_err());
+        assert_eq!(env.super_anchor("/#do1/foo", 1).unwrap(), "/#do1");
+        assert!(env.super_anchor("/#do1", 1).is_err());
+        // a registered package's root refuses super
+        env.package_roots.insert_cow(ArcStr::from("pkg"));
+        assert!(env.super_anchor("/pkg", 1).is_err());
+        assert_eq!(env.super_anchor("/pkg/sub", 1).unwrap(), "/pkg");
+    }
+
+    #[test]
+    fn scope_under() {
+        assert!(scope_is_under("/a/b", "/a"));
+        assert!(scope_is_under("/a", "/a"));
+        assert!(!scope_is_under("/ab", "/a"));
+        assert!(scope_is_under("/anything", "/"));
     }
 }

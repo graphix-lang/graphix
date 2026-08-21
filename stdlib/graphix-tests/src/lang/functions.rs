@@ -347,7 +347,7 @@ run!(fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
 // invocation pattern that's the realistic deferred-fusion target.
 const KIR_FUSED_DEFERRED_MAP: &str = r#"
 {
-    use array;
+    use array::*;
     let xs = array::init(100, |idx: i64| idx);
     array::fold(xs, 0, |acc, x| acc + x * 2)
 }
@@ -447,7 +447,7 @@ run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
 // (5*5 + 5*5) + 1 = 51.
 const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 {
-    use array;
+    use array::*;
     let helper = |x: i64| -> i64 array::fold([x, x], 0, |a, b| a + b * b);
     let outer = |x: i64| -> i64 helper(x) + 1;
     outer(5)

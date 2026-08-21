@@ -1,3 +1,4 @@
+use super::*;
 type KeyEvent = {
   key: string,
   modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool},

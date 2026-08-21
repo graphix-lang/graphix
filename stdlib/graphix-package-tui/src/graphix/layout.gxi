@@ -1,3 +1,4 @@
+use super::*;
 type Spacing = [
   `Space(i64),
   `Overlap(i64)

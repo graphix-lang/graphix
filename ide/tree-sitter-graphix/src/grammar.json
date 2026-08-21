@@ -957,8 +957,17 @@
                       "type": "FIELD",
                       "name": "rename",
                       "content": {
-                        "type": "SYMBOL",
-                        "name": "_binding_name"
+                        "type": "CHOICE",
+                        "members": [
+                          {
+                            "type": "SYMBOL",
+                            "name": "_binding_name"
+                          },
+                          {
+                            "type": "SYMBOL",
+                            "name": "type_identifier"
+                          }
+                        ]
                       }
                     }
                   ]
@@ -978,6 +987,10 @@
         {
           "type": "SYMBOL",
           "name": "_binding_name"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "type_identifier"
         },
         {
           "type": "STRING",

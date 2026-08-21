@@ -300,12 +300,15 @@ module.exports = grammar({
       optional(choice(
         seq('::', $.use_group),
         seq('::', $.use_glob),
-        seq('as', field('rename', $._binding_name)),
+        seq('as', field('rename', choice($._binding_name, $.type_identifier))),
       )),
     ),
 
+    // values/modules are lowercase, types uppercase — a use imports
+    // every kind sharing the name, so both are legal segments
     _use_segment: $ => choice(
       $._binding_name,
+      $.type_identifier,
       'self',
       'super',
       'package',

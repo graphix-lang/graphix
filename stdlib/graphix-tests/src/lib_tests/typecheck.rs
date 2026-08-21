@@ -183,7 +183,7 @@ run!(
 run!(
     hof_list_init_json_read,
     r#"{
-    use list;
+    use list::*;
     let s = json::write_str(7)$;
     let results =
         list::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));

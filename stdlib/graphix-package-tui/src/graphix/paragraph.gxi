@@ -1,3 +1,4 @@
+use super::*;
 /// `scroll.y` is in lines and `scroll.x` is in chars; `trim` drops
 /// leading whitespace when wrapping.
 type Paragraph = {

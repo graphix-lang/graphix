@@ -1,3 +1,4 @@
+use super::*;
 type Column = {
   children: &Array<Widget>,
   spacing: &f64,

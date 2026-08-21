@@ -6,7 +6,7 @@ use netidx::publisher::{FromValue, Value};
 
 async fn canvas_harness(shapes_expr: &str) -> Result<GuiTestHarness> {
     let code = format!(
-        "use gui;\nuse gui::canvas;\n\
+        "use gui::*;\nuse gui::canvas::{{self, *}};\n\
          let result = canvas(#width: &`Fill, #height: &`Fixed(200.0), &[{shapes_expr}])"
     );
     GuiTestHarness::new(&code).await

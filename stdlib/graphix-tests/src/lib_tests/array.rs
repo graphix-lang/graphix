@@ -751,12 +751,12 @@ run!(array_window2, ARRAY_WINDOW2, |v: Result<&Value>| {
 
 const ARRAY_LEN: &str = r#"
 {
-  use array;
+  use array::*;
   len(concat([1, 2, 3], [4, 5], [6]))
 }
 "#;
 
-// Builtins called by their UNQUALIFIED imported names (`use array; len(…)`)
+// Builtins called by their UNQUALIFIED imported names (`use array::*; len(…)`)
 // now fuse: builtin-call discovery resolves the name in the CALL SITE's own
 // lexical scope (which carries the `use array`), not the region root's — so
 // `len`/`concat` register as DynCall sites and the whole body fuses. Before

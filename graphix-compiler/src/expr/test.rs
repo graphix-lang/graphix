@@ -467,10 +467,20 @@ fn use_item() -> impl Strategy<Value = UseItem> {
         1 => (1..3usize).prop_map(|n| vec![ArcStr::from("super"); n]),
     ];
     let glob = prop_oneof![4 => Just(false), 1 => Just(true)];
-    (lead, collection::vec(random_fname(), 1..4), glob, option::of(random_fname()))
-        .prop_map(|(lead, segs, glob, rename)| {
+    // the TERMINAL segment (and a rename target) may be a type name —
+    // uppercase; interior segments are modules (lowercase)
+    let upper = prop_oneof![
+        Just(ArcStr::from("Client")),
+        Just(ArcStr::from("T0")),
+        Just(ArcStr::from("StyleSheet")),
+    ];
+    let leaf = prop_oneof![3 => random_fname(), 1 => upper.clone()];
+    let rename = prop_oneof![3 => random_fname(), 1 => upper];
+    (lead, collection::vec(random_fname(), 0..3), leaf, glob, option::of(rename))
+        .prop_map(|(lead, segs, leaf, glob, rename)| {
             let mut parts = lead;
             parts.extend(segs);
+            parts.push(leaf);
             if glob {
                 parts.push(ArcStr::from("*"));
             }

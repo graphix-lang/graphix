@@ -24,7 +24,7 @@ fn auto_range<'a>(
 
 async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
     let code = format!(
-        "use gui;\nuse gui::chart;\n\
+        "use gui::*;\nuse gui::chart::{{self, *}};\n\
          let result = chart({args})"
     );
     GuiTestHarness::new(&code).await
