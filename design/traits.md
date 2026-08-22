@@ -56,18 +56,18 @@ then, so generic code written before an impl existed accepts it.
 `Read` in an argument position = a fresh `'a: Read` per occurrence
 (`fn(a: Read, b: Read)` is two variables — Rust's `impl Trait` rule).
 In any other position (return type, struct field, array element) it
-cannot mean that, and should be an error pointing at `dyn Read` (§3).
+cannot mean that and is an error; a struct parameterizes
+(`type Server<'a: Read> = {conn: 'a}`).
 
 ## 2. Static dispatch is right, and it is the only sound choice
 
-The sketch makes an unresolvable method call a compile error. Agreed,
-for a reason stronger than taste: there is no runtime witness. A
-gx-defined abstract type (`type Counter = i64`) ERASES — the value is
-an `I64`, indistinguishable from any other — which is why select
-refuses abstract type predicates today. Rust-backed abstract values do
-carry a witness (`Value::Abstract` + `downcast_ref`), but a dispatch
-rule that works for sys's types and fails for the user's is a trap,
-not a feature.
+The sketch makes an unresolvable method call a compile error. Agreed:
+a self type that is still an unbound tvar after typecheck has no
+runtime witness to fall back on — a gx-defined abstract type
+(`type Counter = i64`) ERASES to its representation — and the only
+alternative would be a closure record (dictionary passing), which is a
+new value shape and a DynCall at every method call. A self type that
+is a UNION of implementors is a different, decidable case: §3.
 
 Two further things fall out of static resolution for free:
 
@@ -88,43 +88,62 @@ static site (stored in a struct field or a `&`, called through a
 dynamic CallSite). The message must name the call site that could not
 resolve and the unbound variable.
 
-## 3. A union of implementors is not an implementor — io needs `dyn`
-
-This is the gap in the sketch. Today
+## 3. Dispatch over a union: generate the select (Eric's call)
 
 ```graphix
 let s = select use_tls { true => tls::connect(..)?, false => tcp::connect(..)? }
 ```
 
-has type `Stream<[`Tls, `Tcp]>` and every io function accepts it,
-because the Rust enum dispatches at runtime. Under static traits
-`[Tls, Tcp]` does not implement `Read` — `'a: Read` needs ONE impl, and
-a union has none — so `read(s, n)` is a compile error. That program
-is not exotic; it is how every server chooses its transport.
+types as `[Tls, Tcp]`. A trait call on it — `read(s, n)` — desugars
+to the select the programmer would otherwise write, with a static
+call in each arm:
 
-Rust solves it with `dyn`, and the vtable is attached at the COERCION
-site, where the concrete type is known. Graphix has no coercion sites:
-subtyping is `contains`-subsumption, a `File` flows into a `Read`
-position with no node in between, and inserting one at every
-subsumption edge (unions included — `[File, i64]` into `[Read, i64]`)
-is a large and hidden change. So make it explicit:
+```graphix
+select s { Tls as t => Tls::read(t, n), Tcp as t => Tcp::read(t, n) }
+```
 
-- `dyn Read` is a TYPE (and `dyn Read + Write`).
-- Packing is explicit, at a site where the type is concrete:
-  `cast<dyn Read>(f)` reads naturally with the existing cast syntax.
-  Explicit is in keeping with "no hidden allocation".
-- Representation: a record of closures over the witness, generated
-  from the impl — `{read: |n| File::read(f, n), read_exact: ...}`.
-  That is exactly what a programmer can write by hand today, which is
-  the proof it is not a new runtime concept; the feature is that the
-  compiler writes it from the impl, and that `read(d, n)` on a
-  `dyn Read` resolves to the field.
-- A call through `dyn` is a call through a closure value: it does not
-  fuse, and the `dyn` in the source says so. Static for the fast
-  path, `dyn` where heterogeneity is genuinely dynamic.
+Everything follows from that being the desugaring:
 
-With `dyn` the io story closes: `json::read` takes `'a: Read`; the
-tls-or-tcp program packs once at the select.
+- Semantics need no new ruling. The generated select is a sleep
+  boundary the user did not write — an impl body holding `count` or
+  `once` restarts when a `[i64, string]` scrutinee alternates types —
+  but the hand-written select does exactly the same, so the trait
+  introduces nothing. Organic firing, arm sleep, the scrutinee ride:
+  all inherited.
+- It fuses: static calls in select arms, arm-region fusion applies.
+  No closure record, no DynCall.
+- Primitive and structural members (`Show` on `[i64, string]`) are the
+  COMMON case and cost nothing: select has those predicates today.
+
+The select has to discriminate at runtime, and that is decidable per
+member kind:
+
+- primitives and structural shapes: the existing type predicates;
+- Rust-backed abstract values (`Tls`, `Tcp`): `Value::Abstract`
+  carries a TypeId — a runtime test exists, it is not yet exposed to
+  select;
+- gx-defined abstract types ERASE to their representation, so the
+  test is the rep's predicate, and it is decidable iff the members'
+  reps are pairwise disjoint. `[Counter, Name]` over `i64`/`string`
+  dispatches; `[Counter, Meter]` both `= i64` is a compile error at
+  the call site.
+
+The last case is an abstraction leak: changing `Meter`'s private rep
+from `f64` to `i64` breaks a downstream dispatch. Accepted, as Rust
+accepts the auto-trait leak — the remedy is local and honest
+(`type Meter = `Meter(i64)`, a self-describing rep), and it is a
+monotone relaxation of today's rule, which refuses abstract type
+predicates outright. The same disjointness check should lift that
+refusal for USER-written selects too: one mechanism, no trait special
+case.
+
+What this leaves uncovered is a value whose implementor set is
+unknowable at the type — Rust's `dyn`. In a language that types every
+value the union is always inferable at the call site, and a library
+struct parameterizes (`type Server<'a: Read> = {conn: 'a}`) like a
+Rust generic struct. No `dyn` until a real program demands one; the
+closure-record encoding is the fallback if one ever does, and a
+programmer can write it by hand today.
 
 ## 4. Impl targets in a structural type system
 
@@ -216,7 +235,8 @@ different project, not a trait feature.
    the existing cell conjunctions, static resolution in typecheck1,
    `Trait::method` paths + `use`, `.gxi` impl declarations. Compile
    error on unresolved self.
-3. `dyn Trait` + `cast<dyn T>(x)` with the closure-record encoding.
-   Ship with v1 — io cannot migrate without it (§3).
+3. Union dispatch as a generated select (§3), with the abstract-rep
+   disjointness check — and the same check lifting select's refusal
+   of abstract type predicates for user code.
 4. Migrate io to it; split the stream-consuming Rust builtins.
 5. v2: trait parameters with one-impl-per-self coherence.
