@@ -203,6 +203,46 @@ it (`contains` binds the expanded form), so whether a value "is still
 a Point" at the print site would depend on the inference path. Only
 `Abstract<...>` makes a name matter — that is what the newtype is for.
 
+### Parameterized targets (Eric's case)
+
+```graphix
+type Point<'a> = {x: 'a, y: 'a};
+impl<'a: SomeTrait> SomeTrait for Point<'a> { .. }
+```
+
+Allowed, inside `SomeTrait`'s package — the instance-with-context
+form (`instance Show a => Show (Point a)`, `impl<T: Tr> Tr for
+Point<T>`), and what makes structural impls USEFUL: the author saying
+"any pair-of-equal-things is a SomeTrait when its element is". Four
+rules, all standard:
+
+1. Head tvars bind the constraints: every quantified tvar appears in
+   the target; constraints discharge with `'a :=` what the use site's
+   shape has there. Each required impl is for a strictly smaller
+   component, so resolution terminates.
+2. Lookup is by UNIFICATION, not exact key: `{x: i64, y: i64}` unifies
+   with the head, binds `'a := i64`, then requires `SomeTrait for
+   i64` — the author's own primitive impl — or fails naming the
+   missing one. `{x: i64, y: string}` does not unify (equal fields
+   demanded) and falls through. Exact-key hash first, then the
+   parameterized heads — a short list, trait-author-only.
+3. No overlap within the package: two heads that unify (`Point<'a>`
+   and `{x: i64, y: i64}`) are refused — no specialization. The one
+   place `contains`-style reasoning returns, confined to one
+   package's own impl list.
+4. A union satisfies a constraint iff EVERY member does:
+   `Point<[i64, string]>` needs impls for `i64` and `string`; the
+   call on the field is §3's generated select. Needed anyway for
+   `Array<[i64, string]>: ToJson`.
+
+Monomorphization does the rest: the body is a lambda generic in `'a`,
+each use elaborates it with `'a := i64`, and the inner
+`SomeTrait::m(self.x)` resolves statically — so it fuses. Symmetry:
+for the core four this IS the typed walk — on `{x: Counter, y:
+Counter}` it recurses into the fields and calls `Counter`'s `Display`
+there; core's "impl" is `impl<'a: Display> Display for {..'a..}` for
+every shape at once, in Rust.
+
 The table is global, keyed by trait path + canonical target; impls
 register when their MODULE loads, so a package's impls must be
 reachable from its root. A REPL re-`impl` replaces, like re-`let`.
