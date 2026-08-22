@@ -1,4 +1,3 @@
-use tui::*;
 use tui::browser::{self, *};
 use tui::input_handler::{self, *};
 

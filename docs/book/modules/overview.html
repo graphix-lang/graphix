@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -182,11 +182,15 @@ what parts of a module are publicly accessible.</p>
 <li>module hierarchies</li>
 <li>implementation files (<code>.gx</code>) for module code</li>
 <li>interface files (<code>.gxi</code>) for defining module APIs and controlling visibility</li>
+<li>explicit imports with renaming (<code>use a::b as c</code>) and glob imports (<code>use a::*</code>)</li>
+<li>relative paths from <code>self</code>, <code>super</code>, and <code>package</code> roots</li>
 <li>modules stored in files or netidx</li>
 <li>modules dynamically loadable at runtime</li>
 </ul>
-<p>Note: module renaming on <code>use</code> is not yet supported but may be added in a future
-release.</p>
+<p>Name resolution follows the same discipline as Rust 2018: every name in
+scope arrived by an explicit declaration, an explicit <code>use</code>, or one of
+the two preludes (the <code>core</code> prelude and the installed package names).
+See <a href="../core/use.html">Use</a> for the import rules.</p>
 
                     </main>
 

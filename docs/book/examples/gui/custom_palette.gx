@@ -1,10 +1,10 @@
-use gui;
-use gui::style;
-use gui::text;
-use gui::button;
-use gui::toggler;
-use gui::slider;
-use gui::column;
+use gui::{color, window};
+use gui::style::Palette;
+use gui::text::{self, *};
+use gui::button::{self, *};
+use gui::toggler::{self, *};
+use gui::slider::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let enabled = true;

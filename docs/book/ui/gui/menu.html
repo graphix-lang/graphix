@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -257,10 +257,10 @@ val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widge
 <p>The menu closes when an item is clicked, when the user clicks outside it, or when Escape is pressed.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="menu-bar"><a class="header" href="#menu-bar">Menu Bar</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::menu;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::menu::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let file_menu = menu::menu(
@@ -324,11 +324,11 @@ let layout = column(
 </code></pre>
 <p><img src="./media/menu_bar.png" alt="Menu Bar"></p>
 <h3 id="context-menu"><a class="header" href="#context-menu">Context Menu</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::container;
-use gui::menu;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
+use gui::menu::{self, *};
 mod icon;
 
 let status = "Right-click anywhere";

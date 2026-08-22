@@ -1,4 +1,4 @@
-use tui::*;
+use tui::line;
 use tui::table::{self, *};
 
 let header = row([

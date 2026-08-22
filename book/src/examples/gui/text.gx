@@ -1,4 +1,4 @@
-use gui::*;
+use gui::{color, style, Widget, window};
 use gui::text::{self, *};
 use gui::column::{self, *};
 mod icon;

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Length, Widget};
 type Stack = {
   children: &Array<Widget>,
   width: &Length,

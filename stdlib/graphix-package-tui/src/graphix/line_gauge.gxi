@@ -1,4 +1,4 @@
-use super::*;
+use super::{Line, Style, style, Tui};
 type LineGauge = {
   filled_style: &[Style, null],
   filled_symbol: &[string, null],

@@ -1,4 +1,4 @@
-use super::*;
+use super::{HAlign, Length, Padding, Widget};
 type Column = {
   children: &Array<Widget>,
   spacing: &f64,

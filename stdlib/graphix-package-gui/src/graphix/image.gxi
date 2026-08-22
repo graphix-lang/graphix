@@ -1,4 +1,4 @@
-use super::*;
+use super::{ContentFit, ImageSource, Length, Widget};
 type Image = {
   source: &ImageSource,
   width: &Length,

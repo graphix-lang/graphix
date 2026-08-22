@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -212,8 +212,7 @@ val close: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
 Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> for raw access.</p>
-<pre><code class="language-graphix">use sqlite;
-
+<pre><code class="language-graphix">
 let conn = sqlite::open(":memory:")?;
 sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
 sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;

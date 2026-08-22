@@ -1,4 +1,4 @@
-use gui::*;
+use gui::window;
 use gui::text::{self, *};
 use gui::tooltip::{self, *};
 use gui::button::{self, *};

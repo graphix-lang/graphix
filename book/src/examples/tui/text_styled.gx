@@ -1,4 +1,4 @@
-use tui::*;
+use tui::{line, span};
 use tui::text::{self, *};
 
 let colors = [

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Font, Padding, Widget};
 type TextEditor = {
   content: &string,
   disabled: &bool,

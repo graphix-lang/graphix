@@ -1,10 +1,9 @@
-use gui::*;
+use gui::{row, window};
 use gui::data_table::{self, *};
 use gui::column::{self, *};
 use gui::text::{self, *};
-use str::*;
-use sys::*;
-use sys::net::{self, *};
+use sys::time;
+use sys::net::publish;
 use gui::data_table::Table;
 mod icon;
 

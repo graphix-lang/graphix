@@ -307,13 +307,18 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
+        enclosing: &Scope,
         scope: &Scope,
         sandbox: Sandbox,
         sig: Sig,
         source: Arc<Expr>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        let source = compile(ctx, flags, (*source).clone(), scope, top_id)?;
+        // The source expression is LOADER-side code: it compiles in the
+        // enclosing scope, so `let src = …; mod foo dynamic { … source
+        // src }` resolves. Only the loaded module text compiles under
+        // the module's own scope.
+        let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         env.modules.insert_cow(scope.lexical.clone());
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)

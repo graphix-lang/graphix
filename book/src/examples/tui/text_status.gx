@@ -1,4 +1,4 @@
-use tui::*;
+use tui::{line, span, style};
 use tui::text::{self, *};
 
 let make_status = |level, msg| select level {

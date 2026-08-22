@@ -159,8 +159,7 @@ Functions can capture variables from their surrounding scope:
 Now let's write a real Graphix program! Create a file called `hello.gx` with this content:
 
 ```graphix
-use tui;
-use tui::text;
+use tui::text::{self, *};
 
 let counter = count(sys::time::timer(duration:1.s, true));
 

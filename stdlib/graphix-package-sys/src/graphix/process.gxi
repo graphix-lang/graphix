@@ -1,5 +1,5 @@
-use super::*;
-use sys::io::{self, *};
+use super::args;
+use sys::io::{self, stderr, stdin, stdout};
 
 /// An opaque handle to a managed child process.
 type Proc;

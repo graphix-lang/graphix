@@ -393,23 +393,18 @@ GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 
 In REPL mode only, the shell automatically tries to load a module named `init`. If found, it's loaded before the REPL starts. If not found, the shell continues silently.
 
-Create an `init.gx` file in your init directory to:
-- Define commonly used utilities
-- Set up default imports
+Create an `init.gx` file in your init directory to define commonly
+used utilities.
 
 Example `~/.local/share/graphix/init.gx`:
 ```graphix
-// Commonly used stdlib modules
-use sys::time;
-use str;
-use array;
-
-// Personal utilities
 let debug = |x| { print("DEBUG: [x]"); x };
 let clear = || print("\x1b[2J\x1b[H");
 ```
 
-Now these are available immediately in any REPL session.
+The shell loads this as the module `init`, so in any REPL session the
+utilities are available as `init::debug`, `init::clear`, etc. — or
+bare after a `use init::*`.
 
 ## Command-Line Options
 

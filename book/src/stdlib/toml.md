@@ -4,7 +4,7 @@ The `toml` module provides TOML serialization and deserialization.
 Like `json::read`, `toml::read` uses type-directed deserialization.
 
 ```graphix
-use sys::io;
+use sys::io::Stream;
 
 /// Parse TOML from a string, byte array, or I/O stream.
 val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]>;
@@ -22,7 +22,6 @@ val write_stream: fn(?#pretty: bool, stream: Stream<'a>, value: Any) -> Result<n
 ## Example
 
 ```graphix
-use toml;
 
 type Config = {
     host: string,

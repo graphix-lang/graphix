@@ -5,7 +5,7 @@ The `json` module provides JSON serialization and deserialization.
 inferred from the type annotation at the call site.
 
 ```graphix
-use sys::io;
+use sys::io::Stream;
 
 /// Parse JSON from a string, byte array, or I/O stream.
 val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;
@@ -27,7 +27,6 @@ the binding. The compiler resolves the concrete type at compile time and
 generates the appropriate deserialization code.
 
 ```graphix
-use json;
 
 let n: i64 = json::read("42")?;
 let s: string = json::read("\"hello\"")?;

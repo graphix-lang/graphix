@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color, color, Length, style, Widget};
 type SeriesStyle = {
   color: [Color, null],
   label: [string, null],

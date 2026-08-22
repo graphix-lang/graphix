@@ -1,7 +1,7 @@
-use tui;
-use tui::block;
-use tui::input_handler;
-use tui::browser;
+use tui::{line, Size, span, style};
+use tui::block::{self, *};
+use tui::input_handler::{self, *};
+use tui::browser::{self, *};
 
 let path = "/";
 let command_error: error = never();

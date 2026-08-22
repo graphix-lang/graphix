@@ -181,19 +181,37 @@ fn tvar() -> impl Strategy<Value = TVar> {
     random_fname().prop_map(|n| TVar::empty_named(n))
 }
 
+/// Optional keyword ROOT (`self`/`package`/a `super` chain) — legal
+/// leading-only, in expression, connect, sandbox, and type paths alike.
+fn path_lead() -> impl Strategy<Value = Vec<String>> {
+    prop_oneof![
+        6 => Just(Vec::new()),
+        1 => Just(vec!["self".to_string()]),
+        1 => Just(vec!["package".to_string()]),
+        1 => (1..3usize).prop_map(|n| vec!["super".to_string(); n]),
+    ]
+}
+
 fn random_modpath() -> impl Strategy<Value = ModPath> {
     // `self` is special inside use groups (the enclosing prefix), so a
-    // literal `self` segment would print/reparse asymmetrically.
-    collection::vec(
+    // literal `self` segment would print/reparse asymmetrically —
+    // keyword roots come only from `path_lead`.
+    let segs = collection::vec(
         random_modpart().prop_filter("self is special in use", |s| s != "self"),
         (1, 5),
-    )
-    .prop_map(ModPath::from_iter)
+    );
+    (path_lead(), segs)
+        .prop_map(|(lead, segs)| ModPath::from_iter(lead.into_iter().chain(segs)))
 }
 
 fn typath() -> impl Strategy<Value = ModPath> {
-    (collection::vec(random_modpart(), (0, 4)), typart())
-        .prop_map(|(path, typ)| ModPath(ModPath::from_iter(path).0.append(typ.as_str())))
+    (path_lead(), collection::vec(random_modpart(), (0, 4)), typart()).prop_map(
+        |(lead, path, typ)| {
+            ModPath(
+                ModPath::from_iter(lead.into_iter().chain(path)).0.append(typ.as_str()),
+            )
+        },
+    )
 }
 
 fn valid_modpath() -> impl Strategy<Value = ModPath> {

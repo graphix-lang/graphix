@@ -1,6 +1,6 @@
 use super::{
-    csep, fname, grow::grow, ident, not_prefix, sep_by_tok, sep_by1_tok, spaces, spaces1,
-    spfldname, spstring, sptoken, typname,
+    csep, fname, grow::grow, ident, not_prefix, path_root, sep_by_tok, sep_by1_tok,
+    spaces, spaces1, spfldname, spstring, sptoken, typname,
 };
 use crate::{
     expr::{Expr, ExprKind, ModPath, TypeDefExpr},
@@ -27,21 +27,28 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    sep_by1(spaces().with(choice((fname(), typname()))), string("::")).then(
-        |mut parts: LPooled<Vec<ArcStr>>| {
-            if parts.len() == 0 {
-                unexpected_any("empty type path").left()
-            } else {
-                match parts.last().unwrap().chars().next() {
-                    None => unexpected_any("empty name").left(),
-                    Some(c) if c.is_lowercase() => {
-                        unexpected_any("type names must be capitalized").left()
-                    }
-                    Some(_) => value(ModPath::from(parts.drain(..))).right(),
-                }
-            }
-        },
+    (
+        spaces().with(path_root()),
+        sep_by1(spaces().with(choice((fname(), typname()))), string("::")),
     )
+        .then(
+            |(mut root, mut parts): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+                if parts.len() == 0 {
+                    unexpected_any("empty type path").left()
+                } else {
+                    match parts.last().unwrap().chars().next() {
+                        None => unexpected_any("empty name").left(),
+                        Some(c) if c.is_lowercase() => {
+                            unexpected_any("type names must be capitalized").left()
+                        }
+                        Some(_) => {
+                            root.extend(parts.drain(..));
+                            value(ModPath::from(root.drain(..))).right()
+                        }
+                    }
+                }
+            },
+        )
 }
 
 fn typeprim<I>() -> impl Parser<I, Output = Typ>

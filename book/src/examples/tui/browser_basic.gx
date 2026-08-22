@@ -1,4 +1,3 @@
-use tui::*;
 use tui::browser::{self, *};
 
 let selected_path: string = never();

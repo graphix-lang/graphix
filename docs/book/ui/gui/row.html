@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -196,11 +196,11 @@
 </ul>
 <p>The positional argument is a reference to an array of child widgets.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::row;
-use gui::button;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::button::{self, *};
 mod icon;
 
 [&amp;window(

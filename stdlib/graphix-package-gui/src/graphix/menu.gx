@@ -1,4 +1,3 @@
-use str::*;
 
 type Shortcut = {alt: bool, ctrl: bool, key: string, logo: bool, shift: bool};
 

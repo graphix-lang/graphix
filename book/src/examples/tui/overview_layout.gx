@@ -1,4 +1,3 @@
-use tui::*;
 use tui::layout::{self, *};
 use tui::text::{self, *};
 

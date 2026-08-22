@@ -55,12 +55,11 @@ module, they are required to be defined in order, sandbox, sig, and source,
   - `sandbox unrestricted;` no sandboxing, the dynamic module can access
     anything in it's scope
   - `sandbox whitelist [item0, item1, ...]` the dynamic module may access ONLY
-    the names explicitly listed. e.g. `sandbox whitelist [core::array];` would
-    allow the dynamic module to access only `core::array` and nothing else.
+    the names explicitly listed. e.g. `sandbox whitelist [core, array];` would
+    allow the dynamic module to access only `core` and `array` and nothing else.
   - `sandbox blacklist [item0, item1, ...]` the dynamic module may access
-    anything except the names listed. `sandbox blacklist
-    [super::secret::module];` everything except super secret module would be
-    accessible
+    anything except the names listed. `sandbox blacklist [sys];` everything
+    except the `sys` package would be accessible
 - a `sig` statement is the type signature of the module. This is a special
   syntax for writing module type signatures. There are four possible statements,
   - a val statement defines a value and it's type, `val add: fn(x: i64) -> i64` is
@@ -76,7 +75,9 @@ module, they are required to be defined in order, sandbox, sig, and source,
   - a mod statement defines a sub module of the dynamically loaded module. A sub
     module must have a sig. `mod m: sig { ... }` defines a sub module.
 - a `source` statement defines where the source code for the dynamic module will
-  come from. It's type must be a string.
+  come from. It's type must be a string. The source expression is part of the
+  loading program, so it resolves in the enclosing scope — referencing `path`
+  above works even though it appears inside the `mod foo dynamic` block.
 
 The `mod foo dynamic ...` expression returns a value of type,
 

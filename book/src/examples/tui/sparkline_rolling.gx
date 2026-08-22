@@ -1,9 +1,6 @@
-use tui::*;
 use tui::sparkline::{self, *};
-use core::math::{self, *};
-use sys::*;
-use sys::net::{self, *};
-use sys::time::{self, *};
+use core::math;
+use sys::time;
 
 // Self-contained: publish a simulated CPU value once a second, then
 // subscribe to it for a rolling 60-sample sparkline. Drop the

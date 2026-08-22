@@ -1,4 +1,4 @@
-use super::*;
+use super::{Length, Widget};
 type Checkbox = {
   disabled: &bool,
   is_checked: &bool,

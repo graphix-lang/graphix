@@ -1,6 +1,6 @@
-use tui;
-use tui::table;
-use tui::text;
+use tui::line;
+use tui::table::{self, *};
+use tui::text::{self, *};
 
 let clock = sys::time::timer(duration:1.s, true);
 

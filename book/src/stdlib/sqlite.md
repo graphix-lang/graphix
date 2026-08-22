@@ -43,7 +43,6 @@ The return type of `sqlite::query` determines how rows are deserialized.
 Use struct types for named columns, or `Map<string, SqlVal>` for raw access.
 
 ```graphix
-use sqlite;
 
 let conn = sqlite::open(":memory:")?;
 sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;

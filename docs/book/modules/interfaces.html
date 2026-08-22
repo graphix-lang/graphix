@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -224,9 +224,14 @@ mod parser;
 <p>Each declared sub-module should have its own implementation file (e.g.,
 <code>utils.gx</code>) and optionally its own interface file (<code>utils.gxi</code>).</p>
 <h3 id="use-statements-use"><a class="header" href="#use-statements-use">Use Statements (use)</a></h3>
-<p>Re-export items from other modules:</p>
-<pre><code class="language-graphix">use other::module;
+<p>Import names the interface’s own declarations need:</p>
+<pre><code class="language-graphix">use super::{Client, Response};
+use sys::io::Stream;
 </code></pre>
+<p>A <code>use</code> in the interface applies to the implementation automatically —
+don’t repeat it in the <code>.gx</code> file. It is a private import, not a
+re-export: it does not make the imported names part of the module’s
+public API.</p>
 <h2 id="a-complete-example"><a class="header" href="#a-complete-example">A Complete Example</a></h2>
 <p>Let’s create a simple math utilities module with an interface.</p>
 <p><strong>math.gxi</strong> (interface):</p>
@@ -324,28 +329,19 @@ mod utils;
 mod parser;
 </code></pre>
 <h2 id="sub-module-visibility"><a class="header" href="#sub-module-visibility">Sub-module Visibility</a></h2>
-<p>Sub-modules can see everything in their parent that was declared before the
-<code>mod</code> statement that declared them. This includes private items not exported in
-the interface.</p>
-<p>The position of the <code>mod</code> statement controls what the sub-module can see:</p>
-<ul>
-<li>
-<p><strong>Module declared only in interface</strong>: The sub-module can see everything
-declared before the item it follows in the implementation. For example, if the
-interface has <code>val foo; mod child; val bar;</code>, and the implementation has
-<code>let foo = ...; let bar = ...;</code>, then <code>child</code> can see <code>foo</code> but not <code>bar</code>.</p>
-</li>
-<li>
-<p><strong>Module declared only in implementation</strong>: The sub-module can see everything
-declared before its <code>mod</code> statement, but it is not exported (not accessible to
-users of the parent module).</p>
-</li>
-<li>
-<p><strong>Module declared in both</strong>: The position in the implementation controls what
-the sub-module can see, while the interface declaration exports it. Use this
-for precise control over sub-module visibility.</p>
-</li>
-</ul>
+<p>A sub-module sees nothing of its parent implicitly — it imports what it
+needs with <code>use super::...</code>. Because visibility is order-independent,
+the position of the <code>mod</code> statement carries no meaning: declare it
+wherever reads best, and a sub-module may import parent items declared
+after it.</p>
+<p>Privacy follows Rust’s rule: a private item is visible to its defining
+module and that module’s descendants. So a sub-module may
+<code>use super::private_setup</code> even when <code>private_setup</code> is not exported in
+the parent’s interface — privacy hides items from <em>users</em> of the
+module, not from the module’s own subtree.</p>
+<p>Whether the sub-module itself is exported is controlled by the
+interface: a <code>mod child;</code> in the <code>.gxi</code> exports it, a <code>mod child;</code> only
+in the <code>.gx</code> keeps it private to the parent’s subtree.</p>
 <p>Example:</p>
 <pre><code class="language-graphix">// parent.gxi
 val public_helper: fn(x: i64) -&gt; i64;
@@ -355,7 +351,10 @@ mod child;
 let private_setup = ...;
 let public_helper = |x| x + 1;
 
-mod child;  // child can see private_setup and public_helper
+mod child;
+</code></pre>
+<pre><code class="language-graphix">// parent/child.gx
+use super::{private_setup, public_helper};  // both visible here
 </code></pre>
 <h2 id="interfaces-with-netidx-modules"><a class="header" href="#interfaces-with-netidx-modules">Interfaces with Netidx Modules</a></h2>
 <p>Interface files also work with modules stored in netidx. The naming convention

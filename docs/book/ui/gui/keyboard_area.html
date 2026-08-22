@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -204,11 +204,11 @@ val keyboard_area: fn(
 </ul>
 <p>The positional argument is a reference to the child widget.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::keyboard_area;
-use gui::container;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::keyboard_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let last_key = "None";

@@ -1,5 +1,4 @@
-use super::*;
-use sys::io::{self, *};
+use sys::io;
 
 /// An opaque handle to a TCP listener. The listener is closed when
 /// there are no remaining references to the TcpListener value.

@@ -13,7 +13,6 @@ val render: fn(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -> Re
 ## Example
 
 ```graphix
-use hbs;
 
 let greeting = hbs::render(
     "Hello, {{name}}! You have {{count}} messages.",

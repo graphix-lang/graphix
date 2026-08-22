@@ -1,4 +1,4 @@
-use super::*;
+use super::{Length, Widget};
 type VerticalSlider = {
   disabled: &bool,
   value: &f64,

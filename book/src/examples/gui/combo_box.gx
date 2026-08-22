@@ -1,4 +1,4 @@
-use gui::*;
+use gui::window;
 use gui::text::{self, *};
 use gui::combo_box::{self, *};
 use gui::column::{self, *};

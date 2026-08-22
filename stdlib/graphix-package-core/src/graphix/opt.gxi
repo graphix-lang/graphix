@@ -1,4 +1,4 @@
-use super::*;
+use super::Result;
 /// true if v is not null
 val is_some: fn(v: ['a, null]) -> bool;
 

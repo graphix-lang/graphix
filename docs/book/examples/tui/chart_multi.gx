@@ -1,6 +1,6 @@
-use tui;
-use tui::chart;
-use tui::text;
+use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
 
 let temp_data = [(0.0, 20.0), (1.0, 22.0), (2.0, 21.5)];
 let humidity_data = [(0.0, 50.0), (1.0, 55.0), (2.0, 52.0)];

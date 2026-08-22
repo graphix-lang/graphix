@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -178,7 +178,7 @@
 <p>The <code>pack</code> module provides native binary serialization using the netidx
 Pack format. Like <code>json::read</code>, <code>pack::read</code> uses type-directed
 deserialization.</p>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::Stream;
 
 /// Decode a value from packed binary bytes or stream.
 val read: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;

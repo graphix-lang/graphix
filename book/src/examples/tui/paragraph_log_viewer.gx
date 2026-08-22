@@ -1,9 +1,7 @@
-use tui::*;
+use tui::line;
 use tui::paragraph::{self, *};
 use tui::text::{self, *};
-use sys::*;
-use sys::net::{self, *};
-use sys::time::{self, *};
+use sys::time;
 
 // Self-contained: publish a simulated log entry every second, then
 // subscribe to display the rolling window. Drop the publish to point

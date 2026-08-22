@@ -1,4 +1,4 @@
-use super::*;
+use super::Widget;
 type HorizontalRule = { height: &f64 };
 type VerticalRule = { width: &f64 };
 

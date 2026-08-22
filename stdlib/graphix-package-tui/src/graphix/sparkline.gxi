@@ -1,4 +1,4 @@
-use super::*;
+use super::{Style, style, Tui};
 type RenderDirection = [
   `LeftToRight,
   `RightToLeft

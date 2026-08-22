@@ -181,6 +181,10 @@ fn feature_report(progs: &[String], ok: &[bool]) {
         ("modules", "mod "),
         ("files", "file-v1"),
         ("reactive", "schedule-v1"),
+        ("use-super", "use super::"),
+        ("use-main", "use m"),
+        ("path-super", "super::m"),
+        ("path-package", "package::m"),
     ];
     println!("  per-feature compile rates:");
     for (name, pat) in FEATURES {

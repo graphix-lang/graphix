@@ -1,6 +1,6 @@
-use tui;
-use tui::paragraph;
-use tui::text;
+use tui::{line, style};
+use tui::paragraph::{self, *};
+use tui::text::{self, *};
 
 paragraph(
     #alignment: &`Center,

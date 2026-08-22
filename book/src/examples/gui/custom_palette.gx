@@ -1,5 +1,5 @@
-use gui::*;
-use gui::style::{self, *};
+use gui::{color, window};
+use gui::style::Palette;
 use gui::text::{self, *};
 use gui::button::{self, *};
 use gui::toggler::{self, *};

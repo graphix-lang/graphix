@@ -1,7 +1,7 @@
-use tui::*;
-use tui::barchart::{self, *};
+use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
 use tui::block::{self, *};
-use rand::*;
+use rand::rand;
 
 let clock = sys::time::timer(duration:0.7s, true);
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Alignment, Line, Style, style, Tui};
 type Text = {
   style: &Style,
   alignment: &[Alignment, null],

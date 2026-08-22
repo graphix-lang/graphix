@@ -1,4 +1,4 @@
-use super::*;
+use super::{Length, Widget};
 type Toggler = {
   disabled: &bool,
   is_toggled: &bool,

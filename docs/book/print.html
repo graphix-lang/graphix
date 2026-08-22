@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -548,8 +548,7 @@ want to exit the REPL press ctrl-d.</p>
 </code></pre>
 <h2 id="creating-your-first-file"><a class="header" href="#creating-your-first-file">Creating Your First File</a></h2>
 <p>Now let’s write a real Graphix program! Create a file called <code>hello.gx</code> with this content:</p>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::text::{self, *};
 
 let counter = count(sys::time::timer(duration:1.s, true));
 
@@ -618,7 +617,7 @@ text(&amp;"Count: [counter]")
 <p>In Graphix, you create bindings with <code>let</code>. Unlike variables in other languages, these bindings can update over time—they’re more like pipes that different values flow through.</p>
 <p><strong><a href="#let-binds">Let Binds</a></strong> explains how to create bindings, how shadowing works, and why every binding in Graphix is potentially reactive. When you write <code>let x = 42</code>, you’re not just storing a value—you’re creating a node in the dataflow graph.</p>
 <p><strong><a href="#blocks">Blocks</a></strong> shows how to group expressions with <code>{...}</code> to create scopes, hide intermediate bindings, and build up complex expressions. Blocks are expressions too—they evaluate to their last value.</p>
-<p><strong><a href="#use">Use</a></strong> lets you bring module names into scope so you can write <code>map(arr, f)</code> instead of <code>array::map(arr, f)</code>. Simple, but essential as your programs grow.</p>
+<p><strong><a href="#use">Use</a></strong> imports names into scope so you can write <code>map(arr, f)</code> instead of <code>array::map(arr, f)</code>. Simple, but essential as your programs grow.</p>
 <h2 id="connect-the-heart-of-reactivity"><a class="header" href="#connect-the-heart-of-reactivity">Connect: The Heart of Reactivity</a></h2>
 <p>This is where Graphix becomes special. The <code>&lt;-</code> operator (connect) is the only way to create cycles in your dataflow graph, and it’s the key to writing reactive programs and loops.</p>
 <p><strong><a href="#connect">Connect</a></strong> is the most important section in this chapter. When you write:</p>
@@ -1434,55 +1433,101 @@ valid, and they are just expressions. They will become very important
 when we introduce lambda expressions.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="use"><a class="header" href="#use">Use</a></h1>
-<p>Use allows you to bring names in modules into your current scope so they can be used without prefixing.</p>
-<p>Several uses sharing a prefix can be grouped, exactly as in Rust:</p>
-<pre><code class="language-graphix">use tui::{list, block, text};
-use sys::{time, net};
+<p><code>use</code> imports a <em>name</em> into the current scope. It follows the same
+rules as Rust 2018 paths: every name in scope arrived either by an
+explicit declaration (<code>let</code>, <code>type</code>, <code>mod</code>), an explicit <code>use</code>, or one
+of the two preludes described below. Nothing else is implicit.</p>
+<pre><code class="language-graphix">sys::net::subscribe(...); // fully qualified call
+use sys::net;             // import the name `net`
+net::subscribe(...);      // now `net` is in scope
+use sys::net::subscribe;  // import the item itself
+subscribe(...)            // same function
 </code></pre>
-<p>is the same as writing each <code>use</code> on its own line. Groups nest
-(<code>use a::{b::{c, d}, e}</code>), a trailing comma is allowed, and <code>self</code>
-inside a group names the prefix itself: <code>use sys::{self, net}</code> is
-<code>use sys</code> plus <code>use sys::net</code>. The same syntax works in <code>.gxi</code>
-interface files.</p>
-<pre><code class="language-graphix">sys::net::subscribe(...); // call subscribe in the sys::net module
-use sys::net;
-subscribe(...) // same function
+<p>Note that <code>use sys::net</code> imports the single name <code>net</code> — it does not
+bring the <em>contents</em> of <code>sys::net</code> into scope. To import an item, name
+the item. An imported name covers every declaration kind that shares
+it: if a module exports both a type <code>Color</code> and a value <code>Color</code>, one
+<code>use m::Color</code> imports both.</p>
+<h2 id="forms"><a class="header" href="#forms">Forms</a></h2>
+<pre><code class="language-graphix">use tui::line;                    // one name
+use tui::{line, span, style};     // group
+use sys::{fs::{self, watch}, io}; // groups nest; self names the prefix
+use tui::line as tline;           // rename
+use array::*;                     // glob: import everything array exports
+use super::{answer, identicon};   // from the parent module
+use package::tui::pump;           // from the current package's root
 </code></pre>
-<p>Use is valid anywhere expressions are valid</p>
+<p><code>self</code> inside a group names the prefix itself: <code>use sys::{self, net}</code>
+is <code>use sys</code> plus <code>use sys::net</code>. A trailing comma is allowed. The
+same syntax works in <code>.gxi</code> interface files.</p>
+<p>Globs are legal but discouraged outside test modules — an explicit
+list documents where every name comes from, and two globs that both
+provide a name make that name an error at its first use.</p>
+<p>The <code>{self, *}</code> group is the idiom for the UI packages’ widget
+modules, where a module and its main function share a name:
+<code>use tui::text::{self, *}</code> imports the module <code>text</code> <em>and</em> its
+contents, so both the widget call <code>text(&amp;"hi")</code> and qualified access
+to the module’s other items work.</p>
+<h2 id="path-roots"><a class="header" href="#path-roots">Path roots</a></h2>
+<p>The leading segment of any path — in <code>use</code>, in expressions, and in
+type annotations — is one of:</p>
+<ul>
+<li>a <strong>package name</strong>: <code>array::len</code>, <code>tui::line</code>. Every installed
+package’s name is usable as a path root anywhere, with no <code>use</code>
+(this is the <em>package prelude</em>; only the name is implicit, not the
+package’s items).</li>
+<li><strong><code>self</code></strong> — the current module: <code>self::helper</code>.</li>
+<li><strong><code>super</code></strong> — the parent module, chainable: <code>use super::super::x</code>.
+In a program file’s top-level submodules, <code>super</code> reaches the
+bindings at the top of the file.</li>
+<li><strong><code>package</code></strong> — the root of the current package (like Rust’s
+<code>crate</code>): <code>use package::tui::pump</code>.</li>
+</ul>
+<p>The same grammar works outside <code>use</code>: <code>super::helper(x)</code> and
+<code>let p: package::tui::Pump = ...</code> are both valid.</p>
+<h2 id="the-core-prelude"><a class="header" href="#the-core-prelude">The core prelude</a></h2>
+<p>The root items of the <code>core</code> package (<code>print</code>, <code>println</code>, <code>cast</code>,
+<code>error</code>, <code>filter</code>, <code>once</code>, <code>never</code>, <code>seq</code>, <code>Any</code>, <code>Result</code>, …) and
+the primitive type names are implicitly imported into every module.
+They can be shadowed by explicit declarations and imports.</p>
+<h2 id="scoping"><a class="header" href="#scoping">Scoping</a></h2>
+<p><code>use</code> is valid anywhere expressions are valid, and imports into the
+enclosing lexical scope only:</p>
 <pre><code class="language-graphix">let list = {
-  use array;
+  use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
 list
 </code></pre>
 <p>will print <code>[2, 4, 6, 8, 10]</code></p>
 <pre><code class="language-graphix">let list = {
-  use array;
+  use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
 map(list, |x| x * 2)
 </code></pre>
-<p>will not compile, e.g.</p>
+<p>will not compile — the import is local to the block:</p>
 <pre><code>$ graphix test.gx
 Error: in file "test.gx"
 
 Caused by:
-    at line: 5, column: 1 map not defined
+    0: at: line: 5, column: 1 in file test.gx, in: map
+    1: map not defined
 </code></pre>
-<p>Use paths are always absolute — they are resolved from the root of the
-module tree, not relative to the current module. For example, if you are
-inside the <code>sys::net</code> module and want to use the <code>sys::time</code> module, you
-must write <code>use sys::time</code>, not <code>use time</code>.</p>
-<pre><code class="language-graphix">// inside sys::net
-use sys::time;     // correct — absolute path
-</code></pre>
-<p>A submodule can reference bindings from its parent directly, but
-only if the <code>mod</code> declaration comes after those bindings in the
-parent’s interface file.</p>
-<p>Use shadows earlier declarations in it’s scope. Consider,</p>
+<p>Unlike declarations, imports carry no ordering constraint within a
+module: a <code>use</code> may name an item that is declared later in the file,
+and <code>mod</code> statements may appear anywhere. Visibility is
+order-independent; only <em>execution</em> of a module’s body follows
+declaration order.</p>
+<h2 id="shadowing-and-collisions"><a class="header" href="#shadowing-and-collisions">Shadowing and collisions</a></h2>
+<p>Within one scope, names resolve in precedence order: an explicit
+declaration beats an import, an import beats a glob, a glob beats the
+package prelude, and the package prelude beats the core prelude.
+Inner scopes shadow outer scopes as usual, so a block-local <code>use</code>
+shadows an outer <code>let</code>:</p>
 <pre><code class="language-graphix">let map = |a, f| "hello you called map!";
 let list = {
-  use array;
+  use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
 (list, map(list, |x| x * 2))
@@ -1491,6 +1536,16 @@ let list = {
 <pre><code>$ graphix test.gx
 ([2, 4, 6, 8, 10], "hello you called map!")
 </code></pre>
+<p>The error cases:</p>
+<ul>
+<li>a declaration and an import of the same name in the same scope:
+error at the <code>use</code> if the declaration comes first; if the
+declaration comes after, it shadows the import (rebinding a name
+with <code>let</code> is idiomatic Graphix and imports are no different)</li>
+<li>two explicit imports of the same name: error — rename one</li>
+<li>two globs that both provide a name: allowed at import, error at the
+first <em>use</em> of the ambiguous name, naming both sources</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="select"><a class="header" href="#select">Select</a></h1>
 <p>Select lets us create a graph node with multiple possible output paths that
@@ -2826,11 +2881,15 @@ what parts of a module are publicly accessible.</p>
 <li>module hierarchies</li>
 <li>implementation files (<code>.gx</code>) for module code</li>
 <li>interface files (<code>.gxi</code>) for defining module APIs and controlling visibility</li>
+<li>explicit imports with renaming (<code>use a::b as c</code>) and glob imports (<code>use a::*</code>)</li>
+<li>relative paths from <code>self</code>, <code>super</code>, and <code>package</code> roots</li>
 <li>modules stored in files or netidx</li>
 <li>modules dynamically loadable at runtime</li>
 </ul>
-<p>Note: module renaming on <code>use</code> is not yet supported but may be added in a future
-release.</p>
+<p>Name resolution follows the same discipline as Rust 2018: every name in
+scope arrived by an explicit declaration, an explicit <code>use</code>, or one of
+the two preludes (the <code>core</code> prelude and the installed package names).
+See <a href="#use">Use</a> for the import rules.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="implementation-files"><a class="header" href="#implementation-files">Implementation Files</a></h1>
 <p>Module implementations are stored in <code>.gx</code> files. A module may be defined in
@@ -3005,9 +3064,14 @@ mod parser;
 <p>Each declared sub-module should have its own implementation file (e.g.,
 <code>utils.gx</code>) and optionally its own interface file (<code>utils.gxi</code>).</p>
 <h3 id="use-statements-use"><a class="header" href="#use-statements-use">Use Statements (use)</a></h3>
-<p>Re-export items from other modules:</p>
-<pre><code class="language-graphix">use other::module;
+<p>Import names the interface’s own declarations need:</p>
+<pre><code class="language-graphix">use super::{Client, Response};
+use sys::io::Stream;
 </code></pre>
+<p>A <code>use</code> in the interface applies to the implementation automatically —
+don’t repeat it in the <code>.gx</code> file. It is a private import, not a
+re-export: it does not make the imported names part of the module’s
+public API.</p>
 <h2 id="a-complete-example"><a class="header" href="#a-complete-example">A Complete Example</a></h2>
 <p>Let’s create a simple math utilities module with an interface.</p>
 <p><strong>math.gxi</strong> (interface):</p>
@@ -3105,28 +3169,19 @@ mod utils;
 mod parser;
 </code></pre>
 <h2 id="sub-module-visibility"><a class="header" href="#sub-module-visibility">Sub-module Visibility</a></h2>
-<p>Sub-modules can see everything in their parent that was declared before the
-<code>mod</code> statement that declared them. This includes private items not exported in
-the interface.</p>
-<p>The position of the <code>mod</code> statement controls what the sub-module can see:</p>
-<ul>
-<li>
-<p><strong>Module declared only in interface</strong>: The sub-module can see everything
-declared before the item it follows in the implementation. For example, if the
-interface has <code>val foo; mod child; val bar;</code>, and the implementation has
-<code>let foo = ...; let bar = ...;</code>, then <code>child</code> can see <code>foo</code> but not <code>bar</code>.</p>
-</li>
-<li>
-<p><strong>Module declared only in implementation</strong>: The sub-module can see everything
-declared before its <code>mod</code> statement, but it is not exported (not accessible to
-users of the parent module).</p>
-</li>
-<li>
-<p><strong>Module declared in both</strong>: The position in the implementation controls what
-the sub-module can see, while the interface declaration exports it. Use this
-for precise control over sub-module visibility.</p>
-</li>
-</ul>
+<p>A sub-module sees nothing of its parent implicitly — it imports what it
+needs with <code>use super::...</code>. Because visibility is order-independent,
+the position of the <code>mod</code> statement carries no meaning: declare it
+wherever reads best, and a sub-module may import parent items declared
+after it.</p>
+<p>Privacy follows Rust’s rule: a private item is visible to its defining
+module and that module’s descendants. So a sub-module may
+<code>use super::private_setup</code> even when <code>private_setup</code> is not exported in
+the parent’s interface — privacy hides items from <em>users</em> of the
+module, not from the module’s own subtree.</p>
+<p>Whether the sub-module itself is exported is controlled by the
+interface: a <code>mod child;</code> in the <code>.gxi</code> exports it, a <code>mod child;</code> only
+in the <code>.gx</code> keeps it private to the parent’s subtree.</p>
 <p>Example:</p>
 <pre><code class="language-graphix">// parent.gxi
 val public_helper: fn(x: i64) -&gt; i64;
@@ -3136,7 +3191,10 @@ mod child;
 let private_setup = ...;
 let public_helper = |x| x + 1;
 
-mod child;  // child can see private_setup and public_helper
+mod child;
+</code></pre>
+<pre><code class="language-graphix">// parent/child.gx
+use super::{private_setup, public_helper};  // both visible here
 </code></pre>
 <h2 id="interfaces-with-netidx-modules"><a class="header" href="#interfaces-with-netidx-modules">Interfaces with Netidx Modules</a></h2>
 <p>Interface files also work with modules stored in netidx. The naming convention
@@ -3312,11 +3370,11 @@ module, they are required to be defined in order, sandbox, sig, and source,</p>
 <li><code>sandbox unrestricted;</code> no sandboxing, the dynamic module can access
 anything in it’s scope</li>
 <li><code>sandbox whitelist [item0, item1, ...]</code> the dynamic module may access ONLY
-the names explicitly listed. e.g. <code>sandbox whitelist [core::array];</code> would
-allow the dynamic module to access only <code>core::array</code> and nothing else.</li>
+the names explicitly listed. e.g. <code>sandbox whitelist [core, array];</code> would
+allow the dynamic module to access only <code>core</code> and <code>array</code> and nothing else.</li>
 <li><code>sandbox blacklist [item0, item1, ...]</code> the dynamic module may access
-anything except the names listed. <code>sandbox blacklist [super::secret::module];</code> everything except super secret module would be
-accessible</li>
+anything except the names listed. <code>sandbox blacklist [sys];</code> everything
+except the <code>sys</code> package would be accessible</li>
 </ul>
 </li>
 <li>a <code>sig</code> statement is the type signature of the module. This is a special
@@ -3336,7 +3394,9 @@ module must have a sig. <code>mod m: sig { ... }</code> defines a sub module.</l
 </ul>
 </li>
 <li>a <code>source</code> statement defines where the source code for the dynamic module will
-come from. It’s type must be a string.</li>
+come from. It’s type must be a string. The source expression is part of the
+loading program, so it resolves in the enclosing scope — referencing <code>path</code>
+above works even though it appears inside the <code>mod foo dynamic</code> block.</li>
 </ul>
 <p>The <code>mod foo dynamic ...</code> expression returns a value of type,</p>
 <p><code>[null, Error&lt;`DynamicLoadError(string)&gt;]</code></p>
@@ -3645,22 +3705,15 @@ GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 </code></pre>
 <h3 id="the-init-module"><a class="header" href="#the-init-module">The Init Module</a></h3>
 <p>In REPL mode only, the shell automatically tries to load a module named <code>init</code>. If found, it’s loaded before the REPL starts. If not found, the shell continues silently.</p>
-<p>Create an <code>init.gx</code> file in your init directory to:</p>
-<ul>
-<li>Define commonly used utilities</li>
-<li>Set up default imports</li>
-</ul>
+<p>Create an <code>init.gx</code> file in your init directory to define commonly
+used utilities.</p>
 <p>Example <code>~/.local/share/graphix/init.gx</code>:</p>
-<pre><code class="language-graphix">// Commonly used stdlib modules
-use sys::time;
-use str;
-use array;
-
-// Personal utilities
-let debug = |x| { print("DEBUG: [x]"); x };
+<pre><code class="language-graphix">let debug = |x| { print("DEBUG: [x]"); x };
 let clear = || print("\x1b[2J\x1b[H");
 </code></pre>
-<p>Now these are available immediately in any REPL session.</p>
+<p>The shell loads this as the module <code>init</code>, so in any REPL session the
+utilities are available as <code>init::debug</code>, <code>init::clear</code>, etc. — or
+bare after a <code>use init::*</code>.</p>
 <h2 id="command-line-options"><a class="header" href="#command-line-options">Command-Line Options</a></h2>
 <p>The <code>graphix</code> command supports several options for controlling its behavior.</p>
 <h3 id="netidx-configuration"><a class="header" href="#netidx-configuration">Netidx Configuration</a></h3>
@@ -5197,7 +5250,7 @@ val patch: fn(
 <p>The <code>json</code> module provides JSON serialization and deserialization.
 <code>json::read</code> uses type-directed deserialization — the target type is
 inferred from the type annotation at the call site.</p>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::Stream;
 
 /// Parse JSON from a string, byte array, or I/O stream.
 val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
@@ -5215,8 +5268,7 @@ val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt;
 <p>The return type of <code>json::read</code> is determined by the type annotation on
 the binding. The compiler resolves the concrete type at compile time and
 generates the appropriate deserialization code.</p>
-<pre><code class="language-graphix">use json;
-
+<pre><code class="language-graphix">
 let n: i64 = json::read("42")?;
 let s: string = json::read("\"hello\"")?;
 let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 30}")?;
@@ -5227,7 +5279,7 @@ let maybe: [string, null] = json::read(data)?;
 <h1 id="toml"><a class="header" href="#toml">toml</a></h1>
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization.</p>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::Stream;
 
 /// Parse TOML from a string, byte array, or I/O stream.
 val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
@@ -5242,8 +5294,7 @@ val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `TomlErr(
 val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
-<pre><code class="language-graphix">use toml;
-
+<pre><code class="language-graphix">
 type Config = {
     host: string,
     port: i64,
@@ -5258,7 +5309,7 @@ let out = toml::write_str(#pretty: true, cfg)?;
 <p>The <code>pack</code> module provides native binary serialization using the netidx
 Pack format. Like <code>json::read</code>, <code>pack::read</code> uses type-directed
 deserialization.</p>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::Stream;
 
 /// Decode a value from packed binary bytes or stream.
 val read: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
@@ -5277,7 +5328,7 @@ Graphix types including bytes, datetime, and duration.</p>
 <p>The <code>xls</code> module reads spreadsheet files in xlsx, xls, ods, and xlsb
 formats (via calamine). Data is returned as a 2D array of primitive
 values.</p>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::Stream;
 
 /// List sheet names in a workbook.
 val sheets: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
@@ -5286,9 +5337,7 @@ val sheets: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string
 val read: fn(input: [bytes, Stream&lt;'a&gt;], sheet: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
-<pre><code class="language-graphix">use xls;
-use sys;
-
+<pre><code class="language-graphix">
 let data = sys::fs::read_all_bin("report.xlsx")?;
 let names = xls::sheets(data)?;
 let rows = xls::read(data, names[0]$)?;
@@ -5332,8 +5381,7 @@ val close: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
 Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> for raw access.</p>
-<pre><code class="language-graphix">use sqlite;
-
+<pre><code class="language-graphix">
 let conn = sqlite::open(":memory:")?;
 sqlite::exec_batch(conn, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")?;
 sqlite::exec(conn, "INSERT INTO users VALUES (?, ?, ?)", [1, "Alice", 30])?;
@@ -5660,7 +5708,7 @@ val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null
 val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
 </code></pre>
 <h2 id="example-2"><a class="header" href="#example-2">Example</a></h2>
-<pre><code class="language-graphix">use args;
+<pre><code class="language-graphix">use args::Command;
 
 let cli = args::parse(
     args::command(
@@ -5694,8 +5742,7 @@ rendering.</p>
 val render: fn(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example-3"><a class="header" href="#example-3">Example</a></h2>
-<pre><code class="language-graphix">use hbs;
-
+<pre><code class="language-graphix">
 let greeting = hbs::render(
     "Hello, {{name}}! You have {{count}} messages.",
     {name: "Alice", count: 5}
@@ -5774,10 +5821,10 @@ to pass on events they receive or not. See the input widget for more
 details.</p>
 <h2 id="building-your-first-tui"><a class="header" href="#building-your-first-tui">Building Your First TUI</a></h2>
 <p>Here’s a simple example that demonstrates the core concepts:</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::text;
-use tui::layout;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
 
 let counter = count(sys::time::timer(duration:1.s, true));
 
@@ -5801,7 +5848,7 @@ block(
 <li><strong>Conditional Styling</strong>: Use <code>select</code> expressions to change styles based on state</li>
 </ul>
 <p>Many widgets take optional style arguments, allowing styling to be applied at many levels.</p>
-<pre><code class="language-graphix">use tui;
+<pre><code class="language-graphix">use tui::style;
 
 let is_selected = true;
 
@@ -5819,9 +5866,8 @@ style(
 <li><strong>Alignment</strong>: <code>Left</code>, <code>Center</code>, <code>Right</code> for horizontal; <code>Top</code>, <code>Center</code>, <code>Bottom</code> for vertical</li>
 <li><strong>Focus Management</strong>: Built-in focus handling for interactive components</li>
 </ul>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
 
 let selected_pane = 0;
 let sidebar = text(&amp;"Sidebar");
@@ -5845,9 +5891,9 @@ layout(
 <li>Application modes (normal, edit, command)</li>
 </ul>
 <p>State changes automatically trigger UI updates:</p>
-<pre><code class="language-graphix">use tui;
-use tui::list;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
@@ -5862,12 +5908,10 @@ list(#selected: &amp;selected_item, &amp;items)
 </code></pre>
 <h2 id="real-time-data-integration"><a class="header" href="#real-time-data-integration">Real-time Data Integration</a></h2>
 <p>Graphix TUIs excel at displaying real-time data. Connect to data sources via netidx and the UI updates automatically:</p>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
-use tui::text;
+<pre><code class="language-graphix">use tui::{span, style};
+use tui::gauge::{self, *};
+use tui::text::{self, *};
 use core::math;
-use sys;
-use sys::net;
 use sys::time;
 
 // Self-contained: publish a simulated temperature reading once a
@@ -6094,8 +6138,8 @@ val bar_chart: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::barchart;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
 
 let bar1 = bar(
     #style: &amp;style(#fg: `Cyan),
@@ -6107,10 +6151,10 @@ bar_chart(&amp;[bar_group(#label: line("Q1"), [bar1])])
 </code></pre>
 <p><img src="ui/tui/media/barchart_basic.png" alt="Basic Bar Chart"></p>
 <h3 id="grouped-bars-with-dynamic-data"><a class="header" href="#grouped-bars-with-dynamic-data">Grouped Bars with Dynamic Data</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::barchart;
-use tui::block;
-use rand;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
+use tui::block::{self, *};
+use rand::rand;
 
 let clock = sys::time::timer(duration:0.7s, true);
 
@@ -6138,8 +6182,8 @@ block(#border: &amp;`All, #title: &amp;line("Resource Usage"), &amp;chart)
 </code></pre>
 <p><img src="ui/tui/media/barchart_grouped.png" alt="Grouped Bar Chart"></p>
 <h3 id="color-coded-values"><a class="header" href="#color-coded-values">Color-coded Values</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::barchart;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
 
 let make_colored_bar = |label, value| {
     let color = select value {
@@ -6232,9 +6276,9 @@ val block: fn(
 </ul>
 <h2 id="examples-1"><a class="header" href="#examples-1">Examples</a></h2>
 <h3 id="basic-usage-1"><a class="header" href="#basic-usage-1">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let content = paragraph(&amp;"Hello, World!");
 
@@ -6247,9 +6291,9 @@ block(
 <p><img src="ui/tui/media/block_basic.png" alt="Basic Block"></p>
 <h3 id="focus-indication"><a class="header" href="#focus-indication">Focus Indication</a></h3>
 <p>Use dynamic styling to show which block has focus:</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let focused_block = 0;
 let content = paragraph(&amp;"Content here");
@@ -6269,9 +6313,9 @@ block(
 <p><img src="ui/tui/media/block_focus.png" alt="Styled Block"></p>
 <h3 id="dynamic-titles"><a class="header" href="#dynamic-titles">Dynamic Titles</a></h3>
 <p>Titles can contain reactive values that update automatically:</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let count = count(sys::time::timer(duration:1.s, true));
 
@@ -6323,8 +6367,7 @@ val browser: fn(
 </ul>
 <h2 id="examples-2"><a class="header" href="#examples-2">Examples</a></h2>
 <h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::browser;
+<pre><code class="language-graphix">use tui::browser::{self, *};
 
 let selected_path: string = never();
 
@@ -6337,9 +6380,8 @@ browser(
 </code></pre>
 <p><img src="ui/tui/media/browser_basic.png" alt="Basic Browser Widget"></p>
 <h3 id="basic-navigation"><a class="header" href="#basic-navigation">Basic Navigation</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::browser;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::browser::{self, *};
+use tui::input_handler::{self, *};
 
 let path = "/";
 let selected_path: string = never();
@@ -6421,8 +6463,7 @@ val calendar: fn(
 <p>Creates a date with year, month (1-12), and day (1-31).</p>
 <h2 id="examples-3"><a class="header" href="#examples-3">Examples</a></h2>
 <h3 id="basic-usage-3"><a class="header" href="#basic-usage-3">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::calendar;
+<pre><code class="language-graphix">use tui::calendar::{self, *};
 
 let current_date = date(2024, 5, 15);
 
@@ -6430,10 +6471,10 @@ calendar(&amp;current_date)
 </code></pre>
 <p><img src="ui/tui/media/calendar_basic.png" alt="Basic Calendar"></p>
 <h3 id="event-calendar"><a class="header" href="#event-calendar">Event Calendar</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::calendar;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::calendar::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let today = date(2024, 5, 15);
 
@@ -6458,8 +6499,8 @@ block(
 </code></pre>
 <p><img src="ui/tui/media/calendar_events.png" alt="Calendar With Events"></p>
 <h3 id="color-coded-events-by-type"><a class="header" href="#color-coded-events-by-type">Color-coded Events by Type</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::calendar;
+<pre><code class="language-graphix">use tui::style;
+use tui::calendar::{self, *};
 
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};
@@ -6565,8 +6606,7 @@ val canvas: fn(
 </code></pre>
 <h2 id="examples-4"><a class="header" href="#examples-4">Examples</a></h2>
 <h3 id="basic-usage-4"><a class="header" href="#basic-usage-4">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
 
 let line = `Line({color: `Red, x1: 0.0, y1: 0.0, x2: 10.0, y2: 5.0});
 let circle = `Circle({color: `Blue, x: 5.0, y: 5.0, radius: 2.0});
@@ -6579,8 +6619,7 @@ canvas(
 </code></pre>
 <p><img src="ui/tui/media/canvas_basic.png" alt="Basic Canvas"></p>
 <h3 id="function-plotting"><a class="header" href="#function-plotting">Function Plotting</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
 
 let coords = [
     (0.0, 0.0), (0.5, 0.48), (1.0, 0.84), (1.5, 1.0),
@@ -6598,9 +6637,8 @@ canvas(
 </code></pre>
 <p><img src="ui/tui/media/canvas_plot.png" alt="Scatter Plot"></p>
 <h3 id="network-diagram"><a class="header" href="#network-diagram">Network Diagram</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
-use tui::text;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
+use tui::text::{self, *};
 
 let circle1 = `Circle({color: `Blue, x: 2.0, y: 5.0, radius: 0.5});
 let circle2 = `Circle({color: `Blue, x: 8.0, y: 5.0, radius: 0.5});
@@ -6620,8 +6658,7 @@ canvas(
 </code></pre>
 <p><img src="ui/tui/media/canvas_network.png" alt="Network Diagram"></p>
 <h3 id="animated-graphics"><a class="header" href="#animated-graphics">Animated Graphics</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
 
 let x = cast&lt;f64&gt;(count(sys::time::timer(0.1, true)))$ * 0.1 % 10.;
 
@@ -6741,8 +6778,8 @@ val chart: fn(
 </ul>
 <h2 id="examples-5"><a class="header" href="#examples-5">Examples</a></h2>
 <h3 id="basic-usage-5"><a class="header" href="#basic-usage-5">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::chart;
+<pre><code class="language-graphix">use tui::style;
+use tui::chart::{self, *};
 
 let data: Array&lt;(f64, f64)&gt; = [(0.0, 0.0), (1.0, 1.0), (2.0, 4.0), (3.0, 9.0)];
 
@@ -6761,9 +6798,9 @@ chart(
 </code></pre>
 <p><img src="ui/tui/media/chart_basic.png" alt="Basic Chart"></p>
 <h3 id="real-time-data-visualization"><a class="header" href="#real-time-data-visualization">Real-time Data Visualization</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::chart;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
 
 let data: Array&lt;(f64, f64)&gt; = {
     let clock = sys::time::timer(duration:0.5s, true);
@@ -6805,9 +6842,9 @@ chart(
 </code></pre>
 <p><img src="ui/tui/media/chart_realtime.gif" alt="Real Time Chart"></p>
 <h3 id="multiple-datasets"><a class="header" href="#multiple-datasets">Multiple Datasets</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::chart;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
 
 let temp_data = [(0.0, 20.0), (1.0, 22.0), (2.0, 21.5)];
 let humidity_data = [(0.0, 50.0), (1.0, 55.0), (2.0, 52.0)];
@@ -6867,15 +6904,14 @@ chart(
 </ul>
 <h2 id="examples-6"><a class="header" href="#examples-6">Examples</a></h2>
 <h3 id="basic-usage-6"><a class="header" href="#basic-usage-6">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::text::{self, *};
 
 text(&amp;"Hello, World!")
 </code></pre>
 <p><img src="ui/tui/media/text_basic.png" alt="Basic Text"></p>
 <h3 id="status-messages"><a class="header" href="#status-messages">Status Messages</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::text::{self, *};
 
 let make_status = |level, msg| select level {
     `Error =&gt; line([
@@ -6900,8 +6936,8 @@ text(&amp;[
 </code></pre>
 <p><img src="ui/tui/media/text_status.png" alt="Multi Line Status"></p>
 <h3 id="dynamic-colors"><a class="header" href="#dynamic-colors">Dynamic Colors</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::text::{self, *};
 
 let count = count(sys::time::timer(duration:1.s, true));
 
@@ -6917,8 +6953,8 @@ text(&amp;[l])
 </code></pre>
 <p><img src="ui/tui/media/text_dynamic.gif" alt="Dynamic Text"></p>
 <h3 id="alignment"><a class="header" href="#alignment">Alignment</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::text::{self, *};
 
 text(&amp;[
     line(#alignment: `Left, "Left aligned"),
@@ -6963,18 +6999,17 @@ text(&amp;[
 </ul>
 <h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
 <h3 id="basic-usage-7"><a class="header" href="#basic-usage-7">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::paragraph::{self, *};
 
 paragraph(&amp;"This is a simple paragraph. It will automatically wrap to fit the available width.")
 </code></pre>
 <p><img src="ui/tui/media/paragraph_basic.png" alt="Basic Paragraph"></p>
 <h3 id="scrollable-content"><a class="header" href="#scrollable-content">Scrollable Content</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::line;
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let long_text = "I have got a lovely bunch of coconuts. Very long text continues here. More text. Even more text. This is a very long paragraph that will need scrolling to see all of it.";
 let scroll_y = 0;
@@ -7012,11 +7047,9 @@ input_handler(
 <p><img src="ui/tui/media/paragraph_scrollable.gif" alt="Scrollable Paragraph"></p>
 <h3 id="live-log-viewer"><a class="header" href="#live-log-viewer">Live Log Viewer</a></h3>
 <p>Display real-time updating content:</p>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
-use tui::text;
-use sys;
-use sys::net;
+<pre><code class="language-graphix">use tui::line;
+use tui::paragraph::{self, *};
+use tui::text::{self, *};
 use sys::time;
 
 // Self-contained: publish a simulated log entry every second, then
@@ -7048,9 +7081,9 @@ paragraph(&amp;log_entries)
 </code></pre>
 <p><img src="ui/tui/media/paragraph_log_viewer.gif" alt="Log Viewer"></p>
 <h3 id="centered-message"><a class="header" href="#centered-message">Centered Message</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::paragraph::{self, *};
+use tui::text::{self, *};
 
 paragraph(
     #alignment: &amp;`Center,
@@ -7093,8 +7126,8 @@ paragraph(
 </ul>
 <h2 id="examples-8"><a class="header" href="#examples-8">Examples</a></h2>
 <h3 id="basic-usage-8"><a class="header" href="#basic-usage-8">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
+<pre><code class="language-graphix">use tui::style;
+use tui::gauge::{self, *};
 
 // 75%
 let progress = 0.75;
@@ -7106,10 +7139,10 @@ gauge(
 </code></pre>
 <p><img src="ui/tui/media/gauge_basic.png" alt="Basic Gauge"></p>
 <h3 id="progress-with-color-thresholds"><a class="header" href="#progress-with-color-thresholds">Progress with Color Thresholds</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::gauge::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
 
@@ -7133,9 +7166,9 @@ block(
 </code></pre>
 <p><img src="ui/tui/media/gauge_threshold.gif" alt="Gauge With Color"></p>
 <h3 id="resource-usage"><a class="header" href="#resource-usage">Resource Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
-use tui::text;
+<pre><code class="language-graphix">use tui::{span, style};
+use tui::gauge::{self, *};
+use tui::text::{self, *};
 
 // memory amounts, in GB
 let used_memory = 6.5;
@@ -7186,8 +7219,8 @@ gauge(
 </ul>
 <h2 id="examples-9"><a class="header" href="#examples-9">Examples</a></h2>
 <h3 id="basic-usage-9"><a class="header" href="#basic-usage-9">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::line_gauge;
+<pre><code class="language-graphix">use tui::style;
+use tui::line_gauge::{self, *};
 
 // 75%
 let progress = 0.75;
@@ -7199,10 +7232,10 @@ line_gauge(
 </code></pre>
 <p><img src="ui/tui/media/linegauge_basic.png" alt="Basic Line Gauge"></p>
 <h3 id="color-coded-status"><a class="header" href="#color-coded-status">Color-coded Status</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::line_gauge;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::line_gauge::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
 
@@ -7226,10 +7259,10 @@ block(
 </code></pre>
 <p><img src="ui/tui/media/linegauge_colored.gif" alt="Line Gauge Color Coded"></p>
 <h3 id="compact-multi-metric-display"><a class="header" href="#compact-multi-metric-display">Compact Multi-metric Display</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::line_gauge;
-use tui::text;
-use tui::layout;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::line_gauge::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
 
 layout(
     #direction: &amp;`Vertical,
@@ -7565,10 +7598,10 @@ val layout: fn(
 </ul>
 <h2 id="examples-10"><a class="header" href="#examples-10">Examples</a></h2>
 <h3 id="basic-layout"><a class="header" href="#basic-layout">Basic Layout</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::layout::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let content1 = text(&amp;"Sidebar content");
 let content2 = text(&amp;"Main content");
@@ -7586,11 +7619,10 @@ layout(
 </code></pre>
 <p><img src="ui/tui/media/layout_basic.png" alt="Basic Layout"></p>
 <h3 id="three-pane-layout-with-focus"><a class="header" href="#three-pane-layout-with-focus">Three-Pane Layout with Focus</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
-use tui::input_handler;
-use tui::block;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+use tui::block::{self, *};
 
 let focused = 0;
 
@@ -7628,10 +7660,9 @@ input_handler(
 </code></pre>
 <p><img src="ui/tui/media/layout_focus.gif" alt="Layout With Focus"></p>
 <h3 id="nested-layouts"><a class="header" href="#nested-layouts">Nested Layouts</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
-use tui::block;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::block::{self, *};
 
 let widget1 = block(#border:&amp;`All, &amp;text(&amp;"Widget 1"));
 let widget2 = block(#border:&amp;`All, &amp;text(&amp;"Widget 2"));
@@ -7655,10 +7686,9 @@ layout(
 </code></pre>
 <p><img src="ui/tui/media/layout_nested.png" alt="Nested Layout"></p>
 <h3 id="headercontentfooter"><a class="header" href="#headercontentfooter">Header/Content/Footer</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
-use tui::block;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::block::{self, *};
 
 let header = block(#border:&amp;`All, &amp;text(&amp;"Header"));
 let content = block(#border:&amp;`All, &amp;text(&amp;"Main Content"));
@@ -7705,8 +7735,8 @@ layout(
 </ul>
 <h2 id="examples-11"><a class="header" href="#examples-11">Examples</a></h2>
 <h3 id="basic-usage-10"><a class="header" href="#basic-usage-10">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::list;
+<pre><code class="language-graphix">use tui::line;
+use tui::list::{self, *};
 
 let items = [
     line("Apple"),
@@ -7721,11 +7751,11 @@ list(
 </code></pre>
 <p><img src="ui/tui/media/list_basic.png" alt="Basic List"></p>
 <h3 id="interactive-list-with-navigation"><a class="header" href="#interactive-list-with-navigation">Interactive List with Navigation</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::list;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::list::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let items = [
     line("Apple"), line("Banana"), line("Cherry"),
@@ -7781,9 +7811,9 @@ input_handler(
 </code></pre>
 <p><img src="ui/tui/media/list_interactive.gif" alt="Interactive List"></p>
 <h3 id="styled-items"><a class="header" href="#styled-items">Styled Items</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::list;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let make_item = |text, priority| select priority {
     `High =&gt; line(#style: style(#fg: `Red, #add_modifier: [`Bold]), text),
@@ -7845,11 +7875,11 @@ and captures input</li>
 <h2 id="example-4"><a class="header" href="#example-4">Example</a></h2>
 <p>A modal opened with <code>o</code> and closed with <code>Esc</code>. While it is up, its
 input handler sees every key; the base handler sees none.</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::input_handler;
-use tui::overlay;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::block::{self, *};
+use tui::input_handler::{self, *};
+use tui::overlay::{self, *};
+use tui::paragraph::{self, *};
 
 let open = false;
 
@@ -7947,9 +7977,9 @@ val scrollbar: fn(
 </ul>
 <h2 id="examples-12"><a class="header" href="#examples-12">Examples</a></h2>
 <h3 id="basic-usage-11"><a class="header" href="#basic-usage-11">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::scrollbar;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::text;
+use tui::scrollbar::{self, *};
+use tui::paragraph::{self, *};
 
 let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
 let position = 0;
@@ -7965,12 +7995,12 @@ scrollbar(
 </code></pre>
 <p><img src="ui/tui/media/scroll_basic.png" alt="Basic Scrollbar"></p>
 <h3 id="scrollable-paragraph"><a class="header" href="#scrollable-paragraph">Scrollable Paragraph</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::scrollbar;
-use tui::paragraph;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::line;
+use tui::scrollbar::{self, *};
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let long_text = "Very long text content...";
 let position = 0;
@@ -8019,10 +8049,10 @@ input_handler(
 </code></pre>
 <p><img src="ui/tui/media/scroll_paragraph.gif" alt="Scrollable Paragraph"></p>
 <h3 id="scrollable-list"><a class="header" href="#scrollable-list">Scrollable List</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::scrollbar;
-use tui::list;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::scrollbar::{self, *};
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let items = [
     line("Item 1"),
@@ -8100,8 +8130,7 @@ val sparkline: fn(
 </ul>
 <h2 id="examples-13"><a class="header" href="#examples-13">Examples</a></h2>
 <h3 id="basic-usage-12"><a class="header" href="#basic-usage-12">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::sparkline;
+<pre><code class="language-graphix">use tui::sparkline::{self, *};
 
 let data = [10.0, 25.0, 40.0, 55.0, 70.0, 85.0, 100.0];
 
@@ -8109,10 +8138,10 @@ sparkline(#max: &amp;100, &amp;data)
 </code></pre>
 <p><img src="ui/tui/media/sparkline_basic.png" alt="Basic Sparkline"></p>
 <h3 id="threshold-based-coloring"><a class="header" href="#threshold-based-coloring">Threshold-based Coloring</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::sparkline;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::sparkline::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let data = {
     let clock = sys::time::timer(duration:0.3s, true);
@@ -8140,11 +8169,11 @@ block(
 </code></pre>
 <p><img src="ui/tui/media/sparkline_threshold.gif" alt="Threshold Colors"></p>
 <h3 id="multi-metric-dashboard"><a class="header" href="#multi-metric-dashboard">Multi-metric Dashboard</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::sparkline;
-use tui::block;
-use tui::text;
-use tui::layout;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::sparkline::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
 
 let cpu_data = [50., 60., 55., 70., 65.];
 let mem_data = [30., 35., 40., 38., 42.];
@@ -8179,11 +8208,8 @@ grep --line-buffered Cpu | \
 awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
 netidx publisher
 </code></pre>
-<pre><code class="language-graphix">use tui;
-use tui::sparkline;
+<pre><code class="language-graphix">use tui::sparkline::{self, *};
 use core::math;
-use sys;
-use sys::net;
 use sys::time;
 
 // Self-contained: publish a simulated CPU value once a second, then
@@ -8282,8 +8308,8 @@ val table: fn(
 </ul>
 <h2 id="examples-14"><a class="header" href="#examples-14">Examples</a></h2>
 <h3 id="basic-usage-13"><a class="header" href="#basic-usage-13">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
+<pre><code class="language-graphix">use tui::line;
+use tui::table::{self, *};
 
 let header = row([
     cell(line("Name")),
@@ -8311,11 +8337,11 @@ table(
 </code></pre>
 <p><img src="ui/tui/media/table_basic.png" alt="Basic Table"></p>
 <h3 id="interactive-table"><a class="header" href="#interactive-table">Interactive Table</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::table::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 type User = {name: string, age: i64, city: string};
 
@@ -8385,9 +8411,9 @@ input_handler(
 </code></pre>
 <p><img src="ui/tui/media/table_interactive.gif" alt="Interactive Table"></p>
 <h3 id="conditional-cell-styling"><a class="header" href="#conditional-cell-styling">Conditional Cell Styling</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::table::{self, *};
+use tui::text::{self, *};
 
 let make_cpu_cell = |cpu| {
     let s = select cpu {
@@ -8429,9 +8455,9 @@ table(
 </code></pre>
 <p><img src="ui/tui/media/table_styled_cells.png" alt="Conditional Styling"></p>
 <h3 id="real-time-updates"><a class="header" href="#real-time-updates">Real-time Updates</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::table::{self, *};
+use tui::text::{self, *};
 
 let clock = sys::time::timer(duration:1.s, true);
 
@@ -8487,9 +8513,9 @@ table(#header: &amp;header, &amp;rows)
 </ul>
 <h2 id="examples-15"><a class="header" href="#examples-15">Examples</a></h2>
 <h3 id="basic-usage-14"><a class="header" href="#basic-usage-14">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::tabs::{self, *};
+use tui::paragraph::{self, *};
 
 let tab1 = paragraph(&amp;"This is tab 1");
 let tab2 = paragraph(&amp;"This is tab 2");
@@ -8506,11 +8532,11 @@ tabs(
 </code></pre>
 <p><img src="ui/tui/media/tabs_basic.png" alt="Basic Tabs"></p>
 <h3 id="navigation-between-tabs"><a class="header" href="#navigation-between-tabs">Navigation Between Tabs</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::tabs::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let selected_tab = 0;
 
@@ -8561,9 +8587,9 @@ input_handler(
 </code></pre>
 <p><img src="ui/tui/media/tabs_navigation.gif" alt="Tabs With Navigation"></p>
 <h3 id="styled-tab-titles"><a class="header" href="#styled-tab-titles">Styled Tab Titles</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::tabs::{self, *};
+use tui::text::{self, *};
 
 let completed_content = text(&amp;"Completed");
 let progress_content = text(&amp;"In Progress");
@@ -8588,9 +8614,9 @@ tabs(&amp;tab_list)
 </code></pre>
 <p><img src="ui/tui/media/tabs_styled.png" alt="Styled Tabs"></p>
 <h3 id="tab-with-badge"><a class="header" href="#tab-with-badge">Tab with Badge</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::tabs::{self, *};
+use tui::text::{self, *};
 
 let unread_count = 5;
 
@@ -8651,10 +8677,10 @@ val window: fn(
 <p>The final expression of your program should be an <code>Array&lt;&amp;Window&gt;</code> – the shell sees this type and launches the GUI runtime.</p>
 <h2 id="getting-started-2"><a class="header" href="#getting-started-2">Getting Started</a></h2>
 <p>Here is a minimal GUI program that creates a window with text and a button:</p>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::button;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::button::{self, *};
 mod icon;
 
 [&amp;window(
@@ -8699,10 +8725,10 @@ text_input(#on_input: |v| name &lt;- v, #placeholder: &amp;"Type here...", &amp;
 <p>The <code>&lt;-</code> connect operator schedules <code>name</code> to update on the next cycle, and because the text input holds a reference to <code>name</code>, it automatically reflects the new value.</p>
 <h2 id="theming"><a class="header" href="#theming">Theming</a></h2>
 <p>Every window accepts a <code>#theme</code> parameter that controls its visual appearance. Graphix ships with 22 built-in themes plus support for fully custom palettes and stylesheets:</p>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::container;
+<pre><code class="language-graphix">use gui::{Theme, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
 mod icon;
 
 [&amp;window(
@@ -8976,13 +9002,13 @@ window(#theme: &amp;theme, &amp;content)
 <li><code>danger</code> – color for destructive actions and error states.</li>
 <li><code>warning</code> – color for warning indicators.</li>
 </ul>
-<pre><code class="language-graphix">use gui;
-use gui::style;
-use gui::text;
-use gui::button;
-use gui::toggler;
-use gui::slider;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::style::Palette;
+use gui::text::{self, *};
+use gui::button::{self, *};
+use gui::toggler::{self, *};
+use gui::slider::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let enabled = true;
@@ -9059,16 +9085,16 @@ let col = column(
 ) -&gt; StyleSheet;
 </code></pre>
 <p>Example with a custom palette and button override:</p>
-<pre><code class="language-graphix">use gui;
-use gui::style;
-use gui::text;
-use gui::button;
-use gui::text_input;
-use gui::slider;
-use gui::toggler;
-use gui::container;
-use gui::column;
-use gui::rule;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::style::{button_style, container_style, slider_style, stylesheet, text_input_style, toggler_style};
+use gui::text::{self, *};
+use gui::button::{self, *};
+use gui::text_input::{self, *};
+use gui::slider::{self, *};
+use gui::toggler::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
+use gui::rule::horizontal_rule;
 mod icon;
 
 let palette = {
@@ -9273,9 +9299,9 @@ val slider_style: fn(
 <p>The positional argument is a reference to the string to display. Because it is a reference, the text updates reactively when the underlying value changes.</p>
 <h2 id="examples-16"><a class="header" href="#examples-16">Examples</a></h2>
 <h3 id="styling-and-alignment"><a class="header" href="#styling-and-alignment">Styling and Alignment</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, style, Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 [&amp;window(
@@ -9329,10 +9355,10 @@ mod icon;
 </ul>
 <h2 id="examples-17"><a class="header" href="#examples-17">Examples</a></h2>
 <h3 id="basic-buttons"><a class="header" href="#basic-buttons">Basic Buttons</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::button;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::button::{self, *};
 mod icon;
 
 let b0 = button(
@@ -9400,10 +9426,10 @@ let col = column(
 </ul>
 <h2 id="examples-18"><a class="header" href="#examples-18">Examples</a></h2>
 <h3 id="basic-text-input"><a class="header" href="#basic-text-input">Basic Text Input</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::text_input;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let name = "";
@@ -9458,10 +9484,10 @@ let col = column(
 </ul>
 <h2 id="examples-19"><a class="header" href="#examples-19">Examples</a></h2>
 <h3 id="basic-text-editor"><a class="header" href="#basic-text-editor">Basic Text Editor</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::text_editor;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Length, window};
+use gui::text::{self, *};
+use gui::text_editor::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let content = "";
@@ -9517,10 +9543,10 @@ let col = column(
 </ul>
 <h2 id="examples-20"><a class="header" href="#examples-20">Examples</a></h2>
 <h3 id="checkbox-group"><a class="header" href="#checkbox-group">Checkbox Group</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::checkbox;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::checkbox::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let dark_mode = true;
@@ -9573,10 +9599,10 @@ let col = column(
 </ul>
 <h2 id="examples-21"><a class="header" href="#examples-21">Examples</a></h2>
 <h3 id="toggle-switches"><a class="header" href="#toggle-switches">Toggle Switches</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::toggler;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::toggler::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let wifi = true;
@@ -9629,10 +9655,10 @@ let col = column(
 </ul>
 <h2 id="examples-22"><a class="header" href="#examples-22">Examples</a></h2>
 <h3 id="radio-group"><a class="header" href="#radio-group">Radio Group</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::radio;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::radio::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let size: [`Small, `Medium, `Large] = `Medium;
@@ -9736,11 +9762,11 @@ let col = column(
 </ul>
 <h2 id="examples-23"><a class="header" href="#examples-23">Examples</a></h2>
 <h3 id="slider--progress-bar"><a class="header" href="#slider--progress-bar">Slider &amp; Progress Bar</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::slider;
-use gui::progress_bar;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::slider::{self, *};
+use gui::progress_bar::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let volume = 50.0;
@@ -9762,11 +9788,11 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/slider.gif" alt="Slider"></p>
 <h3 id="vertical-slider-1"><a class="header" href="#vertical-slider-1">Vertical Slider</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::vertical_slider;
-use gui::column;
-use gui::row;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::vertical_slider::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
 mod icon;
 
 let value = 50.0;
@@ -9829,10 +9855,10 @@ let value = 50.0;
 <li><strong>positional <code>&amp;Array&lt;string&gt;</code></strong> – Reference to the list of available options.</li>
 </ul>
 <h2 id="examples-24"><a class="header" href="#examples-24">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::pick_list;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::pick_list::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let language: [string, null] = null;
@@ -9884,10 +9910,10 @@ let col = column(
 <li><strong>positional <code>&amp;Array&lt;string&gt;</code></strong> – Reference to the full list of options. The combo box filters this list as the user types.</li>
 </ul>
 <h2 id="examples-25"><a class="header" href="#examples-25">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::combo_box;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::combo_box::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let selected: [string, null] = null;
@@ -9939,9 +9965,9 @@ let col = column(
 </ul>
 <p>The positional argument is a reference to an array of child widgets.</p>
 <h2 id="examples-26"><a class="header" href="#examples-26">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 [&amp;window(
@@ -9995,11 +10021,11 @@ mod icon;
 </ul>
 <p>The positional argument is a reference to an array of child widgets.</p>
 <h2 id="examples-27"><a class="header" href="#examples-27">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::row;
-use gui::button;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::button::{self, *};
 mod icon;
 
 [&amp;window(
@@ -10062,10 +10088,10 @@ mod icon;
 </ul>
 <p>The positional argument is a reference to the child widget.</p>
 <h2 id="examples-28"><a class="header" href="#examples-28">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::container;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
 mod icon;
 
 [&amp;window(
@@ -10127,11 +10153,11 @@ mod icon;
 </ul>
 <p>The positional argument is a reference to the child widget to scroll.</p>
 <h2 id="examples-29"><a class="header" href="#examples-29">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::scrollable;
-use gui::column;
-use gui::rule;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::scrollable::{self, *};
+use gui::column::{self, *};
+use gui::rule::horizontal_rule;
 mod icon;
 
 let col = column(
@@ -10191,11 +10217,11 @@ let col = column(
 </ul>
 <p>The positional argument is a reference to an array of child widgets. Children are drawn in order, with later children appearing on top of earlier ones.</p>
 <h2 id="examples-30"><a class="header" href="#examples-30">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::stack;
-use gui::container;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, Widget, window};
+use gui::text::{self, *};
+use gui::stack::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 [&amp;window(
@@ -10256,11 +10282,11 @@ mod icon;
 </ul>
 <p>A common pattern is <code>space(#width: &amp;</code>Fill)` to push items to opposite ends of a row.</p>
 <h3 id="example-5"><a class="header" href="#example-5">Example</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::row;
-use gui::space;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::space::{self, *};
 mod icon;
 
 [&amp;window(
@@ -10301,11 +10327,11 @@ val vertical_rule: fn(?#width: &amp;f64) -&gt; Widget;
 <li><strong>width</strong> (vertical_rule) — thickness of the vertical line in pixels</li>
 </ul>
 <h3 id="example-1-1"><a class="header" href="#example-1-1">Example</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::row;
-use gui::rule;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::rule::{self, horizontal_rule, vertical_rule};
 mod icon;
 
 [&amp;window(
@@ -10512,10 +10538,10 @@ val canvas: fn(
 </code></pre>
 <h2 id="examples-31"><a class="header" href="#examples-31">Examples</a></h2>
 <h3 id="basic-shapes"><a class="header" href="#basic-shapes">Basic Shapes</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::canvas;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::canvas::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let shapes = &amp;[
@@ -10820,12 +10846,12 @@ val chart: fn(
 </ul>
 <h2 id="examples-32"><a class="header" href="#examples-32">Examples</a></h2>
 <h3 id="multiple-datasets-1"><a class="header" href="#multiple-datasets-1">Multiple Datasets</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
-use gui::row;
-use gui::slider;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::slider::{self, *};
 mod icon;
 
 let rate = 0.;
@@ -10871,10 +10897,10 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/chart.gif" alt="Chart"></p>
 <h3 id="bar-chart"><a class="header" href="#bar-chart">Bar Chart</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let data = [
@@ -10914,10 +10940,10 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/chart_bar.png" alt="Bar Chart"></p>
 <h3 id="candlestick"><a class="header" href="#candlestick">Candlestick</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let dark_bg = color(#r: 0.1, #g: 0.1, #b: 0.15)$;
@@ -10994,10 +11020,10 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/chart_candlestick.png" alt="Candle Chart"></p>
 <h3 id="error-bars"><a class="header" href="#error-bars">Error Bars</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let clock = sys::time::timer(duration:1.s, true);
@@ -11046,10 +11072,10 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/chart_error_bars.png" alt="Chart With Error Bars"></p>
 <h3 id="pie-chart"><a class="header" href="#pie-chart">Pie Chart</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let data = [
@@ -11084,10 +11110,10 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/chart_pie.png" alt="Pie Chart"></p>
 <h3 id="3d-surface"><a class="header" href="#3d-surface">3D Surface</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let surface_data = [
@@ -11126,10 +11152,10 @@ let col = column(
 </code></pre>
 <p><img src="ui/gui/media/chart_3d.png" alt="3d Chart"></p>
 <h3 id="styling"><a class="header" href="#styling">Styling</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let clock = sys::time::timer(duration:0.5s, true);
@@ -11264,10 +11290,10 @@ val image: fn(
 <p>The <code>svg</code> widget accepts a string that is either a file path to an <code>.svg</code> file or inline SVG XML content.</p>
 <h2 id="examples-33"><a class="header" href="#examples-33">Examples</a></h2>
 <h3 id="image-1"><a class="header" href="#image-1">Image</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::image;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::image::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AAAD//8DL/6UqKv8AgID//9cA/w==;
@@ -11295,10 +11321,10 @@ let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AA
 </code></pre>
 <p><img src="ui/gui/media/image.png" alt="Image"></p>
 <h3 id="svg-1"><a class="header" href="#svg-1">SVG</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::image;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::image::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let svg_content = r##"&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"&gt;
@@ -11353,11 +11379,11 @@ let svg_content = r##"&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20
 </ul>
 <p>The positional argument is a reference to the child widget that triggers the tooltip on hover.</p>
 <h2 id="examples-34"><a class="header" href="#examples-34">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::tooltip;
-use gui::button;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::tooltip::{self, *};
+use gui::button::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let col = column(
@@ -11416,11 +11442,11 @@ val mouse_area: fn(
 </ul>
 <p>The positional argument is a reference to the child widget.</p>
 <h2 id="examples-35"><a class="header" href="#examples-35">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::mouse_area;
-use gui::container;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::mouse_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let status = "Move the mouse over the box";
@@ -11501,11 +11527,11 @@ val keyboard_area: fn(
 </ul>
 <p>The positional argument is a reference to the child widget.</p>
 <h2 id="examples-36"><a class="header" href="#examples-36">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::keyboard_area;
-use gui::container;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::keyboard_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let last_key = "None";
@@ -11594,11 +11620,11 @@ val clear:       fn(v: Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
 </ul>
 <p>All read functions take an <code>Any</code> argument as an event trigger — they execute when the trigger fires. All functions return <code>Result</code> types that may contain a <code>ClipboardError</code>.</p>
 <h2 id="examples-37"><a class="header" href="#examples-37">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::text_input;
-use gui::button;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::button::{self, *};
+use gui::column::{self, *};
 use gui::clipboard;
 mod icon;
 
@@ -11659,11 +11685,11 @@ val grid: fn(
 </ul>
 <h2 id="examples-38"><a class="header" href="#examples-38">Examples</a></h2>
 <h3 id="colored-grid-items"><a class="header" href="#colored-grid-items">Colored Grid Items</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::grid;
-use gui::container;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::grid::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let item = |label| container(
@@ -11721,11 +11747,11 @@ let col = column(
 </ul>
 <h2 id="examples-39"><a class="header" href="#examples-39">Examples</a></h2>
 <h3 id="qr-code-from-text-input"><a class="header" href="#qr-code-from-text-input">QR Code from Text Input</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::text_input;
-use gui::qr_code;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::qr_code::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let url = "https://graphix-lang.github.io/graphix";
@@ -11776,11 +11802,11 @@ let col = column(
 </ul>
 <h2 id="examples-40"><a class="header" href="#examples-40">Examples</a></h2>
 <h3 id="rendered-markdown-with-link-callback"><a class="header" href="#rendered-markdown-with-link-callback">Rendered Markdown with Link Callback</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::text_editor;
-use gui::markdown;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::text_editor::{self, *};
+use gui::markdown::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let content = r"# Markdown Demo
@@ -11864,10 +11890,10 @@ val table: fn(
 </ul>
 <h2 id="examples-41"><a class="header" href="#examples-41">Examples</a></h2>
 <h3 id="product-table"><a class="header" href="#product-table">Product Table</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::table;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::table::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let cols = &amp;[
@@ -12146,12 +12172,11 @@ scrolls into view as needed). <code>Enter</code> on a row-name cell fires
 <code>sys::net::list_table</code> output to <code>data_table</code> with no column
 configuration. Bare-string columns become default Text columns with
 <code>`Netidx</code> source.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use sys;
-use sys::net;
+<pre><code class="language-graphix">use gui::window;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::net::Table;
 mod icon;
 
 let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
@@ -12190,19 +12215,16 @@ let layout = column(
 <p>Row filtering (a regex over basenames) and sort configuration done
 in graphix before the <code>Table</code> is handed to the widget. Shows how the
 caller owns the data pipeline end to end.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::row;
-use gui::column;
-use gui::text;
-use gui::text_input;
-use gui::pick_list;
-use array;
-use opt;
-use re;
-use str;
-use sys;
-use sys::net;
+<pre><code class="language-graphix">use gui::data_table::{self, *};
+use gui::row::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::pick_list::{self, *};
+use array::{filter, sort};
+use opt::or;
+use gui::data_table::Table;
+use gui::window;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
@@ -12364,12 +12386,11 @@ round-trip through netidx. The example shows the
 <code>array::map(raw_columns, …)</code> pattern for attaching custom
 <code>ColumnSpec</code>s to specific column names while leaving everything else
 as bare-string Netidx-sourced columns.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use sys;
-use sys::net;
+<pre><code class="language-graphix">use gui::window;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::net::Table;
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes
@@ -12501,13 +12522,13 @@ let layout = column(
 <p>A virtual column whose <code>source</code> is a reactive <code>Map&lt;string, Any&gt;</code>,
 rebuilt whenever any subscribed cell updates. Demonstrates deriving
 per-row aggregates (here, sums) without touching netidx.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use str;
-use sys;
-use sys::net;
+<pre><code class="language-graphix">use gui::{row, window};
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::time;
+use sys::net::publish;
+use gui::data_table::Table;
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its
@@ -12589,13 +12610,12 @@ let layout = column(
 <p>Live rolling charts per row with automatic column-wide y-axis
 sharing, so cells are visually comparable without the caller picking
 bounds.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
+<pre><code class="language-graphix">use gui::window;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
 use core::math;
-use sys;
-use sys::net;
+use sys::net::Table;
 use sys::time;
 mod icon;
 
@@ -12659,12 +12679,12 @@ let layout = column(
 <p>Mix live subscribed rows with virtual rows whose cells come from
 non-Netidx sources. Virtual-column-plus-virtual-row combinations
 give you fully client-side cells.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::slider;
-use gui::column;
-use gui::text;
-use sys;
+<pre><code class="language-graphix">use gui::window;
+use gui::data_table::{self, *};
+use gui::slider::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::{net, time};
 mod icon;
 
 let rv = {
@@ -12741,21 +12761,17 @@ let layout = column(
 CPU metrics, <code>Progress</code> uptime, a <code>Button</code> action column, a regex
 row filter in a text input, sort controlled by pick-lists, and
 selection echoed in the footer.</p>
-<pre><code class="language-graphix">use gui;
-use gui::data_table;
-use gui::row;
-use gui::column;
-use gui::text;
-use gui::text_input;
-use gui::pick_list;
+<pre><code class="language-graphix">use gui::data_table::{self, *};
+use gui::row::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::pick_list::{self, *};
 use core::math;
-use array;
-use opt;
-use re;
-use str;
-use sys;
-use sys::net;
+use opt::or;
 use sys::time;
+use gui::data_table::Table;
+use gui::window;
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:
@@ -13014,10 +13030,10 @@ val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widge
 <p>The menu closes when an item is clicked, when the user clicks outside it, or when Escape is pressed.</p>
 <h2 id="examples-43"><a class="header" href="#examples-43">Examples</a></h2>
 <h3 id="menu-bar"><a class="header" href="#menu-bar">Menu Bar</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::menu;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::menu::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let file_menu = menu::menu(
@@ -13081,11 +13097,11 @@ let layout = column(
 </code></pre>
 <p><img src="ui/gui/media/menu_bar.png" alt="Menu Bar"></p>
 <h3 id="context-menu"><a class="header" href="#context-menu">Context Menu</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::container;
-use gui::menu;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
+use gui::menu::{self, *};
 mod icon;
 
 let status = "Right-click anywhere";

@@ -69,11 +69,17 @@ Each declared sub-module should have its own implementation file (e.g.,
 
 ### Use Statements (use)
 
-Re-export items from other modules:
+Import names the interface's own declarations need:
 
 ```graphix
-use other::module;
+use super::{Client, Response};
+use sys::io::Stream;
 ```
+
+A `use` in the interface applies to the implementation automatically —
+don't repeat it in the `.gx` file. It is a private import, not a
+re-export: it does not make the imported names part of the module's
+public API.
 
 ## A Complete Example
 
@@ -196,24 +202,21 @@ mod parser;
 
 ## Sub-module Visibility
 
-Sub-modules can see everything in their parent that was declared before the
-`mod` statement that declared them. This includes private items not exported in
-the interface.
+A sub-module sees nothing of its parent implicitly — it imports what it
+needs with `use super::...`. Because visibility is order-independent,
+the position of the `mod` statement carries no meaning: declare it
+wherever reads best, and a sub-module may import parent items declared
+after it.
 
-The position of the `mod` statement controls what the sub-module can see:
+Privacy follows Rust's rule: a private item is visible to its defining
+module and that module's descendants. So a sub-module may
+`use super::private_setup` even when `private_setup` is not exported in
+the parent's interface — privacy hides items from *users* of the
+module, not from the module's own subtree.
 
-- **Module declared only in interface**: The sub-module can see everything
-  declared before the item it follows in the implementation. For example, if the
-  interface has `val foo; mod child; val bar;`, and the implementation has 
-  `let foo = ...; let bar = ...;`, then `child` can see `foo` but not `bar`.
-
-- **Module declared only in implementation**: The sub-module can see everything
-  declared before its `mod` statement, but it is not exported (not accessible to
-  users of the parent module).
-
-- **Module declared in both**: The position in the implementation controls what
-  the sub-module can see, while the interface declaration exports it. Use this
-  for precise control over sub-module visibility.
+Whether the sub-module itself is exported is controlled by the
+interface: a `mod child;` in the `.gxi` exports it, a `mod child;` only
+in the `.gx` keeps it private to the parent's subtree.
 
 Example:
 
@@ -228,7 +231,12 @@ mod child;
 let private_setup = ...;
 let public_helper = |x| x + 1;
 
-mod child;  // child can see private_setup and public_helper
+mod child;
+```
+
+```graphix
+// parent/child.gx
+use super::{private_setup, public_helper};  // both visible here
 ```
 
 ## Interfaces with Netidx Modules

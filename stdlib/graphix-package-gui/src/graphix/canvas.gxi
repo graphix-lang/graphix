@@ -1,4 +1,4 @@
-use super::*;
+use super::{Color, color, Length, Widget};
 type PathSegment = [
   `MoveTo({x: f64, y: f64}),
   `LineTo({x: f64, y: f64}),

@@ -1,6 +1,6 @@
-use tui;
-use tui::list;
-use tui::text;
+use tui::{line, style};
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let make_item = |text, priority| select priority {
     `High => line(#style: style(#fg: `Red, #add_modifier: [`Bold]), text),

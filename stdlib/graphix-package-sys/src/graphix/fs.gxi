@@ -1,5 +1,4 @@
-use super::*;
-use sys::io::{self, *};
+use sys::io;
 
 type FileType = [
     `Dir,

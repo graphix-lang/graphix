@@ -448,7 +448,13 @@ module.exports = grammar({
       optional($.type_arguments),
     )),
 
+    // Type paths accept the same path-root keywords as expression
+    // paths: `super::m::T`, `package::m::T`, `self::T`.
     type_path: $ => seq(
+      optional(seq(
+        choice('self', 'package', seq('super', repeat(seq('::', 'super')))),
+        '::',
+      )),
       choice($.type_identifier, $._binding_name),
       repeat(seq('::', choice($.type_identifier, $._binding_name))),
     ),

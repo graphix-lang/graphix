@@ -1,4 +1,4 @@
-use gui::*;
+use gui::{Widget, window};
 use gui::text::{self, *};
 use gui::grid::{self, *};
 use gui::container::{self, *};

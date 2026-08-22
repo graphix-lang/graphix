@@ -475,6 +475,21 @@ fn typed_letbind() {
 }
 
 #[test]
+fn keyword_rooted_typath() {
+    for (s, path) in [
+        ("let foo: super::m0::T = x", &["super", "m0", "T"][..]),
+        ("let foo: package::m0::T = x", &["package", "m0", "T"]),
+        ("let foo: self::T = x", &["self", "T"]),
+        ("let foo: super::super::a::T = x", &["super", "super", "a", "T"]),
+    ] {
+        let e = parse_one(s).unwrap();
+        let ExprKind::Bind(b) = &e.kind else { panic!("expected bind: {s}") };
+        let Some(Type::Ref(r)) = &b.typ else { panic!("expected type ref: {s}") };
+        assert_eq!(&r.name, &ModPath::from_iter(path.iter().copied()), "{s}");
+    }
+}
+
+#[test]
 fn nested_apply() {
     let src = ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter([

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -262,8 +262,8 @@ val chart: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::chart;
+<pre><code class="language-graphix">use tui::style;
+use tui::chart::{self, *};
 
 let data: Array&lt;(f64, f64)&gt; = [(0.0, 0.0), (1.0, 1.0), (2.0, 4.0), (3.0, 9.0)];
 
@@ -282,9 +282,9 @@ chart(
 </code></pre>
 <p><img src="./media/chart_basic.png" alt="Basic Chart"></p>
 <h3 id="real-time-data-visualization"><a class="header" href="#real-time-data-visualization">Real-time Data Visualization</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::chart;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
 
 let data: Array&lt;(f64, f64)&gt; = {
     let clock = sys::time::timer(duration:0.5s, true);
@@ -326,9 +326,9 @@ chart(
 </code></pre>
 <p><img src="./media/chart_realtime.gif" alt="Real Time Chart"></p>
 <h3 id="multiple-datasets"><a class="header" href="#multiple-datasets">Multiple Datasets</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::chart;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
 
 let temp_data = [(0.0, 20.0), (1.0, 22.0), (2.0, 21.5)];
 let humidity_data = [(0.0, 50.0), (1.0, 55.0), (2.0, 52.0)];

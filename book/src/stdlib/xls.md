@@ -5,7 +5,7 @@ formats (via calamine). Data is returned as a 2D array of primitive
 values.
 
 ```graphix
-use sys::io;
+use sys::io::Stream;
 
 /// List sheet names in a workbook.
 val sheets: fn(input: [bytes, Stream<'a>]) -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]>;
@@ -17,8 +17,6 @@ val read: fn(input: [bytes, Stream<'a>], sheet: string) -> Result<Array<Array<Pr
 ## Example
 
 ```graphix
-use xls;
-use sys;
 
 let data = sys::fs::read_all_bin("report.xlsx")?;
 let names = xls::sheets(data)?;

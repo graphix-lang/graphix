@@ -1,9 +1,9 @@
-use gui::*;
+use gui::window;
 use gui::text::{self, *};
 use gui::text_input::{self, *};
 use gui::button::{self, *};
 use gui::column::{self, *};
-use gui::clipboard::{self, *};
+use gui::clipboard;
 mod icon;
 
 let content = "Hello, clipboard!";

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -222,10 +222,10 @@ val layout: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-layout"><a class="header" href="#basic-layout">Basic Layout</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::layout::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let content1 = text(&amp;"Sidebar content");
 let content2 = text(&amp;"Main content");
@@ -243,11 +243,10 @@ layout(
 </code></pre>
 <p><img src="./media/layout_basic.png" alt="Basic Layout"></p>
 <h3 id="three-pane-layout-with-focus"><a class="header" href="#three-pane-layout-with-focus">Three-Pane Layout with Focus</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
-use tui::input_handler;
-use tui::block;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+use tui::block::{self, *};
 
 let focused = 0;
 
@@ -285,10 +284,9 @@ input_handler(
 </code></pre>
 <p><img src="./media/layout_focus.gif" alt="Layout With Focus"></p>
 <h3 id="nested-layouts"><a class="header" href="#nested-layouts">Nested Layouts</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
-use tui::block;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::block::{self, *};
 
 let widget1 = block(#border:&amp;`All, &amp;text(&amp;"Widget 1"));
 let widget2 = block(#border:&amp;`All, &amp;text(&amp;"Widget 2"));
@@ -312,10 +310,9 @@ layout(
 </code></pre>
 <p><img src="./media/layout_nested.png" alt="Nested Layout"></p>
 <h3 id="headercontentfooter"><a class="header" href="#headercontentfooter">Header/Content/Footer</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
-use tui::block;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
+use tui::block::{self, *};
 
 let header = block(#border:&amp;`All, &amp;text(&amp;"Header"));
 let content = block(#border:&amp;`All, &amp;text(&amp;"Main Content"));

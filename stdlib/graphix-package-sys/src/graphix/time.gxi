@@ -1,4 +1,3 @@
-use super::*;
 /// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
 val after_idle: fn(timeout: [duration, Number], v: 'a) -> 'a;

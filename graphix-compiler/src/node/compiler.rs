@@ -170,6 +170,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
         ExprKind::Module { name, value } => {
+            let enclosing = scope;
             let scope = scope.append(&name);
             if !ctx.predeclared_mods.remove(&scope.lexical)
                 && ctx.env.modules.contains(&scope.lexical)
@@ -224,6 +225,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                     ctx,
                     flags,
                     spec.clone(),
+                    enclosing,
                     &scope,
                     sandbox.clone(),
                     sig.clone(),

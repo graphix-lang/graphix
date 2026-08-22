@@ -1,4 +1,4 @@
-use gui::*;
+use gui::window;
 use gui::text::{self, *};
 use gui::mouse_area::{self, *};
 use gui::container::{self, *};

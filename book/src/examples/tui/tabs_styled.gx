@@ -1,4 +1,4 @@
-use tui::*;
+use tui::{line, span, style};
 use tui::tabs::{self, *};
 use tui::text::{self, *};
 

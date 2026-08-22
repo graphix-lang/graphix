@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -224,10 +224,10 @@ val image: fn(
 <p>The <code>svg</code> widget accepts a string that is either a file path to an <code>.svg</code> file or inline SVG XML content.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="image-1"><a class="header" href="#image-1">Image</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::image;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::image::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AAAD//8DL/6UqKv8AgID//9cA/w==;
@@ -255,10 +255,10 @@ let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AA
 </code></pre>
 <p><img src="./media/image.png" alt="Image"></p>
 <h3 id="svg-1"><a class="header" href="#svg-1">SVG</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::image;
-use gui::column;
+<pre><code class="language-graphix">use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::image::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let svg_content = r##"&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"&gt;

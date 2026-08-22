@@ -534,7 +534,30 @@ Deltas from the plan above, each cheap to revise:
     fixtures the `{self, *}` spellings, and the fuzz harness
     prepends `use super::*; ` (same line — subject positions
     preserved) to `/test.gx` so generated subjects keep reading
-    schedule-injected inputs across the module boundary.
+    schedule-injected inputs across the module boundary. The arc-end
+    tightening pass (2026-08-22) then replaced every mechanical glob
+    in the stdlib and the examples with the explicit list of names
+    actually referenced; the widget-module `{self, *}` idiom is kept
+    (a module and its main function sharing a name is what the
+    spelling is FOR) and is documented in the book's Use chapter.
+12. **Keyword roots parse in TYPE position** (arc-end fix): `typath`
+    initially lacked `path_root`, so `-> super::m0::T` was a parse
+    error while the doc promised expression/type-position parity.
+    `path_root()` now leads `typath`; resolution needed nothing.
+    Covered by `keyword_rooted_typath` (parser test), keyword leads
+    in the roundtrip generators (`path_lead`), and the tree-sitter
+    `type_path` rule.
+13. **A dynamic module's `source` expression compiles in the
+    ENCLOSING scope** (arc-end fix, semantics call flagged for Eric).
+    The flip left the whole `mod foo dynamic { … }` block compiling
+    under `foo`, which made `let src = …; mod foo dynamic { … source
+    src }` inexpressible — inside a block no spelling reaches the
+    block-local (`super::` names module items only), a real
+    capability regression the fuzzer's reactive dynamic-module arm
+    caught (0/9 dead arm). The source expression is LOADER-side code,
+    so it now compiles against the enclosing scope (the sig still
+    binds under `foo`; sandbox items were already reachable through
+    the package prelude). Reactive gen-check: 95.5% → 100%.
 
 ## Open questions (collected)
 

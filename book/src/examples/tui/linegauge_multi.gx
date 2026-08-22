@@ -1,4 +1,4 @@
-use tui::*;
+use tui::{line, style};
 use tui::line_gauge::{self, *};
 use tui::text::{self, *};
 use tui::layout::{self, *};

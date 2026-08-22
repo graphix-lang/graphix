@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::column;
-use gui::container;
-use gui::menu;
+use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
+use gui::menu::{self, *};
 mod icon;
 
 let status = "Right-click anywhere";

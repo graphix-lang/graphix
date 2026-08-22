@@ -1,9 +1,9 @@
-use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
-use gui::row;
-use gui::slider;
+use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::slider::{self, *};
 mod icon;
 
 let rate = 0.;

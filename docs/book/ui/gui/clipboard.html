@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -217,11 +217,11 @@ val clear:       fn(v: Any) -&gt; Result&lt;null, `ClipboardError(string)&gt;;
 </ul>
 <p>All read functions take an <code>Any</code> argument as an event trigger — they execute when the trigger fires. All functions return <code>Result</code> types that may contain a <code>ClipboardError</code>.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::text_input;
-use gui::button;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::button::{self, *};
+use gui::column::{self, *};
 use gui::clipboard;
 mod icon;
 

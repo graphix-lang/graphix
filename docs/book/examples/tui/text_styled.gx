@@ -1,5 +1,5 @@
-use tui;
-use tui::text;
+use tui::{line, span};
+use tui::text::{self, *};
 
 let colors = [
    `Red,

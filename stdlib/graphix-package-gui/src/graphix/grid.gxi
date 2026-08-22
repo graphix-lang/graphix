@@ -1,4 +1,4 @@
-use super::*;
+use super::{Length, Widget};
 type GridColumns = [`Fixed(i64), `Fluid(f64)];
 type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
 

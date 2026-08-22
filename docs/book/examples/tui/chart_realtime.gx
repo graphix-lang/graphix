@@ -1,6 +1,6 @@
-use tui;
-use tui::chart;
-use tui::text;
+use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
 
 let data: Array<(f64, f64)> = {
     let clock = sys::time::timer(duration:0.5s, true);

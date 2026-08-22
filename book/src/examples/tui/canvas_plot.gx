@@ -1,4 +1,3 @@
-use tui::*;
 use tui::canvas::{self, *};
 
 let coords = [

@@ -1,4 +1,3 @@
-use super::*;
 /// An opaque handle to an I/O stream. The phantom type parameter indicates
 /// the underlying stream kind, constraining which operations are valid.
 /// Stream<`File> for files, Stream<`Tcp> for TCP, Stream<`Tls> for TLS,

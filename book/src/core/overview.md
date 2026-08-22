@@ -18,7 +18,7 @@ In Graphix, you create bindings with `let`. Unlike variables in other languages,
 
 **[Blocks](./block.md)** shows how to group expressions with `{...}` to create scopes, hide intermediate bindings, and build up complex expressions. Blocks are expressions too—they evaluate to their last value.
 
-**[Use](./use.md)** lets you bring module names into scope so you can write `map(arr, f)` instead of `array::map(arr, f)`. Simple, but essential as your programs grow.
+**[Use](./use.md)** imports names into scope so you can write `map(arr, f)` instead of `array::map(arr, f)`. Simple, but essential as your programs grow.
 
 ## Connect: The Heart of Reactivity
 

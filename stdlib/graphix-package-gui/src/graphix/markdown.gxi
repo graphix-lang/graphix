@@ -1,4 +1,4 @@
-use super::*;
+use super::{Length, Widget};
 type Markdown = {
   content: &string,
   on_link: &fn(url: string) -> Any,

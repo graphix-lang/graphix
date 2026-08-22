@@ -1,10 +1,9 @@
-use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
+use gui::window;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
 use core::math;
-use sys;
-use sys::net;
+use sys::net::Table;
 use sys::time;
 mod icon;
 

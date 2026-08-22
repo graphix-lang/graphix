@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -240,9 +240,9 @@ val block: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let content = paragraph(&amp;"Hello, World!");
 
@@ -255,9 +255,9 @@ block(
 <p><img src="./media/block_basic.png" alt="Basic Block"></p>
 <h3 id="focus-indication"><a class="header" href="#focus-indication">Focus Indication</a></h3>
 <p>Use dynamic styling to show which block has focus:</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let focused_block = 0;
 let content = paragraph(&amp;"Content here");
@@ -277,9 +277,9 @@ block(
 <p><img src="./media/block_focus.png" alt="Styled Block"></p>
 <h3 id="dynamic-titles"><a class="header" href="#dynamic-titles">Dynamic Titles</a></h3>
 <p>Titles can contain reactive values that update automatically:</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let count = count(sys::time::timer(duration:1.s, true));
 

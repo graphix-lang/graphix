@@ -1,4 +1,4 @@
-use super::*;
+use super::Tree;
 /// A cursor for iterating over tree entries one at a time.
 type Cursor<'k, 'v>;
 

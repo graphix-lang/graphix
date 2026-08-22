@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -211,11 +211,11 @@ and captures input</li>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <p>A modal opened with <code>o</code> and closed with <code>Esc</code>. While it is up, its
 input handler sees every key; the base handler sees none.</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::input_handler;
-use tui::overlay;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::block::{self, *};
+use tui::input_handler::{self, *};
+use tui::overlay::{self, *};
+use tui::paragraph::{self, *};
 
 let open = false;
 

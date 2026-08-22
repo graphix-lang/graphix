@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::checkbox;
-use gui::column;
+use gui::window;
+use gui::text::{self, *};
+use gui::checkbox::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let dark_mode = true;
