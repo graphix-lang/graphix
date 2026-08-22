@@ -53,6 +53,22 @@ eager union. If `action`'s signature froze `Read` into
 constraint is checked at INSTANTIATION, against the table as it stands
 then, so generic code written before an impl existed accepts it.
 
+**Scope (Eric's rule, as Rust):** a trait is a NAME and resolves like
+any other — by declaration, `use io::Read;` (or a full path), or the
+prelude. Impls are not names; they are global facts (§4). So: the
+trait name (in `'a: Read`, `Read::read(f, n)`, `impl Read for File`)
+needs the trait in scope; a method called BARE (`read(f, n)`) needs
+the item (`use io::Read::read;` or `use io::Read::*;` — traits register
+as module-like scopes, the existing import engine does the rest; two
+bare `read`s collide under the existing rules); constraint discharge,
+the generated union select (§3) and parameterized-head lookup (§4)
+resolve by trait IDENTITY through the global table, so a generic
+`action` declared where `Read` is in scope is callable from a module
+that never imports `Read`, and `==`/interpolation find the core four
+with no name at all (they are in core's prelude anyway). There is no
+method-call syntax — `f.read(n)` stays field access — so the language
+never searches scope for a method by the receiver's type.
+
 `Read` in an argument position = a fresh `'a: Read` per occurrence
 (`fn(a: Read, b: Read)` is two variables — Rust's `impl Trait` rule).
 In any other position (return type, struct field, array element) it
