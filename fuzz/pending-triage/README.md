@@ -38,3 +38,32 @@ Open, each parked here with mechanism located and a design question:
    walks) drained a name-keyed AHashMap in per-process hash order.
    Fixed by (name, TVarId) sorts; pin:
    findings/constrain-order-diag-aug2026/.
+
+## The aug20a round (2026-08-22) — 5 findings, 1 apparent class, PARKED
+
+Campaign aug20a (hz0/aieka/katana/ryouko on ad091e65, the
+activation-state soak): 5 divergences — ryouko 4, hz0 1 — pulled at
+the module-system redeploy (aug22a). Parked per Eric before root-cause
+work; all five REPRODUCE on merged main (bdd013b0), so they are not
+module-system artifacts and not fixed by it.
+
+**Shape (all five, `aug20a_epoch_refire_*.gx`):** an
+`array::iter([1,2,3,4])`-driven binding `m` is read ONLY by the guard
+of a structure-failed arm of an inner select over a constant
+scrutinee, inside a `let rec` callee:
+`select <const≠0> { 0 if m == 0 => A, _ => B }`. The interp emits B
+once (the guard is never consulted — structure fails first, so `m` is
+not a consumed input); the JIT re-emits B on EVERY `m` delivery
+(interp `[0:v]` vs jit `[0:v 1:v 2:v 3:v 4:v]`; the `array::group`
+variant turns the extra fires into a phantom `[2,2,2]` group).
+
+**Suspect** (UNCONFIRMED): the guard PROLOGUE's `guard_stale` fold in
+`emit_select_arms` counts a non-consulted guard's freshness as an
+own-fire — the consulted-guard rule says a structure-failed arm's
+guard is irrelevant on both planes. BUT the bare skeleton does NOT
+reproduce: probes of the naked select, a plain callee wrapper, and a
+minimal `let rec` wrapper all AGREE — the embedded minimized forms
+(which still diverge) each retain extra ingredients (inner
+`count(f(x))` rec-shadow body, `math::abs` cmp, `array::group`
+shell), so the real trigger is narrower and still unisolated. Each
+file carries its campaign-minimized form under `// minimized:`.
