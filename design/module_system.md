@@ -548,7 +548,7 @@ Deltas from the plan above, each cheap to revise:
     in the roundtrip generators (`path_lead`), and the tree-sitter
     `type_path` rule.
 13. **A dynamic module's `source` expression compiles in the
-    ENCLOSING scope** (arc-end fix, semantics call flagged for Eric).
+    ENCLOSING scope** (arc-end fix; Eric approved 2026-08-22).
     The flip left the whole `mod foo dynamic { … }` block compiling
     under `foo`, which made `let src = …; mod foo dynamic { … source
     src }` inexpressible — inside a block no spelling reaches the
