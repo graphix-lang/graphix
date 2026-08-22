@@ -905,6 +905,39 @@ enforces it):**
   `design/kernel_instance_state.md` "DynCall site identity"; pinned
   by `dyncall_site_identity_state` +
   `findings/dyncall-site-identity-jul2026/`.
+- **THE QUIET FLAG** (2026-08-22, soak aug20a — five findings, one
+  class, two mechanisms; pins `findings/quiet-frame-init-view-aug2026/`):
+  a re-derivation inside a QUIET FRAME (`frame_depth > 0 &&
+  !frame_init` — every framed pass of a tail chain on a non-init
+  cycle) is NOT an init view. The interp already says so at every
+  reader (Constant/Ref/Bind gate on `frame_init` first), but two
+  kernel mechanisms manufactured one. (1) `DynCallSlot::sleep` RESET
+  `fired`, so every post-wake dispatch was a "first" dispatch (forced
+  `event.init`, every arg delivered fired, STALE mask ignored) — the
+  slot sleeps with the arm on the n≠0 pass and re-wakes on the n=0
+  pass, loop plumbing, not a trigger. The interp's `CallSite::sleep`
+  keeps `first_update`: a re-woken site is RESUMED, not re-primed
+  (sleep is pause), and only the first-ever dispatch is the `bound`
+  init-view dispatch — which keeps its forced view at ANY frame depth
+  (43e6af90 seeds its quiet formals FIRED in frames; a frame-gated
+  first dispatch broke `frame-formal-init-view-aug2026` on the first
+  try — the discriminator is first-ever vs resumed, never the frame).
+  The depth-0 init view a becoming-selected arm owes its interior
+  arrives through the ARGS (the arm's `init_override` folds the stale
+  masks; R2 fires a region's inputs), so the reset was redundant there
+  and wrong in frames. (2) A fused select's selection-changed word
+  (`woke`) granted the re-selected arm an init view on every native
+  tail-loop iteration (and in a callee that can't know statically it
+  runs per iteration), and in a fused sub-region of an interp frame.
+  Wire slot 0 is now a context WORD: bit 0 init, bit 1 QUIET — the
+  wrapper sets it from the interp frame, a tail-loop body sets it for
+  itself when `!init` (`LowerCtx::quiet_flag`), callees inherit it
+  through `callee_init`. Under it becoming-selected grants no init
+  view (the word is still recorded for sleep/wake routing); a site's
+  first-ever call still does. The symptom to recognize: a `let rec`
+  chain re-derived by an input that is NOT consumed (read only by a
+  structure-failed arm's guard) fires on the JIT every delivery and
+  once on the interp.
 - **A program may spin forever inside one cycle, on BOTH engines** — an
   infinite tail recursion is the constant-stack, bounded-memory case.
   This is semantics, not a JIT artifact (Eric's ruling 2026-08-15,

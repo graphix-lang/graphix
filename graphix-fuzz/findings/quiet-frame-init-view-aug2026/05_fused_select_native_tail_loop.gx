@@ -1,0 +1,9 @@
+// Second face, found while isolating 00: `f` compiles whole, so the tail
+// loop is NATIVE. The fused select over the loop variable re-selects on
+// every iteration, and its selection-changed word gave the re-selected
+// arm an init view — its constant fired, the DynCall fired on the
+// fired arg, v fired, the root fired — on a quiet invocation where the
+// interp's framed passes keep every constant stale. Under the QUIET
+// flag (wire slot 0, bit 1: set by a tail-loop body when not its own
+// init) becoming-selected grants no init view.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x; let rec f = |n| {let v = select n {i64:0 => str::len("abc"), _ => i64:5}; select n {i64:0 => select i64:2 {i64:0 if m == i64:0 => i64:1, _ => v}, _ => f(n - i64:1)}}; f(i64:3)}

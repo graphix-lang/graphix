@@ -1204,6 +1204,11 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         }
         slot_cvs.push(cv);
     }
+    // The callee's context word: its init view — ours, or a forced
+    // one on this site's first call ever (the `Callee::Static`
+    // priming: a `bound` dispatch seeds its formals FIRED at any
+    // frame depth, callsite.rs) — and the QUIET bit, inherited.
+    let quiet = cx.quiet_flag();
     let callee_init = match cx.claim_state_word_loop_invariant() {
         Some(off) => {
             let sp = cx.state_ptr();
@@ -1217,6 +1222,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         }
         None => cx.init_flag(),
     };
+    let quiet_bit = cx.b.ins().ishl_imm(quiet, 1);
+    let callee_init = cx.b.ins().bor(callee_init, quiet_bit);
     clif_args.push(callee_init);
     clif_args.push(cx.state_ptr());
     let site_block = emit_site_block(cx, info, is_self)?;

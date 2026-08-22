@@ -1,0 +1,5 @@
+// aug20a epoch_refire (ryouko0): the same first-dispatch face with the
+// DynCall as the inner select's SCRUTINEE, under an `array::group`
+// consumer (the call stays interp-driven; the arm regions fuse). The
+// phantom re-fires closed a [2,2,2] group the interp never saw.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x; let rec f = |n| select n {i64:0 => select str::len("abc") {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; array::group(f(i64:3), |n, _| n == i64:3)}

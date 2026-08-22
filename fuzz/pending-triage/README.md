@@ -39,31 +39,50 @@ Open, each parked here with mechanism located and a design question:
    Fixed by (name, TVarId) sorts; pin:
    findings/constrain-order-diag-aug2026/.
 
-## The aug20a round (2026-08-22) — 5 findings, 1 apparent class, PARKED
+## The aug20a round (2026-08-22) — 5 findings, 1 class, CLOSED
 
 Campaign aug20a (hz0/aieka/katana/ryouko on ad091e65, the
 activation-state soak): 5 divergences — ryouko 4, hz0 1 — pulled at
-the module-system redeploy (aug22a). Parked per Eric before root-cause
-work; all five REPRODUCE on merged main (bdd013b0), so they are not
-module-system artifacts and not fixed by it.
+the module-system redeploy (aug22a); all five reproduced on merged
+main (bdd013b0). Triaged and fixed 2026-08-22; pins moved to
+`graphix-fuzz/findings/quiet-frame-init-view-aug2026/` (00–04 the
+campaign witnesses, 05–07 the two further faces found while
+isolating).
 
-**Shape (all five, `aug20a_epoch_refire_*.gx`):** an
-`array::iter([1,2,3,4])`-driven binding `m` is read ONLY by the guard
-of a structure-failed arm of an inner select over a constant
-scrutinee, inside a `let rec` callee:
-`select <const≠0> { 0 if m == 0 => A, _ => B }`. The interp emits B
-once (the guard is never consulted — structure fails first, so `m` is
-not a consumed input); the JIT re-emits B on EVERY `m` delivery
-(interp `[0:v]` vs jit `[0:v 1:v 2:v 3:v 4:v]`; the `array::group`
-variant turns the extra fires into a phantom `[2,2,2]` group).
+**Shape:** an `array::iter`-driven binding `m` read ONLY by the guard
+of a structure-failed arm, inside a `let rec` tail chain. Every `m`
+delivery re-derives the chain (quiet framed passes in the interp), and
+on each pass the `0 =>` arm is re-woken after sleeping on the n≠0
+pass — loop plumbing, not a trigger. The interp emits once; the JIT
+re-emitted per delivery.
 
-**Suspect** (UNCONFIRMED): the guard PROLOGUE's `guard_stale` fold in
-`emit_select_arms` counts a non-consulted guard's freshness as an
-own-fire — the consulted-guard rule says a structure-failed arm's
-guard is irrelevant on both planes. BUT the bare skeleton does NOT
-reproduce: probes of the naked select, a plain callee wrapper, and a
-minimal `let rec` wrapper all AGREE — the embedded minimized forms
-(which still diverge) each retain extra ingredients (inner
-`count(f(x))` rec-shadow body, `math::abs` cmp, `array::group`
-shell), so the real trigger is narrower and still unisolated. Each
-file carries its campaign-minimized form under `// minimized:`.
+**Root cause — NOT the guard fold** (the suspect above was wrong; the
+consulted-guard chain is fine): a re-derivation inside a QUIET FRAME
+(`frame_depth > 0 && !frame_init`) is not an init view — the interp's
+Constant/Ref/Bind/lambda-priming sites all gate on `frame_init` there
+— but three kernel mechanisms manufactured one anyway:
+
+1. `DynCallSlot::sleep` reset `fired`, so every post-wake dispatch
+   was a FIRST dispatch — forced `event.init`, every arg delivered
+   fired, STALE mask ignored — and the arm-body DynCall fired on
+   constant args the interp delivers stale. The interp's
+   `CallSite::sleep` keeps `first_update`: a re-woken site is resumed,
+   not re-primed (sleep is pause); only a site's first-ever dispatch
+   is the `bound` init-view dispatch, and THAT one keeps its forced
+   view at any frame depth (43e6af90's FIRED seeds — pins
+   frame-formal-init-view-aug2026, which a frame-gated first dispatch
+   broke on the first try). (Faces 00–04.)
+2. A fused select's selection-changed word (`woke`) granted the
+   re-selected arm an init view on every NATIVE tail-loop iteration
+   (05), and in a callee kernel that cannot know statically it runs
+   per iteration (06).
+3. The same word inside a fused sub-region of an INTERP frame (07).
+
+**Fix:** `DynCallSlot::sleep` no longer resets `fired`; wire slot 0
+gains bit 1, THE QUIET FLAG — set by the wrapper from the interp
+frame, by a tail-loop body for itself when `!init`, inherited by
+callees through the context word — under which becoming-selected
+grants no init view (a first-ever call/dispatch still does, as the
+interp's `bound` dispatch does). See CLAUDE.md "Fusion / JIT
+subsystem" (the QUIET FLAG entry).
+

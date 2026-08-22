@@ -1888,6 +1888,15 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
     let base_init = cx.init_flag();
+    // Becoming-selected is an init view at depth 0 only: under the
+    // QUIET flag the re-selection is a frame's or loop's
+    // re-derivation — the interp's in-frame wake keeps constants and
+    // refs on the value channel (node/mod.rs, bind.rs) — so the word
+    // is still recorded (sleep/wake routing) but grants nothing.
+    let woke_allowed = {
+        let q = cx.quiet_flag();
+        cx.b.ins().icmp_imm(IntCC::Equal, q, 0)
+    };
     let record = |cx: &mut BodyCx, addr: ClifValue, idx: usize| {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
@@ -1896,6 +1905,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         let recorded = cx.b.ins().select(valid, tag, stored);
         cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
         let woke = cx.b.ins().band(changed, valid);
+        let woke = cx.b.ins().band(woke, woke_allowed);
         let woke64 = cx.b.ins().uextend(types::I64, woke);
         cx.b.ins().bor(base_init, woke64)
     };
@@ -1926,6 +1936,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             let fired = cx.b.ins().icmp_imm(IntCC::Equal, ss, 0);
             let valid = is_untainted(cx.b, scrut_disc);
             let woke = cx.b.ins().band(fired, valid);
+            let woke = cx.b.ins().band(woke, woke_allowed);
             let woke64 = cx.b.ins().uextend(types::I64, woke);
             let eff_init = cx.b.ins().bor(base_init, woke64);
             cx.b.ins().jump(merge, &[BlockArg::Value(eff_init)]);

@@ -1570,10 +1570,15 @@ pub struct SiteLeaf {
 /// starts its wire-slot scan here and every load/pack site reserves
 /// this many leading words.
 ///
-/// Slot 0 is the `event.init` flag (1 = the kernel's init cycle), read
-/// by every fused constant to gate its
-/// [`emit::STALE`](crate::fusion::emit) bit (a constant fires only at
-/// init).
+/// Slot 0 is the cycle-context word. Bit 0 is the `event.init` flag
+/// (1 = the kernel's init cycle), read by every fused constant to gate
+/// its [`emit::STALE`](crate::fusion::emit) bit (a constant fires only
+/// at init). Bit 1 is the QUIET flag: the invocation re-derives inside
+/// an evaluation frame or tail loop that is not its own init, where
+/// a re-selection or a first call is loop plumbing and grants no init
+/// view (`LowerCtx::quiet_flag`). The wrapper sets it from an interp
+/// frame (`frame_depth > 0 && !frame_init`); a tail-loop body sets it
+/// for itself when bit 0 is clear; callees inherit it.
 ///
 /// Slot 1 is the per-kernel-INSTANCE state pointer (`*mut u64`, 0 when
 /// the kernel claimed no state — `WrappedKernel::state_words == 0`): a

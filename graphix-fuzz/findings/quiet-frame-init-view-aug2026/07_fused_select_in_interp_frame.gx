@@ -1,0 +1,5 @@
+// The same face inside an INTERP frame: the union return keeps `f` off
+// the kernel path, so the tail loop is the interp's and the `v` region
+// (a fused select with a site in its arm) runs inside its quiet frames.
+// The wrapper sets the QUIET bit from `frame_depth > 0 && !frame_init`.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x; let rec f = |n| {let v = select n {i64:0 => str::len("abc"), _ => i64:5}; select n {i64:0 => select i64:2 {i64:0 if m == i64:0 => true, _ => v}, _ => f(n - i64:1)}}; f(i64:3)}

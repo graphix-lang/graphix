@@ -18,7 +18,8 @@ use crate::{
 use anyhow::{Context as AnyContext, Result};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    AbiParam, Block, FuncRef, InstBuilder, Signature, Value as ClifValue, types,
+    AbiParam, Block, FuncRef, InstBuilder, Signature, Value as ClifValue,
+    condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_jit::JITModule;
@@ -69,12 +70,29 @@ pub(super) fn compile_into_function(
         poolshark::local::LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
     // The leading cycle-context words (`CTX_WIRE_SLOTS`), BEFORE the
-    // params (`abi_params` wire slots start past them): the
-    // `event.init` flag (1 on the kernel's init cycle — read by
-    // `emit_const_node` to gate each constant's STALE bit) and the
+    // params (`abi_params` wire slots start past them): the context
+    // word — bit 0 the `event.init` flag (1 on the kernel's init
+    // cycle — read by `emit_const_node` to gate each constant's STALE
+    // bit), bit 1 QUIET (see [`LowerCtx::quiet_flag`]) — and the
     // per-instance state-buffer pointer (see
     // [`BodyCx::claim_state_word`]).
-    let init_flag = initial_vals[0];
+    let ctx_word = initial_vals[0];
+    let init_flag = b.ins().band_imm(ctx_word, 1);
+    let quiet_flag = {
+        let q = b.ins().band_imm(ctx_word, 2);
+        let q = b.ins().ushr_imm(q, 1);
+        if kernel.has_tail_loop {
+            // A tail loop re-derives its chain per invocation, and
+            // every pass of a non-init invocation is the interp's
+            // framed quiet pass (`frame_init` rides the dispatch's
+            // real init through every pass — node/lambda.rs).
+            let not_init = b.ins().icmp_imm(IntCC::Equal, init_flag, 0);
+            let not_init = b.ins().uextend(types::I64, not_init);
+            b.ins().bor(q, not_init)
+        } else {
+            q
+        }
+    };
     let state_ptr = initial_vals[1];
     #[cfg(debug_assertions)]
     if std::env::var_os("GXDBG_CALLRET").is_some() {
@@ -198,6 +216,7 @@ pub(super) fn compile_into_function(
             scrut_stale: tail_scrut_stale,
         },
         init_flag,
+        quiet_flag,
         callee_refs,
         helper_refs,
         init_override: std::cell::Cell::new(None),
@@ -620,6 +639,15 @@ pub(crate) struct LowerCtx<'a> {
     /// [`BodyCx::init_flag`]) so a constant carries [`STALE`] on every
     /// non-init cycle — it fires only at init, like the node-walk.
     pub(super) init_flag: ClifValue,
+    /// THE QUIET FLAG (`I64`, 0/1): the invocation re-derives inside
+    /// an evaluation frame or tail loop that is not its own init —
+    /// wire slot 0's bit 1 from the wrapper (an interp frame with
+    /// `!frame_init`), or `!init` in a tail-loop body, inherited by
+    /// callees. Loop plumbing grants no init view (the Constant/Ref
+    /// frame gate, node/mod.rs and bind.rs): a select's
+    /// becoming-selected and a callee's first call stay on the value
+    /// channel under it.
+    pub(super) quiet_flag: ClifValue,
     /// The per-INSTANCE state channel (wire slot 1) — see
     /// [`StateChannel`].
     pub(super) state: StateChannel,

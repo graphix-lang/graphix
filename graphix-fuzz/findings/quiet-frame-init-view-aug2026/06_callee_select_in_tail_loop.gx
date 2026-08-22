@@ -1,0 +1,6 @@
+// The native-loop face through a CALLEE: `g` has no loop of its own and
+// cannot know statically that it runs per iteration of f's tail loop;
+// its select word (one per call site — a tail loop is one activation)
+// flips per iteration. The QUIET flag is inherited through the callee's
+// context word.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x; let g = |k| select k {i64:0 => str::len("abc"), _ => i64:5}; let rec f = |n| {let v = g(n); select n {i64:0 => select i64:2 {i64:0 if m == i64:0 => i64:1, _ => v}, _ => f(n - i64:1)}}; f(i64:3)}

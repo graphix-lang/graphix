@@ -488,23 +488,28 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
     /// "no value yet").
     /// Sleep the slot's bound apply — the arm-sleep twin of
     /// `CallSite::sleep` (which sleeps its callee apply and arg_refs):
-    /// a builtin's `CachedArgs` clears its combineLatest slots, an
-    /// interpreted callback instance sleeps its whole body. `fired`
-    /// resets so the next dispatch runs under a forced init view — an
-    /// arm WAKE is an init view, the same fresh-callee contract
-    /// `dispatch` encodes.
+    /// a builtin's `CachedArgs` sleeps its staging, an interpreted
+    /// callback instance sleeps its whole body. SLEEP IS PAUSE:
+    /// `fired` survives, exactly as `CallSite::sleep` keeps
+    /// `first_update` — a re-woken site is resumed, not re-primed,
+    /// and its next dispatch delivers the honest masks. The init view
+    /// a becoming-selected arm grants its interior at depth 0 arrives
+    /// through the ARGS (the arm's `init_override` folds the stale
+    /// masks, R2 fires the region's inputs), never through a phantom
+    /// first dispatch: resetting here made every post-wake dispatch a
+    /// forced-init arrival, which inside a tail chain's quiet framed
+    /// re-derivation re-fired constant args the interp delivers stale
+    /// (aug20a epoch_refire, findings/quiet-frame-init-view-aug2026).
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some((_, apply)) = &mut self.current {
             apply.sleep(ctx);
         }
         for (_, inst) in &mut self.instances {
             inst.apply.sleep(ctx);
-            inst.fired = false;
         }
         for n in &mut self.arg_refs {
             n.sleep(ctx);
         }
-        self.fired = false;
     }
 
     /// Semantic teardown for the slot's bound apply — the
@@ -601,6 +606,10 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 (&mut inst.apply, &mut inst.fired)
             }
         };
+        // `first` is the site's first dispatch EVER — the interp's
+        // `Callee::Static::first_update`, a `bound` dispatch that runs
+        // under the real init view and seeds its quiet args FIRED at
+        // any frame depth (callsite.rs). Sleep keeps it (see `sleep`).
         let first = !*fired;
         *fired = true;
         // Side-channel: stash each arg's HONEST production at its
@@ -1739,13 +1748,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // param in ABI (= params) order.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
-        // The invocation-uniform init flag the emitted const_stale_gate
-        // reads: inside a frame the honest view is `ctx.frame_init`
-        // (frames force `event.init`, so the raw flag fired every
-        // in-frame const per pass — the Constant node's own gate,
-        // node/mod.rs) — the bind.rs/lambda.rs idiom at the wire slot.
+        // Slot 0: the invocation-uniform init view the emitted
+        // const_stale_gate reads (bit 0) — inside a frame the honest
+        // view is `ctx.frame_init` (frames force `event.init`, so the
+        // raw flag fired every in-frame const per pass — the Constant
+        // node's own gate, node/mod.rs), the bind.rs/lambda.rs idiom
+        // at the wire slot — and the QUIET bit (bit 1): the invocation
+        // re-derives inside a frame that is not its own init, where a
+        // re-selection or a first call is loop plumbing and grants no
+        // init view (`LowerCtx::quiet_flag`).
         let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
-        slots.push(init as u64);
+        let quiet = ctx.frame_depth > 0 && !ctx.frame_init;
+        slots.push(init as u64 | (quiet as u64) << 1);
         slots.push(if self.state.is_empty() {
             0
         } else {

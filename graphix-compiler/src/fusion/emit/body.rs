@@ -484,6 +484,11 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.init_override.get().unwrap_or(self.ctx.init_flag)
     }
 
+    /// THE QUIET FLAG (`I64`, 0/1) — see [`LowerCtx::quiet_flag`].
+    pub fn quiet_flag(&self) -> ClifValue {
+        self.ctx.quiet_flag
+    }
+
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
     /// slot 1. Only meaningful at offsets returned by
     /// [`claim_state_word`](Self::claim_state_word); 0 when the kernel
