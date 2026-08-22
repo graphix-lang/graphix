@@ -1,7 +1,8 @@
 # Nominal abstract types — box at the constructor
 
-Status: PROPOSAL (Eric, 2026-08-22, refined in discussion). Companion
-to `traits.md` §3, but its payoff is wider than trait dispatch.
+Status: RULED 2026-08-22 (Eric): every graphix-defined abstract type is
+boxed; `list::List` goes transparent. Not yet built. Companion to
+`traits.md` §3, but its payoff is wider than trait dispatch.
 
 ## The rule
 
@@ -108,10 +109,10 @@ recursive variant — already self-describing by its `Cons`/`Nil` tags
 — and boxing would add an `Arc` per cons cell to a representation
 whose per-element allocation is already the ~15x gap to the array
 twins. `List` is abstract only to hide its rep; ML and Haskell expose
-theirs. Recommendation: make `List` transparent (`Cons`/`Nil` public),
-which also aligns with the planned move of List into the compiler
-beside Array. `Color` and `Shortcut` (structs, constructed at init)
-take the box with no visible cost.
+theirs. RULED: `List` goes transparent (`Cons`/`Nil` public), which
+also aligns with the planned move of List into the compiler beside
+Array; everything else is boxed. `Color` and `Shortcut` (structs,
+constructed at init) take the box with no visible cost.
 
 ## Migration
 
