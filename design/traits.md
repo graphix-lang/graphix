@@ -140,27 +140,41 @@ Rust generic struct. No `dyn` until a real program demands one; the
 closure-record encoding is the fallback if one ever does, and a
 programmer can write it by hand today.
 
-## 4. Impl targets in a structural type system
+## 4. Impl targets must have an owner
 
-`impl Read for File` needs `File` to have an identity. Abstract types
-and primitives have one; that is already the language's nominal escape
-hatch, so impls over them are natural. For a structural shape —
-`impl Show for {x: f64, y: f64}` — the honest semantics is the
-structural one: the impl applies to EVERY type of that shape, aliases
-being transparent. That is acceptable if it is said out loud.
+Impls are GLOBAL once their module loads — scope governs only whether
+a method's NAME may be written bare (`use io::Read::read`), never
+whether an impl applies. Coherence demands it: a value must be equal
+to the same things and print the same way everywhere (a `Set` built
+under one `Eq` and queried under another is silent corruption), and
+the core four are used implicitly by `==` and interpolation through
+the prelude. Rust rejects scoped impls for the same reason.
 
-Coherence = no two impls of one trait whose targets overlap;
-overlap is `contains` in either direction, checked at impl
-registration (structural subtyping makes it decidable). v1 targets:
-abstract types (with params), primitives, builtin constructors
-(`Array<'a>`, `Map<'k,'v>`, `bytes`, ...), exact structural shapes.
-Refused in v1: unions (§3) and tvars (blanket impls — the overlap
-check stops being a `contains` query).
+Given global impls, a target must have an OWNER, because a structural
+shape has none: `impl Display for {x: i64, y: i64}` in package A would
+change how package B's unrelated grid cell prints the moment A loads,
+and a second such impl in B is a coherence error between two
+strangers the orphan rule cannot adjudicate. Haskell's answer is
+"newtype it", and `nominal_abstract_types.md` makes that one line:
+`type Point = Abstract<{x: i64, y: i64}>` owns its impl, which applies
+to Points and nothing else.
 
-Orphan rule by package: an impl lives in the trait's package or the
-target's package. The table is global, keyed by trait path + target;
-impls register when their MODULE loads, so a package's impls must be
-reachable from its root. A REPL re-`impl` replaces, like re-`let`.
+Targets, v1:
+
+- a nominal abstract (`Abstract<rep>` or Rust-backed), owned by its
+  module — the common case;
+- a primitive or builtin constructor (`i64`, `string`, `Array<'a>`,
+  `Map<'k, 'v>`, `bytes`, ...), owned by core — so under the orphan
+  rule only core impls `Display for i64`, which IS the structural case.
+
+Refused: transparent aliases, structs, tuples, variants, unions, and
+tvars (blanket impls), with the message "`Point` is transparent; make
+it `Abstract<...>` to own an impl". Coherence is then one-key: one
+impl per (trait, owner), and the orphan rule is by package — an impl
+lives in the trait's package or the target's. The table is global,
+keyed by trait path + target id; impls register when their MODULE
+loads, so a package's impls must be reachable from its root. A REPL
+re-`impl` replaces, like re-`let`.
 
 ## 5. Trait generics — stage it
 
@@ -239,8 +253,8 @@ type beside the value at every step (`TVal`), and `==` becomes the
 same shape by carrying the type too. It is Haskell's derived instance
 (`show [a]` calling `show a` per element) done by the walk instead of
 by a materialized blanket impl per composite, so the structural case
-stays ONE RUST LOOP. Impl targets are §4's — nominal abstracts,
-primitives, exact structural shapes — not abstracts only.
+stays ONE RUST LOOP. Impl targets are §4's — owned types: nominal
+abstracts and core's primitives/constructors.
 
 - Call-out is SYNCHRONOUS: an impl body is a node graph and the walk
   runs it inside the cycle. A call site's `update` IS a synchronous
@@ -289,7 +303,7 @@ primitives, exact structural shapes — not abstracts only.
    (§6) can follow the release without an API break.
 2. `nominal_abstract_types.md` (prerequisite; the breaking change).
 3. v1 traits: declarations, required + default methods, impls over
-   nominal/primitive/exact-shape targets, traits as constraints via
+   OWNED targets (§4), traits as constraints via
    the existing cell conjunctions, static resolution in typecheck1,
    union dispatch as a generated select (§3), `Trait::method` paths
    + `use`, `.gxi` impl declarations. Compile error on unresolved self.
