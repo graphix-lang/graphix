@@ -32,9 +32,9 @@ pub(super) struct GenModule {
 /// plain spelling and emits a `use super::{m0, …};` header, 1 rewrites
 /// references to `super::m<j>::…` inline, 2 to `package::m<j>::…`.
 fn sibling_qualified(n: &str) -> bool {
-    n.strip_prefix('m')
-        .and_then(|r| r.split_once("::"))
-        .is_some_and(|(digits, _)| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    n.strip_prefix('m').and_then(|r| r.split_once("::")).is_some_and(|(digits, _)| {
+        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// Walk the abstract-type MODULE fields nested in a vocabulary entry's
@@ -115,7 +115,11 @@ pub(super) fn gen_module(
     } else if idx > 0 {
         let list: Vec<String> = (0..idx).map(|j| format!("m{j}")).collect();
         let header = format!("use super::{{{}}};\n", list.join(", "));
-        if has_gxi { gxi.push_str(&header) } else { gx.push_str(&header) }
+        if has_gxi {
+            gxi.push_str(&header)
+        } else {
+            gx.push_str(&header)
+        }
         stats.use_vocab = true;
     }
     let mut public: Vec<(String, GenType)> = Vec::new();
@@ -285,8 +289,8 @@ pub(super) fn gen_module(
     // binds, later modules' bodies, and (via cross-module wiring
     // pinning a later f0's return to `mk`'s) other interfaces —
     // `m1.gxi` declaring `-> m0::T` resolves (probed 2026-07-08). In
-    // the bare-module variant the same paths hold with `m<i>::T`
-    // resolving as a transparent alias.
+    // the bare-module variant the same paths hold with `m<i>::T` a
+    // PUBLIC newtype (the `Abstract<..>` body is exported).
     let mut stmts = Vec::new();
     if chance(rng, cfg.p_abstract) {
         let concrete = match rng.below(3) {
@@ -294,14 +298,18 @@ pub(super) fn gen_module(
             1 => GenType::Tuple(vec![I64, I64]),
             _ => GenType::Array(Box::new(I64)),
         };
+        // the nominal faces (design/nominal_abstract_types.md): the
+        // constructor `T(..)`, the payload `.0`, the pattern `T(p)`
         let (mk_body, un_body) = match &concrete {
-            GenType::Num(NumTy::I64) => ("x".to_string(), "t".to_string()),
-            GenType::Tuple(_) => ("(x, x + i64:1)".to_string(), "t.0".to_string()),
-            _ => ("[x, x]".to_string(), "t[0]$".to_string()),
+            GenType::Num(NumTy::I64) => ("T(x)".to_string(), "t.0".to_string()),
+            GenType::Tuple(_) => {
+                ("T((x, x + i64:1))".to_string(), "{ let T((a, _)) = t; a }".to_string())
+            }
+            _ => ("T([x, x])".to_string(), "t.0[0]$".to_string()),
         };
         gxi.push_str("type T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n");
         gx.push_str(&format!(
-            "type T = {};\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
+            "type T = Abstract<{}>;\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
             concrete.render()
         ));
         let aty = GenType::Abstract { module: mname.clone() };

@@ -6,11 +6,11 @@ use crate::{
     BindId, Node, NodeView, Rt, UserEvent,
     expr::{Expr, ExprId},
     fusion::{
-        kernel_abi::{self, AbiKind, AbstractRegistry, PrimType},
+        kernel_abi::{self, AbiKind, PrimType},
         lowering::{self},
     },
     node::op::{BinOp, BoolOp, CmpOp},
-    typ::Type,
+    typ::{AbstractId, Type},
 };
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
@@ -32,9 +32,9 @@ use super::{
     lower::{freeze_node_typ, resolve_node_typ},
     scaffold,
     scalar::{
-        compile_bin, compile_cast, compile_cmp, compile_const, compile_element_read,
-        prim_to_clif, scalar_to_payload_i64, string_buf_push_helper,
-        value_buf_push_helper, widen_to_i64, zero_const,
+        abstract_read_helper, compile_bin, compile_cast, compile_cmp, compile_const,
+        compile_element_read, prim_to_clif, scalar_to_payload_i64,
+        string_buf_push_helper, value_buf_push_helper, widen_to_i64, zero_const,
     },
 };
 
@@ -61,7 +61,7 @@ pub(crate) fn emit_const_node(
     // (see `const_stale_gate`). The disc gate is the only flag change —
     // a constant is never tainted.
     let init = cx.init_flag();
-    match kernel_abi::abi_kind(cx.registry(), typ) {
+    match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
             let disc = scalar_disc(cx.b, prim);
             let disc = const_stale_gate(cx.b, init, disc);
@@ -124,8 +124,7 @@ pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
              subtree node-walks"
         )
     })?;
-    let typ = kernel_abi::freeze_for_abi(cx.registry(), typ)
-        .unwrap_or_else(kernel_abi::map_type);
+    let typ = kernel_abi::freeze_for_abi(typ).unwrap_or_else(kernel_abi::map_type);
     emit_const_node(cx, &v, &typ)
 }
 
@@ -250,7 +249,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     // Ref resolution retry, #218), or Err → no fusion.
     let prim = freeze_node_typ(cx.ctx, lhs.typ())
         .as_ref()
-        .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
+        .and_then(|t| kernel_abi::scalar_prim(t))
         .ok_or_else(|| {
             anyhow!("emit_clif: arith operand of non-scalar type {:?}", lhs.typ())
         })?;
@@ -348,12 +347,12 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let lprim = kernel_abi::freeze_for_abi_normalized(cx.registry(), lhs.typ())
+    let lprim = kernel_abi::freeze_for_abi_normalized(lhs.typ())
         .as_ref()
-        .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t));
-    let rprim = kernel_abi::freeze_for_abi_normalized(cx.registry(), rhs.typ())
+        .and_then(|t| kernel_abi::scalar_prim(t));
+    let rprim = kernel_abi::freeze_for_abi_normalized(rhs.typ())
         .as_ref()
-        .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t));
+        .and_then(|t| kernel_abi::scalar_prim(t));
     if let (Some(lp), Some(_)) = (lprim, rprim) {
         let lcv = lhs.emit_clif(cx)?;
         let rcv = rhs.emit_clif(cx)?;
@@ -373,10 +372,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         }
     };
     for t in [lhs.typ(), rhs.typ()] {
-        if matches!(
-            kernel_abi::abi_kind(cx.registry(), t),
-            Some(AbiKind::Unit | AbiKind::Null) | None
-        ) {
+        if matches!(kernel_abi::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null) | None) {
             return Err(anyhow!(
                 "emit_clif: ==/!= operand of type {t:?} has no comparable \
                  runtime form (mirrors kernel_abi::cmp)"
@@ -443,7 +439,7 @@ pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     let cv = inner.emit_clif(cx)?;
     let prim = freeze_node_typ(cx.ctx, inner.typ())
         .as_ref()
-        .and_then(|t| kernel_abi::scalar_prim(cx.registry(), t))
+        .and_then(|t| kernel_abi::scalar_prim(t))
         .ok_or_else(|| {
             anyhow!("emit_neg: operand of non-scalar type {:?}", inner.typ())
         })?;
@@ -471,7 +467,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     // `unreachable!`s), so a bool source/target falls through to the
     // machinery DynCall below, which casts via `Value::cast`.
     if let (Some(src), Some(tgt)) =
-        (kernel_abi::scalar_prim(cx.registry(), inner.typ()), PrimType::from_type(target))
+        (kernel_abi::scalar_prim(inner.typ()), PrimType::from_type(target))
     {
         if src.is_numeric() && tgt.is_numeric() {
             let cv = inner.emit_clif(cx)?;
@@ -620,8 +616,8 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
         let part = a;
         // `freeze_for_abi_normalized` so a select-valued part (whose type is
         // the un-normalized arm union) still classifies.
-        let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), part.typ());
-        match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t)) {
+        let frozen = kernel_abi::freeze_for_abi_normalized(part.typ());
+        match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t)) {
             Some(AbiKind::String) => {
                 let cv = part.emit_clif(cx)?;
                 part_discs.push(cv.disc);
@@ -662,7 +658,7 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    match kernel_abi::abi_kind(cx.registry(), node.typ()) {
+    match kernel_abi::abi_kind(node.typ()) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // #219: the disc carries the operand's taint through. A missing
             // 2-word input is a `Value::Null` placeholder (nonzero disc), so
@@ -738,7 +734,7 @@ pub(crate) fn widen_result_to_value(
     produced: &Type,
     cv: CompiledExpr,
 ) -> Result<CompiledExpr> {
-    match kernel_abi::abi_kind(cx.registry(), produced) {
+    match kernel_abi::abi_kind(produced) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null) => {
             Ok(cv)
         }
@@ -767,16 +763,12 @@ pub(crate) fn widen_result_to_value(
 /// callee's `ret` shape: the node promises a 2-word Value while the
 /// callee ABI delivers its own narrower encoding. `Null` is exempt —
 /// a Null (disc, payload) already IS a valid Value pairing.
-pub(crate) fn call_result_needs_value_widening(
-    reg: &AbstractRegistry,
-    node_typ: &Type,
-    ret: &Type,
-) -> bool {
+pub(crate) fn call_result_needs_value_widening(node_typ: &Type, ret: &Type) -> bool {
     matches!(
-        kernel_abi::abi_kind(reg, node_typ),
+        kernel_abi::abi_kind(node_typ),
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
     ) && !matches!(
-        kernel_abi::abi_kind(reg, ret),
+        kernel_abi::abi_kind(ret),
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
     )
 }
@@ -791,7 +783,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     buf: ClifValue,
     field: &Node<R, E>,
 ) -> Result<ClifValue> {
-    let helper_name: &str = match kernel_abi::abi_kind(cx.registry(), field.typ()) {
+    let helper_name: &str = match kernel_abi::abi_kind(field.typ()) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             match node_composite_source(field) {
@@ -833,8 +825,8 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     // locally-unconsumed bottom into whole-kernel bottom
     // (fuzz/triage-fuzzer-v2/divergence_000001: an UNUSED tuple binding
     // with a bottom element bottomed an unrelated const output).
-    if kernel_abi::is_value_shape(cx.registry(), field.typ())
-        || matches!(kernel_abi::abi_kind(cx.registry(), field.typ()), Some(AbiKind::Null))
+    if kernel_abi::is_value_shape(field.typ())
+        || matches!(kernel_abi::abi_kind(field.typ()), Some(AbiKind::Null))
     {
         cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
@@ -1106,7 +1098,7 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     source: &Node<R, E>,
     want: AbiKind,
 ) -> Result<(ClifValue, CompositeSource, ClifValue)> {
-    if kernel_abi::abi_kind(cx.registry(), source.typ()) != Some(want) {
+    if kernel_abi::abi_kind(source.typ()) != Some(want) {
         return Err(anyhow!(
             "emit_clif: accessor source of type {:?} isn't {want:?}",
             source.typ()
@@ -1125,7 +1117,7 @@ pub(super) fn emit_elem_placeholder(
     cx: &mut BodyCx,
     elem: &Type,
 ) -> Result<CompiledExpr> {
-    match kernel_abi::abi_kind(cx.registry(), elem) {
+    match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
             let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
             Ok(CompiledExpr::new(disc, zero_const(cx.b, p)))
@@ -1174,7 +1166,7 @@ fn emit_guarded_element_read(
     let read_bl = cx.b.create_block();
     let skip_bl = cx.b.create_block();
     let merge = cx.b.create_block();
-    let pay_ty = match kernel_abi::abi_kind(cx.registry(), elem) {
+    let pay_ty = match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => prim_to_clif(p),
         _ => types::I64,
     };
@@ -1198,6 +1190,83 @@ fn emit_guarded_element_read(
 /// `t.<idx>` — a statically-valid index, read through
 /// `compile_element_read` (owned result; Value shape for a value-shape
 /// element, Single otherwise).
+/// `T(v)`: box an owned Value operand with the abstract type's tag.
+pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    id: AbstractId,
+    name: &ArcStr,
+    arg: &Node<R, E>,
+) -> Result<CompiledExpr> {
+    let cv = emit_owned_value_operand_node(cx, arg)?;
+    let wrap = cx.helper("graphix_abstract_wrap")?;
+    let id = cx.b.ins().iconst(types::I64, id.inner() as i64);
+    let name_ptr = cx.interned_str(name);
+    let call = cx.b.ins().call(wrap, &[id, name_ptr, cv.disc, cv.payload]);
+    let (rdisc, rpay) = {
+        let r = cx.b.inst_results(call);
+        (r[0], r[1])
+    };
+    let disc = propagate_flags(cx.b, rdisc, &[cv.disc]);
+    Ok(CompiledExpr::new(disc, rpay))
+}
+
+/// `x.0` on a Graphix-minted abstract value: a guarded, borrowed read
+/// of the payload at the representation's shape `rep` (the
+/// abstract twin of [`emit_guarded_element_read`]).
+pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    source: &Node<R, E>,
+    rep: &Type,
+) -> Result<CompiledExpr> {
+    let rep = resolve_node_typ(cx.ctx, rep);
+    let helper = cx.helper(abstract_read_helper(&rep)?)?;
+    let src = node_composite_source(source);
+    let cv = source.emit_clif(cx)?;
+    let tainted = is_tainted(cx.b, cv.disc);
+    let read_bl = cx.b.create_block();
+    let skip_bl = cx.b.create_block();
+    let merge = cx.b.create_block();
+    let pay_ty = match kernel_abi::abi_kind(&rep) {
+        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
+        _ => types::I64,
+    };
+    cx.b.append_block_param(merge, types::I64);
+    cx.b.append_block_param(merge, pay_ty);
+    cx.b.ins().brif(tainted, skip_bl, &[], read_bl, &[]);
+    cx.b.switch_to_block(read_bl);
+    cx.b.seal_block(read_bl);
+    let call = cx.b.ins().call(helper, &[cv.disc, cv.payload]);
+    let rv = if kernel_abi::is_value_shape(&rep) {
+        let r = cx.b.inst_results(call);
+        CompiledExpr::new(r[0], r[1])
+    } else {
+        let r0 = cx.b.inst_results(call)[0];
+        let disc = match kernel_abi::abi_kind(&rep) {
+            Some(AbiKind::Scalar(p)) => scalar_disc(cx.b, p),
+            Some(AbiKind::String) => cx.b.ins().iconst(types::I64, value_disc::STRING),
+            _ => cx.b.ins().iconst(types::I64, value_disc::ARRAY),
+        };
+        CompiledExpr::new(disc, r0)
+    };
+    cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
+    cx.b.switch_to_block(skip_bl);
+    cx.b.seal_block(skip_bl);
+    let ph = emit_elem_placeholder(cx, &rep)?;
+    cx.b.ins().jump(merge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
+    cx.b.switch_to_block(merge);
+    cx.b.seal_block(merge);
+    let (rdisc, rpay) = {
+        let params = cx.b.block_params(merge);
+        (params[0], params[1])
+    };
+    if matches!(src, CompositeSource::Owned) {
+        let drop = cx.helper("graphix_value_drop")?;
+        cx.b.ins().call(drop, &[cv.disc, cv.payload]);
+    }
+    let disc = propagate_flags(cx.b, rdisc, &[cv.disc]);
+    Ok(CompiledExpr::new(disc, rpay))
+}
+
 pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1253,10 +1322,10 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     source: &Node<R, E>,
     idx: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let idx_prim = kernel_abi::scalar_prim(cx.registry(), idx.typ())
+    let idx_prim = kernel_abi::scalar_prim(idx.typ())
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
-    if matches!(kernel_abi::abi_kind(cx.registry(), source.typ()), Some(AbiKind::Array)) {
+    if matches!(kernel_abi::abi_kind(source.typ()), Some(AbiKind::Array)) {
         // Unforced: `graphix_valarray_index` is bounds-checked (safe on
         // a placeholder), and the source's taint folds into the result
         // disc below — forcing here kernel-bottomed live chains through
@@ -1342,10 +1411,8 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     start: Option<&Node<R, E>>,
     end: Option<&Node<R, E>>,
 ) -> Result<CompiledExpr> {
-    if !(matches!(
-        kernel_abi::abi_kind(cx.registry(), source.typ()),
-        Some(AbiKind::Array)
-    ) || lowering::is_bytes(source.typ()))
+    if !(matches!(kernel_abi::abi_kind(source.typ()), Some(AbiKind::Array))
+        || lowering::is_bytes(source.typ()))
     {
         return Err(anyhow!(
             "emit_clif: slice source of type {:?} isn't an array or bytes",
@@ -1366,8 +1433,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),
             Some(n) => {
-                let Some(p) = kernel_abi::scalar_prim(cx.registry(), n.typ())
-                    .filter(|p| p.is_integer())
+                let Some(p) = kernel_abi::scalar_prim(n.typ()).filter(|p| p.is_integer())
                 else {
                     return Err(anyhow!(
                         "emit_clif: slice bound of non-integer type {:?}",

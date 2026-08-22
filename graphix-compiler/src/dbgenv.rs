@@ -35,7 +35,6 @@ dbg_flag!(gxdbg_ref, "GXDBG_REF");
 dbg_flag!(gxdbg_effect, "GXDBG_EFFECT");
 dbg_flag!(gxdbg_freeze_ret, "GXDBG_FREEZE_RET");
 dbg_flag!(gxdbg_instance_fusion, "GXDBG_INSTANCE_FUSION");
-dbg_flag!(gxdbg_instcheck, "GXDBG_INSTCHECK");
 dbg_flag!(gxdbg_kernel_sleep, "GXDBG_KERNEL_SLEEP");
 dbg_flag!(gxdbg_letbind, "GXDBG_LETBIND");
 dbg_flag!(gxdbg_slot, "GXDBG_SLOT");

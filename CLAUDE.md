@@ -534,25 +534,27 @@ GUI suite 163/163 in ~5s). Rules that matter when touching types:
   seeded cells) vs `with_scope` (fresh — scope changes the resolution).
   Never overwrite a filled cell; contexts needing a different view
   rebind (`rebind_resolution`, fresh pre-filled cell).
-- Seeding is LAZY by default — a fill is correct only when the
-  resolving env holds the name's FINAL target, and mid-compile envs
-  are truncated by registration order (eager transitive seeding
-  captured the list PACKAGE's `List` for tui's `list::List` submodule
-  ref; removed twice). `Type::seed_refs` (explicit transitive walk)
-  runs only at provably-safe times: `check_sig`'s registry copy
-  (post-module-body) and the privatize walk's rebinds (typecheck1).
+- Seeding is LAZY — a fill is correct only when the resolving env
+  holds the name's FINAL target, and mid-compile envs are truncated by
+  registration order (eager transitive seeding captured the list
+  PACKAGE's `List` for tui's `list::List` submodule ref; removed
+  twice). Refs fill when a typecheck-time walk needs them, plus ONE
+  eager pass: `Env::seed_typedef_refs` walks every typedef body right
+  before fusion (after typecheck — every name's final target is
+  registered, the one order-correct moment), because a recursive
+  type's INNER occurrence is reached by no typecheck walk (the
+  Ref×Ref name fast path answers without expanding) and fusion must
+  expand it env-free (`list::List` de-fused without it, 2026-08-22).
 - `same_def` (structural — gates the Ref×Ref name fast paths via
-  `cells_agree`) vs `same_view` (body ALLOCATION identity). The
-  privatize walk rebinds a ref to the env's allocation only on
-  same-def/different-view divergence (interface typedef bodies are
-  registered twice, equal-but-differently-viewed); a DIFFERENT def in
-  the env is a stale-horizon artifact and the cell wins.
-- Typecheck-side bridging is `fusion::lowering::privatize_type` —
-  name-preserving, same-size output (setup_static_bind against
-  `f.env`; check_instance_type's AbstractOpaque retry against
-  `ctx.env`). The fusion-side `resolve_abstract` (capped, expanding)
-  is unchanged; `freeze_for_abi`/`abi_kind` expand refs env-free
-  through the cell (`TypeRef::expand_cell`), unfilled → de-fuse.
+  `cells_agree`); a DIFFERENT def in the env is a stale-horizon
+  artifact and the cell wins. The privatize walk, `same_view`,
+  `private_view` and `rebind_resolution` died with inside-module
+  transparency (nominal abstract types, 2026-08-22).
+- `freeze_for_abi`/`abi_kind` expand refs env-free through the cell
+  (`TypeRef::expand_cell`), unfilled → de-fuse; the fusion-side
+  `expand_refs` (capped, expanding, env-backed) is the pre-pass for
+  kernel-sig derivation. An abstract type is an opaque 2-word Value
+  to both.
 
 ### Two-Phase Typecheck
 
@@ -1436,6 +1438,42 @@ type as `[]`), and reserved-word parse diagnostics at package scale
 (position lands on the enclosing statement, cause buried in the
 combine merge). Measure `--check` time at every size milestone; the
 typechecker-must-be-instant rule applies.
+
+## Nominal abstract types (2026-08-22, branch `nominal-abstracts`)
+
+`design/nominal_abstract_types.md` (RULED, built): an abstract type is
+NOMINAL. `type T = Abstract<rep>` (legal only as a whole typedef body)
+defines a type whose identity is `AbstractId::of(scope, name)` — the
+low 64 bits of `abstract_uuid(path)`, a v5 UUID of the canonical path,
+minted at `Env::deftype`, never at parse (the parse-time counter and
+the packed-AST remap are gone) — and whose values are
+`Value::Abstract(GxAbstract { id, name, payload })`
+(`abstract_value.rs`), minted only by the constructor `T(v)`
+(`ExprKind::Construct` → `node::data::Construct`). `x.0` reads the
+payload (`TupleRef` on an abstract source), the pattern `T(p)`
+destructures it (`StructurePattern::Abstract` /
+`StructPatternNode::Abstract`), and `T as t` is a tag test (`is_a`;
+a Rust-backed value answers by its wrapper UUID, leniently under
+`MatchAbstract` until packages register path-derived UUIDs). The
+three faces compile only where the definition is visible:
+`Env::abstract_reps` is a global registry like `names`, gated by
+`AbstractRep::public` (gxi-exported body / interface-less module,
+set by `bind_sig` and `export_sig`) or scope prefix. A gxi-hidden
+type must be `Abstract<..>` or Rust-backed (`check_sig`). INSIDE-MODULE
+TRANSPARENCY IS GONE, and with it the two-view apparatus:
+`AbstractOpaque`, `privatize_type`, `resolve_internal`, the
+`check_instance_type`/`check_site_arg`/`setup_static_bind` retries,
+`RefHist::abstract_false`, the fusion `AbstractRegistry` (an abstract
+is an opaque 2-word `AbiKind::Value`; `expand_refs` replaces
+`resolve_abstract`). JIT: `graphix_abstract_wrap` /
+`graphix_abstract_get_*` (`emit_construct_node`,
+`emit_abstract_ref_node`); abstract PATTERNS de-fuse the select for
+now. Migration: `gui::Color`, `gui::menu::Shortcut` boxed (Rust reads
+through `abstract_value::payload`); `list::List` went TRANSPARENT
+(`Cons`/`Nil` public). The tree-sitter grammar carries
+`abstract_body`/`abstract_construct`/`abstract_pattern` and a
+body-less `type_def`. Companion: `design/traits.md` (designed, not
+built) — traits sit on this; see its §3/§4/§8.
 
 ## The module system (open → use, 2026-08-22)
 

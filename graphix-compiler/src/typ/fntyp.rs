@@ -6,7 +6,7 @@ use crate::{
         ModPath,
         print::{PrettyBuf, PrettyDisplay},
     },
-    typ::{AbstractId, RefHist, TVar, Type, contains::ContainsFlags},
+    typ::{RefHist, TVar, Type, contains::ContainsFlags},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
@@ -1034,18 +1034,12 @@ impl FnType {
         Ok(())
     }
 
-    pub fn sig_matches(
-        &self,
-        env: &Env,
-        impl_fn: &Self,
-        adts: &mut IntMap<AbstractId, Type>,
-    ) -> Result<()> {
+    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<()> {
         self.sig_matches_int(
             env,
             impl_fn,
             &mut LPooled::take(),
             &mut RefHist::new(LPooled::take()),
-            adts,
         )
     }
 
@@ -1055,7 +1049,6 @@ impl FnType {
         impl_fn: &Self,
         tvar_map: &mut IntMap<usize, Type>,
         hist: &mut RefHist<AHashSet<(Option<usize>, Option<usize>)>>,
-        adts: &IntMap<AbstractId, Type>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
@@ -1094,14 +1087,14 @@ impl FnType {
             }
             sig_arg
                 .typ
-                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist, adts)
+                .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
                 .with_context(|| format!("in argument {i}"))?;
         }
         match (sig_vargs, impl_vargs) {
             (None, None) => (),
             (Some(sig_va), Some(impl_va)) => {
                 sig_va
-                    .sig_matches_int(env, impl_va, tvar_map, hist, adts)
+                    .sig_matches_int(env, impl_va, tvar_map, hist)
                     .context("in variadic argument")?;
             }
             (None, Some(_)) => {
@@ -1112,10 +1105,10 @@ impl FnType {
             }
         }
         sig_rtype
-            .sig_matches_int(env, impl_rtype, tvar_map, hist, adts)
+            .sig_matches_int(env, impl_rtype, tvar_map, hist)
             .context("in return type")?;
         sig_throws
-            .sig_matches_int(env, impl_throws, tvar_map, hist, adts)
+            .sig_matches_int(env, impl_throws, tvar_map, hist)
             .context("in throws clause")?;
         let sig_cons = self.constraint_view();
         let impl_cons = impl_fn.cell_constraint_pairs();

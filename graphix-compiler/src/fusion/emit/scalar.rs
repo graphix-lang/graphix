@@ -3,7 +3,7 @@
 //! `compile_const`/`compile_bin`/`compile_cmp`/`compile_cast`.
 
 use crate::{
-    fusion::kernel_abi::{self, AbiKind, AbstractRegistry, PrimType},
+    fusion::kernel_abi::{self, AbiKind, PrimType},
     node::op::{BinOp, CmpOp},
     typ::Type,
 };
@@ -58,6 +58,38 @@ pub(super) fn valarray_get_helper(p: PrimType) -> Result<&'static str> {
 
 /// Map a struct field [`PrimType`] to the `graphix_struct_get_<T>`
 /// helper symbol name.
+/// The helper that reads a Graphix-minted abstract value's payload
+/// (`.0`) at the representation's shape.
+pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
+    Ok(match kernel_abi::abi_kind(rep) {
+        Some(AbiKind::Scalar(p)) => match p {
+            PrimType::I8 => "graphix_abstract_get_i8",
+            PrimType::I16 => "graphix_abstract_get_i16",
+            PrimType::I32 => "graphix_abstract_get_i32",
+            PrimType::I64 => "graphix_abstract_get_i64",
+            PrimType::U8 => "graphix_abstract_get_u8",
+            PrimType::U16 => "graphix_abstract_get_u16",
+            PrimType::U32 => "graphix_abstract_get_u32",
+            PrimType::U64 => "graphix_abstract_get_u64",
+            PrimType::F32 => "graphix_abstract_get_f32",
+            PrimType::F64 => "graphix_abstract_get_f64",
+            PrimType::Bool => "graphix_abstract_get_bool",
+        },
+        Some(AbiKind::String) => "graphix_abstract_get_arcstr",
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            "graphix_abstract_get_array"
+        }
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            "graphix_abstract_get_value"
+        }
+        other => {
+            return Err(anyhow!(
+                "emit_clif: abstract payload of shape {other:?} — not representable"
+            ));
+        }
+    })
+}
+
 pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
     Ok(match p {
         PrimType::I8 => "graphix_struct_get_i8",
@@ -80,11 +112,10 @@ pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
 /// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
 /// level kv-pair read) family over the flat `valarray_get_*` family.
 pub(super) fn element_read_helper(
-    reg: &AbstractRegistry,
     elem: &Type,
     struct_access: bool,
 ) -> Result<&'static str> {
-    Ok(match kernel_abi::abi_kind(reg, elem) {
+    Ok(match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
             if struct_access {
                 struct_get_helper(p)?
@@ -135,13 +166,13 @@ pub(super) fn compile_element_read(
     struct_access: bool,
     ctx: &LowerCtx,
 ) -> Result<CompiledExpr> {
-    let helper_name = element_read_helper(ctx.registry, elem, struct_access)?;
+    let helper_name = element_read_helper(elem, struct_access)?;
     let helper = ctx
         .helper_refs
         .get(helper_name)
         .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
-    if kernel_abi::is_value_shape(ctx.registry, elem) {
+    if kernel_abi::is_value_shape(elem) {
         // Value-shape element read returns two words (disc, payload).
         let (r0, r1) = {
             let r = b.inst_results(call);
@@ -153,7 +184,7 @@ pub(super) fn compile_element_read(
         let r0 = b.inst_results(call)[0];
         // The element read is untainted (a valid array element); the disc
         // is a const taint-carrier matching the element kind.
-        let disc = match kernel_abi::abi_kind(ctx.registry, elem) {
+        let disc = match kernel_abi::abi_kind(elem) {
             Some(AbiKind::Scalar(p)) => scalar_disc(b, p),
             Some(AbiKind::String) => b.ins().iconst(types::I64, value_disc::STRING),
             _ => b.ins().iconst(types::I64, value_disc::ARRAY),

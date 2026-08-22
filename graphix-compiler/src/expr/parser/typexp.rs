@@ -3,8 +3,8 @@ use super::{
     spaces, spaces1, spfldname, spstring, sptoken, typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ModPath, TypeDefExpr},
-    typ::{AbstractId, FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
+    expr::{Expr, ExprKind, ModPath, TypeDefBody, TypeDefExpr},
+    typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use ahash::AHashSet;
 use arcstr::ArcStr;
@@ -361,6 +361,9 @@ parser! {
             )).map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
             attempt(string("Error").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Error(Arc::new(t))),
+            attempt(string("Abstract").skip(not_prefix())).then(|_| {
+                unexpected_any("Abstract<..> is legal only as the whole body of a type definition")
+            }),
             attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
             tvar().map(|tv| Type::TVar(tv)),
             typref(),
@@ -389,23 +392,22 @@ where
                 token('>'),
             ),
         ))),
-        spaces().with(optional(token('=').with(typ()))),
+        spaces().with(optional(
+            attempt(token('=').skip(not_followed_by(token('>')))).with(choice((
+                attempt(spaces().with(string("Abstract")).skip(not_prefix()))
+                    .with(between(sptoken('<'), sptoken('>'), typ()))
+                    .map(|rep| TypeDefBody::Abstract(Some(rep))),
+                typ().map(TypeDefBody::Alias),
+            ))),
+        )),
     )
-        .map(|(pos, name, params, typ)| {
+        .map(|(pos, name, params, body)| {
             let params = params
                 .map(|mut ps: LPooled<Vec<(TVar, Option<Type>)>>| {
                     Arc::from_iter(ps.drain(..))
                 })
                 .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from_iter([]));
-            let typ = match typ {
-                Some(typ) => typ,
-                None => {
-                    let params = Arc::from_iter(
-                        params.iter().map(|(tv, _)| Type::TVar(tv.clone())),
-                    );
-                    Type::Abstract { id: AbstractId::new(), params }
-                }
-            };
-            ExprKind::TypeDef(TypeDefExpr { name, params, typ }).to_expr(pos)
+            let body = body.unwrap_or(TypeDefBody::Abstract(None));
+            ExprKind::TypeDef(TypeDefExpr { name, params, body }).to_expr(pos)
         })
 }

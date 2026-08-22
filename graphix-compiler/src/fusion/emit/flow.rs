@@ -119,10 +119,8 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
             // tail is an ERROR (de-fuse), never a silent passthrough —
             // the passthrough IS the use-after-free.
             let src = node_composite_source(child);
-            let frozen =
-                kernel_abi::freeze_for_abi_normalized(cx.registry(), child.typ());
-            let shape =
-                frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
+            let frozen = kernel_abi::freeze_for_abi_normalized(child.typ());
+            let shape = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
             let result = match shape {
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     let v = ensure_owned_composite_src(cx, src, tail_cv.payload)?;
@@ -599,9 +597,8 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             // override still drives interior CACHE catch-up (DynCall
             // sites, callee blocks); it just no longer reseeds.
             let use_feeder = valid;
-            let frozen =
-                kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
-            let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
+            let frozen = kernel_abi::freeze_for_abi_normalized(value.typ());
+            let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
             match ak {
                 Some(AbiKind::Scalar(p)) => {
                     // Register scalars are branch-free: both sides are
@@ -684,8 +681,8 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     }
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
-    let frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), value.typ());
-    let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(cx.registry(), t));
+    let frozen = kernel_abi::freeze_for_abi_normalized(value.typ());
+    let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
     match ak {
         Some(AbiKind::Scalar(p)) => {
             // The disc carries the binding's taint — a `let`-bound bottom
@@ -757,7 +754,7 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
     cv: CompiledExpr,
 ) -> Result<()> {
     let owned = matches!(node_composite_source(node), CompositeSource::Owned);
-    match kernel_abi::abi_kind(cx.registry(), node.typ()) {
+    match kernel_abi::abi_kind(node.typ()) {
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) if owned => {
             let drop = cx.helper("graphix_valarray_drop")?;
             cx.b.ins().call(drop, &[cv.payload]);
@@ -935,15 +932,13 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // Lockstep with the discovery-side freeze (lowering.rs
     // try_register_qop_deliver): both normalized, so a site the
     // discovery registered always emits.
-    let Some(inner_typ) =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), inner.typ())
-    else {
+    let Some(inner_typ) = kernel_abi::freeze_for_abi_normalized(inner.typ()) else {
         return Err(anyhow!(
             "emit_clif: `?` inner type {:?} doesn't freeze concrete",
             inner.typ()
         ));
     };
-    if kernel_abi::nullable_inner(cx.registry(), &inner_typ).is_none() {
+    if kernel_abi::nullable_inner(&inner_typ).is_none() {
         // Passthrough is only sound when the inner CANNOT be an error.
         // `nullable_inner` answers "is this a `[T, Error<E>]` union" —
         // a bare `Error<T>` inner (`error(x)$`) is not a union but is
@@ -961,9 +956,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // No error possible — passthrough; the handler (if any) never fires.
         return inner.emit_clif(cx);
     }
-    let Some(success_typ) =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), result_typ)
-    else {
+    let Some(success_typ) = kernel_abi::freeze_for_abi_normalized(result_typ) else {
         return Err(anyhow!(
             "emit_clif: `?` result type {:?} doesn't freeze concrete",
             result_typ
@@ -993,7 +986,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // !STALE; the abort/taint paths still treat it as no-value.
     let fresh = is_fresh(cx.b, disc);
     let deliverable = cx.b.ins().band(is_err, fresh);
-    match kernel_abi::abi_kind(cx.registry(), &success_typ) {
+    match kernel_abi::abi_kind(&success_typ) {
         // Prim success — per-value taint, branchless on the SUCCESS
         // path. The payload word holds the success bits when !is_err;
         // on the error path the bits are garbage but the disc's TAINT
@@ -1050,10 +1043,8 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // unconsumed bottom into no-output-at-all (the live-chain
         // findings, triage item 11).
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let is_string = matches!(
-                kernel_abi::abi_kind(cx.registry(), &success_typ),
-                Some(AbiKind::String)
-            );
+            let is_string =
+                matches!(kernel_abi::abi_kind(&success_typ), Some(AbiKind::String));
             let base_disc =
                 if is_string { value_disc::STRING } else { value_disc::ARRAY };
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
@@ -1117,7 +1108,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // (consumes) / `_borrowed` (clones inner), which abort
             // defined on a non-Array (the tainted Null placeholder is
             // reachable here, #199).
-            let v = match kernel_abi::abi_kind(cx.registry(), &success_typ) {
+            let v = match kernel_abi::abi_kind(&success_typ) {
                 Some(AbiKind::String) => {
                     if inner_owned {
                         payload

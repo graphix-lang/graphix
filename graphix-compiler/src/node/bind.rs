@@ -91,7 +91,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 Some(typ) => typ.scope_refs(&scope.lexical),
                 None => {
                     let typ = node.typ().clone();
-                    let ptyp = pattern.infer_type_predicate(&ctx.env)?;
+                    let ptyp = pattern.infer_type_predicate(&ctx.env, &scope.lexical)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bailat!(spec, "match error {typ} can't be matched by {ptyp}")

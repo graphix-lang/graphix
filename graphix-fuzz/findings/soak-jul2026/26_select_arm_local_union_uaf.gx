@@ -8,6 +8,6 @@ val mk: fn(x: i64) -> T;
 val un: fn(t: T) -> i64;
 // file-v1: m0.gx
 let f0 = |v1: u8, v2: u8| -> u8 ((u8:100 + u8:100) *? u8:1)$;
-type T = Array<i64>;
-let mk = |x: i64| -> T [x, x];
-let un = |t: T| -> i64 t[0]$;
+type T = Abstract<Array<i64>>;
+let mk = |x: i64| -> T T([x, x]);
+let un = |t: T| -> i64 t.0[0]$;

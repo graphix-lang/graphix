@@ -12,6 +12,7 @@ extern crate combine;
 #[macro_use]
 extern crate serde_derive;
 
+pub mod abstract_value;
 pub mod analysis;
 pub(crate) mod dbgenv;
 pub mod effects;
@@ -999,6 +1000,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     StructWith(&'a node::data::StructWith<R, E>),
     Tuple(&'a node::data::Tuple<R, E>),
     Variant(&'a node::data::Variant<R, E>),
+    Construct(&'a node::data::Construct<R, E>),
     Array(&'a node::array::Array<R, E>),
     Map(&'a node::map::Map<R, E>),
     // Accessors
@@ -2259,6 +2261,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     }
     if ctx.fusion.enabled {
         let st = Instant::now();
+        ctx.env.seed_typedef_refs();
         if let Err(e) = fusion::fuse(&mut node, ctx) {
             ctx.env = env;
             return Err(e);

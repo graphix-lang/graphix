@@ -50,7 +50,8 @@ Export type definitions that users of the module can reference:
 type Color = [`Red, `Green, `Blue];
 type Point = { x: f64, y: f64 };
 type Result<'a, 'e> = ['a, Error<'e>];
-type Abstract;
+type Handle;                      // abstract: defined in the implementation
+type Meters = Abstract<f64>;      // a public newtype
 ```
 
 Types can be polymorphic and recursive, just like in regular Graphix code.
@@ -255,13 +256,17 @@ uses the same declaration forms (`val`, `type`, `mod`) as interface files.
 
 ## Abstract Types
 
-Abstract types allow you to hide the concrete representation of a type from users of
-your module. This is a powerful encapsulation mechanism that lets you change the
-internal representation without affecting code that uses your module.
+An abstract type hides the representation of a type from users of your
+module — the encapsulation that lets you change the internals without
+affecting code that uses the module. Graphix's abstract types are
+**nominal**: a value of the type is a box carrying the type's identity,
+minted only by the type's constructor, so two abstract types with the
+same representation are different types at compile time *and* at
+runtime.
 
 ### Declaring Abstract Types
 
-In an interface file, declare an abstract type by omitting the `= definition` part:
+In an interface file, declare an abstract type by omitting the body:
 
 ```graphix
 type Handle;
@@ -269,26 +274,56 @@ type Container<'a>;
 type NumericBox<'a: Number>;
 ```
 
-The implementation file must provide a concrete definition for each abstract type:
+The implementation defines it with an `Abstract<..>` body around the
+representation:
 
 ```graphix
-type Handle = { id: i64, name: string };
-type Container<'a> = Array<'a>;
-type NumericBox<'a: Number> = { value: 'a };
+type Handle = Abstract<{ id: i64, name: string }>;
+type Container<'a> = Abstract<Array<'a>>;
+type NumericBox<'a: Number> = Abstract<{ value: 'a }>;
 ```
 
-### How Abstract Types Work
+`Abstract<..>` is legal only as the whole body of a `type` definition —
+the name is what gives the type its identity. A type hidden by an
+interface must be defined this way (or be a Rust-backed type, declared
+`type T;` on both sides); hiding a transparent alias is an error.
 
-When code outside the module references an abstract type, it sees only the type name,
-not the underlying representation. This means:
+### The Three Faces
 
-- Users cannot construct values of the abstract type directly
-- Users cannot pattern match on the internal structure
-- Users must use functions exported by the module to create and manipulate values
+Inside the module — wherever the definition is visible — the type's
+name is its constructor, `.0` reads the payload, and `T(pattern)`
+destructures it:
 
-This provides true encapsulation - the implementation can change the concrete type
-without breaking any code that uses the module, as long as the exported functions
-still work.
+```graphix
+type Counter = Abstract<i64>;
+
+let make = |x: i64| -> Counter Counter(x);          // construct
+let get = |c: Counter| -> i64 c.0;                  // payload
+let bump = |c: Counter| -> Counter {                // destructure
+    let Counter(x) = c;
+    Counter(x + 1)
+};
+let sign = |c: Counter| -> i64 select c {
+    Counter(x) if x > 0 => 1,
+    Counter(0) => 0,
+    Counter(_) => -1
+}
+```
+
+The payload keeps its shape: for `Abstract<{ a: i64, b: string }>`,
+`x.0.a` reads a field and `T({ x.0 with a: 1 })` updates one.
+
+Outside the module all three are compile errors — users can only call
+the functions the interface exports. The type *test* `T as t` works
+everywhere, since it compares the tag:
+
+```graphix
+let v: [a::A, b::B] = ...;
+select v {
+    a::A as _ => "an A",
+    b::B as _ => "a B"
+}
+```
 
 ### Example: Encapsulated Counter
 
@@ -309,13 +344,15 @@ val increment: fn(#trig: Any, c: &Counter) -> null;
 
 **counter.gx**:
 ```graphix
-// Implementation detail: counter is just an i64
-// We could change this to a struct later without breaking users
-type Counter = i64;
+// We could change the representation later without breaking users
+type Counter = Abstract<i64>;
 
-let make = |x: i64| -> Counter x;
-let get = |c: Counter| -> i64 c;
-let increment = |#trig: Any, c: &Counter| -> null { *c <- trig ~ *c + 1; null }
+let make = |x: i64| -> Counter Counter(x);
+let get = |c: Counter| -> i64 c.0;
+let increment = |#trig: Any, c: &Counter| -> null {
+    *c <- Counter((trig ~ *c).0 + 1);
+    null
+}
 ```
 
 **main.gx**:
@@ -326,6 +363,21 @@ let c = counter::make(0);
 counter::increment(#trig:null, &c);
 let value = counter::get(c)  // 1
 ```
+
+### Public Newtypes
+
+Nominal and hidden are independent. Put the `Abstract<..>` body in the
+interface and the type is nominal but constructible by anyone — a
+newtype whose representation is public:
+
+```graphix
+// interface
+type Meters = Abstract<f64>;
+val add: fn(a: Meters, b: Meters) -> Meters;
+```
+
+A module with no interface file exports its definitions too, so its
+`Abstract<..>` types are public newtypes as well.
 
 ### Parameterized Abstract Types
 
@@ -340,9 +392,9 @@ val unwrap: fn(b: Box<'a>) -> 'a;
 
 ```graphix
 // implementation
-type Box<'a> = { value: 'a };
-let wrap = |x: 'a| -> Box<'a> { value: x };
-let unwrap = |b: Box<'a>| -> 'a b.value
+type Box<'a> = Abstract<{ value: 'a }>;
+let wrap = |x: 'a| -> Box<'a> Box({ value: x });
+let unwrap = |b: Box<'a>| -> 'a b.0.value
 ```
 
 ### Constrained Type Parameters
@@ -359,9 +411,9 @@ val double: fn(w: NumericWrapper<'a>) -> 'a;
 
 ```graphix
 // implementation - same constraint required
-type NumericWrapper<'a: Number> = 'a;
-let wrap = |x: 'a| -> NumericWrapper<'a> x;
-let double = |w: NumericWrapper<'a>| -> 'a w + w
+type NumericWrapper<'a: Number> = Abstract<'a>;
+let wrap = |x: 'a| -> NumericWrapper<'a> NumericWrapper(x);
+let double = |w: NumericWrapper<'a>| -> 'a w.0 + w.0
 ```
 
 ### Abstract Types in Compound Types
@@ -378,17 +430,25 @@ type Container = { items: Array<Element> };
 This allows you to export complex data structures while keeping the element type
 opaque.
 
-### Abstract Types vs Type Aliases
+### Equality and Printing
 
-Don't confuse abstract types with type aliases:
+Two abstract values are equal when they carry the same tag and equal
+payloads; a value prints as its constructor applied to its payload
+(`Counter(5)`). The box costs one allocation per construction, so use
+abstract types for handles and newtypes rather than for hot data
+structures.
+
+### Abstract Types vs Type Aliases
 
 | Declaration | Meaning |
 |-------------|---------|
-| `type T;` | Abstract type - concrete definition hidden |
-| `type T = i64;` | Type alias - `T` is publicly known to be `i64` |
+| `type T;` | Abstract type — nominal, representation hidden |
+| `type T = Abstract<i64>;` | Nominal newtype — representation public |
+| `type T = i64;` | Type alias — `T` *is* `i64`, structurally |
 
-Use abstract types when you want encapsulation. Use type aliases when you want
-to give a convenient name to a type that users can still see and use directly.
+Use abstract types when you want encapsulation or a distinct identity.
+Use type aliases when you want to give a convenient name to a type that
+users can still see and use directly.
 
 ## Best Practices
 

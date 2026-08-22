@@ -1,12 +1,12 @@
 use crate::{
     BindId,
-    expr::{ExprId, ModPath, Origin, Sandbox},
+    expr::{ExprId, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
         Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite,
     },
     mod_root,
-    typ::{TVar, Type},
+    typ::{AbstractId, TVar, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
@@ -65,9 +65,54 @@ impl Clone for Bind {
 }
 
 #[derive(Debug, Clone)]
+/// The representation of a Graphix-minted abstract type (`type T =
+/// Abstract<rep>`), registered globally like [`Env::names`] but
+/// consulted only from inside the defining scope — which is what gates
+/// `T(v)`, `x.0` and the pattern `T(x)` to where the definition is
+/// visible (`design/nominal_abstract_types.md`).
+pub struct AbstractRep {
+    pub scope: ModPath,
+    pub name: ArcStr,
+    pub params: Arc<[TVar]>,
+    pub rep: Type,
+    /// The definition is EXPORTED (an interface's `type T =
+    /// Abstract<rep>`, or a module with no interface), so the
+    /// constructor is usable from anywhere the type is; otherwise only
+    /// from inside `scope`.
+    pub public: bool,
+}
+
+impl AbstractRep {
+    /// A fresh instance of the type: `(T<'a..>, rep['a..])` with the
+    /// formals replaced by fresh type variables shared between the two.
+    pub fn instantiate(&self, id: AbstractId) -> (Type, Type) {
+        let fresh: LPooled<Vec<Type>> =
+            self.params.iter().map(|_| Type::empty_tvar()).collect();
+        let rep = self.instantiate_with(&fresh);
+        (Type::Abstract { id, params: Arc::from_iter(fresh.iter().cloned()) }, rep)
+    }
+
+    /// The representation with the formals replaced by `params`.
+    pub fn instantiate_with(&self, params: &[Type]) -> Type {
+        let known: LPooled<AHashMap<ArcStr, Type>> = self
+            .params
+            .iter()
+            .map(|tv| tv.name.clone())
+            .zip(params.iter().cloned())
+            .collect();
+        self.rep.replace_tvars(&known)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeDef {
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
+    /// For a Graphix-minted abstract type (`type T = Abstract<rep>`),
+    /// the representation its constructor wraps — present exactly
+    /// where the definition is visible, which is what gates `T(v)`,
+    /// `x.0` and the pattern `T(x)` (`design/nominal_abstract_types.md`).
+    pub rep: Option<Type>,
     pub doc: Option<ArcStr>,
     /// Source position where this typedef was declared. Used by IDE
     /// tooling for go-to-definition; the compiler doesn't read it.
@@ -157,6 +202,10 @@ pub struct Env {
     /// which is what lets deferred resolution consult the DEFINING
     /// module's table long after that module finished compiling.
     pub names: Map<ModPath, ScopeNames>,
+    /// Every Graphix-minted abstract type's representation, keyed by
+    /// its identity — a global registry like `names` (see
+    /// [`AbstractRep`]); visibility is decided at lookup.
+    pub abstract_reps: Map<AbstractId, Arc<AbstractRep>>,
     /// Registered package names — the package prelude: usable as
     /// module path roots from anywhere. Populated by package
     /// registration; survives the lexical swap like `names`.
@@ -200,6 +249,7 @@ impl Env {
             binds,
             byref_chain,
             names,
+            abstract_reps,
             package_roots: _,
             modules,
             typedefs,
@@ -212,6 +262,7 @@ impl Env {
         *binds = Map::new();
         *byref_chain = Map::new();
         *names = Map::new();
+        *abstract_reps = Map::new();
         *modules = Set::new();
         *typedefs = Map::new();
         *catch = Map::new();
@@ -237,6 +288,7 @@ impl Env {
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             names: self.names.clone(),
+            abstract_reps: self.abstract_reps.clone(),
             package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
@@ -253,6 +305,7 @@ impl Env {
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             names: self.names.clone(),
+            abstract_reps: self.abstract_reps.clone(),
             package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
@@ -888,7 +941,8 @@ impl Env {
         scope: &ModPath,
         name: &str,
         params: Arc<[(TVar, Option<Type>)]>,
-        typ: Type,
+        body: &TypeDefBody,
+        public: bool,
         doc: Option<ArcStr>,
         pos: SourcePosition,
         ori: Arc<Origin>,
@@ -896,6 +950,16 @@ impl Env {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
         }
+        let (typ, rep) = match body {
+            TypeDefBody::Alias(typ) => (typ.scope_refs(scope), None),
+            TypeDefBody::Abstract(rep) => {
+                let formals =
+                    Arc::from_iter(params.iter().map(|(tv, _)| Type::TVar(tv.clone())));
+                let typ =
+                    Type::Abstract { id: AbstractId::of(scope, name), params: formals };
+                (typ, rep.as_ref().map(|r| r.scope_refs(scope)))
+            }
+        };
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for (tv, tc) in params.iter() {
@@ -905,6 +969,9 @@ impl Env {
             }
         }
         typ.alias_tvars(&mut known);
+        if let Some(rep) = &rep {
+            rep.alias_tvars(&mut known);
+        }
         for (tv, _) in params.iter() {
             if !declared.insert(tv.name.clone()) {
                 bail!("duplicate type variable {tv} in definition of {name}");
@@ -929,8 +996,27 @@ impl Env {
             // before we mutably borrow `self.typedefs` below.
             typ.record_ide_refs(self, scope);
         }
+        if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep) {
+            // an interface's typedefs are compiled again inside the
+            // implementation: a re-registration never hides a
+            // published definition
+            let public =
+                public || self.abstract_reps.get(id).map(|r| r.public).unwrap_or(false);
+            let formals = Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
+            let r = AbstractRep {
+                scope: scope.clone(),
+                name: ArcStr::from(name),
+                params: formals,
+                rep: rep.clone(),
+                public,
+            };
+            self.abstract_reps.insert_cow(*id, Arc::new(r));
+        }
         let defs = self.typedefs.get_or_default_cow(scope.clone());
-        defs.insert_cow(name.into(), TypeDef { params, typ: typ.clone(), doc, pos, ori });
+        defs.insert_cow(
+            name.into(),
+            TypeDef { params, typ: typ.clone(), rep, doc, pos, ori },
+        );
         // A chain of BARE aliases must not close a cycle: `type A = B;
         // type B = A` names nothing, and contains' coinductive ref-pair
         // memo answers true for (cycle, T) before any structure is
@@ -969,7 +1055,61 @@ impl Env {
         Ok(())
     }
 
+    /// The representation of the Graphix-minted abstract type `id`, if
+    /// its definition is visible from `from` (the defining scope and
+    /// its subtree).
+    pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
+        let r = self.abstract_reps.get(&id)?;
+        let mut from_parts = Path::parts(&from.0);
+        let inside = Path::parts(&r.scope.0).all(|part| from_parts.next() == Some(part));
+        (r.public || inside).then_some(&**r)
+    }
+
+    /// Fill the resolution cell of every `Type::Ref` reachable from a
+    /// registered typedef body — the closure-conversion moment for
+    /// bodies fusion will expand env-free (`TypeRef::expand_cell`): a
+    /// recursive type's inner occurrence is reached by no typecheck
+    /// walk (the Ref×Ref name fast path answers without expanding), so
+    /// only this pass fills it. Runs after typecheck, when every name's
+    /// FINAL target is registered — the one moment eager seeding is
+    /// order-correct.
+    pub fn seed_typedef_refs(&self) {
+        for (_, defs) in self.typedefs.into_iter() {
+            for (_, td) in defs.into_iter() {
+                td.typ.seed_refs(self);
+                if let Some(rep) = &td.rep {
+                    rep.seed_refs(self);
+                }
+            }
+        }
+    }
+
+    /// Mark the abstract type `id`'s definition exported: its
+    /// interface (or interface-less module) published the body.
+    pub fn publish_abstract_rep(&mut self, id: AbstractId) {
+        if let Some(r) = self.abstract_reps.get(&id)
+            && !r.public
+        {
+            let r = AbstractRep {
+                scope: r.scope.clone(),
+                name: r.name.clone(),
+                params: r.params.clone(),
+                rep: r.rep.clone(),
+                public: true,
+            };
+            self.abstract_reps.insert_cow(id, Arc::new(r));
+        }
+    }
+
+    /// Is `id` a Graphix-minted abstract type (as opposed to a
+    /// Rust-backed one)? Visible from everywhere: the TAG is public,
+    /// only the representation is scoped.
+    pub fn abstract_minted(&self, id: AbstractId) -> bool {
+        self.abstract_reps.get(&id).is_some()
+    }
+
     pub fn undeftype(&mut self, scope: &ModPath, name: &str) {
+        self.abstract_reps.remove_cow(&AbstractId::of(scope, name));
         if let Some(defs) = self.typedefs.get_mut_cow(scope) {
             defs.remove_cow(&CompactString::from(name));
             if defs.len() == 0 {

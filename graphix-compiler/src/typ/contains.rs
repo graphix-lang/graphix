@@ -362,11 +362,10 @@ impl FnType {
     }
 }
 
-/// A non-containment report that formats LAZILY (on Display):
-/// `check_instance_type` PROBES these errors — inspect for
-/// [`super::AbstractOpaque`], resolve, retry — and eagerly rendering a
-/// widget-scale type into a probe message materialized tree-scale
-/// strings per instance arg (2026-07-13). Carries the types as cheap
+/// A non-containment report that formats LAZILY (on Display): callers
+/// probe these errors, and eagerly rendering a widget-scale type into
+/// a probe message materialized tree-scale strings per instance arg
+/// (2026-07-13). Carries the types as cheap
 /// Arc clones; the message text is unchanged.
 #[derive(Debug)]
 pub struct TypeMismatch {
@@ -423,45 +422,18 @@ impl Type {
             &mut hist,
             t,
         )?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(t, hist.abstract_false)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
-    fn contains_mismatch(&self, t: &Self, abstract_false: bool) -> anyhow::Error {
-        // An opaque-classified failure where either compared type
-        // carries an open, unconstrained, `cycle_refused` cell is NOT
-        // an opacity artifact — it is the infinite type the occurs
-        // check refused, surfacing at a consumer. The AbstractOpaque
-        // classification would let static resolution DISCARD this
-        // failure to dynamic dispatch, skipping the terminal settle
-        // where [`TVar::settle_or_bottom`]'s finite-type rejection
-        // lives — laundering the μ-type into whatever the first
-        // consumer bound the site's cell to (soak jul31a: a
-        // `let rec f = |n, acc| f` call, block-wrapped, passed as
-        // `list::List`; the flat form was already rejected by
-        // `settle_terminal`). Reject with the same error the settle
-        // path issues.
-        if abstract_false
-            && (type_has_refused_open_cell(self) || type_has_refused_open_cell(t))
-        {
+    fn contains_mismatch(&self, t: &Self) -> anyhow::Error {
+        // A failure where either compared type carries an open,
+        // unconstrained, `cycle_refused` cell is the infinite type the
+        // occurs check refused, surfacing at a consumer; report it as
+        // the settle path does.
+        if type_has_refused_open_cell(self) || type_has_refused_open_cell(t) {
             return anyhow::anyhow!("{INFINITE_TYPE_MSG}");
         }
-        let e = anyhow::Error::new(TypeMismatch {
-            expected: self.clone(),
-            actual: t.clone(),
-        });
-        // Abstract types are OPAQUE to `contains` by design — their
-        // private↔public equivalence exists only through NAME
-        // resolution inside the defining module. A failure whose walk
-        // hit a false Abstract-PAIR comparison is therefore
-        // classifiable by the call-site instance recheck (the STRICT
-        // ruling's one other legitimate swallow besides
-        // `UnresolvableRef`): the def-time check relished the private
-        // view, the recheck sees the public form, and no walk can
-        // relate them (the gui `Color` family). A failure with no such
-        // comparison is FINAL — an abstract merely mentioned elsewhere
-        // in the tree cannot flip the verdict (see
-        // `RefHist::abstract_false`).
-        if abstract_false { e.context(super::AbstractOpaque) } else { e }
+        anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
     }
 
     /// [`Self::check_contains`] with RIGID enforcement — the def
@@ -476,7 +448,7 @@ impl Type {
             &mut hist,
             t,
         )?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(t, hist.abstract_false)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
     pub(super) fn contains_int(
@@ -632,10 +604,6 @@ impl Type {
                 Self::Abstract { id: id1, params: p1 },
             ) => {
                 if id0 != id1 {
-                    // Two ids can denote one abstract across views —
-                    // opacity, not a verdict (same-id param mismatches
-                    // below are structural and stay final).
-                    hist.abstract_false = true;
                     return Ok(false);
                 }
                 Ok(p0.len() == p1.len()
@@ -1134,12 +1102,7 @@ impl Type {
                 }
                 Ok(r)
             }
-            (Self::Abstract { .. }, _) | (_, Self::Abstract { .. }) => {
-                // Opaque against everything else — the private↔public
-                // view seam (`Color` vs its concrete variant set).
-                hist.abstract_false = true;
-                Ok(false)
-            }
+            (Self::Abstract { .. }, _) | (_, Self::Abstract { .. }) => Ok(false),
             (_, Self::Any)
             | (_, Self::TVar(_))
             | (Self::TVar(_), _)

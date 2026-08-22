@@ -10,9 +10,7 @@ use crate::{
     fusion::{
         CalleeBody, LambdaCallInfo,
         emit_helpers::all_helpers,
-        kernel_abi::{
-            self, AbiParamKind, AbiReturn, AbstractRegistry, KernelSig, PrimType,
-        },
+        kernel_abi::{self, AbiParamKind, AbiReturn, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
 };
@@ -167,12 +165,8 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
 /// Value ABI: every kernel returns two `I64` words, the genuine
 /// `(disc, payload)` Value pair. Errors on the invalid bare-`Null`
 /// return shape.
-fn push_abi_returns(
-    sig: &mut Signature,
-    kernel: &KernelSig,
-    registry: &AbstractRegistry,
-) -> Result<()> {
-    match kernel.abi_return(registry) {
+fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
+    match kernel.abi_return() {
         Some(AbiReturn::Pair) => {
             sig.returns.push(AbiParam::new(types::I64)); // disc
             sig.returns.push(AbiParam::new(types::I64)); // payload
@@ -482,7 +476,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     callee_bodies: &BTreeMap<usize, CalleeBody<'_, R, E>>,
     parent_self_call: Option<&(BindId, LambdaCallInfo)>,
     type_env: &Env,
-    registry: &AbstractRegistry,
     lifted: &nohash::IntSet<BindId>,
     // REPLAY-word eligibility for the parent body: `true` for region
     // parents (frames reach their reset through the `FusedKernel`
@@ -502,7 +495,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         // its own self info here.
         self_call: parent_self_call,
         type_env: Some(type_env),
-        registry,
         // Parent slots lead the combined `dyn_slots` table.
         fn_index_offset: 0,
         lifted,
@@ -541,7 +533,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     lambda_call_sites: Some(&cb.sites),
                     self_call: cb.self_call.as_ref(),
                     type_env: Some(type_env),
-                    registry,
                     fn_index_offset: base,
                     lifted: &no_lift,
                     allow_state: false,
@@ -555,8 +546,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         .map(|(key, em, spec)| (*key, BodySource { spec: *spec, hook: em }))
         .collect();
     emitters.insert(parent_ptr, BodySource { spec: parent_spec, hook: &parent });
-    let mut wrapped =
-        compile_kernel_with_callees_impl(jit, kernel, callees, &emitters, registry)?;
+    let mut wrapped = compile_kernel_with_callees_impl(jit, kernel, callees, &emitters)?;
     // Override the parent-only default with the combined table; the
     // runtime `Kernel` builds its `dyn_slots` from this.
     wrapped.dyn_fn_params = combined.into();
@@ -568,7 +558,6 @@ fn compile_kernel_with_callees_impl(
     kernel: &std::sync::Arc<KernelSig>,
     callees: &[(usize, std::sync::Arc<KernelSig>)],
     emitters: &BTreeMap<usize, BodySource>,
-    registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     let mut to_define: poolshark::local::LPooled<
         Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
@@ -582,7 +571,6 @@ fn compile_kernel_with_callees_impl(
         emitters,
         &mut to_define,
         &mut defined,
-        registry,
     );
     if r.is_err() {
         // Evict every freshly-declared cache entry. On the direct path
@@ -663,7 +651,6 @@ fn compile_kernel_with_callees_inner(
     emitters: &BTreeMap<usize, BodySource>,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     defined: &mut Vec<(usize, u32, u32)>,
-    registry: &AbstractRegistry,
 ) -> Result<WrappedKernel> {
     // Phase 1 — declare every kernel in the closure (parent + all
     // transitively-reachable callees). Cached entries reuse their
@@ -736,8 +723,7 @@ fn compile_kernel_with_callees_inner(
             callee_layouts.insert(ptr, l.clone());
         }
     };
-    let parent_entry =
-        ensure_declared(jit, kernel, 0, parent_layout, to_define, registry)?;
+    let parent_entry = ensure_declared(jit, kernel, 0, parent_layout, to_define)?;
     funcids.push((parent_ptr, parent_entry.clone()));
     seed_layout(jit, &mut callee_layouts, parent_ptr, 0, parent_layout);
     for (ptr, k) in callees {
@@ -746,7 +732,7 @@ fn compile_kernel_with_callees_inner(
         }
         let base = emitters.get(ptr).map_or(0, |e| e.spec.fn_index_offset);
         let layout = layout_of(k);
-        let entry = ensure_declared(jit, k, base, layout, to_define, registry)?;
+        let entry = ensure_declared(jit, k, base, layout, to_define)?;
         funcids.push((*ptr, entry));
         seed_layout(jit, &mut callee_layouts, *ptr, base, layout);
     }
@@ -866,7 +852,7 @@ fn compile_kernel_with_callees_inner(
     }
     // Phase 3 — compile the uniform wrapper for the parent and
     // finalize the module so the new code is mapped read-execute.
-    let wrapper_id = define_wrapper(&mut jit.ctx, kernel, parent_entry.0, registry)?;
+    let wrapper_id = define_wrapper(&mut jit.ctx, kernel, parent_entry.0)?;
     jit.ctx
         .module
         .finalize_definitions()
@@ -933,7 +919,6 @@ fn ensure_declared(
     base: u32,
     layout: u32,
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
-    registry: &AbstractRegistry,
 ) -> Result<(FuncId, Signature)> {
     let key = (std::sync::Arc::as_ptr(k) as usize, base, layout);
     if let Some(e) = jit.by_kernel.get(&key) {
@@ -942,7 +927,7 @@ fn ensure_declared(
     let symbol = jit.ctx.next_symbol(&k.fn_name);
     let mut sig = Signature::new(jit.ctx.module.isa().default_call_conv());
     push_abi_params(&mut sig, k);
-    push_abi_returns(&mut sig, k, registry)?;
+    push_abi_returns(&mut sig, k)?;
     let fid = jit
         .ctx
         .module
@@ -1169,7 +1154,6 @@ fn define_wrapper(
     jit: &mut JitCtx,
     kernel: &KernelSig,
     typed_func_id: FuncId,
-    registry: &AbstractRegistry,
 ) -> Result<FuncId> {
     let symbol = jit.next_symbol(&format!("{}_wrap", kernel.fn_name));
     let ptr_ty = jit.module.target_config().pointer_type();
@@ -1185,15 +1169,7 @@ fn define_wrapper(
     // A failure past this point leaves `wrapper_id` declared-but-
     // undefined in the shared module — stub it so the next
     // `finalize_definitions` doesn't panic (see `define_stub_body`).
-    match define_wrapper_body(
-        jit,
-        kernel,
-        typed_func_id,
-        registry,
-        wrapper_id,
-        &sig,
-        &symbol,
-    ) {
+    match define_wrapper_body(jit, kernel, typed_func_id, wrapper_id, &sig, &symbol) {
         Ok(()) => Ok(wrapper_id),
         Err(e) => {
             if let Err(se) = define_stub_body(jit, wrapper_id, &sig) {
@@ -1210,7 +1186,6 @@ fn define_wrapper_body(
     jit: &mut JitCtx,
     kernel: &KernelSig,
     typed_func_id: FuncId,
-    registry: &AbstractRegistry,
     wrapper_id: FuncId,
     sig: &Signature,
     symbol: &str,
@@ -1296,7 +1271,6 @@ fn define_wrapper_body(
         // `(disc, payload)` Value pair — store both slots. (`registry`
         // stays a parameter for the signature build's abi_return
         // error path.)
-        let _ = registry;
         let (r0, r1) = {
             let results = b.inst_results(call);
             (results[0], results[1])

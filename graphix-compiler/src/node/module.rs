@@ -6,7 +6,7 @@ use crate::{
     errf,
     expr::{
         BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefExpr, parser,
+        Source, StructurePattern, TypeDefBody, TypeDefExpr, parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     node::{Nop, bind::Bind},
@@ -81,12 +81,12 @@ fn bind_sig(
                 }
             }
             SigKind::TypeDef(td) => {
-                let typ = td.typ.scope_refs(&scope.lexical);
                 env.deftype(
                     &scope.lexical,
                     &td.name,
                     td.params.clone(),
-                    typ.clone(),
+                    &td.body,
+                    true,
                     si.doc.0.clone(),
                     si.pos,
                     si_ori,
@@ -129,6 +129,25 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             }
             copy_sig!(binds);
             copy_sig!(typedefs);
+            // a re-exported module's Graphix-minted abstracts are
+            // public exactly where their typedef entries are copied
+            let exported: LPooled<Vec<AbstractId>> = inner_env
+                .typedefs
+                .range::<ModPath, _>(&scope.lexical..)
+                .filter(|(path, _)| {
+                    buf.clear();
+                    write!(buf, "{}/", scope.lexical.0).unwrap();
+                    *path == &scope.lexical || path.starts_with(&*buf)
+                })
+                .flat_map(|(_, defs)| defs.into_iter())
+                .filter_map(|(_, td)| match (&td.typ, &td.rep) {
+                    (Type::Abstract { id, .. }, Some(_)) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            for id in exported.iter() {
+                env.publish_abstract_rep(*id);
+            }
         }
     }
 }
@@ -140,10 +159,9 @@ fn check_sig<R: Rt, E: UserEvent>(
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
-    private_env: &Env,
 ) -> Result<()> {
     let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
-    let mut abstract_types: LPooled<IntMap<AbstractId, Type>> = LPooled::take();
+    let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
             && let Some(binds) = ctx.env.binds.get(&scope.lexical)
@@ -154,7 +172,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            proxy_bind.typ.sig_matches(&ctx.env, bind.typ(), &abstract_types).with_context(|| {
+            proxy_bind.typ.sig_matches(&ctx.env, bind.typ()).with_context(|| {
                 format!(
                     "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
                     proxy_bind.typ,
@@ -181,10 +199,13 @@ fn check_sig<R: Rt, E: UserEvent>(
             let sig_td = TypeDefExpr {
                 name: td.name.clone(),
                 params: sig_td.params.clone(),
-                typ: sig_td.typ.clone(),
+                body: match (&sig_td.typ, &sig_td.rep) {
+                    (Type::Abstract { .. }, rep) => TypeDefBody::Abstract(rep.clone()),
+                    (typ, _) => TypeDefBody::Alias(typ.clone()),
+                },
             };
-            match &sig_td.typ {
-                Type::Abstract { id, params: _ } => {
+            match &sig_td.body {
+                TypeDefBody::Abstract(None) => {
                     for (tv0, con0) in td.params.iter() {
                         match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
                             Some((_, con1)) if con0 != con1 => {
@@ -210,29 +231,30 @@ fn check_sig<R: Rt, E: UserEvent>(
                             Some(_) => (),
                         }
                     }
-                    abstract_types.insert(*id, td.typ.clone());
-                    // Persist the private representation for scoped
-                    // static-instance checks and fusion ABI lowering.
-                    // The body is a fresh allocation whose ref cells
-                    // are empty, and check_sig runs under the OUTER
-                    // env — where these names resolve to the sig's
-                    // PUBLIC entries. Seed against the module's
-                    // private env so the stored body carries the
-                    // private view its names had where they were
-                    // written.
-                    let body = td.typ.scope_refs(&scope.lexical);
-                    body.seed_refs(private_env);
-                    ctx.fusion.abstract_registry.insert_scoped(
-                        *id,
-                        Arc::from_iter(td.params.iter().map(|(tv, _)| tv.name.clone())),
-                        body,
-                        scope.lexical.clone(),
-                    );
+                    let TypeDefBody::Abstract(_) = &td.body else {
+                        bail!(
+                            "{} is hidden by the interface, so its definition must be \
+                             `type {} = Abstract<..>` (a Rust-backed type declares \
+                             `type {};`)",
+                            td.name,
+                            td.name,
+                            td.name
+                        )
+                    };
+                    defined_abstracts.insert(td.name.clone());
                 }
                 _ => {
+                    let impl_body = match &td.body {
+                        TypeDefBody::Alias(t) => {
+                            TypeDefBody::Alias(t.scope_refs(&scope.lexical))
+                        }
+                        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
+                            rep.as_ref().map(|r| r.scope_refs(&scope.lexical)),
+                        ),
+                    };
                     if sig_td.name != td.name
                         || sig_td.params != td.params
-                        || sig_td.typ != td.typ.scope_refs(&scope.lexical)
+                        || sig_td.body != impl_body
                     {
                         bail!(
                             "signature mismatch in {}, expected {}, found {}",
@@ -249,11 +271,14 @@ fn check_sig<R: Rt, E: UserEvent>(
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
             SigKind::TypeDef(TypeDefExpr {
-                typ: Type::Abstract { id, params: _ },
+                name,
+                body: TypeDefBody::Abstract(None),
                 ..
-            }) if !abstract_types.contains_key(id) => {
+            }) if !defined_abstracts.contains(name) => {
                 bail!(
-                    "abstract signature types must have a concrete definition in the implementation"
+                    "{name} is hidden by the interface, so the implementation must \
+                     define it: `type {name} = Abstract<..>`, or `type {name};` for \
+                     a Rust-backed type"
                 )
             }
             SigKind::Module(_)
@@ -438,7 +463,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         ctx.builtins_allowed = true;
         let (mut nodes, catches) = nodes?;
         self.catches = catches;
-        let private_env = self.env.clone();
         match &mut self.dynamic_sig_env {
             None => check_sig(
                 ctx,
@@ -447,7 +471,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 &self.scope,
                 &self.sig,
                 &nodes,
-                &private_env,
             )?,
             Some(env) => ctx.with_restored_mut(env, |ctx| {
                 check_sig(
@@ -457,7 +480,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                     &self.scope,
                     &self.sig,
                     &nodes,
-                    &private_env,
                 )
             })?,
         }

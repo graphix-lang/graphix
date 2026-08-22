@@ -4,7 +4,7 @@ use crate::{
     expr::{ExprId, Origin, Pattern, StructurePattern},
     format_with_flags,
     node::{Held, compiler},
-    typ::{IsAFlags, Type, TypeRef},
+    typ::{AbstractId, IsAFlags, Type, TypeRef},
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -43,6 +43,15 @@ pub enum StructPatternNode {
         tag: ArcStr,
         all: Option<BindId>,
         binds: Box<[StructPatternNode]>,
+    },
+    /// `T(p)`: a value of the abstract type `id`, its payload
+    /// destructured by `bind` against `rep` (the type's
+    /// representation at this scrutinee's parameters)
+    Abstract {
+        id: AbstractId,
+        all: Option<BindId>,
+        rep: Type,
+        bind: Box<StructPatternNode>,
     },
 }
 
@@ -96,6 +105,10 @@ impl StructPatternNode {
                     }
                 }
                 Ok(())
+            }
+            Self::Abstract { bind, rep, .. } => {
+                let rep = rep.clone();
+                bind.realign(env, &rep)
             }
             Self::Slice { tuple: true, binds, all: _ } => {
                 let ts = typ.with_deref(|t| match t {
@@ -351,6 +364,44 @@ impl StructPatternNode {
                     })?,
                 }
             }
+            StructurePattern::Abstract { all, name, bind } => {
+                let td = ctx
+                    .env
+                    .lookup_typedef(&scope.lexical, name)?
+                    .ok_or_else(|| anyhow!("unknown type {name}"))?;
+                let Type::Abstract { id, .. } = &td.typ else {
+                    bail!("{name} is not an abstract type, so it has no constructor")
+                };
+                let id = *id;
+                let Some(r) = ctx.env.abstract_rep(id, &scope.lexical) else {
+                    bail!(
+                        "the definition of {name} is not visible here, so its values \
+                         cannot be destructured"
+                    )
+                };
+                let (atyp, rep) = r.instantiate(id);
+                type_predicate.check_contains(&ctx.env, &atyp)?;
+                let all = all.as_ref().map(|n| {
+                    ctx.env
+                        .bind_variable(
+                            &scope.lexical,
+                            n,
+                            type_predicate.clone(),
+                            pos,
+                            ori.clone(),
+                        )
+                        .id
+                });
+                let bind = Box::new(Self::compile_int(
+                    ctx,
+                    &rep,
+                    bind,
+                    scope,
+                    pos,
+                    ori.clone(),
+                )?);
+                Self::Abstract { id, all, rep, bind }
+            }
             StructurePattern::Struct { exhaustive, all, binds } => {
                 struct Ifo {
                     name: ArcStr,
@@ -478,6 +529,12 @@ impl StructPatternNode {
 
     fn ids_inner<'a>(&'a self, f: &mut (dyn FnMut(BindId) + 'a)) {
         match &self {
+            Self::Abstract { all, bind, .. } => {
+                if let Some(id) = all {
+                    f(*id)
+                }
+                bind.ids(f)
+            }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id),
             Self::Slice { tuple: _, all, binds } => {
@@ -535,6 +592,16 @@ impl StructPatternNode {
 
     fn bind_inner<F: FnMut(BindId, Value)>(&self, v: &Value, f: &mut F) {
         match &self {
+            Self::Abstract { id, all, bind, .. } => {
+                if let Some(bid) = all {
+                    f(*bid, v.clone())
+                }
+                if let Some(g) = crate::abstract_value::get(v)
+                    && g.id == *id
+                {
+                    bind.bind(&g.payload, f)
+                }
+            }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id, v.clone()),
             Self::Slice { tuple: _, all, binds } => match v {
@@ -622,6 +689,12 @@ impl StructPatternNode {
 
     fn unbind_inner<F: FnMut(BindId)>(&self, f: &mut F) {
         match &self {
+            Self::Abstract { all, bind, .. } => {
+                if let Some(id) = all {
+                    f(*id)
+                }
+                bind.unbind(f)
+            }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id),
             Self::Slice { tuple: _, all, binds }
@@ -672,6 +745,10 @@ impl StructPatternNode {
 
     fn is_match_inner(&self, v: &Value) -> bool {
         match &self {
+            Self::Abstract { id, bind, .. } => match crate::abstract_value::get(v) {
+                Some(g) => g.id == *id && bind.is_match(&g.payload),
+                None => false,
+            },
             Self::Ignore | Self::Bind(_) => true,
             Self::Literal(o) => v == o,
             Self::Slice { tuple: _, all: _, binds } => match v {
@@ -732,6 +809,7 @@ impl StructPatternNode {
 
     fn is_refutable_inner(&self) -> bool {
         match &self {
+            Self::Abstract { bind, .. } => bind.is_refutable(),
             Self::Bind(_) | Self::Ignore => false,
             Self::Literal(_) => true,
             Self::Slice { tuple: true, all: _, binds } => {
@@ -818,7 +896,7 @@ impl StructPatternNode {
     fn matches_anything_inner(&self) -> bool {
         match &self {
             Self::Bind(_) | Self::Ignore => true,
-            Self::Literal(_) | Self::Variant { .. } => false,
+            Self::Literal(_) | Self::Variant { .. } | Self::Abstract { .. } => false,
             Self::Slice { tuple: true, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
             }
@@ -837,6 +915,13 @@ impl StructPatternNode {
 
     fn delete_inner<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
         match self {
+            Self::Abstract { all, bind, .. } => {
+                if let Some(id) = all {
+                    ctx.rt.store_remove(id);
+                    ctx.env.unbind_variable(*id);
+                }
+                bind.delete(ctx)
+            }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => {
                 ctx.rt.store_remove(&id);
@@ -891,34 +976,37 @@ impl StructPatternNode {
     }
 }
 
-/// Does `t` mention an abstract type at any position a runtime type
-/// check would have to verify? Refs are expanded through the env;
-/// pathological depth answers true (refusing is the conservative
-/// direction — this gates a compile error, not a match).
-fn mentions_abstract(env: &Env, t: &Type, depth: usize) -> bool {
+/// Does `t` mention a RUST-BACKED abstract type at any position a
+/// runtime type check would have to verify? A Graphix-minted abstract
+/// is verifiable by its tag; a Rust-backed one only if its package
+/// registered the path-derived wrapper UUID, which the compiler cannot
+/// know, so an explicit predicate on one is refused. Refs are expanded
+/// through the env; pathological depth answers true (refusing is the
+/// conservative direction — this gates a compile error, not a match).
+fn mentions_rust_abstract(env: &Env, t: &Type, depth: usize) -> bool {
     if depth > 64 {
         return true;
     }
     t.with_deref(|t| match t {
         None => false,
         Some(t) => match t {
-            Type::Abstract { .. } => true,
+            Type::Abstract { id, .. } => !env.abstract_minted(*id),
             Type::Ref(_) => match t.lookup_ref(env) {
-                Ok(t) => mentions_abstract(env, &t, depth + 1),
+                Ok(t) => mentions_rust_abstract(env, &t, depth + 1),
                 Err(_) => false,
             },
             Type::Set(s) | Type::Tuple(s) | Type::Variant(_, s) => {
-                s.iter().any(|t| mentions_abstract(env, t, depth + 1))
+                s.iter().any(|t| mentions_rust_abstract(env, t, depth + 1))
             }
             Type::Struct(fs) => {
-                fs.iter().any(|(_, t)| mentions_abstract(env, t, depth + 1))
+                fs.iter().any(|(_, t)| mentions_rust_abstract(env, t, depth + 1))
             }
             Type::Array(t) | Type::ByRef(t) | Type::Error(t) => {
-                mentions_abstract(env, t, depth + 1)
+                mentions_rust_abstract(env, t, depth + 1)
             }
             Type::Map { key, value } => {
-                mentions_abstract(env, key, depth + 1)
-                    || mentions_abstract(env, value, depth + 1)
+                mentions_rust_abstract(env, key, depth + 1)
+                    || mentions_rust_abstract(env, value, depth + 1)
             }
             Type::Bottom
             | Type::Any
@@ -959,7 +1047,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         let (explicit, type_predicate) = match &spec.type_predicate {
             Some(t) => (true, t.scope_refs(&scope.lexical).lookup_ref(&ctx.env)?),
             None => {
-                let typ = spec.structure_predicate.infer_type_predicate(&ctx.env)?;
+                let typ = spec
+                    .structure_predicate
+                    .infer_type_predicate(&ctx.env, &scope.lexical)?;
                 (false, typ)
             }
         };
@@ -989,7 +1079,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // silently won — the exact class the typechecker exists to
         // refuse. Found by the netidx-admin dogfood campaign
         // (2026-08-18).
-        if explicit && mentions_abstract(&ctx.env, &type_predicate, 0) {
+        if explicit && mentions_rust_abstract(&ctx.env, &type_predicate, 0) {
             // Name the type as the USER wrote it (the unresolved spec
             // form): the resolved Type renders an Abstract as its raw
             // process-global id — useless to the reader, and unstable

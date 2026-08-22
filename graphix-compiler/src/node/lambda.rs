@@ -5,7 +5,7 @@ use crate::{
     UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId, ModPath, Origin},
+    expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
         callsite::CallSite, collection::CollectionIntrinsic, pattern::StructPatternNode,
@@ -135,7 +135,6 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     id: LambdaId,
     instance_id: LambdaInstanceId,
     dispatch: LambdaDispatch,
-    scope: ModPath,
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
@@ -286,89 +285,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 
     pub fn set_self_bind(&self, bind: Option<BindId>) {
         *self.self_bind.lock() = bind;
-    }
-}
-
-fn check_instance_type<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    scope: &ModPath,
-    expected: &Type,
-    actual: &Type,
-) -> Result<()> {
-    let probe = expected.check_contains_rigid(&ctx.env, actual);
-    if let Err(e) = &probe
-        && crate::dbgenv::gxdbg_instcheck()
-    {
-        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-            eprintln!(
-                "INSTCHECK-PROBE-FAIL scope={scope} opaque={}\n  expected={expected}\n  actual={actual}\n  err={e:#}",
-                e.downcast_ref::<crate::typ::AbstractOpaque>().is_some()
-            );
-            Ok::<_, std::fmt::Error>(())
-        })
-        .ok();
-    }
-    match probe {
-        Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
-            let expected = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                expected,
-                &ctx.env,
-                scope,
-            );
-            let actual = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                actual,
-                &ctx.env,
-                scope,
-            );
-            let r = expected.check_contains_rigid(&ctx.env, &actual);
-            if r.is_err() && crate::dbgenv::gxdbg_instcheck() {
-                crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-                    eprintln!(
-                        "INSTCHECK-RETRY-FAIL scope={scope}\n  expected={expected}\n  actual={actual}\n  err={:#}",
-                        r.as_ref().unwrap_err()
-                    );
-                    Ok::<_, std::fmt::Error>(())
-                })
-                .ok();
-            }
-            // Privatizing is a NAME-PRESERVING view swap; when it
-            // leaves an abstract still opaque the retry has learned
-            // nothing, and the failure stays "undecided" so consumers
-            // keep their existing latitude (a `List` private↔public
-            // mismatch must not become a hard error — list::flat_map
-            // and the parameterized-abstract interfaces live here).
-            //
-            // But undecided is not the same as undecidable. Resolve
-            // BOTH sides through the abstract REGISTRY — the expanding
-            // resolver fusion already uses — and if the fully-resolved
-            // types still disagree, nothing about module opacity can
-            // rescue them: re-raise without the marker so it is not
-            // excused. `try_static_resolve` discards the whole static
-            // resolution on an opaque failure, and that discard was
-            // silently dropping the site's expected type, which is how
-            // `list + 1` compiled — arithmetic constrained the site to
-            // Number, the instance returned `[i64, <abstract>]`, and
-            // the honest mismatch was excused (aug15b hz0 fuzz 000001).
-            r.map_err(|e| {
-                let re = crate::fusion::lowering::resolve_abstract(
-                    &ctx.fusion.abstract_registry,
-                    &expected,
-                    &ctx.env,
-                );
-                let ra = crate::fusion::lowering::resolve_abstract(
-                    &ctx.fusion.abstract_registry,
-                    &actual,
-                    &ctx.env,
-                );
-                match re.check_contains_rigid(&ctx.env, &ra) {
-                    Ok(()) => e,
-                    Err(e2) => anyhow!("{e2:#}"),
-                }
-            })
-        }
-        result => result,
     }
 }
 
@@ -906,12 +822,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     ) -> Result<()> {
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
             wrap!(arg, arg.typecheck0(ctx))?;
-            wrap!(arg, check_instance_type(ctx, &self.scope, typ, &arg.typ()))?;
+            wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
         }
         wrap!(self.body, self.body.typecheck0(ctx))?;
         wrap!(
             self.body,
-            check_instance_type(ctx, &self.scope, &self.typ.rtype, &self.body.typ())
+            self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
         )?;
         Ok(())
     }
@@ -946,7 +862,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         match res {
             Some(cv)
                 if crate::fusion::emit::call_result_needs_value_widening(
-                    cx.registry(),
                     callsite.typ(),
                     &self.typ.rtype,
                 ) =>
@@ -1109,7 +1024,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             id,
             instance_id: LambdaInstanceId::new(),
             dispatch,
-            scope: scope.lexical.clone(),
             args: Box::from_iter(argpats.drain(..)),
             typ,
             body,
@@ -1127,13 +1041,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 struct BuiltInLambda<R: Rt, E: UserEvent> {
     typ: Arc<FnType>,
     apply: Box<dyn Apply<R, E> + Send + Sync + 'static>,
-    /// The DEF's fn scope — check_instance_type's privatize gate needs
-    /// a scope inside the defining module so an abstract-typed arg
-    /// bridges to its private form (the cons-building fold callback:
-    /// the acc cell binds the caller's OPAQUE view at the top-level
-    /// unification, and the builtin's declared formal is the private
-    /// view — same seam GXLambda's per-arg checks already bridge).
-    scope: ModPath,
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
@@ -1196,11 +1103,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
             } else {
                 self.typ.vargs.as_ref().unwrap()
             };
-            // Through check_instance_type, not a raw check_contains:
-            // an abstract-typed arg (an acc cell bound to the caller's
-            // OPAQUE view) must bridge to the private form the
-            // declared formal carries — the def-scope privatize retry.
-            wrap!(args[i], check_instance_type(ctx, &self.scope, atyp, &args[i].typ()))?
+            wrap!(args[i], atyp.check_contains_rigid(&ctx.env, &args[i].typ()))?
         }
         // The old post-hoc constraint-list check is retired (phase C):
         // cell conjuncts are validated at every bind by
@@ -1497,11 +1400,7 @@ impl Lambda {
                                 init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
                                     |apply| {
                                         let f: Box<dyn Apply<R, E>> =
-                                            Box::new(BuiltInLambda {
-                                                typ,
-                                                apply,
-                                                scope: def_scope.lexical.clone(),
-                                            });
+                                            Box::new(BuiltInLambda { typ, apply });
                                         f
                                     },
                                 )
@@ -1517,8 +1416,8 @@ impl Lambda {
         // final meaning (tui's `list::List` means the tui::list
         // submodule's type, but resolves to the list PACKAGE's before
         // that submodule compiles). Cells fill at typecheck (after
-        // all registrations) and the privatize walk makes instance
-        // signatures env-independent at static-bind time.
+        // all registrations), which makes instance signatures
+        // env-independent at static-bind time.
         let def = ctx.lambdawrap.wrap(LambdaDef {
             id,
             src: ArcStr::from(spec.to_string()),

@@ -118,6 +118,12 @@ impl<'a> TVal<'a> {
             });
         }
         match (&self.typ, &self.v) {
+            (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
+                let g = crate::abstract_value::get(v).unwrap();
+                write!(f, "{}(", g.name)?;
+                fmt_naked(f, &g.payload)?;
+                write!(f, ")")
+            }
             (
                 Type::Primitive(_)
                 | Type::Abstract { .. }

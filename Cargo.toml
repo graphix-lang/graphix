@@ -104,7 +104,7 @@ calamine = { version = "0.34", features = ["dates"] }
 rust_xlsxwriter = "0.94"
 toml_edit = { version = "0.25" }
 triomphe = { version = "0.1" }
-uuid = "1"
+uuid = { version = "1", features = ["v5"] }
 webpki-roots = "1"
 walkdir = "2.5"
 which = "8"

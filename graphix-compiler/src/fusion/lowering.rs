@@ -12,8 +12,8 @@ use crate::{
     fusion::{
         self,
         kernel_abi::{
-            self, AbiKind, AbstractRegistry, BuiltinSlot, FnParam, FnSource, KernelSig,
-            Seen, abi_kind, freeze_for_abi_normalized, scalar_prim,
+            self, AbiKind, BuiltinSlot, FnParam, FnSource, KernelSig, Seen, abi_kind,
+            freeze_for_abi_normalized, scalar_prim,
         },
     },
     node::{callsite::CallSite, lambda::GXLambda},
@@ -153,8 +153,8 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
         NodeView::CallSite(cs) => {
             try_register_builtin_call_from_callsite(cs, ctx, out);
         }
-        NodeView::TypeCast(tc) => try_register_cast(tc, ctx, out),
-        NodeView::Qop(q) => try_register_qop_deliver(q, ctx, out),
+        NodeView::TypeCast(tc) => try_register_cast(tc, out),
+        NodeView::Qop(q) => try_register_qop_deliver(q, out),
         _ => {}
     });
 }
@@ -169,13 +169,11 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// de-fuses, the slot goes unused — harmless).
 fn try_register_qop_deliver<R: Rt, E: UserEvent>(
     q: &crate::node::error::Qop<R, E>,
-    ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
     let Some((handler_id, handler_top)) = q.id else { return };
-    let reg = &ctx.fusion.abstract_registry;
-    let Some(inner_typ) = freeze_for_abi_normalized(reg, q.n.typ()) else { return };
-    if kernel_abi::nullable_inner(reg, &inner_typ).is_none() {
+    let Some(inner_typ) = freeze_for_abi_normalized(q.n.typ()) else { return };
+    if kernel_abi::nullable_inner(&inner_typ).is_none() {
         return;
     }
     // The delivered arg is the inner's full Nullable value (the `Error` on
@@ -221,15 +219,13 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
 /// step with emission.
 fn try_register_cast<R: Rt, E: UserEvent>(
     tc: &crate::node::TypeCast<R, E>,
-    ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
-    let reg = &ctx.fusion.abstract_registry;
     let source = tc.n.typ();
     // Inline-able scalar→scalar cast: no slot (matches emit_cast_node's
     // fast path — NUMERIC prims only; a bool cast needs the machinery
     // DynCall, so it registers a slot like any non-inline cast).
-    if scalar_prim(reg, source).is_some_and(|p| p.is_numeric())
+    if scalar_prim(source).is_some_and(|p| p.is_numeric())
         && PrimType::from_type(&tc.target).is_some_and(|p| p.is_numeric())
     {
         return;
@@ -238,8 +234,8 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     // fallible result type (`[T, Error]`) must decode — otherwise the
     // site can't be lowered and emission fails on the un-registered
     // node (the region stays unfused).
-    let Some(arg_frozen) = freeze_for_abi_normalized(reg, source) else { return };
-    let Some(ret_frozen) = freeze_for_abi_normalized(reg, &tc.typ) else { return };
+    let Some(arg_frozen) = freeze_for_abi_normalized(source) else { return };
+    let Some(ret_frozen) = freeze_for_abi_normalized(&tc.typ) else { return };
     let fn_index = out.fn_params.len() as u32;
     out.fn_params.push(FnParam {
         name: arcstr::literal!("<cast>"),
@@ -364,10 +360,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
                     .unwrap_or_else(|| fa.typ.clone());
-                let kt = match kernel_abi::freeze_for_abi_normalized(
-                    &ctx.fusion.abstract_registry,
-                    &arg_typ,
-                ) {
+                let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
                     Some(t) => t,
                     None => return,
                 };
@@ -388,10 +381,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         .arg_named(name)
                         .map(|n| n.typ().clone())
                         .unwrap_or_else(|| fa.typ.clone());
-                    let kt = match kernel_abi::freeze_for_abi_normalized(
-                        &ctx.fusion.abstract_registry,
-                        &arg_typ,
-                    ) {
+                    let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
                         Some(t) => t,
                         None => return,
                     };
@@ -443,10 +433,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 Some(t) => t,
                 None => return,
             };
-            let kt = match kernel_abi::freeze_for_abi_normalized(
-                &ctx.fusion.abstract_registry,
-                &arg_typ,
-            ) {
+            let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
                 Some(t) => t,
                 None => return,
             };
@@ -464,20 +451,14 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // Return type — the CallSite's own resolved output type (the
     // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
-    let return_type = match kernel_abi::freeze_for_abi_normalized(
-        &ctx.fusion.abstract_registry,
-        &ret_typ,
-    ) {
+    let return_type = match kernel_abi::freeze_for_abi_normalized(&ret_typ) {
         Some(t) => t,
         None => return,
     };
-    if !arg_types
-        .iter()
-        .all(|t| is_dyncall_arg_supported(&ctx.fusion.abstract_registry, t))
-    {
+    if !arg_types.iter().all(|t| is_dyncall_arg_supported(t)) {
         return;
     }
-    if !is_dyncall_return_supported(&ctx.fusion.abstract_registry, &return_type) {
+    if !is_dyncall_return_supported(&return_type) {
         return;
     }
     let fn_index = out.fn_params.len() as u32;
@@ -578,22 +559,19 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 /// On-demand monomorphization for a user lambda encountered at a
 /// `CallSite` whose `resolved_apply()` is `ApplyView::Lambda(&g)`.
 ///
-/// Resolve named (`Type::Ref`) and abstract (`Type::Abstract`) types to
-/// their concrete representation, recursing through composites, so
-/// `abi_kind` / `freeze_for_abi` can determine an abstract-typed value's
-/// runtime shape. This is fusion-internal only — the abstraction stays
-/// opaque to the type system; the optimizer peeks at the registered
-/// concrete rep purely to size kernel slots.
+/// Expand named (`Type::Ref`) types to their definitions, recursing
+/// through composites, so `abi_kind` / `freeze_for_abi` can classify a
+/// value's runtime shape env-free. Abstract types are LEAVES: a nominal
+/// abstract is an opaque `Value::Abstract` box whatever its
+/// representation (`design/nominal_abstract_types.md`).
 ///
 /// Recursive types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate
-/// by [`Seen`] cycle detection on the expansion arms
-/// (`Ref` and nullary `Abstract`): a re-occurring expansion is left
-/// as-is, `abi_kind` then yields `None`, and the kernel simply doesn't
-/// fuse — correct, since a recursive type has no fixed ABI layout.
-/// Detection is by expansion IDENTITY (full `TypeRef` / `AbstractId`), so
-/// structural depth never trips it — a deeply-nested but FINITE type
-/// resolves fully (unlike the old depth cap, which conflated deep with
-/// recursive and silently refused such types). The one case identity
+/// by [`Seen`] cycle detection on the `Ref` expansion arm: a
+/// re-occurring expansion is left as-is, `abi_kind` then yields `None`,
+/// and the kernel simply doesn't fuse — correct, since a recursive type
+/// has no fixed ABI layout. Detection is by expansion IDENTITY (the
+/// full `TypeRef`), so structural depth never trips it — a
+/// deeply-nested but FINITE type resolves fully. The one case identity
 /// can't catch is NON-regular recursion whose params grow each step
 /// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
 /// expansion chain (NOT structural depth) guarantees termination there.
@@ -603,132 +581,15 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 /// the budget is small: finishing the expansion of a huge type (the GUI
 /// widget unions) buys nothing — such types have no kernel encoding —
 /// and a per-region resolve of one was the 2026-07-13 compile wedge.
-/// Typecheck-side resolution is [`resolve_internal_type`], with a
-/// generous budget (truncation there can fail a check that should pass).
-pub(crate) fn resolve_abstract(reg: &AbstractRegistry, typ: &Type, env: &Env) -> Type {
+pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
     let cx =
         ResolveCx { budget: 2_048, size_cap: FUSION_SIZE_CAP, ..ResolveCx::default() };
-    resolve_abstract_d(reg, typ, env, None, None, &cx).unwrap_or_else(|| typ.clone())
+    resolve_abstract_d(typ, env, None, &cx).unwrap_or_else(|| typ.clone())
 }
 
 /// No kernel encodes a type that unfolds past this; resolving further
 /// is work the freeze would discard.
 pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
-
-/// TYPECHECK-side view bridging (scoped static-instance checks,
-/// instance signature binding) — NAME-PRESERVING, replacing the old
-/// EXPANDING typecheck resolver. Output is the same size as the input:
-/// refs stay refs (their carried resolution cells make them
-/// env-independent — see `TypeRef`), so no memo/budget/size machinery
-/// is needed. Two rewrites, both toward the PRIVATE view and both
-/// gated by the registry's scope-visibility check:
-///
-/// - a `Type::Ref` whose resolution body is `Type::Abstract{id}` (the
-///   interface's public entry) is rebound to the registry's private
-///   body TEMPLATE in a fresh cell — the shared original cell is never
-///   overwritten. The instance body then sees the private form through
-///   ordinary `lookup_ref`, still name-compressed;
-/// - a bare `Type::Abstract{id, params}` node substitutes its
-///   registry body (ref-compressed, seeded at `check_sig`), recursing
-///   for nested abstracts under an `AbstractId` cycle guard.
-///
-/// TVars deref-and-recurse (the output carries the binding, like the
-/// fusion resolver — clone out of the guard before recursing, lock
-/// discipline); everything else is a COW walk.
-pub(crate) fn privatize_type(
-    reg: &AbstractRegistry,
-    typ: &Type,
-    env: &Env,
-    scope: &crate::expr::ModPath,
-) -> Type {
-    let mut seen: LPooled<Vec<crate::typ::AbstractId>> = LPooled::take();
-    privatize_d(reg, typ, env, scope, &mut seen).unwrap_or_else(|| typ.clone())
-}
-
-fn privatize_d(
-    reg: &AbstractRegistry,
-    typ: &Type,
-    env: &Env,
-    scope: &crate::expr::ModPath,
-    seen: &mut Vec<crate::typ::AbstractId>,
-) -> Option<Type> {
-    use triomphe::Arc;
-    match typ {
-        Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => Some(privatize_d(reg, &t, env, scope, seen).unwrap_or(t)),
-            None => None,
-        },
-        Type::Ref(tr) => {
-            let params =
-                Type::cow_slice(&tr.params, |t| privatize_d(reg, t, env, scope, seen));
-            // The walk's env view wins over the cell ONLY when both
-            // resolve to the SAME DEFINITION with a different VIEW
-            // (`same_def` && !`same_view`): a site ref reaching here
-            // through the caller's sig-registered allocation carries
-            // the PUBLIC view, whose body's nested refs would leak
-            // abstracts into the instance body ("expected struct not
-            // abstract", the interface-test class) — rebind to the
-            // env's allocation, seeded from this env so the fill
-            // invariant holds. A DIFFERENT definition in the env is a
-            // stale-horizon artifact (f.env is a mid-registration
-            // snapshot; a forward cross-submodule name like tui's
-            // `list::List` resolves there to the list PACKAGE's type)
-            // — the cell, filled post-registration, is the name's
-            // true meaning and wins. Names the env can't see keep
-            // their cells (that's the cell's whole point).
-            let resolution = match (tr.resolve_pure(env), tr.resolved()) {
-                (Some(e), Some(c)) if e.same_def(&c) && !e.same_view(&c) => {
-                    e.typ().seed_refs(env);
-                    Some((e, true))
-                }
-                (_, Some(c)) => Some((c, false)),
-                // Empty cell: REBIND rather than fill — the cell may
-                // be shared into caller-held types, and writing the
-                // walk's (private) view there would leak it to every
-                // aliasing context.
-                (Some(e), None) => {
-                    e.typ().seed_refs(env);
-                    Some((e, true))
-                }
-                (None, None) => None,
-            };
-            let rebound = resolution.and_then(|(r, rebind)| match r.typ() {
-                Type::Abstract { id, .. } => reg
-                    .internal_template(id, scope)
-                    .map(|(formals, body)| Arc::new(r.private_view(&formals, body))),
-                _ => rebind.then_some(r),
-            });
-            match (rebound, params) {
-                (None, None) => None,
-                (rebound, params) => {
-                    let params = params.unwrap_or_else(|| tr.params.clone());
-                    Some(Type::Ref(match rebound {
-                        Some(r) => tr.rebind_resolution(params, r),
-                        None => tr.with_params(params),
-                    }))
-                }
-            }
-        }
-        Type::Abstract { id, params } => {
-            if seen.contains(id) {
-                return None; // recursive abstract — leave opaque
-            }
-            let cow_params =
-                Type::cow_slice(params, |t| privatize_d(reg, t, env, scope, seen));
-            let params = cow_params.as_ref().unwrap_or(params);
-            match reg.resolve_internal(id, params, scope) {
-                Some(body) => {
-                    seen.push(*id);
-                    let r = privatize_d(reg, &body, env, scope, seen).unwrap_or(body);
-                    seen.pop();
-                    Some(r)
-                }
-                None => cow_params.map(|params| Type::Abstract { id: *id, params }),
-            }
-        }
-        t => t.cow_children(&mut |c| privatize_d(reg, c, env, scope, seen)),
-    }
-}
 
 /// Per-top-level-resolve state. `Seen` bounds each expansion PATH, but
 /// nothing bounded the expansion TREE: an unmemoized walk over types that
@@ -829,10 +690,8 @@ impl std::fmt::Debug for MemoEntry {
 }
 
 fn key_closed(key: &kernel_abi::ExpandKey) -> bool {
-    match key {
-        kernel_abi::ExpandKey::Ref(tr) => tr.params.iter().all(|t| t.tvar_free()),
-        kernel_abi::ExpandKey::Abstract(_) => false,
-    }
+    let kernel_abi::ExpandKey::Ref(tr) = key;
+    tr.params.iter().all(|t| t.tvar_free())
 }
 
 impl ResolveCx {
@@ -933,7 +792,7 @@ impl ResolveCx {
             if n == self.budget {
                 self.expansions.set(n + 1);
                 log::warn!(
-                    "resolve_abstract: expansion budget ({}) exhausted — \
+                    "expand_refs: expansion budget ({}) exhausted — \
                      leaving the remainder opaque",
                     self.budget
                 );
@@ -993,10 +852,8 @@ impl ResolveCx {
 /// (shared). Truncation (budget/size/path backstops) also returns `None`
 /// with `cx.poisoned` set: the remainder stays opaque.
 fn resolve_abstract_d<'a>(
-    reg: &AbstractRegistry,
     typ: &Type,
     env: &Env,
-    scope: Option<&crate::expr::ModPath>,
     seen: Option<&'a Seen<'a>>,
     cx: &ResolveCx,
 ) -> Option<Type> {
@@ -1029,8 +886,7 @@ fn resolve_abstract_d<'a>(
     {
         return hit;
     }
-    let (r, frame) =
-        cx.node_frame(|cx| resolve_abstract_node(reg, typ, env, scope, seen, cx));
+    let (r, frame) = cx.node_frame(|cx| resolve_abstract_node(typ, env, seen, cx));
     if let Some(k) = nkey
         && !frame.poisoned
     {
@@ -1043,10 +899,8 @@ fn resolve_abstract_d<'a>(
 }
 
 fn resolve_abstract_node<'a>(
-    reg: &AbstractRegistry,
     typ: &Type,
     env: &Env,
-    scope: Option<&crate::expr::ModPath>,
     seen: Option<&'a Seen<'a>>,
     cx: &ResolveCx,
 ) -> Option<Type> {
@@ -1071,9 +925,7 @@ fn resolve_abstract_node<'a>(
         // A TVar deref is not an expansion (it can't recurse forever —
         // TVar bindings are occurs-checked), so `seen` passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
-            Some(t) => {
-                Some(resolve_abstract_d(reg, &t, env, scope, seen, cx).unwrap_or(t))
-            }
+            Some(t) => Some(resolve_abstract_d(&t, env, seen, cx).unwrap_or(t)),
             None => None,
         },
         Type::Ref(tr) => {
@@ -1100,43 +952,15 @@ fn resolve_abstract_node<'a>(
                 Ok(resolved) => cx.expand(key, true, || {
                     let node = Seen::push(seen, ExpandKey::Ref(tr.clone()));
                     Some(
-                        resolve_abstract_d(reg, &resolved, env, scope, Some(&node), cx)
+                        resolve_abstract_d(&resolved, env, Some(&node), cx)
                             .unwrap_or(resolved),
                     )
                 }),
                 _ => None,
             }
         }
-        Type::Abstract { id, params } => {
-            let key = ExpandKey::Abstract(*id);
-            if Seen::contains(seen, &key) {
-                cx.consult(&key);
-                return None; // recursive abstract — leave opaque
-            }
-            if !cx.charge() {
-                return None;
-            }
-            // No memo for abstracts (`memoize: false`):
-            // `ExpandKey::Abstract` omits `params` — coarse is right for
-            // cycle detection, wrong for caching an instantiation. The
-            // Ref memo carries the tree collapse; the frame still runs so
-            // the self-key drops out of the caller's dependencies.
-            let resolved = match scope {
-                Some(scope) => reg.resolve_internal(id, params, scope),
-                None => reg.resolve(id, params),
-            };
-            match resolved {
-                Some(concrete) => cx.expand(key, false, || {
-                    let node = Seen::push(seen, ExpandKey::Abstract(*id));
-                    Some(
-                        resolve_abstract_d(reg, &concrete, env, scope, Some(&node), cx)
-                            .unwrap_or(concrete),
-                    )
-                }),
-                None => None,
-            }
-        }
-        t => t.cow_children(&mut |c| resolve_abstract_d(reg, c, env, scope, seen, cx)),
+        Type::Abstract { .. } => None,
+        t => t.cow_children(&mut |c| resolve_abstract_d(c, env, seen, cx)),
     }
 }
 
@@ -1285,12 +1109,9 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             FnArgKind::Labeled { name, .. } => name.clone(),
             _ => return None,
         };
-        let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
-        let kt = kernel_abi::freeze_for_abi_normalized(
-            &ec.fusion.abstract_registry,
-            &arg_typ,
-        )?;
-        let kind = type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone())?;
+        let arg_typ = expand_refs(&fa.typ, &ec.env);
+        let kt = kernel_abi::freeze_for_abi_normalized(&arg_typ)?;
+        let kind = type_to_region_input_kind(kt.clone())?;
         let id = g.args().get(i).and_then(|p| p.single_bind_id());
         if id.is_none() {
             // A DESTRUCTURED formal (`|(k, v)| …`) has no single id and
@@ -1370,33 +1191,29 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             // the whole build returns None below.
             continue;
         }
-        let kt = match kernel_abi::freeze_for_abi_normalized(
-            &ec.fusion.abstract_registry,
-            &resolve_abstract(&ec.fusion.abstract_registry, &cap_typ, &ec.env),
-        ) {
+        let kt = match kernel_abi::freeze_for_abi_normalized(&expand_refs(
+            &cap_typ, &ec.env,
+        )) {
             Some(t) => t,
             None => return None,
         };
-        let kind =
-            match type_to_region_input_kind(&ec.fusion.abstract_registry, kt.clone()) {
-                Some(k) => k,
-                None => return None,
-            };
+        let kind = match type_to_region_input_kind(kt.clone()) {
+            Some(k) => k,
+            None => return None,
+        };
         let name = ArcStr::from(b.name.as_str());
         inputs.push((name.clone(), kind, Some(bind_id)));
         captures.push(CaptureSlot { bind_id, name, typ: kt });
     }
-    let return_typ = kernel_abi::freeze_for_abi_normalized(
-        &ec.fusion.abstract_registry,
-        &resolve_abstract(&ec.fusion.abstract_registry, &typ.rtype, &ec.env),
-    )?;
+    let return_typ =
+        kernel_abi::freeze_for_abi_normalized(&expand_refs(&typ.rtype, &ec.env))?;
     // Unified Value ABI: every return crosses as the genuine two-word
     // Value pair, so String returns marshal like everything else.
     // Unit / bare-Null returns still refuse (a unit-typed call has no
     // value to return; bare Null should have widened) — the call
     // stays on the node-walk (via `GXLambda`).
     if matches!(
-        kernel_abi::abi_kind(&ec.fusion.abstract_registry, &return_typ),
+        kernel_abi::abi_kind(&return_typ),
         Some(kernel_abi::AbiKind::Unit | kernel_abi::AbiKind::Null)
     ) {
         return None;
@@ -1461,7 +1278,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             eprintln!(
                 "KERNEL BUILT {kernel_name}: ret={return_typ} kind={:?}",
-                kernel_abi::abi_kind(&ec.fusion.abstract_registry, &return_typ)
+                kernel_abi::abi_kind(&return_typ)
             );
             Ok::<_, anyhow::Error>(())
         })
@@ -1525,15 +1342,12 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
         if !matches!(fa.kind, FnArgKind::Positional { .. }) {
             return false;
         }
-        let arg_typ = resolve_abstract(&ec.fusion.abstract_registry, &fa.typ, &ec.env);
-        let kt = match kernel_abi::freeze_for_abi_normalized(
-            &ec.fusion.abstract_registry,
-            &arg_typ,
-        ) {
+        let arg_typ = expand_refs(&fa.typ, &ec.env);
+        let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
             Some(t) => t,
             None => return false,
         };
-        match type_to_region_input_kind(&ec.fusion.abstract_registry, kt) {
+        match type_to_region_input_kind(kt) {
             Some(
                 RegionInputKind::Prim(_)
                 | RegionInputKind::Array(_)
@@ -1592,7 +1406,6 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     formal_kts: &[Type],
     ec: &ExecCtx<R, E>,
 ) -> bool {
-    let reg = &ec.fusion.abstract_registry;
     let mut ok = true;
     fusion::for_each_node(body, &mut |n| {
         if !ok {
@@ -1607,10 +1420,9 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
                 ok = false;
                 return;
             };
-            let Some(arg_kt) = kernel_abi::freeze_for_abi_normalized(
-                reg,
-                &resolve_abstract(reg, arg.typ(), &ec.env),
-            ) else {
+            let Some(arg_kt) =
+                kernel_abi::freeze_for_abi_normalized(&expand_refs(arg.typ(), &ec.env))
+            else {
                 ok = false;
                 return;
             };
@@ -1661,10 +1473,7 @@ pub enum RegionInputKind {
 ///   at the construction site).
 /// - function types (handled via the `fn_params` channel or the
 ///   statically-resolved-call path, not as a value slot).
-pub(crate) fn type_to_region_input_kind(
-    reg: &AbstractRegistry,
-    t: Type,
-) -> Option<RegionInputKind> {
+pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     use AbiKind;
     // FREEZE at the boundary. The Type comes from a binding's declared
     // type, which may still wrap a (bound) TVar or a Ref. `abi_kind`
@@ -1673,8 +1482,8 @@ pub(crate) fn type_to_region_input_kind(
     // `array_elem`) later run on the STORED `Type` (via
     // `sig_from_inputs` / the emitters) and would return `None`. Store
     // the concrete frozen `Type` so those accessors always succeed.
-    let t = kernel_abi::freeze_for_abi(reg, &t)?;
-    match abi_kind(reg, &t)? {
+    let t = kernel_abi::freeze_for_abi(&t)?;
+    match abi_kind(&t)? {
         AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
         AbiKind::Array => {
             kernel_abi::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
@@ -1683,7 +1492,7 @@ pub(crate) fn type_to_region_input_kind(
         AbiKind::Struct => Some(RegionInputKind::Struct(t)),
         AbiKind::Variant => Some(RegionInputKind::Variant(t)),
         AbiKind::Nullable => {
-            kernel_abi::nullable_inner(reg, &t).map(RegionInputKind::Nullable)
+            kernel_abi::nullable_inner(&t).map(RegionInputKind::Nullable)
         }
         AbiKind::String => Some(RegionInputKind::String),
         AbiKind::Value => Some(RegionInputKind::Value(t)),
@@ -1694,9 +1503,9 @@ pub(crate) fn type_to_region_input_kind(
 /// True if a (frozen) `Type` is a marshallable `DynCall` **argument**
 /// shape — every fusable shape except `Unit` (no value to pass) and
 /// bare `Null` (always widened to `Nullable<T>` at construction).
-fn is_dyncall_arg_supported(reg: &AbstractRegistry, t: &Type) -> bool {
+fn is_dyncall_arg_supported(t: &Type) -> bool {
     use AbiKind;
-    match abi_kind(reg, t) {
+    match abi_kind(t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -1741,9 +1550,9 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 /// True if a (frozen) `Type` is a marshallable `DynCall` **return**
 /// shape — every fusable shape except bare `Null`. `Unit` IS allowed
 /// (side-effect-only sync builtins like `println` return Bottom).
-fn is_dyncall_return_supported(reg: &AbstractRegistry, t: &Type) -> bool {
+fn is_dyncall_return_supported(t: &Type) -> bool {
     use AbiKind;
-    match abi_kind(reg, t) {
+    match abi_kind(t) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array

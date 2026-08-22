@@ -352,14 +352,14 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
     }
-    let result_typ = kernel_abi::freeze_for_abi_normalized(cx.registry(), sel.typ())
-        .ok_or_else(|| {
+    let result_typ =
+        kernel_abi::freeze_for_abi_normalized(sel.typ()).ok_or_else(|| {
             anyhow!(
                 "emit_clif: select result type {:?} doesn't freeze concrete",
                 sel.typ()
             )
         })?;
-    let merge_shape = match kernel_abi::abi_kind(cx.registry(), &result_typ) {
+    let merge_shape = match kernel_abi::abi_kind(&result_typ) {
         Some(AbiKind::Scalar(p)) => SelectMerge::Scalar(p),
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => SelectMerge::Value,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => SelectMerge::Composite,
@@ -633,16 +633,15 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     sel: &Select<R, E>,
     allow_owned: bool,
 ) -> Result<(SelectScrut, AbiKind, Type, Option<ScrutDrop>)> {
-    let scrut_typ =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), sel.arg.node.typ())
-            .ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: select scrutinee type {:?} doesn't freeze \
+    let scrut_typ = kernel_abi::freeze_for_abi_normalized(sel.arg.node.typ())
+        .ok_or_else(|| {
+            anyhow!(
+                "emit_clif: select scrutinee type {:?} doesn't freeze \
                  concrete",
-                    sel.arg.node.typ()
-                )
-            })?;
-    let scrut_kind = kernel_abi::abi_kind(cx.registry(), &scrut_typ)
+                sel.arg.node.typ()
+            )
+        })?;
+    let scrut_kind = kernel_abi::abi_kind(&scrut_typ)
         .ok_or_else(|| anyhow!("emit_clif: select scrutinee shape not classifiable"))?;
     let mut drop_ob: Option<ScrutDrop> = None;
     // Bind an OWNED scrutinee as an env local of its kind: a mid-arm
@@ -902,16 +901,17 @@ fn emit_composite_pattern_cond(
         smallvec::SmallVec::new();
     for leaf in &leaves {
         match leaf.sub {
+            StructPatternNode::Abstract { .. } => {
+                return Err(anyhow!("emit_clif: abstract pattern leaf not lowerable"));
+            }
             StructPatternNode::Ignore => {}
             StructPatternNode::Bind(id) => {
-                let prim = kernel_abi::scalar_prim(cx.registry(), &leaf.typ).ok_or_else(
-                    || {
-                        anyhow!(
-                            "emit_clif: non-scalar select pattern leaf bind {:?}",
-                            leaf.typ
-                        )
-                    },
-                )?;
+                let prim = kernel_abi::scalar_prim(&leaf.typ).ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: non-scalar select pattern leaf bind {:?}",
+                        leaf.typ
+                    )
+                })?;
                 binds.push(SelectArmBind::Elem { id: *id, idx: leaf.idx, prim, ptr });
             }
             StructPatternNode::Literal(v) => {
@@ -926,7 +926,7 @@ fn emit_composite_pattern_cond(
                 // op) must de-fuse like a Bind leaf (aug06f
                 // divergence_000000: `(2, u8:0 -? u8:1)` matched
                 // `(2, u8:0)` on underflow).
-                if kernel_abi::scalar_prim(cx.registry(), &leaf.typ) != Some(prim) {
+                if kernel_abi::scalar_prim(&leaf.typ) != Some(prim) {
                     return Err(anyhow!(
                         "emit_clif: literal pattern leaf prim {prim:?} doesn't \
                          match the leaf's static type {:?}",
@@ -942,7 +942,7 @@ fn emit_composite_pattern_cond(
                 // A NESTED structural pattern over a composite-shaped
                 // leaf recurses through a BORROWED interior pointer —
                 // read after this level's length test (below).
-                match kernel_abi::abi_kind(cx.registry(), &leaf.typ) {
+                match kernel_abi::abi_kind(&leaf.typ) {
                     Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                         nested.push((leaf.idx, sub, leaf.typ.clone()));
                     }
@@ -1454,14 +1454,13 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
         None
     } else {
-        let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
-            .ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: select type predicate {:?} doesn't \
+        let pred = kernel_abi::freeze_for_abi(&pat.type_predicate).ok_or_else(|| {
+            anyhow!(
+                "emit_clif: select type predicate {:?} doesn't \
                          freeze concrete",
-                    pat.type_predicate
-                )
-            })?;
+                pat.type_predicate
+            )
+        })?;
         match &pred {
             Type::Primitive(p)
                 if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
@@ -1506,11 +1505,9 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     }
                     SelectScrut::Value { disc, .. }
                         if matches!(scrut_kind, AbiKind::Nullable)
-                            && kernel_abi::nullable_inner(cx.registry(), &scrut_typ)
+                            && kernel_abi::nullable_inner(&scrut_typ)
                                 .as_ref()
-                                .and_then(|t| {
-                                    kernel_abi::scalar_prim(cx.registry(), t)
-                                })
+                                .and_then(|t| kernel_abi::scalar_prim(t))
                                 == PrimType::from_typ(pt) =>
                     {
                         // Mask taint before the structural compare —
@@ -1575,6 +1572,9 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
         }
     };
     let scond: Option<ClifValue> = match &pat.structure_predicate {
+        StructPatternNode::Abstract { .. } => {
+            return Err(anyhow!("emit_clif: abstract patterns are not lowered"));
+        }
         StructPatternNode::Ignore => None,
         StructPatternNode::Bind(id) => match scrut {
             SelectScrut::Scalar { .. } => {
@@ -1582,10 +1582,9 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                 None
             }
             SelectScrut::Value { .. } if matches!(scrut_kind, AbiKind::Nullable) => {
-                let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate);
-                let Some(prim) = pred
-                    .as_ref()
-                    .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
+                let pred = kernel_abi::freeze_for_abi(&pat.type_predicate);
+                let Some(prim) =
+                    pred.as_ref().and_then(|typ| kernel_abi::scalar_prim(typ))
                 else {
                     return Err(anyhow!(
                         "emit_clif: nullable scrutinee bind predicate is not scalar"
@@ -1656,8 +1655,8 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             // Payload types come from the arm's own (frozen)
             // type predicate — `Variant(tag, elts)` for exactly
             // this arm.
-            let pred = kernel_abi::freeze_for_abi(cx.registry(), &pat.type_predicate)
-                .ok_or_else(|| {
+            let pred =
+                kernel_abi::freeze_for_abi(&pat.type_predicate).ok_or_else(|| {
                     anyhow!(
                         "emit_clif: variant pattern predicate {:?} \
                              doesn't freeze concrete",
@@ -1680,13 +1679,12 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
                 match sub {
                     StructPatternNode::Bind(id) => {
-                        let prim = kernel_abi::scalar_prim(cx.registry(), elt)
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "emit_clif: non-scalar variant \
+                        let prim = kernel_abi::scalar_prim(elt).ok_or_else(|| {
+                            anyhow!(
+                                "emit_clif: non-scalar variant \
                                          payload {elt:?}"
-                                )
-                            })?;
+                            )
+                        })?;
                         binds.push(SelectArmBind::Payload { id: *id, idx, prim });
                     }
                     StructPatternNode::Ignore => {}
@@ -1695,7 +1693,8 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     | StructPatternNode::SlicePrefix { .. }
                     | StructPatternNode::SliceSuffix { .. }
                     | StructPatternNode::Struct { .. }
-                    | StructPatternNode::Variant { .. } => {
+                    | StructPatternNode::Variant { .. }
+                    | StructPatternNode::Abstract { .. } => {
                         return Err(anyhow!(
                             "emit_clif: nested variant payload \
                                  pattern not lowerable"
@@ -1883,8 +1882,8 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     fires: SelFires,
 ) -> Result<()> {
     use NodeView;
-    let body_frozen = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-        .ok_or_else(|| {
+    let body_frozen =
+        kernel_abi::freeze_for_abi_normalized(body.typ()).ok_or_else(|| {
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
     let base_init = cx.init_flag();
@@ -1949,7 +1948,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     };
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(rp) => {
-            if kernel_abi::scalar_prim(cx.registry(), &body_frozen) != Some(rp) {
+            if kernel_abi::scalar_prim(&body_frozen) != Some(rp) {
                 return Err(anyhow!(
                     "emit_clif: select arm type {body_frozen:?} doesn't \
                      match the scalar merge {rp:?}"
@@ -1961,7 +1960,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         SelectMerge::Value => {
             // Node twin of `widen_arm_to_value`, keyed on the arm
             // BODY's frozen type.
-            match kernel_abi::abi_kind(cx.registry(), &body_frozen) {
+            match kernel_abi::abi_kind(&body_frozen) {
                 Some(AbiKind::Null) => {
                     // A bare-null arm body has nothing to emit (and a
                     // Null-shaped node can't emit anyway); only the
@@ -2009,7 +2008,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         }
         SelectMerge::Composite => {
             if !matches!(
-                kernel_abi::abi_kind(cx.registry(), &body_frozen),
+                kernel_abi::abi_kind(&body_frozen),
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
             ) {
                 return Err(anyhow!(
@@ -2023,10 +2022,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             (cv.disc, v)
         }
         SelectMerge::String => {
-            if !matches!(
-                kernel_abi::abi_kind(cx.registry(), &body_frozen),
-                Some(AbiKind::String)
-            ) {
+            if !matches!(kernel_abi::abi_kind(&body_frozen), Some(AbiKind::String)) {
                 return Err(anyhow!(
                     "emit_clif: select arm type {body_frozen:?} doesn't \
                      match the string merge"

@@ -1184,7 +1184,7 @@ impl ServerState {
                     (b.name.to_string(), kind, Some(format!("{}", b.typ)))
                 }
                 SigKind::TypeDef(t) => {
-                    let detail = format!("type {}", t.typ);
+                    let detail = format!("{t}");
                     (
                         t.name.to_string(),
                         lsp_types::SymbolKind::TYPE_PARAMETER,

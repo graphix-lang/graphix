@@ -9,6 +9,6 @@ val un: fn(t: T) -> i64;
 // file-v1: m0.gx
 let h0 = |v3: u8| -> u8 ((u8:0 + v3) * u8:255);
 let f0 = |v4: bool| -> i64 cast<i64>((u8:1 / u8:0))$;
-type T = i64;
-let mk = |x: i64| -> T x;
-let un = |t: T| -> i64 t;
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0;

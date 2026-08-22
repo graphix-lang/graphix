@@ -5,7 +5,7 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     compile_use,
-    data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
+    data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
     error::Qop,
     lambda::Lambda,
     module::Module,
@@ -163,6 +163,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Tuple { args } => {
             Tuple::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
+        ExprKind::Construct { name, arg } => {
+            Construct::compile(ctx, flags, spec.clone(), scope, top_id, name, arg)
+        }
         ExprKind::Variant { tag, args } => {
             Variant::compile(ctx, flags, spec.clone(), scope, top_id, tag, args)
         }
@@ -283,8 +286,8 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::TypeCast { expr, typ } => {
             TypeCast::compile(ctx, flags, spec.clone(), scope, top_id, expr, typ)
         }
-        ExprKind::TypeDef(expr::TypeDefExpr { name, params, typ }) => {
-            TypeDef::compile(ctx, spec.clone(), scope, name, params, typ)
+        ExprKind::TypeDef(expr::TypeDefExpr { name, params, body }) => {
+            TypeDef::compile(ctx, spec.clone(), scope, name, params, body)
         }
         ExprKind::Map { args } => {
             Map::compile(ctx, flags, spec.clone(), scope, top_id, args)

@@ -74,6 +74,8 @@ module.exports = grammar({
     [$._expression, $.qop],
     [$.lambda, $.qop],
     [$.type_path, $.pattern_bind],
+    [$.construct_path, $.module_path],
+    [$.type_path, $.construct_path],
     [$.string, $.value_string],
     [$.value_string, $.interpolation],
     [$.module],
@@ -242,7 +244,7 @@ module.exports = grammar({
       'type',
       field('name', $.type_identifier),
       optional($.type_params),
-      optional(seq('=', field('type', $._type))),
+      optional(seq('=', field('type', choice($.abstract_body, $._type)))),
     ),
 
     sig_bind: $ => seq(
@@ -321,13 +323,16 @@ module.exports = grammar({
     ),
 
     // Type definitions
-    type_def: $ => seq(
+    // `type T = T'` (alias), `type T = Abstract<rep>` (a nominal type
+    // minted by its constructor), or `type T;` (a Rust-backed type).
+    type_def: $ => prec.right(seq(
       'type',
       field('name', $.type_identifier),
       optional($.type_params),
-      '=',
-      field('type', $._type),
-    ),
+      optional(seq('=', field('type', choice($.abstract_body, $._type)))),
+    )),
+
+    abstract_body: $ => seq('Abstract', '<', $._type, '>'),
 
     type_params: $ => seq(
       '<',
@@ -491,7 +496,29 @@ module.exports = grammar({
       $.slice_prefix_pattern,
       $.slice_suffix_pattern,
       $.variant_pattern,
+      $.abstract_pattern,
       $.struct_pattern,
+    ),
+
+    // A path whose LAST segment is a type name: the constructor of a
+    // Graphix-minted abstract type (`T(v)` / the pattern `T(p)`).
+    construct_path: $ => seq(
+      optional(seq(
+        choice('self', 'package', seq('super', repeat(seq('::', 'super')))),
+        '::',
+      )),
+      repeat(seq(choice($.type_identifier, $._binding_name), '::')),
+      $.type_identifier,
+    ),
+
+    abstract_construct: $ => seq($.construct_path, '(', $._expression, ')'),
+
+    abstract_pattern: $ => seq(
+      optional(seq(field('all', $._binding_name), '@')),
+      $.construct_path,
+      '(',
+      $.structure_pattern,
+      ')',
     ),
 
     pattern_bind: $ => seq(
@@ -786,6 +813,7 @@ module.exports = grammar({
       $.map,
       $.struct_with,
       $.variant,
+      $.abstract_construct,
       $.struct_ref,
       $.tuple_ref,
       $.array_ref,

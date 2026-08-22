@@ -785,6 +785,26 @@ where
         })
 }
 
+/// `T(v)` — a constructor call of the abstract type at the capitalized
+/// path `T`. A capitalized last segment is what tells it from a call
+/// (bindings can't be capitalized).
+fn construct<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        attempt(typexp::typath().skip(spaces()).skip(token('('))),
+        expr(),
+        sptoken(')'),
+    )
+        .map(|(pos, name, arg, _)| {
+            ExprKind::Construct { name, arg: Arc::new(arg) }.to_expr(pos)
+        })
+}
+
 fn structwith<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

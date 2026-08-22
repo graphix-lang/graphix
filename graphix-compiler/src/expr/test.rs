@@ -421,6 +421,15 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                 .prop_map(|(all, tag, b)| {
                     StructurePattern::Variant { all, tag, binds: Arc::from_iter(b) }
                 }),
+            (option::of(random_fname()), typart(), inner.clone()).prop_map(
+                |(all, name, b)| {
+                    StructurePattern::Abstract {
+                        all,
+                        name: ModPath::from([name]),
+                        bind: Arc::new(b),
+                    }
+                }
+            ),
             (
                 option::of(random_fname()),
                 collection::vec((field_name(), inner.clone()), (1, 10)),
@@ -520,10 +529,14 @@ fn usestmt() -> impl Strategy<Value = Expr> {
 }
 
 fn typedef() -> impl Strategy<Value = Expr> {
-    (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), typexp()).prop_map(
-        |(name, params, typ)| {
+    let body = prop_oneof![
+        typexp().prop_map(TypeDefBody::Alias),
+        option::of(typexp()).prop_map(TypeDefBody::Abstract),
+    ];
+    (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), body).prop_map(
+        |(name, params, body)| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef(TypeDefExpr { name, params, typ }).to_expr_nopos()
+            ExprKind::TypeDef(TypeDefExpr { name, params, body }).to_expr_nopos()
         },
     )
 }
@@ -736,6 +749,15 @@ macro_rules! variant {
     ($inner:expr) => {
         (typart(), collection::vec($inner, (0, 10))).prop_map(|(tag, a)| {
             ExprKind::Variant { tag, args: Arc::from_iter(a) }.to_expr_nopos()
+        })
+    };
+}
+
+macro_rules! construct {
+    ($inner:expr) => {
+        (typart(), $inner).prop_map(|(name, a)| {
+            ExprKind::Construct { name: ModPath::from([name]), arg: Arc::new(a) }
+                .to_expr_nopos()
         })
     };
 }
@@ -1069,6 +1091,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             structure!(inner.clone().prop_map(add_parens)),
             structwith!(inner.clone().prop_map(add_parens)),
             variant!(inner.clone().prop_map(add_parens)),
+            construct!(inner.clone().prop_map(add_parens)),
             byref!(inner.clone().prop_map(add_parens)),
             deref!(inner.clone().prop_map(add_parens)),
             neg!(inner.clone().prop_map(add_parens)),
@@ -1126,6 +1149,7 @@ fn expr() -> impl Strategy<Value = Expr> {
             map!(inner.clone()),
             tuple!(inner.clone()),
             variant!(inner.clone()),
+            construct!(inner.clone()),
             structure!(inner.clone()),
             structwith!(inner.clone()),
         ]
@@ -1246,6 +1270,10 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
                     .all(|(p0, p1)| check_structure_pattern(p0, p1))
         }
         (
+            StructurePattern::Abstract { all: a0, name: n0, bind: b0 },
+            StructurePattern::Abstract { all: a1, name: n1, bind: b1 },
+        ) => a0 == a1 && n0 == n1 && check_structure_pattern(b0, b1),
+        (
             StructurePattern::Variant { all: a0, tag: t0, binds: p0 },
             StructurePattern::Variant { all: a1, tag: t1, binds: p1 },
         ) => {
@@ -1303,8 +1331,8 @@ fn check_opt(s0: &Option<Arc<Expr>>, s1: &Option<Arc<Expr>>) -> bool {
 }
 
 fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
-    let TypeDefExpr { name: name0, params: p0, typ: typ0 } = td0;
-    let TypeDefExpr { name: name1, params: p1, typ: typ1 } = td1;
+    let TypeDefExpr { name: name0, params: p0, body: body0 } = td0;
+    let TypeDefExpr { name: name1, params: p1, body: body1 } = td1;
     dbg!(name0 == name1)
         && dbg!(
             p0.len() == p1.len()
@@ -1317,7 +1345,14 @@ fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
                         }
                 })
         )
-        && dbg!(check_type(&typ0, &typ1))
+        && dbg!(match (body0, body1) {
+            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => check_type(t0, t1),
+            (TypeDefBody::Abstract(Some(t0)), TypeDefBody::Abstract(Some(t1))) => {
+                check_type(t0, t1)
+            }
+            (TypeDefBody::Abstract(None), TypeDefBody::Abstract(None)) => true,
+            _ => false,
+        })
 }
 
 fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
@@ -1367,6 +1402,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         | (ExprKind::Tuple { args: a0 }, ExprKind::Tuple { args: a1 }) => {
             a0.len() == a1.len() && a0.iter().zip(a1.iter()).all(|(e0, e1)| check(e0, e1))
         }
+        (
+            ExprKind::Construct { name: n0, arg: a0 },
+            ExprKind::Construct { name: n1, arg: a1 },
+        ) => n0 == n1 && check(a0, a1),
         (
             ExprKind::Variant { tag: t0, args: a0 },
             ExprKind::Variant { tag: t1, args: a1 },

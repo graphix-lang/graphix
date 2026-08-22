@@ -10,7 +10,7 @@ use crate::{
     fusion::{
         LambdaCallInfo,
         emit_helpers::{AbiTy, HelperSpec, all_helpers},
-        kernel_abi::{self, AbiParamKind, AbstractRegistry, KernelSig},
+        kernel_abi::{self, AbiParamKind, KernelSig},
         lowering::{self, BuiltinCallSiteInfo},
     },
     typ::Type,
@@ -236,7 +236,6 @@ pub(super) fn compile_into_function(
         lambda_call_sites: spec.lambda_call_sites,
         self_call: spec.self_call,
         type_env: spec.type_env,
-        registry: spec.registry,
         fn_index_offset: spec.fn_index_offset,
         lifted: spec.lifted,
         lifted_ord: &kernel.lifted,
@@ -841,11 +840,6 @@ pub(crate) struct LowerCtx<'a> {
     /// no [`BodyEmitter`] supplies it). See [`BodyEmitter::type_env`]
     /// and [`resolve_node_typ`].
     pub(super) type_env: Option<&'a Env>,
-    /// The compiling `ExecCtx`'s abstract-type registry, borrowed from
-    /// [`BodyEmitter::registry`]. Read by the emit-time type
-    /// classifiers (`abi_kind`/freeze/`resolve_abstract`) via
-    /// [`BodyCx::registry`].
-    pub(super) registry: &'a AbstractRegistry,
     /// Lifted connect-target bind ids (let-bound scalar counters routed
     /// in as feeders). Read by [`emit_let_node`] (seed-select) and
     /// [`emit_connect_node`] (write gate). See [`BodyEmitter::lifted`].
@@ -861,11 +855,11 @@ pub(crate) struct LowerCtx<'a> {
 /// the region's env snapshot (#218): node `typ` cells can hold
 /// `Type::Ref`s to abstract type names (e.g. an interface's
 /// `type Elem`) whose concrete rep `abi_kind`/freeze can't see —
-/// `resolve_abstract` expands them (env `lookup_ref` + the abstract
+/// `expand_refs` expands them (env `lookup_ref` + the abstract
 /// registry). When `type_env` is `None` the type returns unchanged.
 pub(super) fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     match ctx.type_env {
-        Some(env) => lowering::resolve_abstract(ctx.registry, t, env),
+        Some(env) => lowering::expand_refs(t, env),
         None => t.clone(),
     }
 }
@@ -877,9 +871,8 @@ pub(super) fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
 /// already succeeds can't be changed by resolution (it was fully
 /// concrete).
 pub(super) fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
-    kernel_abi::freeze_for_abi_normalized(ctx.registry, t).or_else(|| {
-        kernel_abi::freeze_for_abi_normalized(ctx.registry, &resolve_node_typ(ctx, t))
-    })
+    kernel_abi::freeze_for_abi_normalized(t)
+        .or_else(|| kernel_abi::freeze_for_abi_normalized(&resolve_node_typ(ctx, t)))
 }
 
 /// FuncRefs into the JIT module for each runtime helper, valid

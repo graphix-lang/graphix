@@ -1,7 +1,8 @@
 use crate::expr::{
     ApplyExpr, Expr, ExprKind,
     parser::{
-        any, apply_args, array, array_index_suffix, cast, csep, do_block, expr,
+        any, apply_args, array, array_index_suffix, cast, construct, csep, do_block,
+        expr,
         grow::{grow, max_nesting, note_refused},
         interpolated, literal, map, raw_string, reference, select, spaces, spfldname,
         sptoken, structure, structwith, variant,
@@ -185,6 +186,7 @@ where
         paren_group(),
         attempt(literal()).map(|e| (e, None)),
         neg_arith().map(|e| (e, None)),
+        construct().map(|e| (e, None)),
         reference().map(|e| (e, None)),
     ))
 }

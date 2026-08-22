@@ -1,10 +1,10 @@
 
-type Shortcut = {alt: bool, ctrl: bool, key: string, logo: bool, shift: bool};
+type Shortcut = Abstract<{alt: bool, ctrl: bool, key: string, logo: bool, shift: bool}>;
 
 let shortcut = |#ctrl = false, #shift = false, #alt = false, #logo = false, key: string|
     -> [Shortcut, Error<`InvalidKey(string)>]
     select str::len(key) {
-        1 => {alt, ctrl, key, logo, shift},
+        1 => Shortcut({alt, ctrl, key, logo, shift}),
         _ => error(`InvalidKey("shortcut key must be exactly one character, got: [key]"))
     };
 

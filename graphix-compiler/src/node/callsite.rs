@@ -121,73 +121,6 @@ fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     }
 }
 
-/// Drive the resolved-`typecheck1` ("CallSite phase") of the lambda `id`
-/// against `resolved`. Looks the lambda up in `ctx.lambda_defs` and, if it
-/// retained a check `Apply` (`def.check`), runs that apply's `typecheck1`.
-/// This is the body of the former deferred check, called directly from
-/// `CallSite::typecheck1`.
-/// The call site's per-arg verification (`formal ⊇ arg`), with the
-/// ENTITLED abstract bridge: when the plain check trips the
-/// `AbstractOpaque` boundary and the callee resolves to a single
-/// known `LambdaDef`, retry with both sides privatized under the
-/// CALLEE DEF's scope — the def is entitled to see through its own
-/// signature's abstract types. The canonical case is a collection
-/// callback: the enclosing HOF's privatized instance signature binds
-/// the accumulator at its PRIVATE form, while a builtin's formal
-/// carries the PUBLIC abstract (`list::cons(x, acc)` inside a
-/// caller-side fold callback) — opaque-vs-private trips here, and
-/// only the def-scoped registry view can reconcile them. An
-/// unresolvable or multi-def callee keeps the plain error (no
-/// entitlement to borrow).
-fn check_site_arg<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    callee_scope: &Option<crate::expr::ModPath>,
-    formal: &Type,
-    arg: &Type,
-) -> Result<()> {
-    match formal.check_contains(&ctx.env, arg) {
-        Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
-            let Some(scope) = callee_scope else {
-                return Err(e);
-            };
-            let formal = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                formal,
-                &ctx.env,
-                scope,
-            );
-            let arg = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                arg,
-                &ctx.env,
-                scope,
-            );
-            formal.check_contains(&ctx.env, &arg)
-        }
-        r => r,
-    }
-}
-
-/// The callee definition's lexical scope, when the call target
-/// resolves to a single known `LambdaDef` — the same discovery
-/// channel `try_static_resolve` uses (`bind_to_lambda` /
-/// separately-compiled stdlib values / a direct lambda literal).
-/// `None` for dynamic targets: no entitlement to bridge.
-fn callee_def_scope<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    fnode: &Node<R, E>,
-) -> Option<crate::expr::ModPath> {
-    let fv = match fnode.view() {
-        NodeView::Ref(r) if !ctx.unstable_bindings.contains(&r.id) => {
-            ctx.bind_to_lambda.get(&r.id).cloned().or_else(|| ctx.rt.store_value(&r.id))
-        }
-        NodeView::Lambda(l) => Some(l.def_value().clone()),
-        _ => None,
-    }?;
-    let def = fv.downcast_ref::<LambdaDef<R, E>>()?;
-    Some(def.scope.lexical.clone())
-}
-
 fn finalize_lambda<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     id: LambdaId,
@@ -528,12 +461,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         });
     }
 
-    fn discard_static_resolution(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.clear_prepared_bind(ctx);
-        self.static_target = None;
-        self.recursive_edge.store(false, Ordering::Relaxed);
-    }
-
     fn prepare_bind<F>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -755,15 +682,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        let private_site = crate::fusion::lowering::privatize_type(
-            &ctx.fusion.abstract_registry,
-            &Type::Fn(TArc::new(site_ftype.clone())),
-            &f.env,
-            &f.scope.lexical,
-        );
-        let Type::Fn(private_site) = private_site else {
-            unreachable!("privatizing a function type must produce a function type")
-        };
         // Arg count/kinds are resolution-independent — compare the raw
         // site ftype against the definition directly.
         let same_shape = site_ftype.args.len() == f.typ.args.len()
@@ -773,21 +691,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 .zip(f.typ.args.iter())
                 .all(|(site, definition)| site.kind == definition.kind);
         let instance_ftype = if same_shape {
-            private_site.as_ref().clone()
+            site_ftype.clone()
         } else {
             let definition_ftype = f.typ.reset_tvars();
             definition_ftype.alias_tvars(&mut LPooled::take());
-            let private_definition = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                &Type::Fn(TArc::new(definition_ftype)),
-                &f.env,
-                &f.scope.lexical,
-            );
-            let Type::Fn(private_definition) = private_definition else {
-                unreachable!("privatizing a function type must produce a function type")
-            };
-            private_site.check_contains(&ctx.env, &private_definition)?;
-            private_definition.resolve_tvars()
+            site_ftype.check_contains(&ctx.env, &definition_ftype)?;
+            definition_ftype.resolve_tvars()
         };
         let apply = self.init_prepared_bind(
             ctx,
@@ -812,41 +721,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // is a consistency no-op for them; ⊥ (never) unifies without
         // binding per the open-cell rule.
         if let Some(site_ft) = self.ftype.as_ref() {
-            match site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype) {
-                Ok(()) => {}
-                // A privatized instance rtype (abstract return —
-                // `List`) fails against the site's public view; retry
-                // both sides through the callee def's scope (the
-                // check_instance_type bridge). Still-opaque after the
-                // retry: SKIP the write-back rather than propagate —
-                // an AbstractOpaque escaping here would make
-                // `try_static_resolve` discard the whole static
-                // resolution (a de-fuse; fusecheck caught
-                // list_init_max_wedge losing its region), and skipping
-                // is exactly the pre-write-back state for that site.
-                Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
-                    let site_r = crate::fusion::lowering::privatize_type(
-                        &ctx.fusion.abstract_registry,
-                        &site_ft.rtype,
-                        &f.env,
-                        &f.scope.lexical,
-                    );
-                    let inst_r = crate::fusion::lowering::privatize_type(
-                        &ctx.fusion.abstract_registry,
-                        &instance_ftype.rtype,
-                        &f.env,
-                        &f.scope.lexical,
-                    );
-                    match site_r.check_contains(&ctx.env, &inst_r) {
-                        Ok(()) => {}
-                        Err(e)
-                            if e.downcast_ref::<crate::typ::AbstractOpaque>()
-                                .is_some() => {}
-                        Err(e) => return wrap!(self.fnode, Err(e)),
-                    }
-                }
-                Err(e) => return wrap!(self.fnode, Err(e)),
-            }
+            wrap!(
+                self.fnode,
+                site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
+            )?;
         }
         Ok((apply, instance_ftype))
     }
@@ -1142,16 +1020,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
             return Ok(());
         };
-        if let Err(e) = self.resolve_static(ctx, def) {
-            if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() {
-                if crate::dbgenv::gxdbg_resolve() {
-                    eprintln!("RESOLVE-DISCARD {}: {e:#}", self.spec);
-                }
-                self.discard_static_resolution(ctx);
-                return Ok(());
-            }
-            return Err(e);
-        }
+        self.resolve_static(ctx, def)?;
         // HOF callback pre-materialization: every fn-typed positional arg
         // whose function-valued arguments resolve to known lambdas.
         let ftype = match self.resolved_ftype() {
@@ -1780,7 +1649,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         };
         // Typecheck positional args in order
-        let callee_scope = callee_def_scope(ctx, &self.fnode);
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
             let key = if let FnArgKind::Labeled { name, .. } = &farg.kind {
@@ -1800,7 +1668,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if let Some(n) = arg.node.as_mut() {
                     farg.typ.contains(&ctx.env, n.typ())?;
                     wrap!(n, n.typecheck0(ctx))?;
-                    wrap!(n, check_site_arg(ctx, &callee_scope, &farg.typ, &n.typ()))?;
+                    wrap!(n, farg.typ.check_contains(&ctx.env, &n.typ()))?;
                 }
             }
         }
@@ -1814,7 +1682,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         if let Some(ref mut n) = arg.node {
                             typ.contains(&ctx.env, n.typ())?;
                             wrap!(n, n.typecheck0(ctx))?;
-                            wrap!(n, check_site_arg(ctx, &callee_scope, typ, &n.typ()))?;
+                            wrap!(n, typ.check_contains(&ctx.env, &n.typ()))?;
                         }
                     }
                     None => break,

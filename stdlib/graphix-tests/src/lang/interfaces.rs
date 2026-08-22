@@ -1,8 +1,11 @@
 // Tests for abstract types and interface files (.gxi)
 //
-// Abstract types are types declared in an interface without a concrete definition.
-// The implementation file must provide a concrete definition for each abstract type.
-// Abstract types are opaque - the caller cannot see the concrete type.
+// An abstract type is declared in an interface without a definition
+// and defined in the implementation as `type T = Abstract<rep>` — a
+// NOMINAL type whose values are boxes minted only by the constructor
+// `T(..)`, read through `.0` or the pattern `T(x)` where the definition
+// is visible (`design/nominal_abstract_types.md`). A Rust-backed type
+// declares `type T;` on both sides.
 
 use anyhow::Result;
 use graphix_package_core::run;
@@ -29,9 +32,9 @@ run!(
         val get: fn(t: T) -> i64
     "#,
     "/test/inner.gx" => r#"
-        type T = i64;
-        let make = |x: i64| -> T x;
-        let get = |t: T| -> i64 t
+        type T = Abstract<i64>;
+        let make = |x: i64| -> T T(x);
+        let get = |t: T| -> i64 t.0
     "#);
 
 // Abstract type implemented as a struct
@@ -52,9 +55,9 @@ run!(
         val get_name: fn(h: Handle) -> string
     "#,
     "/test/inner.gx" => r#"
-        type Handle = { value: string };
-        let make = |x: string| -> Handle { value: x };
-        let get_name = |h: Handle| h.value
+        type Handle = Abstract<{ value: string }>;
+        let make = |x: string| -> Handle Handle({ value: x });
+        let get_name = |h: Handle| h.0.value
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Interface without abstract types (regression test - should still work)
@@ -93,11 +96,11 @@ run!(
         val make_b: fn(y: i64) -> B;
         val combine: fn(a: A, b: B) -> i64     "#,
     "/test/inner.gx" => r#"
-        type A = { x: i64 };
-        type B = { y: i64 };
-        let make_a = |x: i64| -> A { x };
-        let make_b = |y: i64| -> B { y };
-        let combine = |a: A, b: B| -> i64 a.x + b.y
+        type A = Abstract<{ x: i64 }>;
+        type B = Abstract<{ y: i64 }>;
+        let make_a = |x: i64| -> A A({ x });
+        let make_b = |y: i64| -> B B({ y });
+        let combine = |a: A, b: B| -> i64 a.0.x + b.0.y
     "#);
 
 // Two modules using same abstract type name with different definitions
@@ -116,18 +119,18 @@ run!(
         val make: fn(x: i64) -> T;
         val get: fn(t: T) -> i64     "#,
     "/test/mod_a.gx" => r#"
-        type T = { value: i64 };
-        let make = |x: i64| -> T { value: x };
-        let get = |t: T| -> i64 t.value
+        type T = Abstract<{ value: i64 }>;
+        let make = |x: i64| -> T T({ value: x });
+        let get = |t: T| -> i64 t.0.value
     "#,
     "/test/mod_b.gxi" => r#"
         type T;
         val make: fn(x: i64) -> T;
         val get: fn(t: T) -> i64     "#,
     "/test/mod_b.gx" => r#"
-        type T = i64;
-        let make = |x: i64| -> T x;
-        let get = |t: T| -> i64 t
+        type T = Abstract<i64>;
+        let make = |x: i64| -> T T(x);
+        let get = |t: T| -> i64 t.0
     "#);
 
 // Abstract type used in exported type definition
@@ -146,9 +149,9 @@ run!(
         val get_first: fn(p: Pair) -> i64
     "#,
     "/test/inner.gx" => r#"
-        type First = i64;
-        let make_pair = |a: i64, b: string| -> Pair { first: a, second: b };
-        let get_first = |p: Pair| -> i64 p.first
+        type First = Abstract<i64>;
+        let make_pair = |a: i64, b: string| -> Pair { first: First(a), second: b };
+        let get_first = |p: Pair| -> i64 p.first.0
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
@@ -174,10 +177,10 @@ run!(
         val get_or_default: fn(opt: Option, default: i64) -> i64
     "#,
     "/test/inner.gx" => r#"
-        type T = { value: i64 };
-        let some = |x: i64| -> Option `Some({ value: x });
+        type T = Abstract<{ value: i64 }>;
+        let some = |x: i64| -> Option `Some(T({ value: x }));
         let get_or_default = |opt: Option, default: i64| -> i64 select opt {
-            `Some(t) => t.value,
+            `Some(t) => t.0.value,
             `None => default
         }
     "#; graphix_package_core::testing::FuseExpect::Jit);
@@ -197,9 +200,9 @@ run!(
         val make_pair: fn(a: i64, b: i64) -> Pair;
         val sum_pair: fn(p: Pair) -> i64     "#,
     "/test/inner.gx" => r#"
-        type Elem = i64;
-        let make_pair = |a: i64, b: i64| -> Pair (a, b);
-        let sum_pair = |p: Pair| -> i64 p.0 + p.1
+        type Elem = Abstract<i64>;
+        let make_pair = |a: i64, b: i64| -> Pair (Elem(a), Elem(b));
+        let sum_pair = |p: Pair| -> i64 p.0.0 + p.1.0
     "#);
 
 // Abstract type in array
@@ -216,9 +219,9 @@ run!(
         val make_array: fn(arr: Array<i64>) -> Array<Elem>;
         val sum_array: fn(arr: Array<Elem>) -> i64     "#,
     "/test/inner.gx" => r#"
-        type Elem = i64;
-        let make_array = |arr: Array<i64>| -> Array<Elem> arr;
-        let sum_array = |arr: Array<Elem>| -> i64 array::fold(arr, 0, |acc, x| acc + x)
+        type Elem = Abstract<i64>;
+        let make_array = |arr: Array<i64>| -> Array<Elem> array::map(arr, |x| Elem(x));
+        let sum_array = |arr: Array<Elem>| -> i64 array::fold(arr, 0, |acc, x| acc + x.0)
     "#);
 
 // =============================================================================
@@ -244,11 +247,11 @@ run!(
         val nil: fn() -> List;
         val sum: fn(list: List) -> i64     "#,
     "/test/inner.gx" => r#"
-        type Elem = i64;
-        let cons = |x: i64, rest: List| -> List `Cons(x, rest);
+        type Elem = Abstract<i64>;
+        let cons = |x: i64, rest: List| -> List `Cons(Elem(x), rest);
         let nil = || -> List `Nil;
         let rec sum = |list: List| -> i64 select list {
-            `Cons(x, rest) => x + sum(rest),
+            `Cons(x, rest) => x.0 + sum(rest),
             `Nil => 0
         }
     "#; graphix_package_core::testing::FuseExpect::Jit);
@@ -279,10 +282,10 @@ run!(
         val get: fn(c: Counter) -> i64;
         val increment: fn(c: &Counter) -> null     "#,
     "/test/inner.gx" => r#"
-        type Counter = i64;
-        let make = |x: i64| -> Counter x;
-        let get = |c: Counter| -> i64 c;
-        let increment = |c: &Counter| -> null { *c <- once(*c) + 1; null }
+        type Counter = Abstract<i64>;
+        let make = |x: i64| -> Counter Counter(x);
+        let get = |c: Counter| -> i64 c.0;
+        let increment = |c: &Counter| -> null { *c <- Counter(once(*c).0 + 1); null }
     "#);
 
 // =============================================================================
@@ -309,9 +312,9 @@ run!(
         val get: fn(t: T) -> i64
     "#,
     "/test/outer/inner.gx" => r#"
-        type T = { v: i64 };
-        let make = |x: i64| -> T { v: x };
-        let get = |t: T| -> i64 t.v
+        type T = Abstract<{ v: i64 }>;
+        let make = |x: i64| -> T T({ v: x });
+        let get = |t: T| -> i64 t.0.v
     "#);
 
 // =============================================================================
@@ -324,9 +327,9 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
     "/test.gx" => r#"
         let source = "
-            type T = i64;
-            let make = |x: i64| -> T x;
-            let double = |t: T| -> i64 t + t
+            type T = Abstract<i64>;
+            let make = |x: i64| -> T T(x);
+            let double = |t: T| -> i64 t.0 + t.0
         ";
         sys::net::publish("/local/dyn_test", source)?;
         let status = mod dyn dynamic {
@@ -396,7 +399,7 @@ run!(
         val make: fn(x: i64) -> T
     "#,
     "/test/inner.gx" => r#"
-        type T = string;
+        type T = Abstract<string>;
         let make = |x: i64| -> i64 x
     "#
 ; graphix_package_core::testing::FuseExpect::None);
@@ -414,8 +417,8 @@ run!(
         val make: fn(x: 'a) -> T<'a>
     "#,
     "/test/inner.gx" => r#"
-        type T<'a> = { val: 'a };
-        let make = |x: 'a| -> T<'a> { val: x }
+        type T<'a> = Abstract<{ val: 'a }>;
+        let make = |x: 'a| -> T<'a> T({ val: x })
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
@@ -437,9 +440,9 @@ run!(
         val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
-        type Box<'a: Number> = { value: 'a };
-        let wrap = |x: 'a| -> Box<'a> { value: x };
-        let unwrap = |b: Box<'a>| -> 'a b.value
+        type Box<'a: Number> = Abstract<{ value: 'a }>;
+        let wrap = |x: 'a| -> Box<'a> Box({ value: x });
+        let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#
 ; graphix_package_core::testing::FuseExpect::Jit);
 
@@ -459,9 +462,9 @@ run!(
         val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
-        type Box<'a: Number> = { value: 'a };
-        let wrap = |x: 'a| -> Box<'a> { value: x };
-        let unwrap = |b: Box<'a>| -> 'a b.value
+        type Box<'a: Number> = Abstract<{ value: 'a }>;
+        let wrap = |x: 'a| -> Box<'a> Box({ value: x });
+        let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
@@ -478,7 +481,7 @@ run!(
         val x: i64
     "#,
     "/test/inner.gx" => r#"
-        type T<'a, 'b> = ('a, 'b);
+        type T<'a, 'b> = Abstract<('a, 'b)>;
         let x = 42
     "#
 ; graphix_package_core::testing::FuseExpect::None);
@@ -497,7 +500,7 @@ run!(
         val get: fn(t: T) -> i64
     "#,
     "/test/inner.gx" => r#"
-        type T = string;
+        type T = Abstract<string>;
         let get = |t: i64| -> i64 t
     "#
 ; graphix_package_core::testing::FuseExpect::None);
@@ -524,9 +527,9 @@ run!(
         val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
-        type Box<'a> = { value: 'a };
-        let wrap = |x: 'a| -> Box<'a> { value: x };
-        let unwrap = |b: Box<'a>| -> 'a b.value
+        type Box<'a> = Abstract<{ value: 'a }>;
+        let wrap = |x: 'a| -> Box<'a> Box({ value: x });
+        let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type instantiated with different concrete types
@@ -548,9 +551,9 @@ run!(
         val unwrap: fn(b: Box<'a>) -> 'a
     "#,
     "/test/inner.gx" => r#"
-        type Box<'a> = { value: 'a };
-        let wrap = |x: 'a| -> Box<'a> { value: x };
-        let unwrap = |b: Box<'a>| -> 'a b.value
+        type Box<'a> = Abstract<{ value: 'a }>;
+        let wrap = |x: 'a| -> Box<'a> Box({ value: x });
+        let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with constraint - use concrete type in interface
@@ -570,9 +573,9 @@ run!(
         val wrap: fn(x: i64) -> IntWrapper;
         val double: fn(w: IntWrapper) -> i64     "#,
     "/test/inner.gx" => r#"
-        type NumWrapper<'a: Number> = 'a;
-        let wrap = |x: i64| -> IntWrapper x;
-        let double = |w: IntWrapper| -> i64 w + w
+        type NumWrapper<'a: Number> = Abstract<'a>;
+        let wrap = |x: i64| -> IntWrapper NumWrapper(x);
+        let double = |w: IntWrapper| -> i64 w.0 + w.0
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type in nested position (Array of Box)
@@ -590,10 +593,10 @@ run!(
         val wrap: fn(x: 'a) -> Box<'a>;
         val sum_boxes: fn(boxes: IntBoxArray) -> i64     "#,
     "/test/inner.gx" => r#"
-        type Box<'a> = { value: 'a };
-        let wrap = |x: 'a| -> Box<'a> { value: x };
+        type Box<'a> = Abstract<{ value: 'a }>;
+        let wrap = |x: 'a| -> Box<'a> Box({ value: x });
         let sum_boxes = |boxes: IntBoxArray| -> i64
-            array::fold(boxes, 0, |acc, b| acc + b.value)
+            array::fold(boxes, 0, |acc, b| acc + b.0.value)
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Parameterized abstract type with two type parameters
@@ -615,10 +618,10 @@ run!(
         val get_second: fn(p: Pair<'a, 'b>) -> 'b
     "#,
     "/test/inner.gx" => r#"
-        type Pair<'a, 'b> = { first: 'a, second: 'b };
-        let make = |a: 'a, b: 'b| -> Pair<'a, 'b> { first: a, second: b };
-        let get_first = |p: Pair<'a, 'b>| -> 'a p.first;
-        let get_second = |p: Pair<'a, 'b>| -> 'b p.second
+        type Pair<'a, 'b> = Abstract<{ first: 'a, second: 'b }>;
+        let make = |a: 'a, b: 'b| -> Pair<'a, 'b> Pair({ first: a, second: b });
+        let get_first = |p: Pair<'a, 'b>| -> 'a p.0.first;
+        let get_second = |p: Pair<'a, 'b>| -> 'b p.0.second
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // =============================================================================
@@ -643,9 +646,9 @@ run!(
         val lookup: fn(m: KeyMap, k: Key) -> string throws Error<ErrChain<`MapKeyError(string)>>
     "#,
     "/test/inner.gx" => r#"
-        type Key = i64;
-        let make_key = |x: i64| -> Key x;
-        let make_map = || -> KeyMap {42 => "found", 99 => "other"};
+        type Key = Abstract<i64>;
+        let make_key = |x: i64| -> Key Key(x);
+        let make_map = || -> KeyMap {Key(42) => "found", Key(99) => "other"};
         let lookup = |m: KeyMap, k: Key| m{k}?
     "#);
 
@@ -667,10 +670,10 @@ run!(
         val unwrap: fn(v: Val) -> i64
     "#,
     "/test/inner.gx" => r#"
-        type Val = { inner: i64 };
-        let make_map = || -> ValMap {"key" => { inner: 42 }};
+        type Val = Abstract<{ inner: i64 }>;
+        let make_map = || -> ValMap {"key" => Val({ inner: 42 })};
         let get = |m: ValMap, k: string| -> Val m{k}?;
-        let unwrap = |v: Val| -> i64 v.inner
+        let unwrap = |v: Val| -> i64 v.0.inner
     "#);
 
 // Abstract types as both Map key and value.
@@ -694,12 +697,12 @@ run!(
         val get_val: fn(v: V) -> i64
     "#,
     "/test/inner.gx" => r#"
-        type K = { name: string };
-        type V = i64;
-        let make_key = |s: string| -> K { name: s };
-        let make_map = |k: K, n: i64| -> KVMap {k => n};
+        type K = Abstract<{ name: string }>;
+        type V = Abstract<i64>;
+        let make_key = |s: string| -> K K({ name: s });
+        let make_map = |k: K, n: i64| -> KVMap {k => V(n)};
         let lookup = |m: KVMap, k: K| -> V m{k}?;
-        let get_val = |v: V| -> i64 v
+        let get_val = |v: V| -> i64 v.0
     "#);
 
 // =============================================================================
@@ -729,7 +732,7 @@ run!(
         val risky: fn(x: i64) -> i64 throws Error<ErrChain<`CustomError(ErrPayload)>>
     "#,
     "/test/inner.gx" => r#"
-        type ErrPayload = { code: i64, msg: string };
+        type ErrPayload = Abstract<{ code: i64, msg: string }>;
         let risky = |x: i64| -> i64 x
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
@@ -760,10 +763,10 @@ run!(
         val get_value: fn(t: T) -> i64 throws Error<ErrChain<`ArrayIndexError(string)>>
     "#,
     "/test/inner.gx" => r#"
-        type T = { value: i64 };
-        let make = |x: i64| -> T { value: x };
+        type T = Abstract<{ value: i64 }>;
+        let make = |x: i64| -> T T({ value: x });
         let get_value = |t: T| -> i64 {
-            let a = [t.value + 41];
+            let a = [t.0.value + 41];
             a[0]?
         }
     "#; graphix_package_core::testing::FuseExpect::Jit);
@@ -792,16 +795,192 @@ run!(
         val make: fn(x: i64) -> T;
         val get: fn(t: T) -> i64     "#,
     "/test/mod_a.gx" => r#"
-        type T = { value: i64 };
-        let make = |x: i64| -> T { value: x };
-        let get = |t: T| -> i64 t.value
+        type T = Abstract<{ value: i64 }>;
+        let make = |x: i64| -> T T({ value: x });
+        let get = |t: T| -> i64 t.0.value
     "#,
     "/test/mod_b.gxi" => r#"
         type T;
         val make: fn(x: i64) -> T;
         val get: fn(t: T) -> i64     "#,
     "/test/mod_b.gx" => r#"
+        type T = Abstract<i64>;
+        let make = |x: i64| -> T T(x);
+        let get = |t: T| -> i64 t.0
+    "#);
+
+// =============================================================================
+// Nominal abstract types: the tag at runtime (design/nominal_abstract_types.md)
+// =============================================================================
+
+// A hidden abstract's constructor, payload and pattern are usable
+// only where the definition is visible: the caller gets a compile
+// error for all three.
+run!(
+    abstract_construct_outside_refused,
+    |v: Result<&Value>| v.is_err(),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::get(inner::T(42))
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val get: fn(t: T) -> i64
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<i64>;
+        let get = |t: T| -> i64 t.0
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    abstract_payload_outside_refused,
+    |v: Result<&Value>| v.is_err(),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::make(42).0
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val make: fn(x: i64) -> T
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<i64>;
+        let make = |x: i64| -> T T(x)
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// A type hidden by the interface must be Abstract<..> (or Rust-backed):
+// hiding a transparent alias is the two-view case itself.
+run!(
+    abstract_hidden_alias_refused,
+    |v: Result<&Value>| v.is_err(),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::get(inner::make(42))
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64
+    "#,
+    "/test/inner.gx" => r#"
         type T = i64;
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// A PUBLIC newtype: the interface exports the body, so anyone can
+// construct and read it — nominal without being hidden.
+run!(
+    abstract_public_newtype,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(43))),
+    "/test.gx" => r#"
+        mod inner;
+        let t = inner::T(42);
+        let result = inner::get(t) + t.0 - 41
+    "#,
+    "/test/inner.gxi" => r#"
+        type T = Abstract<i64>;
+        val get: fn(t: T) -> i64
+    "#,
+    "/test/inner.gx" => r#"
+        let get = |t: T| -> i64 t.0
     "#);
+
+// `let T(x) = v` destructures irrefutably; `select` can nest the
+// payload pattern.
+run!(
+    abstract_pattern_let,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::get(inner::make(42))
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val make: fn(x: i64) -> T;
+        val get: fn(t: T) -> i64
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<{ value: i64 }>;
+        let make = |x: i64| -> T T({ value: x });
+        let get = |t: T| -> i64 { let T({ value }) = t; value }
+    "#);
+
+run!(
+    abstract_pattern_select,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::sign(inner::make(42))
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val make: fn(x: i64) -> T;
+        val sign: fn(t: T) -> i64
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<i64>;
+        let make = |x: i64| -> T T(x);
+        let sign = |t: T| -> i64 select t {
+            T(x) if x > 0 => 1,
+            T(0) => 0,
+            T(_) => -1
+        }
+    "#);
+
+// Two boxed types with the SAME representation are told apart by
+// their tags: `T as _` is a runtime type test, also on a union.
+run!(
+    abstract_type_test_union,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        mod a;
+        mod b;
+        let pick = true;
+        let v: [a::A, b::B] = select pick {
+            true => b::make(1),
+            false => a::make(1)
+        };
+        let result = select v {
+            a::A as _ => 1,
+            b::B as _ => 2
+        }
+    "#,
+    "/test/a.gxi" => r#"
+        type A;
+        val make: fn(x: i64) -> A
+    "#,
+    "/test/a.gx" => r#"
+        type A = Abstract<i64>;
+        let make = |x: i64| -> A A(x)
+    "#,
+    "/test/b.gxi" => r#"
+        type B;
+        val make: fn(x: i64) -> B
+    "#,
+    "/test/b.gx" => r#"
+        type B = Abstract<i64>;
+        let make = |x: i64| -> B B(x)
+    "#
+);
+
+// Equality and printing go through the box: same tag + same payload.
+run!(
+    abstract_equality_and_print,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "true false T(5)"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::show()
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val show: fn() -> string
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<i64>;
+        let show = || -> string "[T(5) == T(5)] [T(5) == T(6)] [T(5)]"
+    "#
+; graphix_package_core::testing::FuseExpect::None);

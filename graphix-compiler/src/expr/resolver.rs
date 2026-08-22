@@ -939,6 +939,10 @@ impl Expr {
                 let args = Arc::from(subexprs!(args));
                 expr!(ExprKind::Variant { tag, args })
             }),
+            ExprKind::Construct { name, arg } => Box::pin(async move {
+                let arg = arg.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::Construct { name, arg: Arc::new(arg) })
+            }),
             ExprKind::Select(SelectExpr { arg, arms }) => Box::pin(async move {
                 let arg =
                     Arc::new(arg.resolve_modules_int(scope, prepend, resolvers).await?);

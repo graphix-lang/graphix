@@ -2,8 +2,8 @@ use super::Sig;
 use crate::{
     expr::{
         ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
-        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefExpr,
-        UseItem, parser,
+        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefBody,
+        TypeDefExpr, UseItem, parser,
     },
     typ::Type,
 };
@@ -208,9 +208,10 @@ impl TypeDefExpr {
 impl fmt::Display for TypeDefExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_name_and_params(f)?;
-        match &self.typ {
-            Type::Abstract { .. } => Ok(()),
-            typ => write!(f, " = {typ}"),
+        match &self.body {
+            TypeDefBody::Abstract(None) => Ok(()),
+            TypeDefBody::Abstract(Some(rep)) => write!(f, " = Abstract<{rep}>"),
+            TypeDefBody::Alias(typ) => write!(f, " = {typ}"),
         }
     }
 }
@@ -218,9 +219,10 @@ impl fmt::Display for TypeDefExpr {
 impl PrettyDisplay for TypeDefExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         self.write_name_and_params(buf)?;
-        match &self.typ {
-            Type::Abstract { .. } => Ok(()),
-            typ => {
+        match &self.body {
+            TypeDefBody::Abstract(None) => Ok(()),
+            TypeDefBody::Abstract(Some(rep)) => write!(buf, " = Abstract<{rep}>"),
+            TypeDefBody::Alias(typ) => {
                 writeln!(buf, " =")?;
                 buf.with_indent(2, |buf| typ.fmt_pretty(buf))
             }
@@ -856,6 +858,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "`{tag}")?;
                 pretty_print_exprs(buf, args, "(", ")", ",")
             }
+            ExprKind::Construct { name, arg } => {
+                write!(buf, "{name}")?;
+                pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",")
+            }
             ExprKind::Struct(st) => st.fmt_pretty(buf),
             ExprKind::Qop(e) => {
                 e.fmt_pretty(buf)?;
@@ -1205,6 +1211,7 @@ impl ExprKind {
                 write!(f, "`{tag}")?;
                 print_exprs(f, args, "(", ")", ", ")
             }
+            ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
             ExprKind::Qop(e) => write!(f, "{}?", e),
             ExprKind::OrNever(e) => write!(f, "{}$", e),

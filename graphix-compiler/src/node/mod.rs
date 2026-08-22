@@ -2,7 +2,7 @@ use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
     env::{Env, ImportEntry},
-    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
+    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath, TypeDefBody},
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_connect_node,
@@ -629,15 +629,15 @@ impl TypeDef {
         scope: &Scope,
         name: &ArcStr,
         params: &Arc<[(TVar, Option<Type>)]>,
-        typ: &Type,
+        body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
-        let typ = typ.scope_refs(&scope.lexical);
         ctx.env
             .deftype(
                 &scope.lexical,
                 name,
                 params.clone(),
-                typ,
+                body,
+                false,
                 None,
                 spec.pos,
                 spec.ori.clone(),

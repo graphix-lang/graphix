@@ -158,7 +158,21 @@ pub struct Decorations {
 pub struct TypeDefExpr {
     pub name: ArcStr,
     pub params: Arc<[(TVar, Option<Type>)]>,
-    pub typ: Type,
+    pub body: TypeDefBody,
+}
+
+/// What a `type` definition says about its name
+/// (`design/nominal_abstract_types.md`).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum TypeDefBody {
+    /// `type T = typ` — a transparent alias of its body
+    Alias(Type),
+    /// `type T = Abstract<rep>` — a nominal type whose values are
+    /// `Value::Abstract` boxes minted only by its constructor `T(..)`;
+    /// `type T;` — the same with no representation in Graphix: either
+    /// an interface hiding a definition, or a Rust-backed type
+    Abstract(Option<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -334,29 +348,81 @@ pub struct SelectExpr {
 pub enum ExprKind {
     NoOp,
     Constant(Value),
-    Module { name: ArcStr, value: ModuleKind },
+    Module {
+        name: ArcStr,
+        value: ModuleKind,
+    },
     ExplicitParens(Arc<Expr>),
-    Do { exprs: Arc<[Expr]> },
-    Use { reexport: bool, names: Arc<[UseItem]> },
+    Do {
+        exprs: Arc<[Expr]>,
+    },
+    Use {
+        reexport: bool,
+        names: Arc<[UseItem]>,
+    },
     Bind(Arc<BindExpr>),
-    Ref { name: ModPath },
-    Connect { name: ModPath, value: Arc<Expr>, deref: bool },
-    StringInterpolate { args: Arc<[Expr]> },
-    StructRef { source: Arc<Expr>, field: ArcStr },
-    TupleRef { source: Arc<Expr>, field: usize },
-    ArrayRef { source: Arc<Expr>, i: Arc<Expr> },
-    ArraySlice { source: Arc<Expr>, start: Option<Arc<Expr>>, end: Option<Arc<Expr>> },
-    MapRef { source: Arc<Expr>, key: Arc<Expr> },
+    Ref {
+        name: ModPath,
+    },
+    Connect {
+        name: ModPath,
+        value: Arc<Expr>,
+        deref: bool,
+    },
+    StringInterpolate {
+        args: Arc<[Expr]>,
+    },
+    StructRef {
+        source: Arc<Expr>,
+        field: ArcStr,
+    },
+    TupleRef {
+        source: Arc<Expr>,
+        field: usize,
+    },
+    ArrayRef {
+        source: Arc<Expr>,
+        i: Arc<Expr>,
+    },
+    ArraySlice {
+        source: Arc<Expr>,
+        start: Option<Arc<Expr>>,
+        end: Option<Arc<Expr>>,
+    },
+    MapRef {
+        source: Arc<Expr>,
+        key: Arc<Expr>,
+    },
     StructWith(StructWithExpr),
     Lambda(Arc<LambdaExpr>),
     TypeDef(TypeDefExpr),
-    TypeCast { expr: Arc<Expr>, typ: Type },
+    TypeCast {
+        expr: Arc<Expr>,
+        typ: Type,
+    },
     Apply(ApplyExpr),
-    Any { args: Arc<[Expr]> },
-    Array { args: Arc<[Expr]> },
-    Map { args: Arc<[(Expr, Expr)]> },
-    Tuple { args: Arc<[Expr]> },
-    Variant { tag: ArcStr, args: Arc<[Expr]> },
+    Any {
+        args: Arc<[Expr]>,
+    },
+    Array {
+        args: Arc<[Expr]>,
+    },
+    Map {
+        args: Arc<[(Expr, Expr)]>,
+    },
+    Tuple {
+        args: Arc<[Expr]>,
+    },
+    Variant {
+        tag: ArcStr,
+        args: Arc<[Expr]>,
+    },
+    /// `T(v)` — the constructor of the abstract type at `name`
+    /// (`design/nominal_abstract_types.md`)
+    Construct {
+        name: ModPath,
+        arg: Arc<Expr>,
+    },
     Struct(StructExpr),
     Select(SelectExpr),
     Qop(Arc<Expr>),
@@ -365,26 +431,85 @@ pub enum ExprKind {
     ByRef(Arc<Expr>),
     Deref(Arc<Expr>),
     Neg(Arc<Expr>),
-    Eq { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Ne { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Lt { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Gt { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Lte { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Gte { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    And { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Or { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Not { expr: Arc<Expr> },
-    Add { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedAdd { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Sub { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedSub { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Mul { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedMul { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Div { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedDiv { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Mod { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedMod { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Sample { lhs: Arc<Expr>, rhs: Arc<Expr> },
+    Eq {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Ne {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Lt {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Gt {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Lte {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Gte {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    And {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Or {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Not {
+        expr: Arc<Expr>,
+    },
+    Add {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedAdd {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Sub {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedSub {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Mul {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedMul {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Div {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedDiv {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Mod {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedMod {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Sample {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
 }
 
 impl ExprKind {
@@ -739,6 +864,7 @@ impl Expr {
             | ExprKind::StringInterpolate { args } => {
                 args.iter().fold(init, |init, e| e.fold(init, f))
             }
+            ExprKind::Construct { name: _, arg } => arg.fold(init, f),
             ExprKind::ArrayRef { source, i } => {
                 let init = source.fold(init, f);
                 i.fold(init, f)

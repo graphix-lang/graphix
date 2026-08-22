@@ -249,7 +249,7 @@ fn bind_elem(
     i_now: ClifValue,
     elem: &HofElem,
 ) -> Result<(BoundElem, Vec<BoundElem>)> {
-    match kernel_abi::abi_kind(cx.registry(), elem.typ) {
+    match kernel_abi::abi_kind(elem.typ) {
         Some(AbiKind::Scalar(prim)) => {
             if !elem.leaves.is_empty() {
                 return Err(anyhow!(
@@ -346,7 +346,7 @@ fn bind_elem(
             cx.b.def_var(disc, d);
             let payload = cx.b.declare_var(types::I64);
             cx.b.def_var(payload, p);
-            let kind = match kernel_abi::abi_kind(cx.registry(), elem.typ) {
+            let kind = match kernel_abi::abi_kind(elem.typ) {
                 Some(AbiKind::Variant) => LocalKind::Variant,
                 Some(AbiKind::Nullable) => LocalKind::Nullable,
                 _ => LocalKind::Value,
@@ -573,7 +573,7 @@ pub fn push_field(
     typ: &Type,
     src: CompositeSource,
 ) -> Result<()> {
-    let helper_name: &str = match kernel_abi::abi_kind(cx.registry(), typ) {
+    let helper_name: &str = match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => match src {
             CompositeSource::Owned => "graphix_value_buf_push_array",
@@ -605,7 +605,7 @@ pub fn push_field(
     // Value-shape fields (Variant/Nullable/DateTime/Duration/Bytes/Map)
     // push both `(disc, payload)` registers; everything else pushes the
     // payload word.
-    if kernel_abi::is_value_shape(cx.registry(), typ) {
+    if kernel_abi::is_value_shape(typ) {
         cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
         cx.b.ins().call(push, &[buf, cv.payload]);
@@ -1050,10 +1050,7 @@ where
 {
     let mut flags = SlotFlags::new(cx);
     flags.set_pass_through();
-    let owns_drop = !matches!(
-        kernel_abi::abi_kind(cx.registry(), elem.typ),
-        Some(AbiKind::Scalar(_))
-    );
+    let owns_drop = !matches!(kernel_abi::abi_kind(elem.typ), Some(AbiKind::Scalar(_)));
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     flags.set_len(len);
@@ -1184,7 +1181,7 @@ where
     // where the arm assumed T (garbage scalar bits, an `Arc<Value>`
     // misread as ArcStr). The interpreted finish clones the Value
     // whatever it runtime-is — push it AS a value, bit-for-bit.
-    match kernel_abi::abi_kind(cx.registry(), out_elem) {
+    match kernel_abi::abi_kind(out_elem) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -1320,7 +1317,6 @@ where
 /// callers node-walk. Empty binds (single-name pattern) is trivially
 /// `Some(empty)`.
 pub fn elem_leaves(
-    reg: &kernel_abi::AbstractRegistry,
     in_elem: &Type,
     elem_binds: &[(crate::BindId, usize)],
 ) -> Option<Vec<(crate::BindId, usize, LeafShape)>> {
@@ -1332,7 +1328,7 @@ pub fn elem_leaves(
     elem_binds
         .iter()
         .map(|(id, i)| {
-            let shape = match kernel_abi::abi_kind(reg, ts.get(*i)?) {
+            let shape = match kernel_abi::abi_kind(ts.get(*i)?) {
                 Some(AbiKind::Scalar(p)) => LeafShape::Scalar(p),
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                     LeafShape::Composite
