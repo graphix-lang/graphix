@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -237,8 +237,8 @@ val bar_chart: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::barchart;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
 
 let bar1 = bar(
     #style: &amp;style(#fg: `Cyan),
@@ -250,10 +250,10 @@ bar_chart(&amp;[bar_group(#label: line("Q1"), [bar1])])
 </code></pre>
 <p><img src="./media/barchart_basic.png" alt="Basic Bar Chart"></p>
 <h3 id="grouped-bars-with-dynamic-data"><a class="header" href="#grouped-bars-with-dynamic-data">Grouped Bars with Dynamic Data</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::barchart;
-use tui::block;
-use rand;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
+use tui::block::{self, *};
+use rand::rand;
 
 let clock = sys::time::timer(duration:0.7s, true);
 
@@ -281,8 +281,8 @@ block(#border: &amp;`All, #title: &amp;line("Resource Usage"), &amp;chart)
 </code></pre>
 <p><img src="./media/barchart_grouped.png" alt="Grouped Bar Chart"></p>
 <h3 id="color-coded-values"><a class="header" href="#color-coded-values">Color-coded Values</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::barchart;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
 
 let make_colored_bar = |label, value| {
     let color = select value {

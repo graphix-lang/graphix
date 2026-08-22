@@ -52,7 +52,7 @@ impl GuiTestHarness {
     ///
     /// `code` is module-level graphix code. The last binding should be
     /// named `result` and evaluate to a Widget value.
-    /// Example: `"use gui; let result = gui::text(content: &\"hello\")"`.
+    /// Example: `"use gui::*; let result = gui::text(content: &\"hello\")"`.
     async fn new(code: &str) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel(100);
         let tbl = AHashMap::from_iter([(

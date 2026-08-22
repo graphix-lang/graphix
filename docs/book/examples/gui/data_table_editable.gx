@@ -1,9 +1,8 @@
-use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use sys;
-use sys::net;
+use gui::window;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::net::Table;
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes

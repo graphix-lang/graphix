@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::text_editor;
-use gui::markdown;
-use gui::column;
+use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::text_editor::{self, *};
+use gui::markdown::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let content = r"# Markdown Demo

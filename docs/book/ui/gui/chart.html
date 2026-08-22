@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -424,12 +424,12 @@ val chart: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="multiple-datasets"><a class="header" href="#multiple-datasets">Multiple Datasets</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
-use gui::row;
-use gui::slider;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::slider::{self, *};
 mod icon;
 
 let rate = 0.;
@@ -475,10 +475,10 @@ let col = column(
 </code></pre>
 <p><img src="./media/chart.gif" alt="Chart"></p>
 <h3 id="bar-chart"><a class="header" href="#bar-chart">Bar Chart</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let data = [
@@ -518,10 +518,10 @@ let col = column(
 </code></pre>
 <p><img src="./media/chart_bar.png" alt="Bar Chart"></p>
 <h3 id="candlestick"><a class="header" href="#candlestick">Candlestick</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let dark_bg = color(#r: 0.1, #g: 0.1, #b: 0.15)$;
@@ -598,10 +598,10 @@ let col = column(
 </code></pre>
 <p><img src="./media/chart_candlestick.png" alt="Candle Chart"></p>
 <h3 id="error-bars"><a class="header" href="#error-bars">Error Bars</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let clock = sys::time::timer(duration:1.s, true);
@@ -650,10 +650,10 @@ let col = column(
 </code></pre>
 <p><img src="./media/chart_error_bars.png" alt="Chart With Error Bars"></p>
 <h3 id="pie-chart"><a class="header" href="#pie-chart">Pie Chart</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let data = [
@@ -688,10 +688,10 @@ let col = column(
 </code></pre>
 <p><img src="./media/chart_pie.png" alt="Pie Chart"></p>
 <h3 id="3d-surface"><a class="header" href="#3d-surface">3D Surface</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let surface_data = [
@@ -730,10 +730,10 @@ let col = column(
 </code></pre>
 <p><img src="./media/chart_3d.png" alt="3d Chart"></p>
 <h3 id="styling"><a class="header" href="#styling">Styling</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::chart;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let clock = sys::time::timer(duration:0.5s, true);

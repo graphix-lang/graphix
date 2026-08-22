@@ -378,7 +378,13 @@ impl Ref {
         top_id: ExprId,
         name: &ModPath,
     ) -> Result<Node<R, E>> {
-        match ctx.env.lookup_bind(&scope.lexical, name) {
+        let resolved = match ctx.env.lookup_bind(&scope.lexical, name) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(e.context(expr::ErrorContext(spec.clone())));
+            }
+        };
+        match resolved {
             None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
                 let bind_id = bind.id;

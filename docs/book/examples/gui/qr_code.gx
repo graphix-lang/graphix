@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::text_input;
-use gui::qr_code;
-use gui::column;
+use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::qr_code::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let url = "https://graphix-lang.github.io/graphix";

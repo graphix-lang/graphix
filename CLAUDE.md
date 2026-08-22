@@ -1393,13 +1393,41 @@ suspend/resume for privileged `sudo`/`$EDITOR` handoff still open
 question pump + a live harness-driven connect round trip landed
 2026-08-21 (netidx b1447c60; tui/mod.gx ~360 lines is the largest
 single `.gx` yet; milestone row: 909 lines, reg 417ms / pump call
-site 593ms, dev build). Open graphix findings from that slice (see
-the findings log): def-site/use-site TYPE-name resolution asymmetry
-(consumer-side instance elaboration sees neither the defining
-module's `use` aliases nor its private types — the def site accepts
-spellings the use site can't resolve), slice patterns carry no
+site 593ms, dev build). Finding 1 from that slice (def-site/use-site
+TYPE-name resolution asymmetry) triggered THE MODULE SYSTEM
+TRANSITION (below) and is FIXED — the package migrated to the use
+system 2026-08-22 (netidx 01e24e07), all 19 tests green. Still open
+from that slice (see the findings log): slice patterns carry no
 select-exhaustiveness credit (and the refusal renders the empty set
 type as `[]`), and reserved-word parse diagnostics at package scale
 (position lands on the enclosing statement, cause buried in the
 combine merge). Measure `--check` time at every size milestone; the
 typechecker-must-be-instant rule applies.
+
+## The module system (open → use, 2026-08-22)
+
+Graphix uses Rust-2018-style imports (`design/module_system.md`,
+built on branch `module-system`): every name arrives by an explicit
+declaration, an explicit `use` (renames `as`, globs `*`, groups,
+`{self, *}`), or one of the two preludes (core's root items;
+installed package NAMES as path roots). Paths lead with a package
+name or `self`/`super`/`package` — in expression AND type positions.
+Modules see nothing of their parent implicitly (`use super::…`);
+`mod`/`use` position carries no visibility meaning (headers passes
+pre-register); a gxi `use` is a private import shared with the impl,
+NOT a re-export (`pub use` is reserved, unbuilt). Resolution:
+lexical chain to the module root → imports → globs (two providers of
+a used name error at first use) → package prelude → core prelude;
+declarations shadow imports, imports shadow globs. The engine is
+`Env.names` — per-scope import tables in a GLOBAL registry keyed by
+scope path (exempt from `restore_lexical_env`), which is what lets
+deferred/instance-side resolution consult the DEFINING module's
+table (the finding-1 fix; fixtures `finding1_*` in
+graphix-tests/src/lang/modules.rs). Block scopes carry `#`-marked
+components (`#do`/`#fn`/`#sel`…) so `mod_root` strips them
+structurally. A dynamic module's `source` expression compiles in the
+ENCLOSING scope (loader-side code); the sig binds under the module.
+`use` compiles to Nop — imports are compile-time state, not graph
+nodes. REPL re-`use` shadows like re-`let` (`CFlag::ReplaceImports`).
+The widget-module `{self, *}` idiom (module and main function share a
+name) is the one blessed glob spelling in exemplar code.

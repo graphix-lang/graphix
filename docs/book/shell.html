@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -468,22 +468,15 @@ GRAPHIX_MODPATH=netidx:/shared/graphix graphix myprogram.gx
 </code></pre>
 <h3 id="the-init-module"><a class="header" href="#the-init-module">The Init Module</a></h3>
 <p>In REPL mode only, the shell automatically tries to load a module named <code>init</code>. If found, it’s loaded before the REPL starts. If not found, the shell continues silently.</p>
-<p>Create an <code>init.gx</code> file in your init directory to:</p>
-<ul>
-<li>Define commonly used utilities</li>
-<li>Set up default imports</li>
-</ul>
+<p>Create an <code>init.gx</code> file in your init directory to define commonly
+used utilities.</p>
 <p>Example <code>~/.local/share/graphix/init.gx</code>:</p>
-<pre><code class="language-graphix">// Commonly used stdlib modules
-use sys::time;
-use str;
-use array;
-
-// Personal utilities
-let debug = |x| { print("DEBUG: [x]"); x };
+<pre><code class="language-graphix">let debug = |x| { print("DEBUG: [x]"); x };
 let clear = || print("\x1b[2J\x1b[H");
 </code></pre>
-<p>Now these are available immediately in any REPL session.</p>
+<p>The shell loads this as the module <code>init</code>, so in any REPL session the
+utilities are available as <code>init::debug</code>, <code>init::clear</code>, etc. — or
+bare after a <code>use init::*</code>.</p>
 <h2 id="command-line-options"><a class="header" href="#command-line-options">Command-Line Options</a></h2>
 <p>The <code>graphix</code> command supports several options for controlling its behavior.</p>
 <h3 id="netidx-configuration"><a class="header" href="#netidx-configuration">Netidx Configuration</a></h3>

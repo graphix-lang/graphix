@@ -1,7 +1,7 @@
-use tui;
-use tui::layout;
-use tui::block;
-use tui::text;
+use tui::line;
+use tui::layout::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let content1 = text(&"Sidebar content");
 let content2 = text(&"Main content");

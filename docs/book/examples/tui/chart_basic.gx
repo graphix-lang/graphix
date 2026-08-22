@@ -1,5 +1,5 @@
-use tui;
-use tui::chart;
+use tui::style;
+use tui::chart::{self, *};
 
 let data: Array<(f64, f64)> = [(0.0, 0.0), (1.0, 1.0), (2.0, 4.0), (3.0, 9.0)];
 

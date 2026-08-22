@@ -1,3 +1,4 @@
+use super::{Alignment, Line, size, Size, Style, style, Tui};
 type Border = [
   `Top,
   `Right,

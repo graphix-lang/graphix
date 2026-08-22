@@ -262,13 +262,14 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
                 val.downcast_ref::<LambdaDef<R, E>>().map(|d| {
                     // `LambdaDef.scope` is the def-SITE scope; the
                     // interp compiles defaults and inits the builtin
-                    // under the lambda BODY's scope, one `fn{id}`
-                    // level deeper (node/lambda.rs `scope.append(
-                    // &format_compact!("fn{}", id.0))`).
-                    let body_lex =
-                        ModPath(d.scope.lexical.append(
-                            compact_str::format_compact!("fn{}", d.id.0).as_str(),
-                        ));
+                    // under the lambda BODY's scope, one block level
+                    // deeper (node/lambda.rs
+                    // `scope.append_block("fn", id.0)`).
+                    let body_lex = ModPath(
+                        d.scope
+                            .lexical
+                            .append(crate::block_component("fn", d.id.0).as_str()),
+                    );
                     (d.env.clone(), body_lex)
                 })
             });

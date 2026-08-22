@@ -1,3 +1,4 @@
+use super::{Span, Style, style, Tui};
 type Gauge = {
   gauge_style: &[Style, null],
   label: &[Span, null],

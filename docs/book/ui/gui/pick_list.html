@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -198,10 +198,10 @@
 <li><strong>positional <code>&amp;Array&lt;string&gt;</code></strong> – Reference to the list of available options.</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::pick_list;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::pick_list::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let language: [string, null] = null;

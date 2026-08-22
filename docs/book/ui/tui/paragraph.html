@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -193,18 +193,17 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::paragraph::{self, *};
 
 paragraph(&amp;"This is a simple paragraph. It will automatically wrap to fit the available width.")
 </code></pre>
 <p><img src="./media/paragraph_basic.png" alt="Basic Paragraph"></p>
 <h3 id="scrollable-content"><a class="header" href="#scrollable-content">Scrollable Content</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::line;
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let long_text = "I have got a lovely bunch of coconuts. Very long text continues here. More text. Even more text. This is a very long paragraph that will need scrolling to see all of it.";
 let scroll_y = 0;
@@ -242,11 +241,9 @@ input_handler(
 <p><img src="./media/paragraph_scrollable.gif" alt="Scrollable Paragraph"></p>
 <h3 id="live-log-viewer"><a class="header" href="#live-log-viewer">Live Log Viewer</a></h3>
 <p>Display real-time updating content:</p>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
-use tui::text;
-use sys;
-use sys::net;
+<pre><code class="language-graphix">use tui::line;
+use tui::paragraph::{self, *};
+use tui::text::{self, *};
 use sys::time;
 
 // Self-contained: publish a simulated log entry every second, then
@@ -278,9 +275,9 @@ paragraph(&amp;log_entries)
 </code></pre>
 <p><img src="./media/paragraph_log_viewer.gif" alt="Log Viewer"></p>
 <h3 id="centered-message"><a class="header" href="#centered-message">Centered Message</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::paragraph;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::paragraph::{self, *};
+use tui::text::{self, *};
 
 paragraph(
     #alignment: &amp;`Center,

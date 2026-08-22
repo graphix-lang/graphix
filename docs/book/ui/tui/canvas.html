@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -252,8 +252,7 @@ val canvas: fn(
 </code></pre>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
 
 let line = `Line({color: `Red, x1: 0.0, y1: 0.0, x2: 10.0, y2: 5.0});
 let circle = `Circle({color: `Blue, x: 5.0, y: 5.0, radius: 2.0});
@@ -266,8 +265,7 @@ canvas(
 </code></pre>
 <p><img src="./media/canvas_basic.png" alt="Basic Canvas"></p>
 <h3 id="function-plotting"><a class="header" href="#function-plotting">Function Plotting</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
 
 let coords = [
     (0.0, 0.0), (0.5, 0.48), (1.0, 0.84), (1.5, 1.0),
@@ -285,9 +283,8 @@ canvas(
 </code></pre>
 <p><img src="./media/canvas_plot.png" alt="Scatter Plot"></p>
 <h3 id="network-diagram"><a class="header" href="#network-diagram">Network Diagram</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
-use tui::text;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
+use tui::text::{self, *};
 
 let circle1 = `Circle({color: `Blue, x: 2.0, y: 5.0, radius: 0.5});
 let circle2 = `Circle({color: `Blue, x: 8.0, y: 5.0, radius: 0.5});
@@ -307,8 +304,7 @@ canvas(
 </code></pre>
 <p><img src="./media/canvas_network.png" alt="Network Diagram"></p>
 <h3 id="animated-graphics"><a class="header" href="#animated-graphics">Animated Graphics</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::canvas;
+<pre><code class="language-graphix">use tui::canvas::{self, *};
 
 let x = cast&lt;f64&gt;(count(sys::time::timer(0.1, true)))$ * 0.1 % 10.;
 

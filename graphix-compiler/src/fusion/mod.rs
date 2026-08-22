@@ -674,7 +674,6 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::Lambda(_) => {}
         NodeView::Ref(_)
         | NodeView::Constant(_)
-        | NodeView::Use(_)
         | NodeView::TypeDef(_)
         | NodeView::Nop(_) => {}
         NodeView::FusedKernel(_) => {}

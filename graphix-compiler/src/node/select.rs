@@ -10,7 +10,6 @@ use crate::{
     wrap,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use netidx_value::Value;
@@ -113,7 +112,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         let arms = arms
             .iter()
             .map(|(pat, spec)| {
-                let scope = scope.append(&format_compact!("sel{}", SelectId::new().0));
+                let scope = scope.append_block("sel", SelectId::new().0);
                 let pat = PatternNode::compile(
                     ctx,
                     flags,

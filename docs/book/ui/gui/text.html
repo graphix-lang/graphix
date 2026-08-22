@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -207,9 +207,9 @@
 <p>The positional argument is a reference to the string to display. Because it is a reference, the text updates reactively when the underlying value changes.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="styling-and-alignment"><a class="header" href="#styling-and-alignment">Styling and Alignment</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, style, Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 [&amp;window(

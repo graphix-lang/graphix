@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -201,10 +201,10 @@ val window: fn(
 <p>The final expression of your program should be an <code>Array&lt;&amp;Window&gt;</code> – the shell sees this type and launches the GUI runtime.</p>
 <h2 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h2>
 <p>Here is a minimal GUI program that creates a window with text and a button:</p>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::button;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::button::{self, *};
 mod icon;
 
 [&amp;window(
@@ -249,10 +249,10 @@ text_input(#on_input: |v| name &lt;- v, #placeholder: &amp;"Type here...", &amp;
 <p>The <code>&lt;-</code> connect operator schedules <code>name</code> to update on the next cycle, and because the text input holds a reference to <code>name</code>, it automatically reflects the new value.</p>
 <h2 id="theming"><a class="header" href="#theming">Theming</a></h2>
 <p>Every window accepts a <code>#theme</code> parameter that controls its visual appearance. Graphix ships with 22 built-in themes plus support for fully custom palettes and stylesheets:</p>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::column;
-use gui::container;
+<pre><code class="language-graphix">use gui::{Theme, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
 mod icon;
 
 [&amp;window(

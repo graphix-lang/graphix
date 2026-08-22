@@ -70,7 +70,7 @@ macro_rules! watch_test {
 
             // Start watching
             let code = format!(
-                r#"{{ use sys::fs::watch; let w = create(null)?; path(watch(#interest: {}, w, "{}")?) }}"#,
+                r#"{{ use sys::fs::watch::{{self, *}}; let w = create(null)?; path(watch(#interest: {}, w, "{}")?) }}"#,
                 $interest, escape_path(watch_path.display())
             );
 
@@ -405,7 +405,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     // Watch two files with a shared watcher, flatten via path()
     let code = format!(
         r#"{{
-  use sys::fs::watch;
+  use sys::fs::watch::{{self, *}};
   let w = create(null)?;
   let h1 = watch(#interest: [`Established, `Create], w, "{file1}")?;
   let h2 = watch(#interest: [`Established, `Create], w, "{file2}")?;
@@ -605,5 +605,5 @@ watch_test! {
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     test_watch_create_with_params,
-    r#"{ use sys::fs::watch; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,
+    r#"{ use sys::fs::watch::{self, *}; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }; graphix_package_core::testing::FuseExpect::None);

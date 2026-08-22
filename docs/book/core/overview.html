@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -184,7 +184,7 @@
 <p>In Graphix, you create bindings with <code>let</code>. Unlike variables in other languages, these bindings can update over time—they’re more like pipes that different values flow through.</p>
 <p><strong><a href="./let_binds.html">Let Binds</a></strong> explains how to create bindings, how shadowing works, and why every binding in Graphix is potentially reactive. When you write <code>let x = 42</code>, you’re not just storing a value—you’re creating a node in the dataflow graph.</p>
 <p><strong><a href="./block.html">Blocks</a></strong> shows how to group expressions with <code>{...}</code> to create scopes, hide intermediate bindings, and build up complex expressions. Blocks are expressions too—they evaluate to their last value.</p>
-<p><strong><a href="./use.html">Use</a></strong> lets you bring module names into scope so you can write <code>map(arr, f)</code> instead of <code>array::map(arr, f)</code>. Simple, but essential as your programs grow.</p>
+<p><strong><a href="./use.html">Use</a></strong> imports names into scope so you can write <code>map(arr, f)</code> instead of <code>array::map(arr, f)</code>. Simple, but essential as your programs grow.</p>
 <h2 id="connect-the-heart-of-reactivity"><a class="header" href="#connect-the-heart-of-reactivity">Connect: The Heart of Reactivity</a></h2>
 <p>This is where Graphix becomes special. The <code>&lt;-</code> operator (connect) is the only way to create cycles in your dataflow graph, and it’s the key to writing reactive programs and loops.</p>
 <p><strong><a href="./connect.html">Connect</a></strong> is the most important section in this chapter. When you write:</p>

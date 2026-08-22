@@ -1,9 +1,9 @@
-use gui;
-use gui::data_table;
-use gui::slider;
-use gui::column;
-use gui::text;
-use sys;
+use gui::window;
+use gui::data_table::{self, *};
+use gui::slider::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::{net, time};
 mod icon;
 
 let rv = {

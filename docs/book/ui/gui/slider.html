@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -245,11 +245,11 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="slider--progress-bar"><a class="header" href="#slider--progress-bar">Slider &amp; Progress Bar</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::slider;
-use gui::progress_bar;
-use gui::column;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::slider::{self, *};
+use gui::progress_bar::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let volume = 50.0;
@@ -271,11 +271,11 @@ let col = column(
 </code></pre>
 <p><img src="./media/slider.gif" alt="Slider"></p>
 <h3 id="vertical-slider-1"><a class="header" href="#vertical-slider-1">Vertical Slider</a></h3>
-<pre><code class="language-graphix">use gui;
-use gui::text;
-use gui::vertical_slider;
-use gui::column;
-use gui::row;
+<pre><code class="language-graphix">use gui::window;
+use gui::text::{self, *};
+use gui::vertical_slider::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
 mod icon;
 
 let value = 50.0;

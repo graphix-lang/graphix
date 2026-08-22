@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::combo_box;
-use gui::column;
+use gui::window;
+use gui::text::{self, *};
+use gui::combo_box::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let selected: [string, null] = null;

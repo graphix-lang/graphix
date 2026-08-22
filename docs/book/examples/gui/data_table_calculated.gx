@@ -1,10 +1,10 @@
-use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use str;
-use sys;
-use sys::net;
+use gui::{row, window};
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::time;
+use sys::net::publish;
+use gui::data_table::Table;
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its

@@ -26,6 +26,44 @@ pub(super) struct GenModule {
     pub stmts: Vec<String>,
 }
 
+/// A sibling-module public (`m<j>::…`) no longer resolves bare inside a
+/// later module — every name arrives by an explicit road
+/// (design/module_system.md). One road is drawn per module: 0 keeps the
+/// plain spelling and emits a `use super::{m0, …};` header, 1 rewrites
+/// references to `super::m<j>::…` inline, 2 to `package::m<j>::…`.
+fn sibling_qualified(n: &str) -> bool {
+    n.strip_prefix('m')
+        .and_then(|r| r.split_once("::"))
+        .is_some_and(|(digits, _)| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Walk the abstract-type MODULE fields nested in a vocabulary entry's
+/// type. Roads 1/2 prefix them (`m0` → `super::m0`) so `m0::T` renders
+/// with its road inside the module; registration back into MAIN strips
+/// the prefix so the main vocabulary stays canonically plain.
+fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
+    match t {
+        GenType::Abstract { module } => f(module),
+        GenType::Tuple(ts) => ts.iter_mut().for_each(|t| map_abstract(t, f)),
+        GenType::Array(t) | GenType::Map(t) | GenType::Nullable(t) | GenType::Ref(t) => {
+            map_abstract(t, f)
+        }
+        GenType::Struct(fs) => fs.iter_mut().for_each(|(_, t)| map_abstract(t, f)),
+        GenType::Variant(vs) => vs
+            .iter_mut()
+            .for_each(|(_, ts)| ts.iter_mut().for_each(|t| map_abstract(t, f))),
+        GenType::Fn { params, ret } => {
+            params.iter_mut().for_each(|t| map_abstract(t, f));
+            map_abstract(ret, f)
+        }
+        GenType::Num(_)
+        | GenType::Bool
+        | GenType::Str
+        | GenType::PolyFn { .. }
+        | GenType::Opaque => (),
+    }
+}
+
 /// Emit one module. Public lambdas are registered in `ctx` under
 /// `m{idx}::name`; an abstract-type round-trip (when present) binds an
 /// i64 in the main scope via `stmts`.
@@ -55,12 +93,37 @@ pub(super) fn gen_module(
     let has_gxi = !chance(rng, cfg.p_bare_module);
     let mut gx = String::new();
     let mut gxi = String::new();
+    // The cross-module ROAD (see `sibling_qualified`): drawn per
+    // module. Road 0 keeps the plain `m<j>::` spelling and emits a
+    // `use super::{…}` header (into the gxi when present — its imports
+    // apply to the impl); roads 1/2 rewrite the retained vocabulary to
+    // the inline spellings.
+    let road = if idx > 0 { rng.below(3) } else { 0 };
+    if road != 0 {
+        let prefix = if road == 1 { "super" } else { "package" };
+        for (n, t) in inner.vars.iter_mut() {
+            if sibling_qualified(n) {
+                *n = format!("{prefix}::{n}");
+            }
+            map_abstract(t, &|module| {
+                if !module.contains("::") {
+                    *module = format!("{prefix}::{module}");
+                }
+            });
+        }
+        stats.use_vocab = true;
+    } else if idx > 0 {
+        let list: Vec<String> = (0..idx).map(|j| format!("m{j}")).collect();
+        let header = format!("use super::{{{}}};\n", list.join(", "));
+        if has_gxi { gxi.push_str(&header) } else { gx.push_str(&header) }
+        stats.use_vocab = true;
+    }
     let mut public: Vec<(String, GenType)> = Vec::new();
     // Optional exported CONSTANT — a non-fn `val`. Emitted FIRST so
     // later fn bodies can reference it organically; registered in MAIN
     // under its path. A cross-region read of exactly this shape found
     // the dead-eliminated-module deadlock (2026-07-08).
-    if chance(rng, 0.5) {
+    let konst = if chance(rng, 0.5) {
         let k = format!("k{idx}");
         let kty = if chance(rng, 0.3) {
             types::random_type(rng, 1)
@@ -71,9 +134,12 @@ pub(super) fn gen_module(
         gx.push_str(&format!("let {k}: {t} = {kv};\n", t = kty.render()));
         gxi.push_str(&format!("val {k}: {};\n", kty.render()));
         inner.push(k.clone(), kty.clone());
-        ctx.push(format!("{mname}::{k}"), kty);
+        ctx.push(format!("{mname}::{k}"), kty.clone());
         stats.iface_const = true;
-    }
+        Some((k, kty))
+    } else {
+        None
+    };
     // Optional private helper: used by the first public lambda, absent
     // from the interface — the visibility surface.
     let helper = if chance(rng, 0.5) {
@@ -273,9 +339,52 @@ pub(super) fn gen_module(
     }
     // Register the public lambdas in MAIN under their absolute paths.
     // With the bare-module variant (no .gxi) everything is public —
-    // same registrations, no interface to constrain the types.
-    for (fname, fty) in public {
-        ctx.push(format!("{mname}::{fname}"), fty);
+    // same registrations, no interface to constrain the types. Road
+    // prefixes picked up from cross-pinned return types are stripped —
+    // MAIN's vocabulary stays canonically plain.
+    let plain = |fty: &GenType| {
+        let mut fty = fty.clone();
+        map_abstract(&mut fty, &|module| {
+            for p in ["super::", "package::"] {
+                if let Some(r) = module.strip_prefix(p) {
+                    *module = r.to_string();
+                }
+            }
+        });
+        fty
+    };
+    for (fname, fty) in &public {
+        ctx.push(format!("{mname}::{fname}"), plain(fty));
+    }
+    // Main-scope import vocabulary: block-scoped `use` forms over this
+    // module's publics — a plain item import (the exported constant's
+    // name is unique per module), a RENAME (`f0` collides across
+    // modules; `as` is the collision-free spelling), and for the first
+    // module a GLOB registering its publics bare.
+    if chance(rng, 0.4) {
+        stats.use_vocab = true;
+        match rng.below(3) {
+            0 if konst.is_some() => {
+                let (k, kty) = konst.clone().unwrap();
+                stmts.push(format!("use {mname}::{k}"));
+                ctx.push(k, kty);
+            }
+            1 if idx == 0 => {
+                stmts.push(format!("use {mname}::*"));
+                for (fname, fty) in &public {
+                    ctx.push(fname.clone(), plain(fty));
+                }
+                if let Some((k, kty)) = &konst {
+                    ctx.push(k.clone(), kty.clone());
+                }
+            }
+            _ => {
+                let (fname, fty) = &public[rng.below(public.len())];
+                let alias = ctx.fresh();
+                stmts.push(format!("use {mname}::{fname} as {alias}"));
+                ctx.push(alias, plain(fty));
+            }
+        }
     }
     // Trailing EXPRESSION statement — the module shape whose fused
     // dead-elim/env-pop silently killed exports

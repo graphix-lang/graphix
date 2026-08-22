@@ -49,6 +49,8 @@ type FontWeight = [
   `Thin, `ExtraLight, `Light, `Normal, `Medium,
   `SemiBold, `Bold, `ExtraBold, `Black
 ];
+use self::style::{Palette, StyleSheet};
+
 type FontStyle = [`Normal, `Italic, `Oblique];
 type Font = { family: FontFamily, weight: FontWeight, style: FontStyle };
 

@@ -1,12 +1,10 @@
-use gui;
-use gui::data_table;
-use gui::column;
-use gui::text;
-use sys;
-use sys::net;
+use gui::data_table::{self, *};
+use gui::column::{self, *};
+use gui::text::{self, *};
+use sys::net::{self, Table};
 use sys::time;
-use array;
-use rand;
+use rand::rand;
+use gui::window;
 mod icon;
 
 // Enough rows and columns that both the vertical and horizontal

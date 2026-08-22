@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -224,11 +224,11 @@ module, they are required to be defined in order, sandbox, sig, and source,</p>
 <li><code>sandbox unrestricted;</code> no sandboxing, the dynamic module can access
 anything in it’s scope</li>
 <li><code>sandbox whitelist [item0, item1, ...]</code> the dynamic module may access ONLY
-the names explicitly listed. e.g. <code>sandbox whitelist [core::array];</code> would
-allow the dynamic module to access only <code>core::array</code> and nothing else.</li>
+the names explicitly listed. e.g. <code>sandbox whitelist [core, array];</code> would
+allow the dynamic module to access only <code>core</code> and <code>array</code> and nothing else.</li>
 <li><code>sandbox blacklist [item0, item1, ...]</code> the dynamic module may access
-anything except the names listed. <code>sandbox blacklist [super::secret::module];</code> everything except super secret module would be
-accessible</li>
+anything except the names listed. <code>sandbox blacklist [sys];</code> everything
+except the <code>sys</code> package would be accessible</li>
 </ul>
 </li>
 <li>a <code>sig</code> statement is the type signature of the module. This is a special
@@ -248,7 +248,9 @@ module must have a sig. <code>mod m: sig { ... }</code> defines a sub module.</l
 </ul>
 </li>
 <li>a <code>source</code> statement defines where the source code for the dynamic module will
-come from. It’s type must be a string.</li>
+come from. It’s type must be a string. The source expression is part of the
+loading program, so it resolves in the enclosing scope — referencing <code>path</code>
+above works even though it appears inside the <code>mod foo dynamic</code> block.</li>
 </ul>
 <p>The <code>mod foo dynamic ...</code> expression returns a value of type,</p>
 <p><code>[null, Error&lt;`DynamicLoadError(string)&gt;]</code></p>

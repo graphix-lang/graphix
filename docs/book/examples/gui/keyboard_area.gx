@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::keyboard_area;
-use gui::container;
-use gui::column;
+use gui::window;
+use gui::text::{self, *};
+use gui::keyboard_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let last_key = "None";

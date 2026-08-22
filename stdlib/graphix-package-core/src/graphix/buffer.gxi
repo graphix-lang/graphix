@@ -1,3 +1,4 @@
+use super::Result;
 /// Convert bytes to a UTF-8 string.
 val to_string: fn(b: bytes) -> Result<string, `EncodingError(string)>;
 

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -210,9 +210,9 @@ val scrollbar: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::scrollbar;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::text;
+use tui::scrollbar::{self, *};
+use tui::paragraph::{self, *};
 
 let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
 let position = 0;
@@ -228,12 +228,12 @@ scrollbar(
 </code></pre>
 <p><img src="./media/scroll_basic.png" alt="Basic Scrollbar"></p>
 <h3 id="scrollable-paragraph"><a class="header" href="#scrollable-paragraph">Scrollable Paragraph</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::scrollbar;
-use tui::paragraph;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::line;
+use tui::scrollbar::{self, *};
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let long_text = "Very long text content...";
 let position = 0;
@@ -282,10 +282,10 @@ input_handler(
 </code></pre>
 <p><img src="./media/scroll_paragraph.gif" alt="Scrollable Paragraph"></p>
 <h3 id="scrollable-list"><a class="header" href="#scrollable-list">Scrollable List</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::scrollbar;
-use tui::list;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::scrollbar::{self, *};
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let items = [
     line("Item 1"),

@@ -1,6 +1,7 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent,
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
+    Scope, Tag, TagValue, Update, UserEvent,
+    env::{Env, ImportEntry},
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         emit::{
@@ -12,7 +13,7 @@ use crate::{
     ide::{ModuleRefSite, ReferenceSite},
     typ::{TVal, TVar, Type},
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use compiler::compile;
 use enumflags2::BitFlags;
@@ -458,111 +459,160 @@ macro_rules! read_prod {
 }
 pub(crate) use read_prod;
 
-/// Bridge a [`UseItem`] onto the CURRENT (open-style) resolver: a glob
-/// `m::*` is exactly the old `use m` (open `m`'s items), so it maps to
-/// the opened module path; a plain module path keeps the old open
-/// semantics unchanged. The forms only the module-system TABLE can
-/// express (renames, `self`/`super`/`package` roots) refuse until it
-/// lands (design/module_system.md P2).
-pub(crate) fn use_item_open_path(item: &crate::expr::UseItem) -> Result<ModPath> {
-    if item.rename.is_some() {
-        bail!("use renames land with the module-system table (P2)")
+/// Compile one `use` item into the scope's namespace table
+/// ([`crate::env::Env::names`]): resolve its module prefix
+/// (keyword-anchored or package/chain-rooted), then install a glob
+/// source or an explicit [`ImportEntry`]. A `use` is a compile-time
+/// declaration — the statement compiles to [`Nop`]; nothing lives in
+/// the graph. See design/module_system.md.
+pub(crate) fn compile_use_item(
+    env: &mut Env,
+    pending: &mut Vec<PendingImport>,
+    pos: combine::stream::position::SourcePosition,
+    ori: &Arc<crate::expr::Origin>,
+    scope: &Scope,
+    replace: bool,
+    item: &crate::expr::UseItem,
+) -> Result<()> {
+    use netidx_core::path::Path;
+    let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
+    let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
+    // The module context the terminal name lives in: a bare keyword
+    // anchor resolves along its lexical chain (a `super` anchor may
+    // be a block level — a script file's top level), everything else
+    // is a canonical module.
+    enum Anchor<'a> {
+        Chain(&'a str),
+        Module(ModPath),
     }
-    if let Some(kw) = item.leading_keyword() {
-        bail!("`{kw}::` paths land with the module-system table (P2)")
-    }
-    if item.is_glob() {
-        use netidx_core::path::Path;
-        match Path::dirname(&item.path.0).filter(|d| Path::parts(d).next().is_some()) {
-            Some(d) => Ok(ModPath(Path::from(arcstr::ArcStr::from(d)))),
-            None => bail!("a glob needs a path prefix"),
+    let n_super = prefix.iter().take_while(|s| **s == "super").count();
+    let anchor = match prefix.first() {
+        None => None,
+        Some(&"self") if prefix.len() == 1 => {
+            Some(Anchor::Chain(crate::mod_root(&scope.lexical)))
         }
-    } else {
-        Ok(item.path.clone())
-    }
-}
-
-#[derive(Debug)]
-pub struct Use {
-    spec: Expr,
-    scope: Scope,
-    names: Arc<[ModPath]>,
-}
-
-impl Use {
-    pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
-        spec: Expr,
-        scope: &Scope,
-        reexport: bool,
-        items: &Arc<[crate::expr::UseItem]>,
-    ) -> Result<Node<R, E>> {
-        if reexport {
-            bail!("re-exports (`pub use`) are not yet supported")
+        Some(&"super") if n_super == prefix.len() => {
+            Some(Anchor::Chain(env.super_anchor(&scope.lexical, n_super)?))
         }
-        let names: Arc<[ModPath]> = items
-            .iter()
-            .map(|i| use_item_open_path(i).with_context(|| ErrorContext(spec.clone())))
-            .collect::<Result<_>>()?;
-        for name in names.iter() {
-            ctx.env
-                .use_in_scope(scope, name)
-                .map_err(|e| anyhow!("{e:?}"))
-                .with_context(|| ErrorContext(spec.clone()))?;
-            if ctx.env.lsp_mode {
-                let canonical = ctx
-                    .env
-                    .canonical_modpath(&scope.lexical, name)
-                    .unwrap_or_else(|| name.clone());
-                ctx.env.push_module_reference(ModuleRefSite {
-                    pos: spec.pos,
-                    ori: spec.ori.clone(),
-                    name: name.clone(),
-                    canonical,
-                    def_ori: None,
-                });
+        Some(&"package") if prefix.len() == 1 => {
+            Some(Anchor::Chain(env.package_root(&scope.lexical)))
+        }
+        Some(_) => {
+            let p = ModPath(Path::from_iter(prefix.iter().copied()));
+            match env.canonical_modpath(&scope.lexical, &p)? {
+                Some(m) => Some(Anchor::Module(m)),
+                None => bail!("use: no module `{p}` in scope"),
             }
         }
-        Ok(Node::new(Self { spec, scope: scope.clone(), names }))
+    };
+    if item.is_glob() {
+        let scope_l = &scope.lexical;
+        match anchor {
+            None => bail!("a glob needs a path prefix"),
+            Some(Anchor::Chain(a)) => {
+                // a `super::*` anchor may span block levels: capture
+                // each level as its own glob source
+                let levels: LPooled<Vec<ModPath>> = crate::env::chain_levels(a)
+                    .map(|l| ModPath(Path::from(ArcStr::from(l))))
+                    .collect();
+                for l in levels.iter() {
+                    env.import_glob(scope_l, l.clone());
+                }
+            }
+            Some(Anchor::Module(m)) => env.import_glob(scope_l, m),
+        }
+        return Ok(());
     }
+    let key: &str = item.rename.as_deref().unwrap_or(base);
+    let entry = match anchor {
+        Some(Anchor::Chain(a)) => ImportEntry {
+            scope: ModPath(Path::from(ArcStr::from(a))),
+            name: base.into(),
+            chain: true,
+            pos,
+            ori: ori.clone(),
+        },
+        Some(Anchor::Module(m)) => ImportEntry {
+            scope: m,
+            name: base.into(),
+            chain: false,
+            pos,
+            ori: ori.clone(),
+        },
+        None => {
+            // `use m;` — a single segment names a module; importing
+            // it means importing the name from its parent
+            let p = ModPath(Path::from_iter([base]));
+            match env.canonical_modpath(&scope.lexical, &p)? {
+                Some(m) => ImportEntry {
+                    scope: ModPath(Path::from(ArcStr::from(
+                        Path::dirname(&*m).unwrap_or("/"),
+                    ))),
+                    name: base.into(),
+                    chain: false,
+                    pos,
+                    ori: ori.clone(),
+                },
+                None => bail!("use: no module `{base}` in scope"),
+            }
+        }
+    };
+    // the package prelude already provides every package name as a
+    // path root, so importing a package under its own name is a
+    // no-op (a DIFFERENT target under a package's name shadows the
+    // prelude by precedence, like every other explicit entry)
+    if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
+        return Ok(());
+    }
+    if env.lsp_mode {
+        let canonical =
+            ModPath(Path::from(ArcStr::from(&**entry.scope)).append(&entry.name));
+        env.push_module_reference(ModuleRefSite {
+            pos,
+            ori: ori.clone(),
+            name: item.path.clone(),
+            canonical,
+            def_ori: None,
+        });
+    }
+    if !env.import_target_exists(&entry) {
+        pending.push(PendingImport {
+            scope: scope.lexical.clone(),
+            key: key.into(),
+            pos,
+            ori: ori.clone(),
+        });
+    }
+    env.import(&scope.lexical, key, entry, replace)
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for Use {
-    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
-        TagValue::phantom_ref()
+/// Compile a `use` statement: every item registers in the namespace
+/// table; the graph gets a [`Nop`].
+pub(crate) fn compile_use<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    scope: &Scope,
+    reexport: bool,
+    items: &Arc<[crate::expr::UseItem]>,
+) -> Result<Node<R, E>> {
+    if reexport {
+        bail!("re-exports (`pub use`) are not yet supported")
     }
-
-    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        Ok(())
+    let replace = flags.contains(CFlag::ReplaceImports);
+    for item in items.iter() {
+        compile_use_item(
+            &mut ctx.env,
+            &mut ctx.pending_imports,
+            spec.pos,
+            &spec.ori,
+            scope,
+            replace,
+            item,
+        )
+        .with_context(|| ErrorContext(spec.clone()))?;
     }
-
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        Ok(())
-    }
-
-    fn refs(&self, _refs: &mut Refs) {}
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for name in self.names.iter() {
-            ctx.env.stop_use_in_scope(&self.scope, name);
-        }
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn typ(&self) -> &Type {
-        &Type::Bottom
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Use(self)
-    }
+    Ok(Nop::new(Type::Bottom))
 }
 
 #[derive(Debug)]
@@ -827,10 +877,27 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     top_id: ExprId,
     exprs: impl Iterator<Item = &'a Expr>,
 ) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
+    let exprs: smallvec::SmallVec<[&'a Expr; 32]> = exprs.collect();
+    // Headers pass: pre-register the block's `mod` NAMES so name
+    // resolution (imports, sibling references, the mid-compile
+    // resolution horizon) is independent of declaration order. The
+    // `Module` compile arm removes its entry from `predeclared_mods`
+    // instead of tripping the duplicate-module guard on it.
+    for e in exprs.iter() {
+        if let ExprKind::Module { name, .. } = &e.kind {
+            let p = ModPath(scope.lexical.append(name));
+            if ctx.env.modules.contains(&p) {
+                return Err(anyhow::anyhow!("duplicate module definition {p}")
+                    .context(ErrorContext((*e).clone())));
+            }
+            ctx.predeclared_mods.insert(p.clone());
+            ctx.env.modules.insert_cow(p);
+        }
+    }
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R, E>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
-    for (i, e) in exprs.enumerate() {
+    for (i, e) in exprs.iter().copied().enumerate() {
         match &e.kind {
             ExprKind::Catch(c) => {
                 let (node, advanced) =
@@ -1153,7 +1220,11 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (id, def_pos, def_ori) = match ctx.env.lookup_bind(&scope.lexical, name) {
+        let (id, def_pos, def_ori) = match ctx
+            .env
+            .lookup_bind(&scope.lexical, name)
+            .map_err(|e| e.context(ErrorContext(spec.clone())))?
+        {
             None => bailat!(spec, "{name} is undefined"),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
@@ -1271,7 +1342,12 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (src_id, def_pos, def_ori) = match ctx.env.lookup_bind(&scope.lexical, name) {
+        let (src_id, def_pos, def_ori) = match ctx
+            .env
+            .lookup_bind(&scope.lexical, name)
+            .map_err(|e| {
+            e.context(ErrorContext(spec.clone()))
+        })? {
             None => bailat!(spec, "{name} is undefined"),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };

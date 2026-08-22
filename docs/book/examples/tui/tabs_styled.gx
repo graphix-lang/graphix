@@ -1,6 +1,6 @@
-use tui;
-use tui::tabs;
-use tui::text;
+use tui::{line, span, style};
+use tui::tabs::{self, *};
+use tui::text::{self, *};
 
 let completed_content = text(&"Completed");
 let progress_content = text(&"In Progress");

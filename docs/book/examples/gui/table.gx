@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::table;
-use gui::column;
+use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::table::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let cols = &[

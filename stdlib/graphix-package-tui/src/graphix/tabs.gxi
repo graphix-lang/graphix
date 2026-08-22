@@ -1,3 +1,4 @@
+use super::{Line, size, Size, Span, Style, style, Tui};
 type Tabs = {
   divider: &[Span, null],
   highlight_style: &[Style, null],

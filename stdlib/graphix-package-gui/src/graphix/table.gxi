@@ -1,3 +1,4 @@
+use super::{HAlign, Length, VAlign, Widget};
 type TableColumn = {
   header: &Widget,
   width: &Length,

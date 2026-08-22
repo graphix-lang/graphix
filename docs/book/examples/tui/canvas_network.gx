@@ -1,6 +1,5 @@
-use tui;
-use tui::canvas;
-use tui::text;
+use tui::canvas::{self, *};
+use tui::text::{self, *};
 
 let circle1 = `Circle({color: `Blue, x: 2.0, y: 5.0, radius: 0.5});
 let circle2 = `Circle({color: `Blue, x: 8.0, y: 5.0, radius: 0.5});

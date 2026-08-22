@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -197,9 +197,9 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::paragraph;
+<pre><code class="language-graphix">use tui::line;
+use tui::tabs::{self, *};
+use tui::paragraph::{self, *};
 
 let tab1 = paragraph(&amp;"This is tab 1");
 let tab2 = paragraph(&amp;"This is tab 2");
@@ -216,11 +216,11 @@ tabs(
 </code></pre>
 <p><img src="./media/tabs_basic.png" alt="Basic Tabs"></p>
 <h3 id="navigation-between-tabs"><a class="header" href="#navigation-between-tabs">Navigation Between Tabs</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::tabs::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let selected_tab = 0;
 
@@ -271,9 +271,9 @@ input_handler(
 </code></pre>
 <p><img src="./media/tabs_navigation.gif" alt="Tabs With Navigation"></p>
 <h3 id="styled-tab-titles"><a class="header" href="#styled-tab-titles">Styled Tab Titles</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::tabs::{self, *};
+use tui::text::{self, *};
 
 let completed_content = text(&amp;"Completed");
 let progress_content = text(&amp;"In Progress");
@@ -298,9 +298,9 @@ tabs(&amp;tab_list)
 </code></pre>
 <p><img src="./media/tabs_styled.png" alt="Styled Tabs"></p>
 <h3 id="tab-with-badge"><a class="header" href="#tab-with-badge">Tab with Badge</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::tabs;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::tabs::{self, *};
+use tui::text::{self, *};
 
 let unread_count = 5;
 

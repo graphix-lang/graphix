@@ -5,22 +5,22 @@ use netidx::publisher::Value;
 
 /// Standard widget imports for interaction tests.
 const IMPORTS: &str = "\
-use gui;\n\
-use gui::text;\n\
-use gui::button;\n\
-use gui::checkbox;\n\
-use gui::toggler;\n\
-use gui::text_input;\n\
-use gui::slider;\n\
-use gui::radio;\n\
-use gui::pick_list;\n\
-use gui::text_editor;\n\
-use gui::vertical_slider;\n\
-use gui::mouse_area;\n\
-use gui::keyboard_area;\n\
-use gui::scrollable;\n\
-use gui::combo_box;\n\
-use gui::column";
+use gui::*;\n\
+use gui::text::{self, *};\n\
+use gui::button::{self, *};\n\
+use gui::checkbox::{self, *};\n\
+use gui::toggler::{self, *};\n\
+use gui::text_input::{self, *};\n\
+use gui::slider::{self, *};\n\
+use gui::radio::{self, *};\n\
+use gui::pick_list::{self, *};\n\
+use gui::text_editor::{self, *};\n\
+use gui::vertical_slider::{self, *};\n\
+use gui::mouse_area::{self, *};\n\
+use gui::keyboard_area::{self, *};\n\
+use gui::scrollable::{self, *};\n\
+use gui::combo_box::{self, *};\n\
+use gui::column::{self, *}";
 
 async fn harness(widget_expr: &str) -> Result<InteractionHarness> {
     let code = format!("{IMPORTS};\nlet result = {widget_expr}");

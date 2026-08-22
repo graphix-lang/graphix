@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -199,8 +199,8 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::list;
+<pre><code class="language-graphix">use tui::line;
+use tui::list::{self, *};
 
 let items = [
     line("Apple"),
@@ -215,11 +215,11 @@ list(
 </code></pre>
 <p><img src="./media/list_basic.png" alt="Basic List"></p>
 <h3 id="interactive-list-with-navigation"><a class="header" href="#interactive-list-with-navigation">Interactive List with Navigation</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::list;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::list::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let items = [
     line("Apple"), line("Banana"), line("Cherry"),
@@ -275,9 +275,9 @@ input_handler(
 </code></pre>
 <p><img src="./media/list_interactive.gif" alt="Interactive List"></p>
 <h3 id="styled-items"><a class="header" href="#styled-items">Styled Items</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::list;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let make_item = |text, priority| select priority {
     `High =&gt; line(#style: style(#fg: `Red, #add_modifier: [`Bold]), text),

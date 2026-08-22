@@ -1,8 +1,8 @@
-use gui;
-use gui::text;
-use gui::column;
-use gui::row;
-use gui::space;
+use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::space::{self, *};
 mod icon;
 
 [&window(

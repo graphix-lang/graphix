@@ -29,7 +29,7 @@ async fn dt(code: &str) -> Result<GuiTestHarness> {
 #[tokio::test(flavor = "current_thread")]
 async fn basic_structure() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1", "r2"], columns: ["c0", "c1"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -47,7 +47,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn empty_table() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: [], columns: [] };
 let result = data_table(#table: &tbl)
 "#;
@@ -62,7 +62,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn value_mode() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["a", "b"], columns: [] };
 let result = data_table(#table: &tbl)
 "#;
@@ -81,7 +81,7 @@ async fn default_preserves_table_order() -> Result<()> {
     // No sort_by passed: widget preserves the caller's row and column
     // order exactly as given in the Table.
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["z", "a", "m"], columns: ["c", "a"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -95,7 +95,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_uniform() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: [
         { name: "c0", typ: `Text({ on_edit: null }), display_name: null, source: &"DEF", on_resize: &null, width: &null }
     ] };
@@ -119,7 +119,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn netidx_source_placeholder() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: [
         { name: "loading", typ: `Text({ on_edit: null }),
             display_name: null,
@@ -155,7 +155,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn netidx_source_map_fallback() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let m = {"r0" => "alpha", "r1" => "beta"};
 let tbl = { rows: ["r0", "r1"], columns: [
         { name: "score", typ: `Text({ on_edit: null }),
@@ -176,7 +176,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_per_row() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let a = "val_a";
 let b = "val_b";
 let tbl = { rows: ["r0", "r1"], columns: [
@@ -198,7 +198,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn virtual_column() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let a = "calc_a";
 let b = "calc_b";
 let tbl = { rows: ["r0", "r1"], columns: [
@@ -226,7 +226,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn selection_initial_empty() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let sel = [];
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(#selection: &sel, #table: &tbl)
@@ -240,7 +240,7 @@ let result = data_table(#selection: &sel, #table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn selection_from_graphix() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let sel = ["r0/c0"];
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(#selection: &sel, #table: &tbl)
@@ -257,7 +257,7 @@ let result = data_table(#selection: &sel, #table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn on_select_fires_on_click() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let sel = [];
 let last_clicked = "";
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
@@ -291,7 +291,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_activate_fires_on_name_click() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let activated = "";
 let tbl = { rows: ["r0", "r1"], columns: ["c0"] };
 let result = data_table(
@@ -320,7 +320,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_header_click_fires() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let clicked_col = "";
 let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let result = data_table(
@@ -361,7 +361,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn header_click_cycles_sort_state() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys; use array;
+use gui::*; use gui::data_table::{self, *}; use sys::*; use array::*;
 let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
 let sort_by: Array<SortBy> = [];
 let result = data_table(
@@ -436,7 +436,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_virtual_column_ascending() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let p0 = "3";
 let p1 = "1";
 let p2 = "2";
@@ -462,7 +462,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_virtual_column_descending() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let s0 = "10";
 let s1 = "30";
 let s2 = "20";
@@ -488,7 +488,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_virtual_column_lexicographic() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let l0 = "cherry";
 let l1 = "apple";
 let l2 = "banana";
@@ -519,7 +519,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_indicator_absent_by_default() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -534,7 +534,7 @@ let result = data_table(#table: &tbl)
 #[tokio::test(flavor = "current_thread")]
 async fn sort_indicator_single_column() -> Result<()> {
     let ascending = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
 let result = data_table(
     #sort_by: &[{ column: "name", direction: `Ascending }],
@@ -546,7 +546,7 @@ let result = data_table(
     assert_eq!(h.dt().dt_sort_indicator("env"), None);
 
     let descending = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env"] };
 let result = data_table(
     #sort_by: &[{ column: "env", direction: `Descending }],
@@ -564,7 +564,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_indicator_multi_column_shows_priority() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: ["name", "env", "score"] };
 let result = data_table(
     #sort_by: &[
@@ -592,7 +592,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_by_subscribed_column_reorders_on_update() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let v0 = f64:30.0;
 let v1 = f64:10.0;
 let v2 = f64:20.0;
@@ -671,7 +671,7 @@ async fn sort_subscribes_newly_visible_rows() -> Result<()> {
     }
     let code = format!(
         r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
 {publishes}
 let tbl = {{ rows: [{rows}], columns: ["cpu"] }};
 let result = data_table(
@@ -752,7 +752,7 @@ async fn sort_by_change_resorts_offscreen_rows() -> Result<()> {
     }
     let code = format!(
         r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
 {publishes}
 let sort_col = "alpha";
 let sort_dir: SortDirection = `Ascending;
@@ -878,7 +878,7 @@ fn sparkline_decimation() {
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -913,7 +913,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column_parses_number() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -947,7 +947,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_cancel() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let edit = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -982,7 +982,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_toggle_column() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let toggled = |#path: string, #value: bool| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -1025,7 +1025,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_combo_column() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let pick = |#path: string, #value: string| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -1083,7 +1083,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_spin_column() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let bumped = |#path: string, #value: f64| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -1148,7 +1148,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_click_button_column() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 let pressed = |#path: string, #value: Any| log <- "[path]=[value]";
 let tbl = { rows: ["r0"], columns: [
@@ -1193,7 +1193,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_update_fires_for_subscribed_cell() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
 sys::net::publish("/local/dt7/r0/c0", v64:42);
 let tbl = { rows: ["/local/dt7/r0"], columns: ["c0"] };
@@ -1230,7 +1230,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_per_row_ref_updates() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let a = "v1";
 let tbl = { rows: ["r0"], columns: [
         { name: "c0", typ: `Text({ on_edit: null }),
@@ -1264,7 +1264,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn virtual_columns_prevent_value_mode() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1"], columns: [
         { name: "region", typ: `Text({ on_edit: null }),
             display_name: "Region",
@@ -1302,7 +1302,7 @@ async fn default_value_reactive_via_connect() -> Result<()> {
     // the cell-update guard at handle_update suppresses default
     // writes when the row has any subscriptions.
     let code = r#"
-use gui; use gui::data_table; use sys; use map; use opt;
+use gui::*; use gui::data_table::{self, *}; use sys::*; use map::*; use opt;
 sys::net::publish("/local/dt8b/r0/c0", v64:0);
 sys::net::publish("/local/dt8b/r1/c0", v64:0);
 let data: Map<string, Map<string, i64>> = {};
@@ -1401,7 +1401,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn default_value_uniform_string() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1", "r2"], columns: [
         { name: "c0", typ: `Text({ on_edit: null }),
             display_name: null,
@@ -1426,7 +1426,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn column_width_ref_controlled() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let w = 120.0;
 let tbl = { rows: ["r0"], columns: [
         { name: "c0", typ: `Text({ on_edit: null }),
@@ -1450,7 +1450,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn on_resize_fires_on_drag() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = 0.0;
 let on_w = |new_w: f64| log <- new_w;
 let w = 100.0;
@@ -1498,7 +1498,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_accumulates() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys; use sys::time;
+use gui::*; use gui::data_table::{self, *}; use sys::*; use sys::time::{self, *};
 let c = 0;
 let t1 = time::timer(duration:300.ms, false);
 let t2 = time::timer(duration:450.ms, false);
@@ -1546,7 +1546,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_default_value_seeds_history() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0"], columns: [
         "anchor",
         { name: "spark", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1573,7 +1573,7 @@ let result = data_table(
 async fn sparkline_decimation_caps_length() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0"], columns: [
         "anchor",
         { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1609,7 +1609,7 @@ let result = data_table(
 async fn sparkline_decimation_preserves_extremes() -> Result<()> {
     use std::time::{Duration, Instant};
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0"], columns: [
         "anchor",
         { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1649,7 +1649,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_nav_arrows_and_enter() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let sel = [];
 let selected = "";
 let activated = "";
@@ -1707,7 +1707,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn name_click_activate_only() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let sel_log = "";
 let act_log = "";
 let tbl = { rows: ["r0"], columns: ["c0"] };
@@ -1740,7 +1740,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn resize_handle_double_click_autofits() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let long = "wider than MIN_COL_WIDTH default";
 let tbl = { rows: ["r0"], columns: [
         { name: "c0", typ: `Text({ on_edit: null }),
@@ -1780,7 +1780,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn viewport_metrics_update_on_resize() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r0", "r1", "r2", "r3", "r4"], columns: ["c0", "c1", "c2"] };
 let result = data_table(#table: &tbl)
 "#;
@@ -1831,7 +1831,7 @@ async fn horizontal_scroll_variable_width() -> Result<()> {
     // 140). Name column is 80 (the auto-fit floor for a one-char
     // basename). Total virtual width = 80 + 60 + 200 + 140 = 480.
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let tbl = { rows: ["r"], columns: [
         { name: "a", typ: `Text({ on_edit: null }),
             display_name: null, source: &"a",
@@ -1880,7 +1880,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_history_seconds_rejects_negative() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys; use sys::time;
+use gui::*; use gui::data_table::{self, *}; use sys::*; use sys::time::{self, *};
 let c = 0;
 c <- time::timer(duration:100.ms, false) ~ 5;
 sys::net::publish("/local/dt_hs/r0/load", c);
@@ -1917,7 +1917,7 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn button_column_passes_typed_raw_value() -> Result<()> {
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let pressed_val: Any = null;
 let pressed = |#path: string, #value: Any| {
     pressed_val <- value;
@@ -1976,7 +1976,7 @@ async fn virtual_col_does_not_create_subscription() -> Result<()> {
     // would shadow the default in the grid; with the fix, the
     // default wins.
     let code = r#"
-use gui; use gui::data_table; use sys;
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 sys::net::publish("/local/dt_virt/r0/real", "real-val");
 sys::net::publish("/local/dt_virt/r0/ghost", "from-publisher");
 let tbl = { rows: ["/local/dt_virt/r0"], columns: [

@@ -1,3 +1,4 @@
+use super::Tree;
 /// A reactive subscription to changes on a tree.
 type Subscription<'k, 'v>;
 

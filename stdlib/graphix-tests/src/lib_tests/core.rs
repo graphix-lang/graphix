@@ -635,7 +635,7 @@ run!(
 // serialize via feedback (each subscription's value triggers the next pop).
 const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 {
-  use sys;
+  use sys::*;
   sys::net::publish("/local/q_async/a", 100);
   sys::net::publish("/local/q_async/b", 200);
   sys::net::publish("/local/q_async/c", 300);
@@ -679,7 +679,7 @@ run!(
 // would emit a third spurious 1030.) After a delay, sample the count.
 const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 {
-  use sys;
+  use sys::*;
   let feedback: Any = never();
   let qf = queuefn(
     #trigger: feedback,

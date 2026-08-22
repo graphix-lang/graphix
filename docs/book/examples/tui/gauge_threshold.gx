@@ -1,7 +1,7 @@
-use tui;
-use tui::gauge;
-use tui::block;
-use tui::text;
+use tui::{line, span, style};
+use tui::gauge::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let power = min(1., cast<f64>(count(sys::time::timer(0.5, true)))$ * 0.01);
 

@@ -12,7 +12,6 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
@@ -144,8 +143,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         top_id: ExprId,
         c: &Arc<expr::CatchExpr>,
     ) -> Result<(Node<R, E>, Scope)> {
-        let catch_name = format_compact!("ca{}", spec.id.inner());
-        let catch_scope = scope.append(catch_name.as_str());
+        let catch_scope = scope.append_block("ca", spec.id.inner());
         let typ = Type::empty_tvar();
         match &typ {
             Type::TVar(tv) => {
@@ -166,7 +164,9 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let covered = Scope {
             lexical: scope.lexical.clone(),
             dynamic: ModPath(
-                scope.dynamic.append(&format_compact!("c{}", spec.id.inner())),
+                scope
+                    .dynamic
+                    .append(crate::block_component("c", spec.id.inner()).as_str()),
             ),
         };
         ctx.env.catch.insert_cow(covered.dynamic.clone(), (bind_id, top_id));

@@ -3,36 +3,36 @@ use anyhow::Result;
 
 /// All widget imports needed for tests.
 const IMPORTS: &str = "\
-use gui;\n\
-use gui::text;\n\
-use gui::button;\n\
-use gui::checkbox;\n\
-use gui::toggler;\n\
-use gui::text_input;\n\
-use gui::slider;\n\
-use gui::radio;\n\
-use gui::pick_list;\n\
-use gui::progress_bar;\n\
-use gui::text_editor;\n\
-use gui::row;\n\
-use gui::column;\n\
-use gui::container;\n\
-use gui::scrollable;\n\
-use gui::space;\n\
-use gui::rule;\n\
-use gui::stack;\n\
-use gui::tooltip;\n\
-use gui::vertical_slider;\n\
-use gui::combo_box;\n\
-use gui::mouse_area;\n\
-use gui::canvas;\n\
-use gui::chart;\n\
-use gui::image;\n\
-use gui::grid;\n\
-use gui::qr_code;\n\
-use gui::markdown;\n\
-use gui::table;\n\
-use gui::menu";
+use gui::*;\n\
+use gui::text::{self, *};\n\
+use gui::button::{self, *};\n\
+use gui::checkbox::{self, *};\n\
+use gui::toggler::{self, *};\n\
+use gui::text_input::{self, *};\n\
+use gui::slider::{self, *};\n\
+use gui::radio::{self, *};\n\
+use gui::pick_list::{self, *};\n\
+use gui::progress_bar::{self, *};\n\
+use gui::text_editor::{self, *};\n\
+use gui::row::{self, *};\n\
+use gui::column::{self, *};\n\
+use gui::container::{self, *};\n\
+use gui::scrollable::{self, *};\n\
+use gui::space::{self, *};\n\
+use gui::rule::{self, *};\n\
+use gui::stack::{self, *};\n\
+use gui::tooltip::{self, *};\n\
+use gui::vertical_slider::{self, *};\n\
+use gui::combo_box::{self, *};\n\
+use gui::mouse_area::{self, *};\n\
+use gui::canvas::{self, *};\n\
+use gui::chart::{self, *};\n\
+use gui::image::{self, *};\n\
+use gui::grid::{self, *};\n\
+use gui::qr_code::{self, *};\n\
+use gui::markdown::{self, *};\n\
+use gui::table::{self, *};\n\
+use gui::menu::{self, *}";
 
 /// Helper: compile a simple widget expression.
 /// Wraps the code in standard imports + `let result = <expr>`.

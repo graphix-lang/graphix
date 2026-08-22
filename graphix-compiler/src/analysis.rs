@@ -487,7 +487,6 @@ fn node_effect<R: Rt, E: UserEvent>(
         | NodeView::Lambda(_)
         | NodeView::Ref(_)
         | NodeView::Constant(_)
-        | NodeView::Use(_)
         | NodeView::TypeDef(_)
         | NodeView::Nop(_) => EffectKind::Sync,
     }
@@ -543,7 +542,9 @@ fn callee_effect<R: Rt, E: UserEvent>(
     }
     // Builtin callee (resolved or via Ref) → its declared effect.
     if let ExprKind::Ref { name } = &cs.fnode().spec().kind {
-        if let Some((_, bind)) = ctx.env.lookup_bind(&cs.scope().lexical, name) {
+        if let Some((_, bind)) =
+            ctx.env.lookup_bind(&cs.scope().lexical, name).ok().flatten()
+        {
             let key = (bind.scope.clone(), bind.name.clone());
             if let Some(info) = ctx.builtin_bindings.get(&key) {
                 return ctx.builtin_effect(info.name.as_str());

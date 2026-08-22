@@ -1,5 +1,5 @@
-use tui;
-use tui::paragraph;
+use tui::{line, span, style, Span};
+use tui::paragraph::{self, *};
 
 let span: Array<Span> = select seq(0, 256)$ {
     i => [

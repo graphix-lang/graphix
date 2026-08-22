@@ -1,6 +1,6 @@
-use tui;
-use tui::block;
-use tui::paragraph;
+use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
 
 let count = count(sys::time::timer(duration:1.s, true));
 

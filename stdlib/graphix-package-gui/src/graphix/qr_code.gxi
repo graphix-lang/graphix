@@ -1,3 +1,4 @@
+use super::Widget;
 type QrCode = {
   data: &string,
   cell_size: &[f64, null]

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -234,8 +234,8 @@ val table: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
+<pre><code class="language-graphix">use tui::line;
+use tui::table::{self, *};
 
 let header = row([
     cell(line("Name")),
@@ -263,11 +263,11 @@ table(
 </code></pre>
 <p><img src="./media/table_basic.png" alt="Basic Table"></p>
 <h3 id="interactive-table"><a class="header" href="#interactive-table">Interactive Table</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::table::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 type User = {name: string, age: i64, city: string};
 
@@ -337,9 +337,9 @@ input_handler(
 </code></pre>
 <p><img src="./media/table_interactive.gif" alt="Interactive Table"></p>
 <h3 id="conditional-cell-styling"><a class="header" href="#conditional-cell-styling">Conditional Cell Styling</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::table::{self, *};
+use tui::text::{self, *};
 
 let make_cpu_cell = |cpu| {
     let s = select cpu {
@@ -381,9 +381,9 @@ table(
 </code></pre>
 <p><img src="./media/table_styled_cells.png" alt="Conditional Styling"></p>
 <h3 id="real-time-updates"><a class="header" href="#real-time-updates">Real-time Updates</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::table;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::table::{self, *};
+use tui::text::{self, *};
 
 let clock = sys::time::timer(duration:1.s, true);
 

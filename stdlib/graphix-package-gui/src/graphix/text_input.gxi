@@ -1,3 +1,4 @@
+use super::{Font, Length, Padding, Widget};
 type TextInput = {
   disabled: &bool,
   value: &string,

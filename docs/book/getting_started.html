@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4e99a5c.js"></script>
@@ -276,8 +276,7 @@ want to exit the REPL press ctrl-d.</p>
 </code></pre>
 <h2 id="creating-your-first-file"><a class="header" href="#creating-your-first-file">Creating Your First File</a></h2>
 <p>Now let’s write a real Graphix program! Create a file called <code>hello.gx</code> with this content:</p>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::text::{self, *};
 
 let counter = count(sys::time::timer(duration:1.s, true));
 

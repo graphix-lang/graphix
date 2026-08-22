@@ -1,3 +1,4 @@
+use super::{column, table, Widget};
 type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 

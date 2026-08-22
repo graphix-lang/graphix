@@ -1,9 +1,10 @@
 use super::{
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
-    TypeDef, Use,
+    TypeDef,
     array::{Array, ArrayRef, ArraySlice},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
+    compile_use,
     data::{Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
     error::Qop,
     lambda::Lambda,
@@ -26,7 +27,6 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Context, Result, bail};
-use compact_str::format_compact;
 use enumflags2::BitFlags;
 
 /// Every per-kind `compile` recurses back through here, so this is the
@@ -138,7 +138,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ),
         ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
         ExprKind::Do { exprs } => {
-            let scope = scope.append(&format_compact!("do{}", spec.id.inner()));
+            let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)
         }
         ExprKind::Array { args } => {
@@ -170,8 +170,11 @@ fn compile_kind<R: Rt, E: UserEvent>(
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
         ExprKind::Module { name, value } => {
+            let enclosing = scope;
             let scope = scope.append(&name);
-            if ctx.env.modules.contains(&scope.lexical) {
+            if !ctx.predeclared_mods.remove(&scope.lexical)
+                && ctx.env.modules.contains(&scope.lexical)
+            {
                 bail!("duplicate module definition {}", scope.lexical)
             }
             if ctx.env.lsp_mode {
@@ -194,6 +197,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                     bail!("external modules are not allowed in this context")
                 }
                 ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
+                    ctx.env.modules.insert_cow(scope.lexical.clone());
                     let res = Block::compile(
                         ctx,
                         flags,
@@ -204,7 +208,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
                         exprs,
                     )
                     .with_context(|| spec.ori.clone())?;
-                    ctx.env.modules.insert_cow(scope.lexical.clone());
                     Ok(res)
                 }
                 ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
@@ -222,6 +225,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                     ctx,
                     flags,
                     spec.clone(),
+                    enclosing,
                     &scope,
                     sandbox.clone(),
                     sig.clone(),
@@ -231,7 +235,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             }
         }
         ExprKind::Use { reexport, names } => {
-            Use::compile(ctx, spec.clone(), scope, *reexport, names)
+            compile_use(ctx, flags, spec.clone(), scope, *reexport, names)
         }
         ExprKind::Connect { name, value, deref: true } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)

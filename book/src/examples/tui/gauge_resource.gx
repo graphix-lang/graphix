@@ -1,6 +1,6 @@
-use tui;
-use tui::gauge;
-use tui::text;
+use tui::{span, style};
+use tui::gauge::{self, *};
+use tui::text::{self, *};
 
 // memory amounts, in GB
 let used_memory = 6.5;

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -207,10 +207,10 @@ to pass on events they receive or not. See the input widget for more
 details.</p>
 <h2 id="building-your-first-tui"><a class="header" href="#building-your-first-tui">Building Your First TUI</a></h2>
 <p>Here’s a simple example that demonstrates the core concepts:</p>
-<pre><code class="language-graphix">use tui;
-use tui::block;
-use tui::text;
-use tui::layout;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
 
 let counter = count(sys::time::timer(duration:1.s, true));
 
@@ -234,7 +234,7 @@ block(
 <li><strong>Conditional Styling</strong>: Use <code>select</code> expressions to change styles based on state</li>
 </ul>
 <p>Many widgets take optional style arguments, allowing styling to be applied at many levels.</p>
-<pre><code class="language-graphix">use tui;
+<pre><code class="language-graphix">use tui::style;
 
 let is_selected = true;
 
@@ -252,9 +252,8 @@ style(
 <li><strong>Alignment</strong>: <code>Left</code>, <code>Center</code>, <code>Right</code> for horizontal; <code>Top</code>, <code>Center</code>, <code>Bottom</code> for vertical</li>
 <li><strong>Focus Management</strong>: Built-in focus handling for interactive components</li>
 </ul>
-<pre><code class="language-graphix">use tui;
-use tui::layout;
-use tui::text;
+<pre><code class="language-graphix">use tui::layout::{self, *};
+use tui::text::{self, *};
 
 let selected_pane = 0;
 let sidebar = text(&amp;"Sidebar");
@@ -278,9 +277,9 @@ layout(
 <li>Application modes (normal, edit, command)</li>
 </ul>
 <p>State changes automatically trigger UI updates:</p>
-<pre><code class="language-graphix">use tui;
-use tui::list;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::list::{self, *};
+use tui::text::{self, *};
 
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
@@ -295,12 +294,10 @@ list(#selected: &amp;selected_item, &amp;items)
 </code></pre>
 <h2 id="real-time-data-integration"><a class="header" href="#real-time-data-integration">Real-time Data Integration</a></h2>
 <p>Graphix TUIs excel at displaying real-time data. Connect to data sources via netidx and the UI updates automatically:</p>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
-use tui::text;
+<pre><code class="language-graphix">use tui::{span, style};
+use tui::gauge::{self, *};
+use tui::text::{self, *};
 use core::math;
-use sys;
-use sys::net;
 use sys::time;
 
 // Self-contained: publish a simulated temperature reading once a

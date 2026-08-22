@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -175,55 +175,101 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="use"><a class="header" href="#use">Use</a></h1>
-<p>Use allows you to bring names in modules into your current scope so they can be used without prefixing.</p>
-<p>Several uses sharing a prefix can be grouped, exactly as in Rust:</p>
-<pre><code class="language-graphix">use tui::{list, block, text};
-use sys::{time, net};
+<p><code>use</code> imports a <em>name</em> into the current scope. It follows the same
+rules as Rust 2018 paths: every name in scope arrived either by an
+explicit declaration (<code>let</code>, <code>type</code>, <code>mod</code>), an explicit <code>use</code>, or one
+of the two preludes described below. Nothing else is implicit.</p>
+<pre><code class="language-graphix">sys::net::subscribe(...); // fully qualified call
+use sys::net;             // import the name `net`
+net::subscribe(...);      // now `net` is in scope
+use sys::net::subscribe;  // import the item itself
+subscribe(...)            // same function
 </code></pre>
-<p>is the same as writing each <code>use</code> on its own line. Groups nest
-(<code>use a::{b::{c, d}, e}</code>), a trailing comma is allowed, and <code>self</code>
-inside a group names the prefix itself: <code>use sys::{self, net}</code> is
-<code>use sys</code> plus <code>use sys::net</code>. The same syntax works in <code>.gxi</code>
-interface files.</p>
-<pre><code class="language-graphix">sys::net::subscribe(...); // call subscribe in the sys::net module
-use sys::net;
-subscribe(...) // same function
+<p>Note that <code>use sys::net</code> imports the single name <code>net</code> — it does not
+bring the <em>contents</em> of <code>sys::net</code> into scope. To import an item, name
+the item. An imported name covers every declaration kind that shares
+it: if a module exports both a type <code>Color</code> and a value <code>Color</code>, one
+<code>use m::Color</code> imports both.</p>
+<h2 id="forms"><a class="header" href="#forms">Forms</a></h2>
+<pre><code class="language-graphix">use tui::line;                    // one name
+use tui::{line, span, style};     // group
+use sys::{fs::{self, watch}, io}; // groups nest; self names the prefix
+use tui::line as tline;           // rename
+use array::*;                     // glob: import everything array exports
+use super::{answer, identicon};   // from the parent module
+use package::tui::pump;           // from the current package's root
 </code></pre>
-<p>Use is valid anywhere expressions are valid</p>
+<p><code>self</code> inside a group names the prefix itself: <code>use sys::{self, net}</code>
+is <code>use sys</code> plus <code>use sys::net</code>. A trailing comma is allowed. The
+same syntax works in <code>.gxi</code> interface files.</p>
+<p>Globs are legal but discouraged outside test modules — an explicit
+list documents where every name comes from, and two globs that both
+provide a name make that name an error at its first use.</p>
+<p>The <code>{self, *}</code> group is the idiom for the UI packages’ widget
+modules, where a module and its main function share a name:
+<code>use tui::text::{self, *}</code> imports the module <code>text</code> <em>and</em> its
+contents, so both the widget call <code>text(&amp;"hi")</code> and qualified access
+to the module’s other items work.</p>
+<h2 id="path-roots"><a class="header" href="#path-roots">Path roots</a></h2>
+<p>The leading segment of any path — in <code>use</code>, in expressions, and in
+type annotations — is one of:</p>
+<ul>
+<li>a <strong>package name</strong>: <code>array::len</code>, <code>tui::line</code>. Every installed
+package’s name is usable as a path root anywhere, with no <code>use</code>
+(this is the <em>package prelude</em>; only the name is implicit, not the
+package’s items).</li>
+<li><strong><code>self</code></strong> — the current module: <code>self::helper</code>.</li>
+<li><strong><code>super</code></strong> — the parent module, chainable: <code>use super::super::x</code>.
+In a program file’s top-level submodules, <code>super</code> reaches the
+bindings at the top of the file.</li>
+<li><strong><code>package</code></strong> — the root of the current package (like Rust’s
+<code>crate</code>): <code>use package::tui::pump</code>.</li>
+</ul>
+<p>The same grammar works outside <code>use</code>: <code>super::helper(x)</code> and
+<code>let p: package::tui::Pump = ...</code> are both valid.</p>
+<h2 id="the-core-prelude"><a class="header" href="#the-core-prelude">The core prelude</a></h2>
+<p>The root items of the <code>core</code> package (<code>print</code>, <code>println</code>, <code>cast</code>,
+<code>error</code>, <code>filter</code>, <code>once</code>, <code>never</code>, <code>seq</code>, <code>Any</code>, <code>Result</code>, …) and
+the primitive type names are implicitly imported into every module.
+They can be shadowed by explicit declarations and imports.</p>
+<h2 id="scoping"><a class="header" href="#scoping">Scoping</a></h2>
+<p><code>use</code> is valid anywhere expressions are valid, and imports into the
+enclosing lexical scope only:</p>
 <pre><code class="language-graphix">let list = {
-  use array;
+  use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
 list
 </code></pre>
 <p>will print <code>[2, 4, 6, 8, 10]</code></p>
 <pre><code class="language-graphix">let list = {
-  use array;
+  use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
 map(list, |x| x * 2)
 </code></pre>
-<p>will not compile, e.g.</p>
+<p>will not compile — the import is local to the block:</p>
 <pre><code>$ graphix test.gx
 Error: in file "test.gx"
 
 Caused by:
-    at line: 5, column: 1 map not defined
+    0: at: line: 5, column: 1 in file test.gx, in: map
+    1: map not defined
 </code></pre>
-<p>Use paths are always absolute — they are resolved from the root of the
-module tree, not relative to the current module. For example, if you are
-inside the <code>sys::net</code> module and want to use the <code>sys::time</code> module, you
-must write <code>use sys::time</code>, not <code>use time</code>.</p>
-<pre><code class="language-graphix">// inside sys::net
-use sys::time;     // correct — absolute path
-</code></pre>
-<p>A submodule can reference bindings from its parent directly, but
-only if the <code>mod</code> declaration comes after those bindings in the
-parent’s interface file.</p>
-<p>Use shadows earlier declarations in it’s scope. Consider,</p>
+<p>Unlike declarations, imports carry no ordering constraint within a
+module: a <code>use</code> may name an item that is declared later in the file,
+and <code>mod</code> statements may appear anywhere. Visibility is
+order-independent; only <em>execution</em> of a module’s body follows
+declaration order.</p>
+<h2 id="shadowing-and-collisions"><a class="header" href="#shadowing-and-collisions">Shadowing and collisions</a></h2>
+<p>Within one scope, names resolve in precedence order: an explicit
+declaration beats an import, an import beats a glob, a glob beats the
+package prelude, and the package prelude beats the core prelude.
+Inner scopes shadow outer scopes as usual, so a block-local <code>use</code>
+shadows an outer <code>let</code>:</p>
 <pre><code class="language-graphix">let map = |a, f| "hello you called map!";
 let list = {
-  use array;
+  use array::map;
   map([1, 2, 3, 4, 5], |x| x * 2)
 };
 (list, map(list, |x| x * 2))
@@ -232,6 +278,16 @@ let list = {
 <pre><code>$ graphix test.gx
 ([2, 4, 6, 8, 10], "hello you called map!")
 </code></pre>
+<p>The error cases:</p>
+<ul>
+<li>a declaration and an import of the same name in the same scope:
+error at the <code>use</code> if the declaration comes first; if the
+declaration comes after, it shadows the import (rebinding a name
+with <code>let</code> is idiomatic Graphix and imports are no different)</li>
+<li>two explicit imports of the same name: error — rename one</li>
+<li>two globs that both provide a name: allowed at import, error at the
+first <em>use</em> of the ambiguous name, naming both sources</li>
+</ul>
 
                     </main>
 

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -192,15 +192,14 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::text::{self, *};
 
 text(&amp;"Hello, World!")
 </code></pre>
 <p><img src="./media/text_basic.png" alt="Basic Text"></p>
 <h3 id="status-messages"><a class="header" href="#status-messages">Status Messages</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::text::{self, *};
 
 let make_status = |level, msg| select level {
     `Error =&gt; line([
@@ -225,8 +224,8 @@ text(&amp;[
 </code></pre>
 <p><img src="./media/text_status.png" alt="Multi Line Status"></p>
 <h3 id="dynamic-colors"><a class="header" href="#dynamic-colors">Dynamic Colors</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::text::{self, *};
 
 let count = count(sys::time::timer(duration:1.s, true));
 
@@ -242,8 +241,8 @@ text(&amp;[l])
 </code></pre>
 <p><img src="./media/text_dynamic.gif" alt="Dynamic Text"></p>
 <h3 id="alignment"><a class="header" href="#alignment">Alignment</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::text;
+<pre><code class="language-graphix">use tui::line;
+use tui::text::{self, *};
 
 text(&amp;[
     line(#alignment: `Left, "Left aligned"),

@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::image;
-use gui::column;
+use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::image::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let svg_content = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">

@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::pick_list;
-use gui::column;
+use gui::window;
+use gui::text::{self, *};
+use gui::pick_list::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let language: [string, null] = null;

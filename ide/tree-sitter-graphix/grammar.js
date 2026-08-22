@@ -300,12 +300,15 @@ module.exports = grammar({
       optional(choice(
         seq('::', $.use_group),
         seq('::', $.use_glob),
-        seq('as', field('rename', $._binding_name)),
+        seq('as', field('rename', choice($._binding_name, $.type_identifier))),
       )),
     ),
 
+    // values/modules are lowercase, types uppercase — a use imports
+    // every kind sharing the name, so both are legal segments
     _use_segment: $ => choice(
       $._binding_name,
+      $.type_identifier,
       'self',
       'super',
       'package',
@@ -445,7 +448,13 @@ module.exports = grammar({
       optional($.type_arguments),
     )),
 
+    // Type paths accept the same path-root keywords as expression
+    // paths: `super::m::T`, `package::m::T`, `self::T`.
     type_path: $ => seq(
+      optional(seq(
+        choice('self', 'package', seq('super', repeat(seq('::', 'super')))),
+        '::',
+      )),
       choice($.type_identifier, $._binding_name),
       repeat(seq('::', choice($.type_identifier, $._binding_name))),
     ),

@@ -1,4 +1,4 @@
-use sys::io;
+use sys::io::Stream;
 
 /// Decode a value from packed binary bytes or stream.
 val read: fn(input: [bytes, Stream<'a>]) -> Result<'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]>;

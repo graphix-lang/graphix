@@ -1,3 +1,4 @@
+use super::args;
 type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 

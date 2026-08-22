@@ -136,18 +136,15 @@ pub trait Package<X: GXExt>: Send + Sync {
     fn main_program(&self) -> Option<&'static str>;
 }
 
-/// Build the root-module prelude from the registered package names: `mod
-/// core;\nuse core` (core is brought into scope) plus `mod <name>` for each
-/// other package, joined by `;\n`. Shared by the shell, the LSP, and the test
+/// Build the root-module prelude from the registered package names:
+/// `mod <name>` for each package, joined by `;\n`. Core needs no
+/// `use` — the compiler's core prelude makes core's root items
+/// visible everywhere. Shared by the shell, the LSP, and the test
 /// harness.
 pub fn root_module_source(root_mods: &IndexSet<ArcStr>) -> ArcStr {
     let mut parts = Vec::new();
     for name in root_mods {
-        if name == "core" {
-            parts.push(format!("mod core;\nuse core"));
-        } else {
-            parts.push(format!("mod {name}"));
-        }
+        parts.push(format!("mod {name}"));
     }
     ArcStr::from(parts.join(";\n"))
 }

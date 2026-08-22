@@ -1,8 +1,8 @@
-use tui;
-use tui::tabs;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+use tui::{line, style};
+use tui::tabs::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let selected_tab = 0;
 

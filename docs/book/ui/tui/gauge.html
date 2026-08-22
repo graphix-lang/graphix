@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -194,8 +194,8 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
+<pre><code class="language-graphix">use tui::style;
+use tui::gauge::{self, *};
 
 // 75%
 let progress = 0.75;
@@ -207,10 +207,10 @@ gauge(
 </code></pre>
 <p><img src="./media/gauge_basic.png" alt="Basic Gauge"></p>
 <h3 id="progress-with-color-thresholds"><a class="header" href="#progress-with-color-thresholds">Progress with Color Thresholds</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, span, style};
+use tui::gauge::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let power = min(1., cast&lt;f64&gt;(count(sys::time::timer(0.5, true)))$ * 0.01);
 
@@ -234,9 +234,9 @@ block(
 </code></pre>
 <p><img src="./media/gauge_threshold.gif" alt="Gauge With Color"></p>
 <h3 id="resource-usage"><a class="header" href="#resource-usage">Resource Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::gauge;
-use tui::text;
+<pre><code class="language-graphix">use tui::{span, style};
+use tui::gauge::{self, *};
+use tui::text::{self, *};
 
 // memory amounts, in GB
 let used_memory = 6.5;

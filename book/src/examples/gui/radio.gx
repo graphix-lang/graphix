@@ -1,7 +1,7 @@
-use gui;
-use gui::text;
-use gui::radio;
-use gui::column;
+use gui::window;
+use gui::text::{self, *};
+use gui::radio::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let size: [`Small, `Medium, `Large] = `Medium;

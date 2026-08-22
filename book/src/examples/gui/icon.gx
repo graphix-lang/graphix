@@ -1,4 +1,4 @@
-use gui;
+use gui::ImageSource;
 
 let icon: ImageSource = `Svg(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 199.7 184.2">
 <path fill="#4fc3f7" d="M189.5,36.8c0.2,2.8,0,5.1-0.6,6.8L153,162c-0.6,2.1-2,3.7-4.2,5c-2.2,1.2-4.4,1.9-6.7,1.9H31.4c-9.6,0-15.3-2.8-17.3-8.4

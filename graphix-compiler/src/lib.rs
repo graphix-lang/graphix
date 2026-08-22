@@ -93,6 +93,11 @@ pub enum CFlag {
     /// control knob — fusion is JIT-only (no interpreter), so there is
     /// no meaningful "fuse but don't JIT" state to represent.
     FusionDisabled,
+    /// Interactive (REPL) name-collision policy: a `use` that would
+    /// collide with an existing import or declaration SHADOWS it
+    /// instead of erroring, the way `let` re-binding already does.
+    /// File modules keep the strict rules.
+    ReplaceImports,
 }
 
 /// Runtime control signals shared between a runtime handle and the
@@ -1030,7 +1035,6 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Neg(&'a node::op::Neg<R, E>),
     // Leaves and declarations
     Constant(&'a node::Constant),
-    Use(&'a node::Use),
     TypeDef(&'a node::TypeDef),
     Nop(&'a node::Nop),
     // Synthetic — produced by fusion itself.
@@ -1812,6 +1816,19 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// [`PendingTailCall`]. `None` except for the instant between a tail
     /// self-call stashing its args and the owning lambda consuming them.
     pub(crate) pending_tail_call: Option<PendingTailCall>,
+    /// Imports whose terminal name did not exist when the `use`
+    /// compiled (a `use self::sub::x` may legitimately precede
+    /// `mod sub;` in body order). Drained and re-checked at the end
+    /// of [`compile_stmt`] — an entry still naming nothing is a
+    /// compile error there, so a typo'd import cannot ride along
+    /// silently.
+    pub(crate) pending_imports: Vec<PendingImport>,
+    /// Module names pre-registered by a block's headers scan (one
+    /// AST pass over each block's direct children before they
+    /// compile), making `mod` declaration order irrelevant to name
+    /// resolution. The `Module` compile arm removes its own entry
+    /// instead of tripping the duplicate-module guard on it.
+    pub(crate) predeclared_mods: AHashSet<ModPath>,
     /// `LambdaId`s whose `GXLambda::update` is currently ON the Rust
     /// call stack, with activation counts (a multiset — recursion
     /// activates the same id many times). `CallSite::bind` consults it:
@@ -1931,6 +1948,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             resolving_sites: Arc::new(parking_lot::Mutex::new(nohash::IntSet::default())),
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
+            pending_imports: Vec::new(),
+            predeclared_mods: AHashSet::default(),
             active_lambdas: nohash::IntMap::default(),
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
@@ -2071,6 +2090,16 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 }
 
+/// A deferred import-existence check: see
+/// [`ExecCtx::pending_imports`].
+#[derive(Debug)]
+pub(crate) struct PendingImport {
+    pub(crate) scope: ModPath,
+    pub(crate) key: compact_str::CompactString,
+    pub(crate) pos: combine::stream::position::SourcePosition,
+    pub(crate) ori: triomphe::Arc<expr::Origin>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub lexical: ModPath,
@@ -2085,9 +2114,44 @@ impl Scope {
         }
     }
 
+    /// Append a generated block-scope component (do/fn/sel/ca level).
+    pub fn append_block(&self, kind: &str, id: u64) -> Self {
+        self.append(block_component(kind, id).as_str())
+    }
+
     pub fn root() -> Self {
         Self { lexical: ModPath::root(), dynamic: ModPath::root() }
     }
+}
+
+/// Format a generated block-scope component. The `#` prefix marks it
+/// as a non-module level: identifiers cannot start with `#`, so a
+/// scope path structurally records where the enclosing module ends —
+/// [`mod_root`] strips trailing marked components.
+pub fn block_component(kind: &str, id: u64) -> CompactString {
+    compact_str::format_compact!("#{kind}{id}")
+}
+
+/// True iff `part` is a generated block-scope component rather than
+/// a module name.
+pub fn is_block_component(part: &str) -> bool {
+    part.starts_with('#')
+}
+
+/// The module root of a lexical scope path: the path minus trailing
+/// generated block components.
+pub fn mod_root(mut scope: &str) -> &str {
+    use netidx_core::path::Path;
+    while let Some(base) = Path::basename(scope) {
+        if !is_block_component(base) {
+            break;
+        }
+        match Path::dirname(scope) {
+            Some(d) => scope = d,
+            None => return "/",
+        }
+    }
+    scope
 }
 
 /// compile the expression into a node graph in the specified context
@@ -2130,6 +2194,8 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     ctx.attr_census.lock().clear();
     ctx.attr_dispatched.lock().clear();
     ctx.attr_absorbed.lock().clear();
+    ctx.pending_imports.clear();
+    ctx.predeclared_mods.clear();
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
     let env = ctx.env.clone();
@@ -2151,6 +2217,27 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         }
     };
     info!("compile time {:?}", st.elapsed());
+    // Deferred import-existence checks: a `use` whose terminal name
+    // didn't exist at its compile position (e.g. `use self::sub::x`
+    // ahead of `mod sub;`) must name something by the end of the
+    // statement, so a typo'd import cannot ride along silently.
+    for p in mem::take(&mut ctx.pending_imports) {
+        let Some(e) = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key))
+        else {
+            continue;
+        };
+        if !ctx.env.import_target_exists(e) {
+            let err = ::anyhow::anyhow!(
+                "use: no `{}` in `{}` (checked again after the enclosing \
+                 statement finished compiling)",
+                e.name,
+                e.scope
+            )
+            .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos });
+            ctx.env = env;
+            return Err(err);
+        }
+    }
     let st = Instant::now();
     if let Err(e) = node.typecheck0(ctx) {
         ctx.env = env;

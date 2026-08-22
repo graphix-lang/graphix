@@ -1,8 +1,5 @@
-use tui;
-use tui::sparkline;
+use tui::sparkline::{self, *};
 use core::math;
-use sys;
-use sys::net;
 use sys::time;
 
 // Self-contained: publish a simulated CPU value once a second, then

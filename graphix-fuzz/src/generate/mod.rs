@@ -200,6 +200,10 @@ pub struct GenStats {
     pub unannotated_ret: bool,
     /// A reference shape was emitted (`&`/`*`/ref param/`*r <-`).
     pub ref_op: bool,
+    /// A new-grammar use road was emitted (a `use super::{…}` header,
+    /// an inline `super::`/`package::` spelling, a main-scope item
+    /// import, a rename, or a module glob).
+    pub use_vocab: bool,
 }
 
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {

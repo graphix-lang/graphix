@@ -295,7 +295,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     // discovery runs from `build_lambda_kernel`) resolves in its own
     // module scope, not the region root's. Behaviour-preserving at the
     // root (root call sites carry root scope).
-    let (_, bind) = match ctx.env.lookup_bind(&cs.scope().lexical, path) {
+    let (_, bind) = match ctx.env.lookup_bind(&cs.scope().lexical, path).ok().flatten() {
         Some(b) => b,
         None => return,
     };

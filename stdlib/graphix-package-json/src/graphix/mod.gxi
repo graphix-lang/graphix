@@ -1,4 +1,4 @@
-use sys::io;
+use sys::io::Stream;
 
 /// Parse JSON from a string, byte array, or I/O stream.
 val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;

@@ -24,8 +24,20 @@ use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
 
-fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Result<()> {
+fn bind_sig(
+    env: &mut Env,
+    pending: &mut Vec<crate::PendingImport>,
+    scope: &Scope,
+    sig: &Sig,
+) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
+    // headers pass: a sig `use self::sub::…` may precede `mod sub;`
+    // — declaration order carries no visibility meaning
+    for si in sig.items.iter() {
+        if let SigKind::Module(name) = &si.kind {
+            env.modules.insert_cow(scope.append(name).lexical);
+        }
+    }
     for si in sig.items.iter() {
         let si_ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
         match &si.kind {
@@ -46,22 +58,14 @@ fn bind_sig(env: &mut Env, mod_env: &mut Env, scope: &Scope, sig: &Sig) -> Resul
                 if *reexport {
                     bail!("re-exports (`pub use`) are not yet supported")
                 }
+                // `names` is a global registry keyed by unique scope
+                // paths (kept from `self` across the privacy swap),
+                // so registering in the OUTER env alone covers the
+                // impl compile too
                 for item in names.iter() {
-                    let name = super::use_item_open_path(item)?;
-                    env.use_in_scope(scope, &name)?;
-                    mod_env.use_in_scope(scope, &name)?;
-                    if env.lsp_mode {
-                        let canonical = env
-                            .canonical_modpath(&scope.lexical, &name)
-                            .unwrap_or_else(|| name.clone());
-                        env.push_module_reference(ModuleRefSite {
-                            pos: si.pos,
-                            ori: si_ori.clone(),
-                            name: name.clone(),
-                            canonical,
-                            def_ori: None,
-                        });
-                    }
+                    super::compile_use_item(
+                        env, pending, si.pos, &si_ori, scope, false, item,
+                    )?;
                 }
             }
             SigKind::Bind(BindSig { name, typ }) => {
@@ -303,15 +307,21 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
+        enclosing: &Scope,
         scope: &Scope,
         sandbox: Sandbox,
         sig: Sig,
         source: Arc<Expr>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        let source = compile(ctx, flags, (*source).clone(), scope, top_id)?;
+        // The source expression is LOADER-side code: it compiles in the
+        // enclosing scope, so `let src = …; mod foo dynamic { … source
+        // src }` resolves. Only the loaded module text compiles under
+        // the module's own scope.
+        let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
-        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
+        env.modules.insert_cow(scope.lexical.clone());
+        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
         Ok(Node::new(Self {
             spec,
@@ -340,7 +350,11 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
         let mut env = ctx.env.clone();
-        bind_sig(&mut ctx.env, &mut env, &scope, &sig)
+        // the private snapshot predates bind_sig, but the module's
+        // own path must be visible from inside it (its submodules
+        // resolve package-rooted paths through it)
+        env.modules.insert_cow(scope.lexical.clone());
+        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .with_context(|| format!("binding signature for module {}", scope.lexical))?;
         let mut t = Self {
             spec,
@@ -370,6 +384,28 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = parser::parse(ori)?;
+        // the namespace table is a global registry (it survives the
+        // privacy swap), so a recompile must scrub the previous
+        // source's imports explicitly or they'd accumulate — then
+        // re-register the SIG's own uses, which the scrub also took
+        ctx.env.clear_names_under(&self.scope.lexical);
+        for si in self.sig.items.iter() {
+            if let SigKind::Use { reexport: false, names } = &si.kind {
+                let si_ori =
+                    si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+                for item in names.iter() {
+                    super::compile_use_item(
+                        &mut ctx.env,
+                        &mut ctx.pending_imports,
+                        si.pos,
+                        &si_ori,
+                        &self.scope,
+                        false,
+                        item,
+                    )?;
+                }
+            }
+        }
         self.compile_inner(ctx, &exprs)
     }
 

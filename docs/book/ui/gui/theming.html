@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -237,13 +237,13 @@ window(#theme: &amp;theme, &amp;content)
 <li><code>danger</code> – color for destructive actions and error states.</li>
 <li><code>warning</code> – color for warning indicators.</li>
 </ul>
-<pre><code class="language-graphix">use gui;
-use gui::style;
-use gui::text;
-use gui::button;
-use gui::toggler;
-use gui::slider;
-use gui::column;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::style::Palette;
+use gui::text::{self, *};
+use gui::button::{self, *};
+use gui::toggler::{self, *};
+use gui::slider::{self, *};
+use gui::column::{self, *};
 mod icon;
 
 let enabled = true;
@@ -320,16 +320,16 @@ let col = column(
 ) -&gt; StyleSheet;
 </code></pre>
 <p>Example with a custom palette and button override:</p>
-<pre><code class="language-graphix">use gui;
-use gui::style;
-use gui::text;
-use gui::button;
-use gui::text_input;
-use gui::slider;
-use gui::toggler;
-use gui::container;
-use gui::column;
-use gui::rule;
+<pre><code class="language-graphix">use gui::{color, window};
+use gui::style::{button_style, container_style, slider_style, stylesheet, text_input_style, toggler_style};
+use gui::text::{self, *};
+use gui::button::{self, *};
+use gui::text_input::{self, *};
+use gui::slider::{self, *};
+use gui::toggler::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
+use gui::rule::horizontal_rule;
 mod icon;
 
 let palette = {

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -206,8 +206,7 @@ val browser: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::browser;
+<pre><code class="language-graphix">use tui::browser::{self, *};
 
 let selected_path: string = never();
 
@@ -220,9 +219,8 @@ browser(
 </code></pre>
 <p><img src="./media/browser_basic.png" alt="Basic Browser Widget"></p>
 <h3 id="basic-navigation"><a class="header" href="#basic-navigation">Basic Navigation</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::browser;
-use tui::input_handler;
+<pre><code class="language-graphix">use tui::browser::{self, *};
+use tui::input_handler::{self, *};
 
 let path = "/";
 let selected_path: string = never();

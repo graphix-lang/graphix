@@ -5,7 +5,7 @@ Pack format. Like `json::read`, `pack::read` uses type-directed
 deserialization.
 
 ```graphix
-use sys::io;
+use sys::io::Stream;
 
 /// Decode a value from packed binary bytes or stream.
 val read: fn(input: [bytes, Stream<'a>]) -> Result<'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]>;

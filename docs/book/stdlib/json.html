@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4e99a5c.js"></script>
@@ -178,7 +178,7 @@
 <p>The <code>json</code> module provides JSON serialization and deserialization.
 <code>json::read</code> uses type-directed deserialization — the target type is
 inferred from the type annotation at the call site.</p>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::Stream;
 
 /// Parse JSON from a string, byte array, or I/O stream.
 val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
@@ -196,8 +196,7 @@ val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt;
 <p>The return type of <code>json::read</code> is determined by the type annotation on
 the binding. The compiler resolves the concrete type at compile time and
 generates the appropriate deserialization code.</p>
-<pre><code class="language-graphix">use json;
-
+<pre><code class="language-graphix">
 let n: i64 = json::read("42")?;
 let s: string = json::read("\"hello\"")?;
 let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 30}")?;

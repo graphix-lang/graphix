@@ -611,11 +611,11 @@ impl ServerState {
         let scope = self.scope_at_char(uri, position);
         let name: ModPath = word.split("::").collect();
 
-        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
+        if let Some((_, bind)) = env.lookup_bind(&scope, &name).ok().flatten() {
             return Some(bind_hover(&word, bind));
         }
 
-        if let Some(typedef) = env.lookup_typedef(&scope, &name) {
+        if let Some(typedef) = env.lookup_typedef(&scope, &name).ok().flatten() {
             let mut contents =
                 format!("```graphix\ntype {} = {}\n```", word, typedef.typ);
             if let Some(doc) = &typedef.doc {
@@ -738,7 +738,7 @@ impl ServerState {
         out: &mut Vec<lsp_types::Location>,
     ) {
         let Some(env) = env else { return };
-        let Some((_, bind)) = env.lookup_bind(scope, name) else { return };
+        let Some((_, bind)) = env.lookup_bind(scope, name).ok().flatten() else { return };
         let starter_id = bind.id;
         // Sig val proxies live in the project's external env; impl
         // bindings live in the per-module internal env. find-references
@@ -1440,7 +1440,7 @@ impl ServerState {
         let scope = ModPath::root();
         let name: ModPath = word.split("::").collect();
         let env = self.env_for(uri);
-        if let Some((_, bind)) = env.lookup_bind(&scope, &name) {
+        if let Some((_, bind)) = env.lookup_bind(&scope, &name).ok().flatten() {
             let target_uri = match &bind.ori.source {
                 Source::File(p) => path_to_uri(p)?,
                 Source::Internal(_) | Source::Unspecified => self
@@ -1459,7 +1459,7 @@ impl ServerState {
         // Last fallback: cursor on a typedef name with no recorded
         // ReferenceSite (e.g. cursor right on `Foo` in
         // `type Foo = …` itself).
-        let typedef = env.lookup_typedef(&scope, &name)?;
+        let typedef = env.lookup_typedef(&scope, &name).ok().flatten()?;
         let target_uri = match &typedef.ori.source {
             Source::File(p) => path_to_uri(p)?,
             Source::Internal(_) | Source::Unspecified => self

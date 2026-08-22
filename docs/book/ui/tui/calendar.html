@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-830d5da5.js";
+            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-e4e99a5c.js"></script>
@@ -215,8 +215,7 @@ val calendar: fn(
 <p>Creates a date with year, month (1-12), and day (1-31).</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::calendar;
+<pre><code class="language-graphix">use tui::calendar::{self, *};
 
 let current_date = date(2024, 5, 15);
 
@@ -224,10 +223,10 @@ calendar(&amp;current_date)
 </code></pre>
 <p><img src="media/calendar_basic.png" alt="Basic Calendar"></p>
 <h3 id="event-calendar"><a class="header" href="#event-calendar">Event Calendar</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::calendar;
-use tui::block;
-use tui::text;
+<pre><code class="language-graphix">use tui::{line, style};
+use tui::calendar::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
 
 let today = date(2024, 5, 15);
 
@@ -252,8 +251,8 @@ block(
 </code></pre>
 <p><img src="media/calendar_events.png" alt="Calendar With Events"></p>
 <h3 id="color-coded-events-by-type"><a class="header" href="#color-coded-events-by-type">Color-coded Events by Type</a></h3>
-<pre><code class="language-graphix">use tui;
-use tui::calendar;
+<pre><code class="language-graphix">use tui::style;
+use tui::calendar::{self, *};
 
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};

@@ -1,3 +1,4 @@
+use super::{size, Size, Style, style, Tui};
 type ScrollbarOrientation = [
   `VerticalRight,
   `VerticalLeft,

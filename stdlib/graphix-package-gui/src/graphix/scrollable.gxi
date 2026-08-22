@@ -1,3 +1,4 @@
+use super::{Length, ScrollDirection, Widget};
 type Scrollable = {
   child: &Widget,
   direction: &ScrollDirection,

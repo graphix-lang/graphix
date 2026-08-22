@@ -1,4 +1,3 @@
-use tui;
-use tui::paragraph;
+use tui::paragraph::{self, *};
 
 paragraph(&"This is a simple paragraph. It will automatically wrap to fit the available width.")
