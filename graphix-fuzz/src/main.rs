@@ -253,6 +253,10 @@ async fn main() -> Result<()> {
     // a generator is used; it's stripped before positional parsing so
     // `generate --reactive 500 42` and `generate 500 42 --reactive`
     // both work.
+    // Before anything allocates: the child half of the sandbox's
+    // address-space limit (the parent can no longer install it through
+    // `pre_exec` without losing posix_spawn — see `sandbox_cwd`).
+    graphix_fuzz::apply_mem_limit();
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");

@@ -32,7 +32,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, FusionStats,
-    expr::{Expr, VfsResolver},
+    expr::{Expr, VfsEntry, VfsResolver},
 };
 use graphix_package::Package;
 use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
@@ -248,6 +248,87 @@ pub async fn run_program_routed(
     run_program_with_stats_routed(code, mode, route, timeout).await.0
 }
 
+/// Everything needed to compile and drive ONE subject, derived from
+/// its source text in a single place.
+///
+/// The individual path and the batch child each used to derive this
+/// for themselves, and drifted apart three times — the batch child's
+/// wrap lost `use super::*`, so every batched subject with injected
+/// inputs failed to compile; it passed no `mod` declarations, so every
+/// batched subject carrying an aux file did the same; and it never
+/// parsed the callable header, so callable subjects could not batch at
+/// all. The first two were INVISIBLE to the oracle, because a
+/// CompileErr agrees with a CompileErr: the subjects reported a clean
+/// agreement having never run. Deriving this once is what makes that
+/// class of drift unrepresentable.
+pub struct Subject {
+    pub sched: schedule::Schedule,
+    pub spec: Option<callable::CallSpec>,
+    pub tier: OracleTier,
+    /// `mod <stem>;` per aux `.gx` section, for the compile text's top
+    /// level — this is what makes an aux module resolvable at all, and
+    /// what `compile_ref_by_name` walks to reach a callable handler.
+    pub mods: String,
+    /// The module VFS: the wrapped body under `modname`, plus aux files.
+    pub table: AHashMap<Path, VfsEntry>,
+    /// The module the body is installed as. Unique per subject inside a
+    /// batch child (one warmed runtime serves many subjects, so a
+    /// shared name would alias their graphs); `test` on the individual
+    /// path, which gets a fresh runtime per subject.
+    pub modname: String,
+}
+
+impl Subject {
+    /// `Err` is the message for a `CompileErr` outcome: a malformed
+    /// header is a compile-class reject in every mode, so it agrees
+    /// everywhere and surfaces in `gen-check` rather than as a phantom
+    /// divergence.
+    pub fn parse(code: &str, modname: &str) -> Result<Subject, String> {
+        let (sched, body) = schedule::Schedule::parse(code)
+            .map_err(|e| format!("schedule header: {e}"))?;
+        let (spec, body) = callable::CallSpec::parse(body)
+            .map_err(|e| format!("callable header: {e}"))?;
+        let (body, files) =
+            files::split(&body).map_err(|e| format!("file section: {e}"))?;
+        // `use super::*` imports the compile text's top-level
+        // declarations — the injected inputs and the aux `mod`s. Under
+        // the module system a submodule sees NOTHING of its parent
+        // implicitly, so without it a subject with inputs cannot name
+        // them.
+        let wrapped = ArcStr::from(format!("use super::*; let result = {body}"));
+        let mut table = AHashMap::from_iter([(
+            Path::from(format!("/{modname}.gx")),
+            VfsEntry::from(wrapped),
+        )]);
+        for (name, text) in &files {
+            table.insert(
+                Path::from(format!("/{name}")),
+                VfsEntry::from(ArcStr::from(text.as_str())),
+            );
+        }
+        Ok(Subject {
+            sched,
+            spec,
+            tier: oracle_tier(code),
+            mods: files::mod_decls(&files),
+            table,
+            modname: modname.to_string(),
+        })
+    }
+
+    /// The text handed to the compiler. Injected-input and callable
+    /// declarations sit at the TOP LEVEL (the D4 contract; see
+    /// `schedule::Schedule::decls`) — before the module wrap, where
+    /// `compile_ref_by_name` can reach them from root — and the aux
+    /// `mod`s precede the callable declarations, which reference into
+    /// the handler's module.
+    pub fn compile_text(&self) -> String {
+        let Subject { sched, spec, mods, modname, .. } = self;
+        let cdecls = spec.as_ref().map(|c| c.decls()).unwrap_or_default();
+        format!("{}{mods}{cdecls}{{ mod {modname}; {modname}::result }}", sched.decls())
+    }
+}
+
 /// Compile `code` (a wrapper, as [`run_program`]) under `mode` WITHOUT
 /// driving it — `None` = compiled clean, `Some(error)` = parse/typecheck
 /// reject (or the runtime failed to init). This is `gen-check`'s
@@ -289,33 +370,12 @@ enum CompileOutcome {
 /// `--bless` could bake a bogus 0 into the manifest (it did, once,
 /// for sample-select-orphan/00).
 async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
-    let (sched, body) = match schedule::Schedule::parse(code) {
-        Ok(x) => x,
-        Err(e) => {
-            let e = format!("schedule header: {e}");
-            return CompileOutcome::Rejected(e, FusionStats::default());
-        }
-    };
-    let (body, files) = match files::split(body) {
-        Ok(x) => x,
-        Err(e) => {
-            let e = format!("file section: {e}");
-            return CompileOutcome::Rejected(e, FusionStats::default());
-        }
+    let subj = match Subject::parse(code, "test") {
+        Ok(s) => s,
+        Err(e) => return CompileOutcome::Rejected(e, FusionStats::default()),
     };
     let (tx, _rx) = mpsc::channel(64);
-    let wrapped = format!("use super::*; let result = {body}");
-    let mut tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
-    )]);
-    for (name, text) in &files {
-        tbl.insert(
-            Path::from(format!("/{name}")),
-            graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
-        );
-    }
-    let resolver = VfsResolver::new(tbl);
+    let resolver = VfsResolver::new(subj.table.clone());
     // The sink is discarded — seeding it keeps the compile cycle's
     // print output (the first update cycle runs inside `compile`) off
     // the process streams.
@@ -334,11 +394,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         Ok(c) => c,
         Err(e) => return CompileOutcome::Failed(format!("runtime init failed: {e:?}")),
     };
-    let text = format!(
-        "{}{}{{ mod test; test::result }}",
-        sched.decls(),
-        files::mod_decls(&files)
-    );
+    let text = subj.compile_text();
     let run = async {
         let base = match ctx.fusion_stats().await {
             Ok(s) => s,
@@ -394,49 +450,15 @@ pub async fn run_program_with_stats_routed(
     route: Route,
     timeout: Duration,
 ) -> (Outcome, FusionStats) {
-    // A malformed schedule header is a COMPILE-class reject in every
-    // mode (agreement) — a generator/minimizer bug surfaces in
-    // gen-check, never as a phantom divergence.
-    let (sched, body) = match schedule::Schedule::parse(code) {
-        Ok(x) => x,
-        Err(e) => {
-            return (
-                Outcome::CompileErr(format!("schedule header: {e}")),
-                FusionStats::default(),
-            );
-        }
-    };
-    let (spec, body_owned) = match callable::CallSpec::parse(body) {
-        Ok(x) => x,
-        Err(e) => {
-            return (
-                Outcome::CompileErr(format!("callable header: {e}")),
-                FusionStats::default(),
-            );
-        }
-    };
-    let (body, files) = match files::split(&body_owned) {
-        Ok(x) => x,
-        Err(e) => {
-            return (
-                Outcome::CompileErr(format!("file section: {e}")),
-                FusionStats::default(),
-            );
-        }
+    // A malformed header is a COMPILE-class reject in every mode
+    // (agreement) — a generator/minimizer bug surfaces in gen-check,
+    // never as a phantom divergence.
+    let subj = match Subject::parse(code, "test") {
+        Ok(s) => s,
+        Err(e) => return (Outcome::CompileErr(e), FusionStats::default()),
     };
     let (tx, mut rx) = mpsc::channel(64);
-    let wrapped = format!("use super::*; let result = {body}");
-    let mut tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(ArcStr::from(wrapped)),
-    )]);
-    for (name, text) in &files {
-        tbl.insert(
-            Path::from(format!("/{name}")),
-            graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
-        );
-    }
-    let resolver = VfsResolver::new(tbl);
+    let resolver = VfsResolver::new(subj.table.clone());
     // The stdout oracle's per-runtime capture: the print family
     // (`print`/`println`/`dbg`) writes here instead of the process
     // streams, so two modes running concurrently in one process keep
@@ -462,20 +484,9 @@ pub async fn run_program_with_stats_routed(
             );
         }
     };
-    let tier = oracle_tier(code);
+    let tier = subj.tier;
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let mut outcome = drive(
-        &ctx,
-        &mut rx,
-        &sched,
-        spec.as_ref(),
-        route,
-        &files::mod_decls(&files),
-        "test",
-        tier,
-        timeout,
-    )
-    .await;
+    let mut outcome = drive(&ctx, &mut rx, &subj, route, timeout).await;
     // Attach the captured print output — Exact tier only (effect
     // emissions are as deterministic as the values there; FinalValues
     // pacing legitimately varies fire counts). Sorted: within-cycle
@@ -514,14 +525,12 @@ pub async fn run_program_with_stats_routed(
 async fn drive(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
-    sched: &schedule::Schedule,
-    spec: Option<&callable::CallSpec>,
+    subj: &Subject,
     route: Route,
-    mods: &str,
-    modname: &str,
-    tier: OracleTier,
     timeout: Duration,
 ) -> Outcome {
+    let Subject { sched, spec, tier, .. } = subj;
+    let (spec, tier) = (spec.as_ref(), *tier);
     // The whole multi-epoch drive shares one wall-clock deadline (a
     // backstop for a wedged evaluator only — quiescence and the trace
     // budgets are the real bounds) and one concurrent drain of the
@@ -621,9 +630,7 @@ async fn drive(
     // Injected-input decls sit at the compile text's TOP LEVEL (the D4
     // contract; see `schedule::Schedule::decls`), before the module
     // wrap, where `compile_ref_by_name` can reach them from root.
-    let cdecls = spec.map(|c| c.decls()).unwrap_or_default();
-    let text =
-        format!("{}{mods}{cdecls}{{ mod {modname}; {modname}::result }}", sched.decls());
+    let text = subj.compile_text();
     let compiled = bounded!(
         ctx.rt.compile(ArcStr::from(text)),
         Ok(c) => c,
@@ -1418,58 +1425,6 @@ pub enum BatchVerdict {
     Other,
 }
 
-/// Which batch a program may ride in. Batching pays only for
-/// COMPUTE-BOUND subjects: a batch runs its subjects sequentially
-/// against the shared runtime pair, so wait-bound subjects (sys::/
-/// http:: — timers, IO, sockets) serialize waits that the per-subject
-/// process pool overlaps across `par` children, and batching them
-/// measured NET SLOWER (16.7s vs 11.6s on the 2000-subject seed-991
-/// campaign) despite a zero observed hang rate. So: `Pure` =
-/// Exact-tier; `Async` = value-nondeterministic but WAITLESS (rand::
-/// — Excluded tier, runs for shape/crash coverage only); everything
-/// touching sys::/http:: — and aux-file programs (program-chosen
-/// module names could collide in the shared VFS) — stays on the
-/// individual path. Pure and Async batch SEPARATELY, never mixed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BatchClass {
-    Pure,
-    Async,
-    Never,
-}
-
-pub fn batch_class(code: &str) -> BatchClass {
-    // Callable programs need the route matrix — the batch child only
-    // drives the in-language route, so a batch "agree" would silently
-    // skip the whole point of the mode.
-    if callable::has_header(code) {
-        return BatchClass::Never;
-    }
-    // BATCH FIRST, manage the failure rate — do not preemptively fail
-    // (Eric, 2026-08-17). The batch path already falls back: a subject
-    // the child cannot resolve comes back `Other` and is re-derived
-    // individually, and a batch that dies or stalls re-batches its
-    // unreported tail. So an exclusion here buys nothing the fallback
-    // would not handle, and costs a dedicated process plus a full stdlib
-    // compile for ONE subject.
-    //
-    // That cost was the campaign's dominant expense: with files, sys::
-    // and http:: excluded, ~89 of ~100 live children were individual
-    // re-runs, and a third of generated programs carry files. Batching
-    // them amortizes the ~80ms stdlib init across the whole batch.
-    //
-    // NOTHING is held out, including `sys::net`. Holding it back was the
-    // same preemptive reasoning applied to files and sys:: — justified
-    // by "it blocks by design" rather than by a number, and there is no
-    // way to learn its real cost except to batch it and read the failure
-    // rate (Eric, 2026-08-17). A subject that blocks is reported `Other`
-    // before the child stops, its batch's tail re-batches, and the
-    // `% individual` counter says what it cost.
-    match oracle_tier(code) {
-        OracleTier::Exact => BatchClass::Pure,
-        OracleTier::FinalValues | OracleTier::Excluded => BatchClass::Async,
-    }
-}
-
 /// The `check-batch` child body: run `progs` sequentially against ONE
 /// warmed runtime pair — the stdlib compiles once per mode instead of
 /// once per subject, which is the fleet-throughput constant (the
@@ -1515,99 +1470,115 @@ pub async fn run_batch(
     };
     let mut consecutive_poison = 0u32;
     for (i, code) in progs.iter().enumerate() {
-        if batch_class(code) == BatchClass::Never {
-            report(i, BatchVerdict::Other);
-            continue;
-        }
-        let mut extra: Vec<(String, String)> = Vec::new();
-        let tier = oracle_tier(code);
-        let (sched, body) = match schedule::Schedule::parse(code) {
-            Ok(x) => x,
-            Err(_) => {
-                report(i, BatchVerdict::Other);
-                continue;
-            }
-        };
-        let (body, files) = match files::split(body) {
-            Ok(x) => x,
-            Err(_) => {
-                report(i, BatchVerdict::Other);
-                continue;
-            }
-        };
-        // Files are installed into the SUBJECT'S OWN table rather than
-        // refusing the subject. They used to be excluded because a batch
-        // child reuses one warmed runtime across subjects, so same-named
-        // modules could alias — but a third of generated programs carry
-        // files, and each exclusion cost a dedicated process plus a full
-        // stdlib compile for ONE subject. That was where the box's CPU
-        // went: ~89 of ~100 children were individual re-runs.
-        //
-        // Aliasing here would be invisible to the differential oracle —
-        // both engines would inherit the same wrong module and agree — so
-        // it is pinned by `batched_files_do_not_alias`, which checks
-        // something other than agreement.
-        for (name, text) in &files {
-            extra.push((name.clone(), text.clone()));
-        }
         // Subject-unique module name: fresh module, fresh BindIds,
         // fresh everything — no cache aliasing between subjects. The
         // previous subject's graph was deleted when its `drive`
         // returned (`CompRes` handles delete their exprs on drop, and
         // ToGX messages are FIFO, so the delete lands before this
         // subject's TraceStart).
-        let modname = format!("t{i}");
-        let wrapped = ArcStr::from(format!("let result = {body}"));
-        let table = || {
-            let mut t = AHashMap::from_iter([(
-                Path::from(format!("/{modname}.gx")),
-                graphix_compiler::expr::VfsEntry::from(wrapped.clone()),
-            )]);
-            for (name, text) in &extra {
-                t.insert(
-                    Path::from(format!("/{name}")),
-                    graphix_compiler::expr::VfsEntry::from(ArcStr::from(text.as_str())),
-                );
+        //
+        // Aux files ride in the subject's OWN table. They used to be
+        // excluded because a batch child reuses one warmed runtime, so
+        // same-named modules could alias — but a third of generated
+        // programs carry files, and each exclusion cost a dedicated
+        // process plus a full stdlib compile for ONE subject. Aliasing
+        // would be invisible to the differential oracle (both engines
+        // inherit the same wrong module and agree), so it is pinned by
+        // `batched_files_do_not_alias`, which checks something other
+        // than agreement.
+        let subj = match Subject::parse(code, &format!("t{i}")) {
+            Ok(s) => s,
+            Err(_) => {
+                report(i, BatchVerdict::Other);
+                continue;
             }
-            t
         };
-        swap_i.set(VfsResolver::new(table()));
-        swap_j.set(VfsResolver::new(table()));
+        let tier = subj.tier;
+        swap_i.set(VfsResolver::new(subj.table.clone()));
+        swap_j.set(VfsResolver::new(subj.table.clone()));
         // The subject's OWN tier drives both runs — FinalValues gets
         // its settle grace rounds exactly as the individual path does.
         let (interp, jit) = tokio::join!(
-            drive(
-                &ctx_i,
-                &mut rx_i,
-                &sched,
-                None,
-                Route::InLanguage,
-                "",
-                &modname,
-                tier,
-                timeout
-            ),
-            drive(
-                &ctx_j,
-                &mut rx_j,
-                &sched,
-                None,
-                Route::InLanguage,
-                "",
-                &modname,
-                tier,
-                timeout
-            ),
+            drive(&ctx_i, &mut rx_i, &subj, Route::InLanguage, timeout),
+            drive(&ctx_j, &mut rx_j, &subj, Route::InLanguage, timeout),
         );
-        let poisoned = matches!(interp, Outcome::Timeout | Outcome::RuntimeErr(_))
-            || matches!(jit, Outcome::Timeout | Outcome::RuntimeErr(_));
-        // Excluded tier: no value comparison is sound (the individual
-        // path returns agree-without-ran unconditionally); the subject
-        // ran for shape/crash coverage, which is all it is for.
+        // A callable subject owes the route matrix: the point of the
+        // mode is that the embedder-dispatch route agrees with the
+        // in-language one, so an in-language-only agreement would skip
+        // what the subject is FOR. The two routes share a runtime per
+        // engine, so they run in sequence; only the engines overlap.
+        //
+        // These used to be held out of batching entirely, which put
+        // every one of them — 15% of the reactive lane is twins, about
+        // half of those callable — on the individual path at a
+        // dedicated process and a full stdlib compile each. That was
+        // the campaign's dominant expense (55 live individual children
+        // against a design target of ~0).
+        let routed = if subj.spec.is_some() {
+            let (ib, jb) = tokio::join!(
+                drive(&ctx_i, &mut rx_i, &subj, Route::Dispatch, timeout),
+                drive(&ctx_j, &mut rx_j, &subj, Route::Dispatch, timeout),
+            );
+            Some((ib, jb))
+        } else {
+            None
+        };
+        let suspect =
+            |o: &Outcome| matches!(o, Outcome::Timeout | Outcome::RuntimeErr(_));
+        let routed_ref = routed.as_ref();
+        let poisoned = suspect(&interp)
+            || suspect(&jit)
+            || routed_ref.is_some_and(|(a, b)| suspect(a) || suspect(b));
+        // Excluded tier stops here, exactly as both individual paths
+        // do: no value comparison is sound, so neither the twin scan
+        // nor the route pair runs and the subject reports agreement
+        // for having run at all — shape and crash coverage is what it
+        // is for. Poison stays batch business whatever the tier says:
+        // the shared runtime may be wedged.
+        //
+        // A metamorphic twin violation is a SINGLE-RUN finding — a bug
+        // that breaks every engine and route IDENTICALLY agrees on the
+        // wrong answer, so agreement cannot see it. Every twin carries
+        // an aux file, so until this child emitted `mod` declarations
+        // every batched twin compile-errored and reported a clean
+        // agreement: the twin oracle was blind in the batch lane. A
+        // violation goes back through the individual path, which
+        // confirms it with a rerun before recording a finding.
+        let comparable = tier != OracleTier::Excluded;
+        let twin = comparable
+            && (twin_violation(&interp)
+                || twin_violation(&jit)
+                || routed_ref
+                    .is_some_and(|(a, b)| twin_violation(a) || twin_violation(b)));
+        // The dispatch route's cycle offsets are not comparable at
+        // Exact strength: the gap compiles and callable dispatch take
+        // an engine- and run-dependent number of cycles, so only
+        // per-epoch settled values are contractual there.
+        let routes_agree = !comparable
+            || routed_ref.is_none_or(|(ib, jb)| {
+                let finals = |a: &Outcome, b: &Outcome| {
+                    a.agrees_with_at(b, OracleTier::FinalValues)
+                };
+                let route_agrees = |a: &Outcome, b: &Outcome| match (a, b) {
+                    (Outcome::Trace(x), Outcome::Trace(y)) => x.agrees_final(y),
+                    _ => a.agrees_with(b),
+                };
+                finals(ib, jb) && route_agrees(&interp, ib)
+            });
         let agreed = !poisoned
-            && (tier == OracleTier::Excluded || interp.agrees_with_at(&jit, tier));
+            && !twin
+            && routes_agree
+            && (!comparable || interp.agrees_with_at(&jit, tier));
         let verdict = if agreed {
-            let ran = tier != OracleTier::Excluded
+            // `ran` is the parent's RING-ADMISSION bar, so it mirrors
+            // the individual path exactly: a callable subject is never
+            // admitted (`check_callable` returns `ran: false` on every
+            // path — the ring's mutation operators do not understand a
+            // callable header, so a bred mutant of one is malformed),
+            // and neither is an Excluded-tier subject, which ran only
+            // for shape and crash coverage.
+            let ran = comparable
+                && subj.spec.is_none()
                 && matches!(&interp, Outcome::Trace(_))
                 && matches!(&jit, Outcome::Trace(_));
             BatchVerdict::Agree { ran }
@@ -1640,42 +1611,14 @@ pub async fn run_batch(
             // (subject 715 of the first K=1000 measurement AGREEs
             // individually).
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let probe_name = format!("p{i}");
-            let probe_src = ArcStr::from("let result = i64:0");
-            let table = || {
-                AHashMap::from_iter([(
-                    Path::from(format!("/{probe_name}.gx")),
-                    graphix_compiler::expr::VfsEntry::from(probe_src.clone()),
-                )])
-            };
-            swap_i.set(VfsResolver::new(table()));
-            swap_j.set(VfsResolver::new(table()));
-            let probe_sched =
-                schedule::Schedule::parse("i64:0").expect("trivial probe parses").0;
+            let probe =
+                Subject::parse("i64:0", &format!("p{i}")).expect("trivial probe parses");
+            swap_i.set(VfsResolver::new(probe.table.clone()));
+            swap_j.set(VfsResolver::new(probe.table.clone()));
             let budget = Duration::from_secs(10);
             let (pi, pj) = tokio::join!(
-                drive(
-                    &ctx_i,
-                    &mut rx_i,
-                    &probe_sched,
-                    None,
-                    Route::InLanguage,
-                    "",
-                    &probe_name,
-                    OracleTier::Exact,
-                    budget
-                ),
-                drive(
-                    &ctx_j,
-                    &mut rx_j,
-                    &probe_sched,
-                    None,
-                    Route::InLanguage,
-                    "",
-                    &probe_name,
-                    OracleTier::Exact,
-                    budget
-                ),
+                drive(&ctx_i, &mut rx_i, &probe, Route::InLanguage, budget),
+                drive(&ctx_j, &mut rx_j, &probe, Route::InLanguage, budget),
             );
             let healthy =
                 matches!(pi, Outcome::Trace(_)) && matches!(pj, Outcome::Trace(_));
@@ -1691,7 +1634,7 @@ pub async fn run_batch(
     let _ = tokio::time::timeout(grace, ctx_j.shutdown()).await;
 }
 
-/// Batch size for the campaign pool's PURE batch children. 1 disables
+/// Batch size for the campaign pool's batch children. 1 disables
 /// batching (every subject gets its own child, the pre-batching
 /// behavior). Default 64: the amortization curve is ~flat past here
 /// (7.2ms/subject at 16 → 5.6 at 64) while batch-child spawn churn
@@ -1704,17 +1647,6 @@ fn batch_size() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(64)
-        .max(1)
-}
-
-/// Batch size for ASYNC (waitless rand::) batch children — half the
-/// pure size (the class is a smaller share of the stream, so bigger
-/// batches would just add fill latency).
-fn batch_size_async() -> usize {
-    std::env::var("GRAPHIX_FUZZ_BATCH_ASYNC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(32)
         .max(1)
 }
 
@@ -3251,6 +3183,36 @@ fn child_cpu(sandbox: &std::path::Path) -> Duration {
 /// tells the child to skip its manual-invocation self-sandbox. A
 /// tempdir failure is a broken HARNESS — die loudly, exactly as child
 /// spawn failure does.
+/// The child's own address-space limit — the other half of
+/// [`sandbox_cwd`]'s rlimit, applied here rather than through a
+/// `pre_exec` hook so the parent keeps posix_spawn's vfork fast path
+/// (see the comment there for the measurement). Called once at
+/// startup by every process the harness spawns; a no-op when
+/// `GRAPHIX_FUZZ_MEM_LIMIT` is 0.
+pub fn apply_mem_limit() {
+    #[cfg(unix)]
+    {
+        // Children only. The DRIVER must never limit itself: its own
+        // address space is far larger than any child's (139GB of VA
+        // reservations against 547MB resident on a live soak box), so
+        // the child's ceiling would kill the parent outright.
+        // `sandbox_cwd` sets this marker on everything it spawns.
+        if std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none() {
+            return;
+        }
+        let limit: u64 = std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(48 << 30);
+        if limit > 0 {
+            let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
+            // Best effort: a hard limit already below `limit` makes
+            // this EPERM, and the subject timeout is the real guard.
+            unsafe { libc::setrlimit(libc::RLIMIT_AS, &rl) };
+        }
+    }
+}
+
 fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
     match tempfile::tempdir() {
         Ok(d) => {
@@ -3275,22 +3237,20 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
             // bind-rate-bound, ~100MB/s — a wall-clock kill fires
             // first); the rlimit is only the backstop against an
             // allocation-rate surprise.
-            #[cfg(unix)]
-            {
-                let limit: u64 = std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(48 << 30);
-                if limit > 0 {
-                    unsafe {
-                        cmd.pre_exec(move || {
-                            let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
-                            libc::setrlimit(libc::RLIMIT_AS, &rl);
-                            Ok(())
-                        });
-                    }
-                }
-            }
+            //
+            // The child sets it ON ITSELF (`apply_mem_limit`, called
+            // from main) rather than the parent setting it through a
+            // `pre_exec` hook, because ANY `pre_exec` closure makes
+            // std take the fork+exec path instead of posix_spawn's
+            // `CLONE_VM|CLONE_VFORK`. Fork cost scales with the
+            // PARENT's address space, and the soak driver's is huge:
+            // measured 11.8ms per spawn at 139GB of VA / 1422 VMAs,
+            // against 0.22ms for a small process. At ~61 spawns/s that
+            // was ~73% of a core spent in the kernel copying page
+            // tables, concurrent forks serializing on mmap_lock, and
+            // the driver pinned at 100% CPU while the box sat 40%
+            // idle. `current_dir` and `env` keep the fast path; only
+            // `pre_exec` loses it.
             d
         }
         Err(e) => {
@@ -3874,7 +3834,6 @@ struct SourceState {
     done: usize,
     stats: FuzzStats,
     pending: Vec<String>,
-    pending_async: Vec<String>,
     /// Ring admissions in flight, and the count the admit task has made.
     /// `None` when the source has no ring.
     admit: Option<tokio::sync::mpsc::Sender<(String, bool)>>,
@@ -3885,7 +3844,7 @@ struct SourceState {
     /// rewrites blocking every other dispatch — which is what made
     /// utilization a sawtooth (a long generation stall, then one child
     /// landing 64 subjects at once).
-    ready: std::collections::VecDeque<(String, BatchClass)>,
+    ready: std::collections::VecDeque<String>,
 }
 
 impl SourceState {
@@ -3926,7 +3885,7 @@ const GEN_BUFFER: usize = 512;
 fn ready_source(
     want: usize,
     states: &mut [SourceState],
-    gens: &mut [tokio::sync::mpsc::Receiver<(String, BatchClass)>],
+    gens: &mut [tokio::sync::mpsc::Receiver<String>],
 ) -> Option<usize> {
     for (st, rx) in states.iter_mut().zip(gens.iter_mut()) {
         while st.ready.len() < GEN_BUFFER {
@@ -4212,7 +4171,6 @@ pub async fn run_pool_multi(
     let mut minims: JoinSet<()> = JoinSet::new();
     let mut launched = 0usize;
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
-    let bsize_async = if isolate { batch_size_async() } else { 1 };
     let mut states: Vec<SourceState> =
         (0..sources.len()).map(|_| SourceState::default()).collect();
     // One generator task per source. Bounded, so a source that outruns
@@ -4220,22 +4178,15 @@ pub async fn run_pool_multi(
     // backlog, and each source's seed stream stays strictly sequential
     // inside its own task — a subject is still (source, seed)
     // reproducible.
-    let mut gens: Vec<tokio::sync::mpsc::Receiver<(String, BatchClass)>> = Vec::new();
+    let mut gens: Vec<tokio::sync::mpsc::Receiver<String>> = Vec::new();
     let mut gen_tasks: JoinSet<()> = JoinSet::new();
     for (i, src) in sources.iter_mut().enumerate() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<(String, BatchClass)>(GEN_BUFFER);
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(GEN_BUFFER);
         for mut next in std::mem::take(&mut src.gens) {
             let tx = tx.clone();
-            // Classify HERE too. `batch_class` parses the schedule header,
-            // splits the files and scans for the oracle tier — a per-subject
-            // parse whose cost tracks program SIZE, which is why it hurt the
-            // fuzz source (big mutants) and not the generators. It is a pure
-            // function of the text, so it belongs beside generation.
             gen_tasks.spawn(async move {
                 loop {
-                    let prog = next();
-                    let class = batch_class(&prog);
-                    if tx.send((prog, class)).await.is_err() {
+                    if tx.send(next()).await.is_err() {
                         break;
                     }
                 }
@@ -4303,19 +4254,16 @@ pub async fn run_pool_multi(
         |checks: &mut JoinSet<(usize, Vec<(String, PoolResult)>, Duration)>,
          sources: &mut Vec<Source<'static>>,
          states: &mut Vec<SourceState>,
-         gens: &mut Vec<tokio::sync::mpsc::Receiver<(String, BatchClass)>>,
+         gens: &mut Vec<tokio::sync::mpsc::Receiver<String>>,
          launched: &mut usize|
          -> bool {
             loop {
                 if !want(*launched) {
                     for (si, st) in states.iter_mut().enumerate() {
-                        let buf = if !st.pending.is_empty() {
-                            &mut st.pending
-                        } else if !st.pending_async.is_empty() {
-                            &mut st.pending_async
-                        } else {
+                        if st.pending.is_empty() {
                             continue;
-                        };
+                        }
+                        let buf = &mut st.pending;
                         let batch = std::mem::take(buf);
                         st.inflight += batch.len();
                         checks.spawn(async move {
@@ -4346,7 +4294,7 @@ pub async fn run_pool_multi(
                     Some(i) => i,
                     None => return false,
                 };
-                let (prog, class) = match states[si].ready.pop_front() {
+                let prog = match states[si].ready.pop_front() {
                     Some(p) => p,
                     None => return false,
                 };
@@ -4370,22 +4318,27 @@ pub async fn run_pool_multi(
                     return true;
                 }
                 let st = &mut states[si];
-                let (buf, cap) = match class {
-                    BatchClass::Pure if bsize > 1 => (&mut st.pending, bsize),
-                    BatchClass::Async if bsize_async > 1 => {
-                        (&mut st.pending_async, bsize_async)
-                    }
-                    _ => {
-                        st.inflight += 1;
-                        checks.spawn(async move {
-                            let (r, cpu) = check_isolated(&prog, timeout).await;
-                            (si, vec![(prog, r)], cpu)
-                        });
-                        return true;
-                    }
-                };
+                // EVERY subject batches. Nothing is classified and
+                // nothing is held out — the batch child falls back on
+                // its own (a subject it cannot resolve comes back
+                // `Other` and is re-derived individually, and a batch
+                // that dies or stalls re-batches its unreported tail),
+                // so an exclusion here buys nothing the fallback would
+                // not handle and costs a dedicated process plus a full
+                // stdlib compile for ONE subject (Eric, 2026-08-17).
+                // The `% individual` counter is what says the fallback
+                // rate, and it is the number to watch instead.
+                if bsize <= 1 {
+                    st.inflight += 1;
+                    checks.spawn(async move {
+                        let (r, cpu) = check_isolated(&prog, timeout).await;
+                        (si, vec![(prog, r)], cpu)
+                    });
+                    return true;
+                }
+                let buf = &mut st.pending;
                 buf.push(prog);
-                if buf.len() >= cap {
+                if buf.len() >= bsize {
                     let batch = std::mem::take(buf);
                     st.inflight += batch.len();
                     checks.spawn(async move {
@@ -4402,7 +4355,7 @@ pub async fn run_pool_multi(
     // unconditional break there exited the campaign having run nothing.
     async fn await_any(
         states: &mut [SourceState],
-        gens: &mut [tokio::sync::mpsc::Receiver<(String, BatchClass)>],
+        gens: &mut [tokio::sync::mpsc::Receiver<String>],
     ) -> bool {
         use tokio::sync::mpsc::error::TryRecvError;
         loop {
@@ -6134,6 +6087,78 @@ mod batch_files_test {
                     "subject {i} did not agree — files aliased across the batch"
                 );
             }
+        }
+    }
+
+    /// A batched subject must reach the same verdict as the individual
+    /// path — INCLUDING `ran`, which is the half that catches drift.
+    ///
+    /// The batch child derives its compile inputs, and for a while it
+    /// derived them separately from the individual path and fell
+    /// behind it three times: the wrap lost `use super::*` (so every
+    /// subject with injected inputs failed to compile), no `mod`
+    /// declarations were emitted (so every subject carrying an aux
+    /// file did the same), and the callable header was never parsed.
+    /// The first two were INVISIBLE to an agreement check — a
+    /// CompileErr agrees with a CompileErr, so the subjects reported a
+    /// clean agreement having never run at all, for five days.
+    /// `batched_files_do_not_alias` above passes under that bug.
+    ///
+    /// So this asserts on the FULL verdict against the individual
+    /// path, which pins the drift class rather than its three
+    /// instances.
+    ///
+    /// One gap it does NOT close: that the batch child drives BOTH
+    /// callable routes. A program satisfying the callable contract
+    /// agrees across routes by construction — that is what the
+    /// contract says — so no unit test can tell a child that drove
+    /// both from one that drove the in-language route twice. The
+    /// fuzzer is what covers it: a silently skipped dispatch route
+    /// shows up as `Pair::EngineDispatch` and `Pair::Route` findings
+    /// drying up.
+    #[tokio::test]
+    async fn batch_verdict_matches_individual() {
+        // `want_ran`: the ring-admission bar this subject must reach.
+        let cases: [(&str, &str, bool); 4] = [
+            ("plain", "i64:1 + i64:2", true),
+            (
+                "injected inputs",
+                "// schedule-v1: cap=8 events=64; in0=i64:5; in0=i64:7\n                 { let acc = i64:0; acc <- in0; acc }",
+                true,
+            ),
+            (
+                "aux module",
+                "m0::bump(i64:1)\n// file-v1: m0.gx\nlet bump = |x: i64| -> i64 x + i64:41",
+                true,
+            ),
+            (
+                "callable dispatch",
+                "// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9\n                 { m0::observe }\n                 // file-v1: m0.gx\n                 let state = { v: 0 };\n                 let handler = |x: i64| -> null { *(&state) <- (x ~ { v: x }); null };\n                 let observe = state",
+                false,
+            ),
+        ];
+        let timeout = Duration::from_secs(20);
+        for (name, prog, want_ran) in cases {
+            let (diverged, ran) = check_classified(prog, timeout).await;
+            assert!(diverged.is_none(), "{name}: individual path diverged");
+            // ABSOLUTE, not just pairwise. Without this the check is
+            // vacuous — the two paths now share one derivation, so
+            // breaking it breaks them identically and they go on
+            // matching each other. That is the same blind spot the
+            // twin oracle exists to cover. `ran` is the ring-admission
+            // bar: true for a subject that ran to a value, and false
+            // for a callable one, which is deliberately never admitted.
+            assert_eq!(want_ran, ran, "{name}: individual path `ran`");
+            let want = BatchVerdict::Agree { ran: want_ran };
+            let mut got = None;
+            run_batch(&[prog.to_string()], timeout, |_, v| got = Some(v)).await;
+            assert_eq!(
+                Some(want),
+                got,
+                "{name}: batch verdict differs from the individual path \
+                 (a `ran: false` agreement means the batch child never \
+                 compiled the subject)"
+            );
         }
     }
 }
