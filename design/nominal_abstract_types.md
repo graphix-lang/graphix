@@ -5,49 +5,56 @@ to `traits.md` §3, but its payoff is wider than trait dispatch.
 
 ## The rule
 
-An abstract type (`type T;` in a `.gxi`) is ONE of:
+A type whose body is `Abstract<rep>` is NOMINAL: its name is a runtime
+tag, and its values are `Value::Abstract` carrying `(type uuid,
+payload)`, minted only by the type's constructor. Whether the body is
+HIDDEN is the interface's business, as for any type — the two are
+orthogonal:
 
-1. **Rust-backed**: no representation on the gx side (`type T;` there
-   too, or nothing). Values are minted by Rust through
-   `AbstractWrapper::wrap`, already `Value::Abstract` with a registered
-   UUID. Unchanged — 18 of the 21 abstract types today.
-2. **Graphix-minted**: the gx side gives a representation
-   (`type Counter = i64`). Values are `Value::Abstract` carrying
-   `(type uuid, payload)`, minted ONLY by the type's constructor.
+| gxi                          | gx                        | meaning                                   |
+|------------------------------|---------------------------|-------------------------------------------|
+| `type T;`                    | `type T = Abstract<u64>;` | hidden newtype (today's abstract type)    |
+| `type T = Abstract<u64>;`    | —                         | public newtype: anyone constructs         |
+| —                            | `type T = Abstract<u64>;` | module-private nominal type, no gxi needed|
+| `type T;`                    | `type T;` / nothing       | Rust-backed: Graphix never constructs     |
 
-There is no third kind: a gx representation never flows as its bare
-rep. That is the whole change, and everything below follows from it.
+There is no other kind: a rep never flows bare. The last row is
+18 of the 21 abstract types today and does not change.
 
-## Construction and destruction
-
-The type's name is its constructor, in expression and pattern
-position, visible exactly where the definition is today (the defining
-module and its subtree):
+## The three faces
 
 ```graphix
 // counter.gxi
 type Counter;
-val make: fn(x: i64) -> Counter;
-val get: fn(c: Counter) -> i64;
+val make: fn(x: u64) -> Counter;
+val get: fn(c: Counter) -> u64;
 
 // counter.gx
-type Counter = i64;
-let make = |x| Counter(x);
-let get = |c| { let Counter(x) = c; x };   // irrefutable destructure
+type Counter = Abstract<u64>;
+let make = |x| Counter(x);                     // construct
+let get = |c| c.0;                             // payload
+let bump = |c| { let Counter(x) = c; Counter(x + 1) };   // destructure
 ```
 
-`select v { Counter(x) => ... }` destructures; `Counter as c` is the
-type TEST and is legal ANYWHERE, since it is a tag comparison — this
-is what lifts select's refusal of abstract predicates and what trait
-dispatch over a union of abstracts needs (`traits.md` §3).
-Parameterized types construct with inference (`Box(x)`); the runtime
-tag does not carry the parameters (erased, as in Rust), so
-`[Box<i64>, Box<string>]` members are not distinguishable by tag —
-the same limit a variant has today.
-
-Type and value names are separate namespaces (`Env.typedefs`), so
-`Counter(x)` resolves to the constructor when no VALUE `Counter` is in
-scope; a declaration shadows, as everywhere.
+1. `Abstract<...>` is legal only as the ENTIRE body of a named `type`:
+   the name is the tag. Nested (`Array<Abstract<u64>>`) or anonymous
+   is an error — nothing to name it.
+2. `T(v)`, `x.0`, and the pattern `T(x)` (irrefutable in `let`, an arm
+   in `select`) are visible exactly where the DEFINITION is. The type
+   test `T as t` is visible wherever `T` is — it is a tag comparison,
+   which is what lifts select's refusal of abstract predicates and
+   what trait dispatch over a union needs (`traits.md` §3).
+3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
+   → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
+   `T({x.0 with a: 1})`.
+4. Parameters flow through: `type Box<'a> = Abstract<'a>`, constructor
+   `fn<'a>(x: 'a) -> Box<'a>`. The runtime tag does not carry `'a`
+   (erased, as in Rust), so `[Box<i64>, Box<string>]` members are not
+   distinguishable by tag — the same limit a variant has.
+5. The constructor is an ordinary fn value (`array::map(xs, Counter)`).
+   Type and value names are separate namespaces (`Env.typedefs`), so
+   `Counter(x)` resolves to the constructor when no VALUE `Counter` is
+   in scope; a declaration shadows, as everywhere.
 
 ## Why this is the prize
 
@@ -109,14 +116,14 @@ take the box with no visible cost.
 ## Migration
 
 Three gx-defined abstracts exist: `gui::Color`, `gui::menu::Shortcut`,
-`list::List` (→ transparent). Each module's internals gain explicit
-`T(x)` / `let T(x) = v`. The Rust-backed 18 do not move.
+`list::List` (→ transparent). Each module's internals gain
+`type T = Abstract<rep>` and explicit `T(x)` / `.0`. The Rust-backed 18 do not move.
 
 ## Sequence
 
 1. Deterministic ids (parse-time counter → path hash). Independent,
    fixes the double-id class on its own.
-2. The constructor/destructure syntax + `GxAbstract` runtime box;
-   inside-module transparency OFF.
+2. `Abstract<rep>` bodies, the three faces, the `GxAbstract` runtime
+   box; inside-module transparency OFF.
 3. Delete the two-view machinery; select accepts abstract predicates.
 4. Migrate the three types; `List` goes transparent.
