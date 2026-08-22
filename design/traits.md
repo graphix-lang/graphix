@@ -220,35 +220,48 @@ different project, not a trait feature.
   argument's type never selects an impl (no multi-dispatch); that
   keeps coherence a one-key lookup.
 
-## 8. Core traits: Eq, Ord, Hash, Show (Eric, 2026-08-22)
+## 8. Core traits: Eq, Ord, Hash, Display (Eric, 2026-08-22)
 
 Equality and printing are hacks on `Value`: there is no way to make a
 type compare equal any way but structurally, or print any way but as
-Graphix syntax (the typed printer walks the STATIC type to choose the
-form). The nominal-abstract ruling makes this acute — a boxed
+Graphix syntax. The nominal-abstract ruling makes this acute — a boxed
 `Counter` gets `(id, payload)` equality and printing that nobody can
 override, and the first newtypes anyone writes (a set as a sorted
 array, a case-folded key, a handle whose identity is its id, a `Color`
 printing as `#ff0000`) are exactly the cases where that default is
-wrong. So the first traits are the canonical four:
+wrong. So the first traits are the canonical four.
 
-- builtin impls for primitives; DERIVED impls for composites as
-  blanket impls (`impl Eq for Array<'a: Eq>` — Rust's derive);
-  user impls for nominal abstracts. Every type has an `Eq`, so
-  `|a, b| a == b` inferring `'a: Eq` breaks nothing.
-- Dispatch happens at TYPED sites: `a == b` with `a: Counter` resolves
-  to `Eq::eq`; `[Counter] == [Counter]` goes through the derived
-  array impl. Places that compare Values with no static type — `Map`
-  keys (the chunkmap comparator), the netidx wire, the JIT's total
-  order — stay structural on `(id, payload)`. Rust has the same
-  division (`BTreeMap` is generic over `Ord`); Graphix's `Map` is
-  not, so a nominal KEY orders structurally. A documented v1 limit.
-- Predictable cost: structural `==`/print on `Array<i64>` is one Rust
-  loop and stays one. Route through the trait only when the static
-  type CONTAINS a nominal abstract with a user impl; otherwise the
-  Rust walk. Where both apply they must agree bit-for-bit — a
-  differential-oracle target, and a JIT one (`==` on an abstract
-  becomes a static kernel call, not the Value-compare helper).
+**The rule (Eric's):** at a print or `==` site, look up the static
+type; if it has an impl, call it; if not, the type-directed structural
+case, recursing with the element types. That is the existing typed
+walk with one hook — the typed printer already carries the static
+type beside the value at every step (`TVal`), and `==` becomes the
+same shape by carrying the type too. It is Haskell's derived instance
+(`show [a]` calling `show a` per element) done by the walk instead of
+by a materialized blanket impl per composite, so the structural case
+stays ONE RUST LOOP. Impl targets are §4's — nominal abstracts,
+primitives, exact structural shapes — not abstracts only.
+
+- Call-out is SYNCHRONOUS: an impl body is a node graph and the walk
+  runs it inside the cycle. A call site's `update` IS a synchronous
+  evaluation for a Sync body, so the walk owns a per-site call site
+  per resolved impl (site identity, as with DynCall) and delivers the
+  args. The trait declares these methods `#[sync]` and effect
+  inference enforces it — no timers in `fmt`. The JIT helper calls
+  the impl's kernel; both engines must agree bit-for-bit — a
+  differential target.
+- Union members resolve FIRST: `==` on `[Point, i64]` determines the
+  member at runtime (the printer does this today), then looks up the
+  member's impl.
+- Under `Any`, a nominal abstract still finds its impl — the runtime
+  tag IS the type id; a structural-shape impl needs the static type.
+  The right asymmetry, and free.
+- Sites with no static type — `Map` keys (the chunkmap comparator),
+  the netidx wire, the JIT's `Value` total order — stay structural on
+  `(id, payload)`. Rust has the same division (`BTreeMap` is generic
+  over `Ord`; Graphix's `Map` is not). A documented v1 limit.
+- Every type has a derived `Eq`, so `|a, b| a == b` inferring
+  `'a: Eq` breaks nothing.
 
 ## 9. Rating against the alternatives (2026-08-22)
 
@@ -280,8 +293,8 @@ wrong. So the first traits are the canonical four:
    the existing cell conjunctions, static resolution in typecheck1,
    union dispatch as a generated select (§3), `Trait::method` paths
    + `use`, `.gxi` impl declarations. Compile error on unresolved self.
-4. The four core traits with derived impls (§8), and the fuzzer
-   generator vocabulary for impls on abstracts with custom `Eq`/`Show`
+4. The four core traits via the hooked typed walk (§8), and the
+   fuzzer generator vocabulary for user `Eq`/`Display` impls
    — part of the feature, not after it.
 5. After the release: io migration (§6); v2 trait parameters with
    one-impl-per-self coherence.
