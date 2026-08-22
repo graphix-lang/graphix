@@ -122,20 +122,15 @@ member kind:
 - Rust-backed abstract values (`Tls`, `Tcp`): `Value::Abstract`
   carries a TypeId — a runtime test exists, it is not yet exposed to
   select;
-- gx-defined abstract types ERASE to their representation, so the
-  test is the rep's predicate, and it is decidable iff the members'
-  reps are pairwise disjoint. `[Counter, Name]` over `i64`/`string`
-  dispatches; `[Counter, Meter]` both `= i64` is a compile error at
-  the call site.
+- gx-defined abstract types: with `nominal_abstract_types.md` every
+  graphix-minted abstract is a `Value::Abstract` tagged with its
+  type's id, so the test is a tag comparison, same as the Rust-backed
+  case. (Without it they erase to their representation and dispatch
+  is decidable only when members' reps are pairwise disjoint — an
+  abstraction leak. That rule is superseded; the box is the fix.)
 
-The last case is an abstraction leak: changing `Meter`'s private rep
-from `f64` to `i64` breaks a downstream dispatch. Accepted, as Rust
-accepts the auto-trait leak — the remedy is local and honest
-(`type Meter = `Meter(i64)`, a self-describing rep), and it is a
-monotone relaxation of today's rule, which refuses abstract type
-predicates outright. The same disjointness check should lift that
-refusal for USER-written selects too: one mechanism, no trait special
-case.
+One mechanism — the tag test — serves trait dispatch and lifts
+select's refusal of abstract type predicates for user code.
 
 What this leaves uncovered is a value whose implementor set is
 unknowable at the type — Rust's `dyn`. In a language that types every
@@ -235,8 +230,7 @@ different project, not a trait feature.
    the existing cell conjunctions, static resolution in typecheck1,
    `Trait::method` paths + `use`, `.gxi` impl declarations. Compile
    error on unresolved self.
-3. Union dispatch as a generated select (§3), with the abstract-rep
-   disjointness check — and the same check lifting select's refusal
-   of abstract type predicates for user code.
+3. Union dispatch as a generated select (§3) over the abstract tag
+   test — requires `nominal_abstract_types.md` first.
 4. Migrate io to it; split the stream-consuming Rust builtins.
 5. v2: trait parameters with one-impl-per-self coherence.
