@@ -220,17 +220,68 @@ different project, not a trait feature.
   argument's type never selects an impl (no multi-dispatch); that
   keeps coherence a one-key lookup.
 
-## 8. Proposal
+## 8. Core traits: Eq, Ord, Hash, Show (Eric, 2026-08-22)
+
+Equality and printing are hacks on `Value`: there is no way to make a
+type compare equal any way but structurally, or print any way but as
+Graphix syntax (the typed printer walks the STATIC type to choose the
+form). The nominal-abstract ruling makes this acute — a boxed
+`Counter` gets `(id, payload)` equality and printing that nobody can
+override, and the first newtypes anyone writes (a set as a sorted
+array, a case-folded key, a handle whose identity is its id, a `Color`
+printing as `#ff0000`) are exactly the cases where that default is
+wrong. So the first traits are the canonical four:
+
+- builtin impls for primitives; DERIVED impls for composites as
+  blanket impls (`impl Eq for Array<'a: Eq>` — Rust's derive);
+  user impls for nominal abstracts. Every type has an `Eq`, so
+  `|a, b| a == b` inferring `'a: Eq` breaks nothing.
+- Dispatch happens at TYPED sites: `a == b` with `a: Counter` resolves
+  to `Eq::eq`; `[Counter] == [Counter]` goes through the derived
+  array impl. Places that compare Values with no static type — `Map`
+  keys (the chunkmap comparator), the netidx wire, the JIT's total
+  order — stay structural on `(id, payload)`. Rust has the same
+  division (`BTreeMap` is generic over `Ord`); Graphix's `Map` is
+  not, so a nominal KEY orders structurally. A documented v1 limit.
+- Predictable cost: structural `==`/print on `Array<i64>` is one Rust
+  loop and stays one. Route through the trait only when the static
+  type CONTAINS a nominal abstract with a user impl; otherwise the
+  Rust walk. Where both apply they must agree bit-for-bit — a
+  differential-oracle target, and a JIT one (`==` on an abstract
+  becomes a static kernel call, not the Value-compare helper).
+
+## 9. Rating against the alternatives (2026-08-22)
+
+- Abstract fix: unconditional, and PRE-release — it is the breaking
+  change (inside-module transparency ends). Additive features can
+  follow a release; breaking ones cannot.
+- Functors: no. The half Graphix can use (a bundle of types and
+  values passed explicitly) it has structurally; the half it lacks
+  (expression-level resolution by type) functors do not give — OCaml
+  needed modular implicits on top.
+- Type classes vs traits: the same thing (single-param, associated
+  types, coherence, defaults) in Rust spelling, MONOMORPHIZED — which
+  matches per-callsite instances and fuses; dictionary passing would
+  de-fuse. What we forgo is higher-kinded classes, by choice.
+- Nothing: off the table, because the abstract fix creates the need
+  (§8). The dogfood log (netidx `graphix-admin-findings.md`) had hit
+  the abstract problem and not asked for traits — but it also could
+  not yet write a newtype whose `==` was wrong.
+
+## 10. Proposal
 
 1. Now, cheaply: the Rust `dyn` fix for `StreamKind` + exported
-   `wrap_stream`, so packages with Rust can produce Streams while the
-   language feature is designed. Independent of everything below.
-2. v1 traits: declarations, required + default methods, impls over
+   `wrap_stream`. `io::read(s, n)` call syntax is forward-compatible
+   with `trait Read` + `impl Read for Stream`, so the io MIGRATION
+   (§6) can follow the release without an API break.
+2. `nominal_abstract_types.md` (prerequisite; the breaking change).
+3. v1 traits: declarations, required + default methods, impls over
    nominal/primitive/exact-shape targets, traits as constraints via
    the existing cell conjunctions, static resolution in typecheck1,
-   `Trait::method` paths + `use`, `.gxi` impl declarations. Compile
-   error on unresolved self.
-3. Union dispatch as a generated select (§3) over the abstract tag
-   test — requires `nominal_abstract_types.md` first.
-4. Migrate io to it; split the stream-consuming Rust builtins.
-5. v2: trait parameters with one-impl-per-self coherence.
+   union dispatch as a generated select (§3), `Trait::method` paths
+   + `use`, `.gxi` impl declarations. Compile error on unresolved self.
+4. The four core traits with derived impls (§8), and the fuzzer
+   generator vocabulary for impls on abstracts with custom `Eq`/`Show`
+   — part of the feature, not after it.
+5. After the release: io migration (§6); v2 trait parameters with
+   one-impl-per-self coherence.
