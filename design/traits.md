@@ -178,6 +178,26 @@ of the alias it names or in the trait's package (a bare
 `impl Display for {x: i64, y: i64}` is refused — name it). The name
 is for the orphan rule only; what the impl applies to is the shape.
 
+Worked case (Eric's):
+
+```graphix
+type Point = {x: i64, y: i64};   impl Display for Point { .. }
+type T     = {x: i64, y: i64};   impl Display for T { .. }
+let f = |x: {x: i64, y: i64}| print(x)
+```
+
+Rejected: both impls target the canonical type `{x: i64, y: i64}`.
+With only one of them, `f` calls it — the annotation's anonymity is
+irrelevant. NAME-DIRECTED dispatch on a transparent alias (Point's
+impl for things called Point) is not offered because it cannot be
+honest: `Type::Ref` keeps the alias name for printing and compression
+but unification expands it (`contains` binds the expanded form), so
+whether a value "is still a Point" at the print site would depend on
+the inference path (`let p: Point = ..` vs `let p = make()` vs after a
+generic call). A transparent alias can GIVE a shape its one impl; only
+`Abstract<...>` can DISTINGUISH itself from another alias of the same
+shape — that is what the newtype is for.
+
 The table is global, keyed by trait path + canonical target; impls
 register when their MODULE loads, so a package's impls must be
 reachable from its root. A REPL re-`impl` replaces, like re-`let`.
