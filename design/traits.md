@@ -140,7 +140,7 @@ Rust generic struct. No `dyn` until a real program demands one; the
 closure-record encoding is the fallback if one ever does, and a
 programmer can write it by hand today.
 
-## 4. Impl targets must have an owner
+## 4. Impl targets: any type but unions and tvars; structural applies by shape
 
 Impls are GLOBAL once their module loads — scope governs only whether
 a method's NAME may be written bare (`use io::Read::read`), never
@@ -148,33 +148,42 @@ whether an impl applies. Coherence demands it: a value must be equal
 to the same things and print the same way everywhere (a `Set` built
 under one `Eq` and queried under another is silent corruption), and
 the core four are used implicitly by `==` and interpolation through
-the prelude. Rust rejects scoped impls for the same reason.
+the prelude.
 
-Given global impls, a target must have an OWNER, because a structural
-shape has none: `impl Display for {x: i64, y: i64}` in package A would
-change how package B's unrelated grid cell prints the moment A loads,
-and a second such impl in B is a coherence error between two
-strangers the orphan rule cannot adjudicate. Haskell's answer is
-"newtype it", and `nominal_abstract_types.md` makes that one line:
-`type Point = Abstract<{x: i64, y: i64}>` owns its impl, which applies
-to Points and nothing else.
+In a structural language a type IS its shape, so a structural target
+applies by shape: `impl Display for Point` with
+`type Point = {x: i64, y: i64}` applies to every `{x: i64, y: i64}` in
+the program. That is not action at a distance, it is what structural
+typing has always meant here; a package that wants its own
+`{x: i64, y: i64}` to print differently newtypes it
+(`Abstract<...>`, one line, `nominal_abstract_types.md`). (An earlier
+draft refused structural targets on Rust's nominal reasoning — Eric:
+"deeply unsatisfying, we're back to traits only on abstract types".)
 
-Targets, v1:
+Targets, v1 — any type EXCEPT:
 
-- a nominal abstract (`Abstract<rep>` or Rust-backed), owned by its
-  module — the common case;
-- a primitive or builtin constructor (`i64`, `string`, `Array<'a>`,
-  `Map<'k, 'v>`, `bytes`, ...), owned by core — so under the orphan
-  rule only core impls `Display for i64`, which IS the structural case.
+- unions: members resolve first (§3), so a union never needs an impl
+  and allowing one would make coherence a `contains` question;
+- bare tvars (blanket impls): v2 at the earliest, same reason.
 
-Refused: transparent aliases, structs, tuples, variants, unions, and
-tvars (blanket impls), with the message "`Point` is transparent; make
-it `Abstract<...>` to own an impl". Coherence is then one-key: one
-impl per (trait, owner), and the orphan rule is by package — an impl
-lives in the trait's package or the target's. The table is global,
-keyed by trait path + target id; impls register when their MODULE
-loads, so a package's impls must be reachable from its root. A REPL
-re-`impl` replaces, like re-`let`.
+Nominal abstracts and core's primitives/constructors apply to
+themselves; structs, tuples, variants, aliases apply to their shape.
+
+Coherence is ONE KEY: one impl per (trait, canonical type) per
+program. Two packages implementing one shape is a LOAD-TIME error
+naming both impls — Haskell's orphan situation, loud instead of a
+warning — resolved by newtyping one. The orphan rule needs an owner,
+so a structural target must be NAMED: the impl lives in the package
+of the alias it names or in the trait's package (a bare
+`impl Display for {x: i64, y: i64}` is refused — name it). The name
+is for the orphan rule only; what the impl applies to is the shape.
+
+The table is global, keyed by trait path + canonical target; impls
+register when their MODULE loads, so a package's impls must be
+reachable from its root. A REPL re-`impl` replaces, like re-`let`.
+Later: under `Any` a structural impl is still findable, since a
+runtime Value HAS a shape — lookup by observed shape beside the
+nominal tag. Not v1.
 
 ## 5. Trait generics — stage it
 
@@ -253,8 +262,8 @@ type beside the value at every step (`TVal`), and `==` becomes the
 same shape by carrying the type too. It is Haskell's derived instance
 (`show [a]` calling `show a` per element) done by the walk instead of
 by a materialized blanket impl per composite, so the structural case
-stays ONE RUST LOOP. Impl targets are §4's — owned types: nominal
-abstracts and core's primitives/constructors.
+stays ONE RUST LOOP. Impl targets are §4's — any type but unions and
+tvars; structural targets apply by shape.
 
 - Call-out is SYNCHRONOUS: an impl body is a node graph and the walk
   runs it inside the cycle. A call site's `update` IS a synchronous
@@ -303,7 +312,7 @@ abstracts and core's primitives/constructors.
    (§6) can follow the release without an API break.
 2. `nominal_abstract_types.md` (prerequisite; the breaking change).
 3. v1 traits: declarations, required + default methods, impls over
-   OWNED targets (§4), traits as constraints via
+   §4's targets (structural applies by shape), traits as constraints via
    the existing cell conjunctions, static resolution in typecheck1,
    union dispatch as a generated select (§3), `Trait::method` paths
    + `use`, `.gxi` impl declarations. Compile error on unresolved self.
