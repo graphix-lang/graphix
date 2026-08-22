@@ -256,9 +256,13 @@ status() {
         pid=$(soak_pid "$dir")
         ps -p "$pid" -o pid=,sid=,ni=,stat=,etime=,cmd= | sed 's/^/soak: /'
         # The per-source CPU split, which is the number the mix controls.
+        # A soak seconds old has logged no counter line yet, and under
+        # `pipefail` that empty grep failed the whole pipeline — so
+        # `start` exited non-zero on a launch that was perfectly healthy,
+        # which is the one signal a deploy verifier must be able to trust.
         grep -aoE '^  [a-z]*….*% cpu' "$dir/soak.log" 2>/dev/null |
             awk -F'…' '{ last[$1] = $0 } END { for (k in last) print "  " last[k] }' |
-            sort
+            sort || true
     elif session_live "$dir"; then
         pid=$(soak_pid "$dir")
         echo "soak: orphaned session $pid"
