@@ -382,21 +382,26 @@ abstract types only (§4); core's structural default is the walk.
   the abstract problem and not asked for traits — but it also could
   not yet write a newtype whose `==` was wrong.
 
-## 10. Proposal
+## 10. Proposal (revised 2026-08-22: io migrates NOW, API break accepted)
 
-1. Now, cheaply: the Rust `dyn` fix for `StreamKind` + exported
-   `wrap_stream`. `io::read(s, n)` call syntax is forward-compatible
-   with `trait Read` + `impl Read for Stream`, so the io MIGRATION
-   (§6) can follow the release without an API break.
-2. `nominal_abstract_types.md` (prerequisite; the breaking change).
-3. v1 traits: declarations, required + default methods, impls over
-   §4's targets (abstract anywhere; other types only in the
-   trait's package), traits as constraints via
-   the existing cell conjunctions, static resolution in typecheck1,
-   union dispatch as a generated select (§3), `Trait::method` paths
-   + `use`, `.gxi` impl declarations. Compile error on unresolved self.
-4. The four core traits via the hooked typed walk (§8), and the
-   fuzzer generator vocabulary for user `Eq`/`Display` impls
-   — part of the feature, not after it.
-5. After the release: io migration (§6); v2 trait parameters with
-   one-impl-per-self coherence.
+Eric: use the sketch's traits (`Read`/`Write`/`Close`/`Seek` over
+`File`, `TcpStream`, …) for io in this arc, not the old `Stream`;
+other types can then implement the io traits. The Rust `dyn
+StreamKind` fix is DEAD — it would have been replaced immediately.
+
+1. `nominal_abstract_types.md` (prerequisite; the breaking change).
+2. v1 traits: declarations, required + default methods, impls over
+   §4's targets (abstract anywhere; other types only in the trait's
+   package), traits as constraints via the existing cell
+   conjunctions, static resolution in typecheck1, union dispatch as a
+   generated select (§3), `Trait::method` paths + `use`, `.gxi` impl
+   declarations. Compile error on unresolved self.
+3. The four core traits via the hooked typed walk (§8), and the
+   fuzzer generator vocabulary for user `Eq`/`Display` impls — part of
+   the feature, not after it.
+4. io migration (§6) on the sketch traits: `StreamKind` dissolves
+   into per-package Rust-backed abstracts, each with builtin-bodied
+   impls; the stream-consuming Rust builtins (json/xls/toml/pack)
+   split into gx-side IO through the trait + Rust-side parse.
+5. After the release: v2 trait parameters with one-impl-per-self
+   coherence.
