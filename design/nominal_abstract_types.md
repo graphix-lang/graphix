@@ -18,9 +18,13 @@ orthogonal:
 | `type T = Abstract<u64>;`    | —                         | public newtype: anyone constructs         |
 | —                            | `type T = Abstract<u64>;` | module-private nominal type, no gxi needed|
 | `type T;`                    | `type T;` / nothing       | Rust-backed: Graphix never constructs     |
+| `type T;`                    | `type T = {x: i64};`      | ERROR: a hidden type is Abstract or Rust  |
 
-There is no other kind: a rep never flows bare. The last row is
-18 of the 21 abstract types today and does not change.
+There is no other kind: a rep never flows bare. A gxi `type T;` over
+a transparent gx body is refused outright (RULED 2026-08-22) — that
+was the one remaining way to give a bare rep an opaque name, i.e. the
+two-view case itself. The Rust-backed row is 18 of the 21 abstract
+types today and does not change.
 
 ## The three faces
 
