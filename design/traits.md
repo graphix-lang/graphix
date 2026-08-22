@@ -140,7 +140,7 @@ Rust generic struct. No `dyn` until a real program demands one; the
 closure-record encoding is the fallback if one ever does, and a
 programmer can write it by hand today.
 
-## 4. Impl targets: any type but unions and tvars; structural applies by shape
+## 4. Impl targets: abstract anywhere; anything else only in the trait's package
 
 Impls are GLOBAL once their module loads — scope governs only whether
 a method's NAME may be written bare (`use io::Read::read`), never
@@ -150,33 +150,41 @@ under one `Eq` and queried under another is silent corruption), and
 the core four are used implicitly by `==` and interpolation through
 the prelude.
 
-In a structural language a type IS its shape, so a structural target
-applies by shape: `impl Display for Point` with
-`type Point = {x: i64, y: i64}` applies to every `{x: i64, y: i64}` in
-the program. That is not action at a distance, it is what structural
-typing has always meant here; a package that wants its own
-`{x: i64, y: i64}` to print differently newtypes it
-(`Abstract<...>`, one line, `nominal_abstract_types.md`). (An earlier
-draft refused structural targets on Rust's nominal reasoning — Eric:
-"deeply unsatisfying, we're back to traits only on abstract types".)
+In a structural language a type IS its shape, so an impl on a
+structural target applies to every type of that shape, program-wide.
+That is a BOMB when strangers can write it: `impl Display for Point`
+with `type Point = {x: i64, y: i64}` in package A changes how package
+B's unrelated `{x: i64, y: i64}` prints the moment A loads, and a
+second such impl in B is a conflict between two packages that never
+heard of each other. The one legitimate non-abstract case tells you
+the rule: a user trait is useless without impls over builtin shapes
+(`impl ToJson for i64`, `for string`, `for Array<'a: ToJson>`,
+`for Map<string, 'a: ToJson>` — Rust's `impl<T: Tr> Tr for Vec<T>`),
+and those are written by the TRAIT'S AUTHOR, who is answerable for
+the trait's semantics over every shape.
 
-Targets, v1 — any type EXCEPT:
+**The rule:** an impl target is either
 
-- unions: members resolve first (§3), so a union never needs an impl
-  and allowing one would make coherence a `contains` question;
-- bare tvars (blanket impls): v2 at the earliest, same reason.
+- an ABSTRACT type (`Abstract<rep>` or Rust-backed) — impl'd in the
+  type's package or the trait's (the orphan rule); or
+- ANY other type (primitive, constructor with constrained element
+  tvars, struct, tuple, variant, alias) — but ONLY inside the trait's
+  own package.
 
-Nominal abstracts and core's primitives/constructors apply to
-themselves; structs, tuples, variants, aliases apply to their shape.
+Unions are never targets (members resolve first, §3); a bare tvar as
+the whole target (blanket impl) is v2 at the earliest. Coherence is
+one key — one impl per (trait, canonical type) — and a conflict can
+only ever be between two impls in one package: the author's own bug,
+never a load-time surprise between strangers.
 
-Coherence is ONE KEY: one impl per (trait, canonical type) per
-program. Two packages implementing one shape is a LOAD-TIME error
-naming both impls — Haskell's orphan situation, loud instead of a
-warning — resolved by newtyping one. The orphan rule needs an owner,
-so a structural target must be NAMED: the impl lives in the package
-of the alias it names or in the trait's package (a bare
-`impl Display for {x: i64, y: i64}` is refused — name it). The name
-is for the orphan rule only; what the impl applies to is the shape.
+Consequences. Core writes NO impls: its structural default for the
+core four IS the typed walk (§8), so outside core those traits are
+implementable for abstract types only. A struct or ADT that should
+carry behaviour gets a name — `type Shape = Abstract<[`Circle(f64),
+`Rect(f64, f64)]>` — at the cost of one unwrap before each `select`;
+that is where structural variants bite hardest (ML's and Haskell's
+classes live on nominal `data`), and the cost is paid rather than
+making variants nominal.
 
 Worked case (Eric's):
 
@@ -186,24 +194,18 @@ type T     = {x: i64, y: i64};   impl Display for T { .. }
 let f = |x: {x: i64, y: i64}| print(x)
 ```
 
-Rejected: both impls target the canonical type `{x: i64, y: i64}`.
-With only one of them, `f` calls it — the annotation's anonymity is
-irrelevant. NAME-DIRECTED dispatch on a transparent alias (Point's
-impl for things called Point) is not offered because it cannot be
-honest: `Type::Ref` keeps the alias name for printing and compression
-but unification expands it (`contains` binds the expanded form), so
-whether a value "is still a Point" at the print site would depend on
-the inference path (`let p: Point = ..` vs `let p = make()` vs after a
-generic call). A transparent alias can GIVE a shape its one impl; only
-`Abstract<...>` can DISTINGUISH itself from another alias of the same
-shape — that is what the newtype is for.
+Refused at the first impl: "`Display` is implemented for abstract
+types only outside core; make `Point` `Abstract<...>`." NAME-DIRECTED
+dispatch on a transparent alias (Point's impl for things called
+Point) is not offered because it cannot be honest: `Type::Ref` keeps
+the alias name for printing and compression but unification expands
+it (`contains` binds the expanded form), so whether a value "is still
+a Point" at the print site would depend on the inference path. Only
+`Abstract<...>` makes a name matter — that is what the newtype is for.
 
 The table is global, keyed by trait path + canonical target; impls
 register when their MODULE loads, so a package's impls must be
 reachable from its root. A REPL re-`impl` replaces, like re-`let`.
-Later: under `Any` a structural impl is still findable, since a
-runtime Value HAS a shape — lookup by observed shape beside the
-nominal tag. Not v1.
 
 ## 5. Trait generics — stage it
 
@@ -282,8 +284,8 @@ type beside the value at every step (`TVal`), and `==` becomes the
 same shape by carrying the type too. It is Haskell's derived instance
 (`show [a]` calling `show a` per element) done by the walk instead of
 by a materialized blanket impl per composite, so the structural case
-stays ONE RUST LOOP. Impl targets are §4's — any type but unions and
-tvars; structural targets apply by shape.
+stays ONE RUST LOOP. Outside core the four are implementable for
+abstract types only (§4); core's structural default is the walk.
 
 - Call-out is SYNCHRONOUS: an impl body is a node graph and the walk
   runs it inside the cycle. A call site's `update` IS a synchronous
@@ -332,7 +334,8 @@ tvars; structural targets apply by shape.
    (§6) can follow the release without an API break.
 2. `nominal_abstract_types.md` (prerequisite; the breaking change).
 3. v1 traits: declarations, required + default methods, impls over
-   §4's targets (structural applies by shape), traits as constraints via
+   §4's targets (abstract anywhere; other types only in the
+   trait's package), traits as constraints via
    the existing cell conjunctions, static resolution in typecheck1,
    union dispatch as a generated select (§3), `Trait::method` paths
    + `use`, `.gxi` impl declarations. Compile error on unresolved self.
