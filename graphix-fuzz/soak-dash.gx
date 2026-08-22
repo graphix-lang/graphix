@@ -22,7 +22,7 @@
 // host row — showing it per lane made one finding light up every lane.
 // diverge / crash are per-source and stay on the lane rows.
 
-use tui::{*, table::{self, *}, block::{self, *}, text::{self, *}};
+use tui::{table::{table, cell, row}, block::block, text, line, style};
 
 let hosts = ["ryouko", "hz0", "aieka", "katana"];
 
