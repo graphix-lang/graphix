@@ -1,7 +1,7 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
-    typ::{TVar, Type},
+    typ::{FnType, TVar, Type},
 };
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
@@ -175,6 +175,45 @@ pub enum TypeDefBody {
     Abstract(Option<Type>),
 }
 
+/// `trait Name { val m: fn(self, ..) -> T; val n: fn(self) -> U = |s| ..; .. }`
+/// (`design/traits.md`). Every method's signature mentions the
+/// receiver as the type `self`; a method with a `default` body is
+/// overridable, one without is required of every implementor.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct TraitExpr {
+    pub name: ArcStr,
+    pub methods: Arc<[TraitMethod]>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct TraitMethod {
+    pub doc: Doc,
+    pub name: ArcStr,
+    pub typ: Arc<FnType>,
+    /// Index of the positional `self` parameter in `typ.args` — the
+    /// argument whose type selects the implementation at a call.
+    pub self_index: usize,
+    pub default: Option<Expr>,
+}
+
+/// `impl<'a: C, ..> Trait for Target { let m = ..; .. }`. `params` are
+/// the head's declared type variables (every one must occur in
+/// `target`), `constraints` their bounds (a tvar may repeat under
+/// `'a: A + B`), and `methods` the `let` bindings supplying the
+/// trait's methods — empty for an interface declaration
+/// (`impl Trait for Target;`).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct ImplExpr {
+    pub trait_name: ModPath,
+    pub params: Arc<[TVar]>,
+    pub constraints: Arc<[(TVar, Type)]>,
+    pub target: Type,
+    pub methods: Arc<[Expr]>,
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct BindSig {
@@ -224,6 +263,8 @@ impl fmt::Display for UseItem {
 #[pack(unwrapped)]
 pub enum SigKind {
     TypeDef(TypeDefExpr),
+    Trait(Arc<TraitExpr>),
+    Impl(Arc<ImplExpr>),
     Bind(BindSig),
     Module(ArcStr),
     Use { reexport: bool, names: Arc<[UseItem]> },
@@ -396,6 +437,8 @@ pub enum ExprKind {
     StructWith(StructWithExpr),
     Lambda(Arc<LambdaExpr>),
     TypeDef(TypeDefExpr),
+    Trait(Arc<TraitExpr>),
+    Impl(Arc<ImplExpr>),
     TypeCast {
         expr: Arc<Expr>,
         typ: Type,
@@ -865,6 +908,13 @@ impl Expr {
                 args.iter().fold(init, |init, e| e.fold(init, f))
             }
             ExprKind::Construct { name: _, arg } => arg.fold(init, f),
+            ExprKind::Trait(t) => {
+                t.methods.iter().fold(init, |init, m| match &m.default {
+                    Some(e) => e.fold(init, f),
+                    None => init,
+                })
+            }
+            ExprKind::Impl(im) => im.methods.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::ArrayRef { source, i } => {
                 let init = source.fold(init, f);
                 i.fold(init, f)

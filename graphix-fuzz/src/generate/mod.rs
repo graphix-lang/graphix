@@ -193,6 +193,9 @@ pub struct GenStats {
     pub cross_module_call: bool,
     /// An abstract T entered the vocabulary as a first-class value.
     pub abstract_value: bool,
+    /// A module declared a trait, implemented it for its abstract T,
+    /// and exported a trait-bounded generic — both callable from MAIN.
+    pub trait_call: bool,
     /// A module exported a non-fn `val` constant.
     pub iface_const: bool,
     /// A module fn impl carried NO return annotation (interface-checked
@@ -607,6 +610,7 @@ mod test {
         let (mut rebind, mut mono, mut collision, mut rec, mut errl, mut module) =
             (0, 0, 0, 0, 0, 0);
         let (mut dynmod, mut comp_iface, mut xmod, mut abst) = (0, 0, 0, 0);
+        let mut trait_call = 0;
         let (mut konst, mut unret, mut refop) = (0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
@@ -621,6 +625,7 @@ mod test {
             comp_iface += s.composite_iface as usize;
             xmod += s.cross_module_call as usize;
             abst += s.abstract_value as usize;
+            trait_call += s.trait_call as usize;
             konst += s.iface_const as usize;
             unret += s.unannotated_ret as usize;
             refop += s.ref_op as usize;
@@ -636,6 +641,7 @@ mod test {
             ("composite interface type", comp_iface),
             ("cross-module call", xmod),
             ("first-class abstract value", abst),
+            ("trait declared+implemented+called", trait_call),
             ("exported constant", konst),
             ("unannotated-return impl", unret),
             ("reference op", refop),

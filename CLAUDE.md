@@ -1475,6 +1475,34 @@ through `abstract_value::payload`); `list::List` went TRANSPARENT
 body-less `type_def`. Companion: `design/traits.md` (designed, not
 built) — traits sit on this; see its §3/§4/§8.
 
+## Traits v1 (2026-08-22, branch `nominal-abstracts`)
+
+Rust-style traits (`design/traits.md`, §11 is the as-built map):
+`trait T { val m: fn(self, ..) -> R [= default]; .. }`, `impl[<'a:
+C>] T for Target { let m = ..; .. }`, `impl T for X;` in a `.gxi`,
+`'a: T + U` bounds, `fn(x: T)` ≡ a fresh bounded quantifier per
+parameter. `self` is the receiver type (a tvar named `self`) and a
+legal receiver parameter name. Trait NAMES are scoped like types
+(`Env.traits`), impls are global facts (`Env.impls`); the trait's
+scope `<mod>::T` is a module holding the dispatcher bindings, so
+`T::m` / `use T::m` ride the import engine; `trait_methods` maps a
+dispatcher binding to its `(TraitId, index)`. A call dispatches
+STATICALLY in `CallSite::resolve_trait_call` (typecheck1): the self
+argument's type → `Env::find_impl` → the call is re-pointed at the
+impl's (or default's) binding and pre-bound; open self at
+`def_gate_depth == 0` is a compile error; a UNION self lowers the call
+to a synthesized select (`lower_trait_union`, `#bind::N` refs by id,
+the CallSite delegates to `lowered`); collection slots call the
+prototype's resolved def as a `Constant` (`prototype_def`). `contains`
+treats a trait ref as the predicate `trait_contains`; `settle` never
+witnesses a trait conjunct. Target rule (`check_target`): abstract →
+the type's or trait's package; anything else → the trait's package
+only; one impl per head (`heads_overlap`). While building this,
+`Type::scope_refs` was found to DROP cell constraints on re-mint —
+every annotated `fn<'a: Number>` bound was vacuous; fixed. Not yet:
+trait params/assoc types, `type T = A + B`, core Eq/Ord/Hash/Display
+as traits, io on traits, dynamic-module impl proxies.
+
 ## The module system (open → use, 2026-08-22)
 
 Graphix uses Rust-2018-style imports (`design/module_system.md`,

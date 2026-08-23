@@ -1,6 +1,9 @@
 use super::{
-    csep, doc_comment, expr, fname, grow::grow, leading_comments, modpath, sep_by1_tok,
-    spaces, spfname, spstring, sptoken, typ, typedef, typname,
+    csep, doc_comment, expr, fname,
+    grow::grow,
+    leading_comments, modpath, sep_by1_tok, spaces, spfname, spstring, sptoken,
+    traitexp::{impl_decl, trait_decl},
+    typ, typedef, typname,
 };
 use crate::expr::{
     BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
@@ -37,6 +40,22 @@ parser! {
                     let ori = ori.clone();
                     move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
                         ExprKind::TypeDef(td) => SigItem { doc: doc.clone(), kind: SigKind::TypeDef(td), pos, ori: ori.clone() },
+                        _ => unreachable!()
+                    }
+                }),
+                trait_decl().map({
+                    let doc = doc.clone();
+                    let ori = ori.clone();
+                    move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
+                        ExprKind::Trait(t) => SigItem { doc: doc.clone(), kind: SigKind::Trait(t), pos, ori: ori.clone() },
+                        _ => unreachable!()
+                    }
+                }),
+                impl_decl().map({
+                    let doc = doc.clone();
+                    let ori = ori.clone();
+                    move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
+                        ExprKind::Impl(i) => SigItem { doc: doc.clone(), kind: SigKind::Impl(i), pos, ori: ori.clone() },
                         _ => unreachable!()
                     }
                 }),

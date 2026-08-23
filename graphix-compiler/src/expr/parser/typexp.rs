@@ -7,7 +7,7 @@ use crate::{
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use ahash::AHashSet;
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
     not_followed_by, optional,
@@ -85,6 +85,32 @@ where
     .skip(not_prefix())
 }
 
+/// A type variable's bound: one type, or a `+`-joined conjunction of
+/// traits (`'a: Read + Write`). Every member becomes its own conjunct
+/// on the variable's cell.
+pub(super) fn bound<I>() -> impl Parser<I, Output = LPooled<Vec<Type>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    sep_by1(typ(), attempt(spaces().with(token('+'))))
+}
+
+/// Flatten `(tvar, bounds)` pairs into one `(tvar, type)` pair per
+/// conjunct, the shape every constraint consumer takes.
+pub(super) fn flatten_bounds(
+    mut cs: LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>,
+) -> LPooled<Vec<(TVar, Type)>> {
+    let mut out: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+    for (tv, mut bs) in cs.drain(..) {
+        for b in bs.drain(..) {
+            out.push((tv.clone(), b));
+        }
+    }
+    out
+}
+
 fn fnconstraints<I>() -> impl Parser<I, Output = LPooled<Vec<(TVar, Type)>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -96,12 +122,14 @@ where
             token('<'),
             sptoken('>'),
             sep_by1_tok(
-                (spaces().with(tvar()).skip(sptoken(':')), typ()),
+                (spaces().with(tvar()).skip(sptoken(':')), bound()),
                 csep(),
                 token('>'),
             ),
         )))
-        .map(|cs: Option<LPooled<Vec<(TVar, Type)>>>| cs.unwrap_or_else(LPooled::take))
+        .map(|cs: Option<LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>>| {
+            flatten_bounds(cs.unwrap_or_else(LPooled::take))
+        })
 }
 
 fn fnlabeled<I>() -> impl Parser<I, Output = FnArgType>
@@ -124,10 +152,24 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (fname().skip(sptoken(':')), typ()).map(|(name, typ)| FnArgType {
-        kind: FnArgKind::Positional { name: Some(name.into()) },
-        typ,
-    })
+    choice((
+        attempt(string("self").skip(not_prefix()).skip(not_followed_by(sptoken(':'))))
+            .map(|_| FnArgType {
+                kind: FnArgKind::Positional { name: Some(literal!("self")) },
+                typ: self_tvar(),
+            }),
+        (fname().skip(sptoken(':')), typ()).map(|(name, typ)| FnArgType {
+            kind: FnArgKind::Positional { name: Some(name.into()) },
+            typ,
+        }),
+    ))
+}
+
+/// The receiver type of a trait method signature: the type variable
+/// spelled `self`. Same-named occurrences in one signature alias to one
+/// cell like any quantifier, and the trait declaration constrains it.
+pub(crate) fn self_tvar() -> Type {
+    Type::TVar(TVar::empty_named(literal!("self")))
 }
 
 fn fnargs<I>() -> impl Parser<I, Output = LPooled<Vec<Either<FnArgType, Type>>>>
@@ -203,9 +245,7 @@ where
                 rtype,
                 throws,
                 explicit_throws,
-                quantifiers: Arc::from_iter(
-                    constraints.iter().map(|(tv, _)| tv.name.clone()),
-                ),
+                quantifiers: quantifier_names(constraints.iter().map(|(tv, _)| tv)),
                 ..Default::default()
             };
             // Quantifier constraints seed CELLS (phase C — the cells
@@ -226,6 +266,19 @@ where
             }
             value(ft).right()
         })
+}
+
+/// The declared quantifier names of a signature, in source order,
+/// deduplicated: a `+`-bound variable appears once per conjunct in the
+/// constraint list but is one quantifier.
+pub(crate) fn quantifier_names<'a>(tvs: impl Iterator<Item = &'a TVar>) -> Arc<[ArcStr]> {
+    let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
+    for tv in tvs {
+        if !names.contains(&tv.name) {
+            names.push(tv.name.clone());
+        }
+    }
+    Arc::from_iter(names.drain(..))
 }
 
 pub(super) fn tvar<I>() -> impl Parser<I, Output = TVar>
@@ -365,6 +418,8 @@ parser! {
                 unexpected_any("Abstract<..> is legal only as the whole body of a type definition")
             }),
             attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
+            attempt(string("self").skip(not_prefix()).skip(not_followed_by(string("::"))))
+                .map(|_| self_tvar()),
             tvar().map(|tv| Type::TVar(tv)),
             typref(),
         ))))

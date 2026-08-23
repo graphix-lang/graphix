@@ -313,6 +313,57 @@ pub(super) fn gen_module(
             concrete.render()
         ));
         let aty = GenType::Abstract { module: mname.clone() };
+        // A trait over T (design/traits.md): declared in the interface
+        // (with a default the impl may override), implemented for T,
+        // and a bounded generic `via` whose body dispatches per
+        // instance. Both enter the MAIN vocabulary as T -> i64 fns,
+        // so trait calls compose into arbitrary expressions: the
+        // static-dispatch, default-method, and annotation-bound
+        // (`fn<'a: Tr>`) surfaces.
+        if chance(rng, 0.6) {
+            let override_default = chance(rng, 0.5);
+            let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
+            let (sig_impl, body_impl) = if override_default {
+                (
+                    "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",
+                    format!(
+                        "impl Tr for T {{ let tv = |t| {un_body}; let tw = |t| {un_body} * i64:2 }};\nlet via = 'a: Tr |x: 'a| Tr::tw(x);\n"
+                    ),
+                )
+            } else {
+                (
+                    "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",
+                    format!(
+                        "impl Tr for T {{ let tv = |t| {un_body} }};\nlet via = 'a: Tr |x: 'a| Tr::tw(x);\n"
+                    ),
+                )
+            };
+            if has_gxi {
+                gxi.push_str(decl);
+                gxi.push_str(sig_impl);
+            } else {
+                gx.push_str(decl);
+                gx.push_str(
+                    "let via: fn<'a: Tr>(x: 'a) -> i64 = 'a: Tr |x: 'a| Tr::tw(x);\n",
+                );
+            }
+            if has_gxi {
+                gx.push_str(&body_impl);
+            } else {
+                gx.push_str(
+                    &body_impl.replace("let via = 'a: Tr |x: 'a| Tr::tw(x);\n", ""),
+                );
+            }
+            ctx.push(
+                format!("{mname}::Tr::tv"),
+                GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+            );
+            ctx.push(
+                format!("{mname}::via"),
+                GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+            );
+            stats.trait_call = true;
+        }
         ctx.push(
             format!("{mname}::mk"),
             GenType::Fn { params: vec![I64], ret: Box::new(aty.clone()) },

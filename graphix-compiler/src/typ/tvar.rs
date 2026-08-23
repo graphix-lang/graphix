@@ -240,6 +240,19 @@ impl fmt::Debug for TVar {
 impl fmt::Display for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
+            if &*self.name == "self" {
+                // a trait method's receiver type is spelled `self`
+                return write!(f, "self");
+            }
+            if self.name.starts_with('#') {
+                // a trait written in argument position (`fn(s: Read)`)
+                // is a compiler-minted quantifier whose one conjunct is
+                // the trait; print it as written
+                let cons = self.cell_constraints();
+                if let [c] = &cons[..] {
+                    return write!(f, "{c}");
+                }
+            }
             write!(f, "'{}", self.name)
         } else {
             // Cycle guard: a cell can be reachable from its own

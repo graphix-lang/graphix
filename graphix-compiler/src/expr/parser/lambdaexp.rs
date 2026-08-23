@@ -1,6 +1,6 @@
 use super::{
     csep, expr, fname, spaces, sptoken, structure_pattern,
-    typexp::{tvar, typ},
+    typexp::{bound, flatten_bounds, tvar, typ},
 };
 use crate::{
     expr::{
@@ -10,7 +10,7 @@ use crate::{
     typ::{TVar, Type},
 };
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, not_followed_by, optional,
     parser::char::string,
@@ -19,6 +19,7 @@ use combine::{
     token, unexpected_any, value,
 };
 use netidx_core::utils::Either;
+use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -90,6 +91,8 @@ where
             spaces().with(position()).and(choice((
                 string("@args").map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
                 token('#').with(fname()).map(|b| (true, StructurePattern::Bind(b))),
+                attempt(string("self").skip(not_prefix()))
+                    .map(|_| (false, StructurePattern::Bind(literal!("self")))),
                 structure_pattern().map(|p| (false, p)),
             ))),
             spaces().with(optional(token(':').with(typ()))),
@@ -165,8 +168,11 @@ where
     (
         position(),
         spaces()
-            .with(sep_by_tok((tvar().skip(sptoken(':')), typ()), csep(), token('|')))
-            .map(|mut tvs: LPooled<Vec<(TVar, Type)>>| Arc::from_iter(tvs.drain(..))),
+            .with(sep_by_tok((tvar().skip(sptoken(':')), bound()), csep(), token('|')))
+            .map(|tvs: LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>| {
+                let mut tvs = flatten_bounds(tvs);
+                Arc::from_iter(tvs.drain(..))
+            }),
         between(sptoken('|'), sptoken('|'), lambda_args()),
         optional(attempt(spaces().with(string("->")).with(typ()))),
         optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),

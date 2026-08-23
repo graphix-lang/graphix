@@ -1,9 +1,9 @@
 use super::Sig;
 use crate::{
     expr::{
-        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
-        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefBody,
-        TypeDefExpr, UseItem, parser,
+        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, ImplExpr, LambdaExpr,
+        ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr,
+        TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr, UseItem, parser,
     },
     typ::Type,
 };
@@ -230,6 +230,123 @@ impl PrettyDisplay for TypeDefExpr {
     }
 }
 
+impl fmt::Display for TraitMethod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}val {}: {}", self.doc, self.name, self.typ)?;
+        match &self.default {
+            None => Ok(()),
+            Some(d) => write!(f, " = {d}"),
+        }
+    }
+}
+
+impl PrettyDisplay for TraitMethod {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        write!(buf, "{}val {}: ", self.doc, self.name)?;
+        self.typ.fmt_pretty(buf)?;
+        match &self.default {
+            None => Ok(()),
+            Some(d) => {
+                buf.kill_newline();
+                write!(buf, " = ")?;
+                buf.with_indent(2, |buf| d.fmt_pretty(buf))
+            }
+        }
+    }
+}
+
+impl fmt::Display for TraitExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "trait {} {{", self.name)?;
+        for (i, m) in self.methods.iter().enumerate() {
+            write!(f, " {m}")?;
+            if i < self.methods.len() - 1 {
+                write!(f, ";")?;
+            }
+        }
+        write!(f, " }}")
+    }
+}
+
+impl PrettyDisplay for TraitExpr {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        writeln!(buf, "trait {} {{", self.name)?;
+        buf.with_indent(2, |buf| {
+            for (i, m) in self.methods.iter().enumerate() {
+                m.fmt_pretty(buf)?;
+                if i < self.methods.len() - 1 {
+                    buf.kill_newline();
+                    writeln!(buf, ";")?;
+                }
+            }
+            Ok(())
+        })?;
+        writeln!(buf, "}}")
+    }
+}
+
+impl ImplExpr {
+    fn write_head(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "impl")?;
+        if !self.params.is_empty() {
+            write!(f, "<")?;
+            for (i, tv) in self.params.iter().enumerate() {
+                write!(f, "{tv}")?;
+                let mut first = true;
+                for (ctv, c) in self.constraints.iter() {
+                    if ctv.name == tv.name {
+                        write!(f, "{}{c}", if first { ": " } else { " + " })?;
+                        first = false;
+                    }
+                }
+                if i < self.params.len() - 1 {
+                    write!(f, ", ")?;
+                }
+            }
+            write!(f, ">")?;
+        }
+        write!(f, " {} for {}", self.trait_name, self.target)
+    }
+}
+
+impl fmt::Display for ImplExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.write_head(f)?;
+        if self.methods.is_empty() {
+            return Ok(());
+        }
+        write!(f, " {{")?;
+        for (i, m) in self.methods.iter().enumerate() {
+            write!(f, " {m}")?;
+            if i < self.methods.len() - 1 {
+                write!(f, ";")?;
+            }
+        }
+        write!(f, " }}")
+    }
+}
+
+impl PrettyDisplay for ImplExpr {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        self.write_head(buf)?;
+        if self.methods.is_empty() {
+            return writeln!(buf);
+        }
+        writeln!(buf, " {{")?;
+        buf.with_indent(2, |buf| {
+            for (i, m) in self.methods.iter().enumerate() {
+                m.fmt_pretty(buf)?;
+                if i < self.methods.len() - 1 {
+                    buf.kill_newline();
+                    writeln!(buf, ";")?;
+                }
+            }
+            Ok(())
+        })?;
+        writeln!(buf, "}}")
+    }
+}
+
 impl fmt::Display for Sandbox {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         macro_rules! write_sandbox {
@@ -297,6 +414,8 @@ impl fmt::Display for SigItem {
         write!(f, "{}", self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
+            SigKind::Trait(t) => write!(f, "{t}"),
+            SigKind::Impl(i) => write!(f, "{i}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
             SigKind::Module(name) => write!(f, "mod {name}"),
             SigKind::Use { reexport, names } => write_use_names(f, *reexport, names),
@@ -310,6 +429,8 @@ impl PrettyDisplay for SigItem {
         match &self.kind {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
+            SigKind::Trait(t) => t.fmt_pretty(buf),
+            SigKind::Impl(i) => i.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
             SigKind::Use { reexport, names } => {
                 write_use_names(buf, *reexport, names)?;
@@ -803,6 +924,8 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
             ExprKind::Bind(b) => b.fmt_pretty(buf),
+            ExprKind::Trait(t) => t.fmt_pretty(buf),
+            ExprKind::Impl(i) => i.fmt_pretty(buf),
             ExprKind::StructWith(sw) => sw.fmt_pretty(buf),
             ExprKind::Module {
                 name,
@@ -1179,6 +1302,8 @@ impl ExprKind {
             }
             ExprKind::TypeCast { expr, typ } => write!(f, "cast<{typ}>({expr})"),
             ExprKind::TypeDef(td) => write!(f, "{td}"),
+            ExprKind::Trait(t) => write!(f, "{t}"),
+            ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),

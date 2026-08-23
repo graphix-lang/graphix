@@ -1110,13 +1110,28 @@ impl FnType {
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
             .context("in throws clause")?;
+        // Every bound the signature declares must be among the
+        // implementation's same-named cell's conjuncts — the WHOLE
+        // conjunction (an inference cell routinely holds the declared
+        // bound beside the def gate's recorded fact; the single-conjunct
+        // display listing skipped exactly those), compared by meaning
+        // (the two sides scope their refs independently).
         let sig_cons = self.constraint_view();
-        let impl_cons = impl_fn.cell_constraint_pairs();
+        let impl_tvs = impl_fn.sig_tvars();
         for (sig_tv, sig_tc) in sig_cons.iter() {
-            if !impl_cons
-                .iter()
-                .any(|(impl_tv, impl_tc)| sig_tv == impl_tv && sig_tc == impl_tc)
-            {
+            let mut found = false;
+            if let Some(tv) = impl_tvs.get(&sig_tv.name) {
+                for c in tv.cell_constraints().iter() {
+                    if c == sig_tc
+                        || (c.contains_with_flags(BitFlags::empty(), env, sig_tc)?
+                            && sig_tc.contains_with_flags(BitFlags::empty(), env, c)?)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
                 bail!("missing constraint {sig_tv}: {sig_tc} in implementation")
             }
         }
@@ -1233,9 +1248,26 @@ impl FnType {
     }
 }
 
+/// Is this positional parameter a trait method's receiver (`self`
+/// typed by the `self` variable)? It prints bare.
+fn is_self_param(a: &FnArgType) -> bool {
+    matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
+        && matches!(&a.typ, Type::TVar(tv) if &*tv.name == "self")
+}
+
+/// The quantifiers a signature prints: the declared ones, minus the
+/// receiver `self` (implied by its trait) and the compiler-minted
+/// `#arg` quantifiers of traits written in argument position (those
+/// print as the trait at the argument).
+fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
+    let mut v = ft.constraint_view();
+    v.retain(|(tv, _)| &*tv.name != "self" && !tv.name.starts_with('#'));
+    v
+}
+
 impl fmt::Display for FnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let constraints = self.constraint_view();
+        let constraints = printed_quantifiers(self);
         if constraints.len() == 0 {
             write!(f, "fn(")?;
         } else {
@@ -1249,17 +1281,21 @@ impl fmt::Display for FnType {
             write!(f, ">(")?;
         }
         for (i, a) in self.args.iter().enumerate() {
-            match &a.kind {
-                FnArgKind::Labeled { name, has_default: true } => {
-                    write!(f, "?#{name}: ")?
+            if is_self_param(a) {
+                write!(f, "self")?;
+            } else {
+                match &a.kind {
+                    FnArgKind::Labeled { name, has_default: true } => {
+                        write!(f, "?#{name}: ")?
+                    }
+                    FnArgKind::Labeled { name, has_default: false } => {
+                        write!(f, "#{name}: ")?
+                    }
+                    FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: ")?,
+                    FnArgKind::Positional { name: None } => (),
                 }
-                FnArgKind::Labeled { name, has_default: false } => {
-                    write!(f, "#{name}: ")?
-                }
-                FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: ")?,
-                FnArgKind::Positional { name: None } => (),
+                write!(f, "{}", a.typ)?;
             }
-            write!(f, "{}", a.typ)?;
             if i < self.args.len() - 1 || self.vargs.is_some() {
                 write!(f, ", ")?;
             }
@@ -1285,7 +1321,7 @@ impl fmt::Display for FnType {
 
 impl PrettyDisplay for FnType {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let constraints = self.constraint_view();
+        let constraints = printed_quantifiers(self);
         if constraints.is_empty() {
             writeln!(buf, "fn(")?;
         } else {
@@ -1305,17 +1341,21 @@ impl PrettyDisplay for FnType {
         }
         buf.with_indent(2, |buf| {
             for (i, a) in self.args.iter().enumerate() {
-                match &a.kind {
-                    FnArgKind::Labeled { name, has_default: true } => {
-                        write!(buf, "?#{name}: ")?
+                if is_self_param(a) {
+                    writeln!(buf, "self")?;
+                } else {
+                    match &a.kind {
+                        FnArgKind::Labeled { name, has_default: true } => {
+                            write!(buf, "?#{name}: ")?
+                        }
+                        FnArgKind::Labeled { name, has_default: false } => {
+                            write!(buf, "#{name}: ")?
+                        }
+                        FnArgKind::Positional { name: Some(n) } => write!(buf, "{n}: ")?,
+                        FnArgKind::Positional { name: None } => (),
                     }
-                    FnArgKind::Labeled { name, has_default: false } => {
-                        write!(buf, "#{name}: ")?
-                    }
-                    FnArgKind::Positional { name: Some(n) } => write!(buf, "{n}: ")?,
-                    FnArgKind::Positional { name: None } => (),
+                    buf.with_indent(2, |buf| a.typ.fmt_pretty(buf))?;
                 }
-                buf.with_indent(2, |buf| a.typ.fmt_pretty(buf))?;
                 if i < self.args.len() - 1 || self.vargs.is_some() {
                     buf.kill_newline();
                     writeln!(buf, ",")?;

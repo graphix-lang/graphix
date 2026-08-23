@@ -347,6 +347,15 @@ pub struct Ref {
     pub(crate) resident: TagValue,
 }
 
+/// The `BindId` a `#bind::N` path names, if `name` is one.
+fn synthesized_bind_ref(name: &ModPath) -> Option<BindId> {
+    let mut parts = netidx_core::path::Path::parts(&**name);
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("#bind"), Some(n), None) => n.parse().ok().map(BindId::from_inner),
+        _ => None,
+    }
+}
+
 impl Ref {
     /// Construct a `Ref` node from its already-resolved components.
     /// AOT codegen uses this after name resolution has already
@@ -378,6 +387,18 @@ impl Ref {
         top_id: ExprId,
         name: &ModPath,
     ) -> Result<Node<R, E>> {
+        // `#bind::N` names binding N directly — the compiler's own
+        // spelling for a synthesized reference (a trait call lowered to
+        // a select over a union, `CallSite::lower_trait_union`); no
+        // source can write it, `#` not being an identifier character
+        if let Some(id) = synthesized_bind_ref(name) {
+            let Some(bind) = ctx.env.by_id.get(&id) else {
+                bailat!(spec, "synthesized reference to an unknown binding {id:?}")
+            };
+            let typ = bind.typ.clone();
+            ctx.rt.ref_var(id, top_id);
+            return Ok(Self::new(id, typ, top_id, spec));
+        }
         let resolved = match ctx.env.lookup_bind(&scope.lexical, name) {
             Ok(r) => r,
             Err(e) => {

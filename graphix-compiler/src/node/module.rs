@@ -1,15 +1,16 @@
+use crate::env::Map;
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent,
     compiler::compile,
-    env::Env,
+    env::{Env, ImplDef},
     errf,
     expr::{
         BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
         Source, StructurePattern, TypeDefBody, TypeDefExpr, parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
-    node::{Nop, bind::Bind},
+    node::{Nop, bind::Bind, traits},
     typ::{AbstractId, Type},
     wrap,
 };
@@ -69,7 +70,7 @@ fn bind_sig(
                 }
             }
             SigKind::Bind(BindSig { name, typ }) => {
-                let typ = typ.scope_refs(&scope.lexical);
+                let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
                 typ.alias_tvars(&mut LPooled::take());
                 if env.lsp_mode {
                     typ.record_ide_refs(env, &scope.lexical);
@@ -91,6 +92,68 @@ fn bind_sig(
                     si.pos,
                     si_ori,
                 )?;
+            }
+            SigKind::Trait(t) => {
+                let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &si_ori);
+                let sigs = t.methods.iter().map(|m| {
+                    let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
+                    (m.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
+                });
+                env.deftrait(
+                    &scope.lexical,
+                    &t.name,
+                    sigs,
+                    si.doc.0.clone(),
+                    si.pos,
+                    si_ori,
+                )?;
+            }
+            SigKind::Impl(im) => {
+                // a DECLARED implementation: its method bindings are
+                // minted here with the trait's signatures at the
+                // target, and the implementation's own registration
+                // of the same (trait, target) replaces it
+                let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)?
+                else {
+                    bail!("no trait `{}` in scope at {}", im.trait_name, si.pos)
+                };
+                let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
+                let (target, params) =
+                    traits::impl_head(env, &scope.lexical, &trait_def, im)
+                        .with_context(|| format!("at {}", si.pos))?;
+                if !im.methods.is_empty() {
+                    bail!(
+                        "an interface declares `impl {} for {target};` without a body",
+                        im.trait_name
+                    )
+                }
+                let bscope = scope.append_block("impl", ExprId::new().inner());
+                let mut methods: Map<CompactString, BindId> = Map::new();
+                for d in trait_def.methods.iter() {
+                    let typ = Type::Fn(Arc::new(traits::method_sig_at(
+                        &d.typ.reset_tvars(),
+                        &target,
+                    )));
+                    let bind = env.bind_variable(
+                        &bscope.lexical,
+                        &d.name,
+                        typ,
+                        si.pos,
+                        si_ori.clone(),
+                    );
+                    methods.insert_cow(d.name.as_str().into(), bind.id);
+                }
+                env.register_impl(Arc::new(ImplDef {
+                    trait_id,
+                    target,
+                    params,
+                    scope: bscope.lexical,
+                    methods,
+                    declared: true,
+                    pos: si.pos,
+                    ori: si_ori,
+                }))
+                .with_context(|| format!("at {}", si.pos))?;
             }
         }
     }
@@ -129,6 +192,7 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             }
             copy_sig!(binds);
             copy_sig!(typedefs);
+            copy_sig!(traits);
             // a re-exported module's Graphix-minted abstracts are
             // public exactly where their typedef entries are copied
             let exported: LPooled<Vec<AbstractId>> = inner_env
@@ -270,6 +334,41 @@ fn check_sig<R: Rt, E: UserEvent>(
     for si in sig.items.iter() {
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
+            SigKind::Impl(im) => {
+                let trait_id = ctx
+                    .env
+                    .lookup_trait(&scope.lexical, &im.trait_name)?
+                    .expect("bound by bind_sig");
+                let target = im.target.scope_refs(&scope.lexical);
+                !ctx.env
+                    .impl_entry(trait_id, &target)?
+                    .map(|e| !e.declared)
+                    .unwrap_or(false)
+            }
+            SigKind::Trait(t) => {
+                // the implementation re-declares the trait (the
+                // interface's declaration is prepended to its body
+                // unless it wrote its own); a written re-declaration
+                // must agree with the interface
+                for n in nodes {
+                    if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
+                        && t2.name == t.name
+                        && (t2.methods.len() != t.methods.len()
+                            || t2.methods.iter().zip(t.methods.iter()).any(|(a, b)| {
+                                a.name != b.name
+                                    || format_compact!("{}", a.typ)
+                                        != format_compact!("{}", b.typ)
+                            }))
+                    {
+                        bail!(
+                            "trait {} is declared by the interface as {t}; the \
+                             implementation's {t2} does not match",
+                            t.name
+                        )
+                    }
+                }
+                false
+            }
             SigKind::TypeDef(TypeDefExpr {
                 name,
                 body: TypeDefBody::Abstract(None),

@@ -16,6 +16,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use log::error;
 use netidx_core::pack::Pack;
@@ -1203,28 +1204,48 @@ impl Lambda {
             Some(None) => Some(None),
             Some(Some(typ)) => Some(Some(typ.scope_refs(&scope.lexical))),
         };
-        let rtype = l.rtype.as_ref().map(|t| t.scope_refs(&scope.lexical));
-        let throws = l.throws.as_ref().map(|t| t.scope_refs(&scope.lexical));
-        let mut argspec = l
-            .args
-            .iter()
-            .map(|a| match &a.constraint {
-                None => Arg {
-                    labeled: a.labeled.clone(),
-                    pattern: a.pattern.clone(),
-                    constraint: None,
-                    pos: a.pos,
-                },
-                Some(typ) => Arg {
-                    labeled: a.labeled.clone(),
-                    pattern: a.pattern.clone(),
-                    constraint: Some(typ.scope_refs(&scope.lexical)),
-                    pos: a.pos,
-                },
-            })
-            .collect::<LPooled<Vec<_>>>();
+        let rtype = match l.rtype.as_ref() {
+            None => None,
+            Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
+        };
+        let throws = match l.throws.as_ref() {
+            None => None,
+            Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
+        };
+        // a trait as a parameter's type is a fresh bounded quantifier
+        // (`|s: Read|` ≡ `'s: Read |s: 's|`) — see
+        // `Type::rewrite_trait_args`; it joins the declared quantifiers
+        // so the def gate holds it rigid
+        let mut trait_quantifiers: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        let mut argspec: LPooled<Vec<Arg>> = LPooled::take();
+        for (i, a) in l.args.iter().enumerate() {
+            let constraint = match &a.constraint {
+                None => None,
+                Some(typ) => {
+                    let typ = typ.scope_refs(&scope.lexical);
+                    match &typ {
+                        Type::Ref(tr) if ctx.env.trait_of_ref(tr).is_some() => {
+                            let name: ArcStr = match a.pattern.single_bind() {
+                                Some(n) => format_compact!("#{n}").as_str().into(),
+                                None => format_compact!("#arg{i}").as_str().into(),
+                            };
+                            let tv = TVar::empty_named(name);
+                            trait_quantifiers.push((tv.clone(), typ));
+                            Some(Type::TVar(tv))
+                        }
+                        _ => Some(typ.rewrite_trait_args(&ctx.env)?),
+                    }
+                }
+            };
+            argspec.push(Arg {
+                labeled: a.labeled.clone(),
+                pattern: a.pattern.clone(),
+                constraint,
+                pos: a.pos,
+            });
+        }
         let argspec = Arc::from_iter(argspec.drain(..));
-        let constraints = l
+        let mut constraints = l
             .constraints
             .iter()
             .map(|(tv, tc)| {
@@ -1233,6 +1254,7 @@ impl Lambda {
                 Ok((tv, tc))
             })
             .collect::<Result<LPooled<Vec<_>>>>()?;
+        constraints.extend(trait_quantifiers.drain(..));
         let original_scope = scope.clone();
         let scope = scope.append_block("fn", id.0);
         let def_scope = scope.clone();
@@ -1288,8 +1310,8 @@ impl Lambda {
                 rtype,
                 throws,
                 explicit_throws,
-                quantifiers: Arc::from_iter(
-                    constraints.iter().map(|(tv, _)| tv.name.clone()),
+                quantifiers: crate::expr::parser::quantifier_names(
+                    constraints.iter().map(|(tv, _)| tv),
                 ),
                 lambda_ids: LambdaIds::default(),
             })

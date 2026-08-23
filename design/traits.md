@@ -405,3 +405,115 @@ StreamKind` fix is DEAD — it would have been replaced immediately.
    split into gx-side IO through the trait + Rust-side parse.
 5. After the release: v2 trait parameters with one-impl-per-self
    coherence.
+
+## 11. v1 as built (2026-08-22, branch `nominal-abstracts`)
+
+The §10 step-2 feature set, as it landed. Durable map; history is in
+`git log`.
+
+**Syntax** (`expr/parser/traitexp.rs`): `trait T { val m: fn(self, ..)
+-> R [= default]; .. }`, `impl[<'a: C + D, ..>] T for Target [{ let m =
+..; .. }]` (the bodiless form declares an impl in a `.gxi` or
+implements an all-defaults trait), both also `SigKind` items. The
+receiver type is spelled `self` — parsed as the type variable named
+`self` (`typexp::self_tvar`), so same-named occurrences alias like any
+quantifier; a fn-type positional written bare `self` is `self: self`;
+`self` is also legal as a lambda parameter name and as a bare
+expression (`resolve_visible` treats the single segment as a value
+name). Bounds join with `+` (`typexp::bound`, flattened to one
+`(tvar, conjunct)` pair per member everywhere a constraint list is
+consumed). A value path may carry an uppercase interior segment
+(`Read::read`, `io::Read::read` — `valpath`).
+
+**Identity and registries** (`env.rs`): `TraitId::of(scope, name)` is
+path-derived like `AbstractId`, so an interface's declaration and the
+implementation's re-declaration are one trait. `Env.traits` maps names
+per scope (lexical, like `typedefs`); `trait_defs` (by id),
+`trait_methods` (dispatcher `BindId` → `(trait, method)`), and `impls`
+(per trait, a list of `ImplDef`) are GLOBAL like `names`. The first
+registration is the definition of record; a re-declaration adds its
+compiled default bodies through `set_trait_defaults`. The trait's own
+scope `<mod>::T` is entered in `env.modules` and its dispatcher
+bindings live there — which is all it takes for `T::m` paths and `use
+T::m` to ride the existing import engine. Default bodies compile as
+typed bindings in a block under the DECLARING module (so they see its
+items) with the trait scope glob-imported (so siblings are callable
+bare); impl methods likewise under `<mod>::#impl<id>`. A method lambda
+takes the declared signature (at the target) as its own parameter
+annotations (`annotate_lambda`), which is what lets `|c| c.0` see
+`c: Counter`.
+
+**Constraint discharge** (`typ/contains.rs`): a trait `Ref` on the
+left of `contains` is the predicate `trait_contains`: ⊥ yes, `Any` no,
+a union iff every member, an open cell yes (the tvar merge carries the
+conjunct) unless it is RIGID without the conjunct, a typedef by its
+expansion, anything else by `Env::find_impl` — abstract targets by
+id, other heads by unification against a fresh instantiation (head
+bounds discharge through the cells, which is the `impl<'a: T> T for
+P<'a>` rule) then equivalence; a type with an open interior cell never
+matches. A trait on the right is contained only by `Any` or itself.
+`settle` never picks a trait conjunct as a witness; a cell bounded by
+traits alone stays open. `trait_of_ref` walks the table only for refs
+whose resolution cell is empty (a typedef ref fills it on first use).
+
+**Dispatch** (`node/callsite.rs`): `try_static_resolve` finds no
+lambda behind a dispatcher `Ref` and calls `resolve_trait_call`: the
+instantiated signature's self-argument type, resolved and
+alias-expanded, selects the impl (or the trait's default); the call's
+function node is RE-POINTED at that binding (`Ref::new`) and pre-bound
+statically when the lambda is known — after which it is an ordinary
+static call (fuses, effect-classified per impl). An open self type
+inside a definition gate is the polymorphic case, left for the
+instances; open at depth zero is the compile error §2 demands. A union
+self type lowers the call to `{ let #s = self; let #a_i = arg_i; ..;
+select #s { M as #t => #bind::N(#t, #a_i, ..), .. } }` — the
+synthesized expression compiles under the call's scope, `#bind::N`
+being the compiler's private spelling for a binding by id, and the
+`CallSite` delegates every `Update` method to the lowered node. A
+trait method passed as a HOF argument registers the instance's
+parameter binding in `trait_methods` for the elaboration, and a
+collection's runtime slots call the prototype's resolved definition as
+a constant (`prototype_def`) rather than binding on the dispatcher's
+(absent) runtime value.
+
+**Argument-position traits** (`Type::rewrite_trait_args`): a trait as
+a parameter's type becomes a fresh quantifier named `#<param>` bound by
+the trait (rigid in the def gate, printed back as the trait); a trait
+anywhere else is an error. Applied at `Lambda::compile`, `bind_sig`,
+and `deftype`.
+
+**Targets**: `check_target` enforces §4 — an abstract type in the
+type's or the trait's package, anything else only in the trait's
+package (`package_root` of the scopes — a whole program outside any
+package is one package, so sibling modules may implement for
+primitives), never a union, a bare variable, `Any` or ⊥;
+`register_impl` refuses overlapping heads (`heads_overlap`: fresh
+instantiations contain each other either way) except that an
+implementation replaces the interface's `declared` entry for the same
+head.
+
+**Interfaces**: `bind_sig` registers a `trait` item like a typedef
+(the declaration is prepended to the implementation's body by
+`add_interface_modules`, like typedefs — a written re-declaration must
+match) and an `impl T for X;` item as a `declared` impl whose method
+bindings are minted with the signatures at the target; `check_sig`
+requires the implementation to have replaced it.
+
+**Found on the way — a pre-existing hole, fixed:** `Type::scope_refs`
+re-minted type variables WITHOUT their cell constraints, so a
+quantifier bound written in a `let` annotation or a `.gxi` `val`
+(`fn<'a: Number>(x: 'a)`) was vacuous — `f("hi")` typechecked. The
+re-mint now carries the (scoped) conjunction. Pinned by
+`annotation_bound_enforced`.
+
+**Known limits (v1):** no trait parameters or associated types (§5);
+`type T = A + B` trait aliases are not built (write the bound
+inline); an `impl` declared by a DYNAMIC module's interface has
+method bindings but no proxy to the loaded source yet, so a consumer
+compiled against it cannot dispatch statically; a polymorphic binding
+used as a first-class value at one type pins its own signature cells
+for later uses — true of every polymorphic `let`, not only
+dispatchers (`let f = 'a: Number |x: 'a| x; array::map([1], f);
+array::map([1.5], f)` is refused today); the union-dispatch select
+de-fuses while abstract patterns do; the core four (§8) are not
+traits yet.

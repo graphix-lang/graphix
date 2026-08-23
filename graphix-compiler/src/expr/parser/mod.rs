@@ -46,7 +46,11 @@ mod modexp;
 use modexp::{module, sig_item, use_module};
 
 mod typexp;
+pub(crate) use typexp::quantifier_names;
 use typexp::{fntype, typ, typedef};
+
+mod traitexp;
+use traitexp::{impl_decl, trait_decl};
 
 mod lambdaexp;
 use lambdaexp::{apply_args, lambda};
@@ -102,7 +106,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "bytes", "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch",
-            "try", "self", "super", "package", "pub",
+            "try", "self", "super", "package", "pub", "trait", "impl",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -515,7 +519,7 @@ where
         })
 }
 
-fn letbind<I>() -> impl Parser<I, Output = Expr>
+pub(super) fn letbind<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -574,13 +578,42 @@ where
     )
 }
 
+/// A value path: `x`, `m::x`, `Trait::m` (an uppercase interior
+/// segment names a trait, whose methods are reached like a module's
+/// items), or the bare receiver name `self` of an impl method.
+fn valpath<I>() -> impl Parser<I, Output = ModPath>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(string("self").skip(not_prefix()).skip(not_followed_by(string("::"))))
+            .map(|_| ModPath::from([literal!("self")])),
+        (path_root(), sep_by1(choice((fname(), typname())), string("::"))).then(
+            |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+                let terminal_is_value = v
+                    .last()
+                    .and_then(|s| s.chars().next())
+                    .map(|c| c.is_lowercase())
+                    .unwrap_or(false);
+                if !terminal_is_value {
+                    return unexpected_any("expected a value name").left();
+                }
+                root.extend(v.drain(..));
+                value(ModPath(Path::from_iter(root.drain(..)))).right()
+            },
+        ),
+    ))
+}
+
 fn reference<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), modpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
+    (position(), valpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
 }
 
 fn qop<I, P>(p: P) -> impl Parser<I, Output = Expr>
@@ -935,6 +968,8 @@ parser! {
                 catch_stmt(),
                 try_removed(),
                 typedef(),
+                trait_decl(),
+                impl_decl(),
                 letbind(),
                 attempt(lambda()),
                 attempt(connect()),

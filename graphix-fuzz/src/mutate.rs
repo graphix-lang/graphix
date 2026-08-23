@@ -69,7 +69,14 @@ fn collect_preorder(e: &Expr, out: &mut Vec<Expr>) {
 fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
     use ExprKind::*;
     match &e.kind {
-        NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {}
+        NoOp
+        | Constant(_)
+        | Use { .. }
+        | Ref { .. }
+        | TypeDef(_)
+        | Trait(_)
+        | Impl(_)
+        | Module { .. } => {}
         ExplicitParens(x)
         | Qop(x)
         | OrNever(x)
@@ -199,9 +206,14 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
     }
     use ExprKind::*;
     let kind = match &e.kind {
-        NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {
-            e.kind.clone()
-        }
+        NoOp
+        | Constant(_)
+        | Use { .. }
+        | Ref { .. }
+        | TypeDef(_)
+        | Trait(_)
+        | Impl(_)
+        | Module { .. } => e.kind.clone(),
         ExplicitParens(x) => ExplicitParens(ra!(x)),
         Qop(x) => Qop(ra!(x)),
         OrNever(x) => OrNever(ra!(x)),

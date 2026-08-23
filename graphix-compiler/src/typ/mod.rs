@@ -264,6 +264,33 @@ impl AbstractId {
     }
 }
 
+/// The identity of a trait: the low 64 bits of a v5 UUID of its
+/// canonical path (`package::module::Name`), minted at declaration
+/// like [`AbstractId`] — so an interface's declaration and its
+/// implementation's re-declaration name ONE trait, and the global impl
+/// table keys on it (`design/traits.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TraitId(u64);
+
+const TRAIT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x8c, 0x2b, 0x41, 0x9d, 0xe3, 0x07, 0x4f, 0x6a, 0xb1, 0x5d, 0x77, 0x0a, 0x2e, 0x93,
+    0xc8, 0x15,
+]);
+
+impl TraitId {
+    pub fn of(scope: &ModPath, name: &str) -> Self {
+        let path = format_compact!("{scope}::{name}");
+        let (_, lo) = uuid::Uuid::new_v5(&TRAIT_NAMESPACE, path.as_bytes()).as_u64_pair();
+        TraitId(lo)
+    }
+
+    pub fn inner(&self) -> u64 {
+        self.0
+    }
+}
+
+impl nohash::IsEnabled for TraitId {}
+
 /// What a `TypeRef`'s name means: the snapshot of everything
 /// [`Type::lookup_ref`] reads from the env via `find_visible`. Held in
 /// the ref's write-once `resolved` cell so a ref first resolved in its
@@ -1117,6 +1144,104 @@ impl Type {
         }
     }
 
+    /// Apply the trait-in-type-position rule (`design/traits.md` §1):
+    /// a trait named as a PARAMETER's type (`fn(s: Read)`) is a fresh
+    /// bounded quantifier — `fn<'s: Read>(s: 's)`, one variable per
+    /// parameter, named `#s` so it cannot collide with a written name
+    /// and prints back as the trait — and a trait anywhere else (a
+    /// return type, a field, an element) is an error, because no value
+    /// has a trait as its type. Returns the rewritten type; the same
+    /// type when nothing changed.
+    pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
+        match self {
+            Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
+                "trait {} used as a type: a trait is a bound — write it as a \
+                 parameter's type (`fn(x: {})`) or a quantifier's (`fn<'a: {}>`)",
+                tr.name,
+                tr.name,
+                tr.name
+            ),
+            Type::Fn(ft) => {
+                let mut quantifiers: LPooled<Vec<ArcStr>> =
+                    ft.quantifiers.iter().cloned().collect();
+                let mut changed = false;
+                let mut args: LPooled<Vec<FnArgType>> = LPooled::take();
+                for (i, a) in ft.args.iter().enumerate() {
+                    let typ = match &a.typ {
+                        Type::Ref(tr) if env.trait_of_ref(tr).is_some() => {
+                            let name: ArcStr = match a.name() {
+                                Some(n) => format_compact!("#{n}").as_str().into(),
+                                None => format_compact!("#arg{i}").as_str().into(),
+                            };
+                            let tv = TVar::empty_named(name.clone());
+                            tv.add_cell_constraint(a.typ.clone());
+                            if !quantifiers.contains(&name) {
+                                quantifiers.push(name);
+                            }
+                            changed = true;
+                            Type::TVar(tv)
+                        }
+                        t => {
+                            let r = t.rewrite_trait_args(env)?;
+                            changed |= !r.ptr_eq_shallow(t);
+                            r
+                        }
+                    };
+                    args.push(FnArgType { kind: a.kind.clone(), typ });
+                }
+                let vargs = match &ft.vargs {
+                    None => None,
+                    Some(t) => {
+                        let r = t.rewrite_trait_args(env)?;
+                        changed |= !r.ptr_eq_shallow(t);
+                        Some(r)
+                    }
+                };
+                let rtype = ft.rtype.rewrite_trait_args(env)?;
+                changed |= !rtype.ptr_eq_shallow(&ft.rtype);
+                let throws = ft.throws.rewrite_trait_args(env)?;
+                changed |= !throws.ptr_eq_shallow(&ft.throws);
+                if !changed {
+                    return Ok(self.clone());
+                }
+                Ok(Type::Fn(Arc::new(FnType {
+                    args: Arc::from_iter(args.drain(..)),
+                    vargs,
+                    rtype,
+                    throws,
+                    explicit_throws: ft.explicit_throws,
+                    quantifiers: Arc::from_iter(quantifiers.drain(..)),
+                    lambda_ids: ft.lambda_ids.clone(),
+                })))
+            }
+            t => {
+                let mut err = None;
+                let r = t.cow_children(&mut |c| match c.rewrite_trait_args(env) {
+                    Ok(r) if r.ptr_eq_shallow(c) => None,
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        err = Some(e);
+                        None
+                    }
+                });
+                match err {
+                    Some(e) => Err(e),
+                    None => Ok(r.unwrap_or_else(|| self.clone())),
+                }
+            }
+        }
+    }
+
+    /// Same allocation or same leaf — the "unchanged" test for walks
+    /// that return `self.clone()` when nothing moved.
+    fn ptr_eq_shallow(&self, other: &Type) -> bool {
+        match (self, other) {
+            (Type::Fn(a), Type::Fn(b)) => Arc::ptr_eq(a, b),
+            (Type::TVar(a), Type::TVar(b)) => a == b,
+            (a, b) => a == b,
+        }
+    }
+
     pub fn scope_refs(&self, scope: &ModPath) -> Type {
         self.scope_refs_int(scope).unwrap_or_else(|| self.clone())
     }
@@ -1130,13 +1255,34 @@ impl Type {
 
     fn scope_refs_int_inner(&self, scope: &ModPath) -> Option<Type> {
         match self {
-            Type::TVar(tv) => Some(match tv.read().typ.read().typ.as_ref() {
-                None => Type::TVar(TVar::empty_named(tv.name.clone())),
-                Some(typ) => {
-                    let typ = typ.scope_refs(scope);
-                    Type::TVar(TVar::named(tv.name.clone(), typ))
+            Type::TVar(tv) => {
+                let (bound, cons) = {
+                    let cell = tv.read().typ.clone();
+                    let cell = cell.read();
+                    (cell.typ.clone(), cell.constraints.clone())
+                };
+                let fresh = match bound {
+                    None => TVar::empty_named(tv.name.clone()),
+                    Some(typ) => TVar::named(tv.name.clone(), typ.scope_refs(scope)),
+                };
+                // The re-minted cell keeps the conjunction: a
+                // quantifier bound written in an annotation
+                // (`fn<'a: Number>(x: 'a)`) lives only on the cell, and
+                // dropping it here made every annotated bound vacuous
+                // (2026-08-22). A conjunct that reaches this very cell
+                // is copied unscoped — re-scoping it would re-mint the
+                // cell inside it without end.
+                let addr = tv.cell_addr();
+                for c in cons.iter() {
+                    let c = if crate::typ::tvar::would_cycle_inner(addr, c) {
+                        c.clone()
+                    } else {
+                        c.scope_refs(scope)
+                    };
+                    fresh.add_cell_constraint(c);
                 }
-            }),
+                Some(Type::TVar(fresh))
+            }
             Type::Ref(tr) => {
                 let params =
                     Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));

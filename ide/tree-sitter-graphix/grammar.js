@@ -89,6 +89,12 @@ module.exports = grammar({
     [$.module, $.sig_module],
     [$.use, $.sig_use],
     [$.type_def, $.sig_type_def],
+    [$.trait_def, $.sig_trait_def],
+    [$.impl_def, $.sig_impl_def],
+    [$.module_path],
+    // `select impl T for X { arms }`: the impl's optional method block
+    // and the select's arms begin alike — keep both parses
+    [$._impl_def],
   ],
 
   word: $ => $.identifier,
@@ -121,6 +127,8 @@ module.exports = grammar({
       $.module,
       $.use,
       $.type_def,
+      $.trait_def,
+      $.impl_def,
       $.let_binding,
       $.catch_stmt,
       $.lambda,
@@ -135,6 +143,8 @@ module.exports = grammar({
       $.module,
       $.use,
       $.type_def,
+      $.trait_def,
+      $.impl_def,
       $.let_binding,
       $.connect,
       $.lambda,
@@ -233,7 +243,56 @@ module.exports = grammar({
       $.sig_bind,
       $.sig_module,
       $.sig_use,
+      $.sig_trait_def,
+      $.sig_impl_def,
     ),
+
+    sig_trait_def: $ => $._trait_def,
+    sig_impl_def: $ => $._impl_def,
+
+    // Traits (design/traits.md): `trait T { val m: fn(self, ..) -> R
+    // [= default]; .. }` and `impl[<'a: C>] T for Target [{ let m =
+    // ..; .. }]`. The same rules serve interface files, where an
+    // `impl` carries no body.
+    trait_def: $ => $._trait_def,
+    impl_def: $ => $._impl_def,
+
+    _trait_def: $ => seq(
+      repeat($.doc_comment),
+      'trait',
+      field('name', $.type_identifier),
+      '{',
+      optional(seq($.trait_method, repeat(seq(';', $.trait_method)), optional(';'))),
+      '}',
+    ),
+
+    trait_method: $ => seq(
+      repeat($.doc_comment),
+      'val',
+      field('name', $._binding_name),
+      ':',
+      field('type', $._type),
+      optional(seq('=', field('default', $._expression))),
+    ),
+
+    _impl_def: $ => seq(
+      repeat($.doc_comment),
+      'impl',
+      optional(seq('<', commaSep1($.constraint_or_var), '>')),
+      field('trait', $.type_path),
+      'for',
+      field('target', $._type),
+      optional(seq(
+        '{',
+        optional(seq($.let_binding, repeat(seq(';', $.let_binding)), optional(';'))),
+        '}',
+      )),
+    ),
+
+    constraint_or_var: $ => seq($.type_variable, optional(seq(':', $.trait_bound))),
+
+    // a bound is one type or a `+`-joined conjunction of traits
+    trait_bound: $ => prec.left(seq($._type, repeat(seq('+', $._type)))),
 
     // sig_type_def covers both concrete (`type Foo = T`) and abstract
     // (`type Foo;` — body deliberately hidden) interface declarations.
@@ -350,6 +409,7 @@ module.exports = grammar({
       $.primitive_type,
       $.type_identifier,
       $.type_variable,
+      $.self_type,
       $.wildcard_type,
       $.array_type,
       $.map_type,
@@ -380,6 +440,9 @@ module.exports = grammar({
     ),
 
     type_variable: $ => seq("'", $._binding_name),
+
+    // the receiver type of a trait method signature
+    self_type: $ => 'self',
 
     array_type: $ => seq('Array', '<', $._type, '>'),
 
@@ -426,10 +489,13 @@ module.exports = grammar({
       ),
     ),
 
-    fn_type_arg: $ => seq(
-      choice($.fn_type_label, $.fn_type_arg_name),
-      $._type,
+    fn_type_arg: $ => choice(
+      seq(choice($.fn_type_label, $.fn_type_arg_name), $._type),
+      // a trait method's receiver: `fn(self, ..)`
+      $.self_param,
     ),
+
+    self_param: $ => 'self',
 
     fn_type_label: $ => seq(optional('?'), '#', $._binding_name, ':'),
 
@@ -446,7 +512,7 @@ module.exports = grammar({
       commaSep1($.constraint),
     )),
 
-    constraint: $ => seq($.type_variable, ':', $._type),
+    constraint: $ => seq($.type_variable, ':', $.trait_bound),
 
     ref_type: $ => prec.right(seq(
       $.type_path,
@@ -615,6 +681,8 @@ module.exports = grammar({
         $.structure_pattern,
         optional(seq(':', $._type)),
       ),
+      // the receiver of an impl method
+      seq($.self_param, optional(seq(':', $._type))),
     ),
 
     variadic_param: $ => seq('@', $._binding_name, optional(seq(':', $._type))),
@@ -958,6 +1026,19 @@ module.exports = grammar({
           repeat1(seq('::', $._binding_name)),
         ),
         seq($._binding_name, repeat(seq('::', $._binding_name))),
+        // a trait method through its trait: `Read::read`, `io::Read::read`
+        seq(
+          optional(seq(
+            choice('self', 'package', seq('super', repeat(seq('::', 'super')))),
+            '::',
+          )),
+          repeat(seq($._binding_name, '::')),
+          $.type_identifier,
+          '::',
+          $._binding_name,
+        ),
+        // the receiver of an impl method
+        $.self_param,
       ),
     ),
 

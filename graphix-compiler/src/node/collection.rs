@@ -1,4 +1,6 @@
-use super::{MAX_ARRAY_INIT_LEN, callsite::CallSite, genn, pattern::StructPatternNode};
+use super::{
+    MAX_ARRAY_INIT_LEN, NOP, callsite::CallSite, genn, pattern::StructPatternNode,
+};
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
@@ -400,6 +402,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
         callback_type: &Arc<FnType>,
         element_type: &Type,
         prototype: bool,
+        resolved: Option<Value>,
     ) -> Self {
         let (id, element) = genn::bind(
             ctx,
@@ -408,8 +411,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
             element_type.clone(),
             top_id,
         );
-        let function =
-            genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
+        let function = callback_fnode(ctx, callback, callback_type, top_id, resolved);
         let call = if prototype {
             genn::apply_prototype(
                 function,
@@ -645,8 +647,16 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
         };
         let element_type = T::Collection::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
-        let prototype =
-            Slot::new(ctx, scope, top_id, callback, &callback_type, &element_type, true);
+        let prototype = Slot::new(
+            ctx,
+            scope,
+            top_id,
+            callback,
+            &callback_type,
+            &element_type,
+            true,
+            None,
+        );
         Ok(Node::new(Self {
             base: MapQBase {
                 source,
@@ -669,6 +679,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
     }
 
     fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
+        let resolved = prototype_def(ctx, &self.base.prototype);
         self.slots.push(Slot::new(
             ctx,
             &self.scope,
@@ -677,6 +688,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             &self.callback_type,
             &self.base.element_type,
             false,
+            resolved,
         ));
     }
 }
@@ -1023,6 +1035,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         acc_type: &Type,
         element_type: &Type,
         prototype: bool,
+        resolved: Option<Value>,
     ) -> Self {
         let (acc_id, acc) =
             genn::bind(ctx, &scope.lexical, "collection_acc", acc_type.clone(), top_id);
@@ -1033,8 +1046,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
             element_type.clone(),
             top_id,
         );
-        let function =
-            genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
+        let function = callback_fnode(ctx, callback, callback_type, top_id, resolved);
         let call = if prototype {
             genn::apply_prototype(
                 function,
@@ -1147,6 +1159,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             &acc_type,
             &element_type,
             true,
+            None,
         );
         Ok(Node::new(Self {
             base: FoldQBase {
@@ -1173,6 +1186,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
     }
 
     fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
+        let resolved = prototype_def(ctx, &self.base.prototype);
         self.slots.push(FoldSlot::new(
             ctx,
             &self.scope,
@@ -1182,6 +1196,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             &self.acc_type,
             &self.base.element_type,
             false,
+            resolved,
         ));
     }
 }
@@ -1617,6 +1632,39 @@ fn emit_fold_call<R: Rt, E: UserEvent, T: FoldFn<R, E>>(
     let r = emit_fold::<R, E, T>(base, source, init, cx);
     cx.swap_collection_site(prev);
     r
+}
+
+/// The callback's definition value when the prototype call resolved
+/// statically: a runtime slot then calls that lambda directly
+/// (`callback_fnode`) instead of binding to whatever value the
+/// callback parameter carries — which a TRAIT METHOD dispatcher never
+/// carries (the prototype resolved it to an implementation by the
+/// element type; the slots inherit that, `design/traits.md` §2).
+fn prototype_def<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    prototype: &Node<R, E>,
+) -> Option<Value> {
+    let NodeView::CallSite(site) = prototype.view() else { return None };
+    let target = site.static_target.as_ref()?;
+    ctx.lambda_defs.get(&target.definition).cloned()
+}
+
+/// A slot's function node: the resolved definition as a constant when
+/// the prototype settled one, else a reference to the callback
+/// parameter (bound at runtime by the value it carries).
+fn callback_fnode<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    callback: BindId,
+    callback_type: &Arc<FnType>,
+    top_id: ExprId,
+    resolved: Option<Value>,
+) -> Node<R, E> {
+    match resolved {
+        Some(v) => {
+            super::Constant::new(v, Type::Fn(callback_type.clone()), Expr::clone(&NOP))
+        }
+        None => genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id),
+    }
 }
 
 fn callback<R: Rt, E: UserEvent>(

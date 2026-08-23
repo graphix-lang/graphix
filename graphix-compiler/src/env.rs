@@ -6,7 +6,7 @@ use crate::{
         SigImplLink, TypeRefSite,
     },
     mod_root,
-    typ::{AbstractId, TVar, Type},
+    typ::{AbstractId, FnType, TVar, TraitId, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
@@ -149,6 +149,79 @@ pub struct ScopeNames {
     pub globs: Arc<Vec<ModPath>>,
 }
 
+/// A declared trait (`design/traits.md`): its identity, where it was
+/// declared, and its methods. Lives in [`Env::trait_defs`], a GLOBAL
+/// registry keyed by [`TraitId`] — the interface's declaration and
+/// the implementation's re-declaration mint the same id, and the
+/// later registration (the implementation's, which carries the
+/// default-method bindings) replaces the earlier.
+#[derive(Debug, Clone)]
+pub struct TraitDef {
+    pub id: TraitId,
+    pub name: ArcStr,
+    /// The declaring module scope.
+    pub scope: ModPath,
+    /// `scope::Name` — the trait's own module-like scope, where its
+    /// method dispatchers are bound (`Trait::method`, `use Trait::*`).
+    pub path: ModPath,
+    pub methods: Arc<[TraitMethodDef]>,
+    pub doc: Option<ArcStr>,
+    pub pos: SourcePosition,
+    pub ori: Arc<Origin>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitMethodDef {
+    pub name: ArcStr,
+    /// The declared signature with the receiver `self` constrained by
+    /// the trait: `fn<self: Trait>(self, ..) -> T`.
+    pub typ: Arc<FnType>,
+    /// Index of the `self` parameter in `typ.args`.
+    pub self_index: usize,
+    /// The declaration supplies a default body (an implementor may
+    /// omit the method).
+    pub has_default: bool,
+    /// The dispatcher binding at `path::name` — what a call names; a
+    /// call site resolves it to an implementation by its self
+    /// argument's type (`CallSite::resolve_trait_call`).
+    pub dispatcher: BindId,
+    /// The default body's binding, when the method has one and the
+    /// declaring implementation has compiled it.
+    pub default: Option<BindId>,
+}
+
+/// Which trait method a dispatcher binding stands for
+/// ([`Env::trait_methods`]).
+#[derive(Debug, Clone, Copy)]
+pub struct TraitMethodRef {
+    pub trait_id: TraitId,
+    pub index: usize,
+}
+
+/// One `impl Trait for Target` ([`Env::impls`], global — impls are
+/// facts, not names; `design/traits.md` §4).
+#[derive(Debug, Clone)]
+pub struct ImplDef {
+    pub trait_id: TraitId,
+    /// The target type, scoped; may mention `params`.
+    pub target: Type,
+    /// The head's declared type variables (`impl<'a: C> T for P<'a>`);
+    /// their bounds live on the cells. Lookup instantiates them fresh
+    /// and unifies the head with the use site's type.
+    pub params: Arc<[TVar]>,
+    /// The scope whose bindings are the implementation's methods.
+    pub scope: ModPath,
+    /// Method name → the binding a resolved call references.
+    pub methods: Map<CompactString, BindId>,
+    /// The impl came from an interface declaration (`impl T for X;`):
+    /// its method bindings were minted by the signature and the
+    /// implementation's methods proxy to them. An implementation's
+    /// own registration of the same (trait, target) replaces it.
+    pub declared: bool,
+    pub pos: SourcePosition,
+    pub ori: Arc<Origin>,
+}
+
 /// Which namespace a resolution serves. Path INTERIORS are always
 /// module-kind; the terminal name's kind decides which preludes
 /// apply: values and types get the core prelude, modules get the
@@ -206,6 +279,20 @@ pub struct Env {
     /// its identity — a global registry like `names` (see
     /// [`AbstractRep`]); visibility is decided at lookup.
     pub abstract_reps: Map<AbstractId, Arc<AbstractRep>>,
+    /// Trait NAMES by declaring scope — lexical, like `typedefs`
+    /// (a trait is in scope by declaration, `use`, or prelude).
+    pub traits: Map<ModPath, Map<CompactString, TraitId>>,
+    /// Every trait's definition by identity — a global registry like
+    /// `names` (see [`TraitDef`]).
+    pub trait_defs: Map<TraitId, Arc<TraitDef>>,
+    /// Dispatcher binding → the trait method it names, for every
+    /// registration (an interface's and its implementation's
+    /// dispatchers both map here). Global.
+    pub trait_methods: Map<BindId, TraitMethodRef>,
+    /// Every trait's implementations. Global: an impl applies
+    /// wherever its trait is used, scope governs only the trait's
+    /// NAME (`design/traits.md` §4).
+    pub impls: Map<TraitId, Arc<Vec<Arc<ImplDef>>>>,
     /// Registered package names — the package prelude: usable as
     /// module path roots from anywhere. Populated by package
     /// registration; survives the lexical swap like `names`.
@@ -250,6 +337,10 @@ impl Env {
             byref_chain,
             names,
             abstract_reps,
+            traits,
+            trait_defs,
+            trait_methods,
+            impls,
             package_roots: _,
             modules,
             typedefs,
@@ -263,6 +354,10 @@ impl Env {
         *byref_chain = Map::new();
         *names = Map::new();
         *abstract_reps = Map::new();
+        *traits = Map::new();
+        *trait_defs = Map::new();
+        *trait_methods = Map::new();
+        *impls = Map::new();
         *modules = Set::new();
         *typedefs = Map::new();
         *catch = Map::new();
@@ -284,11 +379,15 @@ impl Env {
             binds: other.binds,
             modules: other.modules,
             typedefs: other.typedefs,
+            traits: other.traits,
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             names: self.names.clone(),
             abstract_reps: self.abstract_reps.clone(),
+            trait_defs: self.trait_defs.clone(),
+            trait_methods: self.trait_methods.clone(),
+            impls: self.impls.clone(),
             package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
@@ -301,11 +400,15 @@ impl Env {
             binds: mem::take(&mut other.binds),
             modules: mem::take(&mut other.modules),
             typedefs: mem::take(&mut other.typedefs),
+            traits: mem::take(&mut other.traits),
             by_id: self.by_id.clone(),
             catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             names: self.names.clone(),
             abstract_reps: self.abstract_reps.clone(),
+            trait_defs: self.trait_defs.clone(),
+            trait_methods: self.trait_methods.clone(),
+            impls: self.impls.clone(),
             package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
@@ -611,6 +714,12 @@ impl Env {
         let parts: LPooled<Vec<&str>> = Path::parts(&**name).collect();
         let Some((&base, _)) = parts.split_last() else { return Ok(None) };
         let n_super = parts.iter().take_while(|s| **s == "super").count();
+        // the bare receiver name of an impl method is an ordinary
+        // value binding (`self.0`, `read(self, n)`); only `self::x`
+        // is the path keyword
+        if parts.len() == 1 && base == "self" && ns == NameNs::Value {
+            return self.chain_lookup(scope, scope, base, 0, &mut f);
+        }
         let lead = match parts[0] {
             "self" | "package" => 1,
             "super" => n_super,
@@ -714,6 +823,249 @@ impl Env {
         self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
             self.typedefs.get(scope).and_then(|m| m.get(name))
         })
+    }
+
+    /// Resolve a trait NAME written at `scope` — declaration, import,
+    /// or prelude, like a type name.
+    pub fn lookup_trait(
+        &self,
+        scope: &ModPath,
+        name: &ModPath,
+    ) -> Result<Option<TraitId>> {
+        self.resolve_visible(scope, name, NameNs::Type, |scope, name| {
+            self.traits.get(scope).and_then(|m| m.get(name)).copied()
+        })
+    }
+
+    /// The trait a type reference names, if it names one rather than
+    /// a typedef. A reference whose resolution cell is filled is a
+    /// typedef (traits never fill it), so the table walk runs only for
+    /// still-unresolved refs — trait conjuncts on constrained cells.
+    pub fn trait_of_ref(&self, tr: &crate::typ::TypeRef) -> Option<TraitId> {
+        if tr.resolved().is_some() {
+            return None;
+        }
+        self.lookup_trait(&tr.scope, &tr.name).ok().flatten()
+    }
+
+    /// Declare trait `name` in `scope`. Binds one dispatcher per
+    /// method at `scope::name::method` (registering `scope::name` as
+    /// a module-like scope so `Trait::m` paths and `use Trait::m`
+    /// resolve), records the dispatchers in `trait_methods`, and
+    /// registers the definition globally — replacing an earlier
+    /// registration of the same identity (an interface's), whose
+    /// dispatchers stay valid through `trait_methods`.
+    pub fn deftrait(
+        &mut self,
+        scope: &ModPath,
+        name: &ArcStr,
+        methods: impl Iterator<Item = (ArcStr, Arc<FnType>, usize, bool)>,
+        doc: Option<ArcStr>,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
+    ) -> Result<Arc<TraitDef>> {
+        if self.traits.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
+            bail!("trait {name} is already defined in scope {scope}")
+        }
+        if self.typedefs.get(scope).and_then(|m| m.get(name.as_str())).is_some() {
+            bail!("{name} is already defined as a type in scope {scope}")
+        }
+        let id = TraitId::of(scope, name);
+        let path = ModPath(scope.append(name));
+        if self.modules.contains(&path) {
+            bail!("{name} is already defined as a module in scope {scope}")
+        }
+        self.modules.insert_cow(path.clone());
+        let mut defs: LPooled<Vec<TraitMethodDef>> = LPooled::take();
+        for (mname, typ, self_index, has_default) in methods {
+            let bind = self.bind_variable(
+                &path,
+                &mname,
+                Type::Fn(typ.clone()),
+                pos,
+                ori.clone(),
+            );
+            let dispatcher = bind.id;
+            let index = defs.len();
+            self.trait_methods
+                .insert_cow(dispatcher, TraitMethodRef { trait_id: id, index });
+            defs.push(TraitMethodDef {
+                name: mname,
+                typ,
+                self_index,
+                dispatcher,
+                has_default,
+                default: None,
+            });
+        }
+        let def = Arc::new(TraitDef {
+            id,
+            name: name.clone(),
+            scope: scope.clone(),
+            path,
+            methods: Arc::from_iter(defs.drain(..)),
+            doc,
+            pos,
+            ori,
+        });
+        self.traits
+            .get_or_default_cow(scope.clone())
+            .insert_cow(name.as_str().into(), id);
+        // the FIRST registration (an interface's, when there is one)
+        // is the definition of record; a re-declaration contributes
+        // its default bodies through `set_trait_defaults`
+        if self.trait_defs.get(&id).is_none() {
+            self.trait_defs.insert_cow(id, def.clone());
+        }
+        Ok(def)
+    }
+
+    /// Record the compiled default-method bindings of trait `id` on
+    /// its definition of record. Returns that definition.
+    pub fn set_trait_defaults(
+        &mut self,
+        id: TraitId,
+        defaults: impl Iterator<Item = (CompactString, BindId)>,
+    ) -> Arc<TraitDef> {
+        let mut by_name: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
+        for (n, b) in defaults {
+            by_name.insert(n, b);
+        }
+        let cur =
+            self.trait_defs.get(&id).expect("set_trait_defaults on an unknown trait");
+        let methods: Arc<[TraitMethodDef]> =
+            Arc::from_iter(cur.methods.iter().map(|m| {
+                let default = by_name.get(m.name.as_str()).copied().or(m.default);
+                TraitMethodDef { default, ..m.clone() }
+            }));
+        let def = Arc::new(TraitDef { methods, ..(**cur).clone() });
+        self.trait_defs.insert_cow(id, def.clone());
+        def
+    }
+
+    pub fn undeftrait(&mut self, def: &Arc<TraitDef>) {
+        if let Some(m) = self.traits.get_mut_cow(&def.scope) {
+            m.remove_cow(&CompactString::from(def.name.as_str()));
+            if m.len() == 0 {
+                self.traits.remove_cow(&def.scope);
+            }
+        }
+        for m in def.methods.iter() {
+            self.trait_methods.remove_cow(&m.dispatcher);
+            self.unbind_variable(m.dispatcher);
+        }
+        self.modules.remove_cow(&def.path);
+        if self.trait_defs.get(&def.id).map(|d| Arc::ptr_eq(d, def)) == Some(true) {
+            self.trait_defs.remove_cow(&def.id);
+        }
+    }
+
+    pub fn trait_def(&self, id: TraitId) -> Option<&Arc<TraitDef>> {
+        self.trait_defs.get(&id)
+    }
+
+    /// Register an implementation. One impl per (trait, target): a
+    /// registration whose head unifies with an existing one is a
+    /// conflict, except that an implementation may replace the
+    /// interface declaration of the same (trait, target) it fulfils.
+    pub fn register_impl(&mut self, im: Arc<ImplDef>) -> Result<()> {
+        let mut list: Vec<Arc<ImplDef>> =
+            self.impls.get(&im.trait_id).map(|l| (**l).clone()).unwrap_or_default();
+        let mut replace = None;
+        for (i, other) in list.iter().enumerate() {
+            if self.heads_overlap(&other.target, &im.target)? {
+                if other.declared && !im.declared {
+                    replace = Some(i);
+                    break;
+                }
+                bail!(
+                    "conflicting implementation: {} is already implemented for {} at {}",
+                    self.trait_defs
+                        .get(&im.trait_id)
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| arcstr::literal!("?")),
+                    other.target,
+                    other.pos
+                )
+            }
+        }
+        let trait_id = im.trait_id;
+        match replace {
+            Some(i) => list[i] = im,
+            None => list.push(im),
+        }
+        self.impls.insert_cow(trait_id, Arc::new(list));
+        Ok(())
+    }
+
+    pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) {
+        let Some(list) = self.impls.get(&im.trait_id) else { return };
+        let list: Vec<Arc<ImplDef>> =
+            list.iter().filter(|o| !Arc::ptr_eq(o, im)).cloned().collect();
+        if list.is_empty() {
+            self.impls.remove_cow(&im.trait_id);
+        } else {
+            self.impls.insert_cow(im.trait_id, Arc::new(list));
+        }
+    }
+
+    /// Do two impl heads name a common type? Each side's head
+    /// variables are instantiated fresh, so the probe binds nothing
+    /// that outlives it.
+    fn heads_overlap(&self, a: &Type, b: &Type) -> Result<bool> {
+        let a = a.reset_tvars();
+        let b = b.reset_tvars();
+        Ok(a.contains(self, &b)? || b.contains(self, &a)?)
+    }
+
+    /// The registered impl whose head names the same types as
+    /// `target` (an interface's `impl T for X;` pairing with the
+    /// implementation's), parameterized heads included.
+    pub fn impl_entry(
+        &self,
+        trait_id: TraitId,
+        target: &Type,
+    ) -> Result<Option<Arc<ImplDef>>> {
+        let Some(list) = self.impls.get(&trait_id) else { return Ok(None) };
+        for im in list.iter() {
+            if self.heads_overlap(&im.target, target)? {
+                return Ok(Some(im.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The implementation of `trait_id` for `t`, which must already be
+    /// dereferenced and expanded to a structural type (no `TVar`,
+    /// `Ref`, or `Set` at the top — the caller decides those). An
+    /// abstract target matches by identity; any other head matches by
+    /// unification against a fresh instantiation (binding its
+    /// variables, whose bounds discharge through the cells — `impl<'a:
+    /// T> T for P<'a>`), then equivalence.
+    pub fn find_impl(&self, trait_id: TraitId, t: &Type) -> Result<Option<Arc<ImplDef>>> {
+        let Some(list) = self.impls.get(&trait_id) else { return Ok(None) };
+        // an open cell inside `t` could still become anything: no
+        // head is known to apply, and a probe must not bind it
+        if t.has_unbound() {
+            return Ok(None);
+        }
+        for im in list.iter() {
+            if let (Type::Abstract { id: a, .. }, Type::Abstract { id: b, .. }) =
+                (&im.target, t)
+                && a != b
+            {
+                continue;
+            }
+            let head = if im.params.is_empty() {
+                im.target.clone()
+            } else {
+                im.target.reset_tvars()
+            };
+            if head.contains(self, t)? && t.contains(self, &head)? {
+                return Ok(Some(im.clone()));
+            }
+        }
+        Ok(None)
     }
 
     pub fn canonical_modpath(
@@ -879,13 +1231,17 @@ impl Env {
                     e.scope
                 )
             }
-            let declared =
-                self.binds.get(scope).map(|v| v.get(key).is_some()).unwrap_or(false)
-                    || self
-                        .typedefs
-                        .get(scope)
-                        .map(|v| v.get(key).is_some())
-                        .unwrap_or(false);
+            let declared = self
+                .binds
+                .get(scope)
+                .map(|v| v.get(key).is_some())
+                .unwrap_or(false)
+                || self
+                    .typedefs
+                    .get(scope)
+                    .map(|v| v.get(key).is_some())
+                    .unwrap_or(false)
+                || self.traits.get(scope).map(|v| v.get(key).is_some()).unwrap_or(false);
             if declared {
                 bail!("`{key}` is already defined in this scope; use `as` to rename")
             }
@@ -915,6 +1271,7 @@ impl Env {
                     .get(lvl)
                     .map(|v| v.get(&e.name).is_some())
                     .unwrap_or(false)
+                || self.traits.get(lvl).map(|v| v.get(&e.name).is_some()).unwrap_or(false)
                 || self
                     .modules
                     .contains(&ModPath(Path::from(ArcStr::from(lvl)).append(&e.name)))
@@ -951,13 +1308,19 @@ impl Env {
             bail!("{name} is already defined in scope {scope}")
         }
         let (typ, rep) = match body {
-            TypeDefBody::Alias(typ) => (typ.scope_refs(scope), None),
+            TypeDefBody::Alias(typ) => {
+                (typ.scope_refs(scope).rewrite_trait_args(self)?, None)
+            }
             TypeDefBody::Abstract(rep) => {
                 let formals =
                     Arc::from_iter(params.iter().map(|(tv, _)| Type::TVar(tv.clone())));
                 let typ =
                     Type::Abstract { id: AbstractId::of(scope, name), params: formals };
-                (typ, rep.as_ref().map(|r| r.scope_refs(scope)))
+                let rep = match rep {
+                    None => None,
+                    Some(r) => Some(r.scope_refs(scope).rewrite_trait_args(self)?),
+                };
+                (typ, rep)
             }
         };
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();

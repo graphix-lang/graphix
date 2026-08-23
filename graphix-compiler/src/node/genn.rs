@@ -137,6 +137,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         rtype,
         ftype,
         args,
+        lowered: None,
         arg_refs: Vec::new(),
         scope,
         flags: BitFlags::empty(),

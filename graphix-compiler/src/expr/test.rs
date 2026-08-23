@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgKind, FnArgType, FnType, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -353,9 +353,17 @@ fn typexp() -> impl Strategy<Value = Type> {
                         rtype,
                         throws,
                         explicit_throws,
-                        quantifiers: Arc::from_iter(
-                            constraints.iter().map(|(a, _)| a.clone()),
-                        ),
+                        // one quantifier per NAME, like the parser
+                        // (`fn<'a: A, 'a: B>` is one variable, two conjuncts)
+                        quantifiers: {
+                            let mut names: Vec<ArcStr> = Vec::new();
+                            for (a, _) in constraints.iter() {
+                                if !names.contains(a) {
+                                    names.push(a.clone());
+                                }
+                            }
+                            Arc::from_iter(names)
+                        },
                         ..Default::default()
                     };
                     // Mirror the parser: quantifier constraints seed
@@ -541,6 +549,111 @@ fn typedef() -> impl Strategy<Value = Expr> {
     )
 }
 
+/// A trait method signature: `fn(self, x: T, ..) -> R` — the receiver
+/// first, typed by the `self` variable.
+fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
+    (collection::vec((random_fname(), typexp()), 0..3), typexp()).prop_map(
+        |(args, rtype)| {
+            let recv = FnArgType {
+                kind: FnArgKind::Positional { name: Some(ArcStr::from("self")) },
+                typ: Type::TVar(TVar::empty_named(ArcStr::from("self"))),
+            };
+            let args = iter::once(recv).chain(args.into_iter().map(|(n, typ)| {
+                FnArgType { kind: FnArgKind::Positional { name: Some(n) }, typ }
+            }));
+            let ft = FnType {
+                args: Arc::from_iter(args),
+                vargs: None,
+                rtype,
+                throws: Type::Bottom,
+                explicit_throws: false,
+                ..Default::default()
+            };
+            // mirror the parser: same-named leaves of one signature share
+            // one cell (see typexp()'s fn-type arm)
+            ft.alias_tvars(&mut ahash::AHashMap::default());
+            Arc::new(ft)
+        },
+    )
+}
+
+macro_rules! trait_decl {
+    ($inner:expr) => {
+        (
+            typart(),
+            collection::vec(
+                (
+                    random_fname(),
+                    trait_method_sig(),
+                    option::of($inner),
+                    option::of(arcstr()),
+                ),
+                0..4,
+            ),
+        )
+            .prop_map(|(name, methods)| {
+                let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+                let methods = methods
+                    .into_iter()
+                    .filter(|(n, _, _, _)| seen.insert(n.clone()))
+                    .map(|(name, typ, default, doc)| TraitMethod {
+                        doc: Doc(doc),
+                        name,
+                        typ,
+                        self_index: 0,
+                        default,
+                    });
+                ExprKind::Trait(Arc::new(TraitExpr {
+                    name,
+                    methods: Arc::from_iter(methods),
+                }))
+                .to_expr_nopos()
+            })
+    };
+}
+
+macro_rules! impl_decl {
+    ($inner:expr) => {
+        (
+            collection::vec((tvar(), collection::vec(typexp(), 0..3)), 0..3),
+            typath(),
+            typexp(),
+            collection::vec((random_fname(), option::of(typexp()), $inner), 0..3),
+        )
+            .prop_map(|(params, trait_name, target, methods)| {
+                let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+                let params: Vec<(TVar, Vec<Type>)> = params
+                    .into_iter()
+                    .filter(|(tv, _)| seen.insert(tv.name.clone()))
+                    .collect();
+                let constraints = params
+                    .iter()
+                    .flat_map(|(tv, bs)| bs.iter().map(move |b| (tv.clone(), b.clone())));
+                let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+                let methods = methods
+                    .into_iter()
+                    .filter(|(n, _, _)| seen.insert(n.clone()))
+                    .map(|(name, typ, value)| {
+                        ExprKind::Bind(Arc::new(BindExpr {
+                            rec: false,
+                            pattern: StructurePattern::Bind(name),
+                            typ,
+                            value,
+                        }))
+                        .to_expr_nopos()
+                    });
+                ExprKind::Impl(Arc::new(ImplExpr {
+                    trait_name,
+                    constraints: Arc::from_iter(constraints),
+                    params: Arc::from_iter(params.iter().map(|(tv, _)| tv.clone())),
+                    target,
+                    methods: Arc::from_iter(methods),
+                }))
+                .to_expr_nopos()
+            })
+    };
+}
+
 macro_rules! structref {
     ($inner:expr) => {
         ($inner, field_name()).prop_map(|(source, field)| {
@@ -647,7 +760,14 @@ macro_rules! do_block {
     ($inner:expr) => {
         (
             collection::vec(
-                prop_oneof![typedef(), usestmt(), catch_stmt!($inner.clone()), $inner],
+                prop_oneof![
+                    typedef(),
+                    usestmt(),
+                    catch_stmt!($inner.clone()),
+                    trait_decl!($inner.clone()),
+                    impl_decl!($inner.clone()),
+                    $inner
+                ],
                 (2, 10),
             ),
             any::<bool>(),
@@ -900,8 +1020,64 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
             doc: Doc(doc),
             pos: Default::default(),
             ori: None,
+        }),
+        (trait_decl!(constant()), option::of(arcstr())).prop_map(|(mut t, doc)| {
+            match std::mem::replace(&mut t.kind, ExprKind::NoOp) {
+                ExprKind::Trait(t) => SigItem {
+                    kind: SigKind::Trait(t),
+                    doc: Doc(doc),
+                    pos: Default::default(),
+                    ori: None,
+                },
+                _ => unreachable!(),
+            }
+        }),
+        (impl_decl!(constant()), option::of(arcstr())).prop_map(|(mut i, doc)| {
+            match std::mem::replace(&mut i.kind, ExprKind::NoOp) {
+                ExprKind::Impl(i) => SigItem {
+                    kind: SigKind::Impl(Arc::new(ImplExpr {
+                        methods: Arc::from_iter([]),
+                        ..(*i).clone()
+                    })),
+                    doc: Doc(doc),
+                    pos: Default::default(),
+                    ori: None,
+                },
+                _ => unreachable!(),
+            }
         })
     ]
+}
+
+fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
+    dbg!(t0.name == t1.name)
+        && dbg!(t0.methods.len() == t1.methods.len())
+        && t0.methods.iter().zip(t1.methods.iter()).all(|(m0, m1)| {
+            dbg!(m0.name == m1.name)
+                && dbg!(m0.doc == m1.doc)
+                && dbg!(m0.self_index == m1.self_index)
+                && dbg!(check_type(&Type::Fn(m0.typ.clone()), &Type::Fn(m1.typ.clone())))
+                && match (&m0.default, &m1.default) {
+                    (Some(d0), Some(d1)) => dbg!(check(d0, d1)),
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+}
+
+fn check_impl(i0: &ImplExpr, i1: &ImplExpr) -> bool {
+    dbg!(i0.trait_name == i1.trait_name)
+        && dbg!(i0.params.len() == i1.params.len())
+        && i0.params.iter().zip(i1.params.iter()).all(|(a, b)| a.name == b.name)
+        && dbg!(i0.constraints.len() == i1.constraints.len())
+        && i0
+            .constraints
+            .iter()
+            .zip(i1.constraints.iter())
+            .all(|((a, ta), (b, tb))| a.name == b.name && check_type(ta, tb))
+        && dbg!(check_type(&i0.target, &i1.target))
+        && dbg!(i0.methods.len() == i1.methods.len())
+        && i0.methods.iter().zip(i1.methods.iter()).all(|(a, b)| check(a, b))
 }
 
 fn module_sandbox() -> impl Strategy<Value = Sandbox> {
@@ -1124,7 +1300,15 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
 }
 
 fn expr() -> impl Strategy<Value = Expr> {
-    let leaf = prop_oneof![constant(), reference(), usestmt(), typedef(), module()];
+    let leaf = prop_oneof![
+        constant(),
+        reference(),
+        usestmt(),
+        typedef(),
+        module(),
+        trait_decl!(constant()),
+        impl_decl!(constant())
+    ];
     leaf.prop_recursive(5, 100, 25, |inner| {
         prop_oneof![
             dynamic_module!(inner.clone()),
@@ -1390,6 +1574,14 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
                 SigItem { kind: SigKind::Module(n0), doc: d0, .. },
                 SigItem { kind: SigKind::Module(n1), doc: d1, .. },
             ) => n0 == n1 && d0 == d1,
+            (
+                SigItem { kind: SigKind::Trait(t0), doc: d0, .. },
+                SigItem { kind: SigKind::Trait(t1), doc: d1, .. },
+            ) => check_trait(t0, t1) && d0 == d1,
+            (
+                SigItem { kind: SigKind::Impl(i0), doc: d0, .. },
+                SigItem { kind: SigKind::Impl(i1), doc: d1, .. },
+            ) => check_impl(i0, i1) && d0 == d1,
             (_, _) => false,
         })
 }
@@ -1715,6 +1907,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             )
         }
         (ExprKind::TypeDef(td0), ExprKind::TypeDef(td1)) => check_typedef(td0, td1),
+        (ExprKind::Trait(t0), ExprKind::Trait(t1)) => check_trait(t0, t1),
+        (ExprKind::Impl(i0), ExprKind::Impl(i1)) => check_impl(i0, i1),
         (
             ExprKind::TypeCast { expr: expr0, typ: typ0 },
             ExprKind::TypeCast { expr: expr1, typ: typ1 },

@@ -3,7 +3,8 @@ use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, LambdaId,
     LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent, deref_typ,
-    expr::{ErrorContext, Expr, ExprId, ExprKind},
+    env::TraitMethodRef,
+    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         self,
         emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
@@ -267,6 +268,13 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// callee-binding site.
     pub(super) gate_tainted_args: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
+    /// A trait call over a UNION self type lowers to the select the
+    /// programmer would otherwise write — one arm per member, each a
+    /// static call to that member's implementation
+    /// (`design/traits.md` §3). Once set, this node is that select: every
+    /// `Update` method delegates to it and fusion sees a select, not a
+    /// call.
+    pub(crate) lowered: Option<Node<R, E>>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
@@ -419,6 +427,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             callee: Callee::DynamicUnbound,
             gate_tainted_args: false,
             static_target: None,
+            lowered: None,
             recursive_edge: AtomicBool::new(false),
             flags,
             top_id,
@@ -1016,18 +1025,34 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
         };
-        let Some(fv) = target else { return Ok(()) };
+        let fv = match target {
+            Some(fv) => fv,
+            None => {
+                // a TRAIT METHOD: the dispatcher binding names no
+                // lambda; the self argument's type picks one
+                if let NodeView::Ref(r) = self.fnode.view()
+                    && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
+                {
+                    self.resolve_trait_call(ctx, tm)?;
+                }
+                return Ok(());
+            }
+        };
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
             return Ok(());
         };
         self.resolve_static(ctx, def)?;
         // HOF callback pre-materialization: every fn-typed positional arg
-        // whose function-valued arguments resolve to known lambdas.
+        // whose function-valued arguments resolve to known lambdas (or
+        // name a trait method, which the instance's call sites resolve
+        // by their element types).
         let ftype = match self.resolved_ftype() {
             Some(ft) => ft.clone(),
             None => return Ok(()),
         };
         let mut fn_arg_targets: smallvec::SmallVec<[(usize, Value); 4]> =
+            smallvec::SmallVec::new();
+        let mut trait_arg_targets: smallvec::SmallVec<[(usize, TraitMethodRef); 2]> =
             smallvec::SmallVec::new();
         for (i, farg) in ftype.args.iter().enumerate() {
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
@@ -1044,12 +1069,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id) {
                         fn_arg_targets.push((i, fv.clone()));
+                    } else if let Some(tm) = ctx.env.trait_methods.get(&r.id) {
+                        trait_arg_targets.push((i, *tm));
                     }
                 }
                 _ => {}
             }
         }
-        if fn_arg_targets.is_empty() {
+        if fn_arg_targets.is_empty() && trait_arg_targets.is_empty() {
             return Ok(());
         }
         let Some(apply) = self.callee.apply_mut() else {
@@ -1066,11 +1093,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // there is no cross-site contamination by construction, and
         // fusion needs no special HOF callback path.
         let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        let mut trait_param_binds: LPooled<Vec<BindId>> = LPooled::take();
         if let ApplyView::Lambda(g) = apply.view() {
             for (idx, fv) in &fn_arg_targets {
                 if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
                     ctx.bind_to_lambda.insert(id, fv.clone());
                     param_binds.push(id);
+                }
+            }
+            for (idx, tm) in &trait_arg_targets {
+                if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
+                    ctx.env.trait_methods.insert_cow(id, *tm);
+                    trait_param_binds.push(id);
                 }
             }
         }
@@ -1102,18 +1136,237 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             for id in param_binds.drain(..) {
                 ctx.bind_to_lambda.remove(&id);
             }
+            for id in trait_param_binds.drain(..) {
+                ctx.env.trait_methods.remove_cow(&id);
+            }
             res?;
         } else {
             for id in param_binds.drain(..) {
                 ctx.bind_to_lambda.remove(&id);
             }
+            for id in trait_param_binds.drain(..) {
+                ctx.env.trait_methods.remove_cow(&id);
+            }
         }
         Ok(())
     }
+
+    /// Resolve a call through a trait method's dispatcher to an
+    /// implementation by the self argument's type (`design/traits.md`
+    /// §2): the call site is re-pointed at the implementation's (or the
+    /// default's) binding and pre-bound statically when its lambda is
+    /// known. An open self type inside a definition gate is the
+    /// polymorphic case — each instance resolves for itself; open
+    /// anywhere else is the error the design demands. A union self
+    /// type dispatches through a generated select (§3).
+    fn resolve_trait_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        tm: TraitMethodRef,
+    ) -> Result<()> {
+        let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
+            bail!("trait method call through an unknown trait at {}", self.spec)
+        };
+        let m = &def.methods[tm.index];
+        let Some(ftype) = self.ftype.as_ref() else { return Ok(()) };
+        let mut self_t = match ftype.args.get(m.self_index) {
+            Some(a) => a.typ.resolve_tvars(),
+            None => bail!("{}::{} called without its self argument", def.name, m.name),
+        };
+        while let Type::Ref(tr) = &self_t
+            && ctx.env.trait_of_ref(tr).is_none()
+        {
+            self_t = self_t.lookup_ref(&ctx.env)?;
+        }
+        if self_t.has_unbound() {
+            if ctx.def_gate_depth > 0 {
+                return Ok(());
+            }
+            return Err(anyhow!(
+                "cannot resolve {}::{}: the type of its self argument ({}) is not \
+                 known at this call; annotate it",
+                def.name,
+                m.name,
+                self_t
+            )
+            .context(ErrorContext((*self.spec).clone())));
+        }
+        if let Type::Set(members) = &self_t {
+            let members = members.clone();
+            return self.lower_trait_union(ctx, &def, tm.index, &members);
+        }
+        let Some(im) = ctx.env.find_impl(def.id, &self_t)? else {
+            return Err(anyhow!("no implementation of {} for {}", def.name, self_t)
+                .context(ErrorContext((*self.spec).clone())));
+        };
+        let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default) else {
+            bail!(
+                "impl {} for {} has no method {} and the trait declares no default",
+                def.name,
+                self_t,
+                m.name
+            )
+        };
+        self.retarget(ctx, bind);
+        let fv =
+            ctx.bind_to_lambda.get(&bind).cloned().or_else(|| ctx.rt.store_value(&bind));
+        if let Some(fv) = fv
+            && let Some(ldef) = fv.downcast_ref::<LambdaDef<R, E>>()
+        {
+            self.resolve_static(ctx, ldef)?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch over a union self type: the call becomes
+    ///
+    /// ```text
+    /// { let #s = <self>; let #a0 = <arg0>; ..;
+    ///   select #s { M1 as #t => <impl M1>(#t, #a0, ..), M2 as #t => .. } }
+    /// ```
+    ///
+    /// — the arguments bound once, then the select the programmer
+    /// would have written, with a static call in every arm. The
+    /// synthesized expression compiles under this site's scope; the
+    /// implementation bindings are named by id (`#bind::N`, a form no
+    /// source can spell). The original argument nodes are deleted —
+    /// the lowered block re-evaluates their expressions.
+    fn lower_trait_union(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        def: &crate::env::TraitDef,
+        index: usize,
+        members: &[Type],
+    ) -> Result<()> {
+        use crate::expr::{ApplyExpr, BindExpr, Pattern, SelectExpr, StructurePattern};
+        let m = &def.methods[index];
+        let ExprKind::Apply(ApplyExpr { args, function: _ }) = &self.spec.kind else {
+            bail!("trait call site without an apply spec: {}", self.spec)
+        };
+        let mut targets: LPooled<Vec<(Type, BindId)>> = LPooled::take();
+        for mem in members.iter() {
+            let Some(im) = ctx.env.find_impl(def.id, mem)? else {
+                return Err(anyhow!(
+                    "no implementation of {} for {mem}, a member of the self type {}",
+                    def.name,
+                    Type::Set(TArc::from_iter(members.iter().cloned()))
+                )
+                .context(ErrorContext((*self.spec).clone())));
+            };
+            let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default)
+            else {
+                bail!("impl {} for {mem} has no method {}", def.name, m.name)
+            };
+            targets.push((mem.clone(), bind));
+        }
+        let pos = self.spec.pos;
+        let ori = self.spec.ori.clone();
+        let mk = |kind: ExprKind| Expr {
+            id: ExprId::new(),
+            ori: ori.clone(),
+            pos,
+            kind,
+            dec: None,
+        };
+        let self_pos: usize = m.self_index;
+        let mut stmts: LPooled<Vec<Expr>> = LPooled::take();
+        let mut call_args: LPooled<Vec<(Option<ArcStr>, Expr)>> = LPooled::take();
+        let mut positional = 0usize;
+        for (i, (label, e)) in args.iter().enumerate() {
+            let is_self = label.is_none() && {
+                let p = positional;
+                positional += 1;
+                p == self_pos
+            };
+            let name: ArcStr = if is_self {
+                arcstr::literal!("#s")
+            } else {
+                compact_str::format_compact!("#a{i}").as_str().into()
+            };
+            stmts.push(mk(ExprKind::Bind(TArc::new(BindExpr {
+                rec: false,
+                pattern: StructurePattern::Bind(name.clone()),
+                typ: None,
+                value: e.clone(),
+            }))));
+            let arg = if is_self { arcstr::literal!("#t") } else { name };
+            call_args
+                .push((label.clone(), mk(ExprKind::Ref { name: ModPath::from([arg]) })));
+        }
+        let arms = targets.drain(..).map(|(mem, bind)| {
+            let f = mk(ExprKind::Ref {
+                name: ModPath::from([
+                    arcstr::literal!("#bind"),
+                    ArcStr::from(
+                        compact_str::format_compact!("{}", bind.inner()).as_str(),
+                    ),
+                ]),
+            });
+            let call = mk(ExprKind::Apply(ApplyExpr {
+                function: TArc::new(f),
+                args: TArc::from_iter(call_args.iter().cloned()),
+            }));
+            let pat = Pattern {
+                type_predicate: Some(mem),
+                structure_predicate: StructurePattern::Bind(arcstr::literal!("#t")),
+                guard: None,
+            };
+            (pat, call)
+        });
+        let select = mk(ExprKind::Select(SelectExpr {
+            arg: TArc::new(mk(ExprKind::Ref {
+                name: ModPath::from([arcstr::literal!("#s")]),
+            })),
+            arms: TArc::from_iter(arms),
+        }));
+        stmts.push(select);
+        let block = mk(ExprKind::Do { exprs: TArc::from_iter(stmts.drain(..)) });
+        let scope = self.scope.clone();
+        let mut node = compile(ctx, self.flags, block, &scope, self.top_id)?;
+        node.typecheck0(ctx)?;
+        node.typecheck1(ctx)?;
+        wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
+        // the originals are replaced wholesale
+        for arg in self.args.values_mut() {
+            if let Some(mut n) = arg.node.take() {
+                n.delete(ctx);
+            }
+        }
+        for mut n in self.arg_refs.drain(..) {
+            n.delete(ctx);
+        }
+        let mut old =
+            std::mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
+        old.delete(ctx);
+        self.lowered = Some(node);
+        Ok(())
+    }
+
+    /// Re-point this call's function node at binding `bind`.
+    fn retarget(&mut self, ctx: &mut ExecCtx<R, E>, bind: BindId) {
+        let typ = ctx
+            .env
+            .by_id
+            .get(&bind)
+            .map(|b| b.typ.clone())
+            .unwrap_or_else(Type::empty_tvar);
+        let fspec = match &self.spec.kind {
+            ExprKind::Apply(a) => (*a.function).clone(),
+            _ => (*self.spec).clone(),
+        };
+        let mut old =
+            std::mem::replace(&mut self.fnode, Ref::new(bind, typ, self.top_id, fspec));
+        old.delete(ctx);
+        ctx.rt.ref_var(bind, self.top_id);
+    }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+impl<R: Rt, E: UserEvent> CallSite<R, E> {
+    fn update_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> &TagValue {
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         // A FIRED (or tainted) arg production this cycle — the genuine
         // -call signal (a stale production is a value-channel refresh,
@@ -1471,8 +1724,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             None => self.resident.ride(),
         }
     }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        // two arms, each its own borrow: a conditional early return of
+        // the lowered node's production would hold `self` for the
+        // function's whole lifetime
+        match self.lowered.is_some() {
+            true => self.lowered.as_mut().unwrap().update(ctx, event),
+            false => self.update_call(ctx, event),
+        }
+    }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(mut n) = self.lowered.take() {
+            n.delete(ctx);
+            return;
+        }
         if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
         }
@@ -1489,6 +1758,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(n) = &mut self.lowered {
+            return n.sleep(ctx);
+        }
         if let Some(f) = self.callee.apply_mut() {
             f.sleep(ctx)
         }
@@ -1504,6 +1776,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(n) = &mut self.lowered {
+            return n.reset_replay(ctx);
+        }
         // The published arg values (`update` inserts them into
         // the store under this site's own per-instance arg ids) are
         // replay memory: the dispatch back-fills quiet args from there
@@ -1534,7 +1809,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &self.rtype
+        match &self.lowered {
+            Some(n) => n.typ(),
+            None => &self.rtype,
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -1542,6 +1820,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if let Some(n) = &mut self.lowered {
+            return n.typecheck0(ctx);
+        }
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
@@ -1770,6 +2051,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     /// is the former deferred check, now run with `&mut self` in a real
     /// second tree pass.
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if let Some(n) = &mut self.lowered {
+            return n.typecheck1(ctx);
+        }
         wrap!(self.fnode, self.fnode.typecheck1(ctx))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.as_mut() {
@@ -1882,6 +2166,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
+        if let Some(n) = &self.lowered {
+            return n.refs(refs);
+        }
         if let Some(fun) = self.callee.apply() {
             fun.refs(refs)
         }
@@ -1898,10 +2185,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::CallSite(self)
+        match &self.lowered {
+            Some(n) => n.view(),
+            None => NodeView::CallSite(self),
+        }
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        if let Some(n) = &mut self.lowered {
+            return n.fuse(ctx);
+        }
         // Reached only when `try_fuse` on this call site already failed
         // (the call did NOT inline). Two jobs:
         //
@@ -1932,6 +2225,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        if let Some(n) = &self.lowered {
+            return n.emit_clif(cx);
+        }
         if let Some(f) = self.callee.apply() {
             if let Some(cv) = f.emit_clif(self, cx)? {
                 return Ok(cv);
