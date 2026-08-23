@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-169437fd.js";
+            window.path_to_searchindex_js = "../searchindex-014c6c08.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-f7a0005a.js"></script>
@@ -310,13 +310,14 @@ trait Display { val fmt: fn(self) -&gt; string };
 </code></pre>
 <p><code>==</code> and <code>!=</code> consult <code>Eq</code>; <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code> and <code>&gt;=</code> consult <code>Ord</code>;
 string interpolation, <code>print</code>, <code>println</code>, <code>dbg</code> and <code>log</code> consult
-<code>Display</code>. The rule is the same for all three: at a site, look at the
-static type; wherever an implementation exists — for the whole type,
-or for a type nested anywhere inside it — call it; everywhere else
-take the structural case (compare values, or print them as Graphix
-syntax). Every type has the structural default, so the core traits
-hold as bounds for every type, and the dispatchers work on every
-value: <code>Eq::eq(1, 1)</code> is <code>1 == 1</code>.</p>
+<code>Display</code>. The implementation is attached to the VALUE: wherever an
+abstract value with an implementation is compared or printed —
+directly, nested inside an array or a struct, as a map key, in
+<code>array::sort</code>, <code>min</code>/<code>max</code> or <code>uniq</code> — the implementation is called;
+everything else takes the structural case (compare values, or print
+them as Graphix syntax). Every type has the structural default, so
+the core traits hold as bounds for every type, and the dispatchers
+work on every value: <code>Eq::eq(1, 1)</code> is <code>1 == 1</code>.</p>
 <p>A case-insensitive key, equal however it is capitalized:</p>
 <pre><code class="language-graphix">type Key = Abstract&lt;string&gt;;
 impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
@@ -339,11 +340,35 @@ rule of the previous section). A core trait’s method runs inside the
 comparison or the print, so it is implicitly <code>#[sync]</code> — a body that
 waits on a timer is a compile error — and a method that produces no
 value makes the comparison produce none.</p>
-<p>A value of type <code>Any</code> is dispatched on its runtime tag: an abstract
-value still finds its type’s implementation, anything else is
-structural. Map keys, <code>array::sort</code>, <code>min</code>/<code>max</code>, values sent over
-the wire, and the REPL’s echo of a bare expression compare and print
-structurally.</p>
+<p>Because the implementation rides the value, a MAP is keyed by the
+user’s <code>Ord</code>:</p>
+<pre><code class="language-graphix">type T = Abstract&lt;i64&gt;;
+impl Ord for T {
+    // reversed
+    let cmp = |x, y| select (x.0, y.0) {
+        (a, b) if a &lt; b =&gt; `Greater,
+        (a, b) if a &gt; b =&gt; `Less,
+        _ =&gt; `Equal
+    }
+};
+let m = {T(0) =&gt; 0, T(1) =&gt; 1, T(2) =&gt; 2};
+"[m]"                  // {T(2) =&gt; 2, T(1) =&gt; 1, T(0) =&gt; 0}
+</code></pre>
+<p>and an <code>Ord</code> that calls two payloads equal unifies them as keys —
+inserting <code>Key("A")</code> replaces <code>Key("a")</code> under a case-insensitive
+order. A map consults <code>Ord</code> only (like a B-tree); keeping an <code>Eq</code>
+implementation consistent with the order is the implementor’s duty,
+as it is in Rust. Likewise the implementation must be a consistent
+total order — one that answers differently across cycles corrupts
+the maps keyed by it.</p>
+<p>If an implementation produces no value for some pair (an error
+dropped with <code>$</code>, say), the comparison still needs an answer that
+preserves the total order. The rule is per key, like NaN’s: a key
+the implementation bottoms on sorts below every real key and equals
+its fellow bottom keys. A <code>fmt</code> that produces nothing prints the
+structural form and logs a warning.</p>
+<p>Values compared where no Graphix code can run — on the wire, in the
+REPL’s echo of a bare expression — compare and print structurally.</p>
 <h2 id="current-limits"><a class="header" href="#current-limits">Current limits</a></h2>
 <ul>
 <li>Traits take no type parameters and declare no associated types.</li>

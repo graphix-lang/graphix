@@ -183,13 +183,14 @@ trait Display { val fmt: fn(self) -> string };
 
 `==` and `!=` consult `Eq`; `<`, `>`, `<=` and `>=` consult `Ord`;
 string interpolation, `print`, `println`, `dbg` and `log` consult
-`Display`. The rule is the same for all three: at a site, look at the
-static type; wherever an implementation exists — for the whole type,
-or for a type nested anywhere inside it — call it; everywhere else
-take the structural case (compare values, or print them as Graphix
-syntax). Every type has the structural default, so the core traits
-hold as bounds for every type, and the dispatchers work on every
-value: `Eq::eq(1, 1)` is `1 == 1`.
+`Display`. The implementation is attached to the VALUE: wherever an
+abstract value with an implementation is compared or printed —
+directly, nested inside an array or a struct, as a map key, in
+`array::sort`, `min`/`max` or `uniq` — the implementation is called;
+everything else takes the structural case (compare values, or print
+them as Graphix syntax). Every type has the structural default, so
+the core traits hold as bounds for every type, and the dispatchers
+work on every value: `Eq::eq(1, 1)` is `1 == 1`.
 
 A case-insensitive key, equal however it is capitalized:
 
@@ -220,11 +221,40 @@ comparison or the print, so it is implicitly `#[sync]` — a body that
 waits on a timer is a compile error — and a method that produces no
 value makes the comparison produce none.
 
-A value of type `Any` is dispatched on its runtime tag: an abstract
-value still finds its type's implementation, anything else is
-structural. Map keys, `array::sort`, `min`/`max`, values sent over
-the wire, and the REPL's echo of a bare expression compare and print
-structurally.
+Because the implementation rides the value, a MAP is keyed by the
+user's `Ord`:
+
+```graphix
+type T = Abstract<i64>;
+impl Ord for T {
+    // reversed
+    let cmp = |x, y| select (x.0, y.0) {
+        (a, b) if a < b => `Greater,
+        (a, b) if a > b => `Less,
+        _ => `Equal
+    }
+};
+let m = {T(0) => 0, T(1) => 1, T(2) => 2};
+"[m]"                  // {T(2) => 2, T(1) => 1, T(0) => 0}
+```
+
+and an `Ord` that calls two payloads equal unifies them as keys —
+inserting `Key("A")` replaces `Key("a")` under a case-insensitive
+order. A map consults `Ord` only (like a B-tree); keeping an `Eq`
+implementation consistent with the order is the implementor's duty,
+as it is in Rust. Likewise the implementation must be a consistent
+total order — one that answers differently across cycles corrupts
+the maps keyed by it.
+
+If an implementation produces no value for some pair (an error
+dropped with `$`, say), the comparison still needs an answer that
+preserves the total order. The rule is per key, like NaN's: a key
+the implementation bottoms on sorts below every real key and equals
+its fellow bottom keys. A `fmt` that produces nothing prints the
+structural form and logs a warning.
+
+Values compared where no Graphix code can run — on the wire, in the
+REPL's echo of a bare expression — compare and print structurally.
 
 ## Current limits
 

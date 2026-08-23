@@ -585,9 +585,6 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             for a in s.args.iter() {
                 rec!(a)
             }
-            for h in s.hook_nodes() {
-                rec!(h)
-            }
         }
         NodeView::Any(a) => {
             for n in a.n.iter() {
@@ -655,42 +652,12 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::CheckedMul(o) => rec!(&o.lhs, &o.rhs),
         NodeView::CheckedDiv(o) => rec!(&o.lhs, &o.rhs),
         NodeView::CheckedMod(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Eq(o) => {
-            rec!(&o.lhs, &o.rhs);
-            for h in o.hook_nodes() {
-                rec!(h)
-            }
-        }
-        NodeView::Ne(o) => {
-            rec!(&o.lhs, &o.rhs);
-            for h in o.hook_nodes() {
-                rec!(h)
-            }
-        }
-        NodeView::Lt(o) => {
-            rec!(&o.lhs, &o.rhs);
-            for h in o.hook_nodes() {
-                rec!(h)
-            }
-        }
-        NodeView::Gt(o) => {
-            rec!(&o.lhs, &o.rhs);
-            for h in o.hook_nodes() {
-                rec!(h)
-            }
-        }
-        NodeView::Lte(o) => {
-            rec!(&o.lhs, &o.rhs);
-            for h in o.hook_nodes() {
-                rec!(h)
-            }
-        }
-        NodeView::Gte(o) => {
-            rec!(&o.lhs, &o.rhs);
-            for h in o.hook_nodes() {
-                rec!(h)
-            }
-        }
+        NodeView::Eq(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Ne(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Lt(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Gt(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Lte(o) => rec!(&o.lhs, &o.rhs),
+        NodeView::Gte(o) => rec!(&o.lhs, &o.rhs),
         NodeView::And(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Or(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Lambda(_) => {}

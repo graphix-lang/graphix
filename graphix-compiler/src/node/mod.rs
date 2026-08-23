@@ -1076,11 +1076,6 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Node<R, E>]>,
-    /// per part, the core `Display` plan and its hook sites when an
-    /// implementation is reachable from the part's type
-    hooks: Box<[Option<(coretraits::Plan, coretraits::Hooks<R, E>)>]>,
-    scope: Scope,
-    top_id: ExprId,
     resident: TagValue,
 }
 
@@ -1098,76 +1093,57 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typs = args.iter().map(|n| n.typ().clone()).collect();
-        let hooks = args.iter().map(|_| None).collect();
         let typ = Type::Primitive(Typ::String.into());
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            typs,
-            args,
-            hooks,
-            scope: scope.clone(),
-            top_id,
-            resident: TagValue::phantom(),
-        }))
-    }
-
-    /// The hook sites the parts own, for the node walkers.
-    pub(crate) fn hook_nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
-        self.hooks.iter().flatten().flat_map(|(_, h)| h.nodes())
+        Ok(Node::new(Self { spec, typ, typs, args, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        for c in self.args.iter_mut() {
-            let tv = c.update(ctx, event);
-            let t = tv.tag();
-            trig |= t.triggers();
-            fired |= t.is_fired();
-            if t.is_bottom() {
-                bottom = true
-            } else if !bottom {
-                // gathered by clone within the iteration — the same
-                // clone the old cache fill paid per delivery
-                vals.push(tv.value_cloned())
-            }
-        }
-        if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
-            return self.resident.ride();
-        }
-        if bottom {
-            return if trig {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
-        }
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let mut buf: LPooled<String> = LPooled::take();
-        for ((typ, v), hooks) in
-            self.typs.iter().zip(vals.iter()).zip(self.hooks.iter_mut())
-        {
-            let r = match (v, hooks) {
-                (Value::String(s), _) => write!(buf, "{s}"),
-                (v, None) => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
-                (v, Some((plan, hooks))) => {
-                    coretraits::fmt(&mut *buf, ctx, event, plan, hooks, typ, v)
+        // rendered under the value-hook loan: a part holding an
+        // abstract with a core `Display` implementation prints through
+        // it at the seam (`coretraits::with_value_hooks`)
+        let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
+        coretraits::with_value_hooks(ctx, event, |ctx, event| {
+            let mut trig = false;
+            let mut fired = false;
+            let mut bottom = false;
+            let mut vals: LPooled<Vec<Value>> = LPooled::take();
+            for c in args.iter_mut() {
+                let tv = c.update(ctx, event);
+                let t = tv.tag();
+                trig |= t.triggers();
+                fired |= t.is_fired();
+                if t.is_bottom() {
+                    bottom = true
+                } else if !bottom {
+                    // gathered by clone within the iteration — the same
+                    // clone the old cache fill paid per delivery
+                    vals.push(tv.value_cloned())
                 }
-            };
-            // a hook produced nothing: the interpolation bottoms
-            if r.is_err() {
-                return self
-                    .resident
-                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
             }
-        }
-        self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
+            if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                return resident.ride();
+            }
+            if bottom {
+                return if trig {
+                    resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                } else {
+                    resident.ride()
+                };
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
+            let mut buf: LPooled<String> = LPooled::take();
+            for (typ, v) in typs.iter().zip(vals.iter()) {
+                match v {
+                    Value::String(s) => write!(buf, "{s}"),
+                    v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
+                }
+                .unwrap()
+            }
+            resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
+        })
     }
 
     fn spec(&self) -> &Expr {
@@ -1182,17 +1158,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         for a in &self.args {
             a.refs(refs)
         }
-        for (_, h) in self.hooks.iter().flatten() {
-            h.refs(refs)
-        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in &mut self.args {
             n.delete(ctx)
-        }
-        for (_, h) in self.hooks.iter_mut().flatten() {
-            h.delete(ctx)
         }
     }
 
@@ -1200,17 +1170,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         for n in &mut self.args {
             n.sleep(ctx);
         }
-        for (_, h) in self.hooks.iter_mut().flatten() {
-            h.sleep(ctx)
-        }
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in &mut self.args {
             n.reset_replay(ctx);
-        }
-        for (_, h) in self.hooks.iter_mut().flatten() {
-            h.reset_replay(ctx)
         }
     }
 
@@ -1228,29 +1192,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
             // a part whose cell was still open at tc0 (a rec def's
             // return) is bound by now
             self.typs[i] = part_type(a.typ());
-            if self.hooks[i].is_none()
-                && let Some(plan) = wrap!(
-                    a,
-                    coretraits::Plan::build(
-                        &ctx.env,
-                        coretraits::CoreTrait::Display,
-                        &self.typs[i]
-                    )
-                )?
-            {
-                let hooks = wrap!(
-                    a,
-                    coretraits::Hooks::build(
-                        ctx,
-                        &plan,
-                        coretraits::CoreTrait::Display,
-                        &self.scope,
-                        self.spec.id.inner() ^ (i as u64) << 48,
-                        self.top_id,
-                    )
-                )?;
-                self.hooks[i] = Some((plan, hooks));
-            }
         }
         Ok(())
     }
@@ -1260,12 +1201,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        if self.hooks.iter().any(|h| h.is_some()) {
-            bail!(
-                "emit_clif: a string interpolation part printed through a core \
-                 Display implementation is not lowered"
-            )
-        }
         emit_string_interpolate_node(cx, &self.args)
     }
 }

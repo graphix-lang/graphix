@@ -78,10 +78,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let mut m = CMap::new();
-        for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
-            m.insert_cow(k, v);
-        }
+        // construction compares keys — armed so a core `Ord`
+        // implementation on the key type orders the map (the value seam)
+        let m = super::coretraits::with_value_hooks(ctx, event, |_, _| {
+            let mut m = CMap::new();
+            for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
+                m.insert_cow(k, v);
+            }
+            m
+        });
         self.resident.set(TagValue::tagged(Value::Map(m), tag))
     }
 
@@ -208,7 +213,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = map_get(&sval.unwrap(), &kval.unwrap());
+        // the lookup compares keys — armed so a core `Ord`
+        // implementation on the key type is honored (the value seam)
+        let v = super::coretraits::with_value_hooks(ctx, event, |_, _| {
+            map_get(&sval.unwrap(), &kval.unwrap())
+        });
         self.resident.set(TagValue::tagged(v, tag))
     }
 

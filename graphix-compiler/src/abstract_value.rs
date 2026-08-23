@@ -12,11 +12,79 @@ use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use std::{
+    cell::Cell,
     cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
+    ptr,
     sync::LazyLock,
 };
+
+/// THE VALUE SEAM for the core traits (`design/traits.md` §12, Eric's
+/// call 2026-08-23): `Value`'s own `eq`/`partial_cmp`/`Debug` reach a
+/// `GxAbstract` through the netidx abstract vtable, which lands in the
+/// impls below — so a user implementation of core `Eq`/`Ord`/`Display`
+/// hooked HERE is honored by every consumer of Value comparison and
+/// printing at once: chunkmap map keys, `array::sort`, `min`/`max`,
+/// `uniq`, the comparison operators, the JIT's `graphix_value_eq`
+/// helper, the typed and naked printers.
+///
+/// The hurdle is `ExecCtx` access: these impls are called from
+/// arbitrary depth inside operations that can't take a context. The
+/// answer is the [`crate::fusion::DynDispatchHandle`] pattern — the
+/// frame that HOLDS `&mut ExecCtx`/`&mut Event` and is about to run a
+/// comparing/printing operation loans them into this thread-local as
+/// a type-erased dispatch handle for the duration of that operation
+/// (`node::coretraits::with_value_hooks`). No loan installed — an
+/// off-cycle comparison on another thread, a context with no core
+/// impls — means the structural case, exactly as before.
+#[repr(C)]
+pub struct ValueHookDispatch {
+    /// Type-erased pointer to the monomorphized dispatch state
+    /// (`node::coretraits::HookState<R, E>`).
+    pub state: *mut u8,
+    /// `None` = no implementation (or no answer is possible) — take
+    /// the structural case. `Some` is always a definite answer: a
+    /// bottoming implementation resolves by the bottom-key rule
+    /// (`node::coretraits`).
+    pub eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
+    pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
+    pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
+}
+
+thread_local! {
+    static VALUE_HOOKS: Cell<*const ValueHookDispatch> = const { Cell::new(ptr::null()) };
+}
+
+/// Install `h` as the thread's value-hook dispatch until the guard
+/// drops (save/restore — loans nest). The caller owns the pointed-to
+/// handle and state and must keep them alive and unmoved for the
+/// guard's lifetime; `node::coretraits::with_value_hooks` is the safe
+/// wrapper.
+pub(crate) fn arm_value_hooks(h: *const ValueHookDispatch) -> ValueHookGuard {
+    ValueHookGuard { prev: VALUE_HOOKS.with(|c| c.replace(h)) }
+}
+
+pub(crate) struct ValueHookGuard {
+    prev: *const ValueHookDispatch,
+}
+
+impl Drop for ValueHookGuard {
+    fn drop(&mut self) {
+        VALUE_HOOKS.with(|c| c.set(self.prev));
+    }
+}
+
+fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
+    let p = VALUE_HOOKS.with(|c| c.get());
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: the pointer was installed by `arm_value_hooks`, whose
+        // guard is alive in a caller frame that owns the handle.
+        f(unsafe { &*p })
+    }
+}
 
 #[derive(Clone)]
 pub struct GxAbstract {
@@ -28,13 +96,31 @@ pub struct GxAbstract {
 
 impl fmt::Debug for GxAbstract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}({})", self.name, self.payload)
+        // Debug IS the printed form of an abstract value (Eric's call):
+        // every printer — the typed walk, the naked walk, netidx's own
+        // `{:?}` — converges here, so a `Display` implementation
+        // consulted here covers them all. Guarded: abstract payloads
+        // may nest abstracts, one Debug frame per level.
+        crate::stack::ensure_sufficient(|| {
+            if let Some(s) = hooked(|h| (h.fmt)(h.state, self)) {
+                return f.write_str(&s);
+            }
+            write!(f, "{}(", self.name)?;
+            crate::typ::tval::fmt_naked(f, &self.payload)?;
+            write!(f, ")")
+        })
     }
 }
 
 impl PartialEq for GxAbstract {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.payload == other.payload
+        if self.id != other.id {
+            return false;
+        }
+        if let Some(b) = hooked(|h| (h.eq)(h.state, self, other)) {
+            return b;
+        }
+        self.payload == other.payload
     }
 }
 
@@ -48,7 +134,14 @@ impl PartialOrd for GxAbstract {
 
 impl Ord for GxAbstract {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.id.cmp(&other.id).then_with(|| self.payload.cmp(&other.payload))
+        match self.id.cmp(&other.id) {
+            Ordering::Equal => {}
+            o => return o,
+        }
+        if let Some(o) = hooked(|h| (h.cmp)(h.state, self, other)) {
+            return o;
+        }
+        self.payload.cmp(&other.payload)
     }
 }
 

@@ -492,3 +492,87 @@ run!(
     "##
     ; FuseExpect::None
 );
+
+// THE VALUE SEAM (design/traits.md §12): `Value`'s own eq/cmp reach a
+// core implementation through the abstract vtable, so a MAP is keyed
+// by the user's Ord — Eric's motivating example: a reversed order
+// reverses the key order, and lookups agree.
+run!(
+    core_map_keyed_by_ord,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "{T(2) => 2, T(1) => 1, T(0) => 0}|0|2"),
+    "/test.gx" => r##"
+        type T = Abstract<i64>;
+        impl Ord for T {
+            let cmp = |x, y| select (x.0, y.0) {
+                (a, b) if a < b => `Greater,
+                (a, b) if a > b => `Less,
+                _ => `Equal
+            }
+        };
+        let m = {T(0) => 0, T(1) => 1, T(2) => 2};
+        let result = "[m]|[m{T(0)}$]|[m{T(2)}$]"
+    "##
+    ; FuseExpect::None
+);
+
+// An Ord that calls distinct payloads equal UNIFIES map keys: the
+// second insert replaces the first, and either spelling looks it up.
+run!(
+    core_map_key_unified,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1|2|2"),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        impl Ord for Key {
+            let cmp = |a, b| select (str::to_lower(a.0), str::to_lower(b.0)) {
+                (x, y) if x < y => `Less,
+                (x, y) if x > y => `Greater,
+                _ => `Equal
+            }
+        };
+        let m = {Key("a") => 1, Key("b") => 9};
+        let m2 = map::insert(m, Key("A"), 2);
+        let result = "[map::len(m2) - 1]|[m2{Key("a")}$]|[m2{Key("A")}$]"
+    "##
+);
+
+// The comparing builtins go through the same seam: sort, min, max.
+run!(
+    core_sort_min_max_by_ord,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[T(3), T(2), T(1)]|T(3)|T(1)"),
+    "/test.gx" => r##"
+        type T = Abstract<i64>;
+        impl Ord for T {
+            let cmp = |x, y| select (x.0, y.0) {
+                (a, b) if a < b => `Greater,
+                (a, b) if a > b => `Less,
+                _ => `Equal
+            }
+        };
+        let xs = array::sort(#dir: `Ascending, [T(2), T(3), T(1)]);
+        let result = "[xs]|[min(T(2), T(3), T(1))]|[max(T(2), T(3), T(1))]"
+    "##
+);
+
+// THE BOTTOM-KEY RULE (Eric's ruling 2026-08-23): a bottoming
+// implementation resolves per KEY, like NaN — a key the impl bottoms
+// on (here payload 0: 1 /? 0 errors, `$` drops it) sorts below every
+// real key and equal to its fellow bottom keys; pairs of real keys
+// answer by the impl. A structural fallback per pair would break the
+// total order.
+run!(
+    core_bottom_key_rule,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[T(0), T(1), T(2)]|false|true|true"),
+    "/test.gx" => r##"
+        type T = Abstract<i64>;
+        impl Ord for T {
+            let cmp = |x, y| select ((i64:1 /? x.0)$, (i64:1 /? y.0)$) {
+                (a, b) if a < b => `Greater,
+                (a, b) if a > b => `Less,
+                _ => `Equal
+            }
+        };
+        impl Eq for T { let eq = |x, y| (i64:1 /? x.0)$ == (i64:1 /? y.0)$ };
+        let xs = array::sort(#dir: `Ascending, [T(2), T(0), T(1)]);
+        let result = "[xs]|[T(0) == T(1)]|[T(0) == T(0)]|[T(0) < T(1)]"
+    "##
+);

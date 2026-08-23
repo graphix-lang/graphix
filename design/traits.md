@@ -542,83 +542,107 @@ other: self) -> Ordering }` with `type Ordering = [`Less, `Equal,
 ids are path-derived like every trait's, so the compiler names them
 without a registration handshake (`node::coretraits::CoreTrait`).
 
-**The plan** (`coretraits::Plan`): the hook is decided from the STATIC
-type, once, at a site. `Plan::build(env, trait, typ)` walks the type
-the way the typed printer walks it (deref, typedef expansion with a
-per-ref memo so recursive types close into a cycle, union members in
-set order, struct fields in type order) asking `Env::find_impl` at
-every node; a node is *hooked* iff a hook is reachable from it — a
-fixpoint over the arena, since a recursive type's nodes form a cycle,
-which is what keeps a `List<Counter>` honest where an optimistic
-collapse would have declared the cons cell structural. `build`
-answers `None` when the root isn't hooked, and short-circuits to
-`None` before any walk when the program registers no impl of the
-trait at all — the fast path, and the whole cost for every program
-that implements none of the three.
+**THE VALUE SEAM (Eric's design).** The first build hooked each SITE
+(a plan over the static type per `==`, per interpolation part, per
+print builtin) — and a site-by-site system cannot reach the places
+ordering matters most: a map is keyed by the chunkmap comparator over
+`Value`, which no plan can see. The shipped design hooks the VALUE
+instead: netidx's abstract vtable routes `Value::eq`,
+`Value::partial_cmp` and `{:?}` for a `Value::Abstract` to the
+wrapped type's own Rust impls, and `GxAbstract`'s impls
+(`abstract_value.rs`) consult a thread-local dispatch handle. One
+seam covers every consumer at once — map keys (insert, lookup,
+iteration order), `array::sort`, `min`/`max`, `uniq`, the comparison
+operators on both engines (the JIT's `graphix_value_eq` helper calls
+`Value::eq`), the typed printer (`TVal`'s abstract arm renders via
+`{g:?}`), the naked printer, `dbg`'s and netidx's own debug output —
+and `a == b`, `(a, x) == (b, y)`, and a map keyed by `a` all mean
+the same thing by construction. The per-site plan machinery is
+DELETED (`CmpDispatch`, the eq/cmp walks, `TVal::fmt_planned`,
+`Shown`, `PlanNode::Dynamic` — under the seam a value dispatches on
+its runtime tag wherever it sits, `Any` included, with no plan at
+all).
 
-**The walk**: three functions over a plan, each the structural rule
-with the implementation substituted at hooks. `coretraits::eq` and
-`cmp` mirror `Value::eq` / `Value::partial_cmp` (depth-first
-lexicographic, length as the tiebreak, struct field names and variant
-tags structural) and delegate WHOLE unhooked subtrees to the `Value`
-operators — so where no hook sits, the answer is the structural
-answer by construction, not by reimplementation. `Display` is the
-typed printer itself: `TVal::fmt_planned` carries the plan step
-beside the type step, and `TVal`'s `Display` impl is the same walk
-with `NoHooks`. A hook is a call site the node OWNS
-(`coretraits::Hooks`: one `genn::apply` per hook over synthesized
-argument bindings, delivered through `event.variables` the way a
-collection slot feeds its callback, first dispatch under a forced
-init view) — site identity per use site, as with DynCall. A hook
-that produces nothing bottoms the comparison or the print: bottom in,
-bottom out.
+**The ExecCtx hurdle: the loan.** `GxAbstract::{eq, cmp, Debug}` run
+at arbitrary depth inside operations that can't take a context. The
+frame that HOLDS `&mut ExecCtx`/`&mut Event` and is about to run a
+comparing or printing operation loans them into the thread-local as a
+type-erased handle for that operation's duration
+(`coretraits::with_value_hooks` — the `DYN_DISPATCH_HANDLE` pattern,
+per-holder reborrow, save/restore so loans nest). Armed sites: the
+six comparison operators, the whole `EvalCached` family
+(`CachedArgs::update` — min/max/all/sort/the map builtins in one
+place), `uniq`, the map literal and `m{key}` nodes,
+`Kernel::update`'s invocation, string interpolation, and the print
+family's renders. No loan — another thread, a context with no core
+impls (checked before arming: three map probes, nothing armed) —
+means the structural case: publisher dedup, the wire, and the
+REPL's handle-side echo stay structural, which is the conservative
+answer for representation machinery.
 
-**The sites**: the six comparison nodes choose a `CmpDispatch` in
-`typecheck1` — `Structural`; `Lowered` when the WHOLE operand type
-has an implementation (the operands re-compile as the arguments of a
-static call to the impl's method — `Eq::eq(l, r)`, negated for `!=`,
-`Ord::cmp(l, r) == \`Less` and its three siblings — which fuses like
-any call); `Walk` when an implementation sits inside the type (the
-region de-fuses; an ASPIRE). `StringInterpolate` builds a plan per
-part at `typecheck1` (and re-reads each part's type there — a cell
-still open at tc0, a rec definition's return, used to freeze the part
-as `Any` and print it naked). `print`/`println`/`dbg`/`log` format
-through `Shown` (package-core), which builds the plan on the FIRST
-render from the argument's settled type: a builtin's type-derived
-state must exist after `init` + `typecheck0` alone, because the
-DynCall mint runs no `typecheck1` — so the hook works from inside a
-fused kernel's dispatch too. The node walkers (`for_each_node`) see
-hook sites as children, so effect analysis reaches the impl bodies
-from any compile-time site.
+**The dispatch.** A per-context registry (`ExecCtx.core_hook_sites`,
+keyed `(trait, AbstractId)`) holds hook CALL SITES — a `genn::apply`
+of the impl's method binding over synthesized argument bindings,
+delivered through `event.variables` like a collection slot's
+callback; built on first use, resolved-or-`None` STICKY, a POOL per
+key so a re-entrant comparison (an impl whose body compares its own
+type) mints a fresh site per activation. Every dispatch calls
+`reset_replay` on its site first: a dispatch is a fresh logical
+invocation, and a reused site otherwise carries replay history
+across dispatches — the scrutinee ride re-emitted the PREVIOUS
+pair's answer when a pair's computation bottomed (caught by the
+bottom-key fixture; `reset_replay` is the frames mechanism for
+exactly this — replay caches clear, semantic state survives).
 
-**Sync enforcement**: a core trait's method is implicitly `#[sync]`
-(the `Impl` node adds the attribute to each method binding), and the
-`Impl` node builds one never-run PROTOTYPE call site per method
-(`Impl::prototypes`, a `NodeView::Impl` child) so the analysis covers
-the body whether or not any compile-time site calls it — the
-existing `check_def_assertions` then refuses an async body at
-compile time (`core_method_async_refused`).
+**THE BOTTOM-KEY RULE (Eric's ruling).** A bottoming implementation
+inside a Value comparison cannot bottom the chunkmap, and a
+structural fallback per PAIR breaks the total order (two orders mixed
+is intransitive) — as does any constant answer for bottoming pairs.
+Per KEY it is total, and it is the NaN rule: a key the implementation
+bottoms on sorts below every real key and equal to its fellow bottom
+keys; real pairs answer by the implementation. Bottomness is detected
+by SELF-PROBES (`cmp(k, k)`), run only on the bottom path; a pair
+that bottoms while neither key self-bottoms is an inconsistent
+implementation — warn and answer Equal (deterministic, symmetric).
+`eq` follows the same shape (bottom keys equal each other, nothing
+real); a bottoming `fmt` renders structurally with a warning
+(printing has no algebra to preserve).
 
-**The dispatchers are the operators**: `Eq::eq(a, b)` lowers to
-`a == b`, `Display::fmt(x)` to `"[x]"`, `Ord::cmp(a, b)` to a select
-over `(a < b, a > b)` (`CallSite::lower_core_call`), and
-`trait_contains` holds the three for every type — so a core trait
-works as a bound on anything, the dispatcher works on anything, and
-an implementation is reached exactly where the operator reaches it.
-The union case falls out: the operator's walk selects the member.
+**Uniformity delta.** `a == b` on a hooked type with a bottoming impl
+used to bottom the operator; under the seam it answers by the
+bottom-key rule like every other consumer (Eric accepted the
+uniformity trade). The operators' emission is UNCHANGED and `==`/`!=`
+on abstracts FUSE via `graphix_value_eq` — better coverage than the
+deleted root-lowering, with no lowering at all.
 
-**Under `Any`, the runtime tag is the type id** (§8's asymmetry): a
-plan node with no static type (`Any`, an open cell) is `Dynamic` —
-at the walk, an abstract value's `AbstractId` looks the
-implementation up (`find_impl` on the bare abstract type) and the
-node's `Hooks` builds a site for that tag on first use, cached per
-tag (`None` cached too); two-argument dispatch needs both values
-tagged alike, else structural. A parameterized abstract carries no
-params at runtime, so only unparameterized heads resolve this way.
-Rust-backed abstracts resolve once their wrapper UUIDs are the
-path-derived ids — the io migration's registration step.
+**What survives from the first build**: the dispatchers are the
+operators (`CallSite::lower_core_call`: `Eq::eq(a, b)` ≡ `a == b`,
+`Display::fmt(x)` ≡ `"[x]"`, `Ord::cmp` a select over `<`/`>`), so
+the core traits hold as bounds for every type and the dispatchers
+work on every value; `trait_contains` answers true for the three;
+core-trait methods are implicitly `#[sync]` with prototype call
+sites on the `Impl` node (`NodeView::Impl`) so the analysis covers
+and enforces it; `bind::lower_over_operands` (built for the deleted
+cmp lowering) remains the lowering device for union dispatch and the
+dispatcher sugar — operand NODES move into `let #x` bindings, never
+recompiled (recompiling source at typecheck1 cannot see a lambda's
+parameters — the union-dispatch-in-a-lambda bug, pinned by
+`trait_union_dispatch_in_lambda`).
 
-**Limits (v1)**: the shell's REPL echo prints structurally (it has an
-`Env`, not a cycle); `array::sort`, `min`/`max`, map keys, the wire
-and the JIT's `Value` order stay structural as §8 says; the hooked
-walk de-fuses its region.
+**Trust and consistency (rulings, 2026-08-23):** no purity policing —
+Rust doesn't forbid consulting a global in an `Ord` impl and neither
+do we; an impl that isn't a consistent total order corrupts its maps
+exactly as in Rust. An `Ord`-keyed map consults `Ord` only (like
+`BTreeMap`); keeping `Eq` consistent with it is the implementor's
+duty. No `Hash` trait — nothing consults one in v1; `GxAbstract`'s
+structural `Hash` beside a hooked `Eq` means hash-keyed INTERNALS
+(if any appear) would distinguish what `Eq` unifies — think about it
+when and if `Hash` lands. Registry entries are sticky per context —
+an impl loaded by a dynamic module after a tag's first comparison is
+not picked up.
+
+**Rust-backed abstracts** (`File`, `TcpStream`, …) don't route
+through `GxAbstract`, so their comparisons stay structural until the
+io migration registers them with path-derived UUIDs — at which point
+either they wrap through `GxAbstract` or implement the same
+thread-local consult; decide there.

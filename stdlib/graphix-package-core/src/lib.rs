@@ -20,7 +20,7 @@ use netidx_value::{FromValue, ValArray};
 use std::{
     any::Any,
     collections::VecDeque,
-    fmt::{self, Debug, Write},
+    fmt::{Debug, Write},
     iter,
     time::Duration,
 };
@@ -474,62 +474,15 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        match self.cached.update_full(ctx, from, event) {
-            None => self.resident.ride(),
-            Some(t) if self.cached.any_bottom() => {
-                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
-                // arg is bottom — standing poison or the
-                // never-delivered phantom — so the invocation bottoms
-                // WITHOUT calling eval; authors never see bottoms.
-                // FreshBottom iff a delivery triggered this cycle
-                // (`triggers()` becomes the dense fired-bit rule at
-                // the 5b flip). No resident clobber: the value channel
-                // may re-surface the last genuine result on recovery.
-                TagValue::bottom_null(t.triggers())
-            }
-            Some(_) if self.cached.any_tainted() => {
-                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
-                // the CallSite gates every builtin's tainted arg
-                // productions to silence and the fused DynCall
-                // delivers taint-masked slots as absence (Eric's
-                // rulings 2026-07-19/20), so no poisoned delivery can
-                // reach these slots. If a new channel leaks one, emit
-                // the tainted placeholder (loud downstream) rather
-                // than replaying stale state — the SHARED placeholder,
-                // so the resident keeps the last genuine result.
-                TagValue::tainted_null()
-            }
-            Some(t) if t.is_fired() => match self.t.eval(ctx, &self.cached) {
-                Some(v) => self.resident.set(TagValue::fired(v)),
-                // eval produced nothing: ride the resident — the
-                // previous result re-surfaces stale, a never-set
-                // resident stays the phantom.
-                None => self.resident.ride(),
-            },
-            Some(_) if !self.resident.tag().is_bottom() => {
-                // stale refresh: surface the result slot on the value
-                // channel — eval does NOT re-run
-                self.resident.retag(Tag::STALE)
-            }
-            Some(_) => {
-                // ...unless there is NOTHING to surface. A result slot
-                // still holding its phantom has never been filled, and
-                // "re-surface the last result" is vacuous: the call
-                // produces no value at all, so a caller that needs one
-                // (a select arm whose body is `math::to_radians(f64:45.)`
-                // — every argument a constant, hence never a triggering
-                // delivery inside a frame) computes nothing at all,
-                // while the kernel recomputes per invocation and has
-                // the value. Establish the value channel by running
-                // `eval` ONCE; the result is STALE, so this is a value
-                // rule and not a firing one
-                // (`findings/arm-local-bind-aug2026/03`).
-                match self.t.eval(ctx, &self.cached) {
-                    Some(v) => self.resident.set(TagValue::stale(v)),
-                    None => self.resident.ride(),
-                }
-            }
-        }
+        // The whole EvalCached family runs under the value-hook loan
+        // (`coretraits::with_value_hooks`): a builtin whose eval
+        // compares or sorts Values — min/max, all, array::sort, the
+        // map:: operations — honors core Eq/Ord implementations at
+        // the value seam.
+        let (ev, cached, resident) = (&mut self.t, &mut self.cached, &mut self.resident);
+        coretraits::with_value_hooks(ctx, event, move |ctx, event| {
+            Self::update_inner(ev, cached, resident, ctx, from, event)
+        })
     }
 
     fn typecheck0(
@@ -614,6 +567,77 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send;
+}
+
+impl<T> CachedArgs<T> {
+    fn update_inner<'a, R: Rt, E: UserEvent>(
+        ev: &mut T,
+        cached: &mut CachedVals,
+        resident: &'a mut TagValue,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> &'a TagValue
+    where
+        T: EvalCached<R, E>,
+    {
+        match cached.update_full(ctx, from, event) {
+            None => resident.ride(),
+            Some(t) if cached.any_bottom() => {
+                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
+                // arg is bottom — standing poison or the
+                // never-delivered phantom — so the invocation bottoms
+                // WITHOUT calling eval; authors never see bottoms.
+                // FreshBottom iff a delivery triggered this cycle
+                // (`triggers()` becomes the dense fired-bit rule at
+                // the 5b flip). No resident clobber: the value channel
+                // may re-surface the last genuine result on recovery.
+                TagValue::bottom_null(t.triggers())
+            }
+            Some(_) if cached.any_tainted() => {
+                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
+                // the CallSite gates every builtin's tainted arg
+                // productions to silence and the fused DynCall
+                // delivers taint-masked slots as absence (Eric's
+                // rulings 2026-07-19/20), so no poisoned delivery can
+                // reach these slots. If a new channel leaks one, emit
+                // the tainted placeholder (loud downstream) rather
+                // than replaying stale state — the SHARED placeholder,
+                // so the resident keeps the last genuine result.
+                TagValue::tainted_null()
+            }
+            Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
+                Some(v) => resident.set(TagValue::fired(v)),
+                // eval produced nothing: ride the resident — the
+                // previous result re-surfaces stale, a never-set
+                // resident stays the phantom.
+                None => resident.ride(),
+            },
+            Some(_) if !resident.tag().is_bottom() => {
+                // stale refresh: surface the result slot on the value
+                // channel — eval does NOT re-run
+                resident.retag(Tag::STALE)
+            }
+            Some(_) => {
+                // ...unless there is NOTHING to surface. A result slot
+                // still holding its phantom has never been filled, and
+                // "re-surface the last result" is vacuous: the call
+                // produces no value at all, so a caller that needs one
+                // (a select arm whose body is `math::to_radians(f64:45.)`
+                // — every argument a constant, hence never a triggering
+                // delivery inside a frame) computes nothing at all,
+                // while the kernel recomputes per invocation and has
+                // the value. Establish the value channel by running
+                // `eval` ONCE; the result is STALE, so this is a value
+                // rule and not a firing one
+                // (`findings/arm-local-bind-aug2026/03`).
+                match ev.eval(ctx, cached) {
+                    Some(v) => resident.set(TagValue::stale(v)),
+                    None => resident.ride(),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2063,19 +2087,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
-            let v = tv.value_cloned();
-            if Some(&v) != self.0.as_ref() {
-                self.0 = Some(v.clone());
-                Some(v)
-            } else {
-                None
+        // the dedup comparison runs armed: a core Eq implementation
+        // decides what "the same value" means (the value seam)
+        let (last, out) = (&mut self.0, &mut self.1);
+        coretraits::with_value_hooks(ctx, event, |ctx, event| {
+            let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
+                let v = tv.value_cloned();
+                if Some(&v) != last.as_ref() {
+                    *last = Some(v.clone());
+                    Some(v)
+                } else {
+                    None
+                }
+            });
+            match res {
+                Some(v) => out.set(TagValue::fired(v)),
+                None => out.ride(),
             }
-        });
-        match res {
-            Some(v) => self.1.set(TagValue::fired(v)),
-            None => self.1.ride(),
-        }
+        })
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -2174,107 +2203,77 @@ impl FromValue for LogDest {
     }
 }
 
-/// A print builtin's value argument rendered through the core
-/// `Display` hook (`design/traits.md` §8). The plan and its hook
-/// sites are built on the FIRST render, from the argument's settled
-/// type: a builtin's type-derived state must exist after `init` +
-/// `typecheck0` alone (the DynCall mint runs no typecheck1), and a
-/// cell still open at typecheck0 — a rec definition's return — is
-/// bound by the first update on both engines.
-struct Shown<R: Rt, E: UserEvent> {
-    scope: Scope,
-    top_id: ExprId,
-    site_id: u64,
-    hooks: Option<Option<(coretraits::Plan, coretraits::Hooks<R, E>)>>,
+#[derive(Debug)]
+struct Dbg {
+    spec: Expr,
+    dest: LogDest,
+    typ: Type,
+    buf: String,
+    out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> fmt::Debug for Shown<R, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Shown")
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const NAME: &str = "core_dbg";
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a graphix_compiler::typ::FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Dbg {
+            spec: from[1].spec().clone(),
+            dest: LogDest::Stderr,
+            typ: Type::Bottom,
+            buf: String::new(),
+            out: TagValue::phantom(),
+        }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Shown<R, E> {
-    fn new(scope: &Scope, top_id: ExprId, site_id: u64) -> Self {
-        Self { scope: scope.clone(), top_id, site_id, hooks: None }
-    }
-
-    /// Render `v` at `typ` into `buf`. `false` is a bottom: a hook
-    /// produced nothing this cycle.
-    fn render(
+impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
+    fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
         event: &mut Event<E>,
-        typ: &Type,
-        v: &Value,
-        buf: &mut String,
-    ) -> bool {
-        use std::fmt::Write;
-        if let Value::String(s) = v {
-            write!(buf, "{s}").unwrap();
-            return true;
+    ) -> &TagValue {
+        if let Some(v) =
+            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            && let Ok(d) = v.cast_to::<LogDest>()
+        {
+            self.dest = d;
         }
-        if self.hooks.is_none() {
-            let built = match coretraits::Plan::build(
-                &ctx.env,
-                coretraits::CoreTrait::Display,
-                typ,
-            ) {
-                Ok(Some(plan)) => match coretraits::Hooks::build(
-                    ctx,
-                    &plan,
-                    coretraits::CoreTrait::Display,
-                    &self.scope,
-                    self.site_id,
-                    self.top_id,
-                ) {
-                    Ok(hooks) => Some((plan, hooks)),
-                    Err(e) => {
-                        log::error!("Display hook for {typ}: {e:?}");
-                        None
-                    }
-                },
-                Ok(None) => None,
-                Err(e) => {
-                    log::error!("Display plan for {typ}: {e:?}");
-                    None
-                }
-            };
-            self.hooks = Some(built);
-        }
-        match self.hooks.as_mut().unwrap() {
-            None => {
-                write!(buf, "{}", TVal { env: &ctx.env, typ, v }).unwrap();
-                true
-            }
-            Some((plan, hooks)) => {
-                coretraits::fmt(buf, ctx, event, plan, hooks, typ, v).is_ok()
-            }
-        }
+        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        else {
+            return self.out.ride();
+        };
+        self.buf.clear();
+        write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
+        // rendered under the value-hook loan: an abstract with a core
+        // Display implementation prints through it at the seam
+        let (buf, typ) = (&mut self.buf, &self.typ);
+        coretraits::with_value_hooks(ctx, event, |ctx, _| {
+            write!(buf, "{}", TVal { env: &ctx.env, typ, v: &v }).unwrap()
+        });
+        emit_line(ctx, self.dest, &self.buf, "\n");
+        self.out.set(TagValue::fired(v))
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        if let Some(Some((_, h))) = &self.hooks {
-            h.refs(refs)
-        }
-    }
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(Some((_, h))) = &mut self.hooks {
-            h.delete(ctx)
-        }
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(Some((_, h))) = &mut self.hooks {
-            h.sleep(ctx)
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(Some((_, h))) = &mut self.hooks {
-            h.reset_replay(ctx)
-        }
+    fn typecheck0(
+        &mut self,
+        _ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+    ) -> Result<()> {
+        self.typ = from[1].typ().clone();
+        Ok(())
     }
 }
 
@@ -2311,100 +2310,13 @@ fn emit_line<R: Rt, E: UserEvent>(
 }
 
 #[derive(Debug)]
-struct Dbg<R: Rt, E: UserEvent> {
-    spec: Expr,
-    dest: LogDest,
-    typ: Type,
-    shown: Shown<R, E>,
-    buf: String,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const NAME: &str = "core_dbg";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved: Option<&'d FnType>,
-        scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let spec = from[1].spec().clone();
-        Ok(Box::new(Dbg {
-            shown: Shown::new(scope, top_id, spec.id.inner()),
-            spec,
-            dest: LogDest::Stderr,
-            typ: Type::Bottom,
-            buf: String::new(),
-            out: TagValue::phantom(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg<R, E> {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
-        if let Some(v) =
-            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
-            && let Ok(d) = v.cast_to::<LogDest>()
-        {
-            self.dest = d;
-        }
-        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
-        else {
-            return self.out.ride();
-        };
-        self.buf.clear();
-        write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
-        if !self.shown.render(ctx, event, &self.typ, &v, &mut self.buf) {
-            return self.out.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-        }
-        emit_line(ctx, self.dest, &self.buf, "\n");
-        self.out.set(TagValue::fired(v))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.shown.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.shown.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.shown.sleep(ctx)
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.shown.reset_replay(ctx)
-    }
-
-    fn typecheck0(
-        &mut self,
-        _ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        self.typ = from[1].typ().clone();
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct Log<R: Rt, E: UserEvent> {
+struct Log {
     scope: Scope,
     dest: LogDest,
-    shown: Shown<R, E>,
     buf: String,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log<R, E> {
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_log";
 
@@ -2413,19 +2325,18 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log<R, E> {
         _typ: &'a graphix_compiler::typ::FnType,
         _resolved: Option<&'d FnType>,
         scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self {
             scope: scope.clone(),
             dest: LogDest::Stdout,
-            shown: Shown::new(scope, top_id, from[1].spec().id.inner()),
             buf: String::new(),
         }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Log<R, E> {
+impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2443,40 +2354,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log<R, E> {
             self.buf.clear();
             write!(self.buf, "{}: ", self.scope.lexical).unwrap();
             let typ = from[1].typ().clone();
-            if self.shown.render(ctx, event, &typ, &v, &mut self.buf) {
-                emit_line(ctx, self.dest, &self.buf, "\n");
-            }
+            let buf = &mut self.buf;
+            coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v: &v }).unwrap()
+            });
+            emit_line(ctx, self.dest, &self.buf, "\n");
         }
         TagValue::phantom_ref()
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.shown.refs(refs)
-    }
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.shown.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.shown.sleep(ctx)
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.shown.reset_replay(ctx)
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! printfn {
     ($type:ident, $name:literal, $suffix:literal) => {
         #[derive(Debug)]
-        struct $type<R: Rt, E: UserEvent> {
+        struct $type {
             dest: LogDest,
-            shown: Shown<R, E>,
             buf: String,
         }
 
-        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type<R, E> {
+        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
             const EFFECT: EffectKind = EffectKind::Sync;
             const NAME: &str = $name;
 
@@ -2484,19 +2384,15 @@ macro_rules! printfn {
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
                 _resolved: Option<&'d FnType>,
-                scope: &'b Scope,
-                from: &'c [Node<R, E>],
-                top_id: ExprId,
+                _scope: &'b Scope,
+                _from: &'c [Node<R, E>],
+                _top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self {
-                    dest: LogDest::Stdout,
-                    shown: Shown::new(scope, top_id, from[1].spec().id.inner()),
-                    buf: String::new(),
-                }))
+                Ok(Box::new(Self { dest: LogDest::Stdout, buf: String::new() }))
             }
         }
 
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $type<R, E> {
+        impl<R: Rt, E: UserEvent> Apply<R, E> for $type {
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
@@ -2514,28 +2410,22 @@ macro_rules! printfn {
                 {
                     self.buf.clear();
                     let typ = from[1].typ().clone();
-                    if self.shown.render(ctx, event, &typ, &v, &mut self.buf) {
-                        emit_line(ctx, self.dest, &self.buf, $suffix);
-                    }
+                    let buf = &mut self.buf;
+                    coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                        match &v {
+                            Value::String(s) => write!(buf, "{s}"),
+                            v => write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v }),
+                        }
+                        .unwrap()
+                    });
+                    emit_line(ctx, self.dest, &self.buf, $suffix);
                 }
                 TagValue::phantom_ref()
             }
 
-            fn refs(&self, refs: &mut Refs) {
-                self.shown.refs(refs)
-            }
+            fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.shown.delete(ctx)
-            }
-
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.shown.sleep(ctx)
-            }
-
-            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.shown.reset_replay(ctx)
-            }
+            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }
@@ -2577,10 +2467,10 @@ graphix_derive::defpackage! {
         Mean,
         Uniq,
         Never,
-        Dbg as Dbg<GXRt<X>, X::UserEvent>,
-        Log as Log<GXRt<X>, X::UserEvent>,
-        Print as Print<GXRt<X>, X::UserEvent>,
-        Println as Println<GXRt<X>, X::UserEvent>,
+        Dbg,
+        Log,
+        Print,
+        Println,
         buffer::BytesToString,
         buffer::BytesToStringLossy,
         buffer::BytesFromString,

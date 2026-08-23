@@ -34,7 +34,7 @@ mod normalize;
 pub(crate) use normalize::{NormKey, norm_key};
 mod print;
 mod setops;
-mod tval;
+pub(crate) mod tval;
 mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType};

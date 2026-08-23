@@ -1705,6 +1705,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
     /// reach each callee/callback's retained check `Apply` (`def.check`).
     pub lambda_defs: IntMap<LambdaId, Value>,
+    /// The value seam's hook-site registry (`node::coretraits`): the
+    /// call sites through which `Value` comparison and printing reach
+    /// core-trait implementations, keyed by `(trait, AbstractId)` and
+    /// built on first use.
+    pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
     /// `BindId → LambdaDef Value` for every lambda binding in the current
     /// compile BATCH. Populated during `typecheck0` (each
     /// `Bind::typecheck0` records its own binding, `Module::typecheck0`
@@ -1938,6 +1943,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             tags: AHashSet::default(),
             rt: user,
             lambda_defs: IntMap::default(),
+            core_hook_sites: node::coretraits::CoreHookSites::default(),
             bind_to_lambda: IntMap::default(),
             unstable_bindings: nohash::IntSet::default(),
             connect_targets: nohash::IntSet::default(),

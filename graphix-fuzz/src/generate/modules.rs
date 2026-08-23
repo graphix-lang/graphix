@@ -370,9 +370,9 @@ pub(super) fn gen_module(
         // T itself (the lowered static call), `==` on arrays holding
         // T (the hooked walk), and interpolation of T bare and nested.
         if chance(rng, 0.5) {
-            let decls = "impl Eq for T;\nimpl Display for T;\nval teq: fn(a: T, b: T) -> bool;\nval teqa: fn(a: T, b: T) -> bool;\nval tshow: fn(t: T) -> string;\n";
-            let impls = "impl Eq for T { let eq = |a, b| un(a) % i64:2 == un(b) % i64:2 };\nimpl Display for T { let fmt = |t| \"T<[un(t)]>\" };\n";
-            let fns = "let teq = |a: T, b: T| -> bool a == b;\nlet teqa = |a: T, b: T| -> bool [a, a] == [b, a];\nlet tshow = |t: T| -> string \"[t]|[(t, i64:1)]\";\n";
+            let decls = "impl Eq for T;\nimpl Ord for T;\nimpl Display for T;\nval teq: fn(a: T, b: T) -> bool;\nval teqa: fn(a: T, b: T) -> bool;\nval tshow: fn(t: T) -> string;\nval tmap: fn(a: T, b: T) -> i64;\n";
+            let impls = "impl Eq for T { let eq = |a, b| un(a) % i64:2 == un(b) % i64:2 };\nimpl Ord for T { let cmp = |a, b| select (un(a) % i64:2, un(b) % i64:2) { (x, y) if x < y => `Less, (x, y) if x > y => `Greater, _ => `Equal } };\nimpl Display for T { let fmt = |t| \"T<[un(t)]>\" };\n";
+            let fns = "let teq = |a: T, b: T| -> bool a == b && (a <= b || a > b);\nlet teqa = |a: T, b: T| -> bool [a, a] == [b, a];\nlet tshow = |t: T| -> string \"[t]|[(t, i64:1)]\";\nlet tmap = |a: T, b: T| -> i64 { let m = {a => i64:1, b => i64:2}; map::len(m) + map::len(map::insert(m, a, i64:3)) };\n";
             if has_gxi {
                 gxi.push_str(decls);
             }
@@ -384,6 +384,13 @@ pub(super) fn gen_module(
             };
             ctx.push(format!("{mname}::teq"), f2.clone());
             ctx.push(format!("{mname}::teqa"), f2);
+            ctx.push(
+                format!("{mname}::tmap"),
+                GenType::Fn {
+                    params: vec![aty.clone(), aty.clone()],
+                    ret: Box::new(I64),
+                },
+            );
             ctx.push(
                 format!("{mname}::tshow"),
                 GenType::Fn { params: vec![aty.clone()], ret: Box::new(GenType::Str) },

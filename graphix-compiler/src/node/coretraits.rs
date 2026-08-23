@@ -1,30 +1,42 @@
-//! The core traits `Eq`, `Ord` and `Display` (`design/traits.md` §8).
+//! The core traits `Eq`, `Ord` and `Display` (`design/traits.md` §8,
+//! §12).
 //!
-//! Equality, ordering and printing are type-directed walks over a
-//! `Value`. A type with an implementation of the corresponding core
-//! trait is handled by that implementation wherever it occurs in the
-//! static type; everything else is the structural case, which stays
-//! the one Rust loop (`Value::eq`, `Value::partial_cmp`, the typed
-//! printer `TVal`). A [`Plan`] is the static type annotated with the
-//! hook positions; [`Hooks`] are the call sites a node owns, one per
-//! hook, through which the walk invokes an implementation
-//! synchronously inside the cycle.
+//! A user implementation is honored at THE VALUE SEAM
+//! (`crate::abstract_value`): `Value`'s own `eq`/`partial_cmp`/`Debug`
+//! reach a `GxAbstract`, whose impls consult a thread-local dispatch
+//! handle loaned by whichever frame holds `&mut ExecCtx`/`&mut Event`
+//! around a comparing or printing operation ([`with_value_hooks`]).
+//! One seam covers every consumer at once — map keys, `array::sort`,
+//! `min`/`max`, `uniq`, the comparison operators (both engines: the
+//! JIT's `graphix_value_eq` helper calls `Value::eq`), the typed and
+//! naked printers — with the structural case wherever no loan is
+//! installed or no implementation exists.
+//!
+//! This module owns the dispatch: the per-context registry of hook
+//! CALL SITES (one pool per `(trait, AbstractId)`, built on first
+//! use, a fresh site per re-entrant activation), the delivery of
+//! arguments through `event.variables` (the same mechanism a
+//! collection slot uses for its callback), and THE BOTTOM-KEY RULE —
+//! a total order can't fall back structurally per pair (mixing two
+//! orders breaks transitivity), so a bottoming implementation
+//! resolves per KEY, like NaN: a key the implementation bottoms on
+//! sorts below every real key and equal to its fellow bottom keys,
+//! detected by self-probes (`cmp(a, a)`) on the bottom path only.
 
 use super::genn;
 use crate::{
-    BindId, Event, ExecCtx, Node, PrintFlag, Refs, Rt, Scope, TagValue, UserEvent,
+    BindId, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    abstract_value::{self, GxAbstract, ValueHookDispatch},
     env::Env,
     expr::{ExprId, ModPath},
-    format_with_flags,
-    typ::{AbstractId, FnType, IsAFlags, TVal, TraitId, Type},
+    typ::{AbstractId, FnType, IsAFlags, TraitId, Type},
 };
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use netidx_value::Value;
-use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cmp::Ordering, fmt, sync::LazyLock};
+use std::{cmp::Ordering, sync::LazyLock};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,143 +79,9 @@ impl CoreTrait {
 /// A hook: the implementation's method binding and the type it was
 /// found for (the argument type of the call site).
 #[derive(Debug, Clone)]
-pub struct Hook {
-    pub bind: BindId,
-    pub typ: Type,
-}
-
-#[derive(Debug)]
-enum PlanNode {
-    Structural,
-    Hook(usize),
-    /// No static type (`Any`, an open cell): the runtime tag decides —
-    /// an abstract value finds its type's implementation by id, and a
-    /// site is built for each tag on first use.
-    Dynamic,
-    Array(usize),
-    Map(usize, usize),
-    /// tuple elements / struct fields / variant arguments, in type order
-    Fields(Box<[usize]>),
-    Union(Box<[usize]>),
-}
-
-/// The static type of a site annotated with its hook positions. A node
-/// is `hooked` iff a hook is reachable from it; the walk takes the
-/// structural case for any node that isn't. `build` answers `None`
-/// when the root isn't — the fast path, and the only case for a
-/// program that implements no core trait.
-#[derive(Debug)]
-pub struct Plan {
-    nodes: Vec<PlanNode>,
-    hooked: Vec<bool>,
-    root: usize,
-    pub hooks: Vec<Hook>,
-}
-
-struct Builder<'a> {
-    env: &'a Env,
-    t: CoreTrait,
-    nodes: Vec<PlanNode>,
-    hooks: Vec<Hook>,
-    memo: LPooled<ahash::AHashMap<compact_str::CompactString, usize>>,
-}
-
-impl<'a> Builder<'a> {
-    fn push(&mut self, n: PlanNode) -> usize {
-        self.nodes.push(n);
-        self.nodes.len() - 1
-    }
-
-    fn hook_for(&mut self, typ: &Type) -> Result<Option<usize>> {
-        let Some(h) = hook_for(self.env, self.t, typ)? else { return Ok(None) };
-        self.hooks.push(h);
-        Ok(Some(self.hooks.len() - 1))
-    }
-
-    fn walk(&mut self, typ: &Type) -> Result<usize> {
-        typ.with_deref(|t| match t {
-            None => Ok(self.push(PlanNode::Dynamic)),
-            Some(t) => self.walk_deref(t),
-        })
-    }
-
-    fn walk_deref(&mut self, typ: &Type) -> Result<usize> {
-        if let Some(h) = self.hook_for(typ)? {
-            return Ok(self.push(PlanNode::Hook(h)));
-        }
-        match typ {
-            Type::Any => Ok(self.push(PlanNode::Dynamic)),
-            Type::Bottom
-            | Type::Primitive(_)
-            | Type::Fn(_)
-            | Type::Error(_)
-            | Type::ByRef(_)
-            | Type::Abstract { .. }
-            | Type::TVar(_) => Ok(self.push(PlanNode::Structural)),
-            Type::Ref(_) => {
-                let key =
-                    format_with_flags(PrintFlag::DerefTVars, || format_compact!("{typ}"));
-                if let Some(i) = self.memo.get(&key) {
-                    return Ok(*i);
-                }
-                let i = self.push(PlanNode::Structural);
-                self.memo.insert(key, i);
-                let expanded = typ.lookup_ref(self.env)?;
-                let j = self.walk(&expanded)?;
-                // the Ref node IS its expansion; cycles point back at `i`
-                let n = std::mem::replace(&mut self.nodes[j], PlanNode::Structural);
-                self.nodes[i] = n;
-                self.alias(j, i);
-                Ok(i)
-            }
-            Type::Array(et) => {
-                let e = self.walk(et)?;
-                Ok(self.push(PlanNode::Array(e)))
-            }
-            Type::Map { key, value } => {
-                let k = self.walk(key)?;
-                let v = self.walk(value)?;
-                Ok(self.push(PlanNode::Map(k, v)))
-            }
-            Type::Tuple(ts) => {
-                let f = ts.iter().map(|t| self.walk(t)).collect::<Result<Box<[_]>>>()?;
-                Ok(self.push(PlanNode::Fields(f)))
-            }
-            Type::Struct(fs) => {
-                let f =
-                    fs.iter().map(|(_, t)| self.walk(t)).collect::<Result<Box<[_]>>>()?;
-                Ok(self.push(PlanNode::Fields(f)))
-            }
-            Type::Variant(_, ts) => {
-                let f = ts.iter().map(|t| self.walk(t)).collect::<Result<Box<[_]>>>()?;
-                Ok(self.push(PlanNode::Fields(f)))
-            }
-            Type::Set(ts) => {
-                let m = ts.iter().map(|t| self.walk(t)).collect::<Result<Box<[_]>>>()?;
-                Ok(self.push(PlanNode::Union(m)))
-            }
-        }
-    }
-
-    /// Every edge to `from` now points at `to` (`from` was moved into `to`).
-    fn alias(&mut self, from: usize, to: usize) {
-        let fix = |i: &mut usize| {
-            if *i == from {
-                *i = to
-            }
-        };
-        for n in self.nodes.iter_mut() {
-            match n {
-                PlanNode::Structural | PlanNode::Hook(_) | PlanNode::Dynamic => {}
-                PlanNode::Array(e) => fix(e),
-                PlanNode::Map(k, v) => {
-                    fix(k);
-                    fix(v)
-                }
-                PlanNode::Fields(f) | PlanNode::Union(f) => f.iter_mut().for_each(fix),
-            }
-        }
-    }
+struct Hook {
+    bind: BindId,
+    typ: Type,
 }
 
 /// The implementation of `t` for `typ`, as a hook.
@@ -223,232 +101,12 @@ fn hook_for(env: &Env, t: CoreTrait, typ: &Type) -> Result<Option<Hook>> {
     Ok(Some(Hook { bind, typ: typ.clone() }))
 }
 
-impl Plan {
-    /// `None` when no implementation of `t` is reachable from `typ`.
-    pub fn build(env: &Env, t: CoreTrait, typ: &Type) -> Result<Option<Plan>> {
-        if env.impls.get(&t.id()).is_none_or(|l| l.is_empty()) {
-            return Ok(None);
-        }
-        let mut b = Builder {
-            env,
-            t,
-            nodes: Vec::new(),
-            hooks: Vec::new(),
-            memo: LPooled::take(),
-        };
-        let root = b.walk(typ)?;
-        let Builder { nodes, hooks, .. } = b;
-        // a node is hooked iff a hook is reachable from it — a fixpoint,
-        // since a recursive type's nodes form a cycle
-        let mut hooked: Vec<bool> = nodes
-            .iter()
-            .map(|n| matches!(n, PlanNode::Hook(_) | PlanNode::Dynamic))
-            .collect();
-        loop {
-            let mut changed = false;
-            for (i, n) in nodes.iter().enumerate() {
-                if hooked[i] {
-                    continue;
-                }
-                let h = match n {
-                    PlanNode::Structural | PlanNode::Hook(_) | PlanNode::Dynamic => false,
-                    PlanNode::Array(e) => hooked[*e],
-                    PlanNode::Map(k, v) => hooked[*k] || hooked[*v],
-                    PlanNode::Fields(f) | PlanNode::Union(f) => {
-                        f.iter().any(|i| hooked[*i])
-                    }
-                };
-                if h {
-                    hooked[i] = true;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        if !hooked[root] {
-            return Ok(None);
-        }
-        Ok(Some(Plan { nodes, hooked, root, hooks }))
-    }
-
-    pub fn root(&self) -> usize {
-        self.root
-    }
-
-    /// The hook at the root, if the whole type has an implementation.
-    pub fn root_hook(&self) -> Option<&Hook> {
-        match self.nodes[self.root] {
-            PlanNode::Hook(h) => Some(&self.hooks[h]),
-            _ => None,
-        }
-    }
-}
-
-/// The call sites a node owns for its plan's hooks. Each hook's site
-/// calls the implementation's method binding directly with synthesized
-/// argument bindings the walk writes before each call — the same
-/// delivery a collection slot uses for its callback.
-pub struct Hooks<R: Rt, E: UserEvent> {
-    sites: Vec<HookSite<R, E>>,
-    t: CoreTrait,
-    scope: Scope,
-    site_id: u64,
-    top_id: ExprId,
-    /// Per runtime tag met at a `Dynamic` node: the site built for its
-    /// implementation, or `None` once the type is known to have none.
-    dynamic: Vec<(AbstractId, Option<usize>)>,
-}
-
-struct HookSite<R: Rt, E: UserEvent> {
-    site: Node<R, E>,
-    args: SmallVec<[BindId; 2]>,
-    first: bool,
-}
-
-impl<R: Rt, E: UserEvent> fmt::Debug for Hooks<R, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Hooks({})", self.sites.len())
-    }
-}
-
-impl<R: Rt, E: UserEvent> Hooks<R, E> {
-    pub fn build(
-        ctx: &mut ExecCtx<R, E>,
-        plan: &Plan,
-        t: CoreTrait,
-        scope: &Scope,
-        site_id: u64,
-        top_id: ExprId,
-    ) -> Result<Self> {
-        let mut hooks = Self {
-            sites: Vec::with_capacity(plan.hooks.len()),
-            t,
-            scope: scope.clone(),
-            site_id,
-            top_id,
-            dynamic: Vec::new(),
-        };
-        for h in plan.hooks.iter() {
-            hooks.add_site(ctx, h)?;
-        }
-        Ok(hooks)
-    }
-
-    /// Build the call site for `h` and return its index.
-    fn add_site(&mut self, ctx: &mut ExecCtx<R, E>, h: &Hook) -> Result<usize> {
-        let i = self.sites.len();
-        let ftype = match ctx.env.by_id.get(&h.bind).map(|b| b.typ.clone()) {
-            Some(Type::Fn(ft)) => ft,
-            _ => return Err(anyhow!("core trait method {:?} is not a function", h.bind)),
-        };
-        let mut args: SmallVec<[BindId; 2]> = SmallVec::new();
-        let mut nodes: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
-        for k in 0..self.t.arity() {
-            let name = format_compact!("#hook{}_{i}_{k}", self.site_id);
-            let (id, n) =
-                genn::bind(ctx, &self.scope.lexical, &name, h.typ.clone(), self.top_id);
-            args.push(id);
-            nodes.push(n);
-        }
-        let fnode = genn::reference(ctx, h.bind, Type::Fn(ftype.clone()), self.top_id);
-        let mut site = genn::apply(fnode, self.scope.clone(), nodes, &ftype, self.top_id);
-        site.typecheck0(ctx)?;
-        site.typecheck1(ctx)?;
-        self.sites.push(HookSite { site, args, first: true });
-        Ok(i)
-    }
-
-    /// The site for the implementation of the abstract type tagged
-    /// `id`, built on first use; `None` when the type has none.
-    fn dynamic_site(&mut self, ctx: &mut ExecCtx<R, E>, id: AbstractId) -> Option<usize> {
-        if let Some((_, s)) = self.dynamic.iter().find(|(i, _)| *i == id) {
-            return *s;
-        }
-        let typ = Type::Abstract { id, params: Arc::from_iter([]) };
-        let found = match hook_for(&ctx.env, self.t, &typ) {
-            Ok(Some(h)) => match self.add_site(ctx, &h) {
-                Ok(i) => Some(i),
-                Err(e) => {
-                    log::error!("core trait site for {typ}: {e:?}");
-                    None
-                }
-            },
-            Ok(None) => None,
-            Err(e) => {
-                log::error!("core trait lookup for {typ}: {e:?}");
-                None
-            }
-        };
-        self.dynamic.push((id, found));
-        found
-    }
-
-    /// The hook a `Dynamic` plan node resolves `v` to, if `v` is an
-    /// abstract value whose type has an implementation.
-    fn dynamic_for(&mut self, ctx: &mut ExecCtx<R, E>, v: &Value) -> Option<usize> {
-        let id = crate::abstract_value::get(v)?.id;
-        self.dynamic_site(ctx, id)
-    }
-
-    pub fn nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
-        self.sites.iter().map(|s| &s.site)
-    }
-
-    /// Deliver `args` and run the hook's call site. `None` is a bottom
-    /// production — the implementation produced no value this cycle.
-    fn call(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-        hook: usize,
-        args: &[&Value],
-    ) -> Option<Value> {
-        let h = &mut self.sites[hook];
-        for (id, v) in h.args.iter().zip(args.iter()) {
-            ctx.rt.store_insert(*id, TagValue::fired((*v).clone()));
-            event.variables.insert(*id, TagValue::fired((*v).clone()));
-        }
-        let saved = event.init;
-        if h.first {
-            h.first = false;
-            event.init = true;
-        }
-        let tv = h.site.update(ctx, event);
-        let r = if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
-        event.init = saved;
-        r
-    }
-
-    pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for s in self.sites.iter_mut() {
-            s.site.delete(ctx);
-            for id in s.args.iter() {
-                ctx.env.unbind_variable(*id);
-            }
-        }
-    }
-
-    pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for s in self.sites.iter_mut() {
-            s.site.sleep(ctx)
-        }
-    }
-
-    pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for s in self.sites.iter_mut() {
-            s.site.reset_replay(ctx)
-        }
-    }
-
-    pub fn refs(&self, refs: &mut Refs) {
-        for s in self.sites.iter() {
-            s.site.refs(refs);
-            for id in s.args.iter() {
-                refs.bound.insert(*id);
-            }
-        }
+/// The method signature behind a binding, for the `Impl` node's
+/// prototype call sites.
+pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
+    match env.by_id.get(&bind).map(|b| &b.typ) {
+        Some(Type::Fn(ft)) => Some(ft.clone()),
+        _ => None,
     }
 }
 
@@ -465,230 +123,218 @@ pub(crate) fn union_member(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
         .or_else(|| ts.iter().position(|t| t.is_a(env, v)))
 }
 
-/// A walk's outcome: the structural answer, or bottom when a hook
-/// produced nothing.
-type Walk<T> = Option<T>;
+// ── The hook-site registry ───────────────────────────────────────────
 
-/// The hooked equality walk: `Value::eq` everywhere no hook is
-/// reachable, the implementation at every hook. Short-circuits on the
-/// first inequality, as `Value::eq` does.
-pub fn eq<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
-    plan: &Plan,
-    hooks: &mut Hooks<R, E>,
-    typ: &Type,
-    l: &Value,
-    r: &Value,
-) -> Walk<bool> {
-    eq_at(ctx, event, plan, hooks, plan.root(), typ, l, r)
+/// One hook call site: a static call to the implementation's method
+/// binding over synthesized argument bindings the dispatch writes
+/// before each call.
+struct HookSite<R: Rt, E: UserEvent> {
+    site: Node<R, E>,
+    args: SmallVec<[BindId; 2]>,
+    first: bool,
 }
 
-fn eq_at<R: Rt, E: UserEvent>(
+/// The state for one `(trait, AbstractId)` pair: `None` once the type
+/// is known to have no implementation, else the hook and a POOL of
+/// built sites — a dispatch takes a site out and puts it back, so a
+/// re-entrant comparison (an implementation whose body compares values
+/// of its own type) builds and uses a fresh site per activation, the
+/// per-activation state the interp gives any re-entered call.
+enum SiteEntry<R: Rt, E: UserEvent> {
+    None,
+    Impl { hook: Hook, pool: Vec<HookSite<R, E>> },
+}
+
+/// The per-context registry, keyed `(trait, tag)`. Lives on `ExecCtx`;
+/// entries are resolved on first use and STICKY — an implementation
+/// registered after a tag's first comparison in this context is not
+/// picked up (matching every other compile-time resolution).
+pub struct CoreHookSites<R: Rt, E: UserEvent>(
+    ahash::AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
+);
+
+impl<R: Rt, E: UserEvent> Default for CoreHookSites<R, E> {
+    fn default() -> Self {
+        Self(ahash::AHashMap::new())
+    }
+}
+
+impl<R: Rt, E: UserEvent> std::fmt::Debug for CoreHookSites<R, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CoreHookSites({})", self.0.len())
+    }
+}
+
+fn build_site<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    t: CoreTrait,
+    h: &Hook,
+) -> Result<HookSite<R, E>> {
+    let ftype = match ctx.env.by_id.get(&h.bind).map(|b| b.typ.clone()) {
+        Some(Type::Fn(ft)) => ft,
+        _ => return Err(anyhow!("core trait method {:?} is not a function", h.bind)),
+    };
+    let scope = Scope::root();
+    let top_id = ExprId::new();
+    let mut args: SmallVec<[BindId; 2]> = SmallVec::new();
+    let mut nodes: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
+    for k in 0..t.arity() {
+        let name = format_compact!("#seam{}_{k}", top_id.inner());
+        let (id, n) = genn::bind(ctx, &scope.lexical, &name, h.typ.clone(), top_id);
+        args.push(id);
+        nodes.push(n);
+    }
+    let fnode = genn::reference(ctx, h.bind, Type::Fn(ftype.clone()), top_id);
+    let mut site = genn::apply(fnode, scope, nodes, &ftype, top_id);
+    site.typecheck0(ctx)?;
+    site.typecheck1(ctx)?;
+    Ok(HookSite { site, args, first: true })
+}
+
+/// Run the implementation of `t` for tag `id` on `args`.
+/// `None` = no implementation; `Some(None)` = it produced no value
+/// this cycle (the bottom the callers' rules resolve); `Some(Some(v))`
+/// = its result.
+fn call_hook<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
-    plan: &Plan,
-    hooks: &mut Hooks<R, E>,
-    node: usize,
-    typ: &Type,
-    l: &Value,
-    r: &Value,
-) -> Walk<bool> {
-    if !plan.hooked[node] {
-        return Some(l == r);
-    }
-    match &plan.nodes[node] {
-        PlanNode::Structural => Some(l == r),
-        PlanNode::Hook(h) => match hooks.call(ctx, event, *h, &[l, r])? {
-            Value::Bool(b) => Some(b),
-            _ => None,
-        },
-        PlanNode::Dynamic => match same_tag(l, r).and_then(|_| hooks.dynamic_for(ctx, l))
-        {
-            Some(h) => match hooks.call(ctx, event, h, &[l, r])? {
-                Value::Bool(b) => Some(b),
-                _ => None,
-            },
-            None => Some(l == r),
-        },
-        PlanNode::Array(e) => match (l, r) {
-            (Value::Array(la), Value::Array(ra)) => {
-                if la.len() != ra.len() {
-                    return Some(false);
+    t: CoreTrait,
+    id: AbstractId,
+    args: &[&Value],
+) -> Option<Option<Value>> {
+    let key = (t as u8, id);
+    let mut entry = match ctx.core_hook_sites.0.remove(&key) {
+        Some(e) => e,
+        None => {
+            let typ = Type::Abstract { id, params: Arc::from_iter([]) };
+            match hook_for(&ctx.env, t, &typ) {
+                Ok(Some(hook)) => SiteEntry::Impl { hook, pool: Vec::new() },
+                Ok(None) => SiteEntry::None,
+                Err(e) => {
+                    log::error!("core trait lookup for {typ}: {e:?}");
+                    SiteEntry::None
                 }
-                let et = elem_type(typ);
-                for (a, b) in la.iter().zip(ra.iter()) {
-                    if !eq_at(ctx, event, plan, hooks, *e, &et, a, b)? {
-                        return Some(false);
-                    }
-                }
-                Some(true)
-            }
-            _ => Some(l == r),
-        },
-        PlanNode::Map(k, v) => match (l, r) {
-            (Value::Map(lm), Value::Map(rm)) => {
-                if lm.len() != rm.len() {
-                    return Some(false);
-                }
-                let (kt, vt) = map_types(typ);
-                for ((lk, lv), (rk, rv)) in lm.into_iter().zip(rm.into_iter()) {
-                    if !eq_at(ctx, event, plan, hooks, *k, &kt, lk, rk)?
-                        || !eq_at(ctx, event, plan, hooks, *v, &vt, lv, rv)?
-                    {
-                        return Some(false);
-                    }
-                }
-                Some(true)
-            }
-            _ => Some(l == r),
-        },
-        PlanNode::Fields(f) => match (l, r) {
-            (Value::Array(la), Value::Array(ra)) => {
-                if la.len() != ra.len() {
-                    return Some(false);
-                }
-                let fts = field_types(typ);
-                let (lf, rf) = fields(typ, la, ra);
-                if lf.len() != f.len() {
-                    return Some(l == r);
-                }
-                // a struct's field names and a variant's tag compare
-                // structurally — one static type, so they agree
-                if !prefix_eq(typ, la, ra) {
-                    return Some(false);
-                }
-                for (i, (a, b)) in lf.iter().zip(rf.iter()).enumerate() {
-                    if !eq_at(ctx, event, plan, hooks, f[i], &fts[i], a, b)? {
-                        return Some(false);
-                    }
-                }
-                Some(true)
-            }
-            _ => Some(l == r),
-        },
-        PlanNode::Union(m) => {
-            let Type::Set(ts) = typ else { return Some(l == r) };
-            match (union_member(&ctx.env, ts, l), union_member(&ctx.env, ts, r)) {
-                (Some(a), Some(b)) if a == b => {
-                    let t = ts[a].clone();
-                    eq_at(ctx, event, plan, hooks, m[a], &t, l, r)
-                }
-                _ => Some(l == r),
             }
         }
-    }
-}
-
-/// The hooked ordering walk — `Value::partial_cmp`'s order (depth-first
-/// lexicographic, length as the tiebreak, the type discriminant first
-/// across shapes) with the implementation at every hook.
-pub fn cmp<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
-    plan: &Plan,
-    hooks: &mut Hooks<R, E>,
-    typ: &Type,
-    l: &Value,
-    r: &Value,
-) -> Walk<Ordering> {
-    cmp_at(ctx, event, plan, hooks, plan.root(), typ, l, r)
-}
-
-fn structural_cmp(l: &Value, r: &Value) -> Ordering {
-    l.partial_cmp(r).unwrap_or(Ordering::Equal)
-}
-
-fn cmp_at<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
-    plan: &Plan,
-    hooks: &mut Hooks<R, E>,
-    node: usize,
-    typ: &Type,
-    l: &Value,
-    r: &Value,
-) -> Walk<Ordering> {
-    if !plan.hooked[node] {
-        return Some(structural_cmp(l, r));
-    }
-    match &plan.nodes[node] {
-        PlanNode::Structural => Some(structural_cmp(l, r)),
-        PlanNode::Hook(h) => ordering_of(&hooks.call(ctx, event, *h, &[l, r])?),
-        PlanNode::Dynamic => match same_tag(l, r).and_then(|_| hooks.dynamic_for(ctx, l))
-        {
-            Some(h) => ordering_of(&hooks.call(ctx, event, h, &[l, r])?),
-            None => Some(structural_cmp(l, r)),
-        },
-        PlanNode::Array(e) => match (l, r) {
-            (Value::Array(la), Value::Array(ra)) => {
-                let et = elem_type(typ);
-                for (a, b) in la.iter().zip(ra.iter()) {
-                    match cmp_at(ctx, event, plan, hooks, *e, &et, a, b)? {
-                        Ordering::Equal => {}
-                        o => return Some(o),
+    };
+    let r = match &mut entry {
+        SiteEntry::None => None,
+        SiteEntry::Impl { hook, pool } => {
+            let site = match pool.pop() {
+                Some(s) => Ok(s),
+                None => build_site(ctx, t, hook),
+            };
+            match site {
+                Err(e) => {
+                    log::error!("core trait site for {}: {e:?}", hook.typ);
+                    entry = SiteEntry::None;
+                    None
+                }
+                Ok(mut s) => {
+                    // Every dispatch is a FRESH logical invocation: a
+                    // reused site otherwise carries replay history
+                    // across dispatches — the scrutinee ride re-emits
+                    // the PREVIOUS pair's answer when this pair's
+                    // computation bottoms (found by the bottom-key
+                    // fixture: sort's comparator returned stale
+                    // orderings). `reset_replay` is the frames
+                    // mechanism for exactly this: replay caches clear,
+                    // semantic state survives.
+                    s.site.reset_replay(ctx);
+                    for (id, v) in s.args.iter().zip(args.iter()) {
+                        ctx.rt.store_insert(*id, TagValue::fired((*v).clone()));
+                        event.variables.insert(*id, TagValue::fired((*v).clone()));
                     }
-                }
-                Some(la.len().cmp(&ra.len()))
-            }
-            _ => Some(structural_cmp(l, r)),
-        },
-        PlanNode::Map(k, v) => match (l, r) {
-            (Value::Map(lm), Value::Map(rm)) => {
-                let (kt, vt) = map_types(typ);
-                for ((lk, lv), (rk, rv)) in lm.into_iter().zip(rm.into_iter()) {
-                    match cmp_at(ctx, event, plan, hooks, *k, &kt, lk, rk)? {
-                        Ordering::Equal => {}
-                        o => return Some(o),
+                    let saved = event.init;
+                    if s.first {
+                        s.first = false;
+                        event.init = true;
                     }
-                    match cmp_at(ctx, event, plan, hooks, *v, &vt, lv, rv)? {
-                        Ordering::Equal => {}
-                        o => return Some(o),
+                    let tv = s.site.update(ctx, event);
+                    let r =
+                        if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
+                    event.init = saved;
+                    match &mut entry {
+                        SiteEntry::Impl { pool, .. } => pool.push(s),
+                        SiteEntry::None => unreachable!(),
                     }
+                    Some(r)
                 }
-                Some(lm.len().cmp(&rm.len()))
-            }
-            _ => Some(structural_cmp(l, r)),
-        },
-        PlanNode::Fields(f) => match (l, r) {
-            (Value::Array(la), Value::Array(ra)) => {
-                let fts = field_types(typ);
-                let (lf, rf) = fields(typ, la, ra);
-                if lf.len() != f.len() || rf.len() != f.len() {
-                    return Some(structural_cmp(l, r));
-                }
-                match prefix_cmp(typ, la, ra) {
-                    Ordering::Equal => {}
-                    o => return Some(o),
-                }
-                for (i, (a, b)) in lf.iter().zip(rf.iter()).enumerate() {
-                    match cmp_at(ctx, event, plan, hooks, f[i], &fts[i], a, b)? {
-                        Ordering::Equal => {}
-                        o => return Some(o),
-                    }
-                }
-                Some(la.len().cmp(&ra.len()))
-            }
-            _ => Some(structural_cmp(l, r)),
-        },
-        PlanNode::Union(m) => {
-            let Type::Set(ts) = typ else { return Some(structural_cmp(l, r)) };
-            match (union_member(&ctx.env, ts, l), union_member(&ctx.env, ts, r)) {
-                (Some(a), Some(b)) if a == b => {
-                    let t = ts[a].clone();
-                    cmp_at(ctx, event, plan, hooks, m[a], &t, l, r)
-                }
-                _ => Some(structural_cmp(l, r)),
             }
         }
-    }
+    };
+    ctx.core_hook_sites.0.insert(key, entry);
+    r
 }
 
-/// Both abstract values of one type — the runtime precondition for a
-/// dynamic two-argument dispatch.
-fn same_tag(l: &Value, r: &Value) -> Option<AbstractId> {
-    let (a, b) = (crate::abstract_value::get(l)?, crate::abstract_value::get(r)?);
-    (a.id == b.id).then_some(a.id)
+// ── The dispatch handle ──────────────────────────────────────────────
+
+struct HookState<R: Rt, E: UserEvent> {
+    ctx: *mut ExecCtx<R, E>,
+    event: *mut Event<E>,
+}
+
+/// Re-wrap a `GxAbstract` (received by reference inside the vtable
+/// call) as the `Value` a hook site's argument binding carries.
+fn as_value(g: &GxAbstract) -> Value {
+    abstract_value::wrap(g.id, g.name.clone(), g.payload.clone())
+}
+
+fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
+    log::warn!(
+        "core {:?} implementation for {} bottoms on a pair whose keys are both \
+         real (neither self-comparison bottoms) — an inconsistent implementation; \
+         answering Equal",
+        t,
+        a.name
+    );
+}
+
+/// Does the implementation bottom on the key `k` (the self-probe of
+/// the bottom-key rule)?
+fn key_bottoms<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    t: CoreTrait,
+    k: &Value,
+) -> bool {
+    let id = match abstract_value::get(k) {
+        Some(g) => g.id,
+        None => return false,
+    };
+    matches!(call_hook(ctx, event, t, id, &[k, k]), Some(None))
+}
+
+fn dispatch_eq<R: Rt, E: UserEvent>(
+    state: *mut u8,
+    a: &GxAbstract,
+    b: &GxAbstract,
+) -> Option<bool> {
+    // SAFETY: `state` points into the live `with_value_hooks` frame.
+    let s = unsafe { &mut *(state as *mut HookState<R, E>) };
+    let (ctx, event) = unsafe { (&mut *s.ctx, &mut *s.event) };
+    let (av, bv) = (as_value(a), as_value(b));
+    match call_hook(ctx, event, CoreTrait::Eq, a.id, &[&av, &bv])? {
+        Some(Value::Bool(x)) => Some(x),
+        Some(v) => {
+            log::warn!("core Eq for {} returned a non-bool {v:?}", a.name);
+            Some(false)
+        }
+        // THE BOTTOM-KEY RULE: bottom keys are equal to each other and
+        // to nothing real.
+        None => {
+            let ab = key_bottoms(ctx, event, CoreTrait::Eq, &av);
+            let bb = key_bottoms(ctx, event, CoreTrait::Eq, &bv);
+            Some(match (ab, bb) {
+                (true, true) => true,
+                (true, false) | (false, true) => false,
+                (false, false) => {
+                    warn_pair_bottom(CoreTrait::Eq, a);
+                    false
+                }
+            })
+        }
+    }
 }
 
 fn ordering_of(v: &Value) -> Option<Ordering> {
@@ -700,230 +346,98 @@ fn ordering_of(v: &Value) -> Option<Ordering> {
     }
 }
 
-fn elem_type(typ: &Type) -> Type {
-    match typ {
-        Type::Array(et) => (**et).clone(),
-        _ => Type::Any,
-    }
-}
-
-fn map_types(typ: &Type) -> (Type, Type) {
-    match typ {
-        Type::Map { key, value } => ((**key).clone(), (**value).clone()),
-        _ => (Type::Any, Type::Any),
-    }
-}
-
-fn field_types(typ: &Type) -> LPooled<Vec<Type>> {
-    match typ {
-        Type::Tuple(ts) | Type::Variant(_, ts) => ts.iter().cloned().collect(),
-        Type::Struct(fs) => fs.iter().map(|(_, t)| t.clone()).collect(),
-        _ => LPooled::take(),
-    }
-}
-
-/// The element values a `Fields` plan ranges over: a tuple's elements,
-/// a struct's field VALUES (each `[name, value]` pair's second), a
-/// variant's arguments (after the tag).
-fn fields<'a>(
-    typ: &Type,
-    la: &'a [Value],
-    ra: &'a [Value],
-) -> (LPooled<Vec<&'a Value>>, LPooled<Vec<&'a Value>>) {
-    let pick = |a: &'a [Value]| -> LPooled<Vec<&'a Value>> {
-        match typ {
-            Type::Struct(_) => a
-                .iter()
-                .filter_map(|p| match p {
-                    Value::Array(p) if p.len() == 2 => Some(&p[1]),
-                    _ => None,
-                })
-                .collect(),
-            Type::Variant(_, _) => a.iter().skip(1).collect(),
-            _ => a.iter().collect(),
-        }
-    };
-    (pick(la), pick(ra))
-}
-
-/// The structurally-compared parts that precede each field in the
-/// Value layout — a variant's tag, a struct's field names.
-fn prefix_eq(typ: &Type, la: &[Value], ra: &[Value]) -> bool {
-    match typ {
-        Type::Variant(_, _) => la.first() == ra.first(),
-        Type::Struct(_) => la.iter().zip(ra.iter()).all(|(a, b)| match (a, b) {
-            (Value::Array(a), Value::Array(b)) => a.first() == b.first(),
-            _ => false,
-        }),
-        _ => true,
-    }
-}
-
-fn prefix_cmp(typ: &Type, la: &[Value], ra: &[Value]) -> Ordering {
-    match typ {
-        Type::Variant(_, _) => match (la.first(), ra.first()) {
-            (Some(a), Some(b)) => structural_cmp(a, b),
-            _ => Ordering::Equal,
-        },
-        Type::Struct(_) => {
-            for (a, b) in la.iter().zip(ra.iter()) {
-                if let (Value::Array(a), Value::Array(b)) = (a, b)
-                    && let (Some(a), Some(b)) = (a.first(), b.first())
-                {
-                    match structural_cmp(a, b) {
-                        Ordering::Equal => {}
-                        o => return o,
-                    }
-                }
+fn dispatch_cmp<R: Rt, E: UserEvent>(
+    state: *mut u8,
+    a: &GxAbstract,
+    b: &GxAbstract,
+) -> Option<Ordering> {
+    // SAFETY: as in `dispatch_eq`.
+    let s = unsafe { &mut *(state as *mut HookState<R, E>) };
+    let (ctx, event) = unsafe { (&mut *s.ctx, &mut *s.event) };
+    let (av, bv) = (as_value(a), as_value(b));
+    match call_hook(ctx, event, CoreTrait::Ord, a.id, &[&av, &bv])? {
+        Some(v) => match ordering_of(&v) {
+            Some(o) => Some(o),
+            None => {
+                log::warn!("core Ord for {} returned a non-Ordering {v:?}", a.name);
+                Some(Ordering::Equal)
             }
-            Ordering::Equal
-        }
-        _ => Ordering::Equal,
-    }
-}
-
-/// The typed printer's hook interface: the environment for the
-/// structural steps, and the implementation call at a hook.
-pub trait FmtHooks {
-    fn env(&self) -> &Env;
-    /// `None` is a bottom production — the print bottoms.
-    fn call(&mut self, hook: usize, v: &Value) -> Option<ArcStr>;
-    /// At a `Dynamic` node: the implementation's string for `v` if its
-    /// runtime tag has one, `Some(None)` for a bottom, `None` to print
-    /// structurally.
-    fn call_dynamic(&mut self, v: &Value) -> Option<Option<ArcStr>>;
-}
-
-pub struct NoHooks<'a>(pub &'a Env);
-
-impl FmtHooks for NoHooks<'_> {
-    fn env(&self) -> &Env {
-        self.0
-    }
-
-    fn call(&mut self, _: usize, _: &Value) -> Option<ArcStr> {
-        None
-    }
-
-    fn call_dynamic(&mut self, _: &Value) -> Option<Option<ArcStr>> {
-        None
-    }
-}
-
-/// The runtime hook caller: the node's hook sites over the cycle's
-/// context.
-pub struct SiteHooks<'a, R: Rt, E: UserEvent> {
-    pub ctx: &'a mut ExecCtx<R, E>,
-    pub event: &'a mut Event<E>,
-    pub hooks: &'a mut Hooks<R, E>,
-}
-
-impl<R: Rt, E: UserEvent> FmtHooks for SiteHooks<'_, R, E> {
-    fn env(&self) -> &Env {
-        &self.ctx.env
-    }
-
-    fn call(&mut self, hook: usize, v: &Value) -> Option<ArcStr> {
-        match self.hooks.call(self.ctx, self.event, hook, &[v])? {
-            Value::String(s) => Some(s),
-            _ => None,
+        },
+        // THE BOTTOM-KEY RULE (Eric's ruling 2026-08-23): a structural
+        // fallback per PAIR breaks the total order (mixing two orders
+        // is intransitive), and so does any constant answer. Per KEY it
+        // is total — bottom keys below every real key, equal among
+        // themselves — the NaN rule, with bottomness detected by the
+        // self-probe. Probes run only on this path.
+        None => {
+            let ab = key_bottoms(ctx, event, CoreTrait::Ord, &av);
+            let bb = key_bottoms(ctx, event, CoreTrait::Ord, &bv);
+            Some(match (ab, bb) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                (false, false) => {
+                    warn_pair_bottom(CoreTrait::Ord, a);
+                    Ordering::Equal
+                }
+            })
         }
     }
+}
 
-    fn call_dynamic(&mut self, v: &Value) -> Option<Option<ArcStr>> {
-        let h = self.hooks.dynamic_for(self.ctx, v)?;
-        Some(self.call(h, v))
+fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<ArcStr> {
+    // SAFETY: as in `dispatch_eq`.
+    let s = unsafe { &mut *(state as *mut HookState<R, E>) };
+    let (ctx, event) = unsafe { (&mut *s.ctx, &mut *s.event) };
+    let av = as_value(a);
+    match call_hook(ctx, event, CoreTrait::Display, a.id, &[&av])? {
+        Some(Value::String(s)) => Some(s),
+        Some(v) => {
+            log::warn!("core Display for {} returned a non-string {v:?}", a.name);
+            None
+        }
+        // printing has no algebra to preserve: a bottoming fmt renders
+        // structurally, loudly
+        None => {
+            log::warn!(
+                "core Display for {} produced no value; printing structurally",
+                a.name
+            );
+            None
+        }
     }
 }
 
-/// Print `v` at `typ` into `w` through the plan's hooks. `Err` is a
-/// bottom: a hook produced nothing (or the writer failed).
-pub fn fmt<R: Rt, E: UserEvent>(
-    w: &mut dyn fmt::Write,
+/// Loan `ctx`/`event` to the value seam for the duration of `f` — call
+/// this around any operation that compares or prints `Value`s and
+/// should honor core-trait implementations: the comparison operators,
+/// a builtin's `eval`, a map construction or lookup, a kernel
+/// invocation, a print's render. Loans nest (save/restore); with no
+/// core-trait implementation registered this is a handful of map
+/// probes and nothing is armed.
+///
+/// `f` receives the SAME `ctx`/`event` back: the raw pointers in the
+/// handle alias them, used only while `f`'s frame is suspended inside
+/// a `Value` operation — the `DYN_DISPATCH_HANDLE` loan pattern
+/// (`fusion::emit_helpers`).
+pub fn with_value_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
-    plan: &Plan,
-    hooks: &mut Hooks<R, E>,
-    typ: &Type,
-    v: &Value,
-) -> fmt::Result {
-    let mut h = SiteHooks { ctx, event, hooks };
-    TVal::fmt_planned(w, &mut h, Some((plan, plan.root())), typ, v)
-}
-
-impl Plan {
-    /// The plan node for a step of the typed printer's walk — `None`
-    /// once no hook is reachable (the rest of the subtree is
-    /// structural).
-    fn step(
-        &self,
-        node: usize,
-        f: impl FnOnce(&PlanNode) -> Option<usize>,
-    ) -> Option<(&Plan, usize)> {
-        if !self.hooked[node] {
-            return None;
-        }
-        let i = f(&self.nodes[node])?;
-        if self.hooked[i] { Some((self, i)) } else { None }
+    f: impl FnOnce(&mut ExecCtx<R, E>, &mut Event<E>) -> T,
+) -> T {
+    let live = [CoreTrait::Eq, CoreTrait::Ord, CoreTrait::Display]
+        .into_iter()
+        .any(|t| ctx.env.impls.get(&t.id()).is_some_and(|l| !l.is_empty()));
+    if !live {
+        return f(ctx, event);
     }
-
-    pub(crate) fn is_hook(&self, node: usize) -> Option<usize> {
-        match self.nodes[node] {
-            PlanNode::Hook(h) if self.hooked[node] => Some(h),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn is_dynamic(&self, node: usize) -> bool {
-        matches!(self.nodes[node], PlanNode::Dynamic)
-    }
-
-    pub(crate) fn array_elem(&self, node: usize) -> Option<(&Plan, usize)> {
-        self.step(node, |n| match n {
-            PlanNode::Array(e) => Some(*e),
-            _ => None,
-        })
-    }
-
-    pub(crate) fn map_key(&self, node: usize) -> Option<(&Plan, usize)> {
-        self.step(node, |n| match n {
-            PlanNode::Map(k, _) => Some(*k),
-            _ => None,
-        })
-    }
-
-    pub(crate) fn map_value(&self, node: usize) -> Option<(&Plan, usize)> {
-        self.step(node, |n| match n {
-            PlanNode::Map(_, v) => Some(*v),
-            _ => None,
-        })
-    }
-
-    pub(crate) fn field(&self, node: usize, i: usize) -> Option<(&Plan, usize)> {
-        self.step(node, |n| match n {
-            PlanNode::Fields(f) => f.get(i).copied(),
-            _ => None,
-        })
-    }
-
-    pub(crate) fn member(&self, node: usize, i: usize) -> Option<(&Plan, usize)> {
-        self.step(node, |n| match n {
-            PlanNode::Union(m) => m.get(i).copied(),
-            _ => None,
-        })
-    }
-
-    /// A type ref or bound tvar steps through the same node.
-    pub(crate) fn same(&self, node: usize) -> Option<(&Plan, usize)> {
-        if self.hooked[node] { Some((self, node)) } else { None }
-    }
-}
-
-/// The method signature the core traits declare, for the `Impl` node's
-/// prototype call sites.
-pub fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
-    match env.by_id.get(&bind).map(|b| &b.typ) {
-        Some(Type::Fn(ft)) => Some(ft.clone()),
-        _ => None,
-    }
+    let mut state = HookState::<R, E> { ctx: ctx as *mut _, event: event as *mut _ };
+    let handle = ValueHookDispatch {
+        state: &mut state as *mut HookState<R, E> as *mut u8,
+        eq: dispatch_eq::<R, E>,
+        cmp: dispatch_cmp::<R, E>,
+        fmt: dispatch_fmt::<R, E>,
+    };
+    let _guard = abstract_value::arm_value_hooks(&handle as *const _);
+    f(ctx, event)
 }

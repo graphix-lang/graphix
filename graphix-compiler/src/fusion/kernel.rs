@@ -1809,9 +1809,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // we can distinguish "this kernel pended" from
         // "some earlier kernel left the flag set."
         DYNCALL_PENDING.with(|c| c.set(false));
-        unsafe {
+        // Value-hook loan (the core-trait seam): `graphix_value_eq`
+        // and every other helper comparing or printing Values inside
+        // this invocation honors core Eq/Ord/Display implementations,
+        // exactly as the interp's armed operators do.
+        crate::node::coretraits::with_value_hooks(ctx, event, |_, _| unsafe {
             f(slots.as_ptr(), out.as_mut_ptr());
-        }
+        });
         DYN_DISPATCH_HANDLE.with(|c| c.set(prev_handle));
         let pending = DYNCALL_PENDING.with(|c| c.replace(false));
         if pending {

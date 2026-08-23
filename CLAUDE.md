@@ -1508,32 +1508,33 @@ trait params/assoc types, `type T = A + B`, io on traits,
 dynamic-module impl proxies.
 
 **Core traits (2026-08-23, `design/traits.md` §12):** `Eq`/`Ord`/
-`Display` are declared in core's gxi; `node/coretraits.rs` holds
-`CoreTrait` (path-derived ids), `Plan` (the static type annotated
-with hook positions — arena + reachability fixpoint so recursive
-types close; `None` unless the program registers an impl of the
-trait at all), `Hooks` (node-owned call sites per hook, args
-delivered through `event.variables` like a collection slot), and the
-walks `eq`/`cmp` (mirror `Value::eq`/`partial_cmp`, delegating
-unhooked subtrees to the `Value` ops) — `Display` rides `TVal`
-itself (`fmt_planned`, `FmtHooks`). Sites: the six cmp nodes pick a
-`CmpDispatch` at tc1 (Structural / Lowered = static call to the impl
-via `lower_over_operands`, fuses / Walk = interior hook, de-fuses);
-`StringInterpolate` plans per part at tc1; print/dbg/log build their
-plan on first render (`Shown`, package-core — a builtin's
-type-derived state must exist after init+tc0, the DynCall mint runs
-no tc1). `Impl` adds implicit `#[sync]` to core-trait methods and
-builds never-run prototype call sites (`NodeView::Impl`) so analysis
-covers them. `lower_core_call`: `Eq::eq(a,b)` ≡ `a == b`,
-`Display::fmt(x)` ≡ `"[x]"`, `Ord::cmp` ≡ a select over `<`/`>`;
-`trait_contains` holds the three for every type. `PlanNode::Dynamic`
-(an `Any`/open-cell position): the runtime `AbstractId` finds the
-impl and `Hooks` builds a site per tag on first use.
-`bind::lower_over_operands` is THE lowering device (cmp, core calls,
-union dispatch): it MOVES the operand nodes into `let #x = ..` binds
-and compiles only the synthesized expression — recompiling operand
-source at tc1 can't see a lambda's parameters (union dispatch inside
-a lambda was broken this way; `trait_union_dispatch_in_lambda`).
+`Display` declared in core's gxi; THE VALUE SEAM: netidx's abstract
+vtable routes `Value::{eq, partial_cmp}` and `{:?}` to
+`GxAbstract`'s impls (`abstract_value.rs`), which consult a
+thread-local dispatch handle — one seam covers map keys, sort,
+min/max, uniq, the operators (both engines: `graphix_value_eq` calls
+`Value::eq`), and every printer. The loan: `coretraits::
+with_value_hooks(ctx, event, f)` (the DYN_DISPATCH_HANDLE pattern)
+armed at the cmp operators, `CachedArgs::update` (the whole
+EvalCached family), uniq, the map nodes, `Kernel::update`, string
+interpolation, the print family; unarmed (off-thread, no impls) =
+structural. Dispatch: `ExecCtx.core_hook_sites` — per `(trait,
+AbstractId)` a sticky resolved-or-None entry with a POOL of call
+sites (fresh per re-entrant activation), args via `event.variables`,
+`reset_replay` before EVERY dispatch (a reused site's scrutinee ride
+re-emitted the previous pair's answer on a bottoming pair). THE
+BOTTOM-KEY RULE (Eric): a bottoming impl resolves per KEY like NaN —
+bottom keys (self-probe `cmp(k,k)` bottoms) below real keys, equal
+to each other; pair-bottom-with-real-keys warns + Equal; a bottoming
+fmt prints structurally + warns. `lower_core_call` keeps the
+dispatcher sugar (`Eq::eq(a,b)` ≡ `a == b`); `trait_contains` holds
+the three universally; core-trait impls get implicit `#[sync]` +
+prototype sites (`NodeView::Impl`). `bind::lower_over_operands`
+remains THE lowering device (union dispatch, dispatcher sugar):
+operand nodes MOVE into `let #x` binds — recompiling operand source
+at tc1 can't see a lambda's params (`trait_union_dispatch_in_lambda`).
+Rust-backed abstracts stay structural until the io migration
+registers them.
 
 ## The module system (open → use, 2026-08-22)
 
