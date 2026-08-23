@@ -473,3 +473,22 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// Under `Any` (or an open cell) the runtime tag is the type id: an
+// abstract value finds its type's implementation by id, and a site is
+// built for each tag on first use; anything else is structural.
+run!(
+    core_dynamic_under_any,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "true|false|false|[key:Foo, 5]|key:Foo|true"),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+        impl Display for Key { let fmt = |k| "key:[k.0]" };
+        let a: Any = cast<Any>(Key("Foo"));
+        let b: Any = cast<Any>(Key("FOO"));
+        let five: Any = cast<Any>(5);
+        let xs: Array<Any> = [a, five];
+        let result = "[a == b]|[a != b]|[a == five]|[xs]|[a]|[xs == [b, five]]"
+    "##
+    ; FuseExpect::None
+);

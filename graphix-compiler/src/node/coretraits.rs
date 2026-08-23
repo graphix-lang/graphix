@@ -16,7 +16,7 @@ use crate::{
     env::Env,
     expr::{ExprId, ModPath},
     format_with_flags,
-    typ::{FnType, IsAFlags, TVal, TraitId, Type},
+    typ::{AbstractId, FnType, IsAFlags, TVal, TraitId, Type},
 };
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
@@ -76,6 +76,10 @@ pub struct Hook {
 enum PlanNode {
     Structural,
     Hook(usize),
+    /// No static type (`Any`, an open cell): the runtime tag decides —
+    /// an abstract value finds its type's implementation by id, and a
+    /// site is built for each tag on first use.
+    Dynamic,
     Array(usize),
     Map(usize, usize),
     /// tuple elements / struct fields / variant arguments, in type order
@@ -111,25 +115,14 @@ impl<'a> Builder<'a> {
     }
 
     fn hook_for(&mut self, typ: &Type) -> Result<Option<usize>> {
-        let Some(im) = self.env.find_impl(self.t.id(), typ)? else { return Ok(None) };
-        let def = self
-            .env
-            .trait_def(self.t.id())
-            .ok_or_else(|| anyhow!("core trait {:?} is not defined", self.t))?;
-        let m =
-            def.methods.iter().find(|m| m.name == self.t.method()).ok_or_else(|| {
-                anyhow!("core trait {} lacks {}", def.name, self.t.method())
-            })?;
-        let Some(bind) = im.methods.get(self.t.method()).copied().or(m.default) else {
-            return Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name));
-        };
-        self.hooks.push(Hook { bind, typ: typ.clone() });
+        let Some(h) = hook_for(self.env, self.t, typ)? else { return Ok(None) };
+        self.hooks.push(h);
         Ok(Some(self.hooks.len() - 1))
     }
 
     fn walk(&mut self, typ: &Type) -> Result<usize> {
         typ.with_deref(|t| match t {
-            None => Ok(self.push(PlanNode::Structural)),
+            None => Ok(self.push(PlanNode::Dynamic)),
             Some(t) => self.walk_deref(t),
         })
     }
@@ -139,8 +132,8 @@ impl<'a> Builder<'a> {
             return Ok(self.push(PlanNode::Hook(h)));
         }
         match typ {
+            Type::Any => Ok(self.push(PlanNode::Dynamic)),
             Type::Bottom
-            | Type::Any
             | Type::Primitive(_)
             | Type::Fn(_)
             | Type::Error(_)
@@ -201,7 +194,7 @@ impl<'a> Builder<'a> {
         };
         for n in self.nodes.iter_mut() {
             match n {
-                PlanNode::Structural | PlanNode::Hook(_) => {}
+                PlanNode::Structural | PlanNode::Hook(_) | PlanNode::Dynamic => {}
                 PlanNode::Array(e) => fix(e),
                 PlanNode::Map(k, v) => {
                     fix(k);
@@ -211,6 +204,23 @@ impl<'a> Builder<'a> {
             }
         }
     }
+}
+
+/// The implementation of `t` for `typ`, as a hook.
+fn hook_for(env: &Env, t: CoreTrait, typ: &Type) -> Result<Option<Hook>> {
+    let Some(im) = env.find_impl(t.id(), typ)? else { return Ok(None) };
+    let def = env
+        .trait_def(t.id())
+        .ok_or_else(|| anyhow!("core trait {:?} is not defined", t))?;
+    let m = def
+        .methods
+        .iter()
+        .find(|m| m.name == t.method())
+        .ok_or_else(|| anyhow!("core trait {} lacks {}", def.name, t.method()))?;
+    let Some(bind) = im.methods.get(t.method()).copied().or(m.default) else {
+        return Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name));
+    };
+    Ok(Some(Hook { bind, typ: typ.clone() }))
 }
 
 impl Plan {
@@ -230,8 +240,10 @@ impl Plan {
         let Builder { nodes, hooks, .. } = b;
         // a node is hooked iff a hook is reachable from it — a fixpoint,
         // since a recursive type's nodes form a cycle
-        let mut hooked: Vec<bool> =
-            nodes.iter().map(|n| matches!(n, PlanNode::Hook(_))).collect();
+        let mut hooked: Vec<bool> = nodes
+            .iter()
+            .map(|n| matches!(n, PlanNode::Hook(_) | PlanNode::Dynamic))
+            .collect();
         loop {
             let mut changed = false;
             for (i, n) in nodes.iter().enumerate() {
@@ -239,7 +251,7 @@ impl Plan {
                     continue;
                 }
                 let h = match n {
-                    PlanNode::Structural | PlanNode::Hook(_) => false,
+                    PlanNode::Structural | PlanNode::Hook(_) | PlanNode::Dynamic => false,
                     PlanNode::Array(e) => hooked[*e],
                     PlanNode::Map(k, v) => hooked[*k] || hooked[*v],
                     PlanNode::Fields(f) | PlanNode::Union(f) => {
@@ -280,6 +292,13 @@ impl Plan {
 /// delivery a collection slot uses for its callback.
 pub struct Hooks<R: Rt, E: UserEvent> {
     sites: Vec<HookSite<R, E>>,
+    t: CoreTrait,
+    scope: Scope,
+    site_id: u64,
+    top_id: ExprId,
+    /// Per runtime tag met at a `Dynamic` node: the site built for its
+    /// implementation, or `None` once the type is known to have none.
+    dynamic: Vec<(AbstractId, Option<usize>)>,
 }
 
 struct HookSite<R: Rt, E: UserEvent> {
@@ -303,33 +322,74 @@ impl<R: Rt, E: UserEvent> Hooks<R, E> {
         site_id: u64,
         top_id: ExprId,
     ) -> Result<Self> {
-        let mut sites = Vec::with_capacity(plan.hooks.len());
-        for (i, h) in plan.hooks.iter().enumerate() {
-            let ftype = match ctx.env.by_id.get(&h.bind).map(|b| b.typ.clone()) {
-                Some(Type::Fn(ft)) => ft,
-                _ => {
-                    return Err(anyhow!(
-                        "core trait method {:?} is not a function",
-                        h.bind
-                    ));
-                }
-            };
-            let mut args: SmallVec<[BindId; 2]> = SmallVec::new();
-            let mut nodes: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
-            for k in 0..t.arity() {
-                let name = format_compact!("#hook{site_id}_{i}_{k}");
-                let (id, n) =
-                    genn::bind(ctx, &scope.lexical, &name, h.typ.clone(), top_id);
-                args.push(id);
-                nodes.push(n);
-            }
-            let fnode = genn::reference(ctx, h.bind, Type::Fn(ftype.clone()), top_id);
-            let mut site = genn::apply(fnode, scope.clone(), nodes, &ftype, top_id);
-            site.typecheck0(ctx)?;
-            site.typecheck1(ctx)?;
-            sites.push(HookSite { site, args, first: true });
+        let mut hooks = Self {
+            sites: Vec::with_capacity(plan.hooks.len()),
+            t,
+            scope: scope.clone(),
+            site_id,
+            top_id,
+            dynamic: Vec::new(),
+        };
+        for h in plan.hooks.iter() {
+            hooks.add_site(ctx, h)?;
         }
-        Ok(Self { sites })
+        Ok(hooks)
+    }
+
+    /// Build the call site for `h` and return its index.
+    fn add_site(&mut self, ctx: &mut ExecCtx<R, E>, h: &Hook) -> Result<usize> {
+        let i = self.sites.len();
+        let ftype = match ctx.env.by_id.get(&h.bind).map(|b| b.typ.clone()) {
+            Some(Type::Fn(ft)) => ft,
+            _ => return Err(anyhow!("core trait method {:?} is not a function", h.bind)),
+        };
+        let mut args: SmallVec<[BindId; 2]> = SmallVec::new();
+        let mut nodes: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
+        for k in 0..self.t.arity() {
+            let name = format_compact!("#hook{}_{i}_{k}", self.site_id);
+            let (id, n) =
+                genn::bind(ctx, &self.scope.lexical, &name, h.typ.clone(), self.top_id);
+            args.push(id);
+            nodes.push(n);
+        }
+        let fnode = genn::reference(ctx, h.bind, Type::Fn(ftype.clone()), self.top_id);
+        let mut site = genn::apply(fnode, self.scope.clone(), nodes, &ftype, self.top_id);
+        site.typecheck0(ctx)?;
+        site.typecheck1(ctx)?;
+        self.sites.push(HookSite { site, args, first: true });
+        Ok(i)
+    }
+
+    /// The site for the implementation of the abstract type tagged
+    /// `id`, built on first use; `None` when the type has none.
+    fn dynamic_site(&mut self, ctx: &mut ExecCtx<R, E>, id: AbstractId) -> Option<usize> {
+        if let Some((_, s)) = self.dynamic.iter().find(|(i, _)| *i == id) {
+            return *s;
+        }
+        let typ = Type::Abstract { id, params: Arc::from_iter([]) };
+        let found = match hook_for(&ctx.env, self.t, &typ) {
+            Ok(Some(h)) => match self.add_site(ctx, &h) {
+                Ok(i) => Some(i),
+                Err(e) => {
+                    log::error!("core trait site for {typ}: {e:?}");
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(e) => {
+                log::error!("core trait lookup for {typ}: {e:?}");
+                None
+            }
+        };
+        self.dynamic.push((id, found));
+        found
+    }
+
+    /// The hook a `Dynamic` plan node resolves `v` to, if `v` is an
+    /// abstract value whose type has an implementation.
+    fn dynamic_for(&mut self, ctx: &mut ExecCtx<R, E>, v: &Value) -> Option<usize> {
+        let id = crate::abstract_value::get(v)?.id;
+        self.dynamic_site(ctx, id)
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
@@ -443,6 +503,14 @@ fn eq_at<R: Rt, E: UserEvent>(
             Value::Bool(b) => Some(b),
             _ => None,
         },
+        PlanNode::Dynamic => match same_tag(l, r).and_then(|_| hooks.dynamic_for(ctx, l))
+        {
+            Some(h) => match hooks.call(ctx, event, h, &[l, r])? {
+                Value::Bool(b) => Some(b),
+                _ => None,
+            },
+            None => Some(l == r),
+        },
         PlanNode::Array(e) => match (l, r) {
             (Value::Array(la), Value::Array(ra)) => {
                 if la.len() != ra.len() {
@@ -547,6 +615,11 @@ fn cmp_at<R: Rt, E: UserEvent>(
     match &plan.nodes[node] {
         PlanNode::Structural => Some(structural_cmp(l, r)),
         PlanNode::Hook(h) => ordering_of(&hooks.call(ctx, event, *h, &[l, r])?),
+        PlanNode::Dynamic => match same_tag(l, r).and_then(|_| hooks.dynamic_for(ctx, l))
+        {
+            Some(h) => ordering_of(&hooks.call(ctx, event, h, &[l, r])?),
+            None => Some(structural_cmp(l, r)),
+        },
         PlanNode::Array(e) => match (l, r) {
             (Value::Array(la), Value::Array(ra)) => {
                 let et = elem_type(typ);
@@ -609,6 +682,13 @@ fn cmp_at<R: Rt, E: UserEvent>(
             }
         }
     }
+}
+
+/// Both abstract values of one type — the runtime precondition for a
+/// dynamic two-argument dispatch.
+fn same_tag(l: &Value, r: &Value) -> Option<AbstractId> {
+    let (a, b) = (crate::abstract_value::get(l)?, crate::abstract_value::get(r)?);
+    (a.id == b.id).then_some(a.id)
 }
 
 fn ordering_of(v: &Value) -> Option<Ordering> {
@@ -708,6 +788,10 @@ pub trait FmtHooks {
     fn env(&self) -> &Env;
     /// `None` is a bottom production — the print bottoms.
     fn call(&mut self, hook: usize, v: &Value) -> Option<ArcStr>;
+    /// At a `Dynamic` node: the implementation's string for `v` if its
+    /// runtime tag has one, `Some(None)` for a bottom, `None` to print
+    /// structurally.
+    fn call_dynamic(&mut self, v: &Value) -> Option<Option<ArcStr>>;
 }
 
 pub struct NoHooks<'a>(pub &'a Env);
@@ -718,6 +802,10 @@ impl FmtHooks for NoHooks<'_> {
     }
 
     fn call(&mut self, _: usize, _: &Value) -> Option<ArcStr> {
+        None
+    }
+
+    fn call_dynamic(&mut self, _: &Value) -> Option<Option<ArcStr>> {
         None
     }
 }
@@ -740,6 +828,11 @@ impl<R: Rt, E: UserEvent> FmtHooks for SiteHooks<'_, R, E> {
             Value::String(s) => Some(s),
             _ => None,
         }
+    }
+
+    fn call_dynamic(&mut self, v: &Value) -> Option<Option<ArcStr>> {
+        let h = self.hooks.dynamic_for(self.ctx, v)?;
+        Some(self.call(h, v))
     }
 }
 
@@ -779,6 +872,10 @@ impl Plan {
             PlanNode::Hook(h) if self.hooked[node] => Some(h),
             _ => None,
         }
+    }
+
+    pub(crate) fn is_dynamic(&self, node: usize) -> bool {
+        matches!(self.nodes[node], PlanNode::Dynamic)
     }
 
     pub(crate) fn array_elem(&self, node: usize) -> Option<(&Plan, usize)> {

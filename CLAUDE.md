@@ -1526,7 +1526,9 @@ no tc1). `Impl` adds implicit `#[sync]` to core-trait methods and
 builds never-run prototype call sites (`NodeView::Impl`) so analysis
 covers them. `lower_core_call`: `Eq::eq(a,b)` ≡ `a == b`,
 `Display::fmt(x)` ≡ `"[x]"`, `Ord::cmp` ≡ a select over `<`/`>`;
-`trait_contains` holds the three for every type.
+`trait_contains` holds the three for every type. `PlanNode::Dynamic`
+(an `Any`/open-cell position): the runtime `AbstractId` finds the
+impl and `Hooks` builds a site per tag on first use.
 `bind::lower_over_operands` is THE lowering device (cmp, core calls,
 union dispatch): it MOVES the operand nodes into `let #x = ..` binds
 and compiles only the synthesized expression — recompiling operand

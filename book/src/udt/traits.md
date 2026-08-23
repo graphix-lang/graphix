@@ -220,9 +220,11 @@ comparison or the print, so it is implicitly `#[sync]` — a body that
 waits on a timer is a compile error — and a method that produces no
 value makes the comparison produce none.
 
-Where there is no static type there is no implementation to consult:
-map keys, `array::sort`, `min`/`max`, values sent over the wire, and
-the REPL's echo of a bare expression compare and print structurally.
+A value of type `Any` is dispatched on its runtime tag: an abstract
+value still finds its type's implementation, anything else is
+structural. Map keys, `array::sort`, `min`/`max`, values sent over
+the wire, and the REPL's echo of a bare expression compare and print
+structurally.
 
 ## Current limits
 

@@ -607,10 +607,18 @@ works as a bound on anything, the dispatcher works on anything, and
 an implementation is reached exactly where the operator reaches it.
 The union case falls out: the operator's walk selects the member.
 
+**Under `Any`, the runtime tag is the type id** (§8's asymmetry): a
+plan node with no static type (`Any`, an open cell) is `Dynamic` —
+at the walk, an abstract value's `AbstractId` looks the
+implementation up (`find_impl` on the bare abstract type) and the
+node's `Hooks` builds a site for that tag on first use, cached per
+tag (`None` cached too); two-argument dispatch needs both values
+tagged alike, else structural. A parameterized abstract carries no
+params at runtime, so only unparameterized heads resolve this way.
+Rust-backed abstracts resolve once their wrapper UUIDs are the
+path-derived ids — the io migration's registration step.
+
 **Limits (v1)**: the shell's REPL echo prints structurally (it has an
-`Env`, not a cycle); `Any`-typed values print/compare structurally
-even when the runtime value is an abstract with an impl (the
-"runtime tag is the type id" clause of §8 is not built — a site with
-no static type has no plan); `array::sort`, `min`/`max`, map keys, the
-wire and the JIT's `Value` order stay structural as §8 says; the
-hooked walk de-fuses its region.
+`Env`, not a cycle); `array::sort`, `min`/`max`, map keys, the wire
+and the JIT's `Value` order stay structural as §8 says; the hooked
+walk de-fuses its region.

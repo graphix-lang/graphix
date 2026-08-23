@@ -142,6 +142,13 @@ fn fmt_int(
         let s = hooks.call(h, v).ok_or(fmt::Error)?;
         return f.write_str(&s);
     }
+    if let Some((p, n)) = plan
+        && p.is_dynamic(n)
+        && let Some(r) = hooks.call_dynamic(v)
+    {
+        let s = r.ok_or(fmt::Error)?;
+        return f.write_str(&s);
+    }
     match (typ, v) {
         (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
             let g = crate::abstract_value::get(v).unwrap();
