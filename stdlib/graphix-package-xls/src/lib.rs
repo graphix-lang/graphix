@@ -7,11 +7,9 @@ use bytes::Bytes;
 use calamine::{Data, Reader, open_workbook_auto_from_rs};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-use std::{io::Cursor, sync::Arc};
-use tokio::{io::AsyncReadExt, sync::Mutex};
+use std::io::Cursor;
 use triomphe::Arc as TArc;
 
 // ── Cell conversion ──────────────────────────────────────────
@@ -70,54 +68,22 @@ fn parse_sheet<RS: std::io::Read + std::io::Seek + Clone>(rs: RS, sheet: &str) -
     Value::Array(ValArray::from_iter_exact(rows.drain(..)))
 }
 
-// ── ReadInput ────────────────────────────────────────────────
-
-#[derive(Debug)]
-enum ReadInput {
-    Bytes(Bytes),
-    Stream(Arc<Mutex<Option<StreamKind>>>),
-}
-
 // ── XlsSheets (async) ───────────────────────────────────────
 
 #[derive(Debug, Default)]
 struct XlsSheetsEv;
 
 impl EvalCachedAsync for XlsSheetsEv {
-    type Args = ReadInput;
+    type Args = Bytes;
 
     const NAME: &str = "xls_sheets";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let v = cached.0.first()?.as_ref()?;
-        match v {
-            Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
-            Value::Abstract(_) => Some(ReadInput::Stream(get_stream(cached, 0)?)),
-            _ => None,
-        }
+        cached.get::<Bytes>(0)
     }
 
     fn eval(input: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match input {
-                ReadInput::Bytes(b) => {
-                    let cursor = Cursor::new(b);
-                    parse_sheets(cursor)
-                }
-                ReadInput::Stream(stream) => {
-                    let mut guard = stream.lock().await;
-                    let s = match guard.as_mut() {
-                        Some(s) => s,
-                        None => return errf!("IOErr", "stream unavailable"),
-                    };
-                    let mut buf = Vec::new();
-                    if let Err(e) = s.read_to_end(&mut buf).await {
-                        return errf!("IOErr", "read failed: {e}");
-                    }
-                    parse_sheets(Cursor::new(buf))
-                }
-            }
-        }
+        async move { parse_sheets(Cursor::new(input)) }
     }
 }
 
@@ -129,42 +95,16 @@ type XlsSheets = CachedArgsAsync<XlsSheetsEv>;
 struct XlsReadEv;
 
 impl EvalCachedAsync for XlsReadEv {
-    type Args = (ReadInput, ArcStr);
+    type Args = (Bytes, ArcStr);
 
     const NAME: &str = "xls_read";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let v = cached.0.first()?.as_ref()?;
-        let input = match v {
-            Value::Bytes(b) => ReadInput::Bytes((**b).clone()),
-            Value::Abstract(_) => ReadInput::Stream(get_stream(cached, 0)?),
-            _ => return None,
-        };
-        let sheet = cached.get::<ArcStr>(1)?;
-        Some((input, sheet))
+        Some((cached.get::<Bytes>(0)?, cached.get::<ArcStr>(1)?))
     }
 
     fn eval((input, sheet): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match input {
-                ReadInput::Bytes(b) => {
-                    let cursor = Cursor::new(b);
-                    parse_sheet(cursor, &sheet)
-                }
-                ReadInput::Stream(stream) => {
-                    let mut guard = stream.lock().await;
-                    let s = match guard.as_mut() {
-                        Some(s) => s,
-                        None => return errf!("IOErr", "stream unavailable"),
-                    };
-                    let mut buf = Vec::new();
-                    if let Err(e) = s.read_to_end(&mut buf).await {
-                        return errf!("IOErr", "read failed: {e}");
-                    }
-                    parse_sheet(Cursor::new(buf), &sheet)
-                }
-            }
-        }
+        async move { parse_sheet(Cursor::new(input), &sheet) }
     }
 }
 

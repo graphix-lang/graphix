@@ -576,3 +576,133 @@ run!(
         let result = "[xs]|[T(0) == T(1)]|[T(0) == T(0)]|[T(0) < T(1)]"
     "##
 );
+
+// An implementation method may be a BUILTIN reference. This is how a
+// package gives a Rust-backed abstract type its io methods
+// (`impl Read for File { let read = |s, n| 'sys_io_read }`), and it
+// works because the trait's signature, instantiated at the target, is
+// pushed into the lambda — a builtin body needs every argument and
+// the return annotated, and the trait declaration is where they come
+// from.
+run!(
+    trait_builtin_bodied_impl,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        trait Masked { val masked: fn(self, m: i64) -> i64 };
+        impl Masked for i64 { let masked = |x, m| 'core_bit_and };
+        let result = Masked::masked(6, 3)
+    "#
+    ; FuseExpect::None
+);
+
+// The same, through a bound rather than the dispatcher — the builtin
+// body is instantiated per resolved implementation.
+run!(
+    trait_builtin_bodied_bound,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        trait Masked { val masked: fn(self, m: i64) -> i64 };
+        impl Masked for i64 { let masked = |x, m| 'core_bit_and };
+        let f = 'a: Masked |v: 'a| Masked::masked(v, 12);
+        let result = f(6) + f(1)
+    "#
+    ; FuseExpect::None
+);
+
+// An interface's `impl` declaration does not displace the type
+// declarations that follow it. The interface's types/mods/uses are
+// spliced into the implementation anchored on the item BEFORE them,
+// and an `impl` is never spliced (the implementation writes its own),
+// so it must anchor nothing — otherwise everything after it landed at
+// the end of the module body, invisible to the code above (found
+// migrating `sys::process` to the io traits, 2026-08-23).
+run!(
+    interface_type_after_impl,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f(`A)
+    "#,
+    "/test/m.gxi" => r#"
+        trait T { val g: fn(self) -> i64 };
+        type X;
+        impl T for X;
+        type Y = [`A, `B];
+        val f: fn(y: Y) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        type X = Abstract<i64>;
+        impl T for X { let g = |x| x.0 };
+        let f = |y: Y| select y { `A => 1, `B => 2 }
+    "#
+);
+
+// A core trait rides the value, and a Rust-backed abstract type has no
+// payload for the implementation to read — so an implementation for
+// one would compile and never be consulted. Refused (2026-08-23).
+run!(
+    core_impl_rust_backed_refused,
+    |v: Result<&Value>| {
+        matches!(&v, Err(e) if format!("{e:#}").contains("backed by Rust"))
+    },
+    "/test.gx" => r#"
+        impl Display for sys::fs::tempdir::T { let fmt = |_| "a tempdir" };
+        let result = 1
+    "#
+    ; FuseExpect::None
+);
+
+// THE POINT OF THE FEATURE (`design/traits.md` §0): a stream written
+// in Graphix. `Mem` supplies `read` and nothing else — `read_all` is
+// the trait's own default, written over `read`, so it works on a
+// stream the io package has never heard of.
+run!(
+    graphix_defined_read,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello world"),
+    "/test.gx" => r#"
+        use sys::io::Read;
+        type Mem = Abstract<&bytes>;
+        impl Read for Mem {
+            let read = |s, n| {
+                let cell = s.0;
+                let b = *cell;
+                let take = select buffer::len(b) < n {
+                    true => buffer::len(b),
+                    false => n
+                };
+                *cell <- take ~ b[take..]$;
+                b[..take]$
+            }
+        };
+        let src = buffer::from_string("hello world");
+        let m = Mem(&src);
+        let result = buffer::to_string(Read::read_all(m)?)?
+    "#
+);
+
+// The other derived method, on the same Graphix-defined stream:
+// `read_exact` loops over `read` until it has n bytes.
+run!(
+    graphix_defined_read_exact,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
+    "/test.gx" => r#"
+        use sys::io::Read;
+        type Mem = Abstract<&bytes>;
+        // reads one byte at a time, so read_exact has to loop
+        impl Read for Mem {
+            let read = |s, n| {
+                let cell = s.0;
+                let b = *cell;
+                let take = select buffer::len(b) == u64:0 {
+                    true => u64:0,
+                    false => u64:1
+                };
+                *cell <- take ~ b[take..]$;
+                b[..take]$
+            }
+        };
+        let src = buffer::from_string("hello world");
+        let m = Mem(&src);
+        let result = buffer::to_string(Read::read_exact(m, u64:5)?)?
+    "#
+);

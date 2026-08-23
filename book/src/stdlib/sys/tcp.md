@@ -1,31 +1,18 @@
 # sys::tcp
 
 ```graphix
-/// An opaque handle to a TCP listener.
-type TcpListener;
+{{#include ../../../../stdlib/graphix-package-sys/src/graphix/tcp.gxi}}
+```
 
-/// Connect to a TCP server at the given address (host:port).
-val connect: fn(addr: string) -> Result<io::Stream<`Tcp>, `TCPError(string)>;
+`TcpStream` implements the `sys::io` traits, so reading and writing a
+socket is the same code as reading and writing a file:
 
-/// Bind a TCP listener to the given address (host:port).
-val listen: fn(addr: string) -> Result<TcpListener, `TCPError(string)>;
+```graphix
+use sys::io::{Read, Write};
+use sys::tcp::Socket;
 
-/// Accept a new connection from the listener. The second argument
-/// is a trigger — each time it updates, a new accept is performed.
-val accept: fn(listener: TcpListener, trigger: Any) -> Result<io::Stream<`Tcp>, `TCPError(string)>;
-
-/// Shutdown the write half of the stream. Works on both plain TCP
-/// and TLS-upgraded streams.
-val shutdown: fn(stream: io::Stream<[`Tcp, `Tls]>) -> Result<null, `TCPError(string)>;
-
-/// Get the remote address of the connected peer. Works on both
-/// plain TCP and TLS-upgraded streams.
-val peer_addr: fn(stream: io::Stream<[`Tcp, `Tls]>) -> Result<string, `TCPError(string)>;
-
-/// Get the local address of the stream. Works on both plain TCP
-/// and TLS-upgraded streams.
-val local_addr: fn(stream: io::Stream<[`Tcp, `Tls]>) -> Result<string, `TCPError(string)>;
-
-/// Get the local address that the listener is bound to.
-val listener_addr: fn(listener: TcpListener) -> Result<string, `TCPError(string)>;
+let s = sys::tcp::connect("example.com:80")?;
+Write::write_exact(s, buffer::from_string("GET / HTTP/1.0\r\n\r\n"))?;
+let reply = buffer::to_string(Read::read_all(s)?)?;
+Socket::peer_addr(s)?
 ```

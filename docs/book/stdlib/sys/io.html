@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-014c6c08.js";
+            window.path_to_searchindex_js = "../../searchindex-3c02a0d9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-f7a0005a.js"></script>
@@ -175,43 +175,203 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="sysio"><a class="header" href="#sysio">sys::io</a></h1>
-<p>The <code>sys::io</code> module provides a unified <code>Stream</code> type for all I/O
-operations. The phantom type parameter constrains which stream kind is
-accepted — <code>sys::fs::open</code> returns <code>Stream&lt;\</code>File&gt;<code>, </code>sys::tcp::connect<code>returns</code>Stream&lt;`Tcp&gt;<code>, </code>sys::tls::connect<code>returns</code>Stream&lt;`Tls&gt;<code>, </code>stdin<code>/</code>stdout<code>/</code>stderr<code>return</code>Stream&lt;`Stdio&gt;<code>, and child process stdio pipes return </code>Stream&lt;`Pipe&gt;`.</p>
-<pre><code class="language-graphix">/// An opaque handle to an I/O stream. The phantom type parameter indicates
-/// the underlying stream kind, constraining which operations are valid.
-/// Stream&lt;`File&gt; for files, Stream&lt;`Tcp&gt; for TCP, Stream&lt;`Tls&gt; for TLS,
-/// Stream&lt;`Stdio&gt; for stdin/stdout/stderr, Stream&lt;`Pipe&gt; for child pipes.
-type Stream&lt;'a: [`File, `Tcp, `Tls, `Stdio, `Pipe]&gt;;
+<p><code>sys::io</code> is where the io capabilities live. A stream is not one type
+with a tag saying what it is — it is a type of its own (<code>sys::fs::File</code>,
+<code>sys::tcp::TcpStream</code>, <code>sys::tls::TlsStream</code>, <code>sys::process::Pipe</code>,
+<code>sys::io::Stdio</code>), and the traits it implements say what you can do
+with it. Anything else that implements them — including a stream
+written in Graphix — works with the same code.</p>
+<pre><code class="language-graphix">use sys::io::{Read, Write, Close};
 
-/// Read up to n bytes from the stream. May return fewer bytes than
-/// requested if fewer are available.
-val read: fn(stream: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+let f = sys::fs::open(`Read, "/etc/hostname")?;
+let text = buffer::to_string(Read::read_all(f)?)?;
+Close::close(f)?
+</code></pre>
+<p><code>Read</code> is the one to implement if you are writing a stream of your own:
+<code>read</code> is the only required method, and <code>read_exact</code> and <code>read_all</code> are
+written in terms of it, so they come for free. The system streams
+override <code>read_exact</code> with a single call into the operating system,
+which reads under one lock instead of looping.</p>
+<pre><code class="language-graphix">/// A handle to one of the process's standard streams, from [stdin],
+/// [stdout] or [stderr].
+type Stdio;
 
-/// Read exactly n bytes from the stream. Returns fewer bytes only
-/// if EOF is reached before n bytes have been read.
-val read_exact: fn(stream: Stream&lt;'a&gt;, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+/// A source of bytes.
+///
+/// `read` is the only method an implementation must supply — the
+/// others are written in terms of it, so a stream written in Graphix
+/// (a decoder, a framer, a mock for a test) gets them for free. The
+/// system streams override `read_exact` with a single call into the
+/// operating system, which reads under one lock instead of looping.
+trait Read {
+    /// Read up to n bytes from the stream. May return fewer bytes than
+    /// requested if fewer are available, and no bytes at the end of
+    /// the stream.
+    val read: fn(self, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt;;
 
-/// Write bytes to the stream. Returns the number of bytes written,
-/// which may be less than the full length of data.
-val write: fn(stream: Stream&lt;'a&gt;, data: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
+    /// Read exactly n bytes from the stream. Returns fewer bytes only
+    /// if the stream ends before n bytes have been read.
+    val read_exact: fn(self, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s, n| {
+        let want: u64 = n;
+        let acc: bytes = buffer::from_string("");
+        let chunk = read(s, want);
+        select chunk {
+            error as _ =&gt; filter_err(chunk),
+            bytes as b =&gt; select buffer::len(b) == u64:0
+                || buffer::len(acc) + buffer::len(b) &gt;= n {
+                true =&gt; buffer::concat(acc, b),
+                false =&gt; {
+                    // `b ~` is load-bearing: a connect fires when its
+                    // RHS fires, and an ungated `acc &lt;- f(acc, b)`
+                    // would re-fire on its own write — the documented
+                    // counter idiom, an accumulator by accident.
+                    acc &lt;- b ~ buffer::concat(acc, b);
+                    want &lt;- b ~ want - buffer::len(b);
+                    never()
+                }
+            }
+        }
+    };
 
-/// Write all bytes to the stream, looping until complete.
-val write_exact: fn(stream: Stream&lt;'a&gt;, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+    /// Read the stream to its end and return everything it produced as
+    /// one value. Reads re-arm themselves until the stream ends, so a
+    /// stream that never ends (a socket the peer holds open) never
+    /// produces.
+    val read_all: fn(self) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s| {
+        let want: u64 = u64:65536;
+        let acc: bytes = buffer::from_string("");
+        let chunk = read(s, want);
+        select chunk {
+            error as _ =&gt; filter_err(chunk),
+            bytes as b =&gt; select buffer::len(b) == u64:0 {
+                true =&gt; acc,
+                false =&gt; {
+                    // gated on the chunk: see `read_exact`
+                    acc &lt;- b ~ buffer::concat(acc, b);
+                    want &lt;- b ~ u64:65536;
+                    never()
+                }
+            }
+        }
+    }
+};
 
-/// Flush any buffered writes.
-val flush: fn(stream: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+/// A source of bytes that frames itself into lines.
+///
+/// Framing is at the BYTE level, which is why this is a capability of
+/// its own and not a loop over [Read::read]: a multi-byte character
+/// split across a read boundary is destroyed by decoding each chunk on
+/// its own, and nothing the caller does controls where those
+/// boundaries fall. Only complete lines are decoded, and lossily, so
+/// one line of invalid UTF-8 cannot take down the stream. A trailing
+/// `\r` is stripped, and the final line is dropped if the stream ends
+/// without a newline.
+///
+/// Reads re-arm themselves, so either method is the whole "follow a
+/// stream" idiom in one call. Both stop at the end of the stream. A
+/// read error is returned, which also stops it — a stream that has
+/// failed once will not recover, and re-arming into the same error
+/// would spin. The error is a VALUE, like every other operation in
+/// this module: the caller decides whether to propagate it with `?`,
+/// log and drop it with `$`, or match on it.
+trait Lines {
+    /// One event per complete line, with the newline stripped. A chunk
+    /// carrying several lines produces several events, and a chunk
+    /// that ends mid-line holds the remainder until the rest arrives,
+    /// so a line is never split across two events.
+    val lines: fn(self) -&gt; Result&lt;string, `IOError(string)&gt;;
 
-val close: fn(stream: Stream&lt;'a&gt;) -&gt; Result&lt;null, `IOError(string)&gt;;
+    /// As [Lines::lines], but each event carries every line the read
+    /// made available, instead of one line per event.
+    ///
+    /// This is the cheaper form and the one to reach for when the
+    /// consumer works in batches anyway — a busy stream delivers one
+    /// event per read rather than one per line. Framing is identical.
+    val lines_batched: fn(self) -&gt; Result&lt;Array&lt;string&gt;, `IOError(string)&gt;;
+};
+
+/// A sink for bytes.
+///
+/// `write` and `flush` are the required methods; `write_exact` loops
+/// over `write` and the system streams override it with a single call.
+trait Write {
+    /// Write bytes to the stream. Returns the number of bytes written,
+    /// which may be less than the full length of data.
+    val write: fn(self, data: bytes) -&gt; Result&lt;u64, `IOError(string)&gt;;
+
+    /// Write all the bytes, looping until complete.
+    val write_exact: fn(self, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt; = |s, data| {
+        let rest: bytes = data;
+        let written = write(s, rest);
+        select written {
+            error as _ =&gt; filter_err(written),
+            u64 as n =&gt; select n &gt;= buffer::len(rest) {
+                true =&gt; null,
+                false =&gt; { rest &lt;- n ~ rest[n..]$; never() }
+            }
+        }
+    };
+
+    /// Flush any buffered writes.
+    val flush: fn(self) -&gt; Result&lt;null, `IOError(string)&gt;;
+};
+
+/// A handle that holds an operating system resource until it is
+/// released.
+trait Close {
+    /// Close the stream, releasing the underlying resource. For
+    /// writable streams pending data is flushed and end-of-stream is
+    /// signaled — a piped child stdin delivers EOF, so a
+    /// read-until-EOF child can run to completion. Closing an
+    /// already-closed stream is a no-op; subsequent operations on a
+    /// closed stream return an error.
+    val close: fn(self) -&gt; Result&lt;null, `IOError(string)&gt;;
+};
+
+impl Read for Stdio;
+impl Lines for Stdio;
+impl Write for Stdio;
+impl Close for Stdio;
 
 /// Return a handle to standard input.
-val stdin: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdin: fn(trigger: Any) -&gt; Stdio;
 
 /// Return a handle to standard output.
-val stdout: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stdout: fn(trigger: Any) -&gt; Stdio;
 
 /// Return a handle to standard error.
-val stderr: fn(trigger: Any) -&gt; Stream&lt;`Stdio&gt;;
+val stderr: fn(trigger: Any) -&gt; Stdio;
+</code></pre>
+<h2 id="which-stream-implements-what"><a class="header" href="#which-stream-implements-what">Which stream implements what</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>type</th><th>Read</th><th>Lines</th><th>Write</th><th>Close</th><th>other</th></tr>
+</thead>
+<tbody>
+<tr><td><code>sys::fs::File</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>sys::fs::Seek</code></td></tr>
+<tr><td><code>sys::tcp::TcpStream</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>sys::tcp::Socket</code></td></tr>
+<tr><td><code>sys::tls::TlsStream</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>sys::tcp::Socket</code></td></tr>
+<tr><td><code>sys::process::Pipe</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+<tr><td><code>sys::io::Stdio</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<p>A handle whose direction is wrong for the call — writing to <code>stdin</code>,
+reading from a child’s stdin pipe — returns an <code>IOError</code> rather than
+failing to compile: the trait says the operation exists, the operating
+system says which end of the pipe you are holding.</p>
+<h2 id="parsing-and-writing-formats"><a class="header" href="#parsing-and-writing-formats">Parsing and writing formats</a></h2>
+<p><code>json</code>, <code>toml</code>, <code>pack</code> and <code>xls</code> parse from <code>bytes</code> (or a <code>string</code>) and
+serialize to them. Reading a document from a stream is therefore just
+reading the stream:</p>
+<pre><code class="language-graphix">use sys::io::{Read, Write};
+
+let f = sys::fs::open(`Read, path)?;
+let config: Config = toml::read(Read::read_all(f)?)?;
+
+let out = sys::fs::open(`Create, out_path)?;
+Write::write_exact(out, json::write_bytes(#pretty: true, config)?)?
 </code></pre>
 
                     </main>

@@ -1,10 +1,11 @@
-use crate::{STREAM_WRAPPER, StreamKind, StreamValue, get_stream_value};
+use crate::{StreamKind, get_stream, wrap_tls};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 // ── TlsConnect ────────────────────────────────────────────────
@@ -13,7 +14,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 pub(crate) struct TlsConnectEv;
 
 impl EvalCachedAsync for TlsConnectEv {
-    type Args = (Option<Bytes>, ArcStr, StreamValue);
+    type Args = (Option<Bytes>, ArcStr, Arc<Mutex<Option<StreamKind>>>);
 
     const NAME: &str = "sys_tls_connect";
 
@@ -24,14 +25,14 @@ impl EvalCachedAsync for TlsConnectEv {
             Some(v) => v.clone().cast_to::<Bytes>().ok(),
         };
         let hostname = cached.get::<ArcStr>(1)?;
-        let sv = get_stream_value(cached, 2)?;
+        let sv = get_stream(cached, 2)?;
         Some((ca_cert, hostname, sv))
     }
 
     fn eval((ca_cert, hostname, sv): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let tcp = {
-                let mut guard = sv.inner.lock().await;
+                let mut guard = sv.lock().await;
                 match guard.take() {
                     Some(StreamKind::Tcp(tcp)) => tcp,
                     Some(other) => {
@@ -48,13 +49,13 @@ impl EvalCachedAsync for TlsConnectEv {
                     {
                         Ok(c) => c,
                         Err(e) => {
-                            *sv.inner.lock().await = Some(StreamKind::Tcp(tcp));
+                            *sv.lock().await = Some(StreamKind::Tcp(tcp));
                             return errf!("TLSError", "invalid ca_cert PEM: {e}");
                         }
                     };
                     for cert in certs {
                         if let Err(e) = root_store.add(cert) {
-                            *sv.inner.lock().await = Some(StreamKind::Tcp(tcp));
+                            *sv.lock().await = Some(StreamKind::Tcp(tcp));
                             return errf!("TLSError", "invalid CA cert: {e}");
                         }
                     }
@@ -74,16 +75,20 @@ impl EvalCachedAsync for TlsConnectEv {
             ) {
                 Ok(sn) => sn,
                 Err(e) => {
-                    *sv.inner.lock().await = Some(StreamKind::Tcp(tcp));
+                    *sv.lock().await = Some(StreamKind::Tcp(tcp));
                     return errf!("TLSError", "invalid hostname: {e}");
                 }
             };
             match connector.connect(server_name, tcp).await {
+                // The upgrade CONSUMES the TCP handle: the session
+                // moves into a handle of its own and the caller's
+                // `TcpStream` is left empty, so a stray plaintext
+                // read on it is an error rather than a silent read of
+                // the encrypted session. (The error paths above put
+                // the socket back — a failed upgrade leaves the
+                // caller's stream exactly as it was.)
                 Ok(tls_stream) => {
-                    *sv.inner.lock().await = Some(StreamKind::Tls(
-                        tokio_rustls::TlsStream::Client(tls_stream),
-                    ));
-                    STREAM_WRAPPER.wrap(sv)
+                    wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Client(tls_stream)))
                 }
                 Err(e) => {
                     errf!("TLSError", "TLS handshake failed: {e}")
@@ -101,14 +106,14 @@ pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
 pub(crate) struct TlsAcceptEv;
 
 impl EvalCachedAsync for TlsAcceptEv {
-    type Args = (Bytes, Bytes, StreamValue);
+    type Args = (Bytes, Bytes, Arc<Mutex<Option<StreamKind>>>);
 
     const NAME: &str = "sys_tls_accept";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let cert = cached.get::<Bytes>(0)?;
         let key = cached.get::<Bytes>(1)?;
-        let sv = get_stream_value(cached, 2)?;
+        let sv = get_stream(cached, 2)?;
         Some((cert, key, sv))
     }
 
@@ -132,7 +137,7 @@ impl EvalCachedAsync for TlsAcceptEv {
             };
             let acceptor = TlsAcceptor::from(Arc::new(config));
             let tcp = {
-                let mut guard = sv.inner.lock().await;
+                let mut guard = sv.lock().await;
                 match guard.take() {
                     Some(StreamKind::Tcp(tcp)) => tcp,
                     Some(other) => {
@@ -143,11 +148,9 @@ impl EvalCachedAsync for TlsAcceptEv {
                 }
             };
             match acceptor.accept(tcp).await {
+                // consumes the TCP handle, as `connect` does
                 Ok(tls_stream) => {
-                    *sv.inner.lock().await = Some(StreamKind::Tls(
-                        tokio_rustls::TlsStream::Server(tls_stream),
-                    ));
-                    STREAM_WRAPPER.wrap(sv)
+                    wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Server(tls_stream)))
                 }
                 Err(e) => errf!("TLSError", "TLS accept failed: {e}"),
             }

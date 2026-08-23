@@ -3,22 +3,28 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, errf, expr::ExprId, typ::FnType,
+    effects::EffectKind,
+    errf,
+    expr::ExprId,
+    typ::{FnType, abstract_uuid},
 };
 use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
     seam_tick,
 };
 use graphix_rt::GXRt;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use poolshark::local::LPooled;
 use std::{
     cell::RefCell,
     cmp::Ordering,
     hash::{Hash, Hasher},
+    marker::PhantomData,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, LazyLock},
@@ -167,81 +173,139 @@ impl AsyncWrite for StreamKind {
     }
 }
 
-// ── StreamValue ────────────────────────────────────────────────
+// ── Streams ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-pub struct StreamValue {
-    pub inner: Arc<Mutex<Option<StreamKind>>>,
+/// Which kind of stream a handle is.
+///
+/// ONE representation, FIVE nominal types: read/write/close are the
+/// same code whatever is behind the descriptor, so [`StreamKind`]
+/// stays one enum — but `sys::fs::File`, `sys::tcp::TcpStream`,
+/// `sys::tls::TlsStream`, `sys::process::Pipe` and `sys::io::Stdio`
+/// are five distinct types in Graphix, each carrying the trait
+/// implementations that say what it can do (`design/traits.md` §6).
+/// The marker is what makes each a distinct RUST type, which is what
+/// the abstract registry keys a UUID on.
+pub trait StreamMark: 'static + Send + Sync {
+    /// The type's canonical Graphix path. Its UUID is derived from it
+    /// ([`abstract_uuid`]), so a type test (`File as f`) recognizes
+    /// the value by the path alone.
+    const PATH: &'static str;
 }
 
-impl PartialEq for StreamValue {
+pub struct Stream<K: StreamMark> {
+    pub inner: Arc<Mutex<Option<StreamKind>>>,
+    mark: PhantomData<K>,
+}
+
+impl<K: StreamMark> Stream<K> {
+    fn new(kind: StreamKind) -> Self {
+        Self::from_inner(Arc::new(Mutex::new(Some(kind))))
+    }
+
+    /// A handle of this kind onto an EXISTING stream. `tls::connect`
+    /// mints one: the TLS session and the TCP handle it was built
+    /// from are the same socket, and both handles see it.
+    pub(crate) fn from_inner(inner: Arc<Mutex<Option<StreamKind>>>) -> Self {
+        Stream { inner, mark: PhantomData }
+    }
+}
+
+impl<K: StreamMark> std::fmt::Debug for Stream<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", K::PATH)
+    }
+}
+
+impl<K: StreamMark> PartialEq for Stream<K> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
-impl Eq for StreamValue {}
+impl<K: StreamMark> Eq for Stream<K> {}
 
-impl PartialOrd for StreamValue {
+impl<K: StreamMark> PartialOrd for Stream<K> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for StreamValue {
+impl<K: StreamMark> Ord for Stream<K> {
     fn cmp(&self, other: &Self) -> Ordering {
         Arc::as_ptr(&self.inner).cmp(&Arc::as_ptr(&other.inner))
     }
 }
 
-impl Hash for StreamValue {
+impl<K: StreamMark> Hash for Stream<K> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Arc::as_ptr(&self.inner).hash(state)
     }
 }
 
-graphix_package_core::impl_no_pack!(StreamValue);
+impl<K: StreamMark> Pack for Stream<K> {
+    fn encoded_len(&self) -> usize {
+        0
+    }
 
-pub static STREAM_WRAPPER: LazyLock<AbstractWrapper<StreamValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x0c, 0x4d, 0x1e, 0x2f, 0x30, 0x41, 0x52, 0x63,
-        0x74, 0x85, 0x96,
-    ]);
-    Abstract::register::<StreamValue>(id).expect("failed to register StreamValue")
-});
+    fn encode(&self, _buf: &mut impl BufMut) -> Result<(), PackError> {
+        Err(PackError::Application(0))
+    }
 
-pub(crate) fn wrap_file(file: tokio::fs::File) -> Value {
-    STREAM_WRAPPER
-        .wrap(StreamValue { inner: Arc::new(Mutex::new(Some(StreamKind::File(file)))) })
+    fn decode(_buf: &mut impl Buf) -> Result<Self, PackError> {
+        Err(PackError::Application(0))
+    }
 }
 
-pub(crate) fn wrap_tcp(stream: tokio::net::TcpStream) -> Value {
-    STREAM_WRAPPER
-        .wrap(StreamValue { inner: Arc::new(Mutex::new(Some(StreamKind::Tcp(stream)))) })
+macro_rules! stream_kinds {
+    ($($mark:ident => $path:literal, $wrapper:ident, $wrap:ident;)*) => {
+        $(
+            #[derive(Debug)]
+            pub struct $mark;
+
+            impl StreamMark for $mark {
+                const PATH: &'static str = $path;
+            }
+
+            pub(crate) static $wrapper: LazyLock<AbstractWrapper<Stream<$mark>>> =
+                LazyLock::new(|| {
+                    Abstract::register::<Stream<$mark>>(abstract_uuid($path))
+                        .expect(concat!("failed to register ", $path))
+                });
+
+            pub(crate) fn $wrap(kind: StreamKind) -> Value {
+                $wrapper.wrap(Stream::<$mark>::new(kind))
+            }
+        )*
+
+        /// The stream behind `v`, whatever kind of handle it is. The
+        /// io builtins are shared by every kind — the TYPE says which
+        /// operations are legal, and the trait implementations in the
+        /// `.gx` files are what enforce it.
+        pub fn stream_of(v: &Value) -> Option<Arc<Mutex<Option<StreamKind>>>> {
+            let Value::Abstract(a) = v else { return None };
+            $(
+                if let Some(s) = a.downcast_ref::<Stream<$mark>>() {
+                    return Some(s.inner.clone());
+                }
+            )*
+            None
+        }
+    };
 }
 
-pub(crate) fn wrap_stream(kind: StreamKind) -> Value {
-    STREAM_WRAPPER.wrap(StreamValue { inner: Arc::new(Mutex::new(Some(kind))) })
+stream_kinds! {
+    FileMark => "sys::fs::File", FILE_WRAPPER, wrap_file;
+    TcpMark => "sys::tcp::TcpStream", TCP_WRAPPER, wrap_tcp;
+    TlsMark => "sys::tls::TlsStream", TLS_WRAPPER, wrap_tls;
+    PipeMark => "sys::process::Pipe", PIPE_WRAPPER, wrap_pipe;
+    StdioMark => "sys::io::Stdio", STDIO_WRAPPER, wrap_stdio;
 }
 
 pub fn get_stream(
     cached: &CachedVals,
     idx: usize,
 ) -> Option<Arc<Mutex<Option<StreamKind>>>> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => {
-            let sv = a.downcast_ref::<StreamValue>()?;
-            Some(sv.inner.clone())
-        }
-        _ => None,
-    }
-}
-
-pub fn get_stream_value(cached: &CachedVals, idx: usize) -> Option<StreamValue> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => a.downcast_ref::<StreamValue>().cloned(),
-        _ => None,
-    }
+    stream_of(cached.0.get(idx)?.as_ref()?)
 }
 
 // ── TempDir ────────────────────────────────────────────────────
@@ -280,13 +344,10 @@ impl Hash for TempDirValue {
 
 graphix_package_core::impl_no_pack!(TempDirValue);
 
-static TEMPDIR_WRAPPER: LazyLock<AbstractWrapper<TempDirValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12,
-        0x34, 0x56, 0x78,
-    ]);
-    Abstract::register::<TempDirValue>(id).expect("failed to register TempDirValue")
-});
+graphix_package_core::abstract_wrapper!(
+    TempDirValue,
+    static TEMPDIR_WRAPPER = "sys::fs::tempdir::T"
+);
 
 #[derive(Debug)]
 enum Name {

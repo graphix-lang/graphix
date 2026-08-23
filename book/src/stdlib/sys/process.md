@@ -1,23 +1,33 @@
 # sys::process
 
-The `sys::process` module starts and manages local child processes. Stdio
-handles configured as `Pipe` are exposed as `sys::io::Stream<\`Pipe>`.
+The `sys::process` module starts and manages local child processes. A
+stdio handle configured as `Pipe` is a `sys::process::Pipe`, which
+implements the [sys::io](io.md) traits.
 
 ```graphix
-use sys::io;
+use sys::io::{Read, Lines, Write, Close};
 
 type Proc;
 
-type Stdio = [
+/// One end of a pipe to a child process: the child's stdin (which the
+/// parent writes) or its stdout or stderr (which the parent reads).
+type Pipe;
+
+impl Read for Pipe;
+impl Lines for Pipe;
+impl Write for Pipe;
+impl Close for Pipe;
+
+type Redirect = [
   `Pipe,
   `Inherit,
   `Null,
 ];
 
 type StdioConfig = {
-  stdin: Stdio,
-  stdout: Stdio,
-  stderr: Stdio,
+  stdin: Redirect,
+  stdout: Redirect,
+  stderr: Redirect,
 };
 
 type SpawnOptions = {
@@ -33,9 +43,9 @@ type SpawnOptions = {
 type Child = {
   proc: Proc,
   pid: i64,
-  stdin: [io::Stream<`Pipe>, null],
-  stdout: [io::Stream<`Pipe>, null],
-  stderr: [io::Stream<`Pipe>, null],
+  stdin: [Pipe, null],
+  stdout: [Pipe, null],
+  stderr: [Pipe, null],
 };
 
 type ExitStatus = {
@@ -44,9 +54,9 @@ type ExitStatus = {
 };
 
 val stdio: fn(
-  ?#stdin: Stdio,
-  ?#stdout: Stdio,
-  ?#stderr: Stdio
+  ?#stdin: Redirect,
+  ?#stdout: Redirect,
+  ?#stderr: Redirect
 ) -> StdioConfig;
 
 val options: fn(
@@ -104,7 +114,7 @@ Example:
   );
   let child = sys::process::spawn(options)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let out = buffer::to_string(sys::io::read(stdout, u64:1024)?)?;
+  let out = buffer::to_string(sys::io::Read::read(stdout, u64:1024)?)?;
   let status = sys::process::wait(child.proc)?;
   status.success ~ out
 }

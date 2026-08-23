@@ -4,19 +4,7 @@ The `toml` module provides TOML serialization and deserialization.
 Like `json::read`, `toml::read` uses type-directed deserialization.
 
 ```graphix
-use sys::io::Stream;
-
-/// Parse TOML from a string, byte array, or I/O stream.
-val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]>;
-
-/// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `TomlErr(string)>;
-
-/// Serialize a value to TOML bytes.
-val write_bytes: fn(?#pretty: bool, value: Any) -> Result<bytes, `TomlErr(string)>;
-
-/// Serialize a value and write TOML to a stream.
-val write_stream: fn(?#pretty: bool, stream: Stream<'a>, value: Any) -> Result<null, [`TomlErr(string), `IOErr(string)]>;
+{{#include ../../../stdlib/graphix-package-toml/src/graphix/mod.gxi}}
 ```
 
 ## Example

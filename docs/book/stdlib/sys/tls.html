@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-014c6c08.js";
+            window.path_to_searchindex_js = "../../searchindex-3c02a0d9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-f7a0005a.js"></script>
@@ -175,19 +175,32 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="systls"><a class="header" href="#systls">sys::tls</a></h1>
-<p>TLS upgrades for TCP streams. After upgrading, use <code>sys::io::read</code>/<code>write</code>
-as usual — the encryption is transparent.</p>
-<pre><code class="language-graphix">/// Upgrade a TCP stream to a TLS client connection. The hostname is
-/// used for SNI and certificate verification. When ca_cert is null,
-/// Mozilla root certificates are used; when provided, only that CA
-/// is trusted.
-val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: io::Stream&lt;`Tcp&gt;)
-    -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
+<p>TLS upgrades for TCP streams. A <code>TlsStream</code> implements the same io
+traits as a <code>TcpStream</code> — and <code>sys::tcp::Socket</code> as well, since a TLS
+session is still a socket — so nothing above the upgrade changes.</p>
+<pre><code class="language-graphix">use sys::io::{Read, Lines, Write, Close};
+use sys::tcp::{Socket, TcpStream};
 
-/// Upgrade a TCP stream to a TLS server connection using the given
-/// PEM-encoded certificate chain and private key.
-val accept: fn(#cert:bytes, #key:bytes, stream: io::Stream&lt;`Tcp&gt;)
-    -&gt; Result&lt;io::Stream&lt;`Tls&gt;, `TLSError(string)&gt;;
+/// A TLS session over a TCP stream. It is still a socket, so it
+/// implements [Socket] as well as the io traits.
+type TlsStream;
+
+impl Read for TlsStream;
+impl Lines for TlsStream;
+impl Write for TlsStream;
+impl Close for TlsStream;
+impl Socket for TlsStream;
+
+/// Upgrade a TCP stream to a TLS client connection.
+///
+/// The upgrade CONSUMES the TCP stream: on success the session lives
+/// in the returned handle and the one passed in is empty, so a stray
+/// plaintext read on it is an error rather than a silent read of the
+/// encrypted session. A failed upgrade leaves it untouched.
+val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
+
+/// Upgrade a TCP stream to a TLS server connection.
+val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
 </code></pre>
 
                     </main>

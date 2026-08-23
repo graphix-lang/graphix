@@ -5,19 +5,20 @@ The `json` module provides JSON serialization and deserialization.
 inferred from the type annotation at the call site.
 
 ```graphix
-use sys::io::Stream;
+{{#include ../../../stdlib/graphix-package-json/src/graphix/mod.gxi}}
+```
 
-/// Parse JSON from a string, byte array, or I/O stream.
-val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;
+Parsing takes `bytes` or a `string`, so parsing from a stream is
+reading the stream ([sys::io](sys/io.md)):
 
-/// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `JsonErr(string)>;
+```graphix
+use sys::io::{Read, Write};
 
-/// Serialize a value to JSON bytes.
-val write_bytes: fn(?#pretty: bool, value: Any) -> Result<bytes, `JsonErr(string)>;
+let f = sys::fs::open(`Read, path)?;
+let user: {name: string, age: i64} = json::read(Read::read_all(f)?)?;
 
-/// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, stream: Stream<'a>, value: Any) -> Result<null, [`JsonErr(string), `IOErr(string)]>;
+let out = sys::tcp::connect(addr)?;
+Write::write_exact(out, json::write_bytes(user)?)?
 ```
 
 ## Type-directed deserialization

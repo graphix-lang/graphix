@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-014c6c08.js";
+            window.path_to_searchindex_js = "../searchindex-3c02a0d9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-f7a0005a.js"></script>
@@ -177,19 +177,18 @@
                         <h1 id="toml"><a class="header" href="#toml">toml</a></h1>
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
 Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization.</p>
-<pre><code class="language-graphix">use sys::io::Stream;
-
-/// Parse TOML from a string, byte array, or I/O stream.
-val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+<pre><code class="language-graphix">/// Parse TOML from a string or bytes.
+///
+/// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
+val read: fn(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a TOML string.
 val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
+///
+/// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
 val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
-
-/// Serialize a value and write TOML to a stream.
-val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`TomlErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">

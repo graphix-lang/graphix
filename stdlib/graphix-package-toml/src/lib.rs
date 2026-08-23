@@ -16,14 +16,8 @@ use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
     extract_cast_type, is_struct,
 };
-use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
-use std::sync::Arc;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
-};
 use triomphe::Arc as TArc;
 
 // ── TOML ↔ Value conversion ──────────────────────────────────────
@@ -119,13 +113,12 @@ fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
     }
 }
 
-// ── TomlRead (async — handles string, bytes, and stream) ────────
+// ── TomlRead (async) ─────────────────────────────────────────────
 
 #[derive(Debug)]
 enum ReadInput {
     Str(ArcStr),
     Bytes(Bytes),
-    Stream(Arc<Mutex<Option<StreamKind>>>),
 }
 
 #[derive(Debug, Default)]
@@ -186,7 +179,6 @@ impl EvalCachedAsync for TomlReadEv {
         match v {
             Value::String(s) => Some(ReadInput::Str(s.clone())),
             Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
-            Value::Abstract(_) => Some(ReadInput::Stream(get_stream(cached, 0)?)),
             _ => None,
         }
     }
@@ -204,25 +196,6 @@ impl EvalCachedAsync for TomlReadEv {
                         Err(e) => return errf!("TomlErr", "invalid UTF-8: {e}"),
                     };
                     match toml::from_str::<toml::Value>(s) {
-                        Ok(t) => toml_to_value(t),
-                        Err(e) => errf!("TomlErr", "{e}"),
-                    }
-                }
-                ReadInput::Stream(stream) => {
-                    let mut guard = stream.lock().await;
-                    let s = match guard.as_mut() {
-                        Some(s) => s,
-                        None => return errf!("IOErr", "stream unavailable"),
-                    };
-                    let mut buf: LPooled<Vec<u8>> = LPooled::take();
-                    if let Err(e) = s.read_to_end(&mut buf).await {
-                        return errf!("IOErr", "read failed: {e}");
-                    }
-                    let text = match std::str::from_utf8(&buf) {
-                        Ok(s) => s,
-                        Err(e) => return errf!("TomlErr", "invalid UTF-8: {e}"),
-                    };
-                    match toml::from_str::<toml::Value>(text) {
                         Ok(t) => toml_to_value(t),
                         Err(e) => errf!("TomlErr", "{e}"),
                     }
@@ -296,52 +269,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
 
 type TomlWriteBytes = CachedArgs<TomlWriteBytesEv>;
 
-// ── TomlWriteStream (async) ──────────────────────────────────────
-
-#[derive(Debug, Default)]
-struct TomlWriteStreamEv;
-
-impl EvalCachedAsync for TomlWriteStreamEv {
-    type Args = (bool, Arc<Mutex<Option<StreamKind>>>, toml::Value);
-
-    const NAME: &str = "toml_write_stream";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let pretty = cached.get::<bool>(0)?;
-        let stream = get_stream(cached, 1)?;
-        let v = cached.0.get(2)?.as_ref()?;
-        let toml_val = value_to_toml(v).ok()?;
-        Some((pretty, stream, toml_val))
-    }
-
-    fn eval(
-        (pretty, stream, toml_val): Self::Args,
-    ) -> impl Future<Output = Value> + Send {
-        async move {
-            let s = if pretty {
-                toml::to_string_pretty(&toml_val)
-            } else {
-                toml::to_string(&toml_val)
-            };
-            let s = match s {
-                Ok(s) => s,
-                Err(e) => return errf!("TomlErr", "{e}"),
-            };
-            let mut guard = stream.lock().await;
-            let st = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOErr", "stream unavailable"),
-            };
-            match st.write_all(s.as_bytes()).await {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("IOErr", "write failed: {e}"),
-            }
-        }
-    }
-}
-
-type TomlWriteStream = CachedArgsAsync<TomlWriteStreamEv>;
-
 // ── Package registration ─────────────────────────────────────────
 
 graphix_derive::defpackage! {
@@ -349,6 +276,5 @@ graphix_derive::defpackage! {
         TomlRead,
         TomlWriteStr,
         TomlWriteBytes,
-        TomlWriteStream,
     ],
 }

@@ -12,9 +12,7 @@ use graphix_compiler::{
     Scope, TagValue, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick, seam_value};
-use netidx_value::{
-    Abstract, FromValue, ValArray, Value, abstract_type::AbstractWrapper,
-};
+use netidx_value::{FromValue, ValArray, Value};
 use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
@@ -23,7 +21,7 @@ use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
     ops::Deref,
-    sync::{Arc, LazyLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -194,13 +192,10 @@ impl WatcherValue {
     }
 }
 
-static WATCHER_WRAPPER: LazyLock<AbstractWrapper<WatcherValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0xa1, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12,
-        0x34, 0x56, 0x79,
-    ]);
-    Abstract::register::<WatcherValue>(id).expect("failed to register WatcherValue")
-});
+graphix_package_core::abstract_wrapper!(
+    WatcherValue,
+    static WATCHER_WRAPPER = "sys::fs::watch::Watcher"
+);
 
 #[derive(Debug, Clone)]
 struct WatchValue {
@@ -236,13 +231,10 @@ impl Hash for WatchValue {
 
 graphix_package_core::impl_no_pack!(WatchValue);
 
-static WATCH_VALUE_WRAPPER: LazyLock<AbstractWrapper<WatchValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xc3, 0xd4, 0xe5, 0xf6, 0xa1, 0xb2, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12,
-        0x34, 0x56, 0x7a,
-    ]);
-    Abstract::register::<WatchValue>(id).expect("failed to register WatchValue")
-});
+graphix_package_core::abstract_wrapper!(
+    WatchValue,
+    static WATCH_VALUE_WRAPPER = "sys::fs::watch::Watch"
+);
 
 // ── CreateWatcher ────────────────────────────────────────────────
 

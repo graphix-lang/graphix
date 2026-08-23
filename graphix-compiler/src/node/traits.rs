@@ -287,6 +287,25 @@ pub(crate) fn check_target(
         }
         t => t.clone(),
     };
+    // A CORE trait rides the VALUE (`design/traits.md` §12): the
+    // implementation is consulted through the box a Graphix
+    // constructor mints, which is the only kind of abstract value that
+    // carries a payload for the implementation to read. A Rust-backed
+    // value carries none, so an implementation for one would compile
+    // and never be called — refuse it rather than let it look like it
+    // works.
+    if crate::node::coretraits::CoreTrait::of_id(trait_def.id).is_some()
+        && let Type::Abstract { id, .. } = &canonical
+        && !env.abstract_minted(*id)
+    {
+        bail!(
+            "impl {} for {target}: {target} is backed by Rust, so it has no \
+             payload for the implementation to read and nothing would consult \
+             it — its equality, ordering and printing are the ones its package \
+             defined",
+            trait_def.name
+        )
+    }
     match &canonical {
         Type::Abstract { id, .. } => {
             let type_pkg = match env.abstract_reps.get(id) {

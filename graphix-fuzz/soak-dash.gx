@@ -23,6 +23,7 @@
 // diverge / crash are per-source and stay on the lane rows.
 
 use tui::{table::{table, cell, row}, block::block, text, line, style};
+use sys::io::{Write, Close, Lines};
 
 let hosts = ["ryouko", "hz0", "aieka", "katana"];
 
@@ -100,12 +101,12 @@ let probe = |host: string| -> Box {
   let sin = select child.stdin { null as _ => never(), s => s };
   let sout = select child.stdout { null as _ => never(), s => s };
   // Close after the write lands, so the remote bash sees EOF and starts.
-  let wrote = sys::io::write_exact(sin, buffer::from_string(remote))$;
-  sys::io::close(wrote ~ sin)$;
+  let wrote = Write::write_exact(sin, buffer::from_string(remote))$;
+  Close::close(wrote ~ sin)$;
   // `$`, not `?`: one box's stream failing must not take down the
   // dashboard. That box stops producing lines until its ssh exits and
   // the respawn brings a fresh stream.
-  let line = sys::io::lines(sout)$;
+  let line = Lines::lines(sout)$;
   let camp = "-";
   let lanes = {};
   let running = false;

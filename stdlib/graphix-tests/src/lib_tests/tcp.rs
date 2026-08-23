@@ -62,12 +62,13 @@ run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
 // Write on client, read on server
 const TCP_WRITE_READ: &str = r#"
 {
+  use sys::io::{Read, Write};
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::io::write(client, buffer::from_string("hello"))?;
-  buffer::to_string(sys::io::read(server, u64:1024)?)?
+  Write::write(client, buffer::from_string("hello"))?;
+  buffer::to_string(Read::read(server, u64:1024)?)?
 }
 "#;
 
@@ -81,12 +82,13 @@ run!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
 // write_exact on client, read on server
 const TCP_WRITE_EXACT: &str = r#"
 {
+  use sys::io::{Read, Write};
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::io::write_exact(client, buffer::from_string("world"))?;
-  buffer::to_string(sys::io::read(server, u64:1024)?)?
+  Write::write_exact(client, buffer::from_string("world"))?;
+  buffer::to_string(Read::read(server, u64:1024)?)?
 }
 "#;
 
@@ -100,12 +102,13 @@ run!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
 // Write known data, read_exact on server
 const TCP_READ_EXACT: &str = r#"
 {
+  use sys::io::{Read, Write};
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::io::write(client, buffer::from_string("exact"))?;
-  buffer::to_string(sys::io::read_exact(server, u64:5)?)?
+  Write::write(client, buffer::from_string("exact"))?;
+  buffer::to_string(Read::read_exact(server, u64:5)?)?
 }
 "#;
 
@@ -119,11 +122,12 @@ run!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
 // Shutdown returns null (wait for accept before shutting down)
 const TCP_SHUTDOWN: &str = r#"
 {
+  use sys::tcp::Socket;
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::tcp::shutdown(server ~ client)?
+  Socket::shutdown(server ~ client)?
 }
 "#;
 
@@ -136,11 +140,12 @@ run!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
 // graphix so the predicate doesn't need to know the exact port.
 const TCP_PEER_ADDR: &str = r#"
 {
+  use sys::tcp::Socket;
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  (server ~ sys::tcp::peer_addr(client)?) == addr
+  (server ~ Socket::peer_addr(client)?) == addr
 }
 "#;
 
@@ -154,11 +159,12 @@ run!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
 // local_addr on server matches listener address.
 const TCP_LOCAL_ADDR: &str = r#"
 {
+  use sys::tcp::Socket;
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::tcp::local_addr(server)? == addr
+  Socket::local_addr(server)? == addr
 }
 "#;
 
@@ -172,11 +178,12 @@ run!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
 // write returns number of bytes written
 const TCP_WRITE_RETURNS_LEN: &str = r#"
 {
+  use sys::io::Write;
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
-  sys::io::write(server ~ client, buffer::from_string("hello"))?
+  Write::write(server ~ client, buffer::from_string("hello"))?
 }
 "#;
 

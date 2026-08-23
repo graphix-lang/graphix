@@ -1635,23 +1635,26 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// ── explicit abstract type predicates are refused (2026-08-18) ──
-// The runtime can never verify a hidden representation, so the arm was
-// a typechecker-accepted dead arm the wildcard silently won. Refused at
-// compile with the `?`/`$` guidance instead.
+// ── an explicit predicate on a Rust-backed abstract type ────────
+// It is a NOMINAL tag test: the value answers by the path-derived
+// wrapper UUID its package registered. Refused outright until the io
+// migration made that registration the rule (2026-08-23) — before it
+// the arm was a guaranteed-dead arm the wildcard silently won, which
+// is what the netidx-admin dogfood campaign hit on 2026-08-18.
 const SELECT_ABSTRACT_PREDICATE: &str = r#"
 {
-  let v = 42;
-  select v { sys::io::Stream<`Pipe> as s => 0, _ => 1 }
+  let td: [sys::fs::tempdir::T, i64] = sys::fs::tempdir::create(null)?;
+  select td {
+    sys::fs::tempdir::T as _ => 1,
+    i64 as _ => 0
+  }
 }
 "#;
 
 run!(
-    select_abstract_predicate_refused,
+    select_abstract_predicate,
     SELECT_ABSTRACT_PREDICATE,
-    |v: Result<&Value>| {
-        matches!(&v, Err(e) if format!("{e:#}").contains("representation is hidden"))
-    };
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) };
     graphix_package_core::testing::FuseExpect::None
 );
 

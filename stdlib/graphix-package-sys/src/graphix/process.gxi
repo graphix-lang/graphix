@@ -1,19 +1,28 @@
-use super::args;
-use sys::io::{self, stderr, stdin, stdout};
+use sys::io::{Read, Lines, Write, Close};
 
 /// An opaque handle to a managed child process.
 type Proc;
 
-type Stdio = [
+/// One end of a pipe to a child process: the child's stdin (which the
+/// parent writes) or its stdout or stderr (which the parent reads).
+type Pipe;
+
+impl Read for Pipe;
+impl Lines for Pipe;
+impl Write for Pipe;
+impl Close for Pipe;
+
+/// Where one of the child's standard streams goes.
+type Redirect = [
   `Pipe,
   `Inherit,
   `Null,
 ];
 
 type StdioConfig = {
-  stdin: Stdio,
-  stdout: Stdio,
-  stderr: Stdio,
+  stdin: Redirect,
+  stdout: Redirect,
+  stderr: Redirect,
 };
 
 type SpawnOptions = {
@@ -29,9 +38,9 @@ type SpawnOptions = {
 type Child = {
   proc: Proc,
   pid: i64,
-  stdin: [io::Stream<`Pipe>, null],
-  stdout: [io::Stream<`Pipe>, null],
-  stderr: [io::Stream<`Pipe>, null],
+  stdin: [Pipe, null],
+  stdout: [Pipe, null],
+  stderr: [Pipe, null],
 };
 
 type ExitStatus = {
@@ -41,9 +50,9 @@ type ExitStatus = {
 
 /// Build stdio configuration. Streams inherit from the parent by default.
 val stdio: fn(
-  ?#stdin: Stdio,
-  ?#stdout: Stdio,
-  ?#stderr: Stdio
+  ?#stdin: Redirect,
+  ?#stdout: Redirect,
+  ?#stderr: Redirect
 ) -> StdioConfig;
 
 /// Build spawn options with default args/env/cwd/stdio settings.

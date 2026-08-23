@@ -1,11 +1,11 @@
 use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
-use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
+use netidx_value::Value;
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -49,15 +49,10 @@ impl Hash for TcpListenerValue {
 
 graphix_package_core::impl_no_pack!(TcpListenerValue);
 
-static LISTENER_WRAPPER: LazyLock<AbstractWrapper<TcpListenerValue>> =
-    LazyLock::new(|| {
-        let id = uuid::Uuid::from_bytes([
-            0xa6, 0xb7, 0xc8, 0xd9, 0xea, 0xfb, 0x4c, 0x0d, 0x1e, 0x2f, 0x30, 0x41, 0x52,
-            0x63, 0x74, 0x85,
-        ]);
-        Abstract::register::<TcpListenerValue>(id)
-            .expect("failed to register TcpListenerValue")
-    });
+graphix_package_core::abstract_wrapper!(
+    TcpListenerValue,
+    static LISTENER_WRAPPER = "sys::tcp::TcpListener"
+);
 
 fn get_listener(cached: &CachedVals, idx: usize) -> Option<Arc<TcpListener>> {
     match cached.0.get(idx)?.as_ref()? {
@@ -86,7 +81,7 @@ impl EvalCachedAsync for TcpConnectEv {
     fn eval(addr: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match TcpStream::connect(&*addr).await {
-                Ok(stream) => wrap_tcp(stream),
+                Ok(stream) => wrap_tcp(StreamKind::Tcp(stream)),
                 Err(e) => errf!("TCPError", "connect to {addr} failed: {e}"),
             }
         }
@@ -140,7 +135,7 @@ impl EvalCachedAsync for TcpAcceptEv {
     fn eval(listener: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match listener.accept().await {
-                Ok((stream, _addr)) => wrap_tcp(stream),
+                Ok((stream, _addr)) => wrap_tcp(StreamKind::Tcp(stream)),
                 Err(e) => errf!("TCPError", "accept failed: {e}"),
             }
         }

@@ -200,6 +200,55 @@ macro_rules! impl_abstract_arc {
                 .expect(concat!("failed to register ", stringify!($name)))
         });
     };
+    ($name:ident, $wrapper_vis:vis static $wrapper:ident = $path:literal) => {
+        $crate::impl_abstract_arc!(@identity $name);
+        $crate::abstract_wrapper!($name, $wrapper_vis static $wrapper = $path);
+    };
+    (@identity $name:ident) => {
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                std::sync::Arc::ptr_eq(&self.inner, &other.inner)
+            }
+        }
+        impl Eq for $name {}
+        impl PartialOrd for $name {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for $name {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                std::sync::Arc::as_ptr(&self.inner).addr().cmp(&std::sync::Arc::as_ptr(&other.inner).addr())
+            }
+        }
+        impl std::hash::Hash for $name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                std::sync::Arc::as_ptr(&self.inner).hash(state)
+            }
+        }
+        $crate::impl_no_pack!($name);
+    };
+}
+
+/// The `LazyLock<AbstractWrapper<T>>` static for a Rust-backed abstract
+/// type, registered under the UUID DERIVED FROM ITS GRAPHIX PATH
+/// (`graphix_compiler::typ::abstract_uuid`). That derivation is what
+/// makes a runtime type test (`File as f`) exact for a type whose
+/// values Rust mints: the compiler knows the type's identity from its
+/// path alone, so it can recognize the value without the package
+/// telling it anything (`design/nominal_abstract_types.md`).
+#[macro_export]
+macro_rules! abstract_wrapper {
+    ($name:ty, $wrapper_vis:vis static $wrapper:ident = $path:literal) => {
+        $wrapper_vis static $wrapper: std::sync::LazyLock<
+            netidx_value::abstract_type::AbstractWrapper<$name>,
+        > = std::sync::LazyLock::new(|| {
+            netidx_value::Abstract::register::<$name>(
+                ::graphix_compiler::typ::abstract_uuid($path),
+            )
+            .expect(concat!("failed to register ", $path))
+        });
+    };
 }
 
 // ── Testing infrastructure ─────────────────────────────────────────

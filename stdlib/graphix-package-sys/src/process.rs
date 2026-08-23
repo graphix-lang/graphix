@@ -6,13 +6,13 @@ use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_activation::process::{Job, Spawned, spawn as os_spawn, stop_proc};
 use netidx_derive::{FromValue, IntoValue};
-use netidx_value::{Abstract, FromValue as _, Value, abstract_type::AbstractWrapper};
+use netidx_value::{FromValue as _, Value};
 use poolshark::local::LPooled;
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
     process::{ExitStatus as StdExitStatus, Stdio as ProcessStdio},
-    sync::{LazyLock, OnceLock},
+    sync::OnceLock,
     time::Duration,
 };
 use tokio::{
@@ -21,7 +21,7 @@ use tokio::{
 };
 use triomphe::Arc;
 
-use crate::{StreamKind, wrap_stream};
+use crate::{StreamKind, wrap_pipe};
 
 // -- Abstract ProcValue -------------------------------------------------------
 
@@ -136,13 +136,10 @@ impl Hash for ProcValue {
 
 graphix_package_core::impl_no_pack!(ProcValue);
 
-static PROC_WRAPPER: LazyLock<AbstractWrapper<ProcValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xd4, 0xe5, 0xf6, 0xa1, 0xb2, 0xc3, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12,
-        0x34, 0x56, 0x7b,
-    ]);
-    Abstract::register::<ProcValue>(id).expect("failed to register ProcValue")
-});
+graphix_package_core::abstract_wrapper!(
+    ProcValue,
+    static PROC_WRAPPER = "sys::process::Proc"
+);
 
 fn get_proc(cached: &CachedVals, idx: usize) -> Option<ProcValue> {
     match cached.0.get(idx)?.as_ref()? {
@@ -263,9 +260,9 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     let pid =
         spawned.id().ok_or_else(|| anyhow::anyhow!("child process has no OS pid"))?
             as i64;
-    let stdin = spawned.take_stdin().map(|s| wrap_stream(StreamKind::ChildStdin(s)));
-    let stdout = spawned.take_stdout().map(|s| wrap_stream(StreamKind::ChildStdout(s)));
-    let stderr = spawned.take_stderr().map(|s| wrap_stream(StreamKind::ChildStderr(s)));
+    let stdin = spawned.take_stdin().map(|s| wrap_pipe(StreamKind::ChildStdin(s)));
+    let stdout = spawned.take_stdout().map(|s| wrap_pipe(StreamKind::ChildStdout(s)));
+    let stderr = spawned.take_stderr().map(|s| wrap_pipe(StreamKind::ChildStderr(s)));
     let (status_tx, status_rx) = watch::channel(None);
     let (ctl, ctl_rx) = mpsc::unbounded_channel();
     tokio::spawn(own_child(spawned, opts.kill_on_drop, status_tx, ctl_rx));

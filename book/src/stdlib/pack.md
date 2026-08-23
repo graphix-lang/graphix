@@ -5,16 +5,7 @@ Pack format. Like `json::read`, `pack::read` uses type-directed
 deserialization.
 
 ```graphix
-use sys::io::Stream;
-
-/// Decode a value from packed binary bytes or stream.
-val read: fn(input: [bytes, Stream<'a>]) -> Result<'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]>;
-
-/// Encode a value to packed binary bytes.
-val write_bytes: fn(value: Any) -> Result<bytes, `PackErr(string)>;
-
-/// Encode a value and write to a stream.
-val write_stream: fn(stream: Stream<'a>, value: Any) -> Result<null, [`PackErr(string), `IOErr(string)]>;
+{{#include ../../../stdlib/graphix-package-pack/src/graphix/mod.gxi}}
 ```
 
 The Pack format is a compact binary encoding native to netidx. It is

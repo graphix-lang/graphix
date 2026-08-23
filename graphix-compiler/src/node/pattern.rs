@@ -976,47 +976,6 @@ impl StructPatternNode {
     }
 }
 
-/// Does `t` mention a RUST-BACKED abstract type at any position a
-/// runtime type check would have to verify? A Graphix-minted abstract
-/// is verifiable by its tag; a Rust-backed one only if its package
-/// registered the path-derived wrapper UUID, which the compiler cannot
-/// know, so an explicit predicate on one is refused. Refs are expanded
-/// through the env; pathological depth answers true (refusing is the
-/// conservative direction — this gates a compile error, not a match).
-fn mentions_rust_abstract(env: &Env, t: &Type, depth: usize) -> bool {
-    if depth > 64 {
-        return true;
-    }
-    t.with_deref(|t| match t {
-        None => false,
-        Some(t) => match t {
-            Type::Abstract { id, .. } => !env.abstract_minted(*id),
-            Type::Ref(_) => match t.lookup_ref(env) {
-                Ok(t) => mentions_rust_abstract(env, &t, depth + 1),
-                Err(_) => false,
-            },
-            Type::Set(s) | Type::Tuple(s) | Type::Variant(_, s) => {
-                s.iter().any(|t| mentions_rust_abstract(env, t, depth + 1))
-            }
-            Type::Struct(fs) => {
-                fs.iter().any(|(_, t)| mentions_rust_abstract(env, t, depth + 1))
-            }
-            Type::Array(t) | Type::ByRef(t) | Type::Error(t) => {
-                mentions_rust_abstract(env, t, depth + 1)
-            }
-            Type::Map { key, value } => {
-                mentions_rust_abstract(env, key, depth + 1)
-                    || mentions_rust_abstract(env, value, depth + 1)
-            }
-            Type::Bottom
-            | Type::Any
-            | Type::Primitive(_)
-            | Type::Fn(_)
-            | Type::TVar(_) => false,
-        },
-    })
-}
-
 /// See [`PatternNode::arm_match`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ArmMatch {
@@ -1053,6 +1012,17 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
                 (false, typ)
             }
         };
+        // An EXPLICIT predicate on an abstract type is a NOMINAL test:
+        // it compares the value's tag against the type's identity. A
+        // Graphix-minted box carries that identity; a Rust-backed one
+        // answers by the wrapper UUID its package registered, which is
+        // derived from the type's path
+        // (`graphix_package_core::abstract_wrapper!`) — so a package
+        // that registers an ad-hoc UUID instead has values that match
+        // NO type test, in its own tests, loudly. It is a tag test and
+        // not a full type check: an abstract type's PARAMETERS are not
+        // carried at runtime, so `Box<i64> as b` also matches a
+        // `Box<string>` (true of minted and Rust-backed alike).
         match &type_predicate {
             Type::Fn(_) => bail!("can't match on Fn type"),
             Type::Bottom
@@ -1069,33 +1039,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Variant(_, _)
             | Type::Struct(_)
             | Type::Ref(TypeRef { .. }) => (),
-        }
-        // An EXPLICIT predicate is the user's claim, checked strictly at
-        // runtime — and an abstract type's representation is hidden, so
-        // the check can never succeed (`is_a` refuses to claim what it
-        // can't verify; matching by carrier id would claim wrong
-        // parameterizations and can't see hidden non-Abstract reps).
-        // Accepting the pattern made a guaranteed-dead arm the wildcard
-        // silently won — the exact class the typechecker exists to
-        // refuse. Found by the netidx-admin dogfood campaign
-        // (2026-08-18).
-        if explicit && mentions_rust_abstract(&ctx.env, &type_predicate, 0) {
-            // Name the type as the USER wrote it (the unresolved spec
-            // form): the resolved Type renders an Abstract as its raw
-            // process-global id — useless to the reader, and unstable
-            // across concurrent compiles (it flaked selfcheck's
-            // CompileErr comparison, 2026-08-19).
-            let written = spec
-                .type_predicate
-                .as_ref()
-                .map(|t| t.to_string())
-                .unwrap_or_else(|| type_predicate.to_string());
-            bail!(
-                "can't match on the abstract type {written}: its \
-                 representation is hidden, so runtime dispatch cannot verify \
-                 it. Dissect a result union with `?` or `$`, or use an \
-                 accessor exported by the type's module"
-            )
         }
         let structure_predicate = StructPatternNode::compile(
             ctx,

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-014c6c08.js";
+            window.path_to_searchindex_js = "../searchindex-3c02a0d9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-f7a0005a.js"></script>
@@ -178,16 +178,15 @@
 <p>The <code>pack</code> module provides native binary serialization using the netidx
 Pack format. Like <code>json::read</code>, <code>pack::read</code> uses type-directed
 deserialization.</p>
-<pre><code class="language-graphix">use sys::io::Stream;
-
-/// Decode a value from packed binary bytes or stream.
-val read: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
+<pre><code class="language-graphix">/// Decode a value from packed binary bytes.
+///
+/// To decode from a stream, read it first — `pack::read(Read::read_all(f)?)`.
+val read: fn(input: bytes) -&gt; Result&lt;'b, [`PackErr(string), `InvalidCast(string)]&gt;;
 
 /// Encode a value to packed binary bytes.
+///
+/// To write to a stream, write the bytes — `Write::write_exact(f, pack::write_bytes(v)?)`.
 val write_bytes: fn(value: Any) -&gt; Result&lt;bytes, `PackErr(string)&gt;;
-
-/// Encode a value and write to a stream.
-val write_stream: fn(stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`PackErr(string), `IOErr(string)]&gt;;
 </code></pre>
 <p>The Pack format is a compact binary encoding native to netidx. It is
 more space-efficient than JSON or TOML and supports the full range of

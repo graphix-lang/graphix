@@ -74,7 +74,7 @@ Import names the interface's own declarations need:
 
 ```graphix
 use super::{Client, Response};
-use sys::io::Stream;
+use sys::io::Read;
 ```
 
 A `use` in the interface applies to the implementation automatically —

@@ -456,7 +456,16 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             }
             SigKind::Bind(_) | SigKind::Impl(_) => (),
         }
-        last = Some(si);
+        // An `impl` declaration is never spliced into the
+        // implementation — the implementation writes its own — so it
+        // can anchor nothing. The next interface-only item keeps the
+        // anchor of the last item that IS spliceable and stays in
+        // relative order; without this it fell through to the
+        // unanchored tail and was appended after the whole module
+        // body, where the declarations above it could not see it.
+        if !matches!(si.kind, SigKind::Impl(_)) {
+            last = Some(si);
+        }
     }
     for e in &*exprs {
         if let ExprKind::Module { name, .. } = &e.kind {

@@ -646,3 +646,108 @@ through `GxAbstract`, so their comparisons stay structural until the
 io migration registers them with path-derived UUIDs — at which point
 either they wrap through `GxAbstract` or implement the same
 thread-local consult; decide there.
+
+## 13. The io migration as built (2026-08-23, branch `nominal-abstracts`)
+
+§10 step 4 / §6, as it landed. io was the feature's first client and
+its acceptance test: the sketch's `Read`/`Write`/`Close`/`Seek` over
+per-package types, with `Stream<'a>`'s phantom tag gone.
+
+**Five nominal types, one representation.** `sys::fs::File`,
+`sys::tcp::TcpStream`, `sys::tls::TlsStream`, `sys::process::Pipe` and
+`sys::io::Stdio` are five Rust-backed abstract types (declared
+body-less in their `.gxi`s). Behind them `StreamKind` survives as ONE
+enum — read/write/close is the same code whatever the descriptor is,
+and dissolving it into five copies would have bought nothing the
+nominal split doesn't already buy. What makes them five distinct RUST
+types (which is what the abstract registry keys a UUID on) is a marker
+parameter: `Stream<K: StreamMark>` with a `stream_kinds!` list minting
+the markers, the wrappers and the accessor
+(`graphix-package-sys/src/lib.rs`). `get_stream` reaches the shared
+cell from any of the five, so the io builtins are shared: the TYPE
+says which operations are legal and the trait implementations are what
+enforce it.
+
+**The traits** (`sys/graphix/io.gxi`): `Read { read; read_exact =
+default; read_all = default }`, `Lines { lines; lines_batched }`,
+`Write { write; write_exact = default; flush }`, `Close { close }`,
+plus `sys::fs::Seek { seek }` and `sys::tcp::Socket { shutdown;
+peer_addr; local_addr }` (implemented by `TlsStream` too — a TLS
+session is still a socket, which is what §6 asked for). `read` is the
+only method a `Read` implementation must supply; `read_exact` and
+`read_all` are written in Graphix over it, and the system streams
+OVERRIDE `read_exact`/`write_exact` with the builtin, which does the
+loop under one lock. That split is the payoff: a stream written in
+Graphix — a decoder, a framer, a test mock — gets the derived methods
+for free, and the native ones keep their exact behavior.
+
+`Lines` is a trait of its own rather than a `Read` default because
+framing is at the BYTE level: a multi-byte character split across a
+read boundary is destroyed by decoding each chunk on its own, and
+nothing the caller controls decides where the boundary falls. Deriving
+it in Graphix would need a byte-level `find`/`slice` vocabulary
+(`buffer::` has `len`/`concat` and bytes slice, not search) and would
+change the delivery cadence; a self-framing stream is an honest
+separate capability. Fold it into `Read` if that vocabulary lands.
+
+**The defaults are reactive loops**, and the connect in them must be
+gated on the chunk: `acc <- b ~ buffer::concat(acc, b)`, never `acc <-
+buffer::concat(acc, b)`. A connect fires when its RHS fires, so an
+ungated accumulator re-fires on its own write — which is exactly the
+documented counter idiom (`x <- x + 1`), an accumulator by accident.
+The ungated form read 55 bytes from a 5-byte stream before EOF stopped
+it.
+
+**Consumers split** (§6): `json`, `toml`, `pack` and `xls` parse from
+`bytes`/`string` and serialize to them — the stream input arm and
+`write_stream` are gone, and with them their dependency on
+`graphix-package-sys` entirely. Reading a document from a stream is
+now `json::read(Read::read_all(f)?)` and writing one is
+`Write::write_exact(f, json::write_bytes(v)?)`, which is the same code
+for a file, a socket and a pipe.
+
+**Rust-backed abstracts now register path-derived UUIDs.** Every
+Rust-backed abstract type in the stdlib registers its wrapper under
+`abstract_uuid(<its graphix path>)` — `graphix_package_core::
+abstract_wrapper!` is the one-liner, and `impl_abstract_arc!` grew the
+same form. That is what makes a runtime type test on one exact, which
+in turn is what makes trait dispatch over a UNION of them work
+(`Socket` over `[TcpStream, TlsStream]`, pinned by
+`socket_union_dispatch`). Two consequences:
+
+- The 2026-08-18 refusal of explicit predicates on Rust-backed
+  abstract types is LIFTED (`node/pattern.rs`): its premise — the
+  check can never succeed — was true only while no package registered
+  a path-derived UUID. The contract is now the package's:
+  `abstract_wrapper!` or your values match no type test, in your own
+  tests. The tag test remains a NOMINAL test and not a full type
+  check — an abstract type's parameters are not carried at runtime, so
+  `Box<i64> as b` also matches a `Box<string>`, for minted and
+  Rust-backed alike.
+- A CORE trait implementation for a Rust-backed abstract is REFUSED
+  (`traits::check_target`): the core traits ride the value through
+  `GxAbstract`, and a Rust-backed value has no payload for the
+  implementation to read, so such an impl would compile and never be
+  consulted. Their equality, ordering and printing stay the ones their
+  package defined. (This settles §12's open question.)
+
+**Two things the migration found in the compiler.** An interface's
+`impl` declaration is never spliced into the implementation, so it can
+anchor nothing in `add_interface_modules` — everything declared after
+one landed at the END of the module body, invisible to the code above
+(`sys::process::Redirect`; fixed, pinned by `interface_type_after_impl`).
+And a `//` comment between two select arms is still a parse error —
+comments attach to expressions and an arm's PATTERN is not one, so
+`0 => 1, // note \n _ => 2` fails with "can't use keyword as a function
+or variable name" pointing at the next `select`. Not fixed here: the
+fix is a parser + printer + round-trip-proptest change. A comment
+after the `=>`, above the arm's expression, is legal today.
+
+**API break** (accepted in §10): `io::read(s, n)` is `Read::read(s,
+n)`, `fs::seek` is `Seek::seek`, `tcp::shutdown` is `Socket::shutdown`,
+`process::Stdio` (the redirect config) is `process::Redirect` — the
+name freed for `io::Stdio`, the handle — and `Child`'s pipe fields are
+`[Pipe, null]`. A TLS upgrade now CONSUMES the TCP handle: the session
+moves into the returned `TlsStream` and the handle passed in is left
+empty, so a stray plaintext read on it errors instead of silently
+reading the encrypted session. A failed upgrade leaves it untouched.

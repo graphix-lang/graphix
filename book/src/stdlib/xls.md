@@ -5,13 +5,7 @@ formats (via calamine). Data is returned as a 2D array of primitive
 values.
 
 ```graphix
-use sys::io::Stream;
-
-/// List sheet names in a workbook.
-val sheets: fn(input: [bytes, Stream<'a>]) -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]>;
-
-/// Read a sheet by name as a 2D array of rows.
-val read: fn(input: [bytes, Stream<'a>], sheet: string) -> Result<Array<Array<PrimNoErr>>, [`XlsErr(string), `IOErr(string)]>;
+{{#include ../../../stdlib/graphix-package-xls/src/graphix/mod.gxi}}
 ```
 
 ## Example

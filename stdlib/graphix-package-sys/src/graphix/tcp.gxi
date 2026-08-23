@@ -1,30 +1,40 @@
-use sys::io;
+use sys::io::{Read, Lines, Write, Close};
 
 /// An opaque handle to a TCP listener. The listener is closed when
 /// there are no remaining references to the TcpListener value.
 type TcpListener;
 
+/// A connected TCP stream.
+type TcpStream;
+
+/// A connected network socket. Implemented by [TcpStream] and by
+/// `sys::tls::TlsStream`, since a TLS session is still a socket.
+trait Socket {
+    /// Shutdown the write half of the stream.
+    val shutdown: fn(self) -> Result<null, `TCPError(string)>;
+
+    /// Get the remote address of the connected peer.
+    val peer_addr: fn(self) -> Result<string, `TCPError(string)>;
+
+    /// Get the local address of the stream.
+    val local_addr: fn(self) -> Result<string, `TCPError(string)>;
+};
+
+impl Read for TcpStream;
+impl Lines for TcpStream;
+impl Write for TcpStream;
+impl Close for TcpStream;
+impl Socket for TcpStream;
+
 /// Connect to a TCP server at the given address (host:port).
-val connect: fn(addr: string) -> Result<io::Stream<`Tcp>, `TCPError(string)>;
+val connect: fn(addr: string) -> Result<TcpStream, `TCPError(string)>;
 
 /// Bind a TCP listener to the given address (host:port).
 val listen: fn(addr: string) -> Result<TcpListener, `TCPError(string)>;
 
 /// Accept a new connection from the listener. The second argument
 /// is a trigger — each time it updates, a new accept is performed.
-val accept: fn(listener: TcpListener, trigger: Any) -> Result<io::Stream<`Tcp>, `TCPError(string)>;
-
-/// Shutdown the write half of the stream. Works on both plain TCP
-/// and TLS-upgraded streams.
-val shutdown: fn(stream: io::Stream<[`Tcp, `Tls]>) -> Result<null, `TCPError(string)>;
-
-/// Get the remote address of the connected peer. Works on both
-/// plain TCP and TLS-upgraded streams.
-val peer_addr: fn(stream: io::Stream<[`Tcp, `Tls]>) -> Result<string, `TCPError(string)>;
-
-/// Get the local address of the stream. Works on both plain TCP
-/// and TLS-upgraded streams.
-val local_addr: fn(stream: io::Stream<[`Tcp, `Tls]>) -> Result<string, `TCPError(string)>;
+val accept: fn(listener: TcpListener, trigger: Any) -> Result<TcpStream, `TCPError(string)>;
 
 /// Get the local address that the listener is bound to.
 val listener_addr: fn(listener: TcpListener) -> Result<string, `TCPError(string)>;

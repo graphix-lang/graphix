@@ -17,7 +17,26 @@ let readdir = |
 let create_dir = |#all: bool = false, path: string| -> Result<null, `IOError(string)> 'sys_fs_create_dir;
 let remove_dir = |#all: bool = false, path: string| -> Result<null, `IOError(string)> 'sys_fs_remove_dir;
 let remove_file = |path: string| -> Result<null, `IOError(string)> 'sys_fs_remove_file;
-let open = |mode: Mode, path: string| -> Result<io::Stream<`File>, `IOError(string)> 'sys_fs_open;
-let seek = |stream: io::Stream<`File>, pos: SeekFrom| -> Result<u64, `IOError(string)> 'sys_fs_seek;
-let fstat = |stream: io::Stream<`File>| -> Result<Metadata, `IOError(string)> 'sys_fs_fstat;
-let truncate = |stream: io::Stream<`File>, len: u64| -> Result<null, `IOError(string)> 'sys_fs_truncate
+let open = |mode: Mode, path: string| -> Result<File, `IOError(string)> 'sys_fs_open;
+let fstat = |file: File| -> Result<Metadata, `IOError(string)> 'sys_fs_fstat;
+let truncate = |file: File, len: u64| -> Result<null, `IOError(string)> 'sys_fs_truncate;
+
+impl Read for File {
+    let read = |s, n| 'sys_io_read;
+    let read_exact = |s, n| 'sys_io_read_exact
+};
+
+impl Lines for File {
+    let lines = |s| 'sys_io_lines;
+    let lines_batched = |s| 'sys_io_lines_batched
+};
+
+impl Write for File {
+    let write = |s, data| 'sys_io_write;
+    let write_exact = |s, data| 'sys_io_write_exact;
+    let flush = |s| 'sys_io_flush
+};
+
+impl Close for File { let close = |s| 'sys_io_close };
+
+impl Seek for File { let seek = |s, pos| 'sys_fs_seek }

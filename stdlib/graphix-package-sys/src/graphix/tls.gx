@@ -1,4 +1,28 @@
-let connect = |#ca_cert: [bytes, null] = null, hostname: string, stream: io::Stream<`Tcp>|
-    -> Result<io::Stream<`Tls>, `TLSError(string)> 'sys_tls_connect;
-let accept = |#cert: bytes, #key: bytes, stream: io::Stream<`Tcp>|
-    -> Result<io::Stream<`Tls>, `TLSError(string)> 'sys_tls_accept
+let connect = |#ca_cert: [bytes, null] = null, hostname: string, stream: TcpStream|
+    -> Result<TlsStream, `TLSError(string)> 'sys_tls_connect;
+let accept = |#cert: bytes, #key: bytes, stream: TcpStream|
+    -> Result<TlsStream, `TLSError(string)> 'sys_tls_accept;
+
+impl Read for TlsStream {
+    let read = |s, n| 'sys_io_read;
+    let read_exact = |s, n| 'sys_io_read_exact
+};
+
+impl Lines for TlsStream {
+    let lines = |s| 'sys_io_lines;
+    let lines_batched = |s| 'sys_io_lines_batched
+};
+
+impl Write for TlsStream {
+    let write = |s, data| 'sys_io_write;
+    let write_exact = |s, data| 'sys_io_write_exact;
+    let flush = |s| 'sys_io_flush
+};
+
+impl Close for TlsStream { let close = |s| 'sys_io_close };
+
+impl Socket for TlsStream {
+    let shutdown = |s| 'sys_tcp_shutdown;
+    let peer_addr = |s| 'sys_tcp_peer_addr;
+    let local_addr = |s| 'sys_tcp_local_addr
+}

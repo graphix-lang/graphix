@@ -21,11 +21,13 @@ pub enum IsAFlags {
     /// When set, a `Type::Abstract` test accepts any RUST-BACKED
     /// abstract value whose wrapper UUID is not the type's
     /// path-derived one (`abstract_uuid`) — the lenient reading for
-    /// packages that still register ad-hoc UUIDs. A Graphix-minted box
-    /// always answers by its tag, and a non-abstract value never
-    /// matches (`design/nominal_abstract_types.md`). Consumers: the
-    /// `TVal` printer and INFERRED select predicates; an explicit
-    /// `T as t` is strict.
+    /// packages that still register ad-hoc UUIDs — the stdlib registers
+    /// path-derived ones (`abstract_wrapper!`), so this only covers a
+    /// third-party package that has not. A Graphix-minted box always
+    /// answers by its tag, and a non-abstract value never matches
+    /// (`design/nominal_abstract_types.md`). Consumers: the `TVal`
+    /// printer and INFERRED select predicates; an explicit `T as t` is
+    /// strict.
     MatchAbstract,
     /// When set, the type-blind leaves — `Any`, `⊥`, and an unbound
     /// tvar — match NOTHING instead of everything. `is_a` answers

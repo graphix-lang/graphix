@@ -1,7 +1,23 @@
-use sys::io;
+use sys::io::{Read, Lines, Write, Close};
+use sys::tcp::{Socket, TcpStream};
+
+/// A TLS session over a TCP stream. It is still a socket, so it
+/// implements [Socket] as well as the io traits.
+type TlsStream;
+
+impl Read for TlsStream;
+impl Lines for TlsStream;
+impl Write for TlsStream;
+impl Close for TlsStream;
+impl Socket for TlsStream;
 
 /// Upgrade a TCP stream to a TLS client connection.
-val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: io::Stream<`Tcp>) -> Result<io::Stream<`Tls>, `TLSError(string)>;
+///
+/// The upgrade CONSUMES the TCP stream: on success the session lives
+/// in the returned handle and the one passed in is empty, so a stray
+/// plaintext read on it is an error rather than a silent read of the
+/// encrypted session. A failed upgrade leaves it untouched.
+val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -> Result<TlsStream, `TLSError(string)>;
 
 /// Upgrade a TCP stream to a TLS server connection.
-val accept: fn(#cert:bytes, #key:bytes, stream: io::Stream<`Tcp>) -> Result<io::Stream<`Tls>, `TLSError(string)>;
+val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -> Result<TlsStream, `TLSError(string)>;

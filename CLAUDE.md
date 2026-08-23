@@ -1536,6 +1536,61 @@ at tc1 can't see a lambda's params (`trait_union_dispatch_in_lambda`).
 Rust-backed abstracts stay structural until the io migration
 registers them.
 
+## The io traits (2026-08-23, branch `nominal-abstracts`)
+
+`design/traits.md` §13 (§10 step 4 as built): io is the trait system's
+first client. `io::Stream<'a>`'s phantom tag is GONE — a stream's TYPE
+is its kind (`sys::fs::File`, `sys::tcp::TcpStream`,
+`sys::tls::TlsStream`, `sys::process::Pipe`, `sys::io::Stdio`, all
+Rust-backed abstracts) and the traits it implements say what it can do:
+`Read { read; read_exact=default; read_all=default }`,
+`Lines { lines; lines_batched }`,
+`Write { write; write_exact=default; flush }`, `Close { close }`,
+`sys::fs::Seek`, `sys::tcp::Socket` (over TcpStream AND TlsStream).
+`read` is the only required `Read` method; the derived ones are written
+in Graphix over it and the native streams OVERRIDE `read_exact`/
+`write_exact` with the builtin (one lock, no loop). `Lines` is separate
+because framing is byte-level (a multi-byte char split across a read
+boundary) — fold it in if a byte `find`/`slice` vocabulary lands.
+Behind all five is ONE `StreamKind` enum: `Stream<K: StreamMark>` +
+the `stream_kinds!` list (`graphix-package-sys/src/lib.rs`) makes them
+five distinct RUST types, which is what the abstract registry keys a
+UUID on; `get_stream` reaches the shared cell from any of them.
+
+- **A default's accumulator connect must be gated on the event**:
+  `acc <- b ~ buffer::concat(acc, b)`, never `acc <- concat(acc, b)` —
+  a connect fires when its RHS fires, so the ungated form is the
+  documented counter idiom (`x <- x + 1`) by accident. It read 55
+  bytes from a 5-byte stream.
+- **json/toml/pack/xls parse `bytes`/`string` only** — the stream arm
+  and `write_stream` are gone, and with them those packages' dependency
+  on sys. `json::read(Read::read_all(f)?)` /
+  `Write::write_exact(f, json::write_bytes(v)?)`.
+- **Rust-backed abstracts register PATH-DERIVED UUIDs**
+  (`graphix_package_core::abstract_wrapper!`, or `impl_abstract_arc!`'s
+  `= "pkg::mod::Type"` form) — the whole stdlib does now. That makes a
+  runtime type test on one exact, which is what makes trait dispatch
+  over a UNION of them work (`Socket` over `[TcpStream, TlsStream]`).
+  Consequences: the 2026-08-18 refusal of explicit predicates on
+  Rust-backed abstract types is LIFTED (a package that registers an
+  ad-hoc UUID now has values matching no type test — its own bug, in
+  its own tests), and a CORE-trait impl for a Rust-backed abstract is
+  REFUSED (`traits::check_target`: no payload for the impl to read, so
+  nothing would consult it). The tag test stays NOMINAL, not a full
+  type check — parameters are not carried at runtime, so `Box<i64> as
+  b` matches a `Box<string>` (minted and Rust-backed alike).
+- **API break**: `Read::read`, `Seek::seek`, `Socket::shutdown`;
+  `process::Stdio` (the redirect config) → `process::Redirect`, the
+  name freed for the io handle; `Child`'s pipe fields are `[Pipe,
+  null]`; a TLS upgrade CONSUMES the TCP handle (a failed one leaves
+  it untouched).
+- **Found in the compiler**: an interface `impl` declaration anchored
+  the items after it into the module body's TAIL (fixed —
+  `add_interface_modules`, pinned by `interface_type_after_impl`); a
+  `//` comment between two select arms is a parse error (NOT fixed —
+  comments attach to expressions, an arm's pattern is not one; a
+  comment after the `=>` is legal).
+
 ## The module system (open → use, 2026-08-22)
 
 Graphix uses Rust-2018-style imports (`design/module_system.md`,

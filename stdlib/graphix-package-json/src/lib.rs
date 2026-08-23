@@ -15,14 +15,8 @@ use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
     extract_cast_type, is_struct,
 };
-use graphix_package_sys::{StreamKind, get_stream};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
-use std::sync::Arc;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
-};
 
 // ── JSON ↔ Value conversion ──────────────────────────────────────
 
@@ -132,13 +126,12 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
     }
 }
 
-// ── JsonRead (async — handles string, bytes, and stream) ────────
+// ── JsonRead (async) ─────────────────────────────────────────────
 
 #[derive(Debug)]
 enum ReadInput {
     Str(ArcStr),
     Bytes(Bytes),
-    Stream(Arc<Mutex<Option<StreamKind>>>),
 }
 
 #[derive(Debug, Default)]
@@ -199,7 +192,6 @@ impl EvalCachedAsync for JsonReadEv {
         match v {
             Value::String(s) => Some(ReadInput::Str(s.clone())),
             Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
-            Value::Abstract(_) => Some(ReadInput::Stream(get_stream(cached, 0)?)),
             _ => None,
         }
     }
@@ -215,21 +207,6 @@ impl EvalCachedAsync for JsonReadEv {
                 }
                 ReadInput::Bytes(b) => {
                     match serde_json::from_slice::<serde_json::Value>(&b) {
-                        Ok(json) => json_to_value(json),
-                        Err(e) => errf!("JsonErr", "{e}"),
-                    }
-                }
-                ReadInput::Stream(stream) => {
-                    let mut guard = stream.lock().await;
-                    let s = match guard.as_mut() {
-                        Some(s) => s,
-                        None => return errf!("IOErr", "stream unavailable"),
-                    };
-                    let mut buf: LPooled<Vec<u8>> = LPooled::take();
-                    if let Err(e) = s.read_to_end(&mut buf).await {
-                        return errf!("IOErr", "read failed: {e}");
-                    }
-                    match serde_json::from_slice::<serde_json::Value>(&buf) {
                         Ok(json) => json_to_value(json),
                         Err(e) => errf!("JsonErr", "{e}"),
                     }
@@ -310,50 +287,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
 
 type JsonWriteBytes = CachedArgs<JsonWriteBytesEv>;
 
-// ── JsonWriteStream (async) ──────────────────────────────────────
-
-#[derive(Debug, Default)]
-struct JsonWriteStreamEv;
-
-impl EvalCachedAsync for JsonWriteStreamEv {
-    type Args = (bool, Arc<Mutex<Option<StreamKind>>>, serde_json::Value);
-
-    const NAME: &str = "json_write_stream";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let pretty = cached.get::<bool>(0)?;
-        let stream = get_stream(cached, 1)?;
-        let v = cached.0.get(2)?.as_ref()?;
-        let json = value_to_json(v).ok()?;
-        Some((pretty, stream, json))
-    }
-
-    fn eval((pretty, stream, json): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let buf = if pretty {
-                serde_json::to_vec_pretty(&json)
-            } else {
-                serde_json::to_vec(&json)
-            };
-            let buf = match buf {
-                Ok(b) => b,
-                Err(e) => return errf!("JsonErr", "{e}"),
-            };
-            let mut guard = stream.lock().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOErr", "stream unavailable"),
-            };
-            match s.write_all(&buf).await {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("IOErr", "write failed: {e}"),
-            }
-        }
-    }
-}
-
-type JsonWriteStream = CachedArgsAsync<JsonWriteStreamEv>;
-
 // ── Package registration ─────────────────────────────────────────
 
 graphix_derive::defpackage! {
@@ -361,6 +294,5 @@ graphix_derive::defpackage! {
         JsonRead,
         JsonWriteStr,
         JsonWriteBytes,
-        JsonWriteStream,
     ],
 }

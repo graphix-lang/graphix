@@ -91,14 +91,16 @@ run!(toml_array, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_stream_tcp, r#"{
+    use sys::io::{Read, Write};
+    use sys::tcp::Socket;
     type Msg = {age: i64, name: string};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
     let addr = sys::tcp::listener_addr(listener)?;
     let client = sys::tcp::connect(addr)?;
     let server = sys::tcp::accept(listener, client)?;
-    toml::write_stream(client, {name: "alice", age: 30})?;
-    sys::tcp::shutdown(client)?;
-    let msg: Msg = toml::read(server)?;
+    Write::write_exact(client, toml::write_bytes({name: "alice", age: 30})?)?;
+    Socket::shutdown(client)?;
+    let msg: Msg = toml::read(Read::read_all(server)?)?;
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
@@ -108,7 +110,7 @@ run!(toml_stream_tcp, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_invalid, r#"{
-    let r: Result<i64, [`TomlErr(string), `IOErr(string), `InvalidCast(string)]> = toml::read("not valid toml \[\[\[");
+    let r: Result<i64, [`TomlErr(string), `InvalidCast(string)]> = toml::read("not valid toml \[\[\[");
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))

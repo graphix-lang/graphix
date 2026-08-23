@@ -1,45 +1,57 @@
 # sys::io
 
-The `sys::io` module provides a unified `Stream` type for all I/O
-operations. The phantom type parameter constrains which stream kind is
-accepted — `sys::fs::open` returns `Stream<\`File>`, `sys::tcp::connect`
-returns `Stream<\`Tcp>`, `sys::tls::connect` returns `Stream<\`Tls>`,
-`stdin`/`stdout`/`stderr` return `Stream<\`Stdio>`, and child process
-stdio pipes return `Stream<\`Pipe>`.
+`sys::io` is where the io capabilities live. A stream is not one type
+with a tag saying what it is — it is a type of its own (`sys::fs::File`,
+`sys::tcp::TcpStream`, `sys::tls::TlsStream`, `sys::process::Pipe`,
+`sys::io::Stdio`), and the traits it implements say what you can do
+with it. Anything else that implements them — including a stream
+written in Graphix — works with the same code.
 
 ```graphix
-/// An opaque handle to an I/O stream. The phantom type parameter indicates
-/// the underlying stream kind, constraining which operations are valid.
-/// Stream<`File> for files, Stream<`Tcp> for TCP, Stream<`Tls> for TLS,
-/// Stream<`Stdio> for stdin/stdout/stderr, Stream<`Pipe> for child pipes.
-type Stream<'a: [`File, `Tcp, `Tls, `Stdio, `Pipe]>;
+use sys::io::{Read, Write, Close};
 
-/// Read up to n bytes from the stream. May return fewer bytes than
-/// requested if fewer are available.
-val read: fn(stream: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
+let f = sys::fs::open(`Read, "/etc/hostname")?;
+let text = buffer::to_string(Read::read_all(f)?)?;
+Close::close(f)?
+```
 
-/// Read exactly n bytes from the stream. Returns fewer bytes only
-/// if EOF is reached before n bytes have been read.
-val read_exact: fn(stream: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
+`Read` is the one to implement if you are writing a stream of your own:
+`read` is the only required method, and `read_exact` and `read_all` are
+written in terms of it, so they come for free. The system streams
+override `read_exact` with a single call into the operating system,
+which reads under one lock instead of looping.
 
-/// Write bytes to the stream. Returns the number of bytes written,
-/// which may be less than the full length of data.
-val write: fn(stream: Stream<'a>, data: bytes) -> Result<u64, `IOError(string)>;
+```graphix
+{{#include ../../../../stdlib/graphix-package-sys/src/graphix/io.gxi}}
+```
 
-/// Write all bytes to the stream, looping until complete.
-val write_exact: fn(stream: Stream<'a>, data: bytes) -> Result<null, `IOError(string)>;
+## Which stream implements what
 
-/// Flush any buffered writes.
-val flush: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
+| type | Read | Lines | Write | Close | other |
+|------|------|-------|-------|-------|-------|
+| `sys::fs::File` | ✓ | ✓ | ✓ | ✓ | `sys::fs::Seek` |
+| `sys::tcp::TcpStream` | ✓ | ✓ | ✓ | ✓ | `sys::tcp::Socket` |
+| `sys::tls::TlsStream` | ✓ | ✓ | ✓ | ✓ | `sys::tcp::Socket` |
+| `sys::process::Pipe` | ✓ | ✓ | ✓ | ✓ | |
+| `sys::io::Stdio` | ✓ | ✓ | ✓ | ✓ | |
 
-val close: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
+A handle whose direction is wrong for the call — writing to `stdin`,
+reading from a child's stdin pipe — returns an `IOError` rather than
+failing to compile: the trait says the operation exists, the operating
+system says which end of the pipe you are holding.
 
-/// Return a handle to standard input.
-val stdin: fn(trigger: Any) -> Stream<`Stdio>;
+## Parsing and writing formats
 
-/// Return a handle to standard output.
-val stdout: fn(trigger: Any) -> Stream<`Stdio>;
+`json`, `toml`, `pack` and `xls` parse from `bytes` (or a `string`) and
+serialize to them. Reading a document from a stream is therefore just
+reading the stream:
 
-/// Return a handle to standard error.
-val stderr: fn(trigger: Any) -> Stream<`Stdio>;
+```graphix
+use sys::io::{Read, Write};
+
+let f = sys::fs::open(`Read, path)?;
+let config: Config = toml::read(Read::read_all(f)?)?;
+
+let out = sys::fs::open(`Create, out_path)?;
+Write::write_exact(out, json::write_bytes(#pretty: true, config)?)?
 ```

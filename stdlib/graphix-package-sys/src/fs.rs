@@ -47,7 +47,7 @@ impl EvalCachedAsync for FileOpenEv {
                 other => return errf!("IOError", "unknown mode: {other}"),
             };
             match opts.open(&*path).await {
-                Ok(file) => wrap_file(file),
+                Ok(file) => wrap_file(StreamKind::File(file)),
                 Err(e) => errf!("IOError", "could not open {path}: {e}"),
             }
         }
