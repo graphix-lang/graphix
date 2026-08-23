@@ -1038,6 +1038,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     // Leaves and declarations
     Constant(&'a node::Constant),
     TypeDef(&'a node::TypeDef),
+    Impl(&'a node::traits::Impl<R, E>),
     Nop(&'a node::Nop),
     // Synthetic — produced by fusion itself.
     FusedKernel(&'a fusion::FusedKernel<R, E>),

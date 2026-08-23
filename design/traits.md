@@ -511,8 +511,9 @@ re-mint now carries the (scoped) conjunction. Pinned by
 inline); an `impl` declared by a DYNAMIC module's interface has
 method bindings but no proxy to the loaded source yet, so a consumer
 compiled against it cannot dispatch statically; the union-dispatch select
-de-fuses while abstract patterns do; the core four (§8) are not
-traits yet.
+de-fuses while abstract patterns do; `Hash` (§8) is not a trait —
+nothing consults one in v1 (map keys stay structural), so it would
+be dead API.
 
 **A value occurrence is a call site (Eric, 2026-08-22):** a reference
 to a GENERALIZED binding — a let-bound lambda, an interface `val`, a
@@ -530,3 +531,86 @@ a value at one type pinned its own cells for every later use
 (`array::map([1], f); array::map([1.5], f)` was refused) — the same
 for dispatchers. Pinned by `poly_value_two_types` and
 `trait_method_value_then_generic`.
+
+## 12. The core traits as built (2026-08-23, branch `nominal-abstracts`)
+
+§8 landed as `Eq`, `Ord` and `Display`, declared in core's interface
+(`graphix-package-core/src/graphix/mod.gxi`: `trait Eq { val eq:
+fn(self, other: self) -> bool }`, `trait Ord { val cmp: fn(self,
+other: self) -> Ordering }` with `type Ordering = [`Less, `Equal,
+`Greater]`, `trait Display { val fmt: fn(self) -> string }`). Their
+ids are path-derived like every trait's, so the compiler names them
+without a registration handshake (`node::coretraits::CoreTrait`).
+
+**The plan** (`coretraits::Plan`): the hook is decided from the STATIC
+type, once, at a site. `Plan::build(env, trait, typ)` walks the type
+the way the typed printer walks it (deref, typedef expansion with a
+per-ref memo so recursive types close into a cycle, union members in
+set order, struct fields in type order) asking `Env::find_impl` at
+every node; a node is *hooked* iff a hook is reachable from it — a
+fixpoint over the arena, since a recursive type's nodes form a cycle,
+which is what keeps a `List<Counter>` honest where an optimistic
+collapse would have declared the cons cell structural. `build`
+answers `None` when the root isn't hooked, and short-circuits to
+`None` before any walk when the program registers no impl of the
+trait at all — the fast path, and the whole cost for every program
+that implements none of the three.
+
+**The walk**: three functions over a plan, each the structural rule
+with the implementation substituted at hooks. `coretraits::eq` and
+`cmp` mirror `Value::eq` / `Value::partial_cmp` (depth-first
+lexicographic, length as the tiebreak, struct field names and variant
+tags structural) and delegate WHOLE unhooked subtrees to the `Value`
+operators — so where no hook sits, the answer is the structural
+answer by construction, not by reimplementation. `Display` is the
+typed printer itself: `TVal::fmt_planned` carries the plan step
+beside the type step, and `TVal`'s `Display` impl is the same walk
+with `NoHooks`. A hook is a call site the node OWNS
+(`coretraits::Hooks`: one `genn::apply` per hook over synthesized
+argument bindings, delivered through `event.variables` the way a
+collection slot feeds its callback, first dispatch under a forced
+init view) — site identity per use site, as with DynCall. A hook
+that produces nothing bottoms the comparison or the print: bottom in,
+bottom out.
+
+**The sites**: the six comparison nodes choose a `CmpDispatch` in
+`typecheck1` — `Structural`; `Lowered` when the WHOLE operand type
+has an implementation (the operands re-compile as the arguments of a
+static call to the impl's method — `Eq::eq(l, r)`, negated for `!=`,
+`Ord::cmp(l, r) == \`Less` and its three siblings — which fuses like
+any call); `Walk` when an implementation sits inside the type (the
+region de-fuses; an ASPIRE). `StringInterpolate` builds a plan per
+part at `typecheck1` (and re-reads each part's type there — a cell
+still open at tc0, a rec definition's return, used to freeze the part
+as `Any` and print it naked). `print`/`println`/`dbg`/`log` format
+through `Shown` (package-core), which builds the plan on the FIRST
+render from the argument's settled type: a builtin's type-derived
+state must exist after `init` + `typecheck0` alone, because the
+DynCall mint runs no `typecheck1` — so the hook works from inside a
+fused kernel's dispatch too. The node walkers (`for_each_node`) see
+hook sites as children, so effect analysis reaches the impl bodies
+from any compile-time site.
+
+**Sync enforcement**: a core trait's method is implicitly `#[sync]`
+(the `Impl` node adds the attribute to each method binding), and the
+`Impl` node builds one never-run PROTOTYPE call site per method
+(`Impl::prototypes`, a `NodeView::Impl` child) so the analysis covers
+the body whether or not any compile-time site calls it — the
+existing `check_def_assertions` then refuses an async body at
+compile time (`core_method_async_refused`).
+
+**The dispatchers are the operators**: `Eq::eq(a, b)` lowers to
+`a == b`, `Display::fmt(x)` to `"[x]"`, `Ord::cmp(a, b)` to a select
+over `(a < b, a > b)` (`CallSite::lower_core_call`), and
+`trait_contains` holds the three for every type — so a core trait
+works as a bound on anything, the dispatcher works on anything, and
+an implementation is reached exactly where the operator reaches it.
+The union case falls out: the operator's walk selects the member.
+
+**Limits (v1)**: the shell's REPL echo prints structurally (it has an
+`Env`, not a cycle); `Any`-typed values print/compare structurally
+even when the runtime value is an abstract with an impl (the
+"runtime tag is the type id" clause of §8 is not built — a site with
+no static type has no plan); `array::sort`, `min`/`max`, map keys, the
+wire and the JIT's `Value` order stay structural as §8 says; the
+hooked walk de-fuses its region.

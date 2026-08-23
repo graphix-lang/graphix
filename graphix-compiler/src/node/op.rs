@@ -1,4 +1,4 @@
-use super::{CFlag, compiler::compile};
+use super::{CFlag, compiler::compile, coretraits};
 use crate::{
     Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     defetyp,
@@ -51,26 +51,86 @@ pub enum BoolOp {
     Or,
 }
 
+/// How a comparison dispatches once its operand type is known
+/// (`design/traits.md` §8): structurally (the `Value` operators — the
+/// fast path and the only case in a program that implements no core
+/// trait); through a static call to the whole type's implementation
+/// (`Lowered`, which fuses like any call); or through the hooked walk
+/// when an implementation sits INSIDE the type (an `Array<Counter>`).
+enum CmpDispatch<R: Rt, E: UserEvent> {
+    Structural,
+    Lowered(Node<R, E>),
+    Walk { plan: coretraits::Plan, hooks: coretraits::Hooks<R, E> },
+}
+
+impl<R: Rt, E: UserEvent> fmt::Debug for CmpDispatch<R, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Structural => write!(f, "Structural"),
+            Self::Lowered(_) => write!(f, "Lowered"),
+            Self::Walk { .. } => write!(f, "Walk"),
+        }
+    }
+}
+
+/// The expression a comparison with a root implementation lowers to,
+/// over the bound operands `#l` and `#r`: `Eq::eq(#l, #r)` for `==`,
+/// negated for `!=`; `Ord::cmp(#l, #r)` tested against the variant a
+/// relational operator selects.
+fn lower_cmp_expr(op: CmpOp, bind: crate::BindId, spec: &Expr) -> Expr {
+    use crate::expr::{ApplyExpr, ExprKind, ModPath};
+    let mk = |kind: ExprKind| Expr {
+        id: ExprId::new(),
+        ori: spec.ori.clone(),
+        pos: spec.pos,
+        kind,
+        dec: None,
+    };
+    let f = mk(ExprKind::Ref {
+        name: ModPath::from([
+            arcstr::literal!("#bind"),
+            ArcStr::from(format_compact!("{}", bind.inner()).as_str()),
+        ]),
+    });
+    let operand = |n: &'static str| mk(ExprKind::Ref { name: ModPath::from([n]) });
+    let call = mk(ExprKind::Apply(ApplyExpr {
+        function: Arc::new(f),
+        args: Arc::from_iter([(None, operand("#l")), (None, operand("#r"))]),
+    }));
+    let tag = |t: &'static str| {
+        mk(ExprKind::Variant { tag: ArcStr::from(t), args: Arc::from_iter([]) })
+    };
+    match op {
+        CmpOp::Eq => call,
+        CmpOp::Ne => mk(ExprKind::Not { expr: Arc::new(call) }),
+        CmpOp::Lt => mk(ExprKind::Eq { lhs: Arc::new(call), rhs: Arc::new(tag("Less")) }),
+        CmpOp::Gt => {
+            mk(ExprKind::Eq { lhs: Arc::new(call), rhs: Arc::new(tag("Greater")) })
+        }
+        CmpOp::Lte => {
+            mk(ExprKind::Ne { lhs: Arc::new(call), rhs: Arc::new(tag("Greater")) })
+        }
+        CmpOp::Gte => {
+            mk(ExprKind::Ne { lhs: Arc::new(call), rhs: Arc::new(tag("Less")) })
+        }
+    }
+}
+
 macro_rules! compare_op {
-    ($name:ident, $op:tt) => {
+    ($name:ident, $op:tt, $trait:ident, $walk:ident, $test:expr) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
             pub typ: Type,
             pub lhs: Node<R, E>,
             pub rhs: Node<R, E>,
+            scope: Scope,
+            top_id: ExprId,
+            dispatch: CmpDispatch<R, E>,
             resident: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
-            /// Build the comparison node from already-compiled children.
-            /// Used by AOT-generated code.
-            #[allow(dead_code)]
-            pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-                let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
-            }
-
             pub(crate) fn compile(
                 ctx: &mut ExecCtx<R, E>,
                 flags: BitFlags<CFlag>,
@@ -83,12 +143,72 @@ macro_rules! compare_op {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    lhs,
+                    rhs,
+                    scope: scope.clone(),
+                    top_id,
+                    dispatch: CmpDispatch::Structural,
+                    resident: TagValue::phantom(),
+                }))
+            }
+
+            /// The hook sites the walk owns, for the node walkers.
+            pub(crate) fn hook_nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
+                match &self.dispatch {
+                    CmpDispatch::Walk { hooks, .. } => Some(hooks.nodes()),
+                    _ => None,
+                }
+                .into_iter()
+                .flatten()
+            }
+
+            /// Choose the dispatch from the operand type: a root
+            /// implementation lowers to a static call (the operands
+            /// are re-compiled from their expressions as the call's
+            /// arguments, the originals deleted); an interior one
+            /// builds the walk's hook sites.
+            fn resolve_dispatch(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                let typ = self.lhs.typ().clone();
+                let Some(plan) = coretraits::Plan::build(
+                    &ctx.env, coretraits::CoreTrait::$trait, &typ
+                )? else {
+                    return Ok(())
+                };
+                if let Some(h) = plan.root_hook() {
+                    let e = lower_cmp_expr(CmpOp::$name, h.bind, &self.spec);
+                    let nop = || Node::new(super::Nop { typ: Type::Bottom });
+                    let lhs = std::mem::replace(&mut self.lhs, nop());
+                    let rhs = std::mem::replace(&mut self.rhs, nop());
+                    let node = super::bind::lower_over_operands(
+                        ctx,
+                        BitFlags::empty(),
+                        &self.scope,
+                        &self.spec,
+                        self.top_id,
+                        [(arcstr::literal!("#l"), lhs), (arcstr::literal!("#r"), rhs)],
+                        e,
+                    )?;
+                    self.dispatch = CmpDispatch::Lowered(node);
+                    return Ok(());
+                }
+                let hooks = coretraits::Hooks::build(
+                    ctx,
+                    &plan,
+                    coretraits::CoreTrait::$trait,
+                    &self.scope,
+                    self.spec.id.inner(),
+                    self.top_id,
+                )?;
+                self.dispatch = CmpDispatch::Walk { plan, hooks };
+                Ok(())
             }
         }
 
-        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
-            fn update(
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            fn update_op(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
@@ -117,36 +237,116 @@ macro_rules! compare_op {
                 }
                 let fired = lt.is_fired() || rt.is_fired();
                 let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                let v = l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()));
-                self.resident.set(TagValue::tagged(v, tag))
+                let v = match &mut self.dispatch {
+                    CmpDispatch::Structural | CmpDispatch::Lowered(_) => {
+                        Some(l.with_value(|lv| r.with_value(|rv| (lv $op rv).into())))
+                    }
+                    CmpDispatch::Walk { plan, hooks } => {
+                        let lv = l.value_cloned();
+                        let rv = r.value_cloned();
+                        let typ = self.lhs.typ().clone();
+                        coretraits::$walk(ctx, event, plan, hooks, &typ, &lv, &rv)
+                            .map(|o| Value::Bool($test(o)))
+                    }
+                };
+                match v {
+                    Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+                    None => self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)),
+                }
+            }
+        }
+
+        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                event: &mut Event<E>,
+            ) -> &TagValue {
+                match matches!(self.dispatch, CmpDispatch::Lowered(_)) {
+                    true => match &mut self.dispatch {
+                        CmpDispatch::Lowered(n) => n.update(ctx, event),
+                        _ => unreachable!(),
+                    },
+                    false => self.update_op(ctx, event),
+                }
             }
 
+            /// The lowered node's spec when lowered: the node walkers
+            /// see the lowered VIEW, and fusion's call-site discovery
+            /// keys what it finds by the spec id the emitting call site
+            /// will look up.
             fn spec(&self) -> &Expr {
-                &self.spec
+                match &self.dispatch {
+                    CmpDispatch::Lowered(n) => n.spec(),
+                    _ => &self.spec,
+                }
             }
 
             fn typ(&self) -> &Type {
-                &self.typ
+                match &self.dispatch {
+                    CmpDispatch::Lowered(n) => n.typ(),
+                    _ => &self.typ,
+                }
             }
 
             fn refs(&self, refs: &mut Refs) {
-                self.lhs.refs(refs);
-                self.rhs.refs(refs);
+                match &self.dispatch {
+                    CmpDispatch::Lowered(n) => n.refs(refs),
+                    CmpDispatch::Structural => {
+                        self.lhs.refs(refs);
+                        self.rhs.refs(refs)
+                    }
+                    CmpDispatch::Walk { hooks, .. } => {
+                        self.lhs.refs(refs);
+                        self.rhs.refs(refs);
+                        hooks.refs(refs)
+                    }
+                }
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.delete(ctx);
-                self.rhs.delete(ctx)
+                match &mut self.dispatch {
+                    CmpDispatch::Lowered(n) => n.delete(ctx),
+                    CmpDispatch::Structural => {
+                        self.lhs.delete(ctx);
+                        self.rhs.delete(ctx)
+                    }
+                    CmpDispatch::Walk { hooks, .. } => {
+                        self.lhs.delete(ctx);
+                        self.rhs.delete(ctx);
+                        hooks.delete(ctx)
+                    }
+                }
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.sleep(ctx);
-                self.rhs.sleep(ctx)
+                match &mut self.dispatch {
+                    CmpDispatch::Lowered(n) => n.sleep(ctx),
+                    CmpDispatch::Structural => {
+                        self.lhs.sleep(ctx);
+                        self.rhs.sleep(ctx)
+                    }
+                    CmpDispatch::Walk { hooks, .. } => {
+                        self.lhs.sleep(ctx);
+                        self.rhs.sleep(ctx);
+                        hooks.sleep(ctx)
+                    }
+                }
             }
 
             fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.reset_replay(ctx);
-                self.rhs.reset_replay(ctx)
+                match &mut self.dispatch {
+                    CmpDispatch::Lowered(n) => n.reset_replay(ctx),
+                    CmpDispatch::Structural => {
+                        self.lhs.reset_replay(ctx);
+                        self.rhs.reset_replay(ctx)
+                    }
+                    CmpDispatch::Walk { hooks, .. } => {
+                        self.lhs.reset_replay(ctx);
+                        self.rhs.reset_replay(ctx);
+                        hooks.reset_replay(ctx)
+                    }
+                }
             }
 
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -198,36 +398,59 @@ macro_rules! compare_op {
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                if let CmpDispatch::Lowered(n) = &mut self.dispatch {
+                    return n.typecheck1(ctx);
+                }
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
+                if matches!(self.dispatch, CmpDispatch::Structural) {
+                    wrap!(self, self.resolve_dispatch(ctx))?;
+                }
+                Ok(())
             }
 
             fn view(&self) -> $crate::NodeView<'_, R, E> {
-                $crate::NodeView::$name(self)
+                match &self.dispatch {
+                    CmpDispatch::Lowered(n) => n.view(),
+                    _ => $crate::NodeView::$name(self),
+                }
+            }
+
+            fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+                match &mut self.dispatch {
+                    CmpDispatch::Lowered(n) => n.fuse(ctx),
+                    _ => Ok(None),
+                }
             }
 
             fn emit_clif(
                 &self,
                 cx: &mut $crate::fusion::emit::BodyCx,
             ) -> Result<$crate::fusion::emit::CompiledExpr> {
-                $crate::fusion::emit::emit_cmp_node(
-                    cx,
-                    $crate::node::op::CmpOp::$name,
-                    &self.lhs,
-                    &self.rhs,
-                )
+                match &self.dispatch {
+                    CmpDispatch::Lowered(n) => n.emit_clif(cx),
+                    CmpDispatch::Walk { .. } => bail!(
+                        "emit_clif: a comparison through a core trait implementation \
+                         inside the operand type is not lowered"
+                    ),
+                    CmpDispatch::Structural => $crate::fusion::emit::emit_cmp_node(
+                        cx,
+                        $crate::node::op::CmpOp::$name,
+                        &self.lhs,
+                        &self.rhs,
+                    ),
+                }
             }
-
         }
     };
 }
 
-compare_op!(Eq, ==);
-compare_op!(Ne, !=);
-compare_op!(Lt, <);
-compare_op!(Gt, >);
-compare_op!(Lte, <=);
-compare_op!(Gte, >=);
+compare_op!(Eq, ==, Eq, eq, |b: bool| b);
+compare_op!(Ne, !=, Eq, eq, |b: bool| !b);
+compare_op!(Lt, <, Ord, cmp, |o| o == std::cmp::Ordering::Less);
+compare_op!(Gt, >, Ord, cmp, |o| o == std::cmp::Ordering::Greater);
+compare_op!(Lte, <=, Ord, cmp, |o| o != std::cmp::Ordering::Greater);
+compare_op!(Gte, >=, Ord, cmp, |o| o != std::cmp::Ordering::Less);
 
 macro_rules! bool_op {
     ($name:ident, $op:tt) => {

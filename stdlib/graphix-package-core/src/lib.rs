@@ -10,14 +10,20 @@ use graphix_compiler::{
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
-    node::genn,
+    node::{coretraits, genn},
     typ::{FnType, TVal, Type, TypeRef},
 };
 use graphix_rt::GXRt;
 use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
-use std::{any::Any, collections::VecDeque, fmt::Debug, iter, time::Duration};
+use std::{
+    any::Any,
+    collections::VecDeque,
+    fmt::{self, Debug, Write},
+    iter,
+    time::Duration,
+};
 use tokio::time::Instant;
 
 pub(crate) mod buffer;
@@ -2168,15 +2174,153 @@ impl FromValue for LogDest {
     }
 }
 
+/// A print builtin's value argument rendered through the core
+/// `Display` hook (`design/traits.md` §8). The plan and its hook
+/// sites are built on the FIRST render, from the argument's settled
+/// type: a builtin's type-derived state must exist after `init` +
+/// `typecheck0` alone (the DynCall mint runs no typecheck1), and a
+/// cell still open at typecheck0 — a rec definition's return — is
+/// bound by the first update on both engines.
+struct Shown<R: Rt, E: UserEvent> {
+    scope: Scope,
+    top_id: ExprId,
+    site_id: u64,
+    hooks: Option<Option<(coretraits::Plan, coretraits::Hooks<R, E>)>>,
+}
+
+impl<R: Rt, E: UserEvent> fmt::Debug for Shown<R, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Shown")
+    }
+}
+
+impl<R: Rt, E: UserEvent> Shown<R, E> {
+    fn new(scope: &Scope, top_id: ExprId, site_id: u64) -> Self {
+        Self { scope: scope.clone(), top_id, site_id, hooks: None }
+    }
+
+    /// Render `v` at `typ` into `buf`. `false` is a bottom: a hook
+    /// produced nothing this cycle.
+    fn render(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+        typ: &Type,
+        v: &Value,
+        buf: &mut String,
+    ) -> bool {
+        use std::fmt::Write;
+        if let Value::String(s) = v {
+            write!(buf, "{s}").unwrap();
+            return true;
+        }
+        if self.hooks.is_none() {
+            let built = match coretraits::Plan::build(
+                &ctx.env,
+                coretraits::CoreTrait::Display,
+                typ,
+            ) {
+                Ok(Some(plan)) => match coretraits::Hooks::build(
+                    ctx,
+                    &plan,
+                    coretraits::CoreTrait::Display,
+                    &self.scope,
+                    self.site_id,
+                    self.top_id,
+                ) {
+                    Ok(hooks) => Some((plan, hooks)),
+                    Err(e) => {
+                        log::error!("Display hook for {typ}: {e:?}");
+                        None
+                    }
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    log::error!("Display plan for {typ}: {e:?}");
+                    None
+                }
+            };
+            self.hooks = Some(built);
+        }
+        match self.hooks.as_mut().unwrap() {
+            None => {
+                write!(buf, "{}", TVal { env: &ctx.env, typ, v }).unwrap();
+                true
+            }
+            Some((plan, hooks)) => {
+                coretraits::fmt(buf, ctx, event, plan, hooks, typ, v).is_ok()
+            }
+        }
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        if let Some(Some((_, h))) = &self.hooks {
+            h.refs(refs)
+        }
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(Some((_, h))) = &mut self.hooks {
+            h.delete(ctx)
+        }
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(Some((_, h))) = &mut self.hooks {
+            h.sleep(ctx)
+        }
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(Some((_, h))) = &mut self.hooks {
+            h.reset_replay(ctx)
+        }
+    }
+}
+
+/// Where a print builtin's output goes this cycle, and the line it
+/// writes there.
+fn emit_line<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    dest: LogDest,
+    line: &str,
+    suffix: &str,
+) {
+    let sink = match dest {
+        LogDest::Stdout | LogDest::Stderr => ctx.libstate.get::<PrintSink>().cloned(),
+        LogDest::Log(_) => None,
+    };
+    match (dest, sink) {
+        // Captured (the harness stdout oracle) — the sink receives
+        // exactly the bytes the process stream would have.
+        (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
+            let mut out = sink.0.lock();
+            out.push_str(line);
+            out.push_str(suffix);
+        }
+        (LogDest::Stdout, None) => print!("{line}{suffix}"),
+        (LogDest::Stderr, None) => eprint!("{line}{suffix}"),
+        (LogDest::Log(lvl), _) => match lvl {
+            Level::Trace => log::trace!("{line}"),
+            Level::Debug => log::debug!("{line}"),
+            Level::Info => log::info!("{line}"),
+            Level::Warn => log::warn!("{line}"),
+            Level::Error => log::error!("{line}"),
+        },
+    }
+}
+
 #[derive(Debug)]
-struct Dbg {
+struct Dbg<R: Rt, E: UserEvent> {
     spec: Expr,
     dest: LogDest,
     typ: Type,
+    shown: Shown<R, E>,
+    buf: String,
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg<R, E> {
     const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_dbg";
 
@@ -2184,20 +2328,23 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
         _ctx: &'a mut ExecCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
         _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
+        scope: &'b Scope,
         from: &'c [Node<R, E>],
-        _top_id: ExprId,
+        top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
+        let spec = from[1].spec().clone();
         Ok(Box::new(Dbg {
-            spec: from[1].spec().clone(),
+            shown: Shown::new(scope, top_id, spec.id.inner()),
+            spec,
             dest: LogDest::Stderr,
             typ: Type::Bottom,
+            buf: String::new(),
             out: TagValue::phantom(),
         }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
+impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2210,57 +2357,34 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         {
             self.dest = d;
         }
-        let ticked = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned());
-        let res = ticked.map(|v| {
-            let sink = match self.dest {
-                LogDest::Stdout | LogDest::Stderr => {
-                    ctx.libstate.get::<PrintSink>().cloned()
-                }
-                LogDest::Log(_) => None,
-            };
-            let tv = TVal { env: &ctx.env, typ: &self.typ, v: &v };
-            match (self.dest, sink) {
-                // Captured (the harness stdout oracle).
-                (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-                    use std::fmt::Write;
-                    let mut out = sink.0.lock();
-                    writeln!(out, "{} dbg({}): {}", self.spec.pos, self.spec, tv).unwrap()
-                }
-                (LogDest::Stderr, None) => {
-                    eprintln!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                }
-                (LogDest::Stdout, None) => {
-                    println!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                }
-                (LogDest::Log(level), _) => match level {
-                    Level::Trace => {
-                        log::trace!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Debug => {
-                        log::debug!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Info => {
-                        log::info!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Warn => {
-                        log::warn!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Error => {
-                        log::error!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                },
-            };
-            v
-        });
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        else {
+            return self.out.ride();
+        };
+        self.buf.clear();
+        write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
+        if !self.shown.render(ctx, event, &self.typ, &v, &mut self.buf) {
+            return self.out.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
         }
+        emit_line(ctx, self.dest, &self.buf, "\n");
+        self.out.set(TagValue::fired(v))
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn refs(&self, refs: &mut Refs) {
+        self.shown.refs(refs)
+    }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.shown.delete(ctx)
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.shown.sleep(ctx)
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.shown.reset_replay(ctx)
+    }
 
     fn typecheck0(
         &mut self,
@@ -2273,12 +2397,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 }
 
 #[derive(Debug)]
-struct Log {
+struct Log<R: Rt, E: UserEvent> {
     scope: Scope,
     dest: LogDest,
+    shown: Shown<R, E>,
+    buf: String,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log<R, E> {
     const EFFECT: EffectKind = EffectKind::Sync;
     const NAME: &str = "core_log";
 
@@ -2287,14 +2413,19 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
         _typ: &'a graphix_compiler::typ::FnType,
         _resolved: Option<&'d FnType>,
         scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
+        from: &'c [Node<R, E>],
+        top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { scope: scope.clone(), dest: LogDest::Stdout }))
+        Ok(Box::new(Self {
+            scope: scope.clone(),
+            dest: LogDest::Stdout,
+            shown: Shown::new(scope, top_id, from[1].spec().id.inner()),
+            buf: String::new(),
+        }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
+impl<R: Rt, E: UserEvent> Apply<R, E> for Log<R, E> {
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2309,48 +2440,43 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         }
         if let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
         {
-            let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
-            let sink = match self.dest {
-                LogDest::Stdout | LogDest::Stderr => {
-                    ctx.libstate.get::<PrintSink>().cloned()
-                }
-                LogDest::Log(_) => None,
-            };
-            match (self.dest, sink) {
-                // Captured (the harness stdout oracle).
-                (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-                    use std::fmt::Write;
-                    let mut out = sink.0.lock();
-                    writeln!(out, "{}: {}", self.scope.lexical, tv).unwrap()
-                }
-                (LogDest::Stdout, None) => println!("{}: {}", self.scope.lexical, tv),
-                (LogDest::Stderr, None) => eprintln!("{}: {}", self.scope.lexical, tv),
-                (LogDest::Log(lvl), _) => match lvl {
-                    Level::Trace => log::trace!("{}: {}", self.scope.lexical, tv),
-                    Level::Debug => log::debug!("{}: {}", self.scope.lexical, tv),
-                    Level::Info => log::info!("{}: {}", self.scope.lexical, tv),
-                    Level::Warn => log::warn!("{}: {}", self.scope.lexical, tv),
-                    Level::Error => log::error!("{}: {}", self.scope.lexical, tv),
-                },
+            self.buf.clear();
+            write!(self.buf, "{}: ", self.scope.lexical).unwrap();
+            let typ = from[1].typ().clone();
+            if self.shown.render(ctx, event, &typ, &v, &mut self.buf) {
+                emit_line(ctx, self.dest, &self.buf, "\n");
             }
         }
         TagValue::phantom_ref()
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn refs(&self, refs: &mut Refs) {
+        self.shown.refs(refs)
+    }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.shown.delete(ctx)
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.shown.sleep(ctx)
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.shown.reset_replay(ctx)
+    }
 }
 
 macro_rules! printfn {
-    ($type:ident, $name:literal, $print:ident, $eprint:ident, $suffix:literal) => {
+    ($type:ident, $name:literal, $suffix:literal) => {
         #[derive(Debug)]
-        struct $type {
+        struct $type<R: Rt, E: UserEvent> {
             dest: LogDest,
+            shown: Shown<R, E>,
             buf: String,
         }
 
-        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
+        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type<R, E> {
             const EFFECT: EffectKind = EffectKind::Sync;
             const NAME: &str = $name;
 
@@ -2358,22 +2484,25 @@ macro_rules! printfn {
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
                 _resolved: Option<&'d FnType>,
-                _scope: &'b Scope,
-                _from: &'c [Node<R, E>],
-                _top_id: ExprId,
+                scope: &'b Scope,
+                from: &'c [Node<R, E>],
+                top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { dest: LogDest::Stdout, buf: String::new() }))
+                Ok(Box::new(Self {
+                    dest: LogDest::Stdout,
+                    shown: Shown::new(scope, top_id, from[1].spec().id.inner()),
+                    buf: String::new(),
+                }))
             }
         }
 
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $type {
+        impl<R: Rt, E: UserEvent> Apply<R, E> for $type<R, E> {
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
             ) -> &TagValue {
-                use std::fmt::Write;
                 if let Some(v) =
                     seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
                     && let Ok(d) = v.cast_to::<LogDest>()
@@ -2384,53 +2513,35 @@ macro_rules! printfn {
                     seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
                 {
                     self.buf.clear();
-                    match v {
-                        Value::String(s) => write!(self.buf, "{s}"),
-                        v => write!(
-                            self.buf,
-                            "{}",
-                            TVal { env: &ctx.env, typ: &from[1].typ(), v: &v }
-                        ),
-                    }
-                    .unwrap();
-                    let sink = match self.dest {
-                        LogDest::Stdout | LogDest::Stderr => {
-                            ctx.libstate.get::<PrintSink>().cloned()
-                        }
-                        LogDest::Log(_) => None,
-                    };
-                    match (self.dest, sink) {
-                        // Captured (the harness stdout oracle) — the
-                        // sink receives exactly the bytes the process
-                        // stream would have.
-                        (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-                            let mut out = sink.0.lock();
-                            out.push_str(&self.buf);
-                            out.push_str($suffix);
-                        }
-                        (LogDest::Stdout, None) => $print!("{}", self.buf),
-                        (LogDest::Stderr, None) => $eprint!("{}", self.buf),
-                        (LogDest::Log(lvl), _) => match lvl {
-                            Level::Trace => log::trace!("{}", self.buf),
-                            Level::Debug => log::debug!("{}", self.buf),
-                            Level::Info => log::info!("{}", self.buf),
-                            Level::Warn => log::warn!("{}", self.buf),
-                            Level::Error => log::error!("{}", self.buf),
-                        },
+                    let typ = from[1].typ().clone();
+                    if self.shown.render(ctx, event, &typ, &v, &mut self.buf) {
+                        emit_line(ctx, self.dest, &self.buf, $suffix);
                     }
                 }
                 TagValue::phantom_ref()
             }
 
-            fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+            fn refs(&self, refs: &mut Refs) {
+                self.shown.refs(refs)
+            }
 
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.shown.delete(ctx)
+            }
+
+            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.shown.sleep(ctx)
+            }
+
+            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.shown.reset_replay(ctx)
+            }
         }
     };
 }
 
-printfn!(Print, "core_print", print, eprint, "");
-printfn!(Println, "core_println", println, eprintln, "\n");
+printfn!(Print, "core_print", "");
+printfn!(Println, "core_println", "\n");
 
 // ── Package registration ───────────────────────────────────────────
 
@@ -2466,10 +2577,10 @@ graphix_derive::defpackage! {
         Mean,
         Uniq,
         Never,
-        Dbg,
-        Log,
-        Print,
-        Println,
+        Dbg as Dbg<GXRt<X>, X::UserEvent>,
+        Log as Log<GXRt<X>, X::UserEvent>,
+        Print as Print<GXRt<X>, X::UserEvent>,
+        Println as Println<GXRt<X>, X::UserEvent>,
         buffer::BytesToString,
         buffer::BytesToStringLossy,
         buffer::BytesFromString,

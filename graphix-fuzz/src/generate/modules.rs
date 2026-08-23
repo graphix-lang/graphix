@@ -364,6 +364,32 @@ pub(super) fn gen_module(
             );
             stats.trait_call = true;
         }
+        // The core traits (design/traits.md §8): an `Eq` whose answer
+        // differs from the structural one (parity of the payload) and
+        // a `Display` with its own spelling, reached through `==` on
+        // T itself (the lowered static call), `==` on arrays holding
+        // T (the hooked walk), and interpolation of T bare and nested.
+        if chance(rng, 0.5) {
+            let decls = "impl Eq for T;\nimpl Display for T;\nval teq: fn(a: T, b: T) -> bool;\nval teqa: fn(a: T, b: T) -> bool;\nval tshow: fn(t: T) -> string;\n";
+            let impls = "impl Eq for T { let eq = |a, b| un(a) % i64:2 == un(b) % i64:2 };\nimpl Display for T { let fmt = |t| \"T<[un(t)]>\" };\n";
+            let fns = "let teq = |a: T, b: T| -> bool a == b;\nlet teqa = |a: T, b: T| -> bool [a, a] == [b, a];\nlet tshow = |t: T| -> string \"[t]|[(t, i64:1)]\";\n";
+            if has_gxi {
+                gxi.push_str(decls);
+            }
+            gx.push_str(impls);
+            gx.push_str(fns);
+            let f2 = GenType::Fn {
+                params: vec![aty.clone(), aty.clone()],
+                ret: Box::new(GenType::Bool),
+            };
+            ctx.push(format!("{mname}::teq"), f2.clone());
+            ctx.push(format!("{mname}::teqa"), f2);
+            ctx.push(
+                format!("{mname}::tshow"),
+                GenType::Fn { params: vec![aty.clone()], ret: Box::new(GenType::Str) },
+            );
+            stats.core_trait = true;
+        }
         ctx.push(
             format!("{mname}::mk"),
             GenType::Fn { params: vec![I64], ret: Box::new(aty.clone()) },

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>json - The Graphix Programming Language</title>
+        <title>Traits - The Graphix Programming Language</title>
 
 
         <!-- Custom HTML head -->
@@ -174,45 +174,192 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="json"><a class="header" href="#json">json</a></h1>
-<p>The <code>json</code> module provides JSON serialization and deserialization.
-<code>json::read</code> uses type-directed deserialization — the target type is
-inferred from the type annotation at the call site.</p>
-<pre><code class="language-graphix">use sys::io::Stream;
+                        <h1 id="traits"><a class="header" href="#traits">Traits</a></h1>
+<p>A trait names a set of operations a type can support. It is declared
+once, implemented per type, and used as a bound on type variables —
+Graphix’s traits are Rust’s, spelled in Graphix.</p>
+<h2 id="declaring-a-trait"><a class="header" href="#declaring-a-trait">Declaring a Trait</a></h2>
+<pre><code class="language-graphix">trait Show {
+    /// required: every implementor supplies it
+    val show: fn(self) -&gt; string;
 
-/// Parse JSON from a string, byte array, or I/O stream.
-val read: fn(input: [string, bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]&gt;;
-
-/// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
-
-/// Serialize a value to JSON bytes.
-val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
-
-/// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, stream: Stream&lt;'a&gt;, value: Any) -&gt; Result&lt;null, [`JsonErr(string), `IOErr(string)]&gt;;
+    /// overridable: the body is the default
+    val twice: fn(self) -&gt; string = |s| "[show(s)] [show(s)]"
+};
 </code></pre>
-<h2 id="type-directed-deserialization"><a class="header" href="#type-directed-deserialization">Type-directed deserialization</a></h2>
-<p>The return type of <code>json::read</code> is determined by the type annotation on
-the binding. The compiler resolves the concrete type at compile time and
-generates the appropriate deserialization code.</p>
-<pre><code class="language-graphix">
-let n: i64 = json::read("42")?;
-let s: string = json::read("\"hello\"")?;
-let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 30}")?;
-let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
-let maybe: [string, null] = json::read(data)?;
+<p>Each item is a <code>val</code> with a function type. The type <code>self</code> is the
+receiver — the type implementing the trait — and every method has a
+positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
+is <code>self</code> followed by an ordinary named parameter. A method may use
+<code>self</code> anywhere in its signature (<code>fn(self) -&gt; self</code>).</p>
+<p>A method with a <code>= default</code> body is inherited by implementors that
+do not override it. Inside a default body the trait’s other methods
+are visible bare (<code>show(s)</code> above), as are the items of the declaring
+module.</p>
+<p>Trait declarations are legal in <code>.gx</code> files and in <code>.gxi</code> interface
+files; an interface’s declaration applies to the implementation file
+automatically, like a <code>type</code>, and must not be repeated there.</p>
+<h2 id="implementing-a-trait"><a class="header" href="#implementing-a-trait">Implementing a Trait</a></h2>
+<pre><code class="language-graphix">type Counter = Abstract&lt;i64&gt;;
+
+impl Show for Counter {
+    let show = |c| "Counter([c.0])"
+};
+
+impl Show for i64 {
+    let show = |x| "int [x]";
+    let twice = |x| "int [x], again"     // overriding the default
+};
 </code></pre>
+<p>An <code>impl</code> block holds one <code>let</code> per method. Each binding is checked
+against the trait’s signature with <code>self</code> replaced by the target
+(<code>fn(self: Counter) -&gt; string</code> above), so the lambdas need no
+annotations. A required method left out is a compile error; a method
+the trait does not declare is too. The trait’s methods are visible
+bare inside the block, so one method may call another.</p>
+<p><code>impl Trait for Target;</code> (no body) implements a trait whose methods
+all have defaults, and is the form an interface file uses to declare
+that the implementation provides the impl (see below).</p>
+<h3 id="parameterized-targets"><a class="header" href="#parameterized-targets">Parameterized targets</a></h3>
+<pre><code class="language-graphix">impl&lt;'a: Show&gt; Show for Array&lt;'a&gt; {
+    let show = |xs| "\[[str::join(#sep: ", ", array::map(xs, Show::show))]\]"
+}
+</code></pre>
+<p>The head’s type variables are declared in <code>impl&lt;..&gt;</code> with their
+bounds; every one must occur in the target. <code>Array&lt;i64&gt;</code> then
+implements <code>Show</code> exactly when <code>i64</code> does.</p>
+<h3 id="where-an-impl-may-be-written"><a class="header" href="#where-an-impl-may-be-written">Where an impl may be written</a></h3>
+<p>Implementations are global facts: once the module holding one loads,
+the impl applies everywhere the trait is used. To keep that coherent,
+an <code>impl</code> is restricted to where its author answers for it:</p>
+<ul>
+<li>an <strong>abstract type</strong> (<code>Abstract&lt;..&gt;</code> or Rust-backed) may be
+implemented in the type’s package or the trait’s package;</li>
+<li><strong>any other type</strong> — a primitive, <code>Array&lt;..&gt;</code>, a struct, a tuple, a
+variant, an alias — only inside the <strong>trait’s own package</strong>.</li>
+</ul>
+<p>A structural type is its shape, so <code>impl Show for {x: i64, y: i64}</code>
+would apply to every <code>{x: i64, y: i64}</code> in the program; only the
+trait’s author may decide that. A type that should carry behaviour
+gets a name: <code>type Point = Abstract&lt;{x: i64, y: i64}&gt;</code>. Unions are
+never targets (each member is implemented separately), and one
+implementation per (trait, type) is enforced.</p>
+<h2 id="calling-trait-methods"><a class="header" href="#calling-trait-methods">Calling Trait Methods</a></h2>
+<p>A trait’s methods live under the trait’s name, like a module’s items:</p>
+<pre><code class="language-graphix">Show::show(Counter(42));
+
+use Show::{show, twice};         // or `use Show::*`
+show(7);
+twice(Counter(1))
+</code></pre>
+<p>A call resolves to the implementation selected by the type of the
+<code>self</code> argument — statically, when the program is compiled. That is
+what makes a trait call as cheap as any other static call (and lets it
+fuse into the JIT). If the self type is not known at the call, the
+call is a compile error: annotate the argument.</p>
+<h3 id="dispatch-over-a-union"><a class="header" href="#dispatch-over-a-union">Dispatch over a union</a></h3>
+<p>When the self type is a union of implementors, the call becomes the
+<code>select</code> you would otherwise write, one arm per member:</p>
+<pre><code class="language-graphix">let v: [i64, Counter] = select flag { true =&gt; 1, false =&gt; Counter(2) };
+show(v)      // ≡ select v { i64 as x =&gt; show(x), Counter as x =&gt; show(x) }
+</code></pre>
+<p>Every member needs an implementation.</p>
+<h2 id="traits-as-bounds"><a class="header" href="#traits-as-bounds">Traits as Bounds</a></h2>
+<p>A trait names no value’s type; it constrains a type variable:</p>
+<pre><code class="language-graphix">let describe = 'a: Show |x: 'a| "&lt;[show(x)]&gt;";
+describe(3);
+describe(Counter(4))
+</code></pre>
+<p>Inside <code>describe</code>, <code>show(x)</code> resolves per use: each call site of
+<code>describe</code> elaborates the body with its own argument type, so <code>3</code>
+dispatches to <code>i64</code>’s <code>show</code> and <code>Counter(4)</code> to <code>Counter</code>’s.</p>
+<p>Writing the trait as a parameter’s type is shorthand for a fresh
+bounded variable per parameter:</p>
+<pre><code class="language-graphix">let both = |a: Show, b: Show| "[show(a)] [show(b)]";
+// ≡ 'a: Show, 'b: Show |a: 'a, b: 'b| ...
+</code></pre>
+<p>Bounds combine with <code>+</code>: <code>'a: Show + Hash</code>, <code>fn&lt;'s: Read + Write&gt;(s: 's)</code>.
+A trait anywhere else in a type — a return type, a field, an array
+element — is an error, since no value has a trait as its type.</p>
+<p>A function whose signature was written before an implementation
+existed still accepts the new type: bounds are checked at each use,
+against the implementations known then.</p>
+<h2 id="traits-in-interface-files"><a class="header" href="#traits-in-interface-files">Traits in Interface Files</a></h2>
+<pre><code class="language-graphix">// m.gxi
+trait Show { val show: fn(self) -&gt; string };
+type Counter;
+impl Show for Counter;
+val make: fn(x: i64) -&gt; Counter
+</code></pre>
+<pre><code class="language-graphix">// m.gx
+type Counter = Abstract&lt;i64&gt;;
+impl Show for Counter { let show = |c| "Counter([c.0])" };
+let make = |x| Counter(x)
+</code></pre>
+<p>The interface declares the trait (with its defaults, if any) and
+<code>impl Show for Counter;</code> promises the implementation; a consumer
+compiles against the interface and calls <code>m::Show::show(m::make(9))</code>.
+A trait declared only in the <code>.gx</code> file is private to that module.</p>
+<h2 id="the-core-traits-eq-ord-and-display"><a class="header" href="#the-core-traits-eq-ord-and-display">The Core Traits: Eq, Ord and Display</a></h2>
+<p>Three traits are built into core and consulted by the language
+itself:</p>
+<pre><code class="language-graphix">trait Eq { val eq: fn(self, other: self) -&gt; bool };
+type Ordering = [`Less, `Equal, `Greater];
+trait Ord { val cmp: fn(self, other: self) -&gt; Ordering };
+trait Display { val fmt: fn(self) -&gt; string };
+</code></pre>
+<p><code>==</code> and <code>!=</code> consult <code>Eq</code>; <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code> and <code>&gt;=</code> consult <code>Ord</code>;
+string interpolation, <code>print</code>, <code>println</code>, <code>dbg</code> and <code>log</code> consult
+<code>Display</code>. The rule is the same for all three: at a site, look at the
+static type; wherever an implementation exists — for the whole type,
+or for a type nested anywhere inside it — call it; everywhere else
+take the structural case (compare values, or print them as Graphix
+syntax). Every type has the structural default, so the core traits
+hold as bounds for every type, and the dispatchers work on every
+value: <code>Eq::eq(1, 1)</code> is <code>1 == 1</code>.</p>
+<p>A case-insensitive key, equal however it is capitalized:</p>
+<pre><code class="language-graphix">type Key = Abstract&lt;string&gt;;
+impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+
+Key("Foo") == Key("FOO")              // true: the implementation
+[Key("a")] == [Key("A")]              // true: called per element
+(Key("x"), 1) == (Key("X"), 2)        // false: the i64s differ
+</code></pre>
+<p>A color that prints as its hex triplet, wherever it appears:</p>
+<pre><code class="language-graphix">type Color = Abstract&lt;{r: i64, g: i64, b: i64}&gt;;
+impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+
+let red = Color({r: 255, g: 0, b: 0});
+println("[red]")                      // #25500
+println([red, red])                   // [#25500, #25500]
+println({fg: red, n: 3})              // {fg: #25500, n: 3}
+</code></pre>
+<p>Outside core only an abstract type may implement a core trait (the
+rule of the previous section). A core trait’s method runs inside the
+comparison or the print, so it is implicitly <code>#[sync]</code> — a body that
+waits on a timer is a compile error — and a method that produces no
+value makes the comparison produce none.</p>
+<p>Where there is no static type there is no implementation to consult:
+map keys, <code>array::sort</code>, <code>min</code>/<code>max</code>, values sent over the wire, and
+the REPL’s echo of a bare expression compare and print structurally.</p>
+<h2 id="current-limits"><a class="header" href="#current-limits">Current limits</a></h2>
+<ul>
+<li>Traits take no type parameters and declare no associated types.</li>
+<li><code>Hash</code> is not a trait: map keys hash structurally.</li>
+<li>A <code>==</code> or <code>&lt;</code> whose implementation sits inside a composite (an
+<code>Array&lt;Key&gt;</code>) runs on the node-walk; one on the whole type is a
+static call and fuses like any call.</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../stdlib/http.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../udt/references.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../stdlib/toml.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../modules/overview.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -222,11 +369,11 @@ let maybe: [string, null] = json::read(data)?;
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../stdlib/http.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../udt/references.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../stdlib/toml.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../modules/overview.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

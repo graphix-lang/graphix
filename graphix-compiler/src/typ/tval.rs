@@ -1,5 +1,9 @@
 use super::{PrintFlag, Type, TypeRef, cast::IsAFlags};
-use crate::{env::Env, typ::format_with_flags};
+use crate::{
+    env::Env,
+    node::coretraits::{FmtHooks, NoHooks, Plan, union_member},
+    typ::format_with_flags,
+};
 use ahash::AHashSet;
 use netidx_value::NakedValue;
 use netidx_value::Value;
@@ -27,7 +31,7 @@ pub struct TVal<'a> {
 /// USER-CONTROLLED (a cons list nests one level per element — printing
 /// a ~2k-element `list::init` overflowed the stack, jul17a
 /// crash_000003), so the walk must not recurse.
-fn fmt_naked(f: &mut fmt::Formatter<'_>, v: &Value) -> fmt::Result {
+fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     fmt_naked_capped(f, v, usize::MAX)
 }
 
@@ -35,11 +39,7 @@ fn fmt_naked(f: &mut fmt::Formatter<'_>, v: &Value) -> fmt::Result {
 /// with a `…` (unbalanced by design — it is a truncated dump, used by
 /// the type-mismatch diagnostic so a huge mismatched value can't spam
 /// unbounded stderr). The full printer passes `usize::MAX`.
-fn fmt_naked_capped(
-    f: &mut fmt::Formatter<'_>,
-    v: &Value,
-    mut cap: usize,
-) -> fmt::Result {
+fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::Result {
     enum W<'a> {
         V(&'a Value),
         S(&'static str),
@@ -96,182 +96,204 @@ impl fmt::Display for NakedPrefix<'_> {
     }
 }
 
+/// A step of the typed walk: the plan node that goes with `typ`, if a
+/// hook is still reachable below it.
+type Step<'p> = Option<(&'p Plan, usize)>;
+
 impl<'a> TVal<'a> {
-    fn fmt_int(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        hist: &mut AHashSet<(usize, usize)>,
+    /// The typed walk with the core `Display` hook: at a plan node
+    /// that is a hook, the implementation's string; everywhere else
+    /// the structural case, recursing with the element types (and the
+    /// element plan nodes). `Err` is a bottom — a hook produced
+    /// nothing.
+    pub fn fmt_planned(
+        w: &mut dyn fmt::Write,
+        hooks: &mut dyn FmtHooks,
+        plan: Step<'_>,
+        typ: &Type,
+        v: &Value,
     ) -> fmt::Result {
-        if crate::dbgenv::graphix_dbg_tval() {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                eprintln!("TVAL typ={} v={}", self.typ, NakedPrefix(self.v));
-            });
+        fmt_int(w, hooks, plan, typ, v, &mut LPooled::take())
+    }
+}
+
+fn fmt_int(
+    f: &mut dyn fmt::Write,
+    hooks: &mut dyn FmtHooks,
+    plan: Step<'_>,
+    typ: &Type,
+    v: &Value,
+    hist: &mut AHashSet<(usize, usize)>,
+) -> fmt::Result {
+    if crate::dbgenv::graphix_dbg_tval() {
+        format_with_flags(PrintFlag::DerefTVars, || {
+            eprintln!("TVAL typ={} v={}", typ, NakedPrefix(v));
+        });
+    }
+    if !typ.is_a_with(hooks.env(), IsAFlags::MatchAbstract.into(), v) {
+        return format_with_flags(PrintFlag::DerefTVars, || {
+            eprintln!("error, type {} does not match value {}", typ, NakedPrefix(v));
+            fmt_naked(f, v)
+        });
+    }
+    if let Some((p, n)) = plan
+        && let Some(h) = p.is_hook(n)
+    {
+        let s = hooks.call(h, v).ok_or(fmt::Error)?;
+        return f.write_str(&s);
+    }
+    match (typ, v) {
+        (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
+            let g = crate::abstract_value::get(v).unwrap();
+            write!(f, "{}(", g.name)?;
+            fmt_naked(f, &g.payload)?;
+            write!(f, ")")
         }
-        if !self.typ.is_a_with(&self.env, IsAFlags::MatchAbstract.into(), &self.v) {
-            return format_with_flags(PrintFlag::DerefTVars, || {
-                eprintln!(
-                    "error, type {} does not match value {}",
-                    self.typ,
-                    NakedPrefix(self.v)
-                );
-                fmt_naked(f, self.v)
-            });
+        (
+            Type::Primitive(_)
+            | Type::Abstract { .. }
+            | Type::Bottom
+            | Type::Any
+            | Type::Error(_),
+            v,
+        ) => fmt_naked(f, v),
+        (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
+        (Type::Fn(_), v) => fmt_naked(f, v),
+        (Type::Ref(TypeRef { .. }), v) => {
+            let typ = match typ.lookup_ref(hooks.env()) {
+                Err(e) => return write!(f, "error, {e:?}"),
+                Ok(typ) => typ,
+            };
+            let typ_addr = (&typ as *const Type).addr();
+            let v_addr = (v as *const Value).addr();
+            if !hist.contains(&(typ_addr, v_addr)) {
+                hist.insert((typ_addr, v_addr));
+                let plan = plan.and_then(|(p, n)| p.same(n));
+                fmt_int(f, hooks, plan, &typ, v, hist)?
+            }
+            Ok(())
         }
-        match (&self.typ, &self.v) {
-            (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
-                let g = crate::abstract_value::get(v).unwrap();
-                write!(f, "{}(", g.name)?;
-                fmt_naked(f, &g.payload)?;
-                write!(f, ")")
-            }
-            (
-                Type::Primitive(_)
-                | Type::Abstract { .. }
-                | Type::Bottom
-                | Type::Any
-                | Type::Error(_),
-                v,
-            ) => fmt_naked(f, v),
-            (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
-            (Type::Fn(_), v) => fmt_naked(f, v),
-            (Type::Ref(TypeRef { .. }), v) => {
-                let typ = match self.typ.lookup_ref(&self.env) {
-                    Err(e) => return write!(f, "error, {e:?}"),
-                    Ok(typ) => typ,
-                };
-                let typ_addr = (&typ as *const Type).addr();
-                let v_addr = (self.v as *const Value).addr();
-                if !hist.contains(&(typ_addr, v_addr)) {
-                    hist.insert((typ_addr, v_addr));
-                    TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist)?
-                }
-                Ok(())
-            }
-            (Type::Array(et), Value::Array(a)) => {
-                write!(f, "[")?;
-                for (i, v) in a.iter().enumerate() {
-                    Self { typ: et, env: self.env, v }.fmt_int(f, hist)?;
-                    if i < a.len() - 1 {
-                        write!(f, ", ")?
-                    }
-                }
-                write!(f, "]")
-            }
-            (Type::Array(_), v) => fmt_naked(f, v),
-            (Type::Map { key, value }, Value::Map(m)) => {
-                write!(f, "{{")?;
-                for (i, (k, v)) in m.into_iter().enumerate() {
-                    Self { typ: key, env: self.env, v: k }.fmt_int(f, hist)?;
-                    write!(f, " => ")?;
-                    Self { typ: value, env: self.env, v: v }.fmt_int(f, hist)?;
-                    if i < m.len() - 1 {
-                        write!(f, ", ")?
-                    }
-                }
-                write!(f, "}}")
-            }
-            (Type::Map { .. }, v) => fmt_naked(f, v),
-            (Type::ByRef(_), v) => fmt_naked(f, v),
-            (Type::Struct(flds), Value::Array(a)) => {
-                write!(f, "{{")?;
-                for (i, ((n, et), v)) in flds.iter().zip(a.iter()).enumerate() {
-                    write!(f, "{n}: ")?;
-                    match v {
-                        Value::Array(a) if a.len() == 2 => {
-                            Self { typ: et, env: self.env, v: &a[1] }.fmt_int(f, hist)?
-                        }
-                        _ => write!(f, "err")?,
-                    }
-                    if i < flds.len() - 1 {
-                        write!(f, ", ")?
-                    }
-                }
-                write!(f, "}}")
-            }
-            (Type::Struct(_), v) => fmt_naked(f, v),
-            (Type::Tuple(flds), Value::Array(a)) => {
-                write!(f, "(")?;
-                for (i, (t, v)) in flds.iter().zip(a.iter()).enumerate() {
-                    Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
-                    if i < flds.len() - 1 {
-                        write!(f, ", ")?
-                    }
-                }
-                write!(f, ")")
-            }
-            (Type::Tuple(_), v) => fmt_naked(f, v),
-            (Type::TVar(tv), v) => match &tv.read().typ.read().typ {
-                None => fmt_naked(f, v),
-                Some(typ) => TVal { env: self.env, typ, v }.fmt_int(f, hist),
-            },
-            (Type::Variant(n, flds), Value::Array(a)) if a.len() >= 2 => {
-                write!(f, "`{n}(")?;
-                for (i, (t, v)) in flds.iter().zip(a[1..].iter()).enumerate() {
-                    Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
-                    if i < flds.len() - 1 {
-                        write!(f, ", ")?
-                    }
-                }
-                write!(f, ")")
-            }
-            (Type::Variant(_, _), Value::String(s)) => write!(f, "`{s}"),
-            (Type::Variant(_, _), v) => fmt_naked(f, v),
-            // Member selection prefers the first STRICT match — a walk
-            // where the type-blind leaves (unbound tvar, `Any`, `⊥`)
-            // match NOTHING. A `never()` arm's cell terminal-settles
-            // to ⊥ and rides the select union, and blind leaves answer
-            // plain `is_a` true for any value, so a first-match walk
-            // picked the blind member over its concrete sibling and
-            // printed the subtree naked (tuples rendered as arrays).
-            // Worse, HOW such a cell settles is MODE-dependent
-            // (fusion's binding checks bind cells the plain typecheck
-            // leaves open/⊥), so the same value rendered `(...)` under
-            // jit and `[...]` under interp (jul19f divergence_000000,
-            // pinned tval-union-blind-print-jul2026). The original fix
-            // tested informativeness only at the member's TOP level,
-            // which missed a cell nested inside an otherwise-concrete
-            // member — `Array<Array<[i64, ⊥]>>` claimed a tuple-typed
-            // value through its interior ⊥ (aug04f divergence_000000,
-            // pinned in the same family) — so the test is now the
-            // recursive `IsAFlags::Strict` walk. The plain-`is_a`
-            // fallback keeps the old behavior when no member matches
-            // strictly.
-            (Type::Set(ts), v) => {
-                // The plain fallback runs in two tiers: STRUCTURED
-                // members first, then members that are themselves a
-                // bare blind leaf (an unbound tvar / Any / ⊥). A
-                // never()-fed arm union retains the arm's orphan
-                // unbound cell as a member, and bare tvars sort first
-                // in the set — picking one rendered the value NAKED in
-                // the interp while the fused pipeline's settled union
-                // (no orphan) rendered typed (aug06d hz0
-                // divergence_000000: Array<List<Any>> through a
-                // never()-armed select printed `[["Cons", 42, "Nil"]]`
-                // vs `` [`Cons(42, `Nil)] `` — pinned in
-                // tval-union-blind-print-jul2026).
-                let blind = |t: &Type| {
-                    t.with_deref(|t| {
-                        matches!(t, None | Some(Type::Any) | Some(Type::Bottom))
-                    })
-                };
-                let strict = ts
-                    .iter()
-                    .find(|t| t.is_a_with(&self.env, IsAFlags::Strict.into(), v));
-                let pick = strict
-                    .or_else(|| ts.iter().find(|t| !blind(t) && t.is_a(&self.env, v)))
-                    .or_else(|| ts.iter().find(|t| t.is_a(&self.env, v)));
-                match pick {
-                    None => fmt_naked(f, v),
-                    Some(t) => Self { typ: t, env: self.env, v }.fmt_int(f, hist),
+        (Type::Array(et), Value::Array(a)) => {
+            write!(f, "[")?;
+            let plan = plan.and_then(|(p, n)| p.array_elem(n));
+            for (i, v) in a.iter().enumerate() {
+                fmt_int(f, hooks, plan, et, v, hist)?;
+                if i < a.len() - 1 {
+                    write!(f, ", ")?
                 }
             }
+            write!(f, "]")
         }
+        (Type::Array(_), v) => fmt_naked(f, v),
+        (Type::Map { key, value }, Value::Map(m)) => {
+            write!(f, "{{")?;
+            let kplan = plan.and_then(|(p, n)| p.map_key(n));
+            let vplan = plan.and_then(|(p, n)| p.map_value(n));
+            for (i, (k, v)) in m.into_iter().enumerate() {
+                fmt_int(f, hooks, kplan, key, k, hist)?;
+                write!(f, " => ")?;
+                fmt_int(f, hooks, vplan, value, v, hist)?;
+                if i < m.len() - 1 {
+                    write!(f, ", ")?
+                }
+            }
+            write!(f, "}}")
+        }
+        (Type::Map { .. }, v) => fmt_naked(f, v),
+        (Type::ByRef(_), v) => fmt_naked(f, v),
+        (Type::Struct(flds), Value::Array(a)) => {
+            write!(f, "{{")?;
+            for (i, ((n, et), v)) in flds.iter().zip(a.iter()).enumerate() {
+                write!(f, "{n}: ")?;
+                match v {
+                    Value::Array(a) if a.len() == 2 => {
+                        let plan = plan.and_then(|(p, n)| p.field(n, i));
+                        fmt_int(f, hooks, plan, et, &a[1], hist)?
+                    }
+                    _ => write!(f, "err")?,
+                }
+                if i < flds.len() - 1 {
+                    write!(f, ", ")?
+                }
+            }
+            write!(f, "}}")
+        }
+        (Type::Struct(_), v) => fmt_naked(f, v),
+        (Type::Tuple(flds), Value::Array(a)) => {
+            write!(f, "(")?;
+            for (i, (t, v)) in flds.iter().zip(a.iter()).enumerate() {
+                let plan = plan.and_then(|(p, n)| p.field(n, i));
+                fmt_int(f, hooks, plan, t, v, hist)?;
+                if i < flds.len() - 1 {
+                    write!(f, ", ")?
+                }
+            }
+            write!(f, ")")
+        }
+        (Type::Tuple(_), v) => fmt_naked(f, v),
+        (Type::TVar(tv), v) => match &tv.read().typ.read().typ {
+            None => fmt_naked(f, v),
+            Some(typ) => {
+                let plan = plan.and_then(|(p, n)| p.same(n));
+                fmt_int(f, hooks, plan, typ, v, hist)
+            }
+        },
+        (Type::Variant(n, flds), Value::Array(a)) if a.len() >= 2 => {
+            write!(f, "`{n}(")?;
+            for (i, (t, v)) in flds.iter().zip(a[1..].iter()).enumerate() {
+                let plan = plan.and_then(|(p, n)| p.field(n, i));
+                fmt_int(f, hooks, plan, t, v, hist)?;
+                if i < flds.len() - 1 {
+                    write!(f, ", ")?
+                }
+            }
+            write!(f, ")")
+        }
+        (Type::Variant(_, _), Value::String(s)) => write!(f, "`{s}"),
+        (Type::Variant(_, _), v) => fmt_naked(f, v),
+        // Member selection prefers the first STRICT match — a walk
+        // where the type-blind leaves (unbound tvar, `Any`, `⊥`)
+        // match NOTHING. A `never()` arm's cell terminal-settles
+        // to ⊥ and rides the select union, and blind leaves answer
+        // plain `is_a` true for any value, so a first-match walk
+        // picked the blind member over its concrete sibling and
+        // printed the subtree naked (tuples rendered as arrays).
+        // Worse, HOW such a cell settles is MODE-dependent
+        // (fusion's binding checks bind cells the plain typecheck
+        // leaves open/⊥), so the same value rendered `(...)` under
+        // jit and `[...]` under interp (jul19f divergence_000000,
+        // pinned tval-union-blind-print-jul2026). The original fix
+        // tested informativeness only at the member's TOP level,
+        // which missed a cell nested inside an otherwise-concrete
+        // member — `Array<Array<[i64, ⊥]>>` claimed a tuple-typed
+        // value through its interior ⊥ (aug04f divergence_000000,
+        // pinned in the same family) — so the test is now the
+        // recursive `IsAFlags::Strict` walk. The plain-`is_a`
+        // fallback keeps the old behavior when no member matches
+        // strictly, in two tiers: STRUCTURED members first, then
+        // members that are themselves a bare blind leaf (an unbound
+        // tvar / Any / ⊥). A never()-fed arm union retains the arm's
+        // orphan unbound cell as a member, and bare tvars sort first
+        // in the set — picking one rendered the value NAKED in the
+        // interp while the fused pipeline's settled union (no orphan)
+        // rendered typed (aug06d hz0 divergence_000000: Array<List<Any>>
+        // through a never()-armed select printed `[["Cons", 42, "Nil"]]`
+        // vs `` [`Cons(42, `Nil)] `` — pinned in
+        // tval-union-blind-print-jul2026). The rule is
+        // `coretraits::union_member`, shared with the `==`/`<` walks.
+        (Type::Set(ts), v) => match union_member(hooks.env(), ts, v) {
+            None => fmt_naked(f, v),
+            Some(i) => {
+                let plan = plan.and_then(|(p, n)| p.member(n, i));
+                fmt_int(f, hooks, plan, &ts[i], v, hist)
+            }
+        },
     }
 }
 
 impl<'a> fmt::Display for TVal<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_int(f, &mut LPooled::take())
+        fmt_int(f, &mut NoHooks(self.env), None, self.typ, self.v, &mut LPooled::take())
     }
 }
 

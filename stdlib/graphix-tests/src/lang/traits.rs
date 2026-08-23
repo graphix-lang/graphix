@@ -312,3 +312,164 @@ run!(
         let result = "[both(3, Counter(4))] [mapped]"
     "#
 );
+
+// ── The core traits: Eq, Ord, Display (design/traits.md §8) ─────────
+//
+// `==`/`!=`, `<`/`>`/`<=`/`>=` and printing consult an implementation
+// of the core trait wherever one sits in the STATIC type, and take the
+// structural case everywhere else. A whole-type implementation lowers
+// to a static call (fuses); one nested inside a composite runs the
+// hooked walk (interprets).
+
+// A case-insensitive key: `==` calls the implementation.
+run!(
+    core_eq_abstract,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+        let result = Key("Foo") == Key("FOO") && Key("a") != Key("b")
+    "##
+);
+
+// Inside a composite the walk calls it per element; the structural
+// parts compare as values.
+run!(
+    core_eq_nested,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+        let arrays = [Key("a"), Key("B")] == [Key("A"), Key("b")];
+        let tuples = (Key("x"), 1) == (Key("X"), 1) && (Key("x"), 1) != (Key("X"), 2);
+        let structs = {k: Key("q"), n: "n"} == {k: Key("Q"), n: "n"};
+        let maps = {"a" => Key("v")} == {"a" => Key("V")};
+        let variants = `Some(Key("z")) == `Some(Key("Z"));
+        let result = arrays && tuples && structs && maps && variants
+    "##
+);
+
+// A reversed order: `<` consults `Ord::cmp`, and so does the walk for
+// a tuple holding the type.
+run!(
+    core_ord_abstract,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r##"
+        type Rev = Abstract<i64>;
+        impl Ord for Rev {
+            let cmp = |a, b| select (a.0, b.0) {
+                (x, y) if x > y => `Less,
+                (x, y) if x < y => `Greater,
+                _ => `Equal
+            }
+        };
+        let root = Rev(1) > Rev(2) && Rev(2) <= Rev(1) && Rev(3) >= Rev(3) && !(Rev(1) < Rev(2));
+        let nested = (Rev(1), 5) > (Rev(2), 9) && (Rev(1), 5) < (Rev(1), 6);
+        let result = root && nested
+    "##
+);
+
+// Printing: interpolation, nested anywhere in the printed type —
+// arrays, structs, tuples, variants, a union member, a recursive type.
+run!(
+    core_display_interp,
+    |v: Result<&Value>| matches!(
+        v,
+        Ok(Value::String(s))
+            if s == "#123|[#123, #456]|{c: #123, n: 5}|(#456, \"s\")|`Some(#123)|#123|7|`Cons(#123, `Cons(#456, `Nil))"
+    ),
+    "/test.gx" => r##"
+        type Color = Abstract<{r: i64, g: i64, b: i64}>;
+        impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+        type L = [`Cons(Color, L), `Nil];
+        let c1 = Color({r: 1, g: 2, b: 3});
+        let c2 = Color({r: 4, g: 5, b: 6});
+        let u1: [Color, i64] = c1;
+        let u2: [Color, i64] = 7;
+        let l: L = `Cons(c1, `Cons(c2, `Nil));
+        let result = "[c1]|[[c1, c2]]|[{c: c1, n: 5}]|[(c2, "s")]|[`Some(c1)]|[u1]|[u2]|[l]"
+    "##
+);
+
+// The core dispatchers are the operators: they work on every type,
+// implementation or not, and the core traits hold as bounds for every
+// type.
+run!(
+    core_dispatchers_structural,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "true|false|Less|Equal|Greater|(1, 2)|#123"),
+    "/test.gx" => r##"
+        type Color = Abstract<{r: i64, g: i64, b: i64}>;
+        impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+        let same = 'a: Eq |x: 'a, y: 'a| Eq::eq(x, y);
+        let show = 'a: Display |x: 'a| Display::fmt(x);
+        let result = "[same(1, 1)]|[same("a", "b")]|[Ord::cmp(1, 2)]|[Ord::cmp((1, 2), (1, 2))]|[Ord::cmp("b", "a")]|[show((1, 2))]|[show(Color({r: 1, g: 2, b: 3}))]"
+    "##
+    ; FuseExpect::None
+);
+
+// A core trait method runs inside the comparison, so it is implicitly
+// `#[sync]`: an async body is a compile error.
+run!(
+    core_method_async_refused,
+    |v: Result<&Value>| v.is_err(),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        impl Display for Key { let fmt = |k| sys::time::timer(duration:0.01s, false) ~ k.0 };
+        let result = "[Key("a")]"
+    "##
+    ; FuseExpect::None
+);
+
+// `println`/`dbg`/`log` print through the implementation too, on
+// both engines (the builtin formats through the hook from inside a
+// fused kernel's DynCall as well).
+async fn core_display_println(fusion_disabled: bool) -> Result<()> {
+    let code = r##"{
+        type Color = Abstract<{r: i64, g: i64, b: i64}>;
+        impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+        let c = Color({r: 1, g: 2, b: 3});
+        println(c);
+        println([c, c]);
+        print("[c]");
+        println("");
+        dbg(#dest: `Stdout, {c, n: 1});
+        42
+    }"##;
+    let (values, out) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), vec![42]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "#123");
+    assert_eq!(lines[1], "[#123, #123]");
+    assert_eq!(lines[2], "#123");
+    assert!(lines[3].ends_with("): {c: #123, n: 1}"), "{}", lines[3]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn core_display_println_interp() -> Result<()> {
+    core_display_println(true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn core_display_println_jit() -> Result<()> {
+    core_display_println(false).await
+}
+
+// A trait call on a union self type INSIDE a lambda: the lowered
+// select binds the call's argument nodes, it does not recompile their
+// source (the lambda's parameters are out of lexical scope by the
+// time the call is lowered at typecheck1).
+run!(
+    trait_union_dispatch_in_lambda,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "A1 Bx"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type A = Abstract<i64>;
+        type B = Abstract<string>;
+        impl Show for A { let show = |a| "A[a.0]" };
+        impl Show for B { let show = |b| "B[b.0]" };
+        let f = |x: [A, B]| Show::show(x);
+        let result = "[f(A(1))] [f(B("x"))]"
+    "#
+    ; FuseExpect::None
+);

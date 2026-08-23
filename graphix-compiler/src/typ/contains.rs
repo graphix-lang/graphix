@@ -1191,6 +1191,10 @@ impl Type {
         hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
+        // the core traits have a structural default for every type
+        if crate::node::coretraits::CoreTrait::of_id(tid).is_some() {
+            return Ok(true);
+        }
         match t {
             Self::Bottom => Ok(true),
             Self::Any => Ok(false),

@@ -78,6 +78,7 @@ fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
         // statement whole and its exports starved every outside
         // reader).
         NodeView::Block(b) if b.module => ok = false,
+        NodeView::Impl(_) => ok = false,
         // A catch INSTALLATION is never dead: eliminating it from a
         // fused block would silently drop the handler while covered
         // `?`s keep delivering to its variable.

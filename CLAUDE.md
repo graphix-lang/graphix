@@ -1504,8 +1504,34 @@ occurrence of a generalized binding (`Env.poly_binds`: let-bound
 lambdas, gxi vals, dispatchers, `let g = f`) instantiates its
 signature in `Ref::typecheck0` like a call (same knots); a call site
 typechecks a `Ref` argument before its operand pre-bind. Not yet:
-trait params/assoc types, `type T = A + B`, core Eq/Ord/Hash/Display
-as traits, io on traits, dynamic-module impl proxies.
+trait params/assoc types, `type T = A + B`, io on traits,
+dynamic-module impl proxies.
+
+**Core traits (2026-08-23, `design/traits.md` §12):** `Eq`/`Ord`/
+`Display` are declared in core's gxi; `node/coretraits.rs` holds
+`CoreTrait` (path-derived ids), `Plan` (the static type annotated
+with hook positions — arena + reachability fixpoint so recursive
+types close; `None` unless the program registers an impl of the
+trait at all), `Hooks` (node-owned call sites per hook, args
+delivered through `event.variables` like a collection slot), and the
+walks `eq`/`cmp` (mirror `Value::eq`/`partial_cmp`, delegating
+unhooked subtrees to the `Value` ops) — `Display` rides `TVal`
+itself (`fmt_planned`, `FmtHooks`). Sites: the six cmp nodes pick a
+`CmpDispatch` at tc1 (Structural / Lowered = static call to the impl
+via `lower_over_operands`, fuses / Walk = interior hook, de-fuses);
+`StringInterpolate` plans per part at tc1; print/dbg/log build their
+plan on first render (`Shown`, package-core — a builtin's
+type-derived state must exist after init+tc0, the DynCall mint runs
+no tc1). `Impl` adds implicit `#[sync]` to core-trait methods and
+builds never-run prototype call sites (`NodeView::Impl`) so analysis
+covers them. `lower_core_call`: `Eq::eq(a,b)` ≡ `a == b`,
+`Display::fmt(x)` ≡ `"[x]"`, `Ord::cmp` ≡ a select over `<`/`>`;
+`trait_contains` holds the three for every type.
+`bind::lower_over_operands` is THE lowering device (cmp, core calls,
+union dispatch): it MOVES the operand nodes into `let #x = ..` binds
+and compiles only the synthesized expression — recompiling operand
+source at tc1 can't see a lambda's parameters (union dispatch inside
+a lambda was broken this way; `trait_union_dispatch_in_lambda`).
 
 ## The module system (open → use, 2026-08-22)
 

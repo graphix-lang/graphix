@@ -28,6 +28,7 @@ pub(crate) mod bind;
 pub mod callsite;
 pub mod collection;
 pub(crate) mod compiler;
+pub mod coretraits;
 pub(crate) mod data;
 pub(crate) mod error;
 pub mod genn;
@@ -1075,6 +1076,11 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Node<R, E>]>,
+    /// per part, the core `Display` plan and its hook sites when an
+    /// implementation is reachable from the part's type
+    hooks: Box<[Option<(coretraits::Plan, coretraits::Hooks<R, E>)>]>,
+    scope: Scope,
+    top_id: ExprId,
     resident: TagValue,
 }
 
@@ -1092,8 +1098,23 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typs = args.iter().map(|n| n.typ().clone()).collect();
+        let hooks = args.iter().map(|_| None).collect();
         let typ = Type::Primitive(Typ::String.into());
-        Ok(Node::new(Self { spec, typ, typs, args, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            typs,
+            args,
+            hooks,
+            scope: scope.clone(),
+            top_id,
+            resident: TagValue::phantom(),
+        }))
+    }
+
+    /// The hook sites the parts own, for the node walkers.
+    pub(crate) fn hook_nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
+        self.hooks.iter().flatten().flat_map(|(_, h)| h.nodes())
     }
 }
 
@@ -1129,12 +1150,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
         let mut buf: LPooled<String> = LPooled::take();
-        for (typ, v) in self.typs.iter().zip(vals.iter()) {
-            match v {
-                Value::String(s) => write!(buf, "{s}"),
-                v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
+        for ((typ, v), hooks) in
+            self.typs.iter().zip(vals.iter()).zip(self.hooks.iter_mut())
+        {
+            let r = match (v, hooks) {
+                (Value::String(s), _) => write!(buf, "{s}"),
+                (v, None) => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
+                (v, Some((plan, hooks))) => {
+                    coretraits::fmt(&mut *buf, ctx, event, plan, hooks, typ, v)
+                }
+            };
+            // a hook produced nothing: the interpolation bottoms
+            if r.is_err() {
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
             }
-            .unwrap()
         }
         self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
     }
@@ -1151,11 +1182,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         for a in &self.args {
             a.refs(refs)
         }
+        for (_, h) in self.hooks.iter().flatten() {
+            h.refs(refs)
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in &mut self.args {
             n.delete(ctx)
+        }
+        for (_, h) in self.hooks.iter_mut().flatten() {
+            h.delete(ctx)
         }
     }
 
@@ -1163,28 +1200,57 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         for n in &mut self.args {
             n.sleep(ctx);
         }
+        for (_, h) in self.hooks.iter_mut().flatten() {
+            h.sleep(ctx)
+        }
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         for n in &mut self.args {
             n.reset_replay(ctx);
         }
+        for (_, h) in self.hooks.iter_mut().flatten() {
+            h.reset_replay(ctx)
+        }
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck0(ctx))?;
-            self.typs[i] = a.typ().with_deref(|t| match t {
-                None => Type::Any,
-                Some(t) => t.clone(),
-            });
+            self.typs[i] = part_type(a.typ());
         }
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for a in &mut self.args {
+        for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck1(ctx))?;
+            // a part whose cell was still open at tc0 (a rec def's
+            // return) is bound by now
+            self.typs[i] = part_type(a.typ());
+            if self.hooks[i].is_none()
+                && let Some(plan) = wrap!(
+                    a,
+                    coretraits::Plan::build(
+                        &ctx.env,
+                        coretraits::CoreTrait::Display,
+                        &self.typs[i]
+                    )
+                )?
+            {
+                let hooks = wrap!(
+                    a,
+                    coretraits::Hooks::build(
+                        ctx,
+                        &plan,
+                        coretraits::CoreTrait::Display,
+                        &self.scope,
+                        self.spec.id.inner() ^ (i as u64) << 48,
+                        self.top_id,
+                    )
+                )?;
+                self.hooks[i] = Some((plan, hooks));
+            }
         }
         Ok(())
     }
@@ -1194,8 +1260,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        if self.hooks.iter().any(|h| h.is_some()) {
+            bail!(
+                "emit_clif: a string interpolation part printed through a core \
+                 Display implementation is not lowered"
+            )
+        }
         emit_string_interpolate_node(cx, &self.args)
     }
+}
+
+/// A part's type for the typed printer: dereferenced at the top, `Any`
+/// for an open cell.
+fn part_type(t: &Type) -> Type {
+    t.with_deref(|t| match t {
+        None => Type::Any,
+        Some(t) => t.clone(),
+    })
 }
 
 #[derive(Debug)]

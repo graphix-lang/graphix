@@ -11,6 +11,35 @@ type Log = [`Trace, `Debug, `Info, `Warn, `Error, `Stdout, `Stderr];
 type Result<'r, 'e> = ['r, Error<'e>];
 type Option<'a> = ['a, null];
 
+/// The result of a three-way comparison.
+type Ordering = [`Less, `Equal, `Greater];
+
+/// Equality. `==` and `!=` consult the implementation of the operand
+/// type — and of every type nested inside it — falling back to the
+/// structural comparison of values where there is none. Outside core
+/// only an abstract type may implement it. The method is implicitly
+/// `#[sync]`: it runs inside the comparison.
+trait Eq {
+    /// true if the two values are equal
+    val eq: fn(self, other: self) -> bool
+};
+
+/// Ordering. `<`, `>`, `<=` and `>=` consult the implementation the
+/// way `==` consults `Eq`; `array::sort`, `min`/`max` and map keys
+/// stay structural. Implicitly `#[sync]`.
+trait Ord {
+    /// the order of `self` relative to `other`
+    val cmp: fn(self, other: self) -> Ordering
+};
+
+/// Printing. String interpolation, `print`/`println`, `dbg` and `log`
+/// consult the implementation the way `==` consults `Eq`, everywhere
+/// in the printed type. Implicitly `#[sync]`.
+trait Display {
+    /// the printed form of `self`
+    val fmt: fn(self) -> string
+};
+
 type Pos = {
     line: i32,
     column: i32

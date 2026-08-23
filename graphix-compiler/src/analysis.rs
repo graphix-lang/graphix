@@ -489,6 +489,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         | NodeView::Ref(_)
         | NodeView::Constant(_)
         | NodeView::TypeDef(_)
+        | NodeView::Impl(_)
         | NodeView::Nop(_) => EffectKind::Sync,
     }
 }

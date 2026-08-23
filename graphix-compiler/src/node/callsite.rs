@@ -1192,6 +1192,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             )
             .context(ErrorContext((*self.spec).clone())));
         }
+        if let Some(core) = crate::node::coretraits::CoreTrait::of_id(def.id) {
+            return self.lower_core_call(ctx, core);
+        }
         if let Type::Set(members) = &self_t {
             let members = members.clone();
             return self.lower_trait_union(ctx, &def, tm.index, &members);
@@ -1219,6 +1222,166 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(())
     }
 
+    /// Take this call's argument NODES in the spec's argument order,
+    /// each under a synthesized name (`#a<i>`, or `self_name` for the
+    /// positional self argument at `self_pos`), for a lowering over
+    /// them. Returns `(name, node)` pairs and the call-args list
+    /// (`(label, name)`) a synthesized call spells them with.
+    fn take_operands(
+        &mut self,
+        self_pos: Option<usize>,
+        self_name: ArcStr,
+    ) -> Result<(Vec<(ArcStr, Node<R, E>)>, Vec<(Option<ArcStr>, ArcStr)>)> {
+        let ExprKind::Apply(crate::expr::ApplyExpr { args, function: _ }) =
+            &self.spec.kind
+        else {
+            bail!("call site without an apply spec: {}", self.spec)
+        };
+        let mut operands = Vec::with_capacity(args.len());
+        let mut names = Vec::with_capacity(args.len());
+        let mut positional = 0usize;
+        for (i, (label, _)) in args.iter().enumerate() {
+            let key = match label {
+                Some(l) => ArgKey::Named(l.clone()),
+                None => {
+                    let p = positional;
+                    positional += 1;
+                    ArgKey::Positional(p)
+                }
+            };
+            let is_self = label.is_none() && Some(positional - 1) == self_pos;
+            let name: ArcStr = if is_self {
+                self_name.clone()
+            } else {
+                compact_str::format_compact!("#a{i}").as_str().into()
+            };
+            let Some(node) = self.args.get_mut(&key).and_then(|a| a.node.take()) else {
+                bail!("call site argument {i} has no node: {}", self.spec)
+            };
+            operands.push((name.clone(), node));
+            names.push((label.clone(), name));
+        }
+        Ok((operands, names))
+    }
+
+    /// Install `node` as this call's lowering: the function node and
+    /// any remaining argument nodes are deleted, every `Update` method
+    /// delegates to it from now on.
+    fn install_lowered(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        node: Node<R, E>,
+    ) -> Result<()> {
+        wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
+        for arg in self.args.values_mut() {
+            if let Some(mut n) = arg.node.take() {
+                n.delete(ctx);
+            }
+        }
+        for mut n in self.arg_refs.drain(..) {
+            n.delete(ctx);
+        }
+        let mut old =
+            std::mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
+        old.delete(ctx);
+        self.lowered = Some(node);
+        Ok(())
+    }
+
+    /// A core trait's dispatcher is the operator it stands behind:
+    /// `Eq::eq(a, b)` is `a == b`, `Display::fmt(x)` is `"[x]"`, and
+    /// `Ord::cmp(a, b)` tests `<` and `>` — so the call works on every
+    /// type, and an implementation is reached exactly where the
+    /// operator would reach it (`design/traits.md` §8).
+    fn lower_core_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        core: crate::node::coretraits::CoreTrait,
+    ) -> Result<()> {
+        use crate::{
+            expr::{Pattern, SelectExpr, StructurePattern},
+            node::coretraits::CoreTrait,
+        };
+        let (operands, names) = self.take_operands(None, arcstr::literal!("#s"))?;
+        let pos = self.spec.pos;
+        let ori = self.spec.ori.clone();
+        let mk = |kind: ExprKind| Expr {
+            id: ExprId::new(),
+            ori: ori.clone(),
+            pos,
+            kind,
+            dec: None,
+        };
+        let mut positional = names
+            .iter()
+            .filter(|(l, _)| l.is_none())
+            .map(|(_, n)| mk(ExprKind::Ref { name: ModPath::from([n.clone()]) }));
+        let (Some(a), b) = (positional.next(), positional.next()) else {
+            bail!("core trait call without its self argument: {}", self.spec)
+        };
+        let (a, b) = (&a, b.as_ref());
+        let tag = |t: &'static str| {
+            mk(ExprKind::Variant { tag: ArcStr::from(t), args: TArc::from_iter([]) })
+        };
+        let e = match (core, b) {
+            (CoreTrait::Display, _) => {
+                mk(ExprKind::StringInterpolate { args: TArc::from_iter([a.clone()]) })
+            }
+            (CoreTrait::Eq, Some(b)) => {
+                mk(ExprKind::Eq { lhs: TArc::new(a.clone()), rhs: TArc::new(b.clone()) })
+            }
+            (CoreTrait::Ord, Some(b)) => {
+                let lt = mk(ExprKind::Lt {
+                    lhs: TArc::new(a.clone()),
+                    rhs: TArc::new(b.clone()),
+                });
+                let gt = mk(ExprKind::Gt {
+                    lhs: TArc::new(a.clone()),
+                    rhs: TArc::new(b.clone()),
+                });
+                let scrutinee = mk(ExprKind::Tuple { args: TArc::from_iter([lt, gt]) });
+                let arm = |l: StructurePattern, r: StructurePattern, body: Expr| {
+                    (
+                        Pattern {
+                            type_predicate: None,
+                            structure_predicate: StructurePattern::Tuple {
+                                all: None,
+                                binds: TArc::from_iter([l, r]),
+                            },
+                            guard: None,
+                        },
+                        body,
+                    )
+                };
+                let lit = |b: bool| StructurePattern::Literal(Value::Bool(b));
+                let any = || StructurePattern::Ignore;
+                mk(ExprKind::Select(SelectExpr {
+                    arg: TArc::new(scrutinee),
+                    arms: TArc::from_iter([
+                        arm(lit(true), any(), tag("Less")),
+                        arm(any(), lit(true), tag("Greater")),
+                        arm(any(), any(), tag("Equal")),
+                    ]),
+                }))
+            }
+            (CoreTrait::Eq | CoreTrait::Ord, None) => {
+                bail!("core trait call without its other argument: {}", self.spec)
+            }
+        };
+        let scope = self.scope.clone();
+        let spec = (*self.spec).clone();
+        let node = super::bind::lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands,
+            e,
+        )?;
+        self.install_lowered(ctx, node)
+    }
+
     /// Dispatch over a union self type: the call becomes
     ///
     /// ```text
@@ -1226,12 +1389,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ///   select #s { M1 as #t => <impl M1>(#t, #a0, ..), M2 as #t => .. } }
     /// ```
     ///
-    /// — the arguments bound once, then the select the programmer
-    /// would have written, with a static call in every arm. The
-    /// synthesized expression compiles under this site's scope; the
-    /// implementation bindings are named by id (`#bind::N`, a form no
-    /// source can spell). The original argument nodes are deleted —
-    /// the lowered block re-evaluates their expressions.
+    /// — the arguments bound once (the call's own argument NODES,
+    /// moved), then the select the programmer would have written,
+    /// with a static call in every arm. The select compiles under
+    /// this site's scope; the implementation bindings are named by id
+    /// (`#bind::N`, a form no source can spell).
     fn lower_trait_union(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1239,11 +1401,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         index: usize,
         members: &[Type],
     ) -> Result<()> {
-        use crate::expr::{ApplyExpr, BindExpr, Pattern, SelectExpr, StructurePattern};
+        use crate::expr::{ApplyExpr, Pattern, SelectExpr, StructurePattern};
         let m = &def.methods[index];
-        let ExprKind::Apply(ApplyExpr { args, function: _ }) = &self.spec.kind else {
-            bail!("trait call site without an apply spec: {}", self.spec)
-        };
         let mut targets: LPooled<Vec<(Type, BindId)>> = LPooled::take();
         for mem in members.iter() {
             let Some(im) = ctx.env.find_impl(def.id, mem)? else {
@@ -1269,31 +1428,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             kind,
             dec: None,
         };
-        let self_pos: usize = m.self_index;
-        let mut stmts: LPooled<Vec<Expr>> = LPooled::take();
-        let mut call_args: LPooled<Vec<(Option<ArcStr>, Expr)>> = LPooled::take();
-        let mut positional = 0usize;
-        for (i, (label, e)) in args.iter().enumerate() {
-            let is_self = label.is_none() && {
-                let p = positional;
-                positional += 1;
-                p == self_pos
-            };
-            let name: ArcStr = if is_self {
-                arcstr::literal!("#s")
-            } else {
-                compact_str::format_compact!("#a{i}").as_str().into()
-            };
-            stmts.push(mk(ExprKind::Bind(TArc::new(BindExpr {
-                rec: false,
-                pattern: StructurePattern::Bind(name.clone()),
-                typ: None,
-                value: e.clone(),
-            }))));
-            let arg = if is_self { arcstr::literal!("#t") } else { name };
-            call_args
-                .push((label.clone(), mk(ExprKind::Ref { name: ModPath::from([arg]) })));
-        }
+        let (operands, names) =
+            self.take_operands(Some(m.self_index), arcstr::literal!("#s"))?;
+        let call_args: LPooled<Vec<(Option<ArcStr>, Expr)>> = names
+            .iter()
+            .map(|(label, name)| {
+                let arg =
+                    if name == "#s" { arcstr::literal!("#t") } else { name.clone() };
+                (label.clone(), mk(ExprKind::Ref { name: ModPath::from([arg]) }))
+            })
+            .collect();
         let arms = targets.drain(..).map(|(mem, bind)| {
             let f = mk(ExprKind::Ref {
                 name: ModPath::from([
@@ -1320,27 +1464,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             })),
             arms: TArc::from_iter(arms),
         }));
-        stmts.push(select);
-        let block = mk(ExprKind::Do { exprs: TArc::from_iter(stmts.drain(..)) });
         let scope = self.scope.clone();
-        let mut node = compile(ctx, self.flags, block, &scope, self.top_id)?;
-        node.typecheck0(ctx)?;
-        node.typecheck1(ctx)?;
-        wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
-        // the originals are replaced wholesale
-        for arg in self.args.values_mut() {
-            if let Some(mut n) = arg.node.take() {
-                n.delete(ctx);
-            }
-        }
-        for mut n in self.arg_refs.drain(..) {
-            n.delete(ctx);
-        }
-        let mut old =
-            std::mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
-        old.delete(ctx);
-        self.lowered = Some(node);
-        Ok(())
+        let spec = (*self.spec).clone();
+        let node = super::bind::lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands,
+            select,
+        )?;
+        self.install_lowered(ctx, node)
     }
 
     /// Re-point this call's function node at binding `bind`.

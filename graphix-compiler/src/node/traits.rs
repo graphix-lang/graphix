@@ -26,9 +26,10 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
@@ -254,7 +255,13 @@ pub struct Impl<R: Rt, E: UserEvent> {
     spec: Expr,
     def: Arc<ImplDef>,
     trait_def: Arc<TraitDef>,
-    body: Node<R, E>,
+    pub(crate) body: Node<R, E>,
+    /// For a core trait (`Eq`/`Ord`/`Display`), one never-run call
+    /// site per method so the analysis REACHES the method's body —
+    /// the hooked walks call it from sites built after analysis, and
+    /// the implicit `#[sync]` the methods carry is verified only on a
+    /// covered definition.
+    pub(crate) prototypes: Vec<Node<R, E>>,
 }
 
 /// Where may `impl Trait for target` be written? An abstract type's
@@ -388,6 +395,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         // checked against it in typecheck0)
         let bscope = scope.append_block("impl", spec.id.inner());
         ctx.env.import_glob(&bscope.lexical, trait_def.path.clone());
+        let core = super::coretraits::CoreTrait::of_id(trait_id).is_some();
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         let mut provided: LPooled<ahash::AHashSet<ArcStr>> = LPooled::take();
         for m in im.methods.iter() {
@@ -415,12 +423,36 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                 typ: b.typ.clone().or_else(|| Some(Type::Fn(Arc::new(sig.clone())))),
                 value: annotate_lambda(&b.value, &sig),
             };
+            // a core trait's method runs INSIDE a comparison or a
+            // print, so it is implicitly `#[sync]`
+            let dec = match (core, &m.dec) {
+                (false, dec) => dec.clone(),
+                (true, dec) => {
+                    let sync = crate::expr::Attr {
+                        name: arcstr::literal!("sync"),
+                        args: Arc::from_iter([]),
+                    };
+                    let (comments, attrs, trailing) = match dec {
+                        Some(d) => {
+                            (d.comments.clone(), d.attrs.clone(), d.trailing.clone())
+                        }
+                        None => {
+                            (Arc::from_iter([]), Arc::from_iter([]), Arc::from_iter([]))
+                        }
+                    };
+                    Some(Box::new(crate::expr::Decorations {
+                        comments,
+                        attrs: Arc::from_iter(attrs.iter().cloned().chain([sync])),
+                        trailing,
+                    }))
+                }
+            };
             exprs.push(Expr {
                 id: m.id,
                 ori: m.ori.clone(),
                 pos: m.pos,
                 kind: ExprKind::Bind(Arc::new(b)),
-                dec: m.dec.clone(),
+                dec,
             });
         }
         for d in trait_def.methods.iter() {
@@ -454,7 +486,38 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             ori: spec.ori.clone(),
         });
         ctx.env.register_impl(def.clone()).with_context(|| format!("at {}", spec.pos))?;
-        Ok(Node::new(Self { spec, def, trait_def, body }))
+        Ok(Node::new(Self { spec, def, trait_def, body, prototypes: Vec::new() }))
+    }
+
+    /// The core-trait prototypes: a call site per method over
+    /// synthesized argument bindings of the target type, typechecked
+    /// and statically resolved like any call, never updated.
+    fn build_prototypes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        use super::genn;
+        if super::coretraits::CoreTrait::of_id(self.def.trait_id).is_none() {
+            return Ok(());
+        }
+        let scope =
+            Scope { lexical: self.def.scope.clone(), dynamic: self.def.scope.clone() };
+        let top_id = self.spec.id;
+        for (k, (_, bind)) in self.def.methods.clone().into_iter().enumerate() {
+            let Some(ftype) = super::coretraits::method_ftype(&ctx.env, *bind) else {
+                bail!("impl method {:?} is not a function", bind)
+            };
+            let mut args: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
+            for (i, a) in ftype.args.iter().enumerate() {
+                let name = format_compact!("#proto{}_{k}_{i}", self.spec.id.inner());
+                let (_, n) =
+                    genn::bind(ctx, &scope.lexical, &name, a.typ.clone(), top_id);
+                args.push(n);
+            }
+            let fnode = genn::reference(ctx, *bind, Type::Fn(ftype.clone()), top_id);
+            let mut site = genn::apply(fnode, scope.clone(), args, &ftype, top_id);
+            site.typecheck0(ctx)?;
+            site.typecheck1(ctx)?;
+            self.prototypes.push(site);
+        }
+        Ok(())
     }
 }
 
@@ -483,11 +546,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.body, self.body.typecheck1(ctx))
+        wrap!(self.body, self.body.typecheck1(ctx))?;
+        if self.prototypes.is_empty() {
+            wrap!(self.body, self.build_prototypes(ctx))?;
+        }
+        Ok(())
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.body.refs(refs)
+        self.body.refs(refs);
+        for p in self.prototypes.iter() {
+            p.refs(refs)
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -496,6 +566,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.delete(ctx);
+        for p in self.prototypes.iter_mut() {
+            p.delete(ctx)
+        }
         ctx.env.unregister_impl(&self.def);
     }
 
@@ -512,7 +585,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
-        self.body.view()
+        NodeView::Impl(self)
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {

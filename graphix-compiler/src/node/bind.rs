@@ -14,6 +14,7 @@ use crate::{
     wrap,
 };
 use anyhow::{Context, Result, bail};
+use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::Value;
 use poolshark::local::LPooled;
@@ -29,6 +30,63 @@ pub struct Bind<R: Rt, E: UserEvent> {
     /// has, there is no store entry for a reader to fall through to, so
     /// even a QUIET production must be published — see `update`.
     published: bool,
+}
+
+/// A compiler lowering that REWRITES a node into a block: the node's
+/// already-compiled operand nodes become `let <name> = <node>`
+/// bindings (moved, never recompiled — their source may name
+/// bindings of an enclosing lambda whose lexical env is long
+/// restored), and `body` — an expression over those names, compiled
+/// and typechecked here under `scope` — is the block's value.
+pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    spec: &Expr,
+    top_id: ExprId,
+    operands: impl IntoIterator<Item = (ArcStr, Node<R, E>)>,
+    body: Expr,
+) -> Result<Node<R, E>> {
+    let mk = |kind: ExprKind| Expr {
+        id: ExprId::new(),
+        ori: spec.ori.clone(),
+        pos: spec.pos,
+        kind,
+        dec: None,
+    };
+    let mut children: Vec<Node<R, E>> = Vec::new();
+    for (name, node) in operands {
+        let typ = node.typ().clone();
+        let pattern = StructPatternNode::compile(
+            ctx,
+            &typ,
+            &expr::StructurePattern::Bind(name.clone()),
+            scope,
+            spec.pos,
+            spec.ori.clone(),
+        )?;
+        let bspec = mk(ExprKind::Bind(Arc::new(expr::BindExpr {
+            rec: false,
+            pattern: expr::StructurePattern::Bind(name),
+            typ: None,
+            value: node.spec().clone(),
+        })));
+        children.push(Node::new(Bind {
+            spec: bspec,
+            typ,
+            pattern,
+            node,
+            published: false,
+        }));
+    }
+    let mut body = compile(ctx, flags, body, scope, top_id)?;
+    body.typecheck0(ctx)?;
+    body.typecheck1(ctx)?;
+    let bspec = mk(ExprKind::Do {
+        exprs: Arc::from_iter(children.iter().chain([&body]).map(|n| n.spec().clone())),
+    });
+    children.push(body);
+    Ok(super::Block::new(false, children.into_boxed_slice(), bspec, scope.clone()))
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {

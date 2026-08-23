@@ -169,8 +169,65 @@ The interface declares the trait (with its defaults, if any) and
 compiles against the interface and calls `m::Show::show(m::make(9))`.
 A trait declared only in the `.gx` file is private to that module.
 
+## The Core Traits: Eq, Ord and Display
+
+Three traits are built into core and consulted by the language
+itself:
+
+```graphix
+trait Eq { val eq: fn(self, other: self) -> bool };
+type Ordering = [`Less, `Equal, `Greater];
+trait Ord { val cmp: fn(self, other: self) -> Ordering };
+trait Display { val fmt: fn(self) -> string };
+```
+
+`==` and `!=` consult `Eq`; `<`, `>`, `<=` and `>=` consult `Ord`;
+string interpolation, `print`, `println`, `dbg` and `log` consult
+`Display`. The rule is the same for all three: at a site, look at the
+static type; wherever an implementation exists — for the whole type,
+or for a type nested anywhere inside it — call it; everywhere else
+take the structural case (compare values, or print them as Graphix
+syntax). Every type has the structural default, so the core traits
+hold as bounds for every type, and the dispatchers work on every
+value: `Eq::eq(1, 1)` is `1 == 1`.
+
+A case-insensitive key, equal however it is capitalized:
+
+```graphix
+type Key = Abstract<string>;
+impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+
+Key("Foo") == Key("FOO")              // true: the implementation
+[Key("a")] == [Key("A")]              // true: called per element
+(Key("x"), 1) == (Key("X"), 2)        // false: the i64s differ
+```
+
+A color that prints as its hex triplet, wherever it appears:
+
+```graphix
+type Color = Abstract<{r: i64, g: i64, b: i64}>;
+impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
+
+let red = Color({r: 255, g: 0, b: 0});
+println("[red]")                      // #25500
+println([red, red])                   // [#25500, #25500]
+println({fg: red, n: 3})              // {fg: #25500, n: 3}
+```
+
+Outside core only an abstract type may implement a core trait (the
+rule of the previous section). A core trait's method runs inside the
+comparison or the print, so it is implicitly `#[sync]` — a body that
+waits on a timer is a compile error — and a method that produces no
+value makes the comparison produce none.
+
+Where there is no static type there is no implementation to consult:
+map keys, `array::sort`, `min`/`max`, values sent over the wire, and
+the REPL's echo of a bare expression compare and print structurally.
+
 ## Current limits
 
 - Traits take no type parameters and declare no associated types.
-- Equality, ordering, hashing and printing are not yet traits — `==`
-  and interpolation stay structural.
+- `Hash` is not a trait: map keys hash structurally.
+- A `==` or `<` whose implementation sits inside a composite (an
+  `Array<Key>`) runs on the node-walk; one on the whole type is a
+  static call and fuses like any call.

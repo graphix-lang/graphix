@@ -196,6 +196,9 @@ pub struct GenStats {
     /// A module declared a trait, implemented it for its abstract T,
     /// and exported a trait-bounded generic — both callable from MAIN.
     pub trait_call: bool,
+    /// a module implements `Eq`/`Display` for its abstract type and
+    /// compares/prints it
+    pub core_trait: bool,
     /// A module exported a non-fn `val` constant.
     pub iface_const: bool,
     /// A module fn impl carried NO return annotation (interface-checked
@@ -611,6 +614,7 @@ mod test {
             (0, 0, 0, 0, 0, 0);
         let (mut dynmod, mut comp_iface, mut xmod, mut abst) = (0, 0, 0, 0);
         let mut trait_call = 0;
+        let mut core_trait = 0;
         let (mut konst, mut unret, mut refop) = (0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
@@ -626,6 +630,7 @@ mod test {
             xmod += s.cross_module_call as usize;
             abst += s.abstract_value as usize;
             trait_call += s.trait_call as usize;
+            core_trait += s.core_trait as usize;
             konst += s.iface_const as usize;
             unret += s.unannotated_ret as usize;
             refop += s.ref_op as usize;
@@ -642,6 +647,7 @@ mod test {
             ("cross-module call", xmod),
             ("first-class abstract value", abst),
             ("trait declared+implemented+called", trait_call),
+            ("core Eq/Display implemented+used", core_trait),
             ("exported constant", konst),
             ("unannotated-return impl", unret),
             ("reference op", refop),
