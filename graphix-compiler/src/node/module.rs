@@ -75,10 +75,15 @@ fn bind_sig(
                 if env.lsp_mode {
                     typ.record_ide_refs(env, &scope.lexical);
                 }
+                let poly = matches!(typ, Type::Fn(_));
                 let bind =
                     env.bind_variable(&scope.lexical, name, typ, si.pos, si_ori.clone());
                 if let Doc(Some(s)) = &si.doc {
                     bind.doc = Some(s.clone());
+                }
+                if poly {
+                    let id = bind.id;
+                    env.poly_binds.insert_cow(id);
                 }
             }
             SigKind::TypeDef(td) => {

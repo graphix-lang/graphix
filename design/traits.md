@@ -510,10 +510,23 @@ re-mint now carries the (scoped) conjunction. Pinned by
 `type T = A + B` trait aliases are not built (write the bound
 inline); an `impl` declared by a DYNAMIC module's interface has
 method bindings but no proxy to the loaded source yet, so a consumer
-compiled against it cannot dispatch statically; a polymorphic binding
-used as a first-class value at one type pins its own signature cells
-for later uses — true of every polymorphic `let`, not only
-dispatchers (`let f = 'a: Number |x: 'a| x; array::map([1], f);
-array::map([1.5], f)` is refused today); the union-dispatch select
+compiled against it cannot dispatch statically; the union-dispatch select
 de-fuses while abstract patterns do; the core four (§8) are not
 traits yet.
+
+**A value occurrence is a call site (Eric, 2026-08-22):** a reference
+to a GENERALIZED binding — a let-bound lambda, an interface `val`, a
+trait dispatcher, or a `let g = f` forwarding one (`Env::poly_binds`)
+— instantiates the signature afresh in `Ref::typecheck0`, exactly as
+`CallSite::typecheck0` does for a call, with the same knots kept on
+the definition's own cells (a self-reference inside the definition's
+gate, a fn-typed parameter during its gate, the instance being
+elaborated). Typecheck time, not compile time: the definition's gate
+must have recorded the body's facts first (a compile-time copy gave a
+callback instance a ⊥ parameter), and the call site typechecks a
+`Ref` argument ahead of its operand pre-bind so the pre-bind never
+sees the definition's cells. Before this, a polymorphic lambda used as
+a value at one type pinned its own cells for every later use
+(`array::map([1], f); array::map([1.5], f)` was refused) — the same
+for dispatchers. Pinned by `poly_value_two_types` and
+`trait_method_value_then_generic`.

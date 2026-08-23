@@ -293,6 +293,12 @@ pub struct Env {
     /// wherever its trait is used, scope governs only the trait's
     /// NAME (`design/traits.md` §4).
     pub impls: Map<TraitId, Arc<Vec<Arc<ImplDef>>>>,
+    /// GENERALIZED bindings — let-bound lambdas, interface `val`s and
+    /// trait dispatchers — whose signature a VALUE occurrence
+    /// instantiates afresh, exactly as a call site does
+    /// (`Ref::typecheck0`). A lambda parameter is never here: it is
+    /// monomorphic within its body. Global like `names`.
+    pub poly_binds: Set<BindId>,
     /// Registered package names — the package prelude: usable as
     /// module path roots from anywhere. Populated by package
     /// registration; survives the lexical swap like `names`.
@@ -341,6 +347,7 @@ impl Env {
             trait_defs,
             trait_methods,
             impls,
+            poly_binds,
             package_roots: _,
             modules,
             typedefs,
@@ -358,6 +365,7 @@ impl Env {
         *trait_defs = Map::new();
         *trait_methods = Map::new();
         *impls = Map::new();
+        *poly_binds = Set::new();
         *modules = Set::new();
         *typedefs = Map::new();
         *catch = Map::new();
@@ -388,6 +396,7 @@ impl Env {
             trait_defs: self.trait_defs.clone(),
             trait_methods: self.trait_methods.clone(),
             impls: self.impls.clone(),
+            poly_binds: self.poly_binds.clone(),
             package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
@@ -409,6 +418,7 @@ impl Env {
             trait_defs: self.trait_defs.clone(),
             trait_methods: self.trait_methods.clone(),
             impls: self.impls.clone(),
+            poly_binds: self.poly_binds.clone(),
             package_roots: self.package_roots.clone(),
             ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
@@ -889,6 +899,7 @@ impl Env {
             let index = defs.len();
             self.trait_methods
                 .insert_cow(dispatcher, TraitMethodRef { trait_id: id, index });
+            self.poly_binds.insert_cow(dispatcher);
             defs.push(TraitMethodDef {
                 name: mname,
                 typ,
@@ -952,6 +963,7 @@ impl Env {
         }
         for m in def.methods.iter() {
             self.trait_methods.remove_cow(&m.dispatcher);
+            self.poly_binds.remove_cow(&m.dispatcher);
             self.unbind_variable(m.dispatcher);
         }
         self.modules.remove_cow(&def.path);

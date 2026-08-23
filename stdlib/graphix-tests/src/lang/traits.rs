@@ -280,3 +280,35 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// A polymorphic binding used as a VALUE is instantiated per
+// occurrence, like a call: two uses at different types do not pin
+// each other through the definition's cells.
+// ASPIRE: Jit (currently None) — one lambda instantiated at two
+// element types in one region does not lower yet.
+run!(
+    poly_value_two_types,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[1] [1.5]"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| x;
+        let result = "[array::map([1], f)] [array::map([1.5], f)]"
+    "#
+    ; FuseExpect::None
+);
+
+// The same for a trait method passed as a value, then called on
+// another type inside a bounded generic.
+run!(
+    trait_method_value_then_generic,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "int 3 Counter(4) [\"int 1\"]"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        impl Show for i64 { let show = |x| "int [x]" };
+        use Show::show;
+        let both = |a: Show, b: Show| "[show(a)] [show(b)]";
+        let mapped = array::map([1], Show::show);
+        let result = "[both(3, Counter(4))] [mapped]"
+    "#
+);

@@ -447,6 +447,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             id,
             top_id: self.top_id,
             resident: TagValue::phantom(),
+            instantiated: false,
         })
     }
 
@@ -1947,6 +1948,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             };
             if let Some(arg) = self.args.get_mut(&key) {
                 if let Some(n) = arg.node.as_mut() {
+                    // a reference instantiates its (generalized)
+                    // signature in its own typecheck0 — that must
+                    // precede the pre-bind, or the pre-bind would
+                    // unify against the definition's cells
+                    if matches!(n.view(), NodeView::Ref(_)) {
+                        wrap!(n, n.typecheck0(ctx))?;
+                    }
                     farg.typ.contains(&ctx.env, n.typ())?;
                     wrap!(n, n.typecheck0(ctx))?;
                     wrap!(n, farg.typ.check_contains(&ctx.env, &n.typ()))?;
@@ -1961,6 +1969,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 match self.args.get_mut(&key) {
                     Some(arg) => {
                         if let Some(ref mut n) = arg.node {
+                            if matches!(n.view(), NodeView::Ref(_)) {
+                                wrap!(n, n.typecheck0(ctx))?;
+                            }
                             typ.contains(&ctx.env, n.typ())?;
                             wrap!(n, n.typecheck0(ctx))?;
                             wrap!(n, typ.check_contains(&ctx.env, &n.typ()))?;

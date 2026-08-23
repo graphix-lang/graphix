@@ -16,6 +16,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
 #[derive(Debug)]
@@ -113,6 +114,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         };
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
+        }
+        // a let-bound lambda is GENERALIZED: every later reference
+        // instantiates its signature (see `instantiate`). Registered
+        // after the value compiled, so a `let rec` body's own
+        // self-references keep the definition's cells (monomorphic
+        // recursion — the def gate's knot).
+        if matches!(node.view(), NodeView::Lambda(_)) {
+            pattern.ids(&mut |id| {
+                ctx.env.poly_binds.insert_cow(id);
+            });
         }
         // If the bind's value is a builtin lambda (`let foo = |...| 'name`),
         // stash the metadata on `ctx.builtin_bindings` so the fusion
@@ -301,7 +312,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck0(ctx))?;
-        wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        // `let g = f` with `f` generalized and no annotation: `g` IS
+        // `f`'s scheme (its recorded type shares the definition's
+        // cells) and is generalized in turn — unifying it with the
+        // occurrence's fresh instance would pin the definition
+        let forwards = match &self.spec.kind {
+            ExprKind::Bind(b) if b.typ.is_none() => match self.node.view() {
+                NodeView::Ref(r) => ctx.env.poly_binds.contains(&r.id),
+                _ => false,
+            },
+            _ => false,
+        };
+        if forwards {
+            self.pattern.ids(&mut |id| {
+                ctx.env.poly_binds.insert_cow(id);
+            });
+        } else {
+            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        }
         // Record this binding in the static-resolution index so a
         // `CallSite` whose `fnode` resolves to it can pre-bind in
         // `typecheck1`. Recording faux/inside-lambda binds is harmless:
@@ -345,6 +373,8 @@ pub struct Ref {
     pub id: BindId,
     pub(super) top_id: ExprId,
     pub(crate) resident: TagValue,
+    /// This occurrence's signature has been minted (see `typecheck0`).
+    pub(crate) instantiated: bool,
 }
 
 /// The `BindId` a `#bind::N` path names, if `name` is one.
@@ -377,6 +407,7 @@ impl Ref {
             id,
             top_id,
             resident: TagValue::phantom(),
+            instantiated: false,
         })
     }
 
@@ -430,6 +461,7 @@ impl Ref {
                     id: bind_id,
                     top_id,
                     resident: TagValue::phantom(),
+                    instantiated: false,
                 }))
             }
         }
@@ -516,7 +548,43 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &self.typ
     }
 
-    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    /// A VALUE occurrence of a GENERALIZED binding (`Env::poly_binds`)
+    /// is an instantiation site like a call: it mints fresh cells for
+    /// the signature, so two uses of one polymorphic lambda
+    /// (`array::map([1], f); array::map([1.5], f)`) do not pin each
+    /// other through the definition's own cells. Minted at typecheck
+    /// time — after the definition's gate has recorded the body's
+    /// facts in those cells — and before anything reads this
+    /// occurrence's type (`CallSite::typecheck0` typechecks a `Ref`
+    /// argument ahead of its operand pre-bind). The exemptions are the
+    /// call site's knots, where the definition's cells ARE the point:
+    /// a self-reference inside the definition's gate (monomorphic
+    /// recursion), a fn-typed parameter during its gate, and a
+    /// reference to the instance being elaborated.
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if self.instantiated || !ctx.env.poly_binds.contains(&self.id) {
+            return Ok(());
+        }
+        let Type::Fn(ft) = &self.typ else { return Ok(()) };
+        self.instantiated = true;
+        let rec_knot = !ctx.rec_defs.is_empty()
+            && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
+        if rec_knot || ctx.def_gate_params.contains(&self.id) {
+            return Ok(());
+        }
+        let active = {
+            let resolving = ctx.resolving_lambdas.lock();
+            ft.lambda_ids.own().and_then(|id| resolving.get(&id)).map(|a| a.ftype.clone())
+        };
+        let fresh = match active {
+            Some(ft) => ft,
+            None => {
+                let fresh = ft.reset_tvars();
+                fresh.alias_tvars(&mut LPooled::take());
+                fresh
+            }
+        };
+        self.typ = Type::Fn(Arc::new(fresh));
         Ok(())
     }
 

@@ -1499,7 +1499,11 @@ witnesses a trait conjunct. Target rule (`check_target`): abstract →
 the type's or trait's package; anything else → the trait's package
 only; one impl per head (`heads_overlap`). While building this,
 `Type::scope_refs` was found to DROP cell constraints on re-mint —
-every annotated `fn<'a: Number>` bound was vacuous; fixed. Not yet:
+every annotated `fn<'a: Number>` bound was vacuous; fixed. A VALUE
+occurrence of a generalized binding (`Env.poly_binds`: let-bound
+lambdas, gxi vals, dispatchers, `let g = f`) instantiates its
+signature in `Ref::typecheck0` like a call (same knots); a call site
+typechecks a `Ref` argument before its operand pre-bind. Not yet:
 trait params/assoc types, `type T = A + B`, core Eq/Ord/Hash/Display
 as traits, io on traits, dynamic-module impl proxies.
 
