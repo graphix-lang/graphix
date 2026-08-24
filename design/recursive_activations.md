@@ -1,0 +1,458 @@
+# Recursive activations and the collection traits
+
+**Status: DESIGNED 2026-08-24 (Eric + Claude), not built.** Amends
+`activation_state.md` Ruling 2 (the tail-loop clause), dissolves the
+"not planned: higher-kinded self" deferral in `traits.md` §5, and
+DEFERS v2 trait parameters (§8). Nothing here changes the bottom-out
+rule, organic firing, or atomic recursion.
+
+## 0. The goal
+
+A `map` that does the same thing whatever it is mapping over — an
+array, a list, a map, or a structure the user invented — and that a
+user can IMPLEMENT for their own structure in the language. Today the
+collection HOFs are compiler intrinsics special-cased on three types
+(`node/collection.rs`, `collection_intrinsics.md`), and there is no
+way to write one: the per-slot reactive semantics (one live callback
+instance per collection position, identity across resizes, per-slot
+sleep/wake) exist only inside the compiler. Eric's framing: intrinsics
+for the fundamental structures are fair game in a language like this;
+the ugliness is that ONLY the compiler can implement `map`. This doc
+argues that we COULD retire the intrinsics, and deliberately does not
+argue that we should (§6).
+
+Why it is more than beauty: per-slot reactivity is the one thing
+Graphix has that Haskell and Rust don't. `fmap` over a tree of IO
+actions gives a tree of unrun actions; `map(tree, |p| net::subscribe(p))`
+gives a tree of LIVE subscriptions whose identities track the
+structure's positions across updates. That claim is only true if a
+user's structure gets it too.
+
+The observation that makes it cheap: recursion already has activations
+(`activation_state.md` Ruling 2 — an activation per level for non-tail
+recursion, retained across cycles, materialized lazily), and an
+activation is exactly what a collection slot is. The gap is one
+clause: a tail loop collapses to ONE activation, so a tail-recursive
+`map` over a linear structure has one publish site instead of n.
+
+## 1. Two facts, measured (2026-08-24, both engines)
+
+1. **Async recursion already allocates an activation per iteration.**
+   The tail-loop gate requires a Sync body — `analysis.rs:629`,
+   `structural && lambda_is_sync(..)` — so an async tail-recursive
+   body never loops today; it NESTS, one retained instance per level.
+   `go(rest, acc + (timer ~ x))` over 100 elements gives 4950: every
+   level owns its timer. The `publish_loop` example in §2 already does
+   what its author intends. What it does not do is pass 256: the same
+   chain over 300 elements trips `DEFAULT_MAX_CALL_DEPTH`
+   (`lib.rs:131`) and bottoms.
+
+2. **"A sync loop cannot observe the difference" is false.** `count`,
+   `once`, `uniq`, `hold`, `take`, `skip` are Sync since P7 and
+   stateful. `go([10, 20, 30], 0)` with `acc + count(x)` in the tail
+   call returns **6** today (one activation; `count` sees all three
+   deliveries) and **3** under an activation per iteration — which is
+   what `array::fold([10, 20, 30], 0, |acc, x| acc + count(x))` gives,
+   because each FoldQ slot owns its `count`. Today's 6 is the
+   inconsistency.
+
+So the proposed ruling is already the de facto semantics for async
+bodies, the collapse criterion has to be STATELESS rather than SYNC,
+and the missing pieces are a predicate, a deletion, and a stack bound.
+
+## 2. Ruling 2, amended
+
+> **A tail call creates an activation like any other call. A tail
+> loop may reuse ONE activation only when its body is STATELESS —
+> because then no program can tell the difference.**
+
+Ruling 2 said a tail loop is one activation "FORCED, not chosen:
+inlining semantics for general recursion plus constant-space tail
+loops are jointly incompatible with per-depth history". The amendment
+keeps both halves and puts the boundary where the history is: a
+stateless body HAS no per-depth history, so constant space costs
+nothing; a stateful body has O(n) history, and O(n) space is exactly
+what a slot vector costs for the same n live things. Space is O(n)
+precisely when there is O(n) state.
+
+**Stateless** (of a lambda body, a fixpoint of the same shape as the
+M6 effect analysis):
+
+- the body is Sync (existing `intrinsic_effect`; a cross-cycle node
+  such as `~` or any async builtin makes it Async, so those are
+  already out);
+- every builtin the body reaches is `STATELESS` (the fact is recorded
+  per builtin, `ctx.builtin_stateless`, `lib.rs:2038`);
+- the body contains no `<-` target (the connect identity law gives a
+  target per-activation identity in recursion — a body that has one
+  has state by definition);
+- every callee it reaches, transitively, is stateless.
+
+The example the writeup started from:
+
+```graphix
+let rec publish_loop = |a: Array<string>, c: i64| select a {
+    [] => null,
+    [p, rest..] => {
+        net::publish(p, c)$;
+        publish_loop(rest, c + 1)
+    }
+}
+```
+
+`net::publish` is Async, so today this nests and each path has its own
+publish site up to 256 paths, then bottoms. Under the amendment it is
+the same program without the cliff.
+
+What follows for the three kinds of body:
+
+| body | today | amended |
+|---|---|---|
+| stateless (arith, pattern, stateless builtins) | one activation, framed loop | unchanged |
+| stateful Sync (`count`, `uniq`, `<-` ...) | one activation — **6** above | activation per iteration — **3** |
+| Async | activation per level, capped at 256 | activation per level, memory-bounded |
+
+Only the middle row changes value semantics. The fuzz corpus will
+count its pins; expect few — a P7 builtin inside a `let rec` tail body
+is rare.
+
+## 3. Mechanism — the interpreter needs no new driver
+
+This was the surprise. The non-tail dispatch path (`node/lambda.rs:511`,
+`crate::stack::ensure_sufficient(|| self.body.update(..))`) IS the
+per-iteration driver:
+
+- **Activation = a retained instance per level** (the retention ruling
+  2026-08-13). Slot identity is depth, which is ordinal position in
+  traversal order — the same rule MapQ applies to Map keys today (a
+  middle insert shifts later slots). No drift.
+- **Re-feed** on the next cycle is the inner call site delivering the
+  new tail to its already-bound instance. Exists.
+- **Shrink**: the base-case arm selects, the recursive arm sleeps,
+  and every deeper activation sleeps with it — pause, not reset.
+  Wake resumes. A `RESTART` builtin clears on sleep either way; a
+  subscription pauses.
+- **Concurrency is right**: in `cons(f(v), map(tail, f))` the
+  recursive argument does not depend on `f(v)`, so every level
+  dispatches in the first cycle — as MapQ instantiates every slot at
+  once. An accumulator threaded THROUGH an async value serializes
+  (the §1 timer chain took 100 cycles), and FoldQ serializes
+  identically (slot i's acc is slot i−1's output).
+- **Stack** is already heap-segmented under `ensure_sufficient`; the
+  only bound is the counter.
+
+So the interpreter's change is: the `tail_loop` gate reads STATELESS
+instead of `lambda_is_sync`, and the depth counter goes (§5). The
+frame machinery (`replay_frames.md`) stays exactly as it is for the
+stateless loop — frames are the re-derivation discipline for a body
+with nothing to keep.
+
+An iterative slot-vector driver (FoldQ generalized to successive
+tail-call arguments) was considered and is NOT proposed: nesting under
+stacker costs a few KB of segment per level against the tens of KB of
+the retained instance itself, so the driver would save nothing that
+matters. If the per-activation footprint turns out to be the problem
+(§9 P0), the fix is instance size, not the driver.
+
+**Retention vs deletion** (open, §11): MapQ DELETES excess slots on
+shrink; recursion RETAINS them asleep (the retention ruling: "let the
+user run out of memory"). A deque that grows to 100k and shrinks to
+10 keeps 100k sleeping instances. The recommendation is to keep the
+ruling (retain), measure, and treat reclamation of long-asleep
+activations as a runtime GC concern if it ever bites — not a
+semantics one, since sleep is pause.
+
+## 4. Mechanism — the JIT
+
+Two independent pieces.
+
+### 4a. Stateful tail loops
+
+A fused tail loop is rebind-and-jump over ONE set of state words
+(`emit/lower.rs`). Under the amendment a stateful Sync body needs a
+state set per iteration.
+
+- **Phase 1 — de-fuse.** A tail loop whose body is not stateless
+  refuses to fuse, exactly as the `SLEEP_RESTARTS` arm gate de-fuses a
+  select whose arm reaches a restart builtin. The interpreter nests it.
+  This lands the semantics with zero new emission and lets the corpus
+  count the change.
+- **Phase 2 — per-iteration site blocks (coverage, later).** The
+  machinery exists: in-loop callee SITE BLOCKS are chain leaves with a
+  `words` stride from `graphix_slot_state_table` (`emit/lower.rs:516`),
+  and the shrink-to-zero rule truncates a chain whose level shrinks.
+  A stateful tail loop selects its block by iteration index and
+  truncates on a shorter chain. Async bodies interpret regardless.
+
+### 4b. Depth bounded by memory, not a counter
+
+Eric's preference: limit depth to available memory. The interpreter
+is there once the counter is deleted. The kernel's non-tail
+self-calls run on the machine stack, so it needs a stack switch —
+the JIT twin of `ensure_sufficient`:
+
+- The wrapper writes a STACK LIMIT into a wire slot per invocation
+  (derived from `stacker::remaining_stack` at entry).
+- At every non-tail recursive call site (self and mutual edges) the
+  kernel compares the stack pointer against the slot — one inline
+  compare-and-branch — and on the slow path calls
+  `graphix_grow_stack(thunk, args_block)`: the args are spilled to a
+  block (the `graphix_dyncall` marshaling shape), the helper runs
+  `stacker::grow(SEGMENT, || thunk(args_block))`, and the thunk — one
+  generated entry per recursion-target kernel — unspills, installs the
+  NEW limit in the callee's wire slot, calls the kernel with the
+  register ABI, and writes the result back.
+- Cost on the fast path: the compare. fib(30)'s 1.6M calls is the
+  benchmark that measures it.
+
+The trampoline lands WITH the counter deletion, not after: removing
+the interpreter's bound while the kernel keeps one makes the engines
+disagree above 256 on any deep sync non-tail recursion. The
+entry-only interim (`ensure_sufficient` around `Kernel::update`, a
+fresh segment per invocation) bounds depth at ~segment/frame, roughly
+1e4–1e5 — a large fixed number, not memory, and silent (a segfault)
+past it. Not acceptable as the resting state.
+
+## 5. Containment, and what a bound means now
+
+`atomic_recursion.md` already rules that a program may spin forever
+inside one cycle and that containment lives outside the language: the
+cooperative interrupt, armed by a human or an embedder, observable by
+no program. Memory is the same shape: a recursion that exhausts memory
+aborts the process on both engines (stacker's segment allocation and
+the allocator fail the same way), the fuzz children run under
+`GRAPHIX_FUZZ_MEM_LIMIT`, and the shell's Ctrl-C path is unchanged.
+There is no depth TRIP any more — no delivered bottom, no
+`depth_tripped` poison, no whole-derivation rule — because there is no
+depth limit to trip. The seven `depth-*`/`nontail-recursion-depth-bound`
+pin families re-bless as "deep recursion completes" witnesses (§10).
+
+## 6. The collection trait
+
+```graphix
+trait Collection {
+    val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b) -> 'b;
+    val filter_map: fn(self<'a>, f: fn(x: 'a) -> ['b, null]) -> self<'b>;
+    val map: fn(self<'a>, f: fn(x: 'a) -> 'b) -> self<'b>
+        = |c, f| filter_map(c, |x| f(x));
+    val filter: fn(self<'a>, f: fn(x: 'a) -> bool) -> self<'a>
+        = |c, f| filter_map(c, |x| select f(x) { true => x, false => null });
+    val find: fn(self<'a>, f: fn(x: 'a) -> bool) -> ['a, null] = ..;
+    val find_map: fn(self<'a>, f: fn(x: 'a) -> ['b, null]) -> ['b, null] = ..;
+    val len: fn(self<'a>) -> i64 = |c| fold(c, 0, |n, _| n + 1);
+}
+```
+
+- **Required**: `fold` (traversal) and `filter_map` (construction with
+  selection). `map`/`filter` derive from `filter_map`; `find`/
+  `find_map`/`len` from `fold`. Derived methods inherit the required
+  method's slots, so a user type gets per-slot semantics from two
+  hand-written recursions. `flat_map` needs a concat and is left out
+  (a `Monoid`-shaped trait, or the package function, later).
+- **The blessed implementations** are the intrinsics, unchanged in
+  mechanism: `impl Collection for Array { let map = 'array_map; let
+  fold = 'array_fold; .. }` — the reserved marker names as impl
+  bodies, `LambdaDispatch::Collection` keyed on the impl binding
+  instead of on the free function. They override every default,
+  including `len` (O(1)). List and Map likewise. The scaffold loops
+  (`emit/scaffold.rs`) stay as THE fast path: a list-accumulator body
+  fused as a tail loop is a cons per element plus a reverse plus a
+  copy, ~20–30× off the scaffold's ~1000× (the List benches' 15× cons
+  gap), and the predictable-performance rule says that cannot be the
+  default. What the general mechanism replaces is the intrinsics being
+  the ONLY way; retiring their interp side (`node/collection.rs`'s
+  slots, prefix retention, per-slot firing/sleep/replay, result
+  assembly) in favour of Graphix bodies is a separate decision this
+  doc does not make.
+- **A user's linear structure** writes `filter_map` as a tail chain
+  over a list accumulator, front to back, finished by
+  `list::to_array_rev` (one Rust walk: reverse + build; to be written)
+  or its own constructor. Front-to-back matters: the suffix pattern
+  `[init.., x]` would avoid the reverse but makes depth d element
+  n−1−d, so every append shifts every slot. With the list accumulator
+  an async update at slot d re-conses the suffix (n−d) and rebuilds
+  (n) — ~3× MapQ's n clones per update, and the retained chain shares
+  tails, O(n) cells total. In-place `push` on a uniquely owned array
+  (the JIT's owned-accumulator loops) was considered and does not
+  work here: under per-iteration activations iteration i's
+  accumulator is retained by i and passed to i+1, never unique.
+- **Naming.** `Map` is the builtin type; `deftrait` rejects a trait
+  named like a TYPEDEF in scope but a builtin is not a typedef, and
+  `Map` in a bound position would parse against the type. The doc
+  uses `Collection`; Eric's call.
+- **Map is a functor over VALUES** under the last-parameter hole
+  (`self<'a>` ≡ `Map<'k, 'a>`), so `Collection::map` on a Map maps
+  values and `Collection::fold` folds values. `map::map`/`map::fold`
+  are PAIR operations (`kv: ('k, 'v) -> ('k2, 'v2)`, `map.gxi:3`) and
+  stay as they are. Haskell draws the line in the same place
+  (`Functor (Map k)`, `foldrWithKey` beside it).
+
+## 7. Higher-kinded self: the hole
+
+`self<'a>` is not a trait parameter; it is `self` as a type
+CONSTRUCTOR. `traits.md` §5 declined it for two reasons: "the
+collection HOFs are compiler intrinsics with per-slot semantics; a
+`Map` trait abstracting over them is a different project" — this doc
+is that project, so the reason dissolves — and "`['a, null]` is
+structural and cannot be a target", which stands and does not matter:
+Option is not a collection.
+
+The design that keeps v1's clean property (TYPING never needs
+resolution — the call's type is known from the trait alone, impl
+selection is a typecheck1 codegen decision):
+
+- **A constructor is a type with a HOLE in its last parameter.** A
+  constructor variable is a `TVar` that binds to such a type.
+  `self<'x>` is the form `App(self, 'x)`: fill the hole with `'x`.
+  Normalization: `App(c, a)` with `c` bound → the filled type.
+- **Decomposition is syntactic, on the receiver's outermost form only**
+  (Haskell's rule; no kinds in unification): unifying `App(c, a)` with
+  `Ref{name, params}` (params non-empty) binds `c := Ref{name,
+  params[..n−1] ++ [Hole]}` and unifies `a` with `params[n−1]`;
+  `Array<e>` → `c := Array<Hole>`, `a ~ e`; `Map<k, v>` → `c := Map<k,
+  Hole>`, `a ~ v`; anything else — a struct, a tuple, a union, a bare
+  primitive — is an error ("not a constructor"). `App(c, a) ~ App(c',
+  a')` unifies pairwise. An unbound plain tvar against `App(c, a)`
+  binds to the `App` form. One new arm pair in `contains`; the
+  typechecker-must-be-instant rule is not at risk.
+- **Impl heads name the constructor**: `impl Collection for AltList`
+  (a parameterized abstract, hole = its last parameter), `impl<'k>
+  Collection for Map<'k, _>`, `impl Collection for Array`. `find_impl`
+  decomposes the receiver argument's type and matches heads by
+  constructor identity; `heads_overlap` treats `Hole` as a leaf that
+  overlaps anything in its position.
+- **Each impl's method has an ordinary polymorphic signature** once
+  the hole is filled: Array's `map` is `fn(Array<'a>, f: fn(x: 'a) ->
+  'b) -> Array<'b>` — today's `array::map` exactly. Dispatch is v1's
+  flow (`resolve_trait_call` → `find_impl` → re-point).
+- **Generic code**: `'c: Collection` makes `'c` a constructor variable
+  and the receiver type is written `'c<i64>` (new syntax: a tvar
+  applied to parameters, expression and type positions). The
+  per-parameter sugar extends: `|c: Collection|` ≡ `'c: Collection,
+  'e fresh, c: 'c<'e>`. Per-callsite elaboration means the def-time
+  body only carries `App('c, 'b)` as a form; it normalizes when `'c`
+  binds at each instance.
+- **Union receivers are an error** for a hole trait (v1's
+  union-dispatch select is for non-constructor self; extend later if a
+  case appears).
+- **Rust-backed abstracts with parameters** (`type AltList<'a>;`) are
+  `Ref`s and decompose. Eric's newtype example, `type AltMap<'k, 'v> =
+  Abstract<Map<'k, 'v>>`, delegates: `let map = |m, f|
+  AltMap(map::map(m.0, |(k, v)| (k, f(v))))`.
+
+## 8. Deferred: v2 trait parameters
+
+`trait WithErr<'e>` / `impl WithErr<`FsErr> for File` — parameters as
+OUTPUTS of impl selection, one impl per self type (`traits.md` §5).
+Deferred because the client is thin. The one Eric named is a custom
+error type, and it comes in two shapes:
+
+- **Per-impl error type** (`trait Read<'e> { read: .. -> Result<bytes,
+  'e> }`): io declares one fixed `` `IOError(string) `` for every
+  stream (`io.gxi:16`) and has no pressure for more.
+- **Conversion at `?`**: a module declares `throws MyErr` (an abstract
+  type — the real motive is a stable, hidden error API), writes `impl
+  From<[`IoErr(string), `ParseErr]> for MyErr`, and `?` inside a
+  `throws MyErr` function converts. This WOULD work under v2 with no
+  return-type inference — the self at a `?` site is DECLARED by the
+  enclosing function's `throws`, the parameter is the union of
+  accepted sources, and the site check is `source ⊆ 'src` (plain
+  `contains`). But union error types plus `?` already cover most of
+  what Rust needs `From` for; the residual is encapsulation.
+
+The hole (§7) cannot substitute: it reads its bindings from the
+receiver's STRUCTURE (unification, no impl lookup), which is exactly
+why it is resolution-free; an error type is a fact about the IMPL,
+i.e. the impl table, which is what "parameters as outputs of
+selection" means and why v2 pays the resolution-order cost. Smuggling
+an error type into the receiver's structure is a phantom parameter
+(`File<'e>`) — the pattern the io migration just removed. When a real
+module wants v2, build it against that module.
+
+## 9. Pressure tests
+
+Three examples, one per part of the mechanism; they are the doc's
+fixtures.
+
+1. **Newtype delegation** — `type Grid<'a> = Abstract<Array<Array<'a>>>`,
+   a spreadsheet whose cells are async evaluations; `impl Collection
+   for Grid` is two `array::map`s. Stresses only the trait: the hole,
+   `use core::Collection::*`, the impl head form. The slots are the
+   intrinsics'.
+2. **A linear structure** — a deque of 5,000 live subscriptions.
+   `filter_map` is a tail chain with a list accumulator. Stresses the
+   amendment: this is the case that hits 256 today, and where the
+   interpreter's per-activation footprint gets measured (an activation
+   is a whole body instance — select, slice, cons, two call sites —
+   several times a MapQ slot's; `interp_lazy_bind_cost.md` names
+   instantiation as the known slow path).
+3. **A tree** — the admin package's browser, a netidx path tree with a
+   subscription per node: `type Tree<'a> = [`Node('a, Array<Tree<'a>>)]`,
+   `map` is `` `Node(f(v), array::map(children, |c| map(c, f))) `` —
+   recursion THROUGH a callback. Slot identity is tree position, which
+   is the right identity for a browser (collapse a subtree: it sleeps;
+   expand: it wakes). It works in the interpreter today because async
+   bodies nest, and the bound bites by depth (20), not size (a million
+   nodes). What it stresses is the pinned de-fuse
+   (`fold_callback_name_collision`: a rec callee inside a collection
+   callback keeps the collection on the node-walk) — moot for the
+   async tree, the coverage gap for a sync tree fold.
+
+## 10. Deletion inventory, and what stays
+
+Deleted:
+
+- `DEFAULT_MAX_CALL_DEPTH`, `Control::{max_call_depth,
+  set_max_call_depth, depth_push, depth_pop}`, the interpreter's trip
+  arm in `GXLambda::update` (`node/lambda.rs:436`), the `DEPTH TRIP`
+  diagnostic and `GRAPHIX_DBG_DEPTH`.
+- `ctx.depth_tripped` and its rides (the scrutinee-ride refusal, the
+  tainted guard's held-ride false, pop-to-zero clearing), the
+  whole-derivation trip rule.
+- `graphix_depth_push`/`_pop`/`_tripped` (`emit_helpers.rs:616`), the
+  scaffold's depth charge (`emit_helpers.rs:668`), the kernel's
+  value-level trip propagation and `builder.rs:100`'s region-level
+  report.
+- Pins re-blessed from "trips at N" to "completes at N":
+  `depth-guard-jul2026`, `depth-guard-marshal-jul2026`,
+  `depth-trip-delivered-bottom-aug2026`,
+  `depth-trip-quiet-remint-aug2026`, `depth-trip-settle-aug2026`,
+  `depth-trip-whole-derivation-aug2026`,
+  `nontail-recursion-depth-bound-aug2026`,
+  `empty-scaffold-depth-charge-aug2026`.
+
+Stays:
+
+- MapQ/FoldQ and the eight scaffold loops, as the blessed impls (§6).
+- Frames and the framed tail loop, for stateless bodies.
+- The retention ruling, the interrupt, `GRAPHIX_FUZZ_MEM_LIMIT`.
+- Every bottom-out / organic-firing / quiet-flag rule: activations
+  fire and ride exactly as retained non-tail activations do today.
+
+## 11. Phasing and open questions
+
+- **P0 — measure.** Test 2 (§9) in the interpreter: time to first
+  result and RSS for 1k/10k activations with an async body, against
+  the same over `array::map`. This decides whether instance size needs
+  work before the semantics land.
+- **P1 — the amendment.** The stateless predicate (analysis.rs, the
+  M6 shape); the `tail_loop` gate reads it; the JIT de-fuses stateful
+  tail loops (4a phase 1); the counter and the trip machinery go
+  (§10) TOGETHER WITH the kernel stack trampoline (4b); pins
+  re-blessed; fleet soak.
+- **P2 — the trait.** The hole in the type system (§7), `trait
+  Collection` in core with the intrinsic impls under it, `list::
+  to_array_rev`, the three pressure tests as fixtures, generator
+  vocabulary for traits (there is none yet — the aug24 soak note).
+- **P3 — coverage.** Per-iteration site blocks for stateful tail
+  loops (4a phase 2); recursion-through-callback fusion.
+
+Open:
+
+- Retain or delete shrunk activations (§3). Recommendation: retain.
+- The trait's name (§6). Recommendation: `Collection`.
+- Whether `len` belongs in the trait at all, given its O(n) default.
+- `flat_map`/concat.
+- Whether List's impl should be the first Graphix-bodied one as the
+  proof of mechanism — decided by measurement against the flatten
+  loop's 142–151×, not by principle.

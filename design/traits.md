@@ -272,7 +272,7 @@ never needs resolution — the call's type is known from the trait
 alone, and impl selection is a typecheck1 codegen decision, the same
 place `try_static_resolve` lives. No chicken-and-egg with inference.
 
-**v2: trait parameters, one impl per self type.** `trait WithErr<'e>`,
+**v2: trait parameters, one impl per self type — DEFERRED 2026-08-24, see `recursive_activations.md` §8 (the error client is thin; build v2 against a real module when one asks).** `trait WithErr<'e>`,
 `impl WithErr<`MyErr> for File`. With the coherence rule "one impl per
 self type" the parameters are OUTPUTS of impl selection — exactly the
 associated-type behavior (`type Err;`) without projection types
@@ -281,7 +281,7 @@ everywhere. The cost v2 pays that v1 does not: selecting the impl now
 BINDS tvars, so typing depends on resolution, and resolution order
 matters. Worth it, later.
 
-**Not planned: higher-kinded self (`self<'a>`).** The `Map` trait needs
+**Higher-kinded self (`self<'a>`) — SUPERSEDED 2026-08-24: designed as the last-parameter HOLE in `recursive_activations.md` §7; the intrinsics reason below dissolved when recursion activations became the general slot mechanism, the Option reason stands and does not matter. Original text:** The `Map` trait needs
 `self` to be a type CONSTRUCTOR — kinds in unification, decomposition
 of `Array<i64>` into `Array` applied to `i64`. Rust deliberately does
 not have it. Two Graphix-specific reasons on top: `['a, null]` (Option)

@@ -239,6 +239,18 @@ loop is ONE activation whose iterations reuse its one state — a tail
 call does not create an activation, it REPLACES the current one.
 Collection slots are each an activation.**
 
+> **AMENDED 2026-08-24** (`recursive_activations.md` §2): a tail call
+> creates an activation like any other call; a tail loop may reuse
+> ONE activation only when its body is STATELESS (Sync, every builtin
+> `STATELESS`, no `<-` target, callees transitively stateless) —
+> because then no program can tell. The "forced" argument survives
+> with the boundary moved to where the history is: a stateless body
+> has no per-depth history, so constant space is free; a stateful one
+> has O(n) history and pays O(n) space, exactly as a slot vector does.
+> Measured trigger: `acc + count(x)` in a tail call returns 6 today
+> and 3 as a fold does. The depth counter goes with it — depth is
+> bounded by memory on both engines (§4b there).
+
 This is the Scheme move extended from space to state, and it is
 FORCED, not chosen: inlining semantics for general recursion plus
 constant-space tail loops are jointly incompatible with per-depth

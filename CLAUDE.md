@@ -1286,6 +1286,23 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `recursive_activations.md` — **DESIGNED 2026-08-24, not built:**
+  recursion activations ARE collection slots. Amends Ruling 2: a tail
+  call creates an activation; a tail loop collapses to ONE only when
+  the body is STATELESS (not merely Sync — `count` in a tail call
+  returns 6 today, 3 as a fold does). Async recursion already nests
+  per level (the tail-loop gate requires Sync, analysis.rs:629), so
+  the interpreter needs no new driver — the predicate, the depth
+  counter's deletion (depth bounded by MEMORY, both engines: the
+  kernel gets a stack trampoline at non-tail recursive call sites),
+  and a JIT de-fuse for stateful tail loops. On that sits `trait
+  Collection` (required `fold`/`filter_map`, the rest default) with
+  higher-kinded self as a last-parameter HOLE (decomposition on the
+  receiver's outermost form, resolution-free typing kept), the
+  intrinsics as its blessed Array/List/Map impls with the scaffolds as
+  the fast path, and user structures implementing it in Graphix. v2
+  trait parameters DEFERRED (thin client). Three pressure tests
+  (newtype grid, deque, the admin browser tree).
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the
