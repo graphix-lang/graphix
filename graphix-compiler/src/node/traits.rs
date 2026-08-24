@@ -451,18 +451,13 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                         name: arcstr::literal!("sync"),
                         args: Arc::from_iter([]),
                     };
-                    let (comments, attrs, trailing) = match dec {
-                        Some(d) => {
-                            (d.comments.clone(), d.attrs.clone(), d.trailing.clone())
-                        }
-                        None => {
-                            (Arc::from_iter([]), Arc::from_iter([]), Arc::from_iter([]))
-                        }
+                    let (comments, attrs) = match dec {
+                        Some(d) => (d.comments.clone(), d.attrs.clone()),
+                        None => (Arc::from_iter([]), Arc::from_iter([])),
                     };
                     Some(Box::new(crate::expr::Decorations {
                         comments,
                         attrs: Arc::from_iter(attrs.iter().cloned().chain([sync])),
-                        trailing,
                     }))
                 }
             };

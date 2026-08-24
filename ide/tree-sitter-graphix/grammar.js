@@ -13,6 +13,7 @@ module.exports = grammar({
   extras: $ => [
     /\s/,
     $.line_comment,
+    $.attribute,
   ],
 
   externals: $ => [
@@ -176,6 +177,24 @@ module.exports = grammar({
     )),
 
     doc_comment: $ => token(seq('///', /.*/)),
+
+    // Attributes
+    //
+    // `#[name]` / `#[name(arg, ...)]` on its own line above an
+    // expression. Like line_comment it is an `extra`: the graphix
+    // parser accepts a decoration only directly above an expression
+    // (or above a select arm's pattern, an impl method, or a struct
+    // field's name), but tree-sitter is permissive on placement and
+    // leaves that judgement to the compiler.
+    //
+    // `#[` is one token, so it beats the `#` of a labeled argument by
+    // longest match; a labeled name can never begin with `[`.
+    attribute: $ => seq(
+      '#[',
+      field('name', $._binding_name),
+      optional(seq('(', commaSep1(field('args', $._expression)), ')')),
+      ']',
+    ),
 
     // Module and use
     module: $ => choice(

@@ -4,6 +4,7 @@
     "scopeName": "source.graphix",
     "patterns": [
         { "include": "#comments" },
+        { "include": "#attributes" },
         { "include": "#keywords" },
         { "include": "#constants" },
         { "include": "#strings" },
@@ -23,6 +24,14 @@
                 {
                     "name": "comment.line.double-slash.graphix",
                     "match": "//.*$"
+                }
+            ]
+        },
+        "attributes": {
+            "patterns": [
+                {
+                    "name": "meta.attribute.graphix",
+                    "match": "^\\s*#\\[[^\\]]*\\]"
                 }
             ]
         },

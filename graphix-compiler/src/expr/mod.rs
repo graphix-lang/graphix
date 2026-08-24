@@ -129,8 +129,7 @@ impl PartialOrd for Arg {
 pub struct Doc(pub Option<ArcStr>);
 
 /// A single `#[name(args, ...)]` / `#[name]` attribute attached above an
-/// expression. (Parsed and acted on by a later change; the field exists
-/// now so the `Decorations` shape is stable.)
+/// expression — `#[sync]`, `#[async]`, `#[tail_recursive]`, `#[native]`.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Attr {
@@ -140,17 +139,14 @@ pub struct Attr {
 
 /// Source decorations attached to the `Expr` they sit above — the `//`
 /// comment lines and `#[..]` attributes on their own line directly above
-/// the expression, plus any `trailing` comments dangling after the last
-/// expression of a block/file (the one position with no expression below
-/// to attach to). `None` for the overwhelming majority of expressions, so
-/// it costs one word and no allocation. Invisible to `Expr` equality
+/// the expression. `None` for the overwhelming majority of expressions,
+/// so it costs one word and no allocation. Invisible to `Expr` equality
 /// (comments don't affect semantics — see `PartialEq for Expr`).
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Decorations {
     pub comments: Arc<[ArcStr]>,
     pub attrs: Arc<[Attr]>,
-    pub trailing: Arc<[ArcStr]>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -696,8 +692,8 @@ pub struct Expr {
     pub pos: SourcePosition,
     pub kind: ExprKind,
     /// Comments/attributes on their own line directly above this
-    /// expression (and trailing dangling comments). `None` unless the
-    /// expression was decorated; not compared by equality.
+    /// expression. `None` unless the expression was decorated; not
+    /// compared by equality.
     pub dec: Option<Box<Decorations>>,
 }
 

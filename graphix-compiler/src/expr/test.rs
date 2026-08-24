@@ -39,25 +39,33 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
     any::<String>().prop_map(ArcStr::from)
 }
 
-/// The `//` comment lines an expression can carry: any text short of a
-/// newline that does not open with `/` (that would read back as a `///`
-/// doc comment). `None` when there are none, as the parser leaves an
-/// undecorated expression. Attributes are not generated: the same
-/// strategy feeds the tree-sitter lane and the grammar has no `#[..]`
-/// rule yet; their round trip is pinned by the parser's unit tests.
+/// `#[name]` / `#[name(arg, ..)]`. The args are leaves rather than full
+/// expressions: an arg prints through `Display for Expr`, so a decorated
+/// one would put a comment line inside the brackets, and the recursion
+/// would have to be threaded through every caller of `decorations`.
+fn attr() -> impl Strategy<Value = Attr> {
+    (random_fname(), collection::vec(prop_oneof![constant(), reference()], 0..3))
+        .prop_map(|(name, args)| Attr { name, args: Arc::from_iter(args) })
+}
+
+/// The `//` comment lines and `#[..]` attributes an expression can carry.
+/// Comment text is any run short of a newline that does not open with `/`
+/// (that would read back as a `///` doc comment). `None` when there are
+/// none of either, as the parser leaves an undecorated expression.
 fn decorations() -> impl Strategy<Value = Option<Box<Decorations>>> {
     let comment = "[ a-zA-Z0-9_,.!?*-]{0,24}".prop_map(ArcStr::from);
-    collection::vec(comment, 0..3).prop_map(|comments| {
-        if comments.is_empty() {
-            None
-        } else {
-            Some(Box::new(Decorations {
-                comments: Arc::from_iter(comments),
-                attrs: Arc::from_iter(iter::empty::<Attr>()),
-                trailing: Arc::from_iter(iter::empty::<ArcStr>()),
-            }))
-        }
-    })
+    (collection::vec(comment, 0..3), collection::vec(attr(), 0..2)).prop_map(
+        |(comments, attrs)| {
+            if comments.is_empty() && attrs.is_empty() {
+                None
+            } else {
+                Some(Box::new(Decorations {
+                    comments: Arc::from_iter(comments),
+                    attrs: Arc::from_iter(attrs),
+                }))
+            }
+        },
+    )
 }
 
 /// `inner` with decorations above it. Legal ONLY where the parser
@@ -2265,6 +2273,39 @@ mod tree_sitter_compat {
                 tree.root_node().to_sexp()
             );
         }
+    }
+
+    /// Attributes at every position the graphix parser captures a
+    /// decoration, and the shapes it admits: bare, args, args that are
+    /// themselves expressions. The proptest lane below generates
+    /// attributes too, but only over the expressions it builds — this
+    /// pins the syntax itself against the grammar.
+    #[test]
+    fn ts_attributes_parse() {
+        const SRCS: [&str; 6] = [
+            "#[sync]\nlet f = |x| x + 1",
+            "#[foo(1, \"two\", a::b)]\nlet f = 3",
+            "let f = |n| select n {\n  // above the pattern\n  #[native]\n  0 => 0,\n  k => k\n}",
+            "type Counter = Abstract<i64>;\nimpl Show for Counter {\n  #[sync]\n  let show = |c| \"x\"\n}",
+            "let s = {\n  #[native]\n  a: 1,\n  // and a comment\n  #[sync]\n  b: 2\n}",
+            "{\n  #[sync]\n  let a = 1;\n  #[async]\n  a + 1\n}",
+        ];
+        for src in SRCS {
+            assert_ts_parses(src);
+        }
+    }
+
+    /// An attribute is a node of its own, so an editor can color it —
+    /// if it were swallowed by the expression's extent there would be
+    /// nothing to match on.
+    #[test]
+    fn ts_attribute_is_a_node() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
+        let src = "#[foo(1)]\nlet f = 3";
+        let tree = parser.parse(src, None).unwrap();
+        let sexp = tree.root_node().to_sexp();
+        assert!(sexp.contains("attribute"), "no attribute node in {sexp}");
     }
 
     proptest! {

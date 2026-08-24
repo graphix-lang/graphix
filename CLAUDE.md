@@ -1597,8 +1597,13 @@ UUID on; `get_stream` reaches the shared cell from any of them.
   printer dropping block-item comments (`pretty_print_exprs_int`
   printed `.kind`). Comments are still legal ONLY above an expression
   or one of those three heads: interior/trailing/dangling comments are
-  parse errors by design. The tree-sitter grammar has no `#[..]`
-  attribute rule (pre-existing; the proptest generates comments only).
+  parse errors by design. The tree-sitter grammar gained the `#[..]`
+  attribute rule the same day (an `extra`, like `line_comment` —
+  placement is the compiler's judgement, not the grammar's; `#[` is
+  one token so it beats a labeled arg's `#` by longest match), and the
+  proptest now generates attributes too. `Decorations.trailing` is
+  gone with it — the parser rejects dangling comments, so it was never
+  populated.
 
 ## The module system (open → use, 2026-08-22)
 

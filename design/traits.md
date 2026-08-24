@@ -749,6 +749,17 @@ pattern or the name, and the round-trip proptest now generates
 comments at every such position — which is what caught the pretty
 printer laying block items out by kind and dropping their comments.
 
+The same pass closed the tree-sitter grammar's older hole: it had no
+`#[..]` rule at all, so an attributed program was one big ERROR node
+in every editor. `attribute` is now an `extra` alongside
+`line_comment` — the grammar is permissive about where a decoration
+sits and leaves the judgement to the compiler, as it already did for
+comments — and `#[` is a single token, so it beats a labeled
+argument's `#` by longest match. The proptest generates attributes now
+too, which makes that lane the gate. `Decorations.trailing` went away
+with the same change: the parser rejects a dangling comment, so
+nothing ever filled it.
+
 **API break** (accepted in §10): `io::read(s, n)` is `Read::read(s,
 n)`, `fs::seek` is `Seek::seek`, `tcp::shutdown` is `Socket::shutdown`,
 `process::Stdio` (the redirect config) is `process::Redirect` — the

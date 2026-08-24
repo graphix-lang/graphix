@@ -280,19 +280,14 @@ fn decorate(mut e: Expr, (mut comments, mut attrs): Leading) -> Expr {
     if comments.is_empty() && attrs.is_empty() {
         return e;
     }
-    let trailing = match e.dec.take() {
-        Some(own) => {
-            let Decorations { comments: c, attrs: a, trailing } = *own;
-            comments.extend(c.iter().cloned());
-            attrs.extend(a.iter().cloned());
-            trailing
-        }
-        None => Arc::from_iter(std::iter::empty::<ArcStr>()),
-    };
+    if let Some(own) = e.dec.take() {
+        let Decorations { comments: c, attrs: a } = *own;
+        comments.extend(c.iter().cloned());
+        attrs.extend(a.iter().cloned());
+    }
     e.dec = Some(Box::new(Decorations {
         comments: Arc::from_iter(comments.drain(..)),
         attrs: Arc::from_iter(attrs.drain(..)),
-        trailing,
     }));
     e
 }
