@@ -1549,8 +1549,13 @@ occurrence of a generalized binding (`Env.poly_binds`: let-bound
 lambdas, gxi vals, dispatchers, `let g = f`) instantiates its
 signature in `Ref::typecheck0` like a call (same knots); a call site
 typechecks a `Ref` argument before its operand pre-bind. Not yet:
-trait params/assoc types, `type T = A + B`, io on traits,
-dynamic-module impl proxies.
+trait params/assoc types (v2, post-release), `type T = A + B` trait
+aliases (write the bound inline), dynamic-module impl proxies (an
+`impl` declared by a dynamic module's interface has method bindings
+but no proxy to the loaded source, so a consumer compiled against it
+can't dispatch statically), and no `Hash` (nothing consults one —
+map keys ride `Ord`). Fusion coverage, not correctness: the
+union-dispatch select de-fuses, as do abstract patterns.
 
 **Core traits (2026-08-23, `design/traits.md` §12):** `Eq`/`Ord`/
 `Display` declared in core's gxi; THE VALUE SEAM: netidx's abstract
