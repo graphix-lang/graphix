@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::{
         ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
-        StructurePattern, UseItem,
+        StructurePattern, UseItem, print::PrettyDisplay,
     },
     typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
@@ -186,6 +186,151 @@ fn interior_comment_is_error() {
 fn trailing_block_comment_is_error() {
     // Dangling after the last item of a block (nothing below to attach to).
     assert!(parse_one("{ let x = 1; x\n// nope\n}").is_err());
+}
+
+fn comments_of(e: &Expr) -> Vec<ArcStr> {
+    e.dec.as_ref().map(|d| d.comments.to_vec()).unwrap_or_default()
+}
+
+fn arm_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
+    match &e.kind {
+        ExprKind::Select(SelectExpr { arms, .. }) => {
+            arms.iter().map(|(_, body)| comments_of(body)).collect()
+        }
+        other => panic!("expected a select, got {other:?}"),
+    }
+}
+
+#[test]
+fn comment_above_select_arm() {
+    // Above an arm's pattern the comment belongs to the arm's body; both
+    // printers put it back above the pattern.
+    let e = parse_one("select x {\n// zero\n0 => 1,\n// rest\n_ => 2\n}").unwrap();
+    let want = vec![vec![literal!(" zero")], vec![literal!(" rest")]];
+    assert_eq!(arm_comments(&e), want);
+    assert_eq!(arm_comments(&parse_one(&e.to_string()).unwrap()), want);
+    assert_eq!(arm_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+    let e = parse_one("select x {\n// zero\n0 => { 1; 2 },\n// rest\n_ => 3\n}").unwrap();
+    assert_eq!(arm_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+}
+
+#[test]
+fn comment_above_arm_and_after_arrow_keep_source_order() {
+    let e = parse_one("select x {\n// arm\n_ =>\n// body\n1\n}").unwrap();
+    assert_eq!(arm_comments(&e), vec![vec![literal!(" arm"), literal!(" body")]]);
+}
+
+#[test]
+fn attr_above_select_arm() {
+    let e = parse_one("select x {\n#[native]\n0 => 1,\n_ => 2\n}").unwrap();
+    match &e.kind {
+        ExprKind::Select(SelectExpr { arms, .. }) => {
+            let dec = arms[0].1.dec.as_ref().expect("attribute lost");
+            assert_eq!(&dec.attrs[0].name, &literal!("native"));
+            assert!(arms[1].1.dec.is_none());
+        }
+        other => panic!("expected a select, got {other:?}"),
+    }
+}
+
+#[test]
+fn trailing_arm_comment_is_error() {
+    assert!(parse_one("select x { _ => 1\n// nope\n}").is_err());
+    assert!(parse_one("select x { _ => 1,\n// nope\n}").is_err());
+}
+
+fn method_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
+    match &e.kind {
+        ExprKind::Impl(i) => i.methods.iter().map(comments_of).collect(),
+        other => panic!("expected an impl, got {other:?}"),
+    }
+}
+
+#[test]
+fn comment_above_impl_method() {
+    let e = parse_one(
+        "impl Show for Counter {\n// how it prints\nlet show = |c| \"c\";\n// twice\nlet twice = |c| \"cc\"\n}",
+    )
+    .unwrap();
+    let want = vec![vec![literal!(" how it prints")], vec![literal!(" twice")]];
+    assert_eq!(method_comments(&e), want);
+    assert_eq!(method_comments(&parse_one(&e.to_string()).unwrap()), want);
+    assert_eq!(method_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+}
+
+#[test]
+fn trailing_impl_comment_is_error() {
+    assert!(
+        parse_one("impl Show for Counter { let show = |c| \"c\"\n// nope\n}").is_err()
+    );
+}
+
+#[test]
+fn impl_body_holds_only_methods() {
+    assert!(parse_one("impl Show for Counter { 42 }").is_err());
+    assert!(parse_one("impl Show for Counter { let (a, b) = (1, 2) }").is_err());
+}
+
+fn field_comments(e: &Expr) -> Vec<(ArcStr, Vec<ArcStr>)> {
+    let fields: &[(ArcStr, Expr)] = match &e.kind {
+        ExprKind::Struct(StructExpr { args }) => args,
+        ExprKind::StructWith(StructWithExpr { replace, .. }) => replace,
+        other => panic!("expected a struct literal, got {other:?}"),
+    };
+    fields.iter().map(|(n, v)| (n.clone(), comments_of(v))).collect()
+}
+
+#[test]
+fn comment_above_struct_field() {
+    // Explicit and shorthand fields alike: the comment belongs to the
+    // field's value (the shorthand's synthesized reference), and the
+    // printers keep the shorthand.
+    let e = parse_one("{\n// the host\nhost: \"h\",\n// the port\nport\n}").unwrap();
+    let want = vec![
+        (literal!("host"), vec![literal!(" the host")]),
+        (literal!("port"), vec![literal!(" the port")]),
+    ];
+    assert_eq!(field_comments(&e), want);
+    let printed = e.to_string();
+    assert!(!printed.contains("port: port"), "{printed}");
+    assert_eq!(field_comments(&parse_one(&printed).unwrap()), want);
+    let pretty = e.to_string_pretty(0);
+    assert!(!pretty.contains("port: port"), "{pretty}");
+    assert_eq!(field_comments(&parse_one(&pretty).unwrap()), want);
+}
+
+#[test]
+fn comment_above_struct_with_field() {
+    let e = parse_one("{ s with\n// bump\nn: 1,\n// keep\nm\n}").unwrap();
+    let want = vec![
+        (literal!("m"), vec![literal!(" keep")]),
+        (literal!("n"), vec![literal!(" bump")]),
+    ];
+    assert_eq!(field_comments(&e), want);
+    assert_eq!(field_comments(&parse_one(&e.to_string()).unwrap()), want);
+    assert_eq!(field_comments(&parse_one(&e.to_string_pretty(0)).unwrap()), want);
+}
+
+#[test]
+fn reserved_shorthand_field_still_needs_explicit_form() {
+    assert!(parse_one("{ x: 1, type }").is_err());
+    assert!(parse_one("{\n// c\ntype }").is_err());
+    assert!(parse_one("{ x: 1, type: 2 }").is_ok());
+}
+
+// The pretty round trips use a ZERO width: at any width a short expression
+// fits on one line and prints through `Display`, never reaching the
+// pretty layouts these pin.
+#[test]
+fn block_item_comment_pretty_round_trips() {
+    let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
+    let e2 = parse_one(&e.to_string_pretty(0)).unwrap();
+    match &e2.kind {
+        ExprKind::Do { exprs } => {
+            assert_eq!(comments_of(exprs.last().unwrap()), vec![literal!(" note")])
+        }
+        other => panic!("expected a do block, got {other:?}"),
+    }
 }
 
 // ── attributes ──

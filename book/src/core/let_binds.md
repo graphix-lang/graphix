@@ -42,3 +42,27 @@ let (x, y): (i64, string) = (3, "hello")
 To document the public API of a module, use `///` documentation comments in
 [interface files](../modules/interfaces.md). Documentation is displayed in the
 shell during tab completion and made available by the LSP server.
+
+## Comments
+
+A `//` comment runs to the end of its line and belongs to whatever comes
+next: write it on its own line directly above an expression, a `select`
+arm, a method inside an `impl` block, or a field of a struct literal.
+
+```graphix
+// a counter, one step per cycle
+let n = 0;
+n <- n + 1;
+select n {
+  // nothing has happened yet
+  0 => "waiting",
+  // every later step
+  k => "step [k]"
+}
+```
+
+Anywhere else is a parse error — after an expression on the same line
+(`x + 1; // no`), between an operator and its operand, or dangling before
+a closing `}` with nothing below it. The rule is what lets the parser keep
+every comment in the syntax tree, so tools that rewrite a program (the
+formatter, the REPL echo) never lose one.

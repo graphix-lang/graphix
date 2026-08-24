@@ -1587,9 +1587,18 @@ UUID on; `get_stream` reaches the shared cell from any of them.
 - **Found in the compiler**: an interface `impl` declaration anchored
   the items after it into the module body's TAIL (fixed —
   `add_interface_modules`, pinned by `interface_type_after_impl`); a
-  `//` comment between two select arms is a parse error (NOT fixed —
-  comments attach to expressions, an arm's pattern is not one; a
-  comment after the `=>` is legal).
+  `//` comment between two select arms (or above an impl method) was
+  a parse error — FIXED 2026-08-24: decorations above a select arm's
+  pattern, an impl method, or a struct-literal field attach to the
+  expression below (arm body / method binding / field value —
+  `parser::decorate`), the printers hoist them back above the pattern
+  or field name, and the round-trip proptest generates comments at
+  those positions (`decorated()`), which also caught the pretty
+  printer dropping block-item comments (`pretty_print_exprs_int`
+  printed `.kind`). Comments are still legal ONLY above an expression
+  or one of those three heads: interior/trailing/dangling comments are
+  parse errors by design. The tree-sitter grammar has no `#[..]`
+  attribute rule (pre-existing; the proptest generates comments only).
 
 ## The module system (open → use, 2026-08-22)
 

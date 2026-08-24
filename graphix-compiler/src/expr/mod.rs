@@ -725,14 +725,7 @@ impl fmt::Debug for Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(dec) = &self.dec {
-            for c in dec.comments.iter() {
-                writeln!(f, "//{c}")?;
-            }
-            for a in dec.attrs.iter() {
-                writeln!(f, "{a}")?;
-            }
-        }
+        print::write_leading(f, &self.dec)?;
         // Printing descends the whole tree, and error paths print
         // arbitrary user subexpressions (`bailat!`, the default
         // `emit_clif` blocker message).
@@ -742,15 +735,7 @@ impl fmt::Display for Expr {
 
 impl PrettyDisplay for Expr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        use std::fmt::Write;
-        if let Some(dec) = &self.dec {
-            for c in dec.comments.iter() {
-                writeln!(buf, "//{c}")?;
-            }
-            for a in dec.attrs.iter() {
-                writeln!(buf, "{a}")?;
-            }
-        }
+        print::write_leading(buf, &self.dec)?;
         self.kind.fmt_pretty(buf)
     }
 }

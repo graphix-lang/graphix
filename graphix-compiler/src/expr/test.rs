@@ -39,6 +39,40 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
     any::<String>().prop_map(ArcStr::from)
 }
 
+/// The `//` comment lines an expression can carry: any text short of a
+/// newline that does not open with `/` (that would read back as a `///`
+/// doc comment). `None` when there are none, as the parser leaves an
+/// undecorated expression. Attributes are not generated: the same
+/// strategy feeds the tree-sitter lane and the grammar has no `#[..]`
+/// rule yet; their round trip is pinned by the parser's unit tests.
+fn decorations() -> impl Strategy<Value = Option<Box<Decorations>>> {
+    let comment = "[ a-zA-Z0-9_,.!?*-]{0,24}".prop_map(ArcStr::from);
+    collection::vec(comment, 0..3).prop_map(|comments| {
+        if comments.is_empty() {
+            None
+        } else {
+            Some(Box::new(Decorations {
+                comments: Arc::from_iter(comments),
+                attrs: Arc::from_iter(iter::empty::<Attr>()),
+                trailing: Arc::from_iter(iter::empty::<ArcStr>()),
+            }))
+        }
+    })
+}
+
+/// `inner` with decorations above it. Legal ONLY where the parser
+/// captures decorations — an expression position (a block item, a call
+/// argument, the top level) or one of the heads that hand them to the
+/// expression below (a select arm, an impl method, a struct field).
+/// Decorating an operand (`1 + <decorated>`) would be an interior comment,
+/// a parse error by design.
+fn decorated(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> {
+    (inner, decorations()).prop_map(|(mut e, dec)| {
+        e.dec = dec;
+        e
+    })
+}
+
 fn value() -> impl Strategy<Value = Value> {
     let leaf = prop_oneof![
         any::<i8>().prop_map(Value::I8),
@@ -618,7 +652,10 @@ macro_rules! impl_decl {
             collection::vec((tvar(), collection::vec(typexp(), 0..3)), 0..3),
             typath(),
             typexp(),
-            collection::vec((random_fname(), option::of(typexp()), $inner), 0..3),
+            collection::vec(
+                (random_fname(), option::of(typexp()), $inner, decorations()),
+                0..3,
+            ),
         )
             .prop_map(|(params, trait_name, target, methods)| {
                 let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
@@ -632,15 +669,17 @@ macro_rules! impl_decl {
                 let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
                 let methods = methods
                     .into_iter()
-                    .filter(|(n, _, _)| seen.insert(n.clone()))
-                    .map(|(name, typ, value)| {
-                        ExprKind::Bind(Arc::new(BindExpr {
+                    .filter(|(n, _, _, _)| seen.insert(n.clone()))
+                    .map(|(name, typ, value, dec)| {
+                        let mut m = ExprKind::Bind(Arc::new(BindExpr {
                             rec: false,
                             pattern: StructurePattern::Bind(name),
                             typ,
                             value,
                         }))
-                        .to_expr_nopos()
+                        .to_expr_nopos();
+                        m.dec = dec;
+                        m
                     });
                 ExprKind::Impl(Arc::new(ImplExpr {
                     trait_name,
@@ -760,14 +799,14 @@ macro_rules! do_block {
     ($inner:expr) => {
         (
             collection::vec(
-                prop_oneof![
+                decorated(prop_oneof![
                     typedef(),
                     usestmt(),
                     catch_stmt!($inner.clone()),
                     trait_decl!($inner.clone()),
                     impl_decl!($inner.clone()),
                     $inner
-                ],
+                ]),
                 (2, 10),
             ),
             any::<bool>(),
@@ -850,14 +889,17 @@ macro_rules! lambda {
 
 macro_rules! select {
     ($inner:expr) => {
-        ($inner, collection::vec((option::of($inner), pattern(), $inner), (1, 10)))
+        (
+            $inner,
+            collection::vec((option::of($inner), pattern(), decorated($inner)), (1, 10)),
+        )
             .prop_map(|(arg, arms)| build_pattern(arg, arms))
     };
 }
 
 macro_rules! structure {
     ($inner:expr) => {
-        collection::vec((field_name(), $inner), (1, 10)).prop_map(|mut a| {
+        collection::vec((field_name(), decorated($inner)), (1, 10)).prop_map(|mut a| {
             a.sort_by_key(|(n, _)| n.clone());
             a.dedup_by_key(|(n, _)| n.clone());
             ExprKind::Struct(StructExpr { args: Arc::from_iter(a) }).to_expr_nopos()
@@ -947,7 +989,7 @@ macro_rules! binop {
 
 macro_rules! structwith {
     ($inner:expr) => {
-        ($inner, collection::vec((field_name(), $inner), (1, 10))).prop_map(
+        ($inner, collection::vec((field_name(), decorated($inner)), (1, 10))).prop_map(
             |(source, mut replace)| {
                 let source = Arc::new(source);
                 replace.sort_by_key(|(f, _)| f.clone());
@@ -1300,6 +1342,10 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
 }
 
 fn expr() -> impl Strategy<Value = Expr> {
+    decorated(undecorated_expr())
+}
+
+fn undecorated_expr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![
         constant(),
         reference(),
@@ -1586,7 +1632,30 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
         })
 }
 
+fn check_dec(d0: &Option<Box<Decorations>>, d1: &Option<Box<Decorations>>) -> bool {
+    match (d0, d1) {
+        (None, None) => true,
+        (Some(d0), Some(d1)) => {
+            dbg!(d0.comments == d1.comments)
+                && dbg!(d0.attrs.len() == d1.attrs.len())
+                && d0.attrs.iter().zip(d1.attrs.iter()).all(|(a0, a1)| {
+                    a0.name == a1.name
+                        && a0.args.len() == a1.args.len()
+                        && a0
+                            .args
+                            .iter()
+                            .zip(a1.args.iter())
+                            .all(|(e0, e1)| check(e0, e1))
+                })
+        }
+        _ => dbg!(false),
+    }
+}
+
 fn check(s0: &Expr, s1: &Expr) -> bool {
+    if !check_dec(&s0.dec, &s1.dec) {
+        return false;
+    }
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0.approx_eq(v1),

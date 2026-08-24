@@ -736,12 +736,18 @@ in turn is what makes trait dispatch over a UNION of them work
 anchor nothing in `add_interface_modules` — everything declared after
 one landed at the END of the module body, invisible to the code above
 (`sys::process::Redirect`; fixed, pinned by `interface_type_after_impl`).
-And a `//` comment between two select arms is still a parse error —
-comments attach to expressions and an arm's PATTERN is not one, so
-`0 => 1, // note \n _ => 2` fails with "can't use keyword as a function
-or variable name" pointing at the next `select`. Not fixed here: the
-fix is a parser + printer + round-trip-proptest change. A comment
-after the `=>`, above the arm's expression, is legal today.
+And a `//` comment between two select arms, or above a method inside
+an `impl` block, was a parse error — comments attach to expressions,
+and an arm's PATTERN is not one (the impl body bypassed the expression
+entry altogether), so `0 => 1, // note \n _ => 2` failed with "can't
+use keyword as a function or variable name" pointing at the next
+`select`. Fixed the day after (2026-08-24): decorations captured above
+a select arm's pattern, an impl method, or a struct-literal field
+attach to the expression that follows (the arm's body, the method's
+binding, the field's value), the printers put them back above the
+pattern or the name, and the round-trip proptest now generates
+comments at every such position — which is what caught the pretty
+printer laying block items out by kind and dropping their comments.
 
 **API break** (accepted in §10): `io::read(s, n)` is `Read::read(s,
 n)`, `fs::seek` is `Seek::seek`, `tcp::shutdown` is `Socket::shutdown`,

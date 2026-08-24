@@ -1,6 +1,5 @@
 use super::{
-    csep, doc_comment, expr, fname, leading_comments, letbind, semisep, spaces, spaces1,
-    sptoken,
+    csep, doc_comment, expr, fname, leading_comments, semisep, spaces, spaces1, sptoken,
     typexp::{bound, tvar, typ, typath},
     typname,
 };
@@ -118,7 +117,7 @@ where
         spaces().with(optional(attempt(between(
             token('{'),
             sptoken('}'),
-            spaces().with(sep_by_tok(spaces().with(letbind()), semisep(), token('}'))),
+            spaces().with(sep_by_tok(expr(), semisep(), token('}'))),
         )))),
     )
         .then(
