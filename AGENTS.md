@@ -184,7 +184,10 @@ expression in a file or block is its value. Statements end with `;`
 inside blocks.
 
 ```graphix
-// line comments
+// line comments — legal ONLY on their own line directly above an
+// expression, a select arm, an impl method, or a struct-literal field.
+// Trailing (`x; // note`), interior (`1 + // n \n 2`) and dangling
+// (before a closing `}`) comments are PARSE ERRORS.
 /// doc comments (only in .gxi interface files, before val/type/mod)
 
 // let bindings
@@ -243,7 +246,10 @@ type List<'a> = [`Cons('a, List<'a>), `Nil]   // recursive
 42  3.14  true  false  null
 "hello [name]!"                   // string interpolation with []
 "escape \[ \] \n \t \\ \""       // escaped brackets, standard escapes
-r'raw string, only \\ and \' '   // raw string (single quotes)
+"""bare " [ ] ok, splice \[x]"""  // TEMPLATE: brackets/quotes are content,
+                                  // interp is MARKED \[expr]; \] is an error;
+                                  // one newline after the opener stripped
+r"verbatim"  r#"has "quotes""#    // raw: counted hashes, NO escapes at all
 [1, 2, 3]                        // array
 {"a" => 1, "b" => 2}             // map
 (1, "two", 3.0)                  // tuple
@@ -351,16 +357,24 @@ select pair {
 // struct matching
 select point {
   {x: 0, y} => y,                // exact match
-  {x, ..} => x                   // partial (needs type annotation)
+  {x, ..} => x                   // partial — completes from the scrutinee
 }
+// a partial matching SEVERAL union members must annotate the member:
+// `S as {x, ..}`. An abstract type test `T as t` is a runtime tag
+// comparison (legal on unions of abstracts); dissect [T, Error]
+// unions with ? or $.
 
-// array slice patterns
+// array slice patterns — LENGTH coverage counts (2026-08-21):
+// unguarded all-bind slice arms are exhaustive when their lengths
+// cover 0..∞ (no wildcard needed), and a shadowed arm is a dead-arm
+// error ([init.., x] after [x, rest..] both match every non-empty
+// array; `_` after a complete ladder is dead too)
 select arr {
-  [x, rest..] => x,              // head + tail
-  [init.., x] => x,              // init + last
-  [a, b, c] => a + b + c,        // exact length
-  [] => 0                         // empty
+  [] => 0,                       // empty
+  [a, b, c] => a + b + c,        // exact length (order above the rest arm)
+  [x, rest..] => x               // head + tail: every other length
 }
+// suffix form: [init.., x] binds init = all but last, x = last
 
 // named capture
 select val {
@@ -450,16 +464,34 @@ let r = &v                        // create reference
 References are critical for UI — widgets take `&` params so
 fine-grained updates propagate without rebuilding the whole tree.
 
-### Modules & Imports
+### Modules & Imports (Rust-2018-style, 2026-08-22)
+
+`use` imports a NAME, not a module's contents. Every name in scope
+arrived by a declaration, a `use`, or a prelude (core's root items;
+installed package NAMES as path roots — `array::map` works bare-
+qualified with no use).
 
 ```graphix
-use array                         // bring module into scope
-use gui::text                     // specific item
-array::map(xs, f)                 // qualified access
-map(xs, f)                        // after `use array`
+array::map(xs, f)                 // package prelude: no use needed
+use array::map;                   // import the item
+map(xs, f)                        // now bare
+use str::join as sjoin;           // rename
+use array::*;                     // glob (discouraged outside tests)
+use tui::text::{self, *};         // widget-module idiom: the module
+                                  // AND its contents (text(...) works)
+use super::{helper, T};           // from the parent module
+use package::a::b;                // from the current package root
 
 mod mymod;                        // declare file-based submodule
 ```
+
+Path roots (`self`/`super`/`package`/package names) work in
+expression AND type positions (`super::m::f(x)`, `-> package::m::T`).
+A submodule sees NOTHING of its parent implicitly — write
+`use super::…` (privacy: parent private items ARE visible to the
+subtree). `mod`/`use` position carries no visibility meaning.
+Declarations shadow imports; imports shadow globs; two globs
+providing one used name error at that use.
 
 File layout: `foo.gx` (impl), `foo.gxi` (interface, optional).
 For directories: `foo/mod.gx`, `foo/mod.gxi`.
@@ -497,9 +529,13 @@ Doc comments (`///`) are only valid in `.gxi` files, before `val`,
 
 ### Abstract Types
 
-Declare a type in the interface without `= definition` to hide its
-representation. Users can't construct or pattern match on it — they
-must use exported functions.
+An abstract type is NOMINAL: a value is a box tagged with the type's
+identity, minted only by the type's constructor (the type's NAME).
+Declare it in the interface without a body; define it in the
+implementation with an `Abstract<rep>` body — legal ONLY as the whole
+body of a `type` definition (never `fn(x: Abstract<i64>)`). A type
+hidden by a gxi must be `Abstract<..>` or Rust-backed (`type T;` on
+both sides); hiding a transparent alias is an error.
 
 ```graphix
 // counter.gxi
@@ -511,15 +547,73 @@ val increment: fn(#trig: Any, c: &Counter) -> null;
 
 ```graphix
 // counter.gx
-type Counter = i64;               // concrete definition stays private
-let make = |x: i64| -> Counter x;
-let get = |c: Counter| -> i64 c;
-let increment = |#trig: Any, c: &Counter| -> null { *c <- trig ~ *c + 1; null }
+type Counter = Abstract<i64>;     // the representation stays private
+let make = |x: i64| -> Counter Counter(x);            // construct: T(v)
+let get = |c: Counter| -> i64 c.0;                    // payload: x.0
+let increment = |#trig: Any, c: &Counter| -> null {
+  *c <- Counter((trig ~ *c).0 + 1); null
+};
+let sign = |c: Counter| -> i64 select c {             // pattern: T(p)
+  Counter(x) if x > 0 => 1, Counter(_) => 0
+}
 ```
 
-Abstract types can be parameterized (`type Box<'a>;`) and constrained
-(`type NumBox<'a: Number>;`). The implementation must have matching
-parameters and constraints.
+`T(v)`, `x.0` and the pattern `T(p)` (also irrefutable: `let T(x) = v`)
+work only where the definition is visible — inside the defining module,
+or anywhere for a PUBLIC newtype whose `Abstract<..>` body is in the
+gxi (`type Meters = Abstract<f64>;`). The type test `T as t` works
+everywhere, including over a union of abstracts. `.0` keeps the
+payload's shape (`x.0.field`). Equality = same tag + equal payloads;
+prints as `Counter(5)`. One allocation per construction — use for
+handles and newtypes, not hot data. Parameterized: `type Box<'a> =
+Abstract<{value: 'a}>`, `Box({value: x})`, `b.0.value`; constraints must
+match the gxi (`type NumBox<'a: Number>;`).
+
+### Traits (2026-08-22, Rust-style)
+
+```graphix
+trait Show {
+  val show: fn(self) -> string;                          // required
+  val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"   // default
+}
+type Counter = Abstract<i64>;
+impl Show for Counter { let show = |c| "Counter([c.0])" }
+impl Show for i64 { let show = |x| "int [x]" }           // primitive: trait's package only
+impl<'a: Show> Show for Array<'a> { let show = |xs| ... }  // parameterized head
+impl Show for Counter;                                   // gxi: declares the impl
+
+Show::show(Counter(1));  use Show::*; show(7); twice(Counter(1))
+let f = 'a: Show |x: 'a| show(x);        // bound; resolved per instance
+let g = |a: Show, b: Show| ...;          // ≡ 'a: Show, 'b: Show |a: 'a, b: 'b|
+fn<'s: Read + Write>(s: 's) -> null      // `+` joins bounds
+```
+
+- `self` is the receiver TYPE in a method signature and the first
+  positional param written bare (`fn(self, n: u64)`); `self` is also
+  legal as an impl lambda's param name and in its body.
+- Calls dispatch STATICALLY on the `self` argument's type; an unknown
+  self type at a call is a compile error (annotate). A UNION self type
+  compiles to a select over the members (each needs an impl).
+- Trait methods are items under the trait's name (`Show::show`,
+  `use Show::show`); trait NAMES are scoped like types, impls are
+  global. Impl targets: an abstract type anywhere in the type's or the
+  trait's package; any other type only in the trait's package; never a
+  union; one impl per (trait, type).
+- A trait in a non-parameter type position is an error. No trait
+  params/associated types yet.
+- CORE TRAITS (2026-08-23): `Eq { eq: fn(self, other: self) -> bool }`,
+  `Ord { cmp: fn(self, other: self) -> Ordering }` (`Ordering =
+  [`Less, `Equal, `Greater]`), `Display { fmt: fn(self) -> string }`.
+  The impl rides the VALUE (the abstract-vtable seam): `==`/`<`/...,
+  MAP KEYS (insert/lookup/order — a reversed Ord reverses the map),
+  array::sort, min/max, uniq, interpolation/print/println/dbg/log all
+  honor it, wherever the value sits (nested, under Any). Only
+  abstract types may implement them outside core; methods implicitly
+  `#[sync]`; they hold as bounds for EVERY type; `Eq::eq(a, b)` ≡
+  `a == b`. A bottoming impl resolves per KEY like NaN (bottom keys
+  sort below real ones, equal to each other). Maps consult Ord only;
+  impls must be consistent total orders (Rust-style trust). The wire
+  and the REPL echo stay structural. No `Hash`.
 
 ### Standard Library Quick Reference
 
@@ -547,7 +641,15 @@ parameters and constraints.
 
 **sys::time**: `timer(timeout, repeat)`, `now()`
 
-**sys::io**: `read`, `write`, `read_exact`, `write_exact`, `flush`
+**sys::io** (traits — `use sys::io::{Read, Write, Close, Lines}`):
+`Read::{read, read_exact, read_all}`, `Lines::{lines, lines_batched}`,
+`Write::{write, write_exact, flush}`, `Close::close`; plus
+`io::stdin/stdout/stderr`. A stream's TYPE is its kind
+(`sys::fs::File`, `sys::tcp::TcpStream`, `sys::tls::TlsStream`,
+`sys::process::Pipe`, `sys::io::Stdio`) and the traits it implements
+say what it can do; also `sys::fs::Seek::seek` and
+`sys::tcp::Socket::{shutdown, peer_addr, local_addr}`. json/toml/pack/
+xls parse `bytes`/`string`: `json::read(Read::read_all(f)?)`.
 
 **sys::fs**: `read_all`, `read_all_bin`, `write_all`, `write_all_bin`,
 `readdir`, `metadata`, `is_file`, `is_dir`,
@@ -570,10 +672,10 @@ parameters and constraints.
 Programs return `Array<&Window>`. Widget args are mostly `&` references.
 
 ```graphix
-use gui;
-use gui::text;
-use gui::column;
-use gui::button;
+use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::button::{self, *};
 
 let clicked = false;
 
@@ -612,11 +714,11 @@ Programs return a single TUI widget. `input_handler` wraps widgets to
 capture keyboard events.
 
 ```graphix
-use tui;
-use tui::list;
-use tui::block;
-use tui::text;
-use tui::input_handler;
+use tui::{line, style};
+use tui::list::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
 
 let selected = 0;
 let items = [line("Apple"), line("Banana"), line("Cherry")];
@@ -658,7 +760,9 @@ input_handler(
 
 **TUI widgets**: `block`, `paragraph`, `list`, `table`, `tabs`,
 `gauge`, `line_gauge`, `sparkline`, `bar_chart`, `canvas`, `chart`,
-`calendar`, `browser`, `input_handler`
+`calendar`, `browser`, `input_handler`, `overlay` (modal/popup stack:
+`overlay(#layers: &Array<Layer>, base)` + `layer(#width?, #height?, child)`
+— top layer captures input)
 
 **Colors**: `` `Red ``, `` `Green ``, `` `Blue ``, `` `Yellow ``, `` `Cyan ``,
 `` `Magenta ``, `` `White ``, `` `Black ``, `` `Rgb(u8,u8,u8) ``
@@ -704,10 +808,24 @@ select x {
 - `never()` returns a value that never arrives — used to stop reactive loops.
 - you must escape square brackets in string literals "[name] must be between \[0, 1\]"
 - literal syntax for non i64, f64, string literals, is typ:value, e.g. u8:100, f32:3.14
-- `use` paths are always absolute, not relative to the current module.
-  Inside `sys::net`, write `use sys::time`, not `use time`.
-- A submodule can reference bindings from its parent, but only if the
-  `mod` declaration comes after those bindings in the parent's `.gxi`.
+- Primitive type names (`duration`, `string`, `i64`, ...) are legal
+  binding AND field names (since 2026-08-18); control keywords
+  (`let`, `select`, `cast`, ...) and literal words (`true`, `null`,
+  `ok`) are not — write those fields explicitly (`{type: v}`), never
+  as shorthand. Exception: `bytes` is field-only (its base64 literal
+  payload collides with annotated binds).
+- `use` imports a NAME, never a module's contents: `use sys::net`
+  gives you `net::subscribe`, NOT bare `subscribe` (import the item,
+  or glob, for that). Paths lead with a package name or
+  `self`/`super`/`package`, in expression and type positions alike.
+- `use` groups like Rust: `use tui::{list, block, text}`, nesting,
+  `self`, renames (`as`), and globs (`*`) included; works in `.gxi`
+  too (a gxi use is a private import shared with the impl, not a
+  re-export). The printer always regroups under the longest common
+  prefix.
+- A submodule sees NOTHING of its parent implicitly — write
+  `use super::{...}` (parent PRIVATE items are visible to the
+  subtree). `mod`/`use` position carries no visibility meaning.
 - if you want to sequence the execution of a function, use ~ on it's arguments,
   not on the whole function. e.g. f(trigger ~ x) to prevent f from executing until
   trigger has happened.
@@ -1495,25 +1613,27 @@ GUI suite 163/163 in ~5s). Rules that matter when touching types:
   seeded cells) vs `with_scope` (fresh — scope changes the resolution).
   Never overwrite a filled cell; contexts needing a different view
   rebind (`rebind_resolution`, fresh pre-filled cell).
-- Seeding is LAZY by default — a fill is correct only when the
-  resolving env holds the name's FINAL target, and mid-compile envs
-  are truncated by registration order (eager transitive seeding
-  captured the list PACKAGE's `List` for tui's `list::List` submodule
-  ref; removed twice). `Type::seed_refs` (explicit transitive walk)
-  runs only at provably-safe times: `check_sig`'s registry copy
-  (post-module-body) and the privatize walk's rebinds (typecheck1).
+- Seeding is LAZY — a fill is correct only when the resolving env
+  holds the name's FINAL target, and mid-compile envs are truncated by
+  registration order (eager transitive seeding captured the list
+  PACKAGE's `List` for tui's `list::List` submodule ref; removed
+  twice). Refs fill when a typecheck-time walk needs them, plus ONE
+  eager pass: `Env::seed_typedef_refs` walks every typedef body right
+  before fusion (after typecheck — every name's final target is
+  registered, the one order-correct moment), because a recursive
+  type's INNER occurrence is reached by no typecheck walk (the
+  Ref×Ref name fast path answers without expanding) and fusion must
+  expand it env-free (`list::List` de-fused without it, 2026-08-22).
 - `same_def` (structural — gates the Ref×Ref name fast paths via
-  `cells_agree`) vs `same_view` (body ALLOCATION identity). The
-  privatize walk rebinds a ref to the env's allocation only on
-  same-def/different-view divergence (interface typedef bodies are
-  registered twice, equal-but-differently-viewed); a DIFFERENT def in
-  the env is a stale-horizon artifact and the cell wins.
-- Typecheck-side bridging is `fusion::lowering::privatize_type` —
-  name-preserving, same-size output (setup_static_bind against
-  `f.env`; check_instance_type's AbstractOpaque retry against
-  `ctx.env`). The fusion-side `resolve_abstract` (capped, expanding)
-  is unchanged; `freeze_for_abi`/`abi_kind` expand refs env-free
-  through the cell (`TypeRef::expand_cell`), unfilled → de-fuse.
+  `cells_agree`); a DIFFERENT def in the env is a stale-horizon
+  artifact and the cell wins. The privatize walk, `same_view`,
+  `private_view` and `rebind_resolution` died with inside-module
+  transparency (nominal abstract types, 2026-08-22).
+- `freeze_for_abi`/`abi_kind` expand refs env-free through the cell
+  (`TypeRef::expand_cell`), unfilled → de-fuse; the fusion-side
+  `expand_refs` (capped, expanding, env-backed) is the pre-pass for
+  kernel-sig derivation. An abstract type is an opaque 2-word Value
+  to both.
 
 ### Two-Phase Typecheck
 
@@ -1684,7 +1804,24 @@ enforces it):**
   The ruled deltas + the red→green fixture protocol live in
   `organic_deltas.rs`; the design doc holds the deletion inventory.
   **THE SCRUTINEE RIDE** (Eric's ruling 2026-08-07, aug06ghz0 — the
-  bottom axis, UNTOUCHED by organic firing): the standing selection
+  bottom axis, UNTOUCHED by organic firing; NARROWED 2026-08-20 by
+  `design/activation_state.md`, BUILT same day — THE BOTTOM-OUT RULE:
+  held state serves selection survival, re-matching, and operand
+  service, never the cycle's output bottomness; `hold` is the
+  explicit tool, and the ride's re-emission face is deleted. Refined
+  same day by THE CONSULTED-GUARD RULE (Ruling 1a): a select
+  consults arms top-down (structure first, guard second); a
+  consulted guard whose CURRENT channel is bottom makes the
+  selection UNDECIDABLE — the chain stops, selection state holds,
+  the select bottoms whatever else fired; guards of structure-failed
+  or below-the-stop arms are irrelevant on both planes. The GUARD
+  RIDES are DELETED on both engines (the aug13b held-bool mechanism
+  is superseded — its observables survive via the chain-stop), and
+  the mid-loop guard-bottom residue dissolved with them (tail and
+  native twins agree). Companion ruling:
+  STATE MULTIPLICITY = ACTIVATION MULTIPLICITY — non-tail recursion
+  is an activation per level, a tail loop is ONE activation reusing
+  its one state, collection slots are activations): the standing selection
   lives on against the select's CACHED scrutinee when a delivery
   bottoms upstream — a bottomed delivery is NOT an own-fire, the
   taken arm's body fires on its own deps, guard-dep fires RE-MATCH
@@ -1826,10 +1963,62 @@ enforces it):**
   Apply per site (`DynCallSlot.instances`) — cache AND builtin state
   get the interp's per-callsite identity. Key 0 = the shared legacy
   bucket: scaffold-loop sites (v1, keeping the init-mask
-  approximation), recursive back-edges, qop-deliver.
+  approximation) and qop-deliver. (Recursive back-edges LEFT the
+  bucket 2026-08-16, 003fa7d6: a self-call roots a lazily-grown
+  per-ACTIVATION block tree — `graphix_site_child_block`, size from
+  the callee's `site_desc` cell, one root per self-call SITE so
+  sibling calls get separate trees; free and reset walks traverse it.
+  The 2026-08-20 audit (design/activation_state.md) verified Ruling-2
+  compliance: ride/routing state per depth is real and pinned
+  (findings/recursive-activation-blocks-aug2026/); per-depth
+  SLEEP_RESTARTS builtin state is structurally unreachable in kernels
+  (the P7 arm gate de-fuses every rec-body stateful shape loudly —
+  pins 03/04 hold the interp contract); every degrade door is closed
+  (in-loop self-call = mutual edge de-fuse, self-as-callback =
+  occurs-check error, aliased self de-fuses; the silent-0 fallbacks
+  in `emit_site_block` now Err). The audit also flushed out and fixed
+  the FORWARD-EDGE definition-order hole: reverse-declaration order
+  broke callees-first on sibling discovery, so a callee could define
+  after its caller and run below a recursion with no interior memory
+  — now a TOPOLOGICAL order over the recorded call edges
+  (emit/jit.rs; red witness pin 05, interp [101,1,1,1] vs jit
+  [101,1]).)
   `design/kernel_instance_state.md` "DynCall site identity"; pinned
   by `dyncall_site_identity_state` +
   `findings/dyncall-site-identity-jul2026/`.
+- **THE QUIET FLAG** (2026-08-22, soak aug20a — five findings, one
+  class, two mechanisms; pins `findings/quiet-frame-init-view-aug2026/`):
+  a re-derivation inside a QUIET FRAME (`frame_depth > 0 &&
+  !frame_init` — every framed pass of a tail chain on a non-init
+  cycle) is NOT an init view. The interp already says so at every
+  reader (Constant/Ref/Bind gate on `frame_init` first), but two
+  kernel mechanisms manufactured one. (1) `DynCallSlot::sleep` RESET
+  `fired`, so every post-wake dispatch was a "first" dispatch (forced
+  `event.init`, every arg delivered fired, STALE mask ignored) — the
+  slot sleeps with the arm on the n≠0 pass and re-wakes on the n=0
+  pass, loop plumbing, not a trigger. The interp's `CallSite::sleep`
+  keeps `first_update`: a re-woken site is RESUMED, not re-primed
+  (sleep is pause), and only the first-ever dispatch is the `bound`
+  init-view dispatch — which keeps its forced view at ANY frame depth
+  (43e6af90 seeds its quiet formals FIRED in frames; a frame-gated
+  first dispatch broke `frame-formal-init-view-aug2026` on the first
+  try — the discriminator is first-ever vs resumed, never the frame).
+  The depth-0 init view a becoming-selected arm owes its interior
+  arrives through the ARGS (the arm's `init_override` folds the stale
+  masks; R2 fires a region's inputs), so the reset was redundant there
+  and wrong in frames. (2) A fused select's selection-changed word
+  (`woke`) granted the re-selected arm an init view on every native
+  tail-loop iteration (and in a callee that can't know statically it
+  runs per iteration), and in a fused sub-region of an interp frame.
+  Wire slot 0 is now a context WORD: bit 0 init, bit 1 QUIET — the
+  wrapper sets it from the interp frame, a tail-loop body sets it for
+  itself when `!init` (`LowerCtx::quiet_flag`), callees inherit it
+  through `callee_init`. Under it becoming-selected grants no init
+  view (the word is still recorded for sleep/wake routing); a site's
+  first-ever call still does. The symptom to recognize: a `let rec`
+  chain re-derived by an input that is NOT consumed (read only by a
+  structure-failed arm's guard) fires on the JIT every delivery and
+  once on the interp.
 - **A program may spin forever inside one cycle, on BOTH engines** — an
   infinite tail recursion is the constant-stack, bounded-memory case.
   This is semantics, not a JIT artifact (Eric's ruling 2026-08-15,
@@ -1898,7 +2087,18 @@ coverage, not correctness).
   `TraceDiff` class — Missing/ExtraFire, Pacing, etc. — keys dedup), and
   programs can carry a `// schedule-v1:` header injecting input epochs
   atomically via `set_many` (inputs use the `let inN = d; inN <- never(d)`
-  contract so fusion binds them as region inputs). `minimize <file>
+  contract so fusion binds them as region inputs). Since 2026-08-19 the oracle also runs the **callable-v1 route matrix**
+  (a header names a module handler; the runner drives one artifact through
+  the in-language injection route AND `GXHandle::compile_callable` dispatch —
+  engine pairs per route, dispatch pair + route pair at finals strength) and
+  the **metamorphic twin scan** (generated modules write state through
+  equivalent routes — `&`-param / capture / nested-`&` — and settle a
+  reserved `` `TwinDiverged `` verdict when they disagree; scanned on every
+  run's finals, so a bug that breaks every engine and route IDENTICALLY —
+  the ConnectDeref silent-write class 9f9e01d0, invisible to any pairwise
+  comparison — is a single-run finding). Twins ride the reactive lane (15%);
+  callable programs never batch and never enter the mutation ring.
+  `design/graphix_fuzz.md` §14. `minimize <file>
   [budget]` (budget = oracle checks, default 4000; the campaign's per-finding
   budget is `CAMPAIGN_MINIMIZE_BUDGET`) is typed-AST HDD whose working
   operator is the STATEMENT DROP, keyed at the statement so a whole round of
@@ -2108,6 +2308,28 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
+- `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
+  day** (interp own_sound/own_bottom split + three-valued is_match;
+  kernel SelFires/undetermined chain/sel_fires scope stack): the
+  bottom-out rule (held state never determines output bottomness;
+  bottom in, bottom out; bottoms sticky on the value plane; `hold` is
+  the explicit tool) + state multiplicity = activation multiplicity
+  (per-level for non-tail recursion, ONE reused state for a tail
+  loop — the Scheme move extended from space to state, forced by
+  constant-space tail loops; self-tail only, mutual tail recursion
+  falls to the per-level clause). Settles aug18a class 5 INVERTED
+  (the kernel's tail-position storage refusal was correct; the fix
+  is an interp amendment), names the kernel key-0 recursive
+  back-edge bucket a Ruling-2 bug, narrows aug06ghz0/aug13b to what
+  their pins demand. Build-time refinements folded into the ruling's
+  fine print: the per-fire formulation (sound beats bottom within one
+  select's scope), nesting composes through arm productions (the
+  kernel's sel_fires scope stack), no-history bottom selects consult
+  no guards (aug13l holds), and THE INIT-PHANTOM GUARD (a
+  never-produced guard is unknown, not false — guarded selects bottom
+  at init until the guard is evaluable; 16 fixtures re-blessed).
+  Open: the key-0 back-edge chapter and the mid-loop guard-bottom
+  residue. Pins: findings/bottom-out-aug2026/.
 - `atomic_recursion.md` — **RULED 2026-08-15:** function evaluation is
   atomic within a cycle, so a program may legally spin forever inside
   one — the no-wedge property of the old one-eval-per-cycle model is
@@ -2261,3 +2483,231 @@ in `run!` fixtures and bench programs). The decision is recorded in
   `NetConfig::Internal`, so a test that uses `sys::net` materializes a real
   in-process netidx on demand and round-trips work — but publisher coalescing means
   rapid updates collapse; space them with one-shot timers for multi-point tests.
+
+## The admin-TUI dogfood campaign (2026-08-18)
+
+The netidx-admin ratatui TUI (~11.2k lines, sibling repo
+`netidx-tools/src/admin/tui/`) is being rewritten in Graphix via
+`graphix-package-netidx-admin` — which lives in the NETIDX repo (the
+first real external package; it versions with netidx-admin, and it
+dogfoods the package manager's external path). Design doc + findings
+log: `../netidx/design/graphix-admin.md` and
+`graphix-admin-findings.md`.
+
+**The PRIMARY objective is finding and fixing Graphix problems; the
+TUI is secondary** (Eric's ruling). No workarounds: an awkward idiom,
+slow compile, bad diagnostic, or missing capability means stop, log a
+finding, fix it here (or consciously accept it), then continue — and
+never quietly move decision/presentation logic into the package's Rust
+layer because Graphix was painful. Prerequisite work in THIS repo:
+overlay/modal widget DONE, line_edit DONE, TuiTestHarness public
+(`graphix_package_tui::testing`, feature `testing`) DONE; terminal
+suspend/resume for privileged `sudo`/`$EDITOR` handoff still open
+(blocks the last phase). Phase D is underway: the shared modal
+question pump + a live harness-driven connect round trip landed
+2026-08-21 (netidx b1447c60; tui/mod.gx ~360 lines is the largest
+single `.gx` yet; milestone row: 909 lines, reg 417ms / pump call
+site 593ms, dev build). Finding 1 from that slice (def-site/use-site
+TYPE-name resolution asymmetry) triggered THE MODULE SYSTEM
+TRANSITION (below) and is FIXED — the package migrated to the use
+system 2026-08-22 (netidx 01e24e07), all 19 tests green. Still open
+from that slice (see the findings log): slice patterns carry no
+select-exhaustiveness credit (and the refusal renders the empty set
+type as `[]`), and reserved-word parse diagnostics at package scale
+(position lands on the enclosing statement, cause buried in the
+combine merge). Measure `--check` time at every size milestone; the
+typechecker-must-be-instant rule applies.
+
+## Nominal abstract types (2026-08-22, branch `nominal-abstracts`)
+
+`design/nominal_abstract_types.md` (RULED, built): an abstract type is
+NOMINAL. `type T = Abstract<rep>` (legal only as a whole typedef body)
+defines a type whose identity is `AbstractId::of(scope, name)` — the
+low 64 bits of `abstract_uuid(path)`, a v5 UUID of the canonical path,
+minted at `Env::deftype`, never at parse (the parse-time counter and
+the packed-AST remap are gone) — and whose values are
+`Value::Abstract(GxAbstract { id, name, payload })`
+(`abstract_value.rs`), minted only by the constructor `T(v)`
+(`ExprKind::Construct` → `node::data::Construct`). `x.0` reads the
+payload (`TupleRef` on an abstract source), the pattern `T(p)`
+destructures it (`StructurePattern::Abstract` /
+`StructPatternNode::Abstract`), and `T as t` is a tag test (`is_a`;
+a Rust-backed value answers by its wrapper UUID, leniently under
+`MatchAbstract` until packages register path-derived UUIDs). The
+three faces compile only where the definition is visible:
+`Env::abstract_reps` is a global registry like `names`, gated by
+`AbstractRep::public` (gxi-exported body / interface-less module,
+set by `bind_sig` and `export_sig`) or scope prefix. A gxi-hidden
+type must be `Abstract<..>` or Rust-backed (`check_sig`). INSIDE-MODULE
+TRANSPARENCY IS GONE, and with it the two-view apparatus:
+`AbstractOpaque`, `privatize_type`, `resolve_internal`, the
+`check_instance_type`/`check_site_arg`/`setup_static_bind` retries,
+`RefHist::abstract_false`, the fusion `AbstractRegistry` (an abstract
+is an opaque 2-word `AbiKind::Value`; `expand_refs` replaces
+`resolve_abstract`). JIT: `graphix_abstract_wrap` /
+`graphix_abstract_get_*` (`emit_construct_node`,
+`emit_abstract_ref_node`); abstract PATTERNS de-fuse the select for
+now. Migration: `gui::Color`, `gui::menu::Shortcut` boxed (Rust reads
+through `abstract_value::payload`); `list::List` went TRANSPARENT
+(`Cons`/`Nil` public). The tree-sitter grammar carries
+`abstract_body`/`abstract_construct`/`abstract_pattern` and a
+body-less `type_def`. Companion: `design/traits.md` (designed, not
+built) — traits sit on this; see its §3/§4/§8.
+
+## Traits v1 (2026-08-22, branch `nominal-abstracts`)
+
+Rust-style traits (`design/traits.md`, §11 is the as-built map):
+`trait T { val m: fn(self, ..) -> R [= default]; .. }`, `impl[<'a:
+C>] T for Target { let m = ..; .. }`, `impl T for X;` in a `.gxi`,
+`'a: T + U` bounds, `fn(x: T)` ≡ a fresh bounded quantifier per
+parameter. `self` is the receiver type (a tvar named `self`) and a
+legal receiver parameter name. Trait NAMES are scoped like types
+(`Env.traits`), impls are global facts (`Env.impls`); the trait's
+scope `<mod>::T` is a module holding the dispatcher bindings, so
+`T::m` / `use T::m` ride the import engine; `trait_methods` maps a
+dispatcher binding to its `(TraitId, index)`. A call dispatches
+STATICALLY in `CallSite::resolve_trait_call` (typecheck1): the self
+argument's type → `Env::find_impl` → the call is re-pointed at the
+impl's (or default's) binding and pre-bound; open self at
+`def_gate_depth == 0` is a compile error; a UNION self lowers the call
+to a synthesized select (`lower_trait_union`, `#bind::N` refs by id,
+the CallSite delegates to `lowered`); collection slots call the
+prototype's resolved def as a `Constant` (`prototype_def`). `contains`
+treats a trait ref as the predicate `trait_contains`; `settle` never
+witnesses a trait conjunct. Target rule (`check_target`): abstract →
+the type's or trait's package; anything else → the trait's package
+only; one impl per head (`heads_overlap`). While building this,
+`Type::scope_refs` was found to DROP cell constraints on re-mint —
+every annotated `fn<'a: Number>` bound was vacuous; fixed. A VALUE
+occurrence of a generalized binding (`Env.poly_binds`: let-bound
+lambdas, gxi vals, dispatchers, `let g = f`) instantiates its
+signature in `Ref::typecheck0` like a call (same knots); a call site
+typechecks a `Ref` argument before its operand pre-bind. Not yet:
+trait params/assoc types, `type T = A + B`, io on traits,
+dynamic-module impl proxies.
+
+**Core traits (2026-08-23, `design/traits.md` §12):** `Eq`/`Ord`/
+`Display` declared in core's gxi; THE VALUE SEAM: netidx's abstract
+vtable routes `Value::{eq, partial_cmp}` and `{:?}` to
+`GxAbstract`'s impls (`abstract_value.rs`), which consult a
+thread-local dispatch handle — one seam covers map keys, sort,
+min/max, uniq, the operators (both engines: `graphix_value_eq` calls
+`Value::eq`), and every printer. The loan: `coretraits::
+with_value_hooks(ctx, event, f)` (the DYN_DISPATCH_HANDLE pattern)
+armed at the cmp operators, `CachedArgs::update` (the whole
+EvalCached family), uniq, the map nodes, `Kernel::update`, string
+interpolation, the print family; unarmed (off-thread, no impls) =
+structural. Dispatch: `ExecCtx.core_hook_sites` — per `(trait,
+AbstractId)` a sticky resolved-or-None entry with a POOL of call
+sites (fresh per re-entrant activation), args via `event.variables`,
+`reset_replay` before EVERY dispatch (a reused site's scrutinee ride
+re-emitted the previous pair's answer on a bottoming pair). THE
+BOTTOM-KEY RULE (Eric): a bottoming impl resolves per KEY like NaN —
+bottom keys (self-probe `cmp(k,k)` bottoms) below real keys, equal
+to each other; pair-bottom-with-real-keys warns + Equal; a bottoming
+fmt prints structurally + warns. `lower_core_call` keeps the
+dispatcher sugar (`Eq::eq(a,b)` ≡ `a == b`); `trait_contains` holds
+the three universally; core-trait impls get implicit `#[sync]` +
+prototype sites (`NodeView::Impl`). `bind::lower_over_operands`
+remains THE lowering device (union dispatch, dispatcher sugar):
+operand nodes MOVE into `let #x` binds — recompiling operand source
+at tc1 can't see a lambda's params (`trait_union_dispatch_in_lambda`).
+Rust-backed abstracts stay structural until the io migration
+registers them.
+
+## The io traits (2026-08-23, branch `nominal-abstracts`)
+
+`design/traits.md` §13 (§10 step 4 as built): io is the trait system's
+first client. `io::Stream<'a>`'s phantom tag is GONE — a stream's TYPE
+is its kind (`sys::fs::File`, `sys::tcp::TcpStream`,
+`sys::tls::TlsStream`, `sys::process::Pipe`, `sys::io::Stdio`, all
+Rust-backed abstracts) and the traits it implements say what it can do:
+`Read { read; read_exact=default; read_all=default }`,
+`Lines { lines; lines_batched }`,
+`Write { write; write_exact=default; flush }`, `Close { close }`,
+`sys::fs::Seek`, `sys::tcp::Socket` (over TcpStream AND TlsStream).
+`read` is the only required `Read` method; the derived ones are written
+in Graphix over it and the native streams OVERRIDE `read_exact`/
+`write_exact` with the builtin (one lock, no loop). `Lines` is separate
+because framing is byte-level (a multi-byte char split across a read
+boundary) — fold it in if a byte `find`/`slice` vocabulary lands.
+Behind all five is ONE `StreamKind` enum: `Stream<K: StreamMark>` +
+the `stream_kinds!` list (`graphix-package-sys/src/lib.rs`) makes them
+five distinct RUST types, which is what the abstract registry keys a
+UUID on; `get_stream` reaches the shared cell from any of them.
+
+- **A default's accumulator connect must be gated on the event**:
+  `acc <- b ~ buffer::concat(acc, b)`, never `acc <- concat(acc, b)` —
+  a connect fires when its RHS fires, so the ungated form is the
+  documented counter idiom (`x <- x + 1`) by accident. It read 55
+  bytes from a 5-byte stream.
+- **json/toml/pack/xls parse `bytes`/`string` only** — the stream arm
+  and `write_stream` are gone, and with them those packages' dependency
+  on sys. `json::read(Read::read_all(f)?)` /
+  `Write::write_exact(f, json::write_bytes(v)?)`.
+- **Rust-backed abstracts register PATH-DERIVED UUIDs**
+  (`graphix_package_core::abstract_wrapper!`, or `impl_abstract_arc!`'s
+  `= "pkg::mod::Type"` form) — the whole stdlib does now. That makes a
+  runtime type test on one exact, which is what makes trait dispatch
+  over a UNION of them work (`Socket` over `[TcpStream, TlsStream]`).
+  Consequences: the 2026-08-18 refusal of explicit predicates on
+  Rust-backed abstract types is LIFTED (a package that registers an
+  ad-hoc UUID now has values matching no type test — its own bug, in
+  its own tests), and a CORE-trait impl for a Rust-backed abstract is
+  REFUSED (`traits::check_target`: no payload for the impl to read, so
+  nothing would consult it). The tag test stays NOMINAL, not a full
+  type check — parameters are not carried at runtime, so `Box<i64> as
+  b` matches a `Box<string>` (minted and Rust-backed alike).
+- **API break**: `Read::read`, `Seek::seek`, `Socket::shutdown`;
+  `process::Stdio` (the redirect config) → `process::Redirect`, the
+  name freed for the io handle; `Child`'s pipe fields are `[Pipe,
+  null]`; a TLS upgrade CONSUMES the TCP handle (a failed one leaves
+  it untouched).
+- **Found in the compiler**: an interface `impl` declaration anchored
+  the items after it into the module body's TAIL (fixed —
+  `add_interface_modules`, pinned by `interface_type_after_impl`); a
+  `//` comment between two select arms (or above an impl method) was
+  a parse error — FIXED 2026-08-24: decorations above a select arm's
+  pattern, an impl method, or a struct-literal field attach to the
+  expression below (arm body / method binding / field value —
+  `parser::decorate`), the printers hoist them back above the pattern
+  or field name, and the round-trip proptest generates comments at
+  those positions (`decorated()`), which also caught the pretty
+  printer dropping block-item comments (`pretty_print_exprs_int`
+  printed `.kind`). Comments are still legal ONLY above an expression
+  or one of those three heads: interior/trailing/dangling comments are
+  parse errors by design. The tree-sitter grammar gained the `#[..]`
+  attribute rule the same day (an `extra`, like `line_comment` —
+  placement is the compiler's judgement, not the grammar's; `#[` is
+  one token so it beats a labeled arg's `#` by longest match), and the
+  proptest now generates attributes too. `Decorations.trailing` is
+  gone with it — the parser rejects dangling comments, so it was never
+  populated.
+
+## The module system (open → use, 2026-08-22)
+
+Graphix uses Rust-2018-style imports (`design/module_system.md`,
+built on branch `module-system`): every name arrives by an explicit
+declaration, an explicit `use` (renames `as`, globs `*`, groups,
+`{self, *}`), or one of the two preludes (core's root items;
+installed package NAMES as path roots). Paths lead with a package
+name or `self`/`super`/`package` — in expression AND type positions.
+Modules see nothing of their parent implicitly (`use super::…`);
+`mod`/`use` position carries no visibility meaning (headers passes
+pre-register); a gxi `use` is a private import shared with the impl,
+NOT a re-export (`pub use` is reserved, unbuilt). Resolution:
+lexical chain to the module root → imports → globs (two providers of
+a used name error at first use) → package prelude → core prelude;
+declarations shadow imports, imports shadow globs. The engine is
+`Env.names` — per-scope import tables in a GLOBAL registry keyed by
+scope path (exempt from `restore_lexical_env`), which is what lets
+deferred/instance-side resolution consult the DEFINING module's
+table (the finding-1 fix; fixtures `finding1_*` in
+graphix-tests/src/lang/modules.rs). Block scopes carry `#`-marked
+components (`#do`/`#fn`/`#sel`…) so `mod_root` strips them
+structurally. A dynamic module's `source` expression compiles in the
+ENCLOSING scope (loader-side code); the sig binds under the module.
+`use` compiles to Nop — imports are compile-time state, not graph
+nodes. REPL re-`use` shadows like re-`let` (`CFlag::ReplaceImports`).
+The widget-module `{self, *}` idiom (module and main function share a
+name) is the one blessed glob spelling in exemplar code.
