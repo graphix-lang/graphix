@@ -480,11 +480,20 @@ struct CallbackParam {
     binds: Vec<(BindId, usize)>,
 }
 
+/// The callback's `index`-th POSITIONAL parameter. A callback with
+/// labeled parameters is refused (`None` — the collection interprets):
+/// the loop delivers the element to the positional slot the interp
+/// fills, and the inline emitter has nothing to bind a labeled
+/// parameter's default to (`BuiltinSlot::LabeledDefault` is a
+/// cross-kernel slot, not an inline binding).
 fn callback_param<R: Rt, E: UserEvent>(
     callback: &super::lambda::GXLambda<R, E>,
     index: usize,
     fallback: ArcStr,
 ) -> Option<CallbackParam> {
+    if callback.typ().first_positional() > 0 {
+        return None;
+    }
     match callback.args().get(index)?.tuple_leaves() {
         Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
         None => {

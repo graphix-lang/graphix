@@ -1,7 +1,7 @@
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
 const LAMBDA: &str = r#"
@@ -1833,3 +1833,32 @@ run!(
     OPEN_CALLEE_OBLIGATION_IS_PER_INSTANCE,
     |v: Result<&Value>| matches!(v, Ok(_))
 );
+
+// A collection callback's element goes to its POSITIONAL parameter;
+// labeled parameters take their defaults. The inline loop emitter bound
+// the element to parameter INDEX 0 whether or not it was positional
+// (aug22c class C: the JIT read `foo` as the element). The callback
+// interprets now — the inline emitter has nothing to bind a labeled
+// default to — hence None.
+const LABELED_CALLBACK_DEFAULT: &str =
+    r#"array::map([i64:7], |#foo: i64 = i64:42, x| foo + x)"#;
+run!(labeled_callback_default, LABELED_CALLBACK_DEFAULT, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) if &a[..] == [Value::I64(49)] => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A callback with ONLY labeled parameters has no slot for the element:
+// `fn(x: 'a) -> 'b` must not contain `fn(#foo: i64 = ..) -> i64`.
+// `FnType::contains` took "the first positional index" to be the LAST
+// labeled index when nothing positional followed, and zipped the labeled
+// parameter against the declared positional one.
+#[tokio::test]
+async fn labeled_only_callback_is_compile_error() {
+    let r =
+        eval("array::map([i64:7], |#foo: i64 = i64:42| foo)", crate::TEST_REGISTER).await;
+    assert!(
+        r.is_err(),
+        "a labeled-only callback must not satisfy fn(x: 'a) -> 'b, got {:?}",
+        r.map(|(v, _)| v)
+    );
+}

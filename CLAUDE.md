@@ -1665,6 +1665,35 @@ UUID on; `get_stream` reaches the shared cell from any of them.
   gone with it — the parser rejects dangling comments, so it was never
   populated.
 
+## The aug22c triage (2026-08-24)
+
+Eleven campaign findings, five classes, four compiler mechanisms
+(`fuzz/pending-triage/README.md` has the per-class record; pins in
+`graphix-fuzz/findings/{nested-bind-stmt-dead-elim,labeled-callback-param,
+dyncall-value-return-stale}-aug2026/` and `lang/{functions,select}.rs`).
+The durable rules:
+
+- **A statement binds whatever its subtree binds.** `emit_block_node`'s
+  dead-statement elimination scans every statement's `Refs` for later
+  readers and connect targets, not only a root-level `Bind` — a `let`
+  inside a literal or a select scrutinee in statement position is a
+  binding for every later sibling.
+- **A free union member stays free.** In the Set×Set residue arm of
+  `contains`, an unbound rhs tvar member is residue (it aliases the
+  bare lhs member), never "covered" by a concrete lhs member that would
+  bind it. A select's type is the union of its arm types; a free `'b`
+  arm (`str::parse(s)?`) beside an `i64` arm is NOT inferred to `i64` —
+  annotate the result. This made three accidentally-typing shapes
+  reject consistently with their literal-arm twins.
+- **The Value-shape DynCall return folds `tagbits`** like every other
+  return shape — the unclaimed in-loop site's honest-stale fold must
+  reach `bytes`/`[T, Error]` results too (a non-scalar cast is one).
+- **Collection callbacks with labeled parameters interpret**
+  (`callback_param` refuses them: the element goes to the positional
+  slot and the inline emitter has no labeled-default binding), and a
+  callback with ONLY labeled parameters is a type error
+  (`FnType::first_positional`).
+
 ## The module system (open → use, 2026-08-22)
 
 Graphix uses Rust-2018-style imports (`design/module_system.md`,

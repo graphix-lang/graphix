@@ -884,6 +884,13 @@ impl FnType {
         throws.collect_tvars(known);
     }
 
+    /// Index of the first positional parameter — `args.len()` when every
+    /// parameter is labeled. Labeled parameters always precede positional
+    /// ones, so `args[..first_positional()]` is the labeled prefix.
+    pub fn first_positional(&self) -> usize {
+        self.args.iter().position(|a| a.is_positional()).unwrap_or(self.args.len())
+    }
+
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
@@ -900,41 +907,24 @@ impl FnType {
         hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
-        let mut sul = 0;
-        let mut tul = 0;
-        for (i, a) in self.args.iter().enumerate() {
-            sul = i;
-            match &a.kind {
-                FnArgKind::Positional { .. } => {
-                    break;
-                }
-                FnArgKind::Labeled { name: l, .. } => {
-                    match t.args.iter().find(|a| a.label() == Some(l)) {
-                        None => return Ok(false),
-                        Some(o) => {
-                            if !o.typ.contains_int(flags, env, hist, &a.typ)? {
-                                return Ok(false);
-                            }
+        let sul = self.first_positional();
+        let tul = t.first_positional();
+        for a in &self.args[..sul] {
+            if let FnArgKind::Labeled { name: l, .. } = &a.kind {
+                match t.args.iter().find(|a| a.label() == Some(l)) {
+                    None => return Ok(false),
+                    Some(o) => {
+                        if !o.typ.contains_int(flags, env, hist, &a.typ)? {
+                            return Ok(false);
                         }
                     }
                 }
             }
         }
-        for (i, a) in t.args.iter().enumerate() {
-            tul = i;
-            match &a.kind {
-                FnArgKind::Positional { .. } => {
-                    break;
-                }
-                FnArgKind::Labeled { name: l, has_default } => {
-                    match self.args.iter().find(|a| a.label() == Some(l)) {
-                        Some(_) => (),
-                        None => {
-                            if !*has_default {
-                                return Ok(false);
-                            }
-                        }
-                    }
+        for a in &t.args[..tul] {
+            if let FnArgKind::Labeled { name: l, has_default } = &a.kind {
+                if !*has_default && !self.args.iter().any(|a| a.label() == Some(l)) {
+                    return Ok(false);
                 }
             }
         }

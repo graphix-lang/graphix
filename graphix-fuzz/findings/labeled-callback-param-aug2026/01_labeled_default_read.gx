@@ -1,0 +1,7 @@
+// aug22c class C (campaign-minimized): a collection callback with labeled
+// parameters before its positional one. The interp passes the element
+// positionally and fills the labeled ones from their defaults; the inline
+// loop emitter bound the element to parameter INDEX 0 (`bar`), so the
+// JIT read `bar` as the element. Such callbacks interpret now — there is
+// no inline binding for a labeled default.
+array::map([i64:7], |#foo: i64 = i64:42, x| foo)

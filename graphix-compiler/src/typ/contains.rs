@@ -1006,6 +1006,19 @@ impl Type {
                     if own_cell {
                         continue;
                     }
+                    // A FREE rhs member is residue too: every concrete
+                    // lhs member "covers" it by binding it, so the
+                    // coverage loop would capture it greedily —
+                    // `['b, i64] ⊇ ['b', i64]` (a select's union arms
+                    // against their instance-check copy) bound `'b'`
+                    // to `i64`, and a `str::parse` in the `'b` arm
+                    // typed where its twin with a literal `i64` arm is
+                    // rejected (aug22c class E). Left to the residue it
+                    // meets the bare lhs member and aliases.
+                    if bare(&m) {
+                        residue.push(m.clone());
+                        continue;
+                    }
                     let mut covered = false;
                     for c in s0.iter().filter(|c| !bare(c)) {
                         if c.contains_int(probe, env, hist, m)? {

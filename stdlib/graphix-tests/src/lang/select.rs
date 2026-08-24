@@ -1,7 +1,7 @@
 // Tests for select/match expressions
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
 const SELECT0: &str = r#"
@@ -1699,3 +1699,33 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a");
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// A select's type is the UNION of its arm types, and a free type
+// variable in one arm stays free — nothing infers `str::parse`'s result
+// from a sibling `i64` arm. Both spellings must agree: with a literal
+// `i64` arm this was always rejected, while a binding whose `i64`
+// arrived through a bound tvar (`array::iter`'s instantiation) typed by
+// accident — the instance check compared the union against a copy of
+// itself and the free member absorbed its sibling's `i64` — and the
+// per-slot callback instance then bottomed at runtime (aug22c class E).
+#[tokio::test]
+async fn free_union_arm_is_not_inferred_from_sibling() {
+    for code in [
+        r#"{let y = i64:0; select i64:1 {i64:1 => str::parse("42")?, _ => y}}"#,
+        r#"{let y = array::iter([i64:0, i64:2]); let m = array::map([i64:1], |x| select i64:1 {i64:1 => str::parse("42")?, _ => y}); m}"#,
+    ] {
+        let r = eval(code, crate::TEST_REGISTER).await;
+        assert!(
+            r.is_err(),
+            "parse's result must not be inferred from a sibling arm: {code} -> {:?}",
+            r.map(|(v, _)| v)
+        );
+    }
+}
+
+// The annotation is what types the union: `i64 ⊇ ['b, i64]` binds `'b`.
+const UNION_ARM_ANNOTATED: &str = r#"{let y = i64:0; let v: i64 = select i64:1 {i64:1 => str::parse("42")?, _ => y}; v}"#;
+run!(union_arm_annotated, UNION_ARM_ANNOTATED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(42))
+));

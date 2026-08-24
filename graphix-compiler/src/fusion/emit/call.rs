@@ -515,8 +515,11 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 _ => {
                     // Value-shape: both register-words — `raw0` is the
                     // real Value disc with the production's tag
-                    // already in-band.
-                    (raw0, raw1)
+                    // already in-band, plus the unclaimed-site stale
+                    // fold `tagbits` carries (a `bytes`-returning
+                    // builtin in a callee's loop fired on every
+                    // invocation without it — aug22c class D).
+                    (cx.b.ins().bor(raw0, tagbits), raw1)
                 }
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);

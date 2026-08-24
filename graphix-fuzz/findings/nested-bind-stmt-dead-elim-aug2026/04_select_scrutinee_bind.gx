@@ -1,0 +1,7 @@
+// aug22c class B (campaign-minimized): the same elimination one step on —
+// the tail READS the connect target, and with the binding statement
+// eliminated the JIT published nothing at all, not even the seed. Here
+// the `let` sits in a select SCRUTINEE (04) / an outer array literal (05)
+// in statement position.
+// schedule-v1: cap=16 events=128; in0=i64:1
+{select let x = i64:1 {i64:0 => i64:0, _ => ["a", "b"]}; x <- x + i64:1; x - (in0 * i64:0)}

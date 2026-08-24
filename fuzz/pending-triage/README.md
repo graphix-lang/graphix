@@ -87,100 +87,58 @@ interp's `bound` dispatch does). See CLAUDE.md "Fusion / JIT
 subsystem" (the QUIET FLAG entry).
 
 
-## The aug22c round (2026-08-24) — 11 findings, 5 classes, parked
+## The aug22c round (2026-08-24) — 11 findings, 5 classes, CLOSED
 
 Campaign aug22c (hz0/aieka/katana/ryouko on e9791a6a, the quiet-frame
 soak): ~2 days, 11 divergences — hz0 7, aieka 2, ryouko 2, katana 0 —
-pulled at the traits redeploy (aug24a). **All 11 reproduce on merged
-main (f60bbf2d)** under the release binary. None is traits-related:
-the campaign predates that merge and every witness is core language.
-Every one came from the corpus-mutation source (~236M subjects across
-the fleet); generate (~260M) and reactive (~281M) found nothing.
+pulled at the traits redeploy (aug24a). All 11 reproduced on merged main
+(f60bbf2d); none was traits-related. Every one came from the
+corpus-mutation source (~236M subjects); generate (~260M) and reactive
+(~281M) found nothing. Triaged and fixed 2026-08-24, all in the compiler
+(four mechanisms, one of them a typechecker unsoundness). Pins:
 
-### Class A — a `<-` target bound inside a literal loses its spin (5)
-
-`aug22c_selfconnect_spin_{00..04}.gx` (hz0 x4, ryouko x1). Shape: a
-`let` bound INSIDE a container literal that stands as a statement,
-then a self-connect.
-
-    {[i64:2, let x = true]; x <- x; true}
-    interp: [0:true …capped]      jit: [0:true]
-
-The values agree; the interp spins forever (the trace cap fires every
-epoch) and the JIT goes quiet after the first. The control says the
-interp is right: `{let x = true; x <- x; true}` — the same program with
-the bind in statement position — AGREES, and both engines cap (its
-region de-fuses, so "both" is really the node-walk twice). `x <- x` is
-a self-feeding connect: x fires, the RHS reads x and fires, the connect
-schedules the next cycle. Direction: in the fused form the lifted
-connect target does not re-trigger itself. Neighbours: the
-connect-instance-identity fix (e05a6c8b) and its write-only-let
-spinner family.
-
-### Class B — the same bind never publishes at all (2)
-
-`aug22c_connect_no_publish_{00,01}.gx` (hz0). One step past class A:
-the tail READS the connect target, and the JIT emits nothing at all —
-not even the initial value.
-
-    // schedule-v1: cap=16 events=128; in0=i64:1
-    {select let x = i64:1 {i64:0 => i64:0, _ => ["a", "b"]}; x <- x + i64:1; x - (in0 * i64:0)}
-    interp: [0:i64:1 1:i64:2 … 15:i64:16 …capped]; [ …capped]      jit: []; []
-
-Here the bind sits in a select SCRUTINEE (00) or in an outer array
-literal (01) — expression position again, so probably one class with A
-in two faces: A's tail is a constant and still emits at init, B's
-tail depends on x and emits nothing, which reads as "the kernel binding
-never publishes".
-
-### Class C — a labeled callback parameter eats the element (2)
-
-`aug22c_labeled_callback_{00,01}.gx` (aieka, hz0). The 45-character
-witness:
-
-    array::map([i64:7], |#foo: i64 = i64:42| foo)
-    interp: [0:[i64:42]]      jit: [0:[i64:7]]
-
-Two bugs stacked. First, the TYPECHECKER accepts a map callback with
-ZERO positional parameters when it has a labeled one with a default —
-`|a, b|` and `||` are both rejected at that same call site, so the
-arity check is counting the labeled parameter as filling the positional
-slot. Then the engines disagree about what the callback receives: the
-node-walk binds `foo` to its default and drops the element, the JIT
-marshals the element into the callback's first slot. 01 is the same
-shape with two labeled parameters and a struct result (`foo: i64:42`
-interp vs `foo: i64:0` jit) plus an extra epoch fire. The arity hole
-is the root worth fixing; the value divergence is downstream of a
-program that should not compile.
-
-### Class D — count over a nested map (1)
-
-`aug22c_nested_map_count_00.gx` (ryouko).
-
-    {let x = array::iter([i64:1, i64:2, i64:3, i64:4]);
-     let f = |n| array::map([n], |i| buffer::from_string("hello"));
-     let a = array::map([i64:-1, i64:1], |j| f(x));
-     let c = count(a);
-     select count(x) {i64:4 => c, _ => never()}}
-    interp: [4:i64:1]      jit: [4:i64:4]
-
-`count` of a value produced by a map whose callback calls a map-bodied
-lambda over an `array::iter` source: the JIT counts a production per
-element delivery, the interp one. Which cadence organic firing demands
-here is not derived yet — do that before touching either engine.
-
-### Class E — `?` in a map callback, and the node-walk is the suspect (1)
-
-`aug22c_qop_callback_00.gx` (aieka).
-
-    {let y = array::iter([i64:0, i64:2, i64:3, i64:4]);
-     let m = array::map([i64:1], |x| select i64:1 {i64:1 => str::parse("42")?, _ => y});
-     let c = m; c}
-    interp: []      jit: [0:[i64:42]]
-
-The scrutinee is a constant that matches the first arm, `str::parse`
-succeeds, and `?` on a non-error is the bare value — so the JIT's
-`[42]` is what the program says and the INTERP producing nothing is the
-side that needs explaining. Node-walk-is-canonical is a claim about the
-model, not an oracle: adjudicate this one against the intended
-semantics before assuming the kernel is wrong.
+- **A + B — one class, `nested-bind-stmt-dead-elim-aug2026`** (7
+  witnesses): a `let` bound INSIDE a statement's subtree — an array or
+  struct literal, a variant payload, a select scrutinee — and later used
+  as a connect target (A: `x <- x` lost its spin in the JIT; B: the tail
+  read `x` and the JIT published nothing). `emit_block_node`'s
+  dead-statement elimination ran its later-reader scan only when the
+  statement WAS a `Bind` and treated every other statement as unread, so
+  the literal was eliminated whole and the connect target's seed with
+  it. A statement binds whatever its subtree binds: the scan now runs
+  over every statement's `Refs`.
+- **C — `labeled-callback-param-aug2026`** (2): TWO bugs. The
+  typechecker accepted `array::map(xs, |#foo: i64 = 42| foo)` — a
+  callback with NO positional parameter — because `FnType::contains`
+  computed "first positional index" as the LAST labeled index when no
+  positional followed and zipped `#foo` against the declared `x: 'a`
+  (`FnType::first_positional` now). And for the legal
+  `|#foo = 42, x| foo` the inline loop emitter bound the element to
+  parameter INDEX 0, labeled or not (the JIT read `foo` as the element);
+  `callback_param` refuses callbacks with labeled parameters — there is
+  no inline binding for a labeled default — so they interpret.
+- **D — `dyncall-value-return-stale-aug2026`** (1 + 2 faces): the
+  README's first reading was wrong (not a cadence question — the interp's
+  1 is the SlotFlags rule). An in-loop DynCall in a CALLEE kernel is an
+  unclaimed key-0 site: it delivers its args fired by design and restores
+  the honest plane by folding the real arg discs' STALE into the RESULT
+  tag — and the Value-shape return branch adopted the dispatcher's disc
+  raw, skipping the fold. A constant-arg `bytes`-returning builtin (and
+  a non-scalar cast, which lowers to the same DynCall with a `[T, Error]`
+  Value return) therefore fired on every invocation of the callee.
+- **E — typechecker, fixtures in `lang/select.rs`** (1): the README's
+  first reading was wrong here too — the program is ILL-TYPED, and the
+  interp was the engine reporting it. A select's type is the union of
+  its arm types and a free `'b` in one arm stays free (`str::parse` has
+  no concrete result — the literal-`i64`-arm twin was always rejected).
+  When the sibling arm's `i64` arrives through a bound tvar
+  (`array::iter`'s instantiation), the instance check
+  (`setup_static_bind`'s return write-back) compared the union
+  `['b, 'a]` against a `resolve_tvars` copy of itself, and the Set×Set
+  residue arm let the bound member "cover" the copy's FREE member by
+  binding it (`'b' := i64`), so the prototype typed by accident while
+  the per-slot callback instance settled `'b := Bottom` and bottomed at
+  eval (the runtime tc1 failure is swallowed at `log::trace`). A free
+  rhs member now goes to the residue and aliases the bare lhs member.
+  Consequence: three shapes that compiled by accident are rejected
+  consistently now; annotate the result (`let v: i64 = select ..`).

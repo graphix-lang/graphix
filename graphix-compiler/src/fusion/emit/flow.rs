@@ -158,9 +158,10 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
         // tuple, an unused let holding an aborting array literal)
         // poisons the WHOLE kernel via the composite producers'
         // bottom-abort, a value divergence vs the node-walk
-        // (findings/flip-jun2026). A Bind is dead iff no LATER
-        // sibling or the tail references a bound id; a bare
-        // expression statement's value is always unread.
+        // (findings/flip-jun2026). A statement is dead iff no LATER
+        // sibling or the tail references an id its subtree binds — a
+        // bare expression's value is always unread, but its subtree
+        // may still bind.
         //
         // The effect-free gate is LOAD-BEARING: a statement whose
         // subtree contains a Connect (`<-`), handler-ful `?`, `$`
@@ -170,49 +171,49 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
         // DROPPING the effect (the env-accounting probe caught
         // exactly that with a skipped `counter <- v`). Those emit
         // normally and de-fuse via their emit Errs as before.
-        let dead = if matches!(child.view(), NodeView::Bind(_)) {
-            let mut bound = Refs::default();
-            child.refs(&mut bound);
-            let mut suffix = Refs::default();
+        // A statement binds whatever `let`s its SUBTREE holds, not only
+        // a `let` at its root: `[i64:2, let x = true]` and
+        // `select let x = 1 {..}` in statement position bind `x` for
+        // every later sibling (aug22c classes A/B — the literal was
+        // eliminated whole and the connect target's seed went with it).
+        let mut bound = Refs::default();
+        child.refs(&mut bound);
+        let mut suffix = Refs::default();
+        for later in &children[i + 1..] {
+            later.refs(&mut suffix);
+        }
+        let mut alive = false;
+        bound.with_bound(|id| {
+            if suffix.is_refed(id) {
+                alive = true;
+            }
+        });
+        // A connect TARGET is a delivery destination, not a read —
+        // `Refs` deliberately doesn't carry it (a connect must not
+        // self-subscribe), so the suffix scan above misses it.
+        // A write-only `let` is NOT dead: it is the seed of a
+        // written variable, and eliminating it drops the target
+        // out of the env so the connect falls through to the
+        // external-iconst path with ONE baked id — every slot of
+        // an inlined callback then wrote the same variable while
+        // the interp binds per slot (aug18a class 3).
+        if !alive {
             for later in &children[i + 1..] {
-                later.refs(&mut suffix);
-            }
-            let mut alive = false;
-            bound.with_bound(|id| {
-                if suffix.is_refed(id) {
-                    alive = true;
-                }
-            });
-            // A connect TARGET is a delivery destination, not a read —
-            // `Refs` deliberately doesn't carry it (a connect must not
-            // self-subscribe), so the suffix scan above misses it.
-            // A write-only `let` is NOT dead: it is the seed of a
-            // written variable, and eliminating it drops the target
-            // out of the env so the connect falls through to the
-            // external-iconst path with ONE baked id — every slot of
-            // an inlined callback then wrote the same variable while
-            // the interp binds per slot (aug18a class 3).
-            if !alive {
-                for later in &children[i + 1..] {
-                    fusion::for_each_node(later, &mut |n| {
-                        if let NodeView::Connect(c) = n.view() {
-                            bound.with_bound(|id| {
-                                if id == c.id {
-                                    alive = true;
-                                }
-                            });
-                        }
-                    });
-                    if alive {
-                        break;
+                fusion::for_each_node(later, &mut |n| {
+                    if let NodeView::Connect(c) = n.view() {
+                        bound.with_bound(|id| {
+                            if id == c.id {
+                                alive = true;
+                            }
+                        });
                     }
+                });
+                if alive {
+                    break;
                 }
             }
-            !alive
-        } else {
-            true
-        };
-        if dead && stmt_subtree_effect_free(child) {
+        }
+        if !alive && stmt_subtree_effect_free(child) {
             continue;
         }
         emit_block_stmt(cx, child)?;

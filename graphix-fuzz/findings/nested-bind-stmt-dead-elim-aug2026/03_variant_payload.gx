@@ -1,0 +1,10 @@
+// aug22c class A (campaign-minimized): a `let` bound INSIDE a container
+// literal that stands as a statement, then a self-connect `x <- x`. The
+// interp spins forever (x fires, the RHS reads it, the connect schedules
+// the next cycle); the JIT went quiet after the first cycle. The emitter's
+// dead-statement elimination scanned for later readers only when the
+// statement WAS a `let`, and treated any other statement as unread — the
+// literal was eliminated whole, and `x`'s seed (a lifted connect target)
+// with it. A statement binds whatever its subtree binds.
+// schedule-v1: cap=16 events=128
+{`Zigzag(let x = true); x <- x; true}
