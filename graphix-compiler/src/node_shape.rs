@@ -357,6 +357,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Struct(n) => kids.extend(n.n.iter()),
         V::Tuple(n) => kids.extend(n.n.iter()),
         V::Variant(n) => kids.extend(n.n.iter()),
+        V::Construct(n) => kids.push(&n.arg),
         V::Array(n) => kids.extend(n.n.iter()),
         V::Map(n) => {
             kids.extend(n.keys.iter());
@@ -392,6 +393,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         // `Contains` descend through a kernel into what feeds it).
         V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
         // True leaves — no child nodes.
+        V::Impl(i) => kids.push(&i.body),
         V::Ref(_) | V::Constant(_) | V::TypeDef(_) | V::Nop(_) | V::Lambda(_) => {}
         // Binops returned above via the first match.
         V::Add(_)

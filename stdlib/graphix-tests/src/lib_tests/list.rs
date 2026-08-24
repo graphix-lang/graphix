@@ -925,34 +925,24 @@ run!(list_flat_map_empty_splice, LIST_FLAT_MAP_EMPTY_SPLICE, |v: Result<&Value>|
     matches!(v.map(|v| v.clone().cast_to::<Vec<i64>>()), Ok(Ok(v)) if v == vec![1, 10, 3, 30])
 });
 
-// A LIST-valued fold ACCUMULATOR — the idiomatic reverse. The
-// FoldAcc::Value carry discipline EXISTS (nullable and map accs fuse,
-// below), but this shape still interprets: the prototype callback's
-// static resolution discards on an ABSTRACT-ID IDENTITY MISMATCH at
-// its return check (`[\`Cons(i64, List<i64>), \`Nil] does not contain
-// <abstract#4>` — the callback's rtype cell holds a DIFFERENT
-// AbstractId for list::List than the registry's; suspected
-// per-decode-unit id remapping divergence). Pinned #[native]-must-
-// fail; flip to the positive assertion when the identity bug is
-// fixed. Repro: design note in the LM commit message.
-#[tokio::test]
-async fn list_fold_list_acc_interprets() {
-    let prog = "{ \
-        let l = list::from_array([1, 2, 3]); \
-        let seed: list::List<i64> = list::from_array([]); \
-        let rev = { \
-            let r = #[native] list::fold(l, seed, |acc, x| list::cons(x, acc)); \
-            r \
-        }; \
-        list::to_array(rev) \
-    }";
-    let r = graphix_package_core::testing::eval(prog, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "the cons-building fold still interprets (abstract-id identity bug); got {:?}",
-        r.map(|(v, _)| v)
-    );
+// A LIST-valued fold ACCUMULATOR — the idiomatic reverse, carried by
+// the FoldAcc::Value discipline like the nullable and map accs below.
+// (It interpreted while `list::List` was an abstract type whose two
+// views minted two ids; `List` is transparent now.)
+const LIST_FOLD_LIST_ACC: &str = r#"
+{
+  let l = list::from_array([1, 2, 3]);
+  let seed: list::List<i64> = list::from_array([]);
+  let rev = {
+    let r = #[native] list::fold(l, seed, |acc, x| list::cons(x, acc));
+    r
+  };
+  list::to_array(rev)
 }
+"#;
+run!(list_fold_list_acc, LIST_FOLD_LIST_ACC, |v: Result<&Value>| {
+    matches!(v.map(|v| v.clone().cast_to::<Vec<i64>>()), Ok(Ok(ref a)) if a == &[3, 2, 1])
+});
 
 // The max-by idiom: a NULLABLE accumulator (`[i64, null]`) seeded
 // null, replaced when the element beats the carried best.

@@ -19,9 +19,7 @@ use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_arg,
 };
 use graphix_rt::GXRt;
-use netidx_value::{
-    Abstract, FromValue, PBytes, ValArray, Value, abstract_type::AbstractWrapper,
-};
+use netidx_value::{FromValue, PBytes, ValArray, Value};
 use std::{
     any::Any,
     cmp::Ordering,
@@ -70,13 +68,10 @@ impl Hash for ClientValue {
 
 graphix_package_core::impl_no_pack!(ClientValue);
 
-static CLIENT_WRAPPER: LazyLock<AbstractWrapper<ClientValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xc7, 0xd8, 0xe9, 0xfa, 0x0b, 0x1c, 0x4d, 0x2e, 0x3f, 0x40, 0x51, 0x62, 0x73,
-        0x84, 0x95, 0xa6,
-    ]);
-    Abstract::register::<ClientValue>(id).expect("failed to register ClientValue")
-});
+graphix_package_core::abstract_wrapper!(
+    ClientValue,
+    static CLIENT_WRAPPER = "http::Client"
+);
 
 fn get_client(cached: &CachedVals, idx: usize) -> Option<Arc<reqwest::Client>> {
     match cached.0.get(idx)?.as_ref()? {
@@ -135,13 +130,10 @@ impl Hash for ServerValue {
 
 graphix_package_core::impl_no_pack!(ServerValue);
 
-static SERVER_WRAPPER: LazyLock<AbstractWrapper<ServerValue>> = LazyLock::new(|| {
-    let id = uuid::Uuid::from_bytes([
-        0xd7, 0xe8, 0xf9, 0x0a, 0x1b, 0x2c, 0x4d, 0x3e, 0x4f, 0x50, 0x61, 0x72, 0x83,
-        0x94, 0xa5, 0xb6,
-    ]);
-    Abstract::register::<ServerValue>(id).expect("failed to register ServerValue")
-});
+graphix_package_core::abstract_wrapper!(
+    ServerValue,
+    static SERVER_WRAPPER = "http::Server"
+);
 
 // ── Shared helpers ───────────────────────────────────────────────
 

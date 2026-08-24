@@ -98,21 +98,43 @@ val remove_file: fn(path: string) -> Result<null, `IOError(string)>;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(mode: Mode, path: string) -> Result<io::Stream<`File>, `IOError(string)>;
-
-/// Seek to a position in the file. Returns the new position.
-val seek: fn(stream: io::Stream<`File>, pos: SeekFrom) -> Result<u64, `IOError(string)>;
+val open: fn(mode: Mode, path: string) -> Result<File, `IOError(string)>;
 
 /// Get metadata for the open file.
-val fstat: fn(stream: io::Stream<`File>) -> Result<Metadata, `IOError(string)>;
+val fstat: fn(file: File) -> Result<Metadata, `IOError(string)>;
 
 /// Truncate or extend the file to the specified length.
-val truncate: fn(stream: io::Stream<`File>, len: u64) -> Result<null, `IOError(string)>;
+val truncate: fn(file: File, len: u64) -> Result<null, `IOError(string)>;
+
+/// An open file. It reads, writes, seeks, and closes.
+type File;
+
+/// A handle with a position in a finite resource.
+trait Seek {
+    /// Seek to a position. Returns the new position.
+    val seek: fn(self, pos: SeekFrom) -> Result<u64, `IOError(string)>;
+};
+
+impl Read for File;
+impl Lines for File;
+impl Write for File;
+impl Close for File;
+impl Seek for File;
 ```
 
-Once a file is opened with `sys::fs::open`, use `sys::io::read`,
-`sys::io::write`, and `sys::io::flush` for I/O — these work on any
-stream kind.
+An open `File` reads, writes and closes through the [sys::io](io.md)
+traits, and seeks through `Seek`:
+
+```graphix
+use sys::fs::{self, *};
+use sys::io::{Read, Write, Close};
+
+let f = open(`Create, path)?;
+let written = Write::write_exact(f, buffer::from_string("hello"))?;
+let rewound = Seek::seek(f, written ~ `Start(u64:0))?;
+let text = buffer::to_string(Read::read_all(rewound ~ f)?)?;
+Close::close(text ~ f)?
+```
 
 ## sys::fs::watch
 

@@ -1,4 +1,6 @@
-use super::{MAX_ARRAY_INIT_LEN, callsite::CallSite, genn, pattern::StructPatternNode};
+use super::{
+    MAX_ARRAY_INIT_LEN, NOP, callsite::CallSite, genn, pattern::StructPatternNode,
+};
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
@@ -334,10 +336,12 @@ impl MapCollection for ListCollection {
     }
 
     fn element_type(ft: &FnType) -> Result<Type> {
-        if let Type::Abstract { params, .. } = &ft.args[0].typ
-            && let Some(t) = params.first()
-        {
-            return Ok(t.clone());
+        match &ft.args[0].typ {
+            Type::Abstract { params, .. } if !params.is_empty() => {
+                return Ok(params[0].clone());
+            }
+            Type::Ref(tr) if !tr.params.is_empty() => return Ok(tr.params[0].clone()),
+            _ => (),
         }
         for arg in ft.args.iter() {
             if let Type::Fn(inner) = &arg.typ
@@ -398,6 +402,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
         callback_type: &Arc<FnType>,
         element_type: &Type,
         prototype: bool,
+        resolved: Option<Value>,
     ) -> Self {
         let (id, element) = genn::bind(
             ctx,
@@ -406,8 +411,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
             element_type.clone(),
             top_id,
         );
-        let function =
-            genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
+        let function = callback_fnode(ctx, callback, callback_type, top_id, resolved);
         let call = if prototype {
             genn::apply_prototype(
                 function,
@@ -499,15 +503,14 @@ fn callback_param<R: Rt, E: UserEvent>(
 }
 
 fn bindable_array_element(
-    cx: &BodyCx,
     typ: &Type,
     binds: &[(BindId, usize)],
 ) -> Option<(Type, Vec<(BindId, usize, scaffold::LeafShape)>)> {
     use kernel_abi::AbiKind;
 
-    let typ = kernel_abi::freeze_for_abi_normalized(cx.registry(), typ)?;
-    let leaves = scaffold::elem_leaves(cx.registry(), &typ, binds)?;
-    match kernel_abi::abi_kind(cx.registry(), &typ) {
+    let typ = kernel_abi::freeze_for_abi_normalized(typ)?;
+    let leaves = scaffold::elem_leaves(&typ, binds)?;
+    match kernel_abi::abi_kind(&typ) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array
@@ -522,10 +525,10 @@ fn bindable_array_element(
     }
 }
 
-fn is_unit_or_null(registry: &kernel_abi::AbstractRegistry, typ: &Type) -> bool {
+fn is_unit_or_null(typ: &Type) -> bool {
     use kernel_abi::AbiKind;
 
-    matches!(kernel_abi::abi_kind(registry, typ), Some(AbiKind::Unit | AbiKind::Null))
+    matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
 }
 
 /// Fold the loop's [`scaffold::SlotFlags`] and the source's firing
@@ -644,8 +647,16 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
         };
         let element_type = T::Collection::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
-        let prototype =
-            Slot::new(ctx, scope, top_id, callback, &callback_type, &element_type, true);
+        let prototype = Slot::new(
+            ctx,
+            scope,
+            top_id,
+            callback,
+            &callback_type,
+            &element_type,
+            true,
+            None,
+        );
         Ok(Node::new(Self {
             base: MapQBase {
                 source,
@@ -668,6 +679,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
     }
 
     fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
+        let resolved = prototype_def(ctx, &self.base.prototype);
         self.slots.push(Slot::new(
             ctx,
             &self.scope,
@@ -676,6 +688,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             &self.callback_type,
             &self.base.element_type,
             false,
+            resolved,
         ));
     }
 }
@@ -1022,6 +1035,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         acc_type: &Type,
         element_type: &Type,
         prototype: bool,
+        resolved: Option<Value>,
     ) -> Self {
         let (acc_id, acc) =
             genn::bind(ctx, &scope.lexical, "collection_acc", acc_type.clone(), top_id);
@@ -1032,8 +1046,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
             element_type.clone(),
             top_id,
         );
-        let function =
-            genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id);
+        let function = callback_fnode(ctx, callback, callback_type, top_id, resolved);
         let call = if prototype {
             genn::apply_prototype(
                 function,
@@ -1146,6 +1159,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             &acc_type,
             &element_type,
             true,
+            None,
         );
         Ok(Node::new(Self {
             base: FoldQBase {
@@ -1172,6 +1186,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
     }
 
     fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
+        let resolved = prototype_def(ctx, &self.base.prototype);
         self.slots.push(FoldSlot::new(
             ctx,
             &self.scope,
@@ -1181,6 +1196,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             &self.acc_type,
             &self.base.element_type,
             false,
+            resolved,
         ));
     }
 }
@@ -1618,6 +1634,39 @@ fn emit_fold_call<R: Rt, E: UserEvent, T: FoldFn<R, E>>(
     r
 }
 
+/// The callback's definition value when the prototype call resolved
+/// statically: a runtime slot then calls that lambda directly
+/// (`callback_fnode`) instead of binding to whatever value the
+/// callback parameter carries — which a TRAIT METHOD dispatcher never
+/// carries (the prototype resolved it to an implementation by the
+/// element type; the slots inherit that, `design/traits.md` §2).
+fn prototype_def<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    prototype: &Node<R, E>,
+) -> Option<Value> {
+    let NodeView::CallSite(site) = prototype.view() else { return None };
+    let target = site.static_target.as_ref()?;
+    ctx.lambda_defs.get(&target.definition).cloned()
+}
+
+/// A slot's function node: the resolved definition as a constant when
+/// the prototype settled one, else a reference to the callback
+/// parameter (bound at runtime by the value it carries).
+fn callback_fnode<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    callback: BindId,
+    callback_type: &Arc<FnType>,
+    top_id: ExprId,
+    resolved: Option<Value>,
+) -> Node<R, E> {
+    match resolved {
+        Some(v) => {
+            super::Constant::new(v, Type::Fn(callback_type.clone()), Expr::clone(&NOP))
+        }
+        None => genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id),
+    }
+}
+
 fn callback<R: Rt, E: UserEvent>(
     prototype: &Node<R, E>,
 ) -> Option<&super::lambda::GXLambda<R, E>> {
@@ -1684,10 +1733,10 @@ impl Flavor {
 }
 
 /// The filter/find gate: the callback must compile to a bool scalar.
-fn predicate_is_bool<R: Rt, E: UserEvent>(cx: &BodyCx, body: &Node<R, E>) -> bool {
-    kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+fn predicate_is_bool<R: Rt, E: UserEvent>(body: &Node<R, E>) -> bool {
+    kernel_abi::freeze_for_abi_normalized(body.typ())
         .as_ref()
-        .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
+        .and_then(|typ| kernel_abi::scalar_prim(typ))
         == Some(PrimType::Bool)
 }
 
@@ -1701,20 +1750,17 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
     if !param.binds.is_empty() {
         return Ok(None);
     }
-    let count_prim =
-        match kernel_abi::freeze_for_abi_normalized(cx.registry(), source.typ())
-            .as_ref()
-            .and_then(|typ| kernel_abi::scalar_prim(cx.registry(), typ))
-        {
-            Some(prim) if prim.is_integer() => prim,
-            _ => return Ok(None),
-        };
-    let Some(output_type) =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-    else {
+    let count_prim = match kernel_abi::freeze_for_abi_normalized(source.typ())
+        .as_ref()
+        .and_then(|typ| kernel_abi::scalar_prim(typ))
+    {
+        Some(prim) if prim.is_integer() => prim,
+        _ => return Ok(None),
+    };
+    let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
-    if is_unit_or_null(cx.registry(), &output_type) {
+    if is_unit_or_null(&output_type) {
         return Ok(None);
     }
     let count = source.emit_clif(cx)?;
@@ -1748,17 +1794,14 @@ fn emit_map_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) =
-        bindable_array_element(cx, element_type, &param.binds)
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
-    let Some(output_type) =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-    else {
+    let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
-    if is_unit_or_null(cx.registry(), &output_type) {
+    if is_unit_or_null(&output_type) {
         return Ok(None);
     }
     let (value, src) = flavor.emit_source(cx, source)?;
@@ -1790,12 +1833,11 @@ fn emit_filter_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) =
-        bindable_array_element(cx, element_type, &param.binds)
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
-    if !predicate_is_bool(cx, body) {
+    if !predicate_is_bool(body) {
         return Ok(None);
     }
     let (value, src) = flavor.emit_source(cx, source)?;
@@ -1824,21 +1866,17 @@ fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) =
-        bindable_array_element(cx, element_type, &param.binds)
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
-    let Some(output_type) =
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
-    else {
+    let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
-    let Some(output_element) = kernel_abi::nullable_inner(cx.registry(), &output_type)
-    else {
+    let Some(output_element) = kernel_abi::nullable_inner(&output_type) else {
         return Ok(None);
     };
-    if is_unit_or_null(cx.registry(), &output_element) {
+    if is_unit_or_null(&output_element) {
         return Ok(None);
     }
     let (value, src) = flavor.emit_source(cx, source)?;
@@ -1872,8 +1910,7 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
 ) -> Result<Option<CompiledExpr>> {
     use kernel_abi::AbiKind;
 
-    let Some((element_type, leaves)) =
-        bindable_array_element(cx, element_type, &param.binds)
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
@@ -1883,9 +1920,9 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     // extend helper walks it — including the interpreted "non-list
     // value pushes as a single element" fallback. No CMap flat_map
     // intrinsic exists.
-    let output_kind = kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+    let output_kind = kernel_abi::freeze_for_abi_normalized(body.typ())
         .as_ref()
-        .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ));
+        .and_then(|typ| kernel_abi::abi_kind(typ));
     let extend = match (flavor, output_kind) {
         (Flavor::Array, Some(AbiKind::Array)) => scaffold::FlatMapExtend::Array,
         (Flavor::List, Some(AbiKind::Variant)) => scaffold::FlatMapExtend::List,
@@ -1939,12 +1976,11 @@ fn emit_find_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) =
-        bindable_array_element(cx, element_type, &param.binds)
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
-    if !predicate_is_bool(cx, body) {
+    if !predicate_is_bool(body) {
         return Ok(None);
     }
     let (value, src) = flavor.emit_source(cx, source)?;
@@ -1975,15 +2011,14 @@ fn emit_find_map_kind<R: Rt, E: UserEvent>(
 ) -> Result<Option<CompiledExpr>> {
     use kernel_abi::AbiKind;
 
-    let Some((element_type, leaves)) =
-        bindable_array_element(cx, element_type, &param.binds)
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
     let output_is_nullable = matches!(
-        kernel_abi::freeze_for_abi_normalized(cx.registry(), body.typ())
+        kernel_abi::freeze_for_abi_normalized(body.typ())
             .as_ref()
-            .and_then(|typ| kernel_abi::abi_kind(cx.registry(), typ)),
+            .and_then(|typ| kernel_abi::abi_kind(typ)),
         Some(AbiKind::Nullable)
     );
     if !output_is_nullable {
@@ -2029,19 +2064,16 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
     use kernel_abi::AbiKind;
 
     let Some((element_type, element_leaves)) =
-        bindable_array_element(cx, element_type, &element.binds)
+        bindable_array_element(element_type, &element.binds)
     else {
         return Ok(None);
     };
-    let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(cx.registry(), acc_type)
-    else {
+    let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(acc_type) else {
         return Ok(None);
     };
-    let acc_leaves = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
+    let acc_leaves = match kernel_abi::abi_kind(&acc_type) {
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let Some(leaves) =
-                scaffold::elem_leaves(cx.registry(), &acc_type, &acc.binds)
-            else {
+            let Some(leaves) = scaffold::elem_leaves(&acc_type, &acc.binds) else {
                 return Ok(None);
             };
             Some(leaves)
@@ -2060,7 +2092,7 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
     if emit::node_is_bottom(body) {
         return Ok(None);
     }
-    let acc_shape = match kernel_abi::abi_kind(cx.registry(), &acc_type) {
+    let acc_shape = match kernel_abi::abi_kind(&acc_type) {
         Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
             scaffold::FoldAcc::Scalar(prim)
         }
@@ -2088,7 +2120,7 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
             if acc.binds.is_empty() =>
         {
             for n in [init, body] {
-                match kernel_abi::abi_kind(cx.registry(), n.typ()) {
+                match kernel_abi::abi_kind(n.typ()) {
                     Some(AbiKind::Unit) | None => return Ok(None),
                     Some(_) => {}
                 }

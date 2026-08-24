@@ -156,7 +156,7 @@ const DYNAMIC_MODULE5: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        sys::net::subscribe(\"/local/test\")$
+        let probe: string = sys::net::subscribe(\"/local/test\")$
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
@@ -187,7 +187,7 @@ const DYNAMIC_MODULE6: &str = r#"
     let source = "
         let foo = never();
         let bar = never(); select foo { x => bar <- dbg(x) };
-        sys::net::subscribe(\"/local/test\")$
+        let probe: string = sys::net::subscribe(\"/local/test\")$
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {
@@ -251,7 +251,7 @@ const DYNAMIC_MODULE8: &str = r#"
         let foo = never();
         let bar = never();
         select foo { x => bar <- dbg(x) };
-        sys::net::subscribe(\"/local/test\")$
+        let probe: string = sys::net::subscribe(\"/local/test\")$
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {

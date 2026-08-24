@@ -15,7 +15,7 @@ const WRITE_THEN_READ: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Test content")
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 // Test that watches a directory, writes to a file, and receives modify events.
 // On macOS, FSEvents reports file writes as Create rather than Modify, so
@@ -90,4 +90,4 @@ const WRITE_BIN_THEN_READ_BIN: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_bin_then_read_bin, WRITE_BIN_THEN_READ_BIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")
-}; graphix_package_core::testing::FuseExpect::None);
+});

@@ -64,6 +64,9 @@ syntax match graphixTemplateEscape /\\u{[0-9a-fA-F]\+}/ contained
 syntax match graphixComment /\/\/.*$/ contains=graphixTodo
 syntax match graphixDocComment /\/\/\/.*$/ contains=graphixTodo
 
+" Attributes — #[name] / #[name(args)] on their own line
+syntax match graphixAttribute /^\s*#\[[^]]*]/
+
 " TODO/FIXME/XXX in comments
 syntax keyword graphixTodo TODO FIXME XXX NOTE HACK contained
 
@@ -84,6 +87,7 @@ highlight default link graphixTemplateEscape SpecialChar
 highlight default link graphixTemplateSplice Special
 highlight default link graphixEscape SpecialChar
 highlight default link graphixInterpolation Special
+highlight default link graphixAttribute PreProc
 highlight default link graphixComment Comment
 highlight default link graphixDocComment SpecialComment
 highlight default link graphixTodo Todo

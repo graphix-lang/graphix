@@ -3,8 +3,9 @@ use crate::theme::{
     ProgressBarSpec, RadioSpec, RuleSpec, ScrollableSpec, SliderSpec, StyleOverrides,
     TextEditorSpec, TextInputSpec, TogglerSpec,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
+use graphix_compiler::abstract_value::payload as abstract_payload;
 use iced_core::{
     Color, ContentFit, Font, Length, Padding, Size,
     alignment::{Horizontal, Vertical},
@@ -100,6 +101,9 @@ pub struct ColorV(pub Color);
 
 impl FromValue for ColorV {
     fn from_value(v: Value) -> Result<Self> {
+        let v = abstract_payload(&v)
+            .ok_or_else(|| anyhow!("expected a Color, got {v}"))?
+            .clone();
         let [(_, a), (_, b), (_, g), (_, r)] = v.cast_to::<[(ArcStr, f64); 4]>()?;
         let [r, g, b, a] = [r as f32, g as f32, b as f32, a as f32];
         if !(0.0..=1.0).contains(&r)
@@ -717,6 +721,9 @@ pub struct ShortcutV {
 
 impl FromValue for ShortcutV {
     fn from_value(v: Value) -> Result<Self> {
+        let v = abstract_payload(&v)
+            .ok_or_else(|| anyhow!("expected a Shortcut, got {v}"))?
+            .clone();
         let [(_, alt), (_, ctrl), (_, key), (_, logo), (_, shift)] =
             v.cast_to::<[(ArcStr, Value); 5]>()?;
         let alt = alt.cast_to::<bool>()?;

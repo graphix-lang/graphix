@@ -69,7 +69,14 @@ fn collect_preorder(e: &Expr, out: &mut Vec<Expr>) {
 fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
     use ExprKind::*;
     match &e.kind {
-        NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {}
+        NoOp
+        | Constant(_)
+        | Use { .. }
+        | Ref { .. }
+        | TypeDef(_)
+        | Trait(_)
+        | Impl(_)
+        | Module { .. } => {}
         ExplicitParens(x)
         | Qop(x)
         | OrNever(x)
@@ -77,6 +84,7 @@ fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         | Deref(x)
         | Neg(x)
         | Not { expr: x }
+        | Construct { arg: x, .. }
         | TypeCast { expr: x, .. } => f(x),
         Do { exprs }
         | StringInterpolate { args: exprs }
@@ -198,9 +206,14 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
     }
     use ExprKind::*;
     let kind = match &e.kind {
-        NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) | Module { .. } => {
-            e.kind.clone()
-        }
+        NoOp
+        | Constant(_)
+        | Use { .. }
+        | Ref { .. }
+        | TypeDef(_)
+        | Trait(_)
+        | Impl(_)
+        | Module { .. } => e.kind.clone(),
         ExplicitParens(x) => ExplicitParens(ra!(x)),
         Qop(x) => Qop(ra!(x)),
         OrNever(x) => OrNever(ra!(x)),
@@ -209,6 +222,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         Neg(x) => Neg(ra!(x)),
         Not { expr } => Not { expr: ra!(expr) },
         TypeCast { expr, typ } => TypeCast { expr: ra!(expr), typ: typ.clone() },
+        Construct { name, arg } => Construct { name: name.clone(), arg: ra!(arg) },
         Do { exprs } => Do { exprs: aslice(exprs.iter().map(|c| r!(c)).collect()) },
         StringInterpolate { args } => {
             StringInterpolate { args: aslice(args.iter().map(|c| r!(c)).collect()) }

@@ -1,70 +1,149 @@
-/// An opaque handle to an I/O stream. The phantom type parameter indicates
-/// the underlying stream kind, constraining which operations are valid.
-/// Stream<`File> for files, Stream<`Tcp> for TCP, Stream<`Tls> for TLS,
-/// Stream<`Stdio> for stdin/stdout/stderr, Stream<`Pipe> for child pipes.
-type Stream<'a: [`File, `Tcp, `Tls, `Stdio, `Pipe]>;
+/// A handle to one of the process's standard streams, from [stdin],
+/// [stdout] or [stderr].
+type Stdio;
 
-/// Read up to n bytes from the stream. May return fewer bytes than
-/// requested if fewer are available.
-val read: fn(stream: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
-
-/// Read exactly n bytes from the stream. Returns fewer bytes only
-/// if EOF is reached before n bytes have been read.
-val read_exact: fn(stream: Stream<'a>, n: u64) -> Result<bytes, `IOError(string)>;
-
-/// Read `stream` to its end, producing ONE event per complete line with
-/// the newline stripped.
+/// A source of bytes.
 ///
-/// Reads re-arm themselves, so this is the whole "follow a stream"
-/// idiom in one call: a chunk carrying several lines produces several
-/// events, and a chunk that ends mid-line holds the remainder until the
-/// rest arrives, so a line is never split across two events. The final
-/// line is dropped if the stream ends without a newline.
+/// `read` is the only method an implementation must supply — the
+/// others are written in terms of it, so a stream written in Graphix
+/// (a decoder, a framer, a mock for a test) gets them for free. The
+/// system streams override `read_exact` with a single call into the
+/// operating system, which reads under one lock instead of looping.
+trait Read {
+    /// Read up to n bytes from the stream. May return fewer bytes than
+    /// requested if fewer are available, and no bytes at the end of
+    /// the stream.
+    val read: fn(self, n: u64) -> Result<bytes, `IOError(string)>;
+
+    /// Read exactly n bytes from the stream. Returns fewer bytes only
+    /// if the stream ends before n bytes have been read.
+    val read_exact: fn(self, n: u64) -> Result<bytes, `IOError(string)> = |s, n| {
+        let want: u64 = n;
+        let acc: bytes = buffer::from_string("");
+        let chunk = read(s, want);
+        select chunk {
+            error as _ => filter_err(chunk),
+            bytes as b => select buffer::len(b) == u64:0
+                || buffer::len(acc) + buffer::len(b) >= n {
+                true => buffer::concat(acc, b),
+                false => {
+                    // `b ~` is load-bearing: a connect fires when its
+                    // RHS fires, and an ungated `acc <- f(acc, b)`
+                    // would re-fire on its own write — the documented
+                    // counter idiom, an accumulator by accident.
+                    acc <- b ~ buffer::concat(acc, b);
+                    want <- b ~ want - buffer::len(b);
+                    never()
+                }
+            }
+        }
+    };
+
+    /// Read the stream to its end and return everything it produced as
+    /// one value. Reads re-arm themselves until the stream ends, so a
+    /// stream that never ends (a socket the peer holds open) never
+    /// produces.
+    val read_all: fn(self) -> Result<bytes, `IOError(string)> = |s| {
+        let want: u64 = u64:65536;
+        let acc: bytes = buffer::from_string("");
+        let chunk = read(s, want);
+        select chunk {
+            error as _ => filter_err(chunk),
+            bytes as b => select buffer::len(b) == u64:0 {
+                true => acc,
+                false => {
+                    // gated on the chunk: see `read_exact`
+                    acc <- b ~ buffer::concat(acc, b);
+                    want <- b ~ u64:65536;
+                    never()
+                }
+            }
+        }
+    }
+};
+
+/// A source of bytes that frames itself into lines.
 ///
-/// Stops at end of stream. A read error is returned, which also stops
-/// it — a stream that has failed once will not recover, and re-arming
-/// into the same error would spin. The error is a VALUE, like every
-/// other operation in this module: the caller decides whether to
-/// propagate it with `?`, log and drop it with `$`, or match on it.
+/// Framing is at the BYTE level, which is why this is a capability of
+/// its own and not a loop over [Read::read]: a multi-byte character
+/// split across a read boundary is destroyed by decoding each chunk on
+/// its own, and nothing the caller does controls where those
+/// boundaries fall. Only complete lines are decoded, and lossily, so
+/// one line of invalid UTF-8 cannot take down the stream. A trailing
+/// `\r` is stripped, and the final line is dropped if the stream ends
+/// without a newline.
 ///
-/// Lines are framed at the BYTE level and only complete lines are
-/// decoded, so a multi-byte character split across a read boundary
-/// survives. Decoding is lossy, so one line of invalid UTF-8 cannot
-/// take down the stream. A trailing `\r` is stripped.
-val lines: fn(stream: Stream<'a>) -> Result<string, `IOError(string)>;
+/// Reads re-arm themselves, so either method is the whole "follow a
+/// stream" idiom in one call. Both stop at the end of the stream. A
+/// read error is returned, which also stops it — a stream that has
+/// failed once will not recover, and re-arming into the same error
+/// would spin. The error is a VALUE, like every other operation in
+/// this module: the caller decides whether to propagate it with `?`,
+/// log and drop it with `$`, or match on it.
+trait Lines {
+    /// One event per complete line, with the newline stripped. A chunk
+    /// carrying several lines produces several events, and a chunk
+    /// that ends mid-line holds the remainder until the rest arrives,
+    /// so a line is never split across two events.
+    val lines: fn(self) -> Result<string, `IOError(string)>;
 
-/// As [lines], but each event carries every line the read made
-/// available, instead of one line per event.
+    /// As [Lines::lines], but each event carries every line the read
+    /// made available, instead of one line per event.
+    ///
+    /// This is the cheaper form and the one to reach for when the
+    /// consumer works in batches anyway — a busy stream delivers one
+    /// event per read rather than one per line. Framing is identical.
+    val lines_batched: fn(self) -> Result<Array<string>, `IOError(string)>;
+};
+
+/// A sink for bytes.
 ///
-/// This is the cheaper form and the one to reach for when the consumer
-/// works in batches anyway — a busy stream delivers one event per read
-/// rather than one per line. Framing is identical: a line is never
-/// split across two events, and a partial trailing line is held until
-/// the rest arrives.
-val lines_batched: fn(stream: Stream<'a>) -> Result<Array<string>, `IOError(string)>;
+/// `write` and `flush` are the required methods; `write_exact` loops
+/// over `write` and the system streams override it with a single call.
+trait Write {
+    /// Write bytes to the stream. Returns the number of bytes written,
+    /// which may be less than the full length of data.
+    val write: fn(self, data: bytes) -> Result<u64, `IOError(string)>;
 
-/// Write bytes to the stream. Returns the number of bytes written,
-/// which may be less than the full length of data.
-val write: fn(stream: Stream<'a>, data: bytes) -> Result<u64, `IOError(string)>;
+    /// Write all the bytes, looping until complete.
+    val write_exact: fn(self, data: bytes) -> Result<null, `IOError(string)> = |s, data| {
+        let rest: bytes = data;
+        let written = write(s, rest);
+        select written {
+            error as _ => filter_err(written),
+            u64 as n => select n >= buffer::len(rest) {
+                true => null,
+                false => { rest <- n ~ rest[n..]$; never() }
+            }
+        }
+    };
 
-/// Write all bytes to the stream, looping until complete.
-val write_exact: fn(stream: Stream<'a>, data: bytes) -> Result<null, `IOError(string)>;
+    /// Flush any buffered writes.
+    val flush: fn(self) -> Result<null, `IOError(string)>;
+};
 
-/// Flush any buffered writes.
-val flush: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
+/// A handle that holds an operating system resource until it is
+/// released.
+trait Close {
+    /// Close the stream, releasing the underlying resource. For
+    /// writable streams pending data is flushed and end-of-stream is
+    /// signaled — a piped child stdin delivers EOF, so a
+    /// read-until-EOF child can run to completion. Closing an
+    /// already-closed stream is a no-op; subsequent operations on a
+    /// closed stream return an error.
+    val close: fn(self) -> Result<null, `IOError(string)>;
+};
 
-/// Close the stream, releasing the underlying resource. For writable
-/// streams pending data is flushed and end-of-stream is signaled — a
-/// piped child stdin delivers EOF, so a read-until-EOF child can run
-/// to completion. Closing an already-closed stream is a no-op;
-/// subsequent operations on a closed stream return an error.
-val close: fn(stream: Stream<'a>) -> Result<null, `IOError(string)>;
+impl Read for Stdio;
+impl Lines for Stdio;
+impl Write for Stdio;
+impl Close for Stdio;
 
 /// Return a handle to standard input.
-val stdin: fn(trigger: Any) -> Stream<`Stdio>;
+val stdin: fn(trigger: Any) -> Stdio;
 
 /// Return a handle to standard output.
-val stdout: fn(trigger: Any) -> Stream<`Stdio>;
+val stdout: fn(trigger: Any) -> Stdio;
 
 /// Return a handle to standard error.
-val stderr: fn(trigger: Any) -> Stream<`Stdio>;
+val stderr: fn(trigger: Any) -> Stdio;

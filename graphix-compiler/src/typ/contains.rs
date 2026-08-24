@@ -118,7 +118,16 @@ impl crate::typ::TVar {
         let mut witness = None;
         let addr = self.cell_addr();
         let mut all_self_referential = true;
+        let mut has_trait = false;
         'cand: for c in cons.iter() {
+            // A trait conjunct is a predicate, not a type: it can't be
+            // materialized as the cell's binding. A cell bounded by
+            // traits alone stays open (a caller binds it, or it is
+            // unused).
+            if c.is_trait_ref(env) {
+                has_trait = true;
+                continue;
+            }
             // The occurs check every BIND site has, which settle was
             // missing: a conjunct can reach THIS cell (name-aliased
             // fn-signature cells merge when a polymorphic builtin is
@@ -145,7 +154,7 @@ impl crate::typ::TVar {
         // may still refine it, and an unrefined cell terminal-settles
         // to ⊥ (fusion refuses unbound cells; the node-walk is
         // type-tolerant).
-        if witness.is_none() && all_self_referential {
+        if witness.is_none() && (all_self_referential || has_trait) {
             return Ok(());
         }
         match witness {
@@ -362,11 +371,10 @@ impl FnType {
     }
 }
 
-/// A non-containment report that formats LAZILY (on Display):
-/// `check_instance_type` PROBES these errors — inspect for
-/// [`super::AbstractOpaque`], resolve, retry — and eagerly rendering a
-/// widget-scale type into a probe message materialized tree-scale
-/// strings per instance arg (2026-07-13). Carries the types as cheap
+/// A non-containment report that formats LAZILY (on Display): callers
+/// probe these errors, and eagerly rendering a widget-scale type into
+/// a probe message materialized tree-scale strings per instance arg
+/// (2026-07-13). Carries the types as cheap
 /// Arc clones; the message text is unchanged.
 #[derive(Debug)]
 pub struct TypeMismatch {
@@ -423,45 +431,18 @@ impl Type {
             &mut hist,
             t,
         )?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(t, hist.abstract_false)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
-    fn contains_mismatch(&self, t: &Self, abstract_false: bool) -> anyhow::Error {
-        // An opaque-classified failure where either compared type
-        // carries an open, unconstrained, `cycle_refused` cell is NOT
-        // an opacity artifact — it is the infinite type the occurs
-        // check refused, surfacing at a consumer. The AbstractOpaque
-        // classification would let static resolution DISCARD this
-        // failure to dynamic dispatch, skipping the terminal settle
-        // where [`TVar::settle_or_bottom`]'s finite-type rejection
-        // lives — laundering the μ-type into whatever the first
-        // consumer bound the site's cell to (soak jul31a: a
-        // `let rec f = |n, acc| f` call, block-wrapped, passed as
-        // `list::List`; the flat form was already rejected by
-        // `settle_terminal`). Reject with the same error the settle
-        // path issues.
-        if abstract_false
-            && (type_has_refused_open_cell(self) || type_has_refused_open_cell(t))
-        {
+    fn contains_mismatch(&self, t: &Self) -> anyhow::Error {
+        // A failure where either compared type carries an open,
+        // unconstrained, `cycle_refused` cell is the infinite type the
+        // occurs check refused, surfacing at a consumer; report it as
+        // the settle path does.
+        if type_has_refused_open_cell(self) || type_has_refused_open_cell(t) {
             return anyhow::anyhow!("{INFINITE_TYPE_MSG}");
         }
-        let e = anyhow::Error::new(TypeMismatch {
-            expected: self.clone(),
-            actual: t.clone(),
-        });
-        // Abstract types are OPAQUE to `contains` by design — their
-        // private↔public equivalence exists only through NAME
-        // resolution inside the defining module. A failure whose walk
-        // hit a false Abstract-PAIR comparison is therefore
-        // classifiable by the call-site instance recheck (the STRICT
-        // ruling's one other legitimate swallow besides
-        // `UnresolvableRef`): the def-time check relished the private
-        // view, the recheck sees the public form, and no walk can
-        // relate them (the gui `Color` family). A failure with no such
-        // comparison is FINAL — an abstract merely mentioned elsewhere
-        // in the tree cannot flip the verdict (see
-        // `RefHist::abstract_false`).
-        if abstract_false { e.context(super::AbstractOpaque) } else { e }
+        anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
     }
 
     /// [`Self::check_contains`] with RIGID enforcement — the def
@@ -476,7 +457,7 @@ impl Type {
             &mut hist,
             t,
         )?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(t, hist.abstract_false)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
     pub(super) fn contains_int(
@@ -520,6 +501,24 @@ impl Type {
         hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
         t: &Self,
     ) -> Result<bool> {
+        // A trait in type position is a PREDICATE — "has an
+        // implementation" — never a shape (`design/traits.md` §1). It
+        // reaches here only as a cell conjunct (`'a: Read`), so the
+        // question is always whether a binding satisfies it.
+        if let Self::Ref(tr) = self
+            && let Some(tid) = env.trait_of_ref(tr)
+        {
+            return Self::trait_contains(tid, flags, env, hist, t);
+        }
+        if let Self::Ref(tr) = t
+            && let Some(tid) = env.trait_of_ref(tr)
+        {
+            return Ok(match self {
+                Self::Any => true,
+                Self::Ref(tr0) => env.trait_of_ref(tr0) == Some(tid),
+                _ => false,
+            });
+        }
         match (self, t) {
             // cells_agree: name equality no longer implies same
             // meaning — two filled cells can hold different defs
@@ -632,10 +631,6 @@ impl Type {
                 Self::Abstract { id: id1, params: p1 },
             ) => {
                 if id0 != id1 {
-                    // Two ids can denote one abstract across views —
-                    // opacity, not a verdict (same-id param mismatches
-                    // below are structural and stay final).
-                    hist.abstract_false = true;
                     return Ok(false);
                 }
                 Ok(p0.len() == p1.len()
@@ -1134,12 +1129,7 @@ impl Type {
                 }
                 Ok(r)
             }
-            (Self::Abstract { .. }, _) | (_, Self::Abstract { .. }) => {
-                // Opaque against everything else — the private↔public
-                // view seam (`Color` vs its concrete variant set).
-                hist.abstract_false = true;
-                Ok(false)
-            }
+            (Self::Abstract { .. }, _) | (_, Self::Abstract { .. }) => Ok(false),
             (_, Self::Any)
             | (_, Self::TVar(_))
             | (Self::TVar(_), _)
@@ -1184,6 +1174,73 @@ impl Type {
             | (Self::Map { .. }, Self::Tuple(_))
             | (Self::Map { .. }, Self::Error(_)) => Ok(false),
         }
+    }
+
+    /// Does `t` implement the trait `tid`? ⊥ implements everything
+    /// (it fits into every type); `Any` nothing; a union iff every
+    /// member does; an open cell iff it could still become an
+    /// implementor — for a RIGID cell that means the trait is among
+    /// its own conjuncts (the def-time rule: arbitrary `'a` satisfies
+    /// only what it declares), for an inference cell always (the
+    /// tvar merge carries the conjunct along); a typedef by its
+    /// expansion; anything structural by the impl table.
+    fn trait_contains(
+        tid: crate::typ::TraitId,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        t: &Self,
+    ) -> Result<bool> {
+        // the core traits have a structural default for every type
+        if crate::node::coretraits::CoreTrait::of_id(tid).is_some() {
+            return Ok(true);
+        }
+        match t {
+            Self::Bottom => Ok(true),
+            Self::Any => Ok(false),
+            Self::TVar(tv) => {
+                let bound = tv.read().typ.read().typ.clone();
+                if let Some(b) = bound {
+                    return Self::trait_contains(tid, flags, env, hist, &b);
+                }
+                if flags.contains(ContainsFlags::RigidCheck) && tv.is_rigid() {
+                    let cons = tv.read().typ.read().constraints.clone();
+                    return Ok(cons.iter().any(
+                        |c| matches!(c, Self::Ref(r) if env.trait_of_ref(r) == Some(tid)),
+                    ));
+                }
+                Ok(true)
+            }
+            Self::Set(ts) => {
+                for m in ts.iter() {
+                    if !Self::trait_contains(tid, flags, env, hist, m)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            Self::Primitive(p) if p.len() > 1 => {
+                for m in p.iter() {
+                    if env.find_impl(tid, &Self::Primitive(m.into()))?.is_none() {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            Self::Ref(tr) => match env.trait_of_ref(tr) {
+                Some(o) => Ok(o == tid),
+                None => {
+                    let e = t.lookup_ref(env)?;
+                    Self::trait_contains(tid, flags, env, hist, &e)
+                }
+            },
+            t => Ok(env.find_impl(tid, t)?.is_some()),
+        }
+    }
+
+    /// Is this a reference to a trait (in `env`)?
+    pub fn is_trait_ref(&self, env: &Env) -> bool {
+        matches!(self, Self::Ref(tr) if env.trait_of_ref(tr).is_some())
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {

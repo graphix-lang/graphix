@@ -1,8 +1,7 @@
-type Proc;
 let stdio = |
-  #stdin: Stdio = `Inherit,
-  #stdout: Stdio = `Inherit,
-  #stderr: Stdio = `Inherit
+  #stdin: Redirect = `Inherit,
+  #stdout: Redirect = `Inherit,
+  #stderr: Redirect = `Inherit
 | -> StdioConfig { stdin, stdout, stderr };
 
 let options = |
@@ -26,4 +25,22 @@ let options = |
 let spawn = |options: SpawnOptions| -> Result<Child, `ProcessError(string)> 'sys_process_spawn;
 let wait = |proc: Proc| -> Result<ExitStatus, `ProcessError(string)> 'sys_process_wait;
 let pid = |proc: Proc| -> i64 'sys_process_pid;
-let kill = |#grace: duration = duration:0.s, proc: Proc| -> null 'sys_process_kill
+let kill = |#grace: duration = duration:0.s, proc: Proc| -> null 'sys_process_kill;
+
+impl Read for Pipe {
+    let read = |s, n| 'sys_io_read;
+    let read_exact = |s, n| 'sys_io_read_exact
+};
+
+impl Lines for Pipe {
+    let lines = |s| 'sys_io_lines;
+    let lines_batched = |s| 'sys_io_lines_batched
+};
+
+impl Write for Pipe {
+    let write = |s, data| 'sys_io_write;
+    let write_exact = |s, data| 'sys_io_write_exact;
+    let flush = |s| 'sys_io_flush
+};
+
+impl Close for Pipe { let close = |s| 'sys_io_close }

@@ -1,6 +1,6 @@
-use super::Expr;
+use super::{Expr, ModPath};
 use crate::{env::Env, typ::Type};
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
@@ -37,6 +37,13 @@ pub enum StructurePattern {
         tag: ArcStr,
         binds: Arc<[StructurePattern]>,
     },
+    /// `T(p)` — destructure a value of the abstract type at `name`
+    /// into its payload (`design/nominal_abstract_types.md`)
+    Abstract {
+        all: Option<ArcStr>,
+        name: ModPath,
+        bind: Arc<StructurePattern>,
+    },
     Struct {
         exhaustive: bool,
         all: Option<ArcStr>,
@@ -55,7 +62,8 @@ impl StructurePattern {
             | Self::SliceSuffix { .. }
             | Self::Tuple { .. }
             | Self::Struct { .. }
-            | Self::Variant { .. } => None,
+            | Self::Variant { .. }
+            | Self::Abstract { .. } => None,
         }
     }
 
@@ -113,6 +121,12 @@ impl StructurePattern {
                     t.with_names(f)
                 }
             }
+            Self::Abstract { all, name: _, bind } => {
+                if let Some(n) = all {
+                    f(n)
+                }
+                bind.with_names(f)
+            }
             Self::Struct { exhaustive: _, all, binds } => {
                 if let Some(n) = all {
                     f(n)
@@ -133,11 +147,11 @@ impl StructurePattern {
         names.len() == len
     }
 
-    pub fn infer_type_predicate(&self, env: &Env) -> Result<Type> {
-        crate::stack::ensure_sufficient(|| self.infer_type_predicate_inner(env))
+    pub fn infer_type_predicate(&self, env: &Env, scope: &ModPath) -> Result<Type> {
+        crate::stack::ensure_sufficient(|| self.infer_type_predicate_inner(env, scope))
     }
 
-    fn infer_type_predicate_inner(&self, env: &Env) -> Result<Type> {
+    fn infer_type_predicate_inner(&self, env: &Env, scope: &ModPath) -> Result<Type> {
         match self {
             // `Any` is load-bearing here: a catch-all `_` arm's
             // predicate must match EVERYTHING for exhaustiveness,
@@ -153,23 +167,33 @@ impl StructurePattern {
             Self::Tuple { all: _, binds } => {
                 let a = binds
                     .iter()
-                    .map(|p| p.infer_type_predicate(env))
+                    .map(|p| p.infer_type_predicate(env, scope))
                     .collect::<Result<SmallVec<[_; 8]>>>()?;
                 Ok(Type::Tuple(Arc::from_iter(a)))
             }
             Self::Variant { all: _, tag, binds } => {
                 let a = binds
                     .iter()
-                    .map(|p| p.infer_type_predicate(env))
+                    .map(|p| p.infer_type_predicate(env, scope))
                     .collect::<Result<SmallVec<[_; 8]>>>()?;
                 Ok(Type::Variant(tag.clone(), Arc::from_iter(a)))
+            }
+            Self::Abstract { all: _, name, bind: _ } => {
+                let td = env
+                    .lookup_typedef(scope, name)?
+                    .ok_or_else(|| anyhow!("unknown type {name}"))?;
+                let Type::Abstract { id, params } = &td.typ else {
+                    bail!("{name} is not an abstract type, so it has no constructor")
+                };
+                let params = Arc::from_iter(params.iter().map(|_| Type::empty_tvar()));
+                Ok(Type::Abstract { id: *id, params })
             }
             Self::Slice { all: _, binds }
             | Self::SlicePrefix { all: _, prefix: binds, tail: _ }
             | Self::SliceSuffix { all: _, head: _, suffix: binds } => {
                 let t =
                     binds.iter().fold(Ok::<_, anyhow::Error>(Type::Bottom), |t, p| {
-                        Ok(t?.union(env, &p.infer_type_predicate(env)?)?)
+                        Ok(t?.union(env, &p.infer_type_predicate(env, scope)?)?)
                     })?;
                 let t = match t {
                     Type::Bottom => Type::empty_tvar(),
@@ -180,7 +204,7 @@ impl StructurePattern {
             Self::Struct { all: _, exhaustive: _, binds } => {
                 let mut typs = binds
                     .iter()
-                    .map(|(n, p)| Ok((n.clone(), p.infer_type_predicate(env)?)))
+                    .map(|(n, p)| Ok((n.clone(), p.infer_type_predicate(env, scope)?)))
                     .collect::<Result<SmallVec<[(ArcStr, Type); 8]>>>()?;
                 typs.sort_by_key(|(n, _)| n.clone());
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
@@ -357,6 +381,7 @@ impl StructurePattern {
                 let (changed, out) = complete_elems!(binds, pts, sts);
                 Ok(changed.then(|| Type::Tuple(Arc::from_iter(out.into_iter()))))
             }
+            Self::Abstract { .. } => Ok(None),
             Self::Variant { all: _, tag, binds } => {
                 let pts = match ptype {
                     Type::Variant(_, pts) if pts.len() == binds.len() => pts,
@@ -473,6 +498,12 @@ impl fmt::Display for StructurePattern {
                 write!(f, "`{tag}(")?;
                 with_sep!(binds);
                 write!(f, ")")
+            }
+            StructurePattern::Abstract { all, name, bind } => {
+                if let Some(all) = all {
+                    write!(f, "{all}@")?
+                }
+                write!(f, "{name}({bind})")
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
                 if let Some(all) = all {

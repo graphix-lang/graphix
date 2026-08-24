@@ -2,7 +2,7 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags,
-    typ::{AbstractId, AndAc, RefHist, Type, TypeRef},
+    typ::{AndAc, RefHist, Type, TypeRef},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -154,18 +154,12 @@ impl Type {
         self.could_match_int(env, &mut RefHist::new(LPooled::take()), t)
     }
 
-    pub fn sig_matches(
-        &self,
-        env: &Env,
-        impl_type: &Self,
-        adts: &IntMap<AbstractId, Type>,
-    ) -> Result<()> {
+    pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
         self.sig_matches_int(
             env,
             impl_type,
             &mut LPooled::take(),
             &mut RefHist::new(LPooled::take()),
-            adts,
         )
     }
 
@@ -175,7 +169,6 @@ impl Type {
         impl_type: &Self,
         tvar_map: &mut IntMap<usize, Type>,
         hist: &mut RefHist<AHashSet<(Option<usize>, Option<usize>)>>,
-        adts: &IntMap<AbstractId, Type>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
             return Ok(());
@@ -189,7 +182,7 @@ impl Type {
                 Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
             ) if s0 == s1 && n0 == n1 && p0.len() == p1.len() => {
                 for (t0, t1) in p0.iter().zip(p1.iter()) {
-                    t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
@@ -203,34 +196,34 @@ impl Type {
                     Ok(())
                 } else {
                     hist.insert((t0_id, t1_id));
-                    let r = t0.sig_matches_int(env, &t1, tvar_map, hist, adts);
+                    let r = t0.sig_matches_int(env, &t1, tvar_map, hist);
                     hist.remove(&(t0_id, t1_id));
                     r
                 }
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
-                f0.sig_matches_int(env, f1, tvar_map, hist, adts)?;
+                f0.sig_matches_int(env, f1, tvar_map, hist)?;
                 f0.lambda_ids.link(&f1.lambda_ids);
                 Ok(())
             }
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
-                    t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
             (Self::Error(e0), Self::Error(e1)) => {
-                e0.sig_matches_int(env, e1, tvar_map, hist, adts)
+                e0.sig_matches_int(env, e1, tvar_map, hist)
             }
             (Self::Array(a0), Self::Array(a1)) => {
-                a0.sig_matches_int(env, a1, tvar_map, hist, adts)
+                a0.sig_matches_int(env, a1, tvar_map, hist)
             }
             (Self::ByRef(b0), Self::ByRef(b1)) => {
-                b0.sig_matches_int(env, b1, tvar_map, hist, adts)
+                b0.sig_matches_int(env, b1, tvar_map, hist)
             }
             (Self::Tuple(t0), Self::Tuple(t1)) if t0.len() == t1.len() => {
                 for (t0, t1) in t0.iter().zip(t1.iter()) {
-                    t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
@@ -241,7 +234,7 @@ impl Type {
                             bail!("struct field name mismatch: {n0} vs {n1}")
                         })?
                     }
-                    t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
@@ -249,26 +242,23 @@ impl Type {
                 if tag0 == tag1 && t0.len() == t1.len() =>
             {
                 for (t0, t1) in t0.iter().zip(t1.iter()) {
-                    t0.sig_matches_int(env, t1, tvar_map, hist, adts)?;
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
             (Self::Map { key: k0, value: v0 }, Self::Map { key: k1, value: v1 }) => {
-                k0.sig_matches_int(env, k1, tvar_map, hist, adts)?;
-                v0.sig_matches_int(env, v1, tvar_map, hist, adts)
+                k0.sig_matches_int(env, k1, tvar_map, hist)?;
+                v0.sig_matches_int(env, v1, tvar_map, hist)
             }
-            (Self::Abstract { .. }, Self::Abstract { .. }) => Ok(()),
-            (Self::Abstract { id, params: _ }, t0) => match adts.get(id) {
-                None => Ok(()), // it's in another module
-                Some(t1) => {
-                    if t0 != t1 {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            bail!("abstract type mismatch {t0} != {t1}")
-                        })?
-                    }
-                    Ok(())
+            (
+                Self::Abstract { id: id0, params: p0 },
+                Self::Abstract { id: id1, params: p1 },
+            ) if id0 == id1 && p0.len() == p1.len() => {
+                for (t0, t1) in p0.iter().zip(p1.iter()) {
+                    t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
-            },
+                Ok(())
+            }
             (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(
@@ -290,7 +280,7 @@ impl Type {
                 // (lock discipline).
                 let bound = impl_tv.read().typ.read().typ.clone();
                 if let Some(b) = bound {
-                    return sig_type.sig_matches_int(env, &b, tvar_map, hist, adts);
+                    return sig_type.sig_matches_int(env, &b, tvar_map, hist);
                 }
                 let impl_tv_addr = impl_tv.inner_addr();
                 match tvar_map.get(&impl_tv_addr) {

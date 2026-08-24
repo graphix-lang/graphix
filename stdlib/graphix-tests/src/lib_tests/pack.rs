@@ -88,14 +88,16 @@ run!(pack_bytes, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(pack_stream_tcp, r#"{
+    use sys::io::{Read, Write};
+    use sys::tcp::Socket;
     type Msg = {age: i64, name: string};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
     let addr = sys::tcp::listener_addr(listener)?;
     let client = sys::tcp::connect(addr)?;
     let server = sys::tcp::accept(listener, client)?;
-    pack::write_stream(client, {name: "alice", age: 30})?;
-    sys::tcp::shutdown(client)?;
-    let msg: Msg = pack::read(server)?;
+    Write::write_exact(client, pack::write_bytes({name: "alice", age: 30})?)?;
+    Socket::shutdown(client)?;
+    let msg: Msg = pack::read(Read::read_all(server)?)?;
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
@@ -105,7 +107,7 @@ run!(pack_stream_tcp, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(pack_invalid, r#"{
-    let r: Result<i64, [`PackErr(string), `IOErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array([u8:255, u8:255, u8:255]));
+    let r: Result<i64, [`PackErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array([u8:255, u8:255, u8:255]));
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))

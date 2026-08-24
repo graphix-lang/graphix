@@ -15,23 +15,8 @@ use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
     extract_cast_type,
 };
-use graphix_package_sys::{StreamKind, get_stream};
 use netidx_core::pack::Pack;
 use netidx_value::{PBytes, Value};
-use poolshark::local::LPooled;
-use std::sync::Arc;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
-};
-
-// ── ReadInput ────────────────────────────────────────────────
-
-#[derive(Debug)]
-enum ReadInput {
-    Bytes(Bytes),
-    Stream(Arc<Mutex<Option<StreamKind>>>),
-}
 
 // ── PackRead (async) ─────────────────────────────────────────
 
@@ -41,7 +26,7 @@ struct PackReadEv {
 }
 
 impl EvalCachedAsync for PackReadEv {
-    type Args = ReadInput;
+    type Args = Bytes;
 
     const NAME: &str = "pack_read";
 
@@ -89,36 +74,14 @@ impl EvalCachedAsync for PackReadEv {
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let v = cached.0.first()?.as_ref()?;
-        match v {
-            Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
-            Value::Abstract(_) => Some(ReadInput::Stream(get_stream(cached, 0)?)),
-            _ => None,
-        }
+        cached.get::<Bytes>(0)
     }
 
-    fn eval(input: Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval(b: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            match input {
-                ReadInput::Bytes(b) => match Value::decode(&mut b.as_ref()) {
-                    Ok(v) => v,
-                    Err(e) => errf!("PackErr", "{e}"),
-                },
-                ReadInput::Stream(stream) => {
-                    let mut guard = stream.lock().await;
-                    let s = match guard.as_mut() {
-                        Some(s) => s,
-                        None => return errf!("IOErr", "stream unavailable"),
-                    };
-                    let mut buf: LPooled<Vec<u8>> = LPooled::take();
-                    if let Err(e) = s.read_to_end(&mut buf).await {
-                        return errf!("IOErr", "read failed: {e}");
-                    }
-                    match Value::decode(&mut buf.as_slice()) {
-                        Ok(v) => v,
-                        Err(e) => errf!("PackErr", "{e}"),
-                    }
-                }
+            match Value::decode(&mut b.as_ref()) {
+                Ok(v) => v,
+                Err(e) => errf!("PackErr", "{e}"),
             }
         }
     }
@@ -150,48 +113,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
 
 type PackWriteBytes = CachedArgs<PackWriteBytesEv>;
 
-// ── PackWriteStream (async) ──────────────────────────────────
-
-#[derive(Debug, Default)]
-struct PackWriteStreamEv;
-
-impl EvalCachedAsync for PackWriteStreamEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, Vec<u8>);
-
-    const NAME: &str = "pack_write_stream";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let stream = get_stream(cached, 0)?;
-        let v = cached.0.get(1)?.as_ref()?;
-        let len = v.encoded_len();
-        let mut buf = Vec::with_capacity(len);
-        v.encode(&mut buf).ok()?;
-        Some((stream, buf))
-    }
-
-    fn eval((stream, buf): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let mut guard = stream.lock().await;
-            let s = match guard.as_mut() {
-                Some(s) => s,
-                None => return errf!("IOErr", "stream unavailable"),
-            };
-            match s.write_all(&buf).await {
-                Ok(()) => Value::Null,
-                Err(e) => errf!("IOErr", "write failed: {e}"),
-            }
-        }
-    }
-}
-
-type PackWriteStream = CachedArgsAsync<PackWriteStreamEv>;
-
 // ── Package registration ─────────────────────────────────────
 
 graphix_derive::defpackage! {
     builtins => [
         PackRead,
         PackWriteBytes,
-        PackWriteStream,
     ],
 }

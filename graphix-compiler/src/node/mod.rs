@@ -2,7 +2,7 @@ use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
     env::{Env, ImportEntry},
-    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
+    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath, TypeDefBody},
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_connect_node,
@@ -28,6 +28,7 @@ pub(crate) mod bind;
 pub mod callsite;
 pub mod collection;
 pub(crate) mod compiler;
+pub mod coretraits;
 pub(crate) mod data;
 pub(crate) mod error;
 pub mod genn;
@@ -37,6 +38,7 @@ pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
 pub(crate) mod select;
+pub mod traits;
 
 /// A variable read's provenance under dense delivery — see [`read_var`].
 pub(crate) enum VarRead<'a> {
@@ -629,15 +631,15 @@ impl TypeDef {
         scope: &Scope,
         name: &ArcStr,
         params: &Arc<[(TVar, Option<Type>)]>,
-        typ: &Type,
+        body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
-        let typ = typ.scope_refs(&scope.lexical);
         ctx.env
             .deftype(
                 &scope.lexical,
                 name,
                 params.clone(),
-                typ,
+                body,
+                false,
                 None,
                 spec.pos,
                 spec.ori.clone(),
@@ -1099,43 +1101,49 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        for c in self.args.iter_mut() {
-            let tv = c.update(ctx, event);
-            let t = tv.tag();
-            trig |= t.triggers();
-            fired |= t.is_fired();
-            if t.is_bottom() {
-                bottom = true
-            } else if !bottom {
-                // gathered by clone within the iteration — the same
-                // clone the old cache fill paid per delivery
-                vals.push(tv.value_cloned())
+        // rendered under the value-hook loan: a part holding an
+        // abstract with a core `Display` implementation prints through
+        // it at the seam (`coretraits::with_value_hooks`)
+        let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
+        coretraits::with_value_hooks(ctx, event, |ctx, event| {
+            let mut trig = false;
+            let mut fired = false;
+            let mut bottom = false;
+            let mut vals: LPooled<Vec<Value>> = LPooled::take();
+            for c in args.iter_mut() {
+                let tv = c.update(ctx, event);
+                let t = tv.tag();
+                trig |= t.triggers();
+                fired |= t.is_fired();
+                if t.is_bottom() {
+                    bottom = true
+                } else if !bottom {
+                    // gathered by clone within the iteration — the same
+                    // clone the old cache fill paid per delivery
+                    vals.push(tv.value_cloned())
+                }
             }
-        }
-        if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
-            return self.resident.ride();
-        }
-        if bottom {
-            return if trig {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
-        }
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let mut buf: LPooled<String> = LPooled::take();
-        for (typ, v) in self.typs.iter().zip(vals.iter()) {
-            match v {
-                Value::String(s) => write!(buf, "{s}"),
-                v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
+            if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                return resident.ride();
             }
-            .unwrap()
-        }
-        self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
+            if bottom {
+                return if trig {
+                    resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                } else {
+                    resident.ride()
+                };
+            }
+            let tag = if fired { Tag::FIRED } else { Tag::STALE };
+            let mut buf: LPooled<String> = LPooled::take();
+            for (typ, v) in typs.iter().zip(vals.iter()) {
+                match v {
+                    Value::String(s) => write!(buf, "{s}"),
+                    v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
+                }
+                .unwrap()
+            }
+            resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
+        })
     }
 
     fn spec(&self) -> &Expr {
@@ -1173,17 +1181,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck0(ctx))?;
-            self.typs[i] = a.typ().with_deref(|t| match t {
-                None => Type::Any,
-                Some(t) => t.clone(),
-            });
+            self.typs[i] = part_type(a.typ());
         }
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for a in &mut self.args {
+        for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck1(ctx))?;
+            // a part whose cell was still open at tc0 (a rec def's
+            // return) is bound by now
+            self.typs[i] = part_type(a.typ());
         }
         Ok(())
     }
@@ -1195,6 +1203,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_string_interpolate_node(cx, &self.args)
     }
+}
+
+/// A part's type for the typed printer: dereferenced at the top, `Any`
+/// for an open cell.
+fn part_type(t: &Type) -> Type {
+    t.with_deref(|t| match t {
+        None => Type::Any,
+        Some(t) => t.clone(),
+    })
 }
 
 #[derive(Debug)]

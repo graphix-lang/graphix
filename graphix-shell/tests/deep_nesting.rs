@@ -13,6 +13,12 @@
 //! child lets the failure name the shape that caused it. `DEPTH` is far
 //! past the parse limit — every case here should come back as a clean
 //! error, and the point of the test is that it comes back at all.
+//!
+//! Behind the `slow-tests` feature (it costs ~80s): the guards it covers
+//! only move when a new recursion is added, so it runs at the release
+//! gate rather than every session. The child invocation below passes
+//! `--include-ignored` — without it a child would SKIP the test and
+//! exit 0, which this test reads as "the shape survived".
 
 use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
@@ -163,6 +169,7 @@ fn run_child(shape: &str, depth: usize) {
 }
 
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn deep_nesting_does_not_overflow() {
     if let Ok(shape) = env::var(SHAPE_VAR) {
         let depth = env::var(DEPTH_VAR).expect("depth").parse().expect("depth");
@@ -175,7 +182,12 @@ fn deep_nesting_does_not_overflow() {
     const CONCURRENCY: usize = 8;
     let spawn = |shape: &str, depth: usize| {
         Command::new(&exe)
-            .args(["deep_nesting_does_not_overflow", "--exact", "--nocapture"])
+            .args([
+                "deep_nesting_does_not_overflow",
+                "--exact",
+                "--nocapture",
+                "--include-ignored",
+            ])
             .env(SHAPE_VAR, shape)
             .env(DEPTH_VAR, depth.to_string())
             .stdout(Stdio::null())

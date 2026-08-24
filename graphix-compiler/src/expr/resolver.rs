@@ -1,5 +1,6 @@
 use crate::{
     PrintFlag,
+    expr::TraitExpr,
     expr::{
         ApplyExpr, BindExpr, CatchExpr, CouldNotResolve, Expr, ExprId, ExprKind,
         LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem,
@@ -335,6 +336,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     enum ItemKind<'a> {
         Module(&'a ArcStr),
         TypeDef(&'a TypeDefExpr),
+        Trait(&'a Arc<TraitExpr>),
         Use(bool, &'a Arc<[UseItem]>),
     }
     impl<'a> PartialEq for Item<'a> {
@@ -342,6 +344,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             match (&self.kind, &other.kind) {
                 (ItemKind::Module(a), ItemKind::Module(b)) => a == b,
                 (ItemKind::TypeDef(a), ItemKind::TypeDef(b)) => a.name == b.name,
+                (ItemKind::Trait(a), ItemKind::Trait(b)) => a.name == b.name,
                 (ItemKind::Use(ra, a), ItemKind::Use(rb, b)) => ra == rb && a == b,
                 (_, _) => false,
             }
@@ -359,6 +362,10 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     1u8.hash(state);
                     td.name.hash(state);
                 }
+                ItemKind::Trait(t) => {
+                    3u8.hash(state);
+                    t.name.hash(state);
+                }
                 ItemKind::Use(r, m) => {
                     2u8.hash(state);
                     r.hash(state);
@@ -375,6 +382,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     value: ModuleKind::Unresolved { from_interface: true },
                 },
                 ItemKind::TypeDef(td) => ExprKind::TypeDef(td.clone()),
+                ItemKind::Trait(t) => ExprKind::Trait(Arc::clone(t)),
                 ItemKind::Use(reexport, m) => {
                     ExprKind::Use { reexport, names: Arc::clone(m) }
                 }
@@ -386,6 +394,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
     let mut after_bind: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
     let mut after_td: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_trait: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
     let mut after_mod: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
     let mut after_use: LPooled<AHashMap<&UseItem, Item>> = LPooled::take();
     let mut first: Option<Item> = None;
@@ -405,6 +414,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                         SigKind::Bind(v) => after_bind.insert(&v.name, name),
                         SigKind::Module(m) => after_mod.insert(m, name),
                         SigKind::TypeDef(td) => after_td.insert(&td.name, name),
+                        SigKind::Trait(t) => after_trait.insert(&t.name, name),
+                        SigKind::Impl(_) => None,
                         SigKind::Use { names: n, .. } => {
                             n.iter().map(|p| after_use.insert(p, name)).last().flatten()
                         }
@@ -417,6 +428,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         match &si.kind {
             SigKind::Module(name) => push!(Module, name, si),
             SigKind::TypeDef(td) => push!(TypeDef, td, si),
+            SigKind::Trait(t) => push!(Trait, t, si),
             SigKind::Use { reexport, names } => {
                 let name = Item {
                     kind: ItemKind::Use(*reexport, names),
@@ -431,6 +443,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                             SigKind::Bind(v) => after_bind.insert(&v.name, name),
                             SigKind::Module(m) => after_mod.insert(m, name),
                             SigKind::TypeDef(td) => after_td.insert(&td.name, name),
+                            SigKind::Trait(t) => after_trait.insert(&t.name, name),
+                            SigKind::Impl(_) => None,
                             SigKind::Use { names: n, .. } => n
                                 .iter()
                                 .map(|p| after_use.insert(p, name))
@@ -440,9 +454,18 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     }
                 }
             }
-            SigKind::Bind(_) => (),
+            SigKind::Bind(_) | SigKind::Impl(_) => (),
         }
-        last = Some(si);
+        // An `impl` declaration is never spliced into the
+        // implementation — the implementation writes its own — so it
+        // can anchor nothing. The next interface-only item keeps the
+        // anchor of the last item that IS spliceable and stays in
+        // relative order; without this it fell through to the
+        // unanchored tail and was appended after the whole module
+        // body, where the declarations above it could not see it.
+        if !matches!(si.kind, SigKind::Impl(_)) {
+            last = Some(si);
+        }
     }
     for e in &*exprs {
         if let ExprKind::Module { name, .. } = &e.kind {
@@ -461,6 +484,14 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             };
             in_sig.shift_remove(&probe);
         }
+        if let ExprKind::Trait(t) = &e.kind {
+            let probe = Item {
+                kind: ItemKind::Trait(t),
+                pos: SourcePosition::default(),
+                ori: None,
+            };
+            in_sig.shift_remove(&probe);
+        }
         if let ExprKind::Use { reexport, names } = &e.kind {
             let probe = Item {
                 kind: ItemKind::Use(*reexport, names),
@@ -474,6 +505,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         drop(in_sig);
         drop(after_bind);
         drop(after_td);
+        drop(after_trait);
         drop(after_mod);
         drop(after_use);
         return exprs;
@@ -500,6 +532,14 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             },
             Some(ExprKind::TypeDef(td)) => {
                 if let Some(name) = after_td.remove(&td.name)
+                    && in_sig.shift_remove(&name)
+                {
+                    res.push(name.synth());
+                    continue;
+                }
+            }
+            Some(ExprKind::Trait(t)) => {
+                if let Some(name) = after_trait.remove(&t.name)
                     && in_sig.shift_remove(&name)
                 {
                     res.push(name.synth());
@@ -729,6 +769,8 @@ impl Expr {
             | ExprKind::Ref { .. }
             | ExprKind::StructRef { .. }
             | ExprKind::TupleRef { .. }
+            | ExprKind::Trait(_)
+            | ExprKind::Impl(_)
             | ExprKind::TypeDef { .. } => Box::pin(async move { Ok(self.clone()) }),
             ExprKind::Module {
                 value: ModuleKind::Unresolved { from_interface },
@@ -938,6 +980,10 @@ impl Expr {
             ExprKind::Variant { tag, args } => Box::pin(async move {
                 let args = Arc::from(subexprs!(args));
                 expr!(ExprKind::Variant { tag, args })
+            }),
+            ExprKind::Construct { name, arg } => Box::pin(async move {
+                let arg = arg.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::Construct { name, arg: Arc::new(arg) })
             }),
             ExprKind::Select(SelectExpr { arg, arms }) => Box::pin(async move {
                 let arg =

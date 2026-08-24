@@ -3,7 +3,8 @@ use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, LambdaId,
     LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent, deref_typ,
-    expr::{ErrorContext, Expr, ExprId, ExprKind},
+    env::TraitMethodRef,
+    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         self,
         emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
@@ -119,73 +120,6 @@ fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
         }
         _ => (),
     }
-}
-
-/// Drive the resolved-`typecheck1` ("CallSite phase") of the lambda `id`
-/// against `resolved`. Looks the lambda up in `ctx.lambda_defs` and, if it
-/// retained a check `Apply` (`def.check`), runs that apply's `typecheck1`.
-/// This is the body of the former deferred check, called directly from
-/// `CallSite::typecheck1`.
-/// The call site's per-arg verification (`formal ⊇ arg`), with the
-/// ENTITLED abstract bridge: when the plain check trips the
-/// `AbstractOpaque` boundary and the callee resolves to a single
-/// known `LambdaDef`, retry with both sides privatized under the
-/// CALLEE DEF's scope — the def is entitled to see through its own
-/// signature's abstract types. The canonical case is a collection
-/// callback: the enclosing HOF's privatized instance signature binds
-/// the accumulator at its PRIVATE form, while a builtin's formal
-/// carries the PUBLIC abstract (`list::cons(x, acc)` inside a
-/// caller-side fold callback) — opaque-vs-private trips here, and
-/// only the def-scoped registry view can reconcile them. An
-/// unresolvable or multi-def callee keeps the plain error (no
-/// entitlement to borrow).
-fn check_site_arg<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    callee_scope: &Option<crate::expr::ModPath>,
-    formal: &Type,
-    arg: &Type,
-) -> Result<()> {
-    match formal.check_contains(&ctx.env, arg) {
-        Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
-            let Some(scope) = callee_scope else {
-                return Err(e);
-            };
-            let formal = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                formal,
-                &ctx.env,
-                scope,
-            );
-            let arg = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                arg,
-                &ctx.env,
-                scope,
-            );
-            formal.check_contains(&ctx.env, &arg)
-        }
-        r => r,
-    }
-}
-
-/// The callee definition's lexical scope, when the call target
-/// resolves to a single known `LambdaDef` — the same discovery
-/// channel `try_static_resolve` uses (`bind_to_lambda` /
-/// separately-compiled stdlib values / a direct lambda literal).
-/// `None` for dynamic targets: no entitlement to bridge.
-fn callee_def_scope<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    fnode: &Node<R, E>,
-) -> Option<crate::expr::ModPath> {
-    let fv = match fnode.view() {
-        NodeView::Ref(r) if !ctx.unstable_bindings.contains(&r.id) => {
-            ctx.bind_to_lambda.get(&r.id).cloned().or_else(|| ctx.rt.store_value(&r.id))
-        }
-        NodeView::Lambda(l) => Some(l.def_value().clone()),
-        _ => None,
-    }?;
-    let def = fv.downcast_ref::<LambdaDef<R, E>>()?;
-    Some(def.scope.lexical.clone())
 }
 
 fn finalize_lambda<R: Rt, E: UserEvent>(
@@ -334,6 +268,13 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// callee-binding site.
     pub(super) gate_tainted_args: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
+    /// A trait call over a UNION self type lowers to the select the
+    /// programmer would otherwise write — one arm per member, each a
+    /// static call to that member's implementation
+    /// (`design/traits.md` §3). Once set, this node is that select: every
+    /// `Update` method delegates to it and fusion sees a select, not a
+    /// call.
+    pub(crate) lowered: Option<Node<R, E>>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
@@ -486,6 +427,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             callee: Callee::DynamicUnbound,
             gate_tainted_args: false,
             static_target: None,
+            lowered: None,
             recursive_edge: AtomicBool::new(false),
             flags,
             top_id,
@@ -505,6 +447,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             id,
             top_id: self.top_id,
             resident: TagValue::phantom(),
+            instantiated: false,
         })
     }
 
@@ -526,12 +469,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 true
             }
         });
-    }
-
-    fn discard_static_resolution(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.clear_prepared_bind(ctx);
-        self.static_target = None;
-        self.recursive_edge.store(false, Ordering::Relaxed);
     }
 
     fn prepare_bind<F>(
@@ -755,15 +692,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        let private_site = crate::fusion::lowering::privatize_type(
-            &ctx.fusion.abstract_registry,
-            &Type::Fn(TArc::new(site_ftype.clone())),
-            &f.env,
-            &f.scope.lexical,
-        );
-        let Type::Fn(private_site) = private_site else {
-            unreachable!("privatizing a function type must produce a function type")
-        };
         // Arg count/kinds are resolution-independent — compare the raw
         // site ftype against the definition directly.
         let same_shape = site_ftype.args.len() == f.typ.args.len()
@@ -773,21 +701,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 .zip(f.typ.args.iter())
                 .all(|(site, definition)| site.kind == definition.kind);
         let instance_ftype = if same_shape {
-            private_site.as_ref().clone()
+            site_ftype.clone()
         } else {
             let definition_ftype = f.typ.reset_tvars();
             definition_ftype.alias_tvars(&mut LPooled::take());
-            let private_definition = crate::fusion::lowering::privatize_type(
-                &ctx.fusion.abstract_registry,
-                &Type::Fn(TArc::new(definition_ftype)),
-                &f.env,
-                &f.scope.lexical,
-            );
-            let Type::Fn(private_definition) = private_definition else {
-                unreachable!("privatizing a function type must produce a function type")
-            };
-            private_site.check_contains(&ctx.env, &private_definition)?;
-            private_definition.resolve_tvars()
+            site_ftype.check_contains(&ctx.env, &definition_ftype)?;
+            definition_ftype.resolve_tvars()
         };
         let apply = self.init_prepared_bind(
             ctx,
@@ -812,41 +731,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // is a consistency no-op for them; ⊥ (never) unifies without
         // binding per the open-cell rule.
         if let Some(site_ft) = self.ftype.as_ref() {
-            match site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype) {
-                Ok(()) => {}
-                // A privatized instance rtype (abstract return —
-                // `List`) fails against the site's public view; retry
-                // both sides through the callee def's scope (the
-                // check_instance_type bridge). Still-opaque after the
-                // retry: SKIP the write-back rather than propagate —
-                // an AbstractOpaque escaping here would make
-                // `try_static_resolve` discard the whole static
-                // resolution (a de-fuse; fusecheck caught
-                // list_init_max_wedge losing its region), and skipping
-                // is exactly the pre-write-back state for that site.
-                Err(e) if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() => {
-                    let site_r = crate::fusion::lowering::privatize_type(
-                        &ctx.fusion.abstract_registry,
-                        &site_ft.rtype,
-                        &f.env,
-                        &f.scope.lexical,
-                    );
-                    let inst_r = crate::fusion::lowering::privatize_type(
-                        &ctx.fusion.abstract_registry,
-                        &instance_ftype.rtype,
-                        &f.env,
-                        &f.scope.lexical,
-                    );
-                    match site_r.check_contains(&ctx.env, &inst_r) {
-                        Ok(()) => {}
-                        Err(e)
-                            if e.downcast_ref::<crate::typ::AbstractOpaque>()
-                                .is_some() => {}
-                        Err(e) => return wrap!(self.fnode, Err(e)),
-                    }
-                }
-                Err(e) => return wrap!(self.fnode, Err(e)),
-            }
+            wrap!(
+                self.fnode,
+                site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
+            )?;
         }
         Ok((apply, instance_ftype))
     }
@@ -1138,27 +1026,34 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
         };
-        let Some(fv) = target else { return Ok(()) };
+        let fv = match target {
+            Some(fv) => fv,
+            None => {
+                // a TRAIT METHOD: the dispatcher binding names no
+                // lambda; the self argument's type picks one
+                if let NodeView::Ref(r) = self.fnode.view()
+                    && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
+                {
+                    self.resolve_trait_call(ctx, tm)?;
+                }
+                return Ok(());
+            }
+        };
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
             return Ok(());
         };
-        if let Err(e) = self.resolve_static(ctx, def) {
-            if e.downcast_ref::<crate::typ::AbstractOpaque>().is_some() {
-                if crate::dbgenv::gxdbg_resolve() {
-                    eprintln!("RESOLVE-DISCARD {}: {e:#}", self.spec);
-                }
-                self.discard_static_resolution(ctx);
-                return Ok(());
-            }
-            return Err(e);
-        }
+        self.resolve_static(ctx, def)?;
         // HOF callback pre-materialization: every fn-typed positional arg
-        // whose function-valued arguments resolve to known lambdas.
+        // whose function-valued arguments resolve to known lambdas (or
+        // name a trait method, which the instance's call sites resolve
+        // by their element types).
         let ftype = match self.resolved_ftype() {
             Some(ft) => ft.clone(),
             None => return Ok(()),
         };
         let mut fn_arg_targets: smallvec::SmallVec<[(usize, Value); 4]> =
+            smallvec::SmallVec::new();
+        let mut trait_arg_targets: smallvec::SmallVec<[(usize, TraitMethodRef); 2]> =
             smallvec::SmallVec::new();
         for (i, farg) in ftype.args.iter().enumerate() {
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
@@ -1175,12 +1070,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id) {
                         fn_arg_targets.push((i, fv.clone()));
+                    } else if let Some(tm) = ctx.env.trait_methods.get(&r.id) {
+                        trait_arg_targets.push((i, *tm));
                     }
                 }
                 _ => {}
             }
         }
-        if fn_arg_targets.is_empty() {
+        if fn_arg_targets.is_empty() && trait_arg_targets.is_empty() {
             return Ok(());
         }
         let Some(apply) = self.callee.apply_mut() else {
@@ -1197,11 +1094,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // there is no cross-site contamination by construction, and
         // fusion needs no special HOF callback path.
         let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        let mut trait_param_binds: LPooled<Vec<BindId>> = LPooled::take();
         if let ApplyView::Lambda(g) = apply.view() {
             for (idx, fv) in &fn_arg_targets {
                 if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
                     ctx.bind_to_lambda.insert(id, fv.clone());
                     param_binds.push(id);
+                }
+            }
+            for (idx, tm) in &trait_arg_targets {
+                if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
+                    ctx.env.trait_methods.insert_cow(id, *tm);
+                    trait_param_binds.push(id);
                 }
             }
         }
@@ -1233,18 +1137,372 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             for id in param_binds.drain(..) {
                 ctx.bind_to_lambda.remove(&id);
             }
+            for id in trait_param_binds.drain(..) {
+                ctx.env.trait_methods.remove_cow(&id);
+            }
             res?;
         } else {
             for id in param_binds.drain(..) {
                 ctx.bind_to_lambda.remove(&id);
             }
+            for id in trait_param_binds.drain(..) {
+                ctx.env.trait_methods.remove_cow(&id);
+            }
         }
         Ok(())
     }
+
+    /// Resolve a call through a trait method's dispatcher to an
+    /// implementation by the self argument's type (`design/traits.md`
+    /// §2): the call site is re-pointed at the implementation's (or the
+    /// default's) binding and pre-bound statically when its lambda is
+    /// known. An open self type inside a definition gate is the
+    /// polymorphic case — each instance resolves for itself; open
+    /// anywhere else is the error the design demands. A union self
+    /// type dispatches through a generated select (§3).
+    fn resolve_trait_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        tm: TraitMethodRef,
+    ) -> Result<()> {
+        let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
+            bail!("trait method call through an unknown trait at {}", self.spec)
+        };
+        let m = &def.methods[tm.index];
+        let Some(ftype) = self.ftype.as_ref() else { return Ok(()) };
+        let mut self_t = match ftype.args.get(m.self_index) {
+            Some(a) => a.typ.resolve_tvars(),
+            None => bail!("{}::{} called without its self argument", def.name, m.name),
+        };
+        while let Type::Ref(tr) = &self_t
+            && ctx.env.trait_of_ref(tr).is_none()
+        {
+            self_t = self_t.lookup_ref(&ctx.env)?;
+        }
+        if self_t.has_unbound() {
+            if ctx.def_gate_depth > 0 {
+                return Ok(());
+            }
+            return Err(anyhow!(
+                "cannot resolve {}::{}: the type of its self argument ({}) is not \
+                 known at this call; annotate it",
+                def.name,
+                m.name,
+                self_t
+            )
+            .context(ErrorContext((*self.spec).clone())));
+        }
+        if let Some(core) = crate::node::coretraits::CoreTrait::of_id(def.id) {
+            return self.lower_core_call(ctx, core);
+        }
+        if let Type::Set(members) = &self_t {
+            let members = members.clone();
+            return self.lower_trait_union(ctx, &def, tm.index, &members);
+        }
+        let Some(im) = ctx.env.find_impl(def.id, &self_t)? else {
+            return Err(anyhow!("no implementation of {} for {}", def.name, self_t)
+                .context(ErrorContext((*self.spec).clone())));
+        };
+        let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default) else {
+            bail!(
+                "impl {} for {} has no method {} and the trait declares no default",
+                def.name,
+                self_t,
+                m.name
+            )
+        };
+        self.retarget(ctx, bind);
+        let fv =
+            ctx.bind_to_lambda.get(&bind).cloned().or_else(|| ctx.rt.store_value(&bind));
+        if let Some(fv) = fv
+            && let Some(ldef) = fv.downcast_ref::<LambdaDef<R, E>>()
+        {
+            self.resolve_static(ctx, ldef)?;
+        }
+        Ok(())
+    }
+
+    /// Take this call's argument NODES in the spec's argument order,
+    /// each under a synthesized name (`#a<i>`, or `self_name` for the
+    /// positional self argument at `self_pos`), for a lowering over
+    /// them. Returns `(name, node)` pairs and the call-args list
+    /// (`(label, name)`) a synthesized call spells them with.
+    fn take_operands(
+        &mut self,
+        self_pos: Option<usize>,
+        self_name: ArcStr,
+    ) -> Result<(Vec<(ArcStr, Node<R, E>)>, Vec<(Option<ArcStr>, ArcStr)>)> {
+        let ExprKind::Apply(crate::expr::ApplyExpr { args, function: _ }) =
+            &self.spec.kind
+        else {
+            bail!("call site without an apply spec: {}", self.spec)
+        };
+        let mut operands = Vec::with_capacity(args.len());
+        let mut names = Vec::with_capacity(args.len());
+        let mut positional = 0usize;
+        for (i, (label, _)) in args.iter().enumerate() {
+            let key = match label {
+                Some(l) => ArgKey::Named(l.clone()),
+                None => {
+                    let p = positional;
+                    positional += 1;
+                    ArgKey::Positional(p)
+                }
+            };
+            let is_self = label.is_none() && Some(positional - 1) == self_pos;
+            let name: ArcStr = if is_self {
+                self_name.clone()
+            } else {
+                compact_str::format_compact!("#a{i}").as_str().into()
+            };
+            let Some(node) = self.args.get_mut(&key).and_then(|a| a.node.take()) else {
+                bail!("call site argument {i} has no node: {}", self.spec)
+            };
+            operands.push((name.clone(), node));
+            names.push((label.clone(), name));
+        }
+        Ok((operands, names))
+    }
+
+    /// Install `node` as this call's lowering: the function node and
+    /// any remaining argument nodes are deleted, every `Update` method
+    /// delegates to it from now on.
+    fn install_lowered(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        node: Node<R, E>,
+    ) -> Result<()> {
+        wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
+        for arg in self.args.values_mut() {
+            if let Some(mut n) = arg.node.take() {
+                n.delete(ctx);
+            }
+        }
+        for mut n in self.arg_refs.drain(..) {
+            n.delete(ctx);
+        }
+        let mut old =
+            std::mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
+        old.delete(ctx);
+        self.lowered = Some(node);
+        Ok(())
+    }
+
+    /// A core trait's dispatcher is the operator it stands behind:
+    /// `Eq::eq(a, b)` is `a == b`, `Display::fmt(x)` is `"[x]"`, and
+    /// `Ord::cmp(a, b)` tests `<` and `>` — so the call works on every
+    /// type, and an implementation is reached exactly where the
+    /// operator would reach it (`design/traits.md` §8).
+    fn lower_core_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        core: crate::node::coretraits::CoreTrait,
+    ) -> Result<()> {
+        use crate::{
+            expr::{Pattern, SelectExpr, StructurePattern},
+            node::coretraits::CoreTrait,
+        };
+        let (operands, names) = self.take_operands(None, arcstr::literal!("#s"))?;
+        let pos = self.spec.pos;
+        let ori = self.spec.ori.clone();
+        let mk = |kind: ExprKind| Expr {
+            id: ExprId::new(),
+            ori: ori.clone(),
+            pos,
+            kind,
+            dec: None,
+        };
+        let mut positional = names
+            .iter()
+            .filter(|(l, _)| l.is_none())
+            .map(|(_, n)| mk(ExprKind::Ref { name: ModPath::from([n.clone()]) }));
+        let (Some(a), b) = (positional.next(), positional.next()) else {
+            bail!("core trait call without its self argument: {}", self.spec)
+        };
+        let (a, b) = (&a, b.as_ref());
+        let tag = |t: &'static str| {
+            mk(ExprKind::Variant { tag: ArcStr::from(t), args: TArc::from_iter([]) })
+        };
+        let e = match (core, b) {
+            (CoreTrait::Display, _) => {
+                mk(ExprKind::StringInterpolate { args: TArc::from_iter([a.clone()]) })
+            }
+            (CoreTrait::Eq, Some(b)) => {
+                mk(ExprKind::Eq { lhs: TArc::new(a.clone()), rhs: TArc::new(b.clone()) })
+            }
+            (CoreTrait::Ord, Some(b)) => {
+                let lt = mk(ExprKind::Lt {
+                    lhs: TArc::new(a.clone()),
+                    rhs: TArc::new(b.clone()),
+                });
+                let gt = mk(ExprKind::Gt {
+                    lhs: TArc::new(a.clone()),
+                    rhs: TArc::new(b.clone()),
+                });
+                let scrutinee = mk(ExprKind::Tuple { args: TArc::from_iter([lt, gt]) });
+                let arm = |l: StructurePattern, r: StructurePattern, body: Expr| {
+                    (
+                        Pattern {
+                            type_predicate: None,
+                            structure_predicate: StructurePattern::Tuple {
+                                all: None,
+                                binds: TArc::from_iter([l, r]),
+                            },
+                            guard: None,
+                        },
+                        body,
+                    )
+                };
+                let lit = |b: bool| StructurePattern::Literal(Value::Bool(b));
+                let any = || StructurePattern::Ignore;
+                mk(ExprKind::Select(SelectExpr {
+                    arg: TArc::new(scrutinee),
+                    arms: TArc::from_iter([
+                        arm(lit(true), any(), tag("Less")),
+                        arm(any(), lit(true), tag("Greater")),
+                        arm(any(), any(), tag("Equal")),
+                    ]),
+                }))
+            }
+            (CoreTrait::Eq | CoreTrait::Ord, None) => {
+                bail!("core trait call without its other argument: {}", self.spec)
+            }
+        };
+        let scope = self.scope.clone();
+        let spec = (*self.spec).clone();
+        let node = super::bind::lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands,
+            e,
+        )?;
+        self.install_lowered(ctx, node)
+    }
+
+    /// Dispatch over a union self type: the call becomes
+    ///
+    /// ```text
+    /// { let #s = <self>; let #a0 = <arg0>; ..;
+    ///   select #s { M1 as #t => <impl M1>(#t, #a0, ..), M2 as #t => .. } }
+    /// ```
+    ///
+    /// — the arguments bound once (the call's own argument NODES,
+    /// moved), then the select the programmer would have written,
+    /// with a static call in every arm. The select compiles under
+    /// this site's scope; the implementation bindings are named by id
+    /// (`#bind::N`, a form no source can spell).
+    fn lower_trait_union(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        def: &crate::env::TraitDef,
+        index: usize,
+        members: &[Type],
+    ) -> Result<()> {
+        use crate::expr::{ApplyExpr, Pattern, SelectExpr, StructurePattern};
+        let m = &def.methods[index];
+        let mut targets: LPooled<Vec<(Type, BindId)>> = LPooled::take();
+        for mem in members.iter() {
+            let Some(im) = ctx.env.find_impl(def.id, mem)? else {
+                return Err(anyhow!(
+                    "no implementation of {} for {mem}, a member of the self type {}",
+                    def.name,
+                    Type::Set(TArc::from_iter(members.iter().cloned()))
+                )
+                .context(ErrorContext((*self.spec).clone())));
+            };
+            let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default)
+            else {
+                bail!("impl {} for {mem} has no method {}", def.name, m.name)
+            };
+            targets.push((mem.clone(), bind));
+        }
+        let pos = self.spec.pos;
+        let ori = self.spec.ori.clone();
+        let mk = |kind: ExprKind| Expr {
+            id: ExprId::new(),
+            ori: ori.clone(),
+            pos,
+            kind,
+            dec: None,
+        };
+        let (operands, names) =
+            self.take_operands(Some(m.self_index), arcstr::literal!("#s"))?;
+        let call_args: LPooled<Vec<(Option<ArcStr>, Expr)>> = names
+            .iter()
+            .map(|(label, name)| {
+                let arg =
+                    if name == "#s" { arcstr::literal!("#t") } else { name.clone() };
+                (label.clone(), mk(ExprKind::Ref { name: ModPath::from([arg]) }))
+            })
+            .collect();
+        let arms = targets.drain(..).map(|(mem, bind)| {
+            let f = mk(ExprKind::Ref {
+                name: ModPath::from([
+                    arcstr::literal!("#bind"),
+                    ArcStr::from(
+                        compact_str::format_compact!("{}", bind.inner()).as_str(),
+                    ),
+                ]),
+            });
+            let call = mk(ExprKind::Apply(ApplyExpr {
+                function: TArc::new(f),
+                args: TArc::from_iter(call_args.iter().cloned()),
+            }));
+            let pat = Pattern {
+                type_predicate: Some(mem),
+                structure_predicate: StructurePattern::Bind(arcstr::literal!("#t")),
+                guard: None,
+            };
+            (pat, call)
+        });
+        let select = mk(ExprKind::Select(SelectExpr {
+            arg: TArc::new(mk(ExprKind::Ref {
+                name: ModPath::from([arcstr::literal!("#s")]),
+            })),
+            arms: TArc::from_iter(arms),
+        }));
+        let scope = self.scope.clone();
+        let spec = (*self.spec).clone();
+        let node = super::bind::lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands,
+            select,
+        )?;
+        self.install_lowered(ctx, node)
+    }
+
+    /// Re-point this call's function node at binding `bind`.
+    fn retarget(&mut self, ctx: &mut ExecCtx<R, E>, bind: BindId) {
+        let typ = ctx
+            .env
+            .by_id
+            .get(&bind)
+            .map(|b| b.typ.clone())
+            .unwrap_or_else(Type::empty_tvar);
+        let fspec = match &self.spec.kind {
+            ExprKind::Apply(a) => (*a.function).clone(),
+            _ => (*self.spec).clone(),
+        };
+        let mut old =
+            std::mem::replace(&mut self.fnode, Ref::new(bind, typ, self.top_id, fspec));
+        old.delete(ctx);
+        ctx.rt.ref_var(bind, self.top_id);
+    }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+impl<R: Rt, E: UserEvent> CallSite<R, E> {
+    fn update_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+    ) -> &TagValue {
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         // A FIRED (or tainted) arg production this cycle — the genuine
         // -call signal (a stale production is a value-channel refresh,
@@ -1602,8 +1860,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             None => self.resident.ride(),
         }
     }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        // two arms, each its own borrow: a conditional early return of
+        // the lowered node's production would hold `self` for the
+        // function's whole lifetime
+        match self.lowered.is_some() {
+            true => self.lowered.as_mut().unwrap().update(ctx, event),
+            false => self.update_call(ctx, event),
+        }
+    }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(mut n) = self.lowered.take() {
+            n.delete(ctx);
+            return;
+        }
         if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
         }
@@ -1620,6 +1894,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(n) = &mut self.lowered {
+            return n.sleep(ctx);
+        }
         if let Some(f) = self.callee.apply_mut() {
             f.sleep(ctx)
         }
@@ -1635,6 +1912,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some(n) = &mut self.lowered {
+            return n.reset_replay(ctx);
+        }
         // The published arg values (`update` inserts them into
         // the store under this site's own per-instance arg ids) are
         // replay memory: the dispatch back-fills quiet args from there
@@ -1665,7 +1945,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &self.rtype
+        match &self.lowered {
+            Some(n) => n.typ(),
+            None => &self.rtype,
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -1673,6 +1956,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if let Some(n) = &mut self.lowered {
+            return n.typecheck0(ctx);
+        }
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
@@ -1780,7 +2066,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         };
         // Typecheck positional args in order
-        let callee_scope = callee_def_scope(ctx, &self.fnode);
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
             let key = if let FnArgKind::Labeled { name, .. } = &farg.kind {
@@ -1798,9 +2083,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             };
             if let Some(arg) = self.args.get_mut(&key) {
                 if let Some(n) = arg.node.as_mut() {
+                    // a reference instantiates its (generalized)
+                    // signature in its own typecheck0 — that must
+                    // precede the pre-bind, or the pre-bind would
+                    // unify against the definition's cells
+                    if matches!(n.view(), NodeView::Ref(_)) {
+                        wrap!(n, n.typecheck0(ctx))?;
+                    }
                     farg.typ.contains(&ctx.env, n.typ())?;
                     wrap!(n, n.typecheck0(ctx))?;
-                    wrap!(n, check_site_arg(ctx, &callee_scope, &farg.typ, &n.typ()))?;
+                    wrap!(n, farg.typ.check_contains(&ctx.env, &n.typ()))?;
                 }
             }
         }
@@ -1812,9 +2104,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 match self.args.get_mut(&key) {
                     Some(arg) => {
                         if let Some(ref mut n) = arg.node {
+                            if matches!(n.view(), NodeView::Ref(_)) {
+                                wrap!(n, n.typecheck0(ctx))?;
+                            }
                             typ.contains(&ctx.env, n.typ())?;
                             wrap!(n, n.typecheck0(ctx))?;
-                            wrap!(n, check_site_arg(ctx, &callee_scope, typ, &n.typ()))?;
+                            wrap!(n, typ.check_contains(&ctx.env, &n.typ()))?;
                         }
                     }
                     None => break,
@@ -1902,6 +2197,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     /// is the former deferred check, now run with `&mut self` in a real
     /// second tree pass.
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if let Some(n) = &mut self.lowered {
+            return n.typecheck1(ctx);
+        }
         wrap!(self.fnode, self.fnode.typecheck1(ctx))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.as_mut() {
@@ -2014,6 +2312,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
+        if let Some(n) = &self.lowered {
+            return n.refs(refs);
+        }
         if let Some(fun) = self.callee.apply() {
             fun.refs(refs)
         }
@@ -2030,10 +2331,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::CallSite(self)
+        match &self.lowered {
+            Some(n) => n.view(),
+            None => NodeView::CallSite(self),
+        }
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        if let Some(n) = &mut self.lowered {
+            return n.fuse(ctx);
+        }
         // Reached only when `try_fuse` on this call site already failed
         // (the call did NOT inline). Two jobs:
         //
@@ -2064,6 +2371,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        if let Some(n) = &self.lowered {
+            return n.emit_clif(cx);
+        }
         if let Some(f) = self.callee.apply() {
             if let Some(cv) = f.emit_clif(self, cx)? {
                 return Ok(cv);

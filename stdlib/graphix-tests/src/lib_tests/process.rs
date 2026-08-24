@@ -5,6 +5,7 @@ use netidx::subscriber::Value;
 #[cfg(unix)]
 const PROCESS_STDOUT_PIPE: &str = r#"
 {
+  use sys::io::Read;
   use opt;
   let options = sys::process::options(
     #args: ["-c", "printf hello"],
@@ -14,7 +15,7 @@ const PROCESS_STDOUT_PIPE: &str = r#"
   );
   let child = sys::process::spawn(options)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let out = buffer::to_string(sys::io::read(stdout, u64:1024)?)?;
+  let out = buffer::to_string(Read::read(stdout, u64:1024)?)?;
   out
 }
 "#;
@@ -22,6 +23,7 @@ const PROCESS_STDOUT_PIPE: &str = r#"
 #[cfg(windows)]
 const PROCESS_STDOUT_PIPE: &str = r#"
 {
+  use sys::io::Read;
   use opt;
   let options = sys::process::options(
     #args: ["/C", "<nul set /p =hello"],
@@ -31,7 +33,7 @@ const PROCESS_STDOUT_PIPE: &str = r#"
   );
   let child = sys::process::spawn(options)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  buffer::to_string(sys::io::read(stdout, u64:1024)?)?
+  buffer::to_string(Read::read(stdout, u64:1024)?)?
 }
 "#;
 
@@ -42,6 +44,7 @@ run!(process_stdout_pipe, PROCESS_STDOUT_PIPE, |v: Result<&Value>| {
 #[cfg(unix)]
 const PROCESS_STDIN_PIPE: &str = r#"
 {
+  use sys::io::{Read, Write};
   use opt;
   let options = sys::process::options(
     #args: ["-c", "cat"],
@@ -51,10 +54,10 @@ const PROCESS_STDIN_PIPE: &str = r#"
   );
   let child = sys::process::spawn(options)?;
   let stdin = opt::ok_or(child.stdin, `Null("stdin"))?;
-  let wrote = sys::io::write_exact(stdin, buffer::from_string("ping"))?;
-  let flushed = sys::io::flush(wrote ~ stdin)?;
+  let wrote = Write::write_exact(stdin, buffer::from_string("ping"))?;
+  let flushed = Write::flush(wrote ~ stdin)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let out = buffer::to_string(sys::io::read(flushed ~ stdout, u64:4)?)?;
+  let out = buffer::to_string(Read::read(flushed ~ stdout, u64:4)?)?;
   sys::process::kill(out ~ child.proc);
   out
 }
@@ -143,6 +146,7 @@ run!(process_kill_during_wait, PROCESS_KILL_DURING_WAIT, |v: Result<&Value>| {
 #[cfg(unix)]
 const PROCESS_STDIN_EOF: &str = r#"
 {
+  use sys::io::{Read, Write, Close};
   use opt;
   let options = sys::process::options(
     #args: ["-c", "cat"],
@@ -152,10 +156,10 @@ const PROCESS_STDIN_EOF: &str = r#"
   );
   let child = sys::process::spawn(options)?;
   let stdin = opt::ok_or(child.stdin, `Null("stdin"))?;
-  let wrote = sys::io::write_exact(stdin, buffer::from_string("eof-test"))?;
-  let closed = sys::io::close(wrote ~ stdin)?;
+  let wrote = Write::write_exact(stdin, buffer::from_string("eof-test"))?;
+  let closed = Close::close(wrote ~ stdin)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let out = buffer::to_string(sys::io::read(closed ~ stdout, u64:1024)?)?;
+  let out = buffer::to_string(Read::read(closed ~ stdout, u64:1024)?)?;
   let status = sys::process::wait(out ~ child.proc)?;
   status.success && out == "eof-test"
 }
@@ -169,6 +173,7 @@ run!(process_stdin_eof, PROCESS_STDIN_EOF, |v: Result<&Value>| {
 #[cfg(unix)]
 const PROCESS_ENV: &str = r#"
 {
+  use sys::io::Read;
   use opt;
   let options = sys::process::options(
     #args: ["-c", "printf \"$FOO\""],
@@ -179,7 +184,7 @@ const PROCESS_ENV: &str = r#"
   );
   let child = sys::process::spawn(options)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  buffer::to_string(sys::io::read(stdout, u64:1024)?)?
+  buffer::to_string(Read::read(stdout, u64:1024)?)?
 }
 "#;
 
@@ -222,7 +227,7 @@ run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// `sys::io::lines` frames at the BYTE level, which is the reason it is
+// `Lines::lines` frames at the BYTE level, which is the reason it is
 // a builtin rather than a read loop in Graphix. This child writes a
 // line split across two reads ("del" then "ta\n"), a CRLF line, and a
 // trailing fragment with no newline: decoding each read on its own
@@ -231,6 +236,7 @@ run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
 #[cfg(unix)]
 const IO_LINES: &str = r#"
 {
+  use sys::io::Lines;
   use opt;
   let child = sys::process::spawn(sys::process::options(
     #args: ["-c", "printf 'alpha\nbeta\r\ngamma\n'; sleep 0.2; printf 'del'; sleep 0.1; printf 'ta\nlast-no-newline'"],
@@ -239,7 +245,7 @@ const IO_LINES: &str = r#"
     "/bin/sh"
   ))?;
   let out = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let line = sys::io::lines(out)?;
+  let line = Lines::lines(out)?;
   let seen = [];
   seen <- array::push(line ~ seen, line);
   // Produce ONCE, complete: the harness asserts on the first update.
@@ -273,6 +279,7 @@ run!(io_lines, IO_LINES, |v: Result<&Value>| {
 #[cfg(unix)]
 const IO_LINES_BATCHED: &str = r#"
 {
+  use sys::io::Lines;
   use opt;
   let child = sys::process::spawn(sys::process::options(
     #args: ["-c", "printf 'a1\na2\na3\n'; sleep 0.2; printf 'b1\nb2\n'"],
@@ -281,7 +288,7 @@ const IO_LINES_BATCHED: &str = r#"
     "/bin/sh"
   ))?;
   let out = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let batch = sys::io::lines_batched(out)?;
+  let batch = Lines::lines_batched(out)?;
   let seen = [];
   // Assert the CONTRACT (every line, in order, never split across
   // events), not the read boundaries: a pipe may split one write across

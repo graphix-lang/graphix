@@ -1,11 +1,21 @@
-let read =|stream: Stream<'a>, n: u64| -> Result<bytes, `IOError(string)> 'sys_io_read;
-let read_exact = |stream: Stream<'a>, n: u64| -> Result<bytes, `IOError(string)> 'sys_io_read_exact;
-let write = |stream: Stream<'a>, data: bytes| -> Result<u64, `IOError(string)> 'sys_io_write;
-let write_exact = |stream: Stream<'a>, data: bytes| -> Result<null, `IOError(string)> 'sys_io_write_exact;
-let flush = |stream: Stream<'a>| -> Result<null, `IOError(string)> 'sys_io_flush;
-let close = |stream: Stream<'a>| -> Result<null, `IOError(string)> 'sys_io_close;
-let stdin = |trigger: Any| -> Stream<`Stdio> 'sys_io_stdin;
-let stdout = |trigger: Any| -> Stream<`Stdio> 'sys_io_stdout;
-let stderr = |trigger: Any| -> Stream<`Stdio> 'sys_io_stderr;
-let lines = |stream: Stream<'a>| -> Result<string, `IOError(string)> 'sys_io_lines;
-let lines_batched = |stream: Stream<'a>| -> Result<Array<string>, `IOError(string)> 'sys_io_lines_batched
+impl Read for Stdio {
+    let read = |s, n| 'sys_io_read;
+    let read_exact = |s, n| 'sys_io_read_exact
+};
+
+impl Lines for Stdio {
+    let lines = |s| 'sys_io_lines;
+    let lines_batched = |s| 'sys_io_lines_batched
+};
+
+impl Write for Stdio {
+    let write = |s, data| 'sys_io_write;
+    let write_exact = |s, data| 'sys_io_write_exact;
+    let flush = |s| 'sys_io_flush
+};
+
+impl Close for Stdio { let close = |s| 'sys_io_close };
+
+let stdin = |trigger: Any| -> Stdio 'sys_io_stdin;
+let stdout = |trigger: Any| -> Stdio 'sys_io_stdout;
+let stderr = |trigger: Any| -> Stdio 'sys_io_stderr

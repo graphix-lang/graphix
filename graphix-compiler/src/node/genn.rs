@@ -51,6 +51,7 @@ pub fn bind<R: Rt, E: UserEvent>(
             id,
             top_id,
             resident: TagValue::phantom(),
+            instantiated: false,
         }),
     )
 }
@@ -63,7 +64,14 @@ pub fn reference<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Node<R, E> {
     ctx.rt.ref_var(id, top_id);
-    Node::new(Ref { spec: NOP.clone(), typ, id, top_id, resident: TagValue::phantom() })
+    Node::new(Ref {
+        spec: NOP.clone(),
+        typ,
+        id,
+        top_id,
+        resident: TagValue::phantom(),
+        instantiated: false,
+    })
 }
 
 pub fn constant<R: Rt, E: UserEvent>(v: Value) -> Node<R, E> {
@@ -137,6 +145,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         rtype,
         ftype,
         args,
+        lowered: None,
         arg_refs: Vec::new(),
         scope,
         flags: BitFlags::empty(),

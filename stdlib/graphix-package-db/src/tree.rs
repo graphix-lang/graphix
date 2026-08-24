@@ -27,10 +27,10 @@ pub struct DbValue {
     pub(crate) inner: Arc<sled::Db>,
 }
 
-graphix_package_core::impl_abstract_arc!(DbValue, pub(crate) static DB_WRAPPER = [
-    0xd1, 0xe2, 0xf3, 0x04, 0x15, 0x26, 0x47, 0x38,
-    0x49, 0x5a, 0x6b, 0x7c, 0x8d, 0x9e, 0xaf, 0xb0,
-]);
+graphix_package_core::impl_abstract_arc!(
+    DbValue,
+    pub(crate) static DB_WRAPPER = "db::Db"
+);
 
 pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<sled::Db> {
     match cached.0.get(idx)?.as_ref()? {
@@ -57,10 +57,10 @@ pub struct TreeValue {
     pub(crate) inner: Arc<TreeInner>,
 }
 
-graphix_package_core::impl_abstract_arc!(TreeValue, pub(crate) static TREE_WRAPPER = [
-    0xd2, 0xe3, 0xf4, 0x05, 0x16, 0x27, 0x48, 0x39,
-    0x4a, 0x5b, 0x6c, 0x7d, 0x8e, 0x9f, 0xa0, 0xb1,
-]);
+graphix_package_core::impl_abstract_arc!(
+    TreeValue,
+    pub(crate) static TREE_WRAPPER = "db::Tree"
+);
 
 pub(crate) fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Arc<TreeInner>> {
     match cached.0.get(idx)?.as_ref()? {

@@ -1,8 +1,28 @@
-type TcpListener;
-let connect = |addr: string| -> Result<io::Stream<`Tcp>, `TCPError(string)> 'sys_tcp_connect;
+let connect = |addr: string| -> Result<TcpStream, `TCPError(string)> 'sys_tcp_connect;
 let listen = |addr: string| -> Result<TcpListener, `TCPError(string)> 'sys_tcp_listen;
-let accept = |listener: TcpListener, trigger: Any| -> Result<io::Stream<`Tcp>, `TCPError(string)> 'sys_tcp_accept;
-let shutdown = |stream: io::Stream<[`Tcp, `Tls]>| -> Result<null, `TCPError(string)> 'sys_tcp_shutdown;
-let peer_addr = |stream: io::Stream<[`Tcp, `Tls]>| -> Result<string, `TCPError(string)> 'sys_tcp_peer_addr;
-let local_addr = |stream: io::Stream<[`Tcp, `Tls]>| -> Result<string, `TCPError(string)> 'sys_tcp_local_addr;
-let listener_addr = |listener: TcpListener| -> Result<string, `TCPError(string)> 'sys_tcp_listener_addr
+let accept = |listener: TcpListener, trigger: Any| -> Result<TcpStream, `TCPError(string)> 'sys_tcp_accept;
+let listener_addr = |listener: TcpListener| -> Result<string, `TCPError(string)> 'sys_tcp_listener_addr;
+
+impl Read for TcpStream {
+    let read = |s, n| 'sys_io_read;
+    let read_exact = |s, n| 'sys_io_read_exact
+};
+
+impl Lines for TcpStream {
+    let lines = |s| 'sys_io_lines;
+    let lines_batched = |s| 'sys_io_lines_batched
+};
+
+impl Write for TcpStream {
+    let write = |s, data| 'sys_io_write;
+    let write_exact = |s, data| 'sys_io_write_exact;
+    let flush = |s| 'sys_io_flush
+};
+
+impl Close for TcpStream { let close = |s| 'sys_io_close };
+
+impl Socket for TcpStream {
+    let shutdown = |s| 'sys_tcp_shutdown;
+    let peer_addr = |s| 'sys_tcp_peer_addr;
+    let local_addr = |s| 'sys_tcp_local_addr
+}

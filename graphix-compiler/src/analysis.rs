@@ -457,6 +457,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         | NodeView::StructWith(_)
         | NodeView::Tuple(_)
         | NodeView::Variant(_)
+        | NodeView::Construct(_)
         | NodeView::Array(_)
         | NodeView::Map(_)
         | NodeView::StructRef(_)
@@ -488,6 +489,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         | NodeView::Ref(_)
         | NodeView::Constant(_)
         | NodeView::TypeDef(_)
+        | NodeView::Impl(_)
         | NodeView::Nop(_) => EffectKind::Sync,
     }
 }

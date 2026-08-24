@@ -135,17 +135,13 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         // needs to agree; a mismatch aborts the kernel (the classic
         // path refuses at lowering — same net effect, the subtree
         // node-walks).
-        let Some(frozen) =
-            kernel_abi::freeze_for_abi_normalized(cx.registry(), arg_node.typ())
-        else {
+        let Some(frozen) = kernel_abi::freeze_for_abi_normalized(arg_node.typ()) else {
             return Err(anyhow!(
                 "emit_clif: DynCall arg type {:?} doesn't freeze concrete",
                 arg_node.typ()
             ));
         };
-        if kernel_abi::abi_kind(cx.registry(), &frozen)
-            != kernel_abi::abi_kind(cx.registry(), t)
-        {
+        if kernel_abi::abi_kind(&frozen) != kernel_abi::abi_kind(t) {
             return Err(anyhow!(
                 "emit_clif: DynCall arg shape {:?} disagrees with the \
                  discovered arg type {t:?}",
@@ -159,7 +155,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         // bound to a local) transfers ownership into the buf. Using the
         // borrowed helper on an Owned source leaks the original; the
         // move helper on a Borrowed source double-frees it.
-        let helper_name: &str = match kernel_abi::abi_kind(cx.registry(), t) {
+        let helper_name: &str = match kernel_abi::abi_kind(t) {
             Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 match node_composite_source(arg_node) {
@@ -196,17 +192,14 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         // would clone/drop, UB).
         let cv = arg_node.emit_clif(cx)?;
         arg_taint_discs.push(cv.disc);
-        if kernel_abi::is_value_shape(cx.registry(), t) {
+        if kernel_abi::is_value_shape(t) {
             cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
         } else {
             cx.b.ins().call(push, &[buf, cv.payload]);
         }
     }
     let dyncall = cx.helper("graphix_dyncall")?;
-    if matches!(
-        kernel_abi::abi_kind(cx.registry(), &info.return_type),
-        Some(AbiKind::Null) | None
-    ) {
+    if matches!(kernel_abi::abi_kind(&info.return_type), Some(AbiKind::Null) | None) {
         return Err(anyhow!(
             "DynCall with bare Null / non-fusable return — \
              should have widened to Nullable<T> at construction"
@@ -344,7 +337,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // joined the args into it (update_full's Tag::join + the Q1
     // bottom arm), so the old per-arg neutral-disc folds are gone.
     let dmerge = cx.b.create_block();
-    let pay_ty = match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+    let pay_ty = match kernel_abi::abi_kind(&info.return_type) {
         Some(AbiKind::Scalar(p)) => prim_to_clif(p),
         _ => types::I64,
     };
@@ -397,7 +390,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     } else {
         tagbits
     };
-    match kernel_abi::abi_kind(cx.registry(), &info.return_type) {
+    match kernel_abi::abi_kind(&info.return_type) {
         Some(AbiKind::Scalar(p)) => {
             // Scalar return: the payload word carries the Value-encoded
             // scalar bits — narrow to the prim (a bottom's placeholder
@@ -445,7 +438,7 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // path too.
             let pend_bl = cx.b.create_block();
             let ok_bl = cx.b.create_block();
-            let ret_abi = kernel_abi::abi_kind(cx.registry(), &info.return_type);
+            let ret_abi = kernel_abi::abi_kind(&info.return_type);
             let t = is_tainted(cx.b, raw0);
             let bad = cx.b.ins().bor(pend, t);
             let expected_disc: Option<i64> = match ret_abi {
@@ -994,7 +987,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // slot-grouping closures below capture IT, not `cx` — otherwise the
     // closures would hold `cx` shared while the per-slot emit needs
     // `&mut cx`.
-    let reg = cx.registry();
     let ftype = cs
         .resolved_ftype()
         .or_else(|| cs.ftype())
@@ -1003,10 +995,9 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // `build_lambda_kernel` translated them into kernel inputs. Each
     // slot is typed from the CALLEE's signature (`info.arg_types`,
     // formals first, captures appended): those types were resolved
-    // (`resolve_abstract` — Refs to hidden-rep abstract type names
-    // expanded to the registered concrete rep) and frozen at build
-    // time. Freezing the caller-side node type here instead would
-    // re-reject exactly those abstract Refs (#218), and env isn't
+    // (`expand_refs` — named types expanded through the env) and
+    // frozen at build time. Freezing the caller-side node type here
+    // instead would re-reject exactly those Refs (#218), and env isn't
     // available at emit time to resolve them — the classic caller
     // (`emit_lambda_call`) types args from the signature the same
     // way. A node whose actual emission shape disagrees with the
@@ -1061,7 +1052,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                 ));
             }
         }
-        match kernel_abi::abi_kind(reg, s.typ()) {
+        match kernel_abi::abi_kind(s.typ()) {
             Some(
                 AbiKind::Scalar(_)
                 | AbiKind::Array
@@ -1114,8 +1105,8 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // the trip placeholder is emitted per the NODE type so both merge
     // edges carry the Value pairing.
     let node_typ = cs.typ();
-    let widen = call_result_needs_value_widening(reg, node_typ, ret);
-    let ret_pay_ty = match kernel_abi::abi_kind(reg, ret) {
+    let widen = call_result_needs_value_widening(node_typ, ret);
+    let ret_pay_ty = match kernel_abi::abi_kind(ret) {
         Some(AbiKind::Scalar(p)) if !widen => prim_to_clif(p),
         _ => types::I64,
     };
@@ -1151,11 +1142,11 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         let scalar_widen = match s {
             LambdaCallSlot::Arg(n, _)
                 if matches!(
-                    kernel_abi::abi_kind(reg, s.typ()),
+                    kernel_abi::abi_kind(s.typ()),
                     Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
                 ) =>
             {
-                match kernel_abi::abi_kind(reg, n.typ()) {
+                match kernel_abi::abi_kind(n.typ()) {
                     Some(AbiKind::Scalar(p)) => Some(p),
                     _ => None,
                 }
@@ -1173,7 +1164,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             }
         };
         if let LambdaCallSlot::Arg(n, _) = s {
-            match kernel_abi::abi_kind(reg, s.typ()) {
+            match kernel_abi::abi_kind(s.typ()) {
                 // String ARG emissions are ALWAYS owned (String local
                 // reads clone at the read; producers are owned) — drop
                 // unconditionally. Cap string reads stay borrowed
@@ -1182,7 +1173,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                     drops.push(CallArgDrop::String(cv.payload));
                 }
                 _ if node_composite_source(n) == CompositeSource::Owned => {
-                    match kernel_abi::abi_kind(reg, s.typ()) {
+                    match kernel_abi::abi_kind(s.typ()) {
                         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                             drops.push(CallArgDrop::Composite(cv.payload));
                         }
@@ -1335,7 +1326,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         }
         (results[0], results[1])
     };
-    let result = match kernel_abi::abi_kind(reg, ret) {
+    let result = match kernel_abi::abi_kind(ret) {
         Some(AbiKind::Scalar(p)) if !widen => {
             CompiledExpr::new(r0, cast_u64_to_prim(cx.b, r1, p))
         }

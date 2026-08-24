@@ -12,6 +12,7 @@ extern crate combine;
 #[macro_use]
 extern crate serde_derive;
 
+pub mod abstract_value;
 pub mod analysis;
 pub(crate) mod dbgenv;
 pub mod effects;
@@ -999,6 +1000,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     StructWith(&'a node::data::StructWith<R, E>),
     Tuple(&'a node::data::Tuple<R, E>),
     Variant(&'a node::data::Variant<R, E>),
+    Construct(&'a node::data::Construct<R, E>),
     Array(&'a node::array::Array<R, E>),
     Map(&'a node::map::Map<R, E>),
     // Accessors
@@ -1036,6 +1038,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     // Leaves and declarations
     Constant(&'a node::Constant),
     TypeDef(&'a node::TypeDef),
+    Impl(&'a node::traits::Impl<R, E>),
     Nop(&'a node::Nop),
     // Synthetic — produced by fusion itself.
     FusedKernel(&'a fusion::FusedKernel<R, E>),
@@ -1702,6 +1705,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
     /// reach each callee/callback's retained check `Apply` (`def.check`).
     pub lambda_defs: IntMap<LambdaId, Value>,
+    /// The value seam's hook-site registry (`node::coretraits`): the
+    /// call sites through which `Value` comparison and printing reach
+    /// core-trait implementations, keyed by `(trait, AbstractId)` and
+    /// built on first use.
+    pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
     /// `BindId → LambdaDef Value` for every lambda binding in the current
     /// compile BATCH. Populated during `typecheck0` (each
     /// `Bind::typecheck0` records its own binding, `Module::typecheck0`
@@ -1935,6 +1943,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             tags: AHashSet::default(),
             rt: user,
             lambda_defs: IntMap::default(),
+            core_hook_sites: node::coretraits::CoreHookSites::default(),
             bind_to_lambda: IntMap::default(),
             unstable_bindings: nohash::IntSet::default(),
             connect_targets: nohash::IntSet::default(),
@@ -2259,6 +2268,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     }
     if ctx.fusion.enabled {
         let st = Instant::now();
+        ctx.env.seed_typedef_refs();
         if let Err(e) = fusion::fuse(&mut node, ctx) {
             ctx.env = env;
             return Err(e);

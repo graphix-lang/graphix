@@ -1,4 +1,4 @@
-use super::{CFlag, compiler::compile};
+use super::{CFlag, compiler::compile, coretraits};
 use crate::{
     Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     defetyp,
@@ -101,24 +101,35 @@ macro_rules! compare_op {
                 // the consumed PRODUCTION tags (the join rule): any
                 // consumed bottom bottoms the result, fresh iff a
                 // delivery triggered.
-                let l = self.lhs.update(ctx, event);
-                let r = self.rhs.update(ctx, event);
-                let (lt, rt) = (l.tag(), r.tag());
-                let trig = lt.triggers() || rt.triggers();
-                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
-                    return self.resident.ride();
-                }
-                if lt.is_bottom() || rt.is_bottom() {
-                    return if trig {
-                        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                    } else {
-                        self.resident.ride()
-                    };
-                }
-                let fired = lt.is_fired() || rt.is_fired();
-                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                let v = l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()));
-                self.resident.set(TagValue::tagged(v, tag))
+                //
+                // The comparison itself runs under the value-hook loan
+                // (`coretraits::with_value_hooks`): a `Value` operator
+                // reaching an abstract with a core `Eq`/`Ord`
+                // implementation calls it — the same seam map keys and
+                // sort go through, so `a == b`, `(a, x) == (b, y)` and
+                // a map keyed by `a` all mean the same thing.
+                let (lhs, rhs, resident) =
+                    (&mut self.lhs, &mut self.rhs, &mut self.resident);
+                coretraits::with_value_hooks(ctx, event, |ctx, event| {
+                    let l = lhs.update(ctx, event);
+                    let r = rhs.update(ctx, event);
+                    let (lt, rt) = (l.tag(), r.tag());
+                    let trig = lt.triggers() || rt.triggers();
+                    if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                        return resident.ride();
+                    }
+                    if lt.is_bottom() || rt.is_bottom() {
+                        return if trig {
+                            resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                        } else {
+                            resident.ride()
+                        };
+                    }
+                    let fired = lt.is_fired() || rt.is_fired();
+                    let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
+                    let v = l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()));
+                    resident.set(TagValue::tagged(v, tag))
+                })
             }
 
             fn spec(&self) -> &Expr {

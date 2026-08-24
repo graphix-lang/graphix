@@ -148,6 +148,24 @@ where
         )
 }
 
+fn abstract_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        attempt(super::typexp::typath().skip(spaces()).skip(token('('))),
+        structure_pattern(),
+        sptoken(')'),
+    )
+        .map(move |(name, bind, _)| StructurePattern::Abstract {
+            all: all.clone(),
+            name,
+            bind: Arc::new(bind),
+        })
+}
+
 pub(super) fn struct_pattern<I>(
     all: Option<ArcStr>,
 ) -> impl Parser<I, Output = StructurePattern>
@@ -266,6 +284,7 @@ parser! {
             tuple_pattern(all.clone()),
             struct_pattern(all.clone()),
             variant_pattern(all.clone()),
+            abstract_pattern(all.clone()),
             underbar_pattern(all.is_some()),
             literal_pattern(all.is_some()),
             bind_pattern(all.is_some()),

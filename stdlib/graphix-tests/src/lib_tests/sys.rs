@@ -41,9 +41,10 @@ async fn args_injected() -> Result<()> {
 // stdout: write and flush succeed
 const STDOUT_WRITE: &str = r#"
 {
+    use sys::io::Write;
     let out = sys::io::stdout(null);
-    let written = sys::io::write_exact(out, buffer::from_string("hello stdout\n"));
-    let flushed = sys::io::flush(written? ~ out);
+    let written = Write::write_exact(out, buffer::from_string("hello stdout\n"));
+    let flushed = Write::flush(written? ~ out);
     !is_err(flushed)
 }
 "#;
@@ -58,9 +59,10 @@ run!(stdout_write, STDOUT_WRITE, |v: Result<&Value>| {
 // stderr: write and flush succeed
 const STDERR_WRITE: &str = r#"
 {
+    use sys::io::Write;
     let err = sys::io::stderr(null);
-    let written = sys::io::write_exact(err, buffer::from_string("hello stderr\n"));
-    let flushed = sys::io::flush(written? ~ err);
+    let written = Write::write_exact(err, buffer::from_string("hello stderr\n"));
+    let flushed = Write::flush(written? ~ err);
     !is_err(flushed)
 }
 "#;
@@ -85,13 +87,14 @@ const STDIN_CREATE: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+});
 
 // writing to stdin returns an error
 const STDIN_WRITE_ERR: &str = r#"
 {
+    use sys::io::Write;
     let inp = sys::io::stdin(null);
-    sys::io::write_exact(inp, buffer::from_string("nope"))
+    Write::write_exact(inp, buffer::from_string("nope"))
 }
 "#;
 

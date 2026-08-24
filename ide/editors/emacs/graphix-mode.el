@@ -133,6 +133,12 @@ Falls back to this mode when tree-sitter is not available.
      '((line_comment) @font-lock-comment-face
        (doc_comment) @font-lock-doc-face)
 
+     ;; Level 1: attributes
+     :language 'graphix
+     :feature 'attribute
+     '((attribute ["#[" "]"] @font-lock-preprocessor-face)
+       (attribute name: (identifier) @font-lock-preprocessor-face))
+
      ;; Level 1: keywords
      :language 'graphix
      :feature 'keyword
@@ -298,7 +304,7 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
     ;; Font-lock
     (setq-local treesit-font-lock-settings graphix--treesit-font-lock-rules)
     (setq-local treesit-font-lock-feature-list
-                '((comment keyword string)
+                '((comment attribute keyword string)
                   (type function constant number)
                   (variable parameter property module constructor)
                   (operator bracket interpolation)))

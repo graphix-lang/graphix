@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
+            window.path_to_searchindex_js = "../../searchindex-e725aa8e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-e4e99a5c.js"></script>
+        <script src="../../toc-f7a0005a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,33 +175,56 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="systcp"><a class="header" href="#systcp">sys::tcp</a></h1>
-<pre><code class="language-graphix">/// An opaque handle to a TCP listener.
+<pre><code class="language-graphix">use sys::io::{Read, Lines, Write, Close};
+
+/// An opaque handle to a TCP listener. The listener is closed when
+/// there are no remaining references to the TcpListener value.
 type TcpListener;
 
+/// A connected TCP stream.
+type TcpStream;
+
+/// A connected network socket. Implemented by [TcpStream] and by
+/// `sys::tls::TlsStream`, since a TLS session is still a socket.
+trait Socket {
+    /// Shutdown the write half of the stream.
+    val shutdown: fn(self) -&gt; Result&lt;null, `TCPError(string)&gt;;
+
+    /// Get the remote address of the connected peer.
+    val peer_addr: fn(self) -&gt; Result&lt;string, `TCPError(string)&gt;;
+
+    /// Get the local address of the stream.
+    val local_addr: fn(self) -&gt; Result&lt;string, `TCPError(string)&gt;;
+};
+
+impl Read for TcpStream;
+impl Lines for TcpStream;
+impl Write for TcpStream;
+impl Close for TcpStream;
+impl Socket for TcpStream;
+
 /// Connect to a TCP server at the given address (host:port).
-val connect: fn(addr: string) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
+val connect: fn(addr: string) -&gt; Result&lt;TcpStream, `TCPError(string)&gt;;
 
 /// Bind a TCP listener to the given address (host:port).
 val listen: fn(addr: string) -&gt; Result&lt;TcpListener, `TCPError(string)&gt;;
 
 /// Accept a new connection from the listener. The second argument
 /// is a trigger — each time it updates, a new accept is performed.
-val accept: fn(listener: TcpListener, trigger: Any) -&gt; Result&lt;io::Stream&lt;`Tcp&gt;, `TCPError(string)&gt;;
-
-/// Shutdown the write half of the stream. Works on both plain TCP
-/// and TLS-upgraded streams.
-val shutdown: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;null, `TCPError(string)&gt;;
-
-/// Get the remote address of the connected peer. Works on both
-/// plain TCP and TLS-upgraded streams.
-val peer_addr: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
-
-/// Get the local address of the stream. Works on both plain TCP
-/// and TLS-upgraded streams.
-val local_addr: fn(stream: io::Stream&lt;[`Tcp, `Tls]&gt;) -&gt; Result&lt;string, `TCPError(string)&gt;;
+val accept: fn(listener: TcpListener, trigger: Any) -&gt; Result&lt;TcpStream, `TCPError(string)&gt;;
 
 /// Get the local address that the listener is bound to.
 val listener_addr: fn(listener: TcpListener) -&gt; Result&lt;string, `TCPError(string)&gt;;
+</code></pre>
+<p><code>TcpStream</code> implements the <code>sys::io</code> traits, so reading and writing a
+socket is the same code as reading and writing a file:</p>
+<pre><code class="language-graphix">use sys::io::{Read, Write};
+use sys::tcp::Socket;
+
+let s = sys::tcp::connect("example.com:80")?;
+Write::write_exact(s, buffer::from_string("GET / HTTP/1.0\r\n\r\n"))?;
+let reply = buffer::to_string(Read::read_all(s)?)?;
+Socket::peer_addr(s)?
 </code></pre>
 
                     </main>

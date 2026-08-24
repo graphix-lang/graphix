@@ -27,7 +27,7 @@ pub struct TVal<'a> {
 /// USER-CONTROLLED (a cons list nests one level per element — printing
 /// a ~2k-element `list::init` overflowed the stack, jul17a
 /// crash_000003), so the walk must not recurse.
-fn fmt_naked(f: &mut fmt::Formatter<'_>, v: &Value) -> fmt::Result {
+pub(crate) fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     fmt_naked_capped(f, v, usize::MAX)
 }
 
@@ -35,11 +35,7 @@ fn fmt_naked(f: &mut fmt::Formatter<'_>, v: &Value) -> fmt::Result {
 /// with a `…` (unbalanced by design — it is a truncated dump, used by
 /// the type-mismatch diagnostic so a huge mismatched value can't spam
 /// unbounded stderr). The full printer passes `usize::MAX`.
-fn fmt_naked_capped(
-    f: &mut fmt::Formatter<'_>,
-    v: &Value,
-    mut cap: usize,
-) -> fmt::Result {
+fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::Result {
     enum W<'a> {
         V(&'a Value),
         S(&'static str),
@@ -78,6 +74,15 @@ fn fmt_naked_capped(
                                 stack.push(W::S(", "));
                             }
                         }
+                    }
+                    // a Graphix abstract renders through its Debug —
+                    // THE VALUE SEAM (`crate::abstract_value`): a core
+                    // `Display` implementation is consulted there when
+                    // the printing frame armed the hooks, and the
+                    // structural form is `Name(payload)` either way
+                    v @ Value::Abstract(_) if crate::abstract_value::get(v).is_some() => {
+                        let g = crate::abstract_value::get(v).unwrap();
+                        write!(f, "{g:?}")?
                     }
                     v => write!(f, "{}", NakedValue(v))?,
                 }
@@ -118,6 +123,13 @@ impl<'a> TVal<'a> {
             });
         }
         match (&self.typ, &self.v) {
+            (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
+                // through Debug — THE VALUE SEAM: the one rendering
+                // every printer shares, hooked by a core `Display`
+                // implementation when the frame armed the hooks
+                let g = crate::abstract_value::get(v).unwrap();
+                write!(f, "{g:?}")
+            }
             (
                 Type::Primitive(_)
                 | Type::Abstract { .. }
@@ -230,33 +242,12 @@ impl<'a> TVal<'a> {
             // recursive `IsAFlags::Strict` walk. The plain-`is_a`
             // fallback keeps the old behavior when no member matches
             // strictly.
+            // the rule is `coretraits::union_member`, one pick for the
+            // printer and the value seam's consumers alike
             (Type::Set(ts), v) => {
-                // The plain fallback runs in two tiers: STRUCTURED
-                // members first, then members that are themselves a
-                // bare blind leaf (an unbound tvar / Any / ⊥). A
-                // never()-fed arm union retains the arm's orphan
-                // unbound cell as a member, and bare tvars sort first
-                // in the set — picking one rendered the value NAKED in
-                // the interp while the fused pipeline's settled union
-                // (no orphan) rendered typed (aug06d hz0
-                // divergence_000000: Array<List<Any>> through a
-                // never()-armed select printed `[["Cons", 42, "Nil"]]`
-                // vs `` [`Cons(42, `Nil)] `` — pinned in
-                // tval-union-blind-print-jul2026).
-                let blind = |t: &Type| {
-                    t.with_deref(|t| {
-                        matches!(t, None | Some(Type::Any) | Some(Type::Bottom))
-                    })
-                };
-                let strict = ts
-                    .iter()
-                    .find(|t| t.is_a_with(&self.env, IsAFlags::Strict.into(), v));
-                let pick = strict
-                    .or_else(|| ts.iter().find(|t| !blind(t) && t.is_a(&self.env, v)))
-                    .or_else(|| ts.iter().find(|t| t.is_a(&self.env, v)));
-                match pick {
+                match crate::node::coretraits::union_member(&self.env, ts, v) {
                     None => fmt_naked(f, v),
-                    Some(t) => Self { typ: t, env: self.env, v }.fmt_int(f, hist),
+                    Some(i) => Self { typ: &ts[i], env: self.env, v }.fmt_int(f, hist),
                 }
             }
         }

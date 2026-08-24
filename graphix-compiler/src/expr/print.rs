@@ -1,9 +1,10 @@
 use super::Sig;
 use crate::{
     expr::{
-        ApplyExpr, Attr, BindExpr, BindSig, Doc, Expr, ExprKind, LambdaExpr, ModuleKind,
-        Sandbox, SelectExpr, SigItem, SigKind, StructExpr, StructWithExpr, TypeDefExpr,
-        UseItem, parser,
+        ApplyExpr, Attr, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind, ImplExpr,
+        LambdaExpr, ModuleKind, Sandbox, SelectExpr, SigItem, SigKind, StructExpr,
+        StructWithExpr, TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr, UseItem,
+        parser,
     },
     typ::Type,
 };
@@ -27,7 +28,7 @@ fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
     writeln!(buf, "{}", open)?;
     buf.with_indent::<fmt::Result, _>(2, |buf| {
         for i in 0..exprs.len() {
-            f(&exprs[i]).kind.fmt_pretty(buf)?;
+            f(&exprs[i]).fmt_pretty(buf)?;
             if i < exprs.len() - 1 {
                 buf.kill_newline();
                 writeln!(buf, "{}", sep)?
@@ -46,6 +47,42 @@ fn pretty_print_exprs(
     sep: &str,
 ) -> fmt::Result {
     pretty_print_exprs_int(buf, exprs, open, close, sep, |a| a)
+}
+
+/// A body laid out inline after its head (`|x| {`, `=> {`, `catch(e) {`):
+/// a block prints as the block, anything else as itself. The body's own
+/// decorations are the caller's to place — above the head for a select
+/// arm, here for the rest.
+fn pretty_body(
+    buf: &mut PrettyBuf,
+    body: &ExprKind,
+    open: &str,
+    close: &str,
+    sep: &str,
+) -> fmt::Result {
+    match body {
+        ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, open, close, sep),
+        body => body.fmt_pretty(buf),
+    }
+}
+
+/// The lines above a decorated expression — its comments, then its
+/// attributes — ahead of whatever the decorations were captured before:
+/// the expression itself, or the select-arm pattern or struct field
+/// name it follows.
+pub(crate) fn write_leading(
+    f: &mut impl fmt::Write,
+    dec: &Option<Box<Decorations>>,
+) -> fmt::Result {
+    if let Some(dec) = dec {
+        for c in dec.comments.iter() {
+            writeln!(f, "//{c}")?;
+        }
+        for a in dec.attrs.iter() {
+            writeln!(f, "{a}")?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -208,9 +245,10 @@ impl TypeDefExpr {
 impl fmt::Display for TypeDefExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_name_and_params(f)?;
-        match &self.typ {
-            Type::Abstract { .. } => Ok(()),
-            typ => write!(f, " = {typ}"),
+        match &self.body {
+            TypeDefBody::Abstract(None) => Ok(()),
+            TypeDefBody::Abstract(Some(rep)) => write!(f, " = Abstract<{rep}>"),
+            TypeDefBody::Alias(typ) => write!(f, " = {typ}"),
         }
     }
 }
@@ -218,13 +256,131 @@ impl fmt::Display for TypeDefExpr {
 impl PrettyDisplay for TypeDefExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         self.write_name_and_params(buf)?;
-        match &self.typ {
-            Type::Abstract { .. } => Ok(()),
-            typ => {
+        match &self.body {
+            TypeDefBody::Abstract(None) => Ok(()),
+            TypeDefBody::Abstract(Some(rep)) => write!(buf, " = Abstract<{rep}>"),
+            TypeDefBody::Alias(typ) => {
                 writeln!(buf, " =")?;
                 buf.with_indent(2, |buf| typ.fmt_pretty(buf))
             }
         }
+    }
+}
+
+impl fmt::Display for TraitMethod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}val {}: {}", self.doc, self.name, self.typ)?;
+        match &self.default {
+            None => Ok(()),
+            Some(d) => write!(f, " = {d}"),
+        }
+    }
+}
+
+impl PrettyDisplay for TraitMethod {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        write!(buf, "{}val {}: ", self.doc, self.name)?;
+        self.typ.fmt_pretty(buf)?;
+        match &self.default {
+            None => Ok(()),
+            Some(d) => {
+                buf.kill_newline();
+                write!(buf, " = ")?;
+                buf.with_indent(2, |buf| d.fmt_pretty(buf))
+            }
+        }
+    }
+}
+
+impl fmt::Display for TraitExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "trait {} {{", self.name)?;
+        for (i, m) in self.methods.iter().enumerate() {
+            write!(f, " {m}")?;
+            if i < self.methods.len() - 1 {
+                write!(f, ";")?;
+            }
+        }
+        write!(f, " }}")
+    }
+}
+
+impl PrettyDisplay for TraitExpr {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        writeln!(buf, "trait {} {{", self.name)?;
+        buf.with_indent(2, |buf| {
+            for (i, m) in self.methods.iter().enumerate() {
+                m.fmt_pretty(buf)?;
+                if i < self.methods.len() - 1 {
+                    buf.kill_newline();
+                    writeln!(buf, ";")?;
+                }
+            }
+            Ok(())
+        })?;
+        writeln!(buf, "}}")
+    }
+}
+
+impl ImplExpr {
+    fn write_head(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "impl")?;
+        if !self.params.is_empty() {
+            write!(f, "<")?;
+            for (i, tv) in self.params.iter().enumerate() {
+                write!(f, "{tv}")?;
+                let mut first = true;
+                for (ctv, c) in self.constraints.iter() {
+                    if ctv.name == tv.name {
+                        write!(f, "{}{c}", if first { ": " } else { " + " })?;
+                        first = false;
+                    }
+                }
+                if i < self.params.len() - 1 {
+                    write!(f, ", ")?;
+                }
+            }
+            write!(f, ">")?;
+        }
+        write!(f, " {} for {}", self.trait_name, self.target)
+    }
+}
+
+impl fmt::Display for ImplExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.write_head(f)?;
+        if self.methods.is_empty() {
+            return Ok(());
+        }
+        write!(f, " {{")?;
+        for (i, m) in self.methods.iter().enumerate() {
+            write!(f, " {m}")?;
+            if i < self.methods.len() - 1 {
+                write!(f, ";")?;
+            }
+        }
+        write!(f, " }}")
+    }
+}
+
+impl PrettyDisplay for ImplExpr {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        self.write_head(buf)?;
+        if self.methods.is_empty() {
+            return writeln!(buf);
+        }
+        writeln!(buf, " {{")?;
+        buf.with_indent(2, |buf| {
+            for (i, m) in self.methods.iter().enumerate() {
+                m.fmt_pretty(buf)?;
+                if i < self.methods.len() - 1 {
+                    buf.kill_newline();
+                    writeln!(buf, ";")?;
+                }
+            }
+            Ok(())
+        })?;
+        writeln!(buf, "}}")
     }
 }
 
@@ -295,6 +451,8 @@ impl fmt::Display for SigItem {
         write!(f, "{}", self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
+            SigKind::Trait(t) => write!(f, "{t}"),
+            SigKind::Impl(i) => write!(f, "{i}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
             SigKind::Module(name) => write!(f, "mod {name}"),
             SigKind::Use { reexport, names } => write_use_names(f, *reexport, names),
@@ -308,6 +466,8 @@ impl PrettyDisplay for SigItem {
         match &self.kind {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
+            SigKind::Trait(t) => t.fmt_pretty(buf),
+            SigKind::Impl(i) => i.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
             SigKind::Use { reexport, names } => {
                 write_use_names(buf, *reexport, names)?;
@@ -388,6 +548,7 @@ impl fmt::Display for StructWithExpr {
             _ => write!(f, "{{ ({source}) with ")?,
         }
         for (i, (name, e)) in replace.iter().enumerate() {
+            write_leading(f, &e.dec)?;
             match &e.kind {
                 ExprKind::Ref { name: n }
                     if Path::dirname(&**n).is_none()
@@ -396,7 +557,7 @@ impl fmt::Display for StructWithExpr {
                 {
                     write!(f, "{name}")?
                 }
-                _ => write!(f, "{name}: {e}")?,
+                e => write!(f, "{name}: {e}")?,
             }
             if i < replace.len() - 1 {
                 write!(f, ", ")?
@@ -415,6 +576,7 @@ impl PrettyDisplay for StructWithExpr {
         }
         buf.with_indent::<fmt::Result, _>(2, |buf| {
             for (i, (name, e)) in replace.iter().enumerate() {
+                write_leading(buf, &e.dec)?;
                 match &e.kind {
                     ExprKind::Ref { name: n }
                         if Path::dirname(&**n).is_none()
@@ -444,6 +606,7 @@ impl fmt::Display for StructExpr {
         let Self { args } = self;
         write!(f, "{{ ")?;
         for (i, (n, e)) in args.iter().enumerate() {
+            write_leading(f, &e.dec)?;
             match &e.kind {
                 ExprKind::Ref { name }
                     if Path::dirname(&**name).is_none()
@@ -452,7 +615,7 @@ impl fmt::Display for StructExpr {
                 {
                     write!(f, "{n}")?
                 }
-                _ => write!(f, "{n}: {e}")?,
+                e => write!(f, "{n}: {e}")?,
             }
             if i < args.len() - 1 {
                 write!(f, ", ")?
@@ -468,6 +631,7 @@ impl PrettyDisplay for StructExpr {
         writeln!(buf, "{{")?;
         buf.with_indent::<fmt::Result, _>(2, |buf| {
             for (i, (n, e)) in args.iter().enumerate() {
+                write_leading(buf, &e.dec)?;
                 match &e.kind {
                     ExprKind::Ref { name }
                         if Path::dirname(&**name).is_none()
@@ -476,7 +640,7 @@ impl PrettyDisplay for StructExpr {
                     {
                         write!(buf, "{n}")?
                     }
-                    _ => {
+                    e => {
                         write!(buf, "{n}: ")?;
                         buf.with_indent(2, |buf| e.fmt_pretty(buf))?;
                     }
@@ -698,10 +862,10 @@ impl PrettyDisplay for LambdaExpr {
             Either::Right(builtin) => {
                 writeln!(buf, "'{builtin}")
             }
-            Either::Left(body) => match &body.kind {
-                ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
-                _ => body.fmt_pretty(buf),
-            },
+            Either::Left(body) => {
+                write_leading(buf, &body.dec)?;
+                pretty_body(buf, &body.kind, "{", "}", ";")
+            }
         }
     }
 }
@@ -711,6 +875,7 @@ impl fmt::Display for SelectExpr {
         let SelectExpr { arg, arms } = self;
         write!(f, "select {arg} {{")?;
         for (i, (pat, rhs)) in arms.iter().enumerate() {
+            write_leading(f, &rhs.dec)?;
             if let Some(tp) = &pat.type_predicate {
                 write!(f, "{tp} as ")?;
             }
@@ -718,7 +883,7 @@ impl fmt::Display for SelectExpr {
             if let Some(guard) = &pat.guard {
                 write!(f, "if {guard} ")?;
             }
-            write!(f, "=> {rhs}")?;
+            write!(f, "=> {}", rhs.kind)?;
             if i < arms.len() - 1 {
                 write!(f, ", ")?
             }
@@ -736,6 +901,7 @@ impl PrettyDisplay for SelectExpr {
         writeln!(buf, " {{")?;
         buf.with_indent(2, |buf| {
             for (i, (pat, expr)) in arms.iter().enumerate() {
+                write_leading(buf, &expr.dec)?;
                 if let Some(tp) = &pat.type_predicate {
                     write!(buf, "{tp} as ")?;
                 }
@@ -747,17 +913,12 @@ impl PrettyDisplay for SelectExpr {
                     write!(buf, " ")?;
                 }
                 write!(buf, "=> ")?;
-                if let ExprKind::Do { exprs } = &expr.kind {
-                    let term = if i < arms.len() - 1 { "}," } else { "}" };
-                    buf.with_indent(2, |buf| {
-                        pretty_print_exprs(buf, exprs, "{", term, ";")
-                    })?;
-                } else if i < arms.len() - 1 {
-                    buf.with_indent(2, |buf| expr.fmt_pretty(buf))?;
+                let last = i == arms.len() - 1;
+                let term = if last { "}" } else { "}," };
+                buf.with_indent(2, |buf| pretty_body(buf, &expr.kind, "{", term, ";"))?;
+                if !last && !matches!(expr.kind, ExprKind::Do { .. }) {
                     buf.kill_newline();
                     writeln!(buf, ",")?
-                } else {
-                    buf.with_indent(2, |buf| expr.fmt_pretty(buf))?;
                 }
             }
             Ok(())
@@ -801,6 +962,8 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
             ExprKind::Bind(b) => b.fmt_pretty(buf),
+            ExprKind::Trait(t) => t.fmt_pretty(buf),
+            ExprKind::Impl(i) => i.fmt_pretty(buf),
             ExprKind::StructWith(sw) => sw.fmt_pretty(buf),
             ExprKind::Module {
                 name,
@@ -856,6 +1019,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "`{tag}")?;
                 pretty_print_exprs(buf, args, "(", ")", ",")
             }
+            ExprKind::Construct { name, arg } => {
+                write!(buf, "{name}")?;
+                pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",")
+            }
             ExprKind::Struct(st) => st.fmt_pretty(buf),
             ExprKind::Qop(e) => {
                 e.fmt_pretty(buf)?;
@@ -872,12 +1039,8 @@ impl PrettyDisplay for ExprKind {
                     None => write!(buf, "catch({}) ", c.bind)?,
                     Some(t) => write!(buf, "catch({}: {t}) ", c.bind)?,
                 }
-                match &c.handler.kind {
-                    ExprKind::Do { exprs } => {
-                        pretty_print_exprs(buf, exprs, "{", "}", "; ")
-                    }
-                    _ => c.handler.fmt_pretty(buf),
-                }
+                write_leading(buf, &c.handler.dec)?;
+                pretty_body(buf, &c.handler.kind, "{", "}", "; ")
             }
             ExprKind::Apply(ae) => ae.fmt_pretty(buf),
             ExprKind::Lambda(l) => l.fmt_pretty(buf),
@@ -1173,6 +1336,8 @@ impl ExprKind {
             }
             ExprKind::TypeCast { expr, typ } => write!(f, "cast<{typ}>({expr})"),
             ExprKind::TypeDef(td) => write!(f, "{td}"),
+            ExprKind::Trait(t) => write!(f, "{t}"),
+            ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),
@@ -1205,6 +1370,7 @@ impl ExprKind {
                 write!(f, "`{tag}")?;
                 print_exprs(f, args, "(", ")", ", ")
             }
+            ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
             ExprKind::Qop(e) => write!(f, "{}?", e),
             ExprKind::OrNever(e) => write!(f, "{}$", e),

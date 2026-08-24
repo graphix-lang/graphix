@@ -6,9 +6,9 @@
 //! encoding tracks the AST automatically as it grows. This module holds the
 //! few hand-written impls for types that can't derive — `Expr` (restores
 //! `ori` from the decode-unit thread-local and `id` fresh), `AbstractId`
-//! (remaps packed ids to fresh ones per decode unit), and `TVar`/`FnType`
-//! (interior `RwLock`/`LPooled` snapshotting) — plus the per-module decode
-//! setup and the `pack_module`/`unpack_module` (and `_sig`) entry points.
+//! (its path-derived inner word), and `TVar`/`FnType` (interior
+//! `RwLock`/`LPooled` snapshotting) — plus the per-module decode setup
+//! and the `pack_module`/`unpack_module` (and `_sig`) entry points.
 //!
 //! There is NO version field and NO parse fallback: the same in-tree compiler
 //! builds the package and regenerates the blob, so a mismatch is impossible by
@@ -22,7 +22,6 @@ use crate::{
     },
     typ::{AbstractId, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
 };
-use ahash::AHashMap;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -31,35 +30,15 @@ use netidx_core::{
     path::Path,
 };
 use poolshark::local::LPooled;
-use std::cell::RefCell;
 use triomphe::Arc;
 
 /// Magic header on every packed blob — a cheap guard against feeding the
 /// decoder something that isn't a graphix AST.
 const MAGIC: &[u8; 4] = b"GXAS";
 
-thread_local! {
-    /// Packed (old) `AbstractId` inner value -> fresh `AbstractId`, for the
-    /// current decode unit. `None` when not decoding a packed module.
-    static ABSTRACT_REMAP: RefCell<Option<AHashMap<u64, AbstractId>>> =
-        const { RefCell::new(None) };
-}
-
-/// Remap a packed `AbstractId`'s raw inner value to a fresh `AbstractId`,
-/// consistently within the current decode unit (a packed id used more than
-/// once maps to the same fresh id; ids from different packed modules — each
-/// numbered from 0 — never collide). Outside a decode unit it mints fresh,
-/// which is always sound since `AbstractId` is pure identity.
-fn remap_abstract_id(old: u64) -> AbstractId {
-    ABSTRACT_REMAP.with_borrow_mut(|tbl| match tbl {
-        Some(tbl) => *tbl.entry(old).or_insert_with(AbstractId::new),
-        None => AbstractId::new(),
-    })
-}
-
 /// Brackets a decode unit: installs the module's `Origin` (so decoded `Expr`s
-/// pick it up via `get_origin`) and a fresh `AbstractId` remap table, and
-/// tears both down on `Drop` — even if decoding errors or panics.
+/// pick it up via `get_origin`) and restores the previous one on `Drop` —
+/// even if decoding errors or panics.
 struct DecodeUnit {
     prev_origin: Option<Arc<Origin>>,
 }
@@ -67,7 +46,6 @@ struct DecodeUnit {
 impl DecodeUnit {
     fn new(ori: Arc<Origin>) -> Self {
         let prev_origin = swap_origin(Some(ori));
-        ABSTRACT_REMAP.with_borrow_mut(|t| *t = Some(AHashMap::default()));
         DecodeUnit { prev_origin }
     }
 }
@@ -75,7 +53,6 @@ impl DecodeUnit {
 impl Drop for DecodeUnit {
     fn drop(&mut self) {
         swap_origin(self.prev_origin.take());
-        ABSTRACT_REMAP.with_borrow_mut(|t| *t = None);
     }
 }
 
@@ -91,7 +68,7 @@ impl Pack for AbstractId {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        Ok(remap_abstract_id(pack::decode_varint(buf)?))
+        Ok(AbstractId::from_inner(pack::decode_varint(buf)?))
     }
 }
 
@@ -413,35 +390,6 @@ mod test {
         assert_eq!(dec.attrs.len(), 1, "attribute lost");
         assert_eq!(&dec.attrs[0].name, "native");
         assert_eq!(&dec.comments[..], &[arcstr::literal!(" note")], "comment lost");
-    }
-
-    #[test]
-    fn abstract_remap_invariants() {
-        let ori = Arc::new(Origin {
-            parent: None,
-            source: Source::Internal(ArcStr::from("remap")),
-            text: ArcStr::new(),
-        });
-        // Within one decode unit: same packed id -> same fresh id; distinct
-        // packed ids -> distinct fresh ids.
-        let (a, b, c) = {
-            let _u = DecodeUnit::new(ori.clone());
-            (remap_abstract_id(0), remap_abstract_id(0), remap_abstract_id(1))
-        };
-        assert_eq!(a, b, "same packed AbstractId must remap consistently");
-        assert_ne!(a, c, "distinct packed AbstractIds must stay distinct");
-        // Across decode units: a packed id 0 from a second module must NOT
-        // collide with the first module's remapped id (the whole point — each
-        // module is packed from its own id space starting at 0).
-        let first = {
-            let _u = DecodeUnit::new(ori.clone());
-            remap_abstract_id(0)
-        };
-        let second = {
-            let _u = DecodeUnit::new(ori.clone());
-            remap_abstract_id(0)
-        };
-        assert_ne!(first, second, "packed id 0 from two modules must not collide");
     }
 
     #[test]

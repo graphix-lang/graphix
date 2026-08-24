@@ -1184,7 +1184,7 @@ impl ServerState {
                     (b.name.to_string(), kind, Some(format!("{}", b.typ)))
                 }
                 SigKind::TypeDef(t) => {
-                    let detail = format!("type {}", t.typ);
+                    let detail = format!("{t}");
                     (
                         t.name.to_string(),
                         lsp_types::SymbolKind::TYPE_PARAMETER,
@@ -1194,6 +1194,14 @@ impl ServerState {
                 SigKind::Module(name) => {
                     (name.to_string(), lsp_types::SymbolKind::MODULE, None)
                 }
+                SigKind::Trait(t) => {
+                    (t.name.to_string(), lsp_types::SymbolKind::INTERFACE, None)
+                }
+                SigKind::Impl(i) => (
+                    format!("impl {} for {}", i.trait_name, i.target),
+                    lsp_types::SymbolKind::OBJECT,
+                    None,
+                ),
                 SigKind::Use { names, .. } => {
                     let mut label = String::from("use ");
                     for (i, n) in names.iter().enumerate() {
@@ -1331,7 +1339,10 @@ impl ServerState {
                         SigKind::Module(name) => {
                             (name.to_string(), lsp_types::SymbolKind::MODULE)
                         }
-                        SigKind::Use { .. } => continue,
+                        SigKind::Trait(t) => {
+                            (t.name.to_string(), lsp_types::SymbolKind::INTERFACE)
+                        }
+                        SigKind::Use { .. } | SigKind::Impl(_) => continue,
                     };
                     push(name, kind, si.pos.line, si.pos.column, &mut out);
                 }

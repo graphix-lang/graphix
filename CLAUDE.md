@@ -73,6 +73,51 @@ Note, the compiler is designed to support multiple instances in a process,
 therefore tests should be designed to run in parallel, running with
 test-threads=1 should be avoided.
 
+### The `slow-tests` feature
+
+A handful of tests dominate the suite's wall time, and what they cover
+moves rarely — package builds, the stack-depth guards. They are marked
+`#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]`, so a
+plain `cargo test --workspace` skips them (they report as `ignored,
+slow-tests` — visible, not hidden) and the RELEASE GATE runs them:
+
+```bash
+cargo test --workspace --features slow-tests
+```
+
+They still COMPILE in the default build, so they cannot rot unnoticed.
+Behind the feature today:
+
+| test | crate | cost |
+|---|---|---|
+| `reduced_feature_build_drops_packages` | graphix-package | vendor.py + a full shell build |
+| `created_package_compiles` | graphix-package | `cargo check` of a generated package |
+| `build_standalone_produces_working_binary` | graphix-package | a full standalone build |
+| `download_source_extracts_package_at_expected_root` | graphix-package | downloads a released crate (needs network) |
+| `deep_ast_drops_without_overflow` | graphix-compiler | ~40s, 50k-deep AST teardown |
+| `deep_nesting_does_not_overflow` | graphix-shell | ~80s, 22 shapes x 2 depths in child processes |
+
+Measured 2026-08-24: **19.5 min of test wall time down to 6.1**, and
+`graphix-package` alone goes 705.8s -> 0.03s (its other 26 tests were
+never the cost). The rest stays in the default run on purpose —
+`graphix-tests` (174s, 2129 fixtures), the compiler proptests (33s),
+`examples_compile` (32s) and the GUI harness (23s) all find bugs on
+ordinary changes. So does `graphix-fuzz`'s 66s, which is ONE test:
+`jit_generated_sweep` runs 120 fixed-seed generated programs through
+both engines — the oracle in miniature, and the one gate here that
+works the way the fuzzer does. It also gets more reliable now that
+705s of concurrent cargo builds is gone: it had to re-check any
+timeout at 4x because the suite ran ~13x slower than a solo run.
+
+Gate a new test only when it is BOTH slow and testing something that
+moves rarely (a build, an environment, a hard limit); never gate a
+language-semantics test. Toggling the feature rebuilds the crates that
+declare it and their dependents, so the gate run pays one rebuild —
+use a separate `--target-dir` if you want to keep the incremental
+artifacts. A test that re-executes its own binary must pass
+`--include-ignored` to the child (see `deep_nesting.rs`), or the child
+skips the test and exits 0, which reads as success.
+
 Run the Graphix shell:
 ```bash
 cargo run --bin graphix                    # Start REPL
@@ -534,25 +579,27 @@ GUI suite 163/163 in ~5s). Rules that matter when touching types:
   seeded cells) vs `with_scope` (fresh — scope changes the resolution).
   Never overwrite a filled cell; contexts needing a different view
   rebind (`rebind_resolution`, fresh pre-filled cell).
-- Seeding is LAZY by default — a fill is correct only when the
-  resolving env holds the name's FINAL target, and mid-compile envs
-  are truncated by registration order (eager transitive seeding
-  captured the list PACKAGE's `List` for tui's `list::List` submodule
-  ref; removed twice). `Type::seed_refs` (explicit transitive walk)
-  runs only at provably-safe times: `check_sig`'s registry copy
-  (post-module-body) and the privatize walk's rebinds (typecheck1).
+- Seeding is LAZY — a fill is correct only when the resolving env
+  holds the name's FINAL target, and mid-compile envs are truncated by
+  registration order (eager transitive seeding captured the list
+  PACKAGE's `List` for tui's `list::List` submodule ref; removed
+  twice). Refs fill when a typecheck-time walk needs them, plus ONE
+  eager pass: `Env::seed_typedef_refs` walks every typedef body right
+  before fusion (after typecheck — every name's final target is
+  registered, the one order-correct moment), because a recursive
+  type's INNER occurrence is reached by no typecheck walk (the
+  Ref×Ref name fast path answers without expanding) and fusion must
+  expand it env-free (`list::List` de-fused without it, 2026-08-22).
 - `same_def` (structural — gates the Ref×Ref name fast paths via
-  `cells_agree`) vs `same_view` (body ALLOCATION identity). The
-  privatize walk rebinds a ref to the env's allocation only on
-  same-def/different-view divergence (interface typedef bodies are
-  registered twice, equal-but-differently-viewed); a DIFFERENT def in
-  the env is a stale-horizon artifact and the cell wins.
-- Typecheck-side bridging is `fusion::lowering::privatize_type` —
-  name-preserving, same-size output (setup_static_bind against
-  `f.env`; check_instance_type's AbstractOpaque retry against
-  `ctx.env`). The fusion-side `resolve_abstract` (capped, expanding)
-  is unchanged; `freeze_for_abi`/`abi_kind` expand refs env-free
-  through the cell (`TypeRef::expand_cell`), unfilled → de-fuse.
+  `cells_agree`); a DIFFERENT def in the env is a stale-horizon
+  artifact and the cell wins. The privatize walk, `same_view`,
+  `private_view` and `rebind_resolution` died with inside-module
+  transparency (nominal abstract types, 2026-08-22).
+- `freeze_for_abi`/`abi_kind` expand refs env-free through the cell
+  (`TypeRef::expand_cell`), unfilled → de-fuse; the fusion-side
+  `expand_refs` (capped, expanding, env-backed) is the pre-pass for
+  kernel-sig derivation. An abstract type is an opaque 2-word Value
+  to both.
 
 ### Two-Phase Typecheck
 
@@ -1436,6 +1483,187 @@ type as `[]`), and reserved-word parse diagnostics at package scale
 (position lands on the enclosing statement, cause buried in the
 combine merge). Measure `--check` time at every size milestone; the
 typechecker-must-be-instant rule applies.
+
+## Nominal abstract types (2026-08-22, branch `nominal-abstracts`)
+
+`design/nominal_abstract_types.md` (RULED, built): an abstract type is
+NOMINAL. `type T = Abstract<rep>` (legal only as a whole typedef body)
+defines a type whose identity is `AbstractId::of(scope, name)` — the
+low 64 bits of `abstract_uuid(path)`, a v5 UUID of the canonical path,
+minted at `Env::deftype`, never at parse (the parse-time counter and
+the packed-AST remap are gone) — and whose values are
+`Value::Abstract(GxAbstract { id, name, payload })`
+(`abstract_value.rs`), minted only by the constructor `T(v)`
+(`ExprKind::Construct` → `node::data::Construct`). `x.0` reads the
+payload (`TupleRef` on an abstract source), the pattern `T(p)`
+destructures it (`StructurePattern::Abstract` /
+`StructPatternNode::Abstract`), and `T as t` is a tag test (`is_a`;
+a Rust-backed value answers by its wrapper UUID, leniently under
+`MatchAbstract` until packages register path-derived UUIDs). The
+three faces compile only where the definition is visible:
+`Env::abstract_reps` is a global registry like `names`, gated by
+`AbstractRep::public` (gxi-exported body / interface-less module,
+set by `bind_sig` and `export_sig`) or scope prefix. A gxi-hidden
+type must be `Abstract<..>` or Rust-backed (`check_sig`). INSIDE-MODULE
+TRANSPARENCY IS GONE, and with it the two-view apparatus:
+`AbstractOpaque`, `privatize_type`, `resolve_internal`, the
+`check_instance_type`/`check_site_arg`/`setup_static_bind` retries,
+`RefHist::abstract_false`, the fusion `AbstractRegistry` (an abstract
+is an opaque 2-word `AbiKind::Value`; `expand_refs` replaces
+`resolve_abstract`). JIT: `graphix_abstract_wrap` /
+`graphix_abstract_get_*` (`emit_construct_node`,
+`emit_abstract_ref_node`); abstract PATTERNS de-fuse the select for
+now. Migration: `gui::Color`, `gui::menu::Shortcut` boxed (Rust reads
+through `abstract_value::payload`); `list::List` went TRANSPARENT
+(`Cons`/`Nil` public). The tree-sitter grammar carries
+`abstract_body`/`abstract_construct`/`abstract_pattern` and a
+body-less `type_def`. Companion: `design/traits.md` (designed, not
+built) — traits sit on this; see its §3/§4/§8.
+
+## Traits v1 (2026-08-22, branch `nominal-abstracts`)
+
+Rust-style traits (`design/traits.md`, §11 is the as-built map):
+`trait T { val m: fn(self, ..) -> R [= default]; .. }`, `impl[<'a:
+C>] T for Target { let m = ..; .. }`, `impl T for X;` in a `.gxi`,
+`'a: T + U` bounds, `fn(x: T)` ≡ a fresh bounded quantifier per
+parameter. `self` is the receiver type (a tvar named `self`) and a
+legal receiver parameter name. Trait NAMES are scoped like types
+(`Env.traits`), impls are global facts (`Env.impls`); the trait's
+scope `<mod>::T` is a module holding the dispatcher bindings, so
+`T::m` / `use T::m` ride the import engine; `trait_methods` maps a
+dispatcher binding to its `(TraitId, index)`. A call dispatches
+STATICALLY in `CallSite::resolve_trait_call` (typecheck1): the self
+argument's type → `Env::find_impl` → the call is re-pointed at the
+impl's (or default's) binding and pre-bound; open self at
+`def_gate_depth == 0` is a compile error; a UNION self lowers the call
+to a synthesized select (`lower_trait_union`, `#bind::N` refs by id,
+the CallSite delegates to `lowered`); collection slots call the
+prototype's resolved def as a `Constant` (`prototype_def`). `contains`
+treats a trait ref as the predicate `trait_contains`; `settle` never
+witnesses a trait conjunct. Target rule (`check_target`): abstract →
+the type's or trait's package; anything else → the trait's package
+only; one impl per head (`heads_overlap`). While building this,
+`Type::scope_refs` was found to DROP cell constraints on re-mint —
+every annotated `fn<'a: Number>` bound was vacuous; fixed. A VALUE
+occurrence of a generalized binding (`Env.poly_binds`: let-bound
+lambdas, gxi vals, dispatchers, `let g = f`) instantiates its
+signature in `Ref::typecheck0` like a call (same knots); a call site
+typechecks a `Ref` argument before its operand pre-bind. A DECLARED
+impl (`impl T for X;` in an interface) is the entry of record
+(2026-08-24): the module's own `impl` FULFILS it and `check_sig`
+proxies the declared method bindings to the implementation's (or the
+trait's default) exactly as a `val` is proxied — so a consumer
+compiled before the implementation exists (a dynamic module's) or
+across a reload resolves to stable bindings. The same fix gave
+dynamically loaded sources the interface splice
+(`add_interface_modules`) and a `typecheck1` pass, which they never
+had (an ill-typed source used to load). Not yet: trait params/assoc
+types (v2, post-release), `type T = A + B` trait aliases (write the
+bound inline), and no `Hash` (nothing consults one — map keys ride
+`Ord`). Fusion coverage, not correctness: the union-dispatch select
+de-fuses, as do abstract patterns.
+
+**Core traits (2026-08-23, `design/traits.md` §12):** `Eq`/`Ord`/
+`Display` declared in core's gxi; THE VALUE SEAM: netidx's abstract
+vtable routes `Value::{eq, partial_cmp}` and `{:?}` to
+`GxAbstract`'s impls (`abstract_value.rs`), which consult a
+thread-local dispatch handle — one seam covers map keys, sort,
+min/max, uniq, the operators (both engines: `graphix_value_eq` calls
+`Value::eq`), and every printer. The loan: `coretraits::
+with_value_hooks(ctx, event, f)` (the DYN_DISPATCH_HANDLE pattern)
+armed at the cmp operators, `CachedArgs::update` (the whole
+EvalCached family), uniq, the map nodes, `Kernel::update`, string
+interpolation, the print family; unarmed (off-thread, no impls) =
+structural. Dispatch: `ExecCtx.core_hook_sites` — per `(trait,
+AbstractId)` a sticky resolved-or-None entry with a POOL of call
+sites (fresh per re-entrant activation), args via `event.variables`,
+`reset_replay` before EVERY dispatch (a reused site's scrutinee ride
+re-emitted the previous pair's answer on a bottoming pair). THE
+BOTTOM-KEY RULE (Eric): a bottoming impl resolves per KEY like NaN —
+bottom keys (self-probe `cmp(k,k)` bottoms) below real keys, equal
+to each other; pair-bottom-with-real-keys warns + Equal; a bottoming
+fmt prints structurally + warns. `lower_core_call` keeps the
+dispatcher sugar (`Eq::eq(a,b)` ≡ `a == b`); `trait_contains` holds
+the three universally; core-trait impls get implicit `#[sync]` +
+prototype sites (`NodeView::Impl`). `bind::lower_over_operands`
+remains THE lowering device (union dispatch, dispatcher sugar):
+operand nodes MOVE into `let #x` binds — recompiling operand source
+at tc1 can't see a lambda's params (`trait_union_dispatch_in_lambda`).
+Rust-backed abstracts stay structural until the io migration
+registers them.
+
+## The io traits (2026-08-23, branch `nominal-abstracts`)
+
+`design/traits.md` §13 (§10 step 4 as built): io is the trait system's
+first client. `io::Stream<'a>`'s phantom tag is GONE — a stream's TYPE
+is its kind (`sys::fs::File`, `sys::tcp::TcpStream`,
+`sys::tls::TlsStream`, `sys::process::Pipe`, `sys::io::Stdio`, all
+Rust-backed abstracts) and the traits it implements say what it can do:
+`Read { read; read_exact=default; read_all=default }`,
+`Lines { lines; lines_batched }`,
+`Write { write; write_exact=default; flush }`, `Close { close }`,
+`sys::fs::Seek`, `sys::tcp::Socket` (over TcpStream AND TlsStream).
+`read` is the only required `Read` method; the derived ones are written
+in Graphix over it and the native streams OVERRIDE `read_exact`/
+`write_exact` with the builtin (one lock, no loop). `Lines` is separate
+because framing is byte-level (a multi-byte char split across a read
+boundary) — fold it in if a byte `find`/`slice` vocabulary lands.
+Behind all five is ONE `StreamKind` enum: `Stream<K: StreamMark>` +
+the `stream_kinds!` list (`graphix-package-sys/src/lib.rs`) makes them
+five distinct RUST types, which is what the abstract registry keys a
+UUID on; `get_stream` reaches the shared cell from any of them.
+
+- **A default's accumulator connect must be gated on the event**:
+  `acc <- b ~ buffer::concat(acc, b)`, never `acc <- concat(acc, b)` —
+  a connect fires when its RHS fires, so the ungated form is the
+  documented counter idiom (`x <- x + 1`) by accident. It read 55
+  bytes from a 5-byte stream.
+- **json/toml/pack/xls parse `bytes`/`string` only** — the stream arm
+  and `write_stream` are gone, and with them those packages' dependency
+  on sys. `json::read(Read::read_all(f)?)` /
+  `Write::write_exact(f, json::write_bytes(v)?)`.
+- **Rust-backed abstracts register PATH-DERIVED UUIDs**
+  (`graphix_package_core::abstract_wrapper!`, or `impl_abstract_arc!`'s
+  `= "pkg::mod::Type"` form) — the whole stdlib does now. That makes a
+  runtime type test on one exact, which is what makes trait dispatch
+  over a UNION of them work (`Socket` over `[TcpStream, TlsStream]`).
+  Consequences: the 2026-08-18 refusal of explicit predicates on
+  Rust-backed abstract types is LIFTED (a package that registers an
+  ad-hoc UUID now has values matching no type test — its own bug, in
+  its own tests), and a CORE-trait impl for a Rust-backed abstract is
+  REFUSED (`traits::check_target`: no payload for the impl to read, so
+  nothing would consult it) — at the implementation's `impl` block,
+  never at an interface's `impl T for X;` (a hidden `type X;` has no
+  known representation at signature time; 2026-08-24, pinned by
+  `core_impl_interface_{declared,rust_backed_refused}`). The tag test
+  stays NOMINAL, not a full
+  type check — parameters are not carried at runtime, so `Box<i64> as
+  b` matches a `Box<string>` (minted and Rust-backed alike).
+- **API break**: `Read::read`, `Seek::seek`, `Socket::shutdown`;
+  `process::Stdio` (the redirect config) → `process::Redirect`, the
+  name freed for the io handle; `Child`'s pipe fields are `[Pipe,
+  null]`; a TLS upgrade CONSUMES the TCP handle (a failed one leaves
+  it untouched).
+- **Found in the compiler**: an interface `impl` declaration anchored
+  the items after it into the module body's TAIL (fixed —
+  `add_interface_modules`, pinned by `interface_type_after_impl`); a
+  `//` comment between two select arms (or above an impl method) was
+  a parse error — FIXED 2026-08-24: decorations above a select arm's
+  pattern, an impl method, or a struct-literal field attach to the
+  expression below (arm body / method binding / field value —
+  `parser::decorate`), the printers hoist them back above the pattern
+  or field name, and the round-trip proptest generates comments at
+  those positions (`decorated()`), which also caught the pretty
+  printer dropping block-item comments (`pretty_print_exprs_int`
+  printed `.kind`). Comments are still legal ONLY above an expression
+  or one of those three heads: interior/trailing/dangling comments are
+  parse errors by design. The tree-sitter grammar gained the `#[..]`
+  attribute rule the same day (an `extra`, like `line_comment` —
+  placement is the compiler's judgement, not the grammar's; `#[` is
+  one token so it beats a labeled arg's `#` by longest match), and the
+  proptest now generates attributes too. `Decorations.trailing` is
+  gone with it — the parser rejects dangling comments, so it was never
+  populated.
 
 ## The module system (open → use, 2026-08-22)
 

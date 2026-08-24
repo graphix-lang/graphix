@@ -17,117 +17,12 @@
 
 use crate::{
     BindId,
-    expr::ModPath,
-    typ::{AbstractId, Type, TypeRef},
+    typ::{Type, TypeRef},
 };
 use arcstr::ArcStr;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
-
-/// Per-`ExecCtx` registry mapping each abstract type's [`AbstractId`] to
-/// its concrete implementation type. Populated by
-/// `node::module::check_sig` when a signed module's `type X;` is matched
-/// to its impl `type X = …`. The fusion classifiers ([`abi_kind`] /
-/// [`freeze_for_abi`] / `resolve_abstract`) consult it to resolve an
-/// abstract-typed value to its concrete shape. Static instance checking
-/// may also resolve a representation, but only from within its defining
-/// module.
-///
-/// Lives on the `ExecCtx` (a field, not a process-global) so it is
-/// dropped with the context. `AbstractId`s are minted fresh on every
-/// compile — each `ExecCtx` recompiles its stdlib from source and gets
-/// new ids — so a global map would grow without bound across a
-/// long-lived process that spins up many contexts. Per-context storage
-/// is also correct: a `Type` (and its `AbstractId`s) never escapes its
-/// owning context, so context A never needs to resolve an abstract that
-/// context B registered.
-///
-/// No lock or interior mutability: registration holds `&mut ExecCtx`;
-/// later instance checks and fusion read through a shared borrow. The
-/// old process-global needed an `RwLock` to guard concurrent compiles of
-/// different contexts; per-context storage removes that contention.
-#[derive(Debug)]
-struct AbstractDef {
-    scope: ModPath,
-    params: Arc<[ArcStr]>,
-    typ: Type,
-}
-
-#[derive(Debug, Default)]
-pub struct AbstractRegistry(nohash::IntMap<AbstractId, AbstractDef>);
-
-impl AbstractRegistry {
-    #[cfg(test)]
-    fn insert(&mut self, id: AbstractId, typ: Type) {
-        let params: Arc<[ArcStr]> = Arc::from_iter(std::iter::empty());
-        self.insert_scoped(id, params, typ, ModPath::root());
-    }
-
-    pub fn insert_scoped(
-        &mut self,
-        id: AbstractId,
-        params: Arc<[ArcStr]>,
-        typ: Type,
-        scope: ModPath,
-    ) {
-        self.0.insert(id, AbstractDef { scope, params, typ });
-    }
-
-    /// The concrete implementation type registered for `id`, cloned out
-    /// (a few `Arc` bumps) so the classifier holds no borrow across its
-    /// recursion. `None` for an unregistered id (non-fusable).
-    pub fn resolve(&self, id: &AbstractId, params: &[Type]) -> Option<Type> {
-        let def = self.0.get(id)?;
-        if def.params.len() != params.len() {
-            return None;
-        }
-        let known = def
-            .params
-            .iter()
-            .cloned()
-            .zip(params.iter().cloned())
-            .collect::<LPooled<ahash::AHashMap<_, _>>>();
-        Some(def.typ.replace_tvars(&known))
-    }
-
-    pub fn resolve_internal(
-        &self,
-        id: &AbstractId,
-        params: &[Type],
-        scope: &ModPath,
-    ) -> Option<Type> {
-        let def = self.0.get(id)?;
-        if !self.visible_from(def, scope) {
-            return None;
-        }
-        self.resolve(id, params)
-    }
-
-    /// The private definition TEMPLATE (formal param names +
-    /// unsubstituted body) for `id`, scope-gated like
-    /// [`Self::resolve_internal`]. The privatize walk uses it to
-    /// re-point a public-view ref's resolution cell at the private
-    /// body without expanding anything — the ref's own params keep
-    /// substituting through `lookup_ref` as usual.
-    pub(crate) fn internal_template(
-        &self,
-        id: &AbstractId,
-        scope: &ModPath,
-    ) -> Option<(Arc<[ArcStr]>, Type)> {
-        let def = self.0.get(id)?;
-        if !self.visible_from(def, scope) {
-            return None;
-        }
-        Some((def.params.clone(), def.typ.clone()))
-    }
-
-    fn visible_from(&self, def: &AbstractDef, scope: &ModPath) -> bool {
-        let mut candidate = netidx_core::path::Path::parts(&scope.0);
-        netidx_core::path::Path::parts(&def.scope.0)
-            .all(|part| candidate.next() == Some(part))
-    }
-}
 
 // ─── Primitive types ─────────────────────────────────────────────
 
@@ -265,7 +160,7 @@ impl PrimType {
 //
 // **Important parity note.** Neither resolves `Type::Ref` aliases (a
 // bare `Type::Ref` reaching the scalar fallback yields `None`); the
-// fusion callers pre-resolve Refs via `resolve_abstract` before
+// fusion callers pre-resolve Refs via `expand_refs` before
 // classifying. Both deref TVars (`with_deref`) and expand nullary
 // `Type::Abstract` via [`ABSTRACT_REGISTRY`], but neither resolves
 // `Type::Ref`. A frozen `Type` is therefore TVar-free and (nullary-)
@@ -338,28 +233,28 @@ fn is_single_prim(t: &Type, which: Typ) -> bool {
 /// Classify the TOP-LEVEL runtime shape of a `Type`, returning the
 /// flat [`AbiKind`] (it does NOT recurse to verify element fusability
 /// — that's [`freeze_for_abi`]'s job). Derefs TVars via `with_deref`;
-/// expands nullary `Type::Abstract` via the [`AbstractRegistry`].
-/// Returns `None` for the top-level shapes that aren't fusable (unbound
-/// TVar, `Type::Fn`, multi-member non-option/non-variant `Set`,
-/// parameterized abstract, `Type::Any`, `Type::Ref`, `Type::ByRef`).
+/// a `Type::Abstract` is an opaque 2-word `Value` whatever its
+/// representation (`design/nominal_abstract_types.md`). Returns `None`
+/// for the top-level shapes that aren't fusable (unbound TVar,
+/// `Type::Fn`, multi-member non-option/non-variant `Set`, `Type::Any`,
+/// `Type::Ref` with an empty cell, `Type::ByRef`).
 ///
-/// Recursive abstract types (a registry rep that re-reaches its own id,
-/// directly or through an option-of-self) terminate via [`Seen`] cycle
-/// detection on the abstract-expansion recursion and return `None` (a
-/// recursive type has no flat ABI kind) — the same mechanism
-/// [`freeze_for_abi`] / `resolve_abstract` use.
-pub fn abi_kind(reg: &AbstractRegistry, t: &Type) -> Option<AbiKind> {
-    abi_kind_d(reg, t, None)
+/// Recursive named types terminate via [`Seen`] cycle detection on the
+/// ref-expansion recursion and return `None` (a recursive type has no
+/// flat ABI kind) — the same mechanism [`freeze_for_abi`] /
+/// `expand_refs` use.
+pub fn abi_kind(t: &Type) -> Option<AbiKind> {
+    abi_kind_d(t, None)
 }
 
-fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
+fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
     // Clone the deref'd type OUT of `with_deref` so the TVar's read
     // guard is DROPPED before the body runs: the Set/Abstract arms
     // recurse (more TVar guards), and parking_lot's fair, non-reentrant
     // TVar lock can't be re-acquired while held. (The registry no longer
     // participates — it's a plain per-ctx borrow now, not a lock — but
     // the TVar deref-clone discipline still stands. Same as
-    // `resolve_abstract`'s TVar arm and `freeze_for_abi_d`.)
+    // `expand_refs`'s TVar arm and `freeze_for_abi_d`.)
     let resolved = t.with_deref(|r| r.cloned());
     {
         let resolved = resolved.as_ref()?;
@@ -375,19 +270,11 @@ fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<A
             Type::Tuple(_) => return Some(AbiKind::Tuple),
             Type::Struct(_) => return Some(AbiKind::Struct),
             Type::Variant(_, _) => return Some(AbiKind::Variant),
-            Type::Abstract { id, params } => {
-                let key = ExpandKey::Abstract(*id);
-                if Seen::contains(seen, &key) {
-                    // Recursive abstract — no flat ABI kind.
-                    return None;
-                }
-                let concrete = reg.resolve(id, params);
-                let node = Seen::push(seen, key);
-                return concrete.as_ref().and_then(|c| abi_kind_d(reg, c, Some(&node)));
-            }
+            // A nominal abstract is an opaque `Value::Abstract` box
+            // whatever its representation (`nominal_abstract_types.md`).
+            Type::Abstract { .. } => return Some(AbiKind::Value),
             // A ref reaches here through instance signatures, which
-            // stay name-compressed since the privatize walk replaced
-            // eager expansion. Its carried resolution cell makes it
+            // stay name-compressed. Its carried resolution cell makes it
             // expandable WITHOUT an env; an empty cell (or a recursive
             // named type — no flat ABI layout) is `None` = de-fuse,
             // exactly the pre-cell behavior.
@@ -398,7 +285,7 @@ fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<A
                 }
                 let expanded = tr.expand_cell();
                 let node = Seen::push(seen, key);
-                return expanded.as_ref().and_then(|c| abi_kind_d(reg, c, Some(&node)));
+                return expanded.as_ref().and_then(|c| abi_kind_d(c, Some(&node)));
             }
             _ => {}
         }
@@ -440,9 +327,7 @@ fn abi_kind_d(reg: &AbstractRegistry, t: &Type, seen: Option<&Seen>) -> Option<A
                 // Pass `seen` through — the success member's abstract (if
                 // any) must be checked against the accumulated path, so an
                 // option-of-self (`type A = [A, null]`) terminates.
-                return succ
-                    .and_then(|s| abi_kind_d(reg, s, seen))
-                    .map(|_| AbiKind::Nullable);
+                return succ.and_then(|s| abi_kind_d(s, seen)).map(|_| AbiKind::Nullable);
             }
             // Variant union: every member must be a single Variant.
             let all_variants = members
@@ -526,11 +411,10 @@ pub fn nullable_error_marked(t: &Type) -> Option<bool> {
 /// (`Type::Ref`) type. Structural nesting (array/tuple/struct) is NOT an
 /// expansion — only following an abstract to its registry rep, or a
 /// `Ref` to its definition, is. Shared by [`freeze_for_abi`] (abstracts
-/// only — it rejects `Ref`) and `fusion::lowering::resolve_abstract`
+/// only — it rejects `Ref`) and `fusion::lowering::expand_refs`
 /// (both).
 #[derive(Clone, PartialEq)]
 pub(crate) enum ExpandKey {
-    Abstract(AbstractId),
     Ref(TypeRef),
 }
 
@@ -561,18 +445,10 @@ pub(crate) struct Seen<'a> {
 pub(crate) fn expand_key_fp(key: &ExpandKey) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = ahash::AHasher::default();
-    match key {
-        ExpandKey::Abstract(id) => {
-            0u8.hash(&mut h);
-            id.hash(&mut h);
-        }
-        ExpandKey::Ref(tr) => {
-            1u8.hash(&mut h);
-            tr.scope.hash(&mut h);
-            tr.name.hash(&mut h);
-            tr.params.len().hash(&mut h);
-        }
-    }
+    let ExpandKey::Ref(tr) = key;
+    tr.scope.hash(&mut h);
+    tr.name.hash(&mut h);
+    tr.params.len().hash(&mut h);
     h.finish()
 }
 
@@ -671,23 +547,15 @@ const MAX_FREEZE_EXPANSIONS: usize = 256;
 /// bound is thus inherited upstream — consistent with those sibling
 /// passes — not a fixed cap re-imposed here (the old `depth > 16` cap
 /// was, and it rejected legitimate deeply-nested finite types).
-pub fn freeze_for_abi(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
-    freeze_for_abi_d(reg, t, None)
+pub fn freeze_for_abi(t: &Type) -> Option<Type> {
+    freeze_for_abi_d(t, None)
 }
 
-fn freeze_for_abi_d(
-    reg: &AbstractRegistry,
-    t: &Type,
-    seen: Option<&Seen>,
-) -> Option<Type> {
-    crate::stack::ensure_sufficient(|| freeze_for_abi_d_inner(reg, t, seen))
+fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
+    crate::stack::ensure_sufficient(|| freeze_for_abi_d_inner(t, seen))
 }
 
-fn freeze_for_abi_d_inner(
-    reg: &AbstractRegistry,
-    t: &Type,
-    seen: Option<&Seen>,
-) -> Option<Type> {
+fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
     // Deref-clone hoisted out — see `abi_kind`'s note (most arms recurse
     // under the TVar lock).
     let resolved = t.with_deref(|r| r.cloned());
@@ -725,28 +593,26 @@ fn freeze_for_abi_d_inner(
                 PrimType::from_type(resolved).map(|_| Type::Primitive(*p))
             }
             Type::Array(inner) => {
-                let inner = freeze_for_abi_d(reg, inner, seen)?;
+                let inner = freeze_for_abi_d(inner, seen)?;
                 Some(Type::Array(Arc::new(inner)))
             }
             Type::Tuple(elems) => {
                 let frozen: Option<LPooled<Vec<Type>>> =
-                    elems.iter().map(|e| freeze_for_abi_d(reg, e, seen)).collect();
+                    elems.iter().map(|e| freeze_for_abi_d(e, seen)).collect();
                 let mut frozen = frozen?;
                 Some(Type::Tuple(Arc::from_iter(frozen.drain(..))))
             }
             Type::Struct(fields) => {
                 let frozen: Option<LPooled<Vec<(ArcStr, Type)>>> = fields
                     .iter()
-                    .map(|(n, ft)| {
-                        freeze_for_abi_d(reg, ft, seen).map(|t| (n.clone(), t))
-                    })
+                    .map(|(n, ft)| freeze_for_abi_d(ft, seen).map(|t| (n.clone(), t)))
                     .collect();
                 let mut frozen = frozen?;
                 Some(Type::Struct(Arc::from_iter(frozen.drain(..))))
             }
             Type::Variant(tag, payloads) => {
                 let frozen: Option<LPooled<Vec<Type>>> =
-                    payloads.iter().map(|p| freeze_for_abi_d(reg, p, seen)).collect();
+                    payloads.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                 let mut frozen = frozen?;
                 Some(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
             }
@@ -762,7 +628,7 @@ fn freeze_for_abi_d_inner(
                     // the other is the marker (kept as-is). Freeze the
                     // success in place, preserving member order.
                     let succ_idx = if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
-                    let frozen_succ = freeze_for_abi_d(reg, succ, seen)?;
+                    let frozen_succ = freeze_for_abi_d(succ, seen)?;
                     let m0 = if succ_idx == 0 {
                         frozen_succ.clone()
                     } else {
@@ -783,7 +649,7 @@ fn freeze_for_abi_d_inner(
                             Some(Type::Variant(tag, payloads)) => {
                                 let fp: Option<LPooled<Vec<Type>>> = payloads
                                     .iter()
-                                    .map(|p| freeze_for_abi_d(reg, p, seen))
+                                    .map(|p| freeze_for_abi_d(p, seen))
                                     .collect();
                                 let mut fp = fp?;
                                 Some(Type::Variant(
@@ -798,27 +664,13 @@ fn freeze_for_abi_d_inner(
                 let mut frozen = frozen?;
                 Some(Type::Set(Arc::from_iter(frozen.drain(..))))
             }
+            // A nominal abstract freezes to an OPAQUE LEAF — the id
+            // IS the identity; params freeze so the leaf is TVar-free.
             Type::Abstract { id, params } => {
-                let key = ExpandKey::Abstract(*id);
-                if Seen::contains(seen, &key) {
-                    // Recursive abstract: freeze to an OPAQUE LEAF
-                    // (see the Ref arm below) — the registry id IS
-                    // the identity; params freeze so the leaf is
-                    // TVar-free.
-                    let frozen: Option<LPooled<Vec<Type>>> =
-                        params.iter().map(|p| freeze_for_abi_d(reg, p, seen)).collect();
-                    let mut frozen = frozen?;
-                    return Some(Type::Abstract {
-                        id: *id,
-                        params: Arc::from_iter(frozen.drain(..)),
-                    });
-                }
-                if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
-                    return None;
-                }
-                let concrete = reg.resolve(id, params)?;
-                let node = Seen::push(seen, key);
-                freeze_for_abi_d(reg, &concrete, Some(&node))
+                let frozen: Option<LPooled<Vec<Type>>> =
+                    params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
+                let mut frozen = frozen?;
+                Some(Type::Abstract { id: *id, params: Arc::from_iter(frozen.drain(..)) })
             }
             // Name-compressed instance-signature refs expand through
             // their carried resolution cell (env-free); an empty cell
@@ -837,14 +689,9 @@ fn freeze_for_abi_d_inner(
             Type::Ref(tr) => {
                 let key = ExpandKey::Ref(tr.clone());
                 if let Some(matched) = Seen::find(seen, &key) {
-                    let ExpandKey::Ref(outer) = matched else {
-                        unreachable!("a Ref key can only match a Ref entry")
-                    };
-                    let frozen: Option<LPooled<Vec<Type>>> = tr
-                        .params
-                        .iter()
-                        .map(|p| freeze_for_abi_d(reg, p, seen))
-                        .collect();
+                    let ExpandKey::Ref(outer) = matched;
+                    let frozen: Option<LPooled<Vec<Type>>> =
+                        tr.params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                     let mut frozen = frozen?;
                     return Some(Type::Ref(
                         outer.with_params(Arc::from_iter(frozen.drain(..))),
@@ -855,7 +702,7 @@ fn freeze_for_abi_d_inner(
                 }
                 let expanded = tr.expand_cell()?;
                 let node = Seen::push(seen, key);
-                freeze_for_abi_d(reg, &expanded, Some(&node))
+                freeze_for_abi_d(&expanded, Some(&node))
             }
             // Everything else: Any, Fn, ByRef, multi-member
             // non-option/non-variant Set
@@ -870,7 +717,7 @@ fn freeze_for_abi_d_inner(
 // These read nesting out of a `Type`: element, slot, field, payload,
 // and option-inner types. They expect a frozen (concrete) `Type` but
 // tolerate live TVars by deref'ing; they do not resolve Refs (the
-// callers pre-resolve via `resolve_abstract`).
+// callers pre-resolve via `expand_refs`).
 
 /// Element type of a `Type::Array`; `None` otherwise.
 pub fn array_elem(t: &Type) -> Option<&Type> {
@@ -937,11 +784,11 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// `--check` diagnostics and every `typ()` reader then differ between
 /// modes on programs where nothing fuses
 /// (fusion-mutates-tvars-aug2026; the old middle rung
-/// `freeze_for_abi(reg, &t.normalize())` did exactly that).
+/// `freeze_for_abi(&t.normalize())` did exactly that).
 /// `resolve_tvars()` deep-clones, so the write-back lands in the
 /// throwaway copy.
-pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
-    freeze_for_abi(reg, t).or_else(|| freeze_for_abi(reg, &t.resolve_tvars().normalize()))
+pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
+    freeze_for_abi(t).or_else(|| freeze_for_abi(&t.resolve_tvars().normalize()))
 }
 
 /// Normalizes ALL THREE option-shaped forms that collapse to
@@ -951,7 +798,7 @@ pub fn freeze_for_abi_normalized(reg: &AbstractRegistry, t: &Type) -> Option<Typ
 /// - the collapsed 2-bit primitive `T | null`.
 /// Returns `None` for any non-option shape. The returned `T` is frozen
 /// (run through [`freeze_for_abi`]) so callers get a concrete inner.
-pub fn nullable_inner(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
+pub fn nullable_inner(t: &Type) -> Option<Type> {
     // Deref-clone hoisted out of the guard — see `abi_kind`'s note
     // (the Set arm freezes the success member, which recurses).
     let resolved = t.with_deref(|r| r.cloned());
@@ -971,7 +818,7 @@ pub fn nullable_inner(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
                 // `freeze_for_abi`. `[null, Error<T>]` → success is
                 // `Error<T>` (null is the marker).
                 let succ = option_result_success(members)??;
-                freeze_for_abi(reg, succ)
+                freeze_for_abi(succ)
             }
             _ => None,
         }
@@ -981,8 +828,8 @@ pub fn nullable_inner(reg: &AbstractRegistry, t: &Type) -> Option<Type> {
 /// The scalar [`PrimType`] of a `Type` whose top-level shape is a plain
 /// register scalar; `None` for any composite / string / value-shape /
 /// option type.
-pub fn scalar_prim(reg: &AbstractRegistry, t: &Type) -> Option<PrimType> {
-    match abi_kind(reg, t) {
+pub fn scalar_prim(t: &Type) -> Option<PrimType> {
+    match abi_kind(t) {
         Some(AbiKind::Scalar(p)) => Some(p),
         _ => None,
     }
@@ -991,19 +838,16 @@ pub fn scalar_prim(reg: &AbstractRegistry, t: &Type) -> Option<PrimType> {
 /// If `t` is `Array<P>` with a plain scalar element, the element
 /// `PrimType`; `None` if the element is composite or `t` isn't an
 /// array.
-pub fn array_scalar_prim(reg: &AbstractRegistry, t: &Type) -> Option<PrimType> {
-    array_elem(t).and_then(|e| scalar_prim(reg, e))
+pub fn array_scalar_prim(t: &Type) -> Option<PrimType> {
+    array_elem(t).and_then(|e| scalar_prim(e))
 }
 
 /// True for the "Value-shape" types — those whose JIT/runtime
 /// representation is a two-register `Value` (disc + payload):
 /// `Variant`, `Nullable`/option/result, `DateTime`, `Duration`,
 /// `Bytes`, `Map`, `Error`.
-pub fn is_value_shape(reg: &AbstractRegistry, t: &Type) -> bool {
-    matches!(
-        abi_kind(reg, t),
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-    )
+pub fn is_value_shape(t: &Type) -> bool {
+    matches!(abi_kind(t), Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
 }
 
 // ─── Concrete-`Type` constructors for the leaf shapes ────────────────
@@ -1642,8 +1486,8 @@ impl KernelSig {
     /// invalid bare-`Null` return (fusion must widen to `Nullable<T>`
     /// before producing). Callers translate `None` into their own
     /// error with context.
-    pub fn abi_return(&self, reg: &AbstractRegistry) -> Option<AbiReturn> {
-        match abi_kind(reg, &self.return_type)? {
+    pub fn abi_return(&self) -> Option<AbiReturn> {
+        match abi_kind(&self.return_type)? {
             AbiKind::Null => None,
             _ => Some(AbiReturn::Pair),
         }
@@ -1689,130 +1533,13 @@ mod tests {
     /// trips it.
     #[test]
     fn deep_finite_type_freezes() {
-        let reg = AbstractRegistry::default();
         let mut t = i64_t();
         for _ in 0..40 {
             t = Type::Array(Arc::new(t));
         }
         assert!(
-            freeze_for_abi(&reg, &t).is_some(),
+            freeze_for_abi(&t).is_some(),
             "a 40-deep nested array is finite and should freeze"
-        );
-    }
-
-    /// A self-referential abstract type must (a) TERMINATE — not hang or
-    /// stack-overflow (the test hanging would itself be the failure) — and
-    /// (b) freeze to a FINITE form whose recurrence is an OPAQUE LEAF:
-    /// `(Abstract(id), i64)` with the inner occurrence unexpanded.
-    #[test]
-    fn recursive_abstract_freezes_to_opaque_leaf() {
-        let mut reg = AbstractRegistry::default();
-        let id = AbstractId::new();
-        // Concrete impl references its own abstract id: `(Self, i64)`.
-        let rec_impl = Type::Tuple(Arc::from_iter([
-            Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) },
-            i64_t(),
-        ]));
-        reg.insert(id, rec_impl);
-        let t = Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
-        let frozen = freeze_for_abi(&reg, &t)
-            .expect("a recursive abstract freezes finitely (and must not loop)");
-        match &frozen {
-            Type::Tuple(slots) => {
-                assert!(
-                    matches!(&slots[0], Type::Abstract { id: leaf, .. } if *leaf == id),
-                    "the recurrence must stay an unexpanded opaque leaf, got {frozen}"
-                );
-                assert_eq!(slots[1], i64_t());
-            }
-            other => panic!("expected the expanded tuple, got {other}"),
-        }
-    }
-
-    /// MUTUAL recursion (abstract A's rep contains B, B's contains A) must
-    /// also terminate — the cons-list carries BOTH ids on the path — and
-    /// freeze with A's re-occurrence as the opaque leaf.
-    #[test]
-    fn mutually_recursive_abstracts_terminate() {
-        let mut reg = AbstractRegistry::default();
-        let a = AbstractId::new();
-        let b = AbstractId::new();
-        let abst = |id| Type::Abstract { id, params: Arc::from_iter(Vec::<Type>::new()) };
-        reg.insert(a, Type::Tuple(Arc::from_iter([abst(b), i64_t()])));
-        reg.insert(b, Type::Tuple(Arc::from_iter([abst(a), i64_t()])));
-        let frozen = freeze_for_abi(&reg, &abst(a))
-            .expect("mutually-recursive abstracts freeze finitely (and must terminate)");
-        // A → (B, i64) → ((A-leaf, i64), i64)
-        match &frozen {
-            Type::Tuple(slots) => match &slots[0] {
-                Type::Tuple(inner) => {
-                    assert!(
-                        matches!(&inner[0], Type::Abstract { id, .. } if *id == a),
-                        "A must recur as an opaque leaf, got {frozen}"
-                    );
-                }
-                other => panic!("expected B's expansion, got {other}"),
-            },
-            other => panic!("expected A's expansion, got {other}"),
-        }
-    }
-
-    /// NON-regular recursion with a params-BLIND key: `ExpandKey::
-    /// Abstract` carries only the id, so a params-growing abstract
-    /// recurrence is caught at the FIRST re-occurrence and freezes to
-    /// a leaf carrying the GROWN (frozen) params — terminating, never
-    /// chasing the growth. (The chain backstop exists for Ref keys,
-    /// which carry params and so never self-match under growth.)
-    #[test]
-    fn non_regular_recursive_abstract_freezes_at_first_recurrence() {
-        let mut reg = AbstractRegistry::default();
-        let id = AbstractId::new();
-        // type T<'a> = (T<Array<'a>>, i64) — the registry substitutes 'a.
-        let tv = crate::typ::TVar::empty_named(arcstr::literal!("a"));
-        let grown = Type::Abstract {
-            id,
-            params: Arc::from_iter([Type::Array(Arc::new(Type::TVar(tv.clone())))]),
-        };
-        let body = Type::Tuple(Arc::from_iter([grown, i64_t()]));
-        reg.insert_scoped(
-            id,
-            Arc::from_iter([arcstr::literal!("a")]),
-            body,
-            crate::expr::ModPath::root(),
-        );
-        let t = Type::Abstract { id, params: Arc::from_iter([i64_t()]) };
-        let frozen = freeze_for_abi(&reg, &t)
-            .expect("params-blind abstract recursion terminates at first recurrence");
-        match &frozen {
-            Type::Tuple(slots) => match &slots[0] {
-                Type::Abstract { id: leaf, params } => {
-                    assert_eq!(*leaf, id);
-                    assert!(
-                        matches!(&params[0], Type::Array(e) if **e == i64_t()),
-                        "the leaf carries the grown, frozen params, got {frozen}"
-                    );
-                }
-                other => panic!("expected the opaque leaf, got {other}"),
-            },
-            other => panic!("expected the expanded tuple, got {other}"),
-        }
-    }
-
-    /// `abi_kind` is the third concretizer with abstract-expansion
-    /// recursion: an option-of-self (`type A = [A, null]`) must terminate
-    /// (the new cycle guard) and yield `None` — without the guard this
-    /// loops forever.
-    #[test]
-    fn abi_kind_option_of_self_terminates() {
-        let mut reg = AbstractRegistry::default();
-        let a = AbstractId::new();
-        let abst = Type::Abstract { id: a, params: Arc::from_iter(Vec::<Type>::new()) };
-        let opt_self =
-            Type::Set(Arc::from_iter([abst.clone(), Type::Primitive(Typ::Null.into())]));
-        reg.insert(a, opt_self);
-        assert!(
-            abi_kind(&reg, &abst).is_none(),
-            "option-of-self abstract has no flat ABI kind (and must terminate)"
         );
     }
 }

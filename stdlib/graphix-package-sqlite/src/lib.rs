@@ -24,10 +24,10 @@ struct ConnectionValue {
     inner: Arc<Mutex<Option<rusqlite::Connection>>>,
 }
 
-graphix_package_core::impl_abstract_arc!(ConnectionValue, static CONNECTION_WRAPPER = [
-    0x5e, 0x07, 0xd4, 0x1a, 0xbd, 0x33, 0x41, 0x94,
-    0x8d, 0xc4, 0x85, 0xf9, 0x44, 0x85, 0xfc, 0x3e,
-]);
+graphix_package_core::impl_abstract_arc!(
+    ConnectionValue,
+    static CONNECTION_WRAPPER = "sqlite::Connection"
+);
 
 fn get_conn_arc(
     cached: &CachedVals,

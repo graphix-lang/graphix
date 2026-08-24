@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3e838236.js";
+            window.path_to_searchindex_js = "../searchindex-e725aa8e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e4e99a5c.js"></script>
+        <script src="../toc-f7a0005a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -213,7 +213,8 @@ val config: Array&lt;i64&gt;;
 <pre><code class="language-graphix">type Color = [`Red, `Green, `Blue];
 type Point = { x: f64, y: f64 };
 type Result&lt;'a, 'e&gt; = ['a, Error&lt;'e&gt;];
-type Abstract;
+type Handle;                      // abstract: defined in the implementation
+type Meters = Abstract&lt;f64&gt;;      // a public newtype
 </code></pre>
 <p>Types can be polymorphic and recursive, just like in regular Graphix code.</p>
 <h3 id="module-declarations-mod"><a class="header" href="#module-declarations-mod">Module Declarations (mod)</a></h3>
@@ -226,7 +227,7 @@ mod parser;
 <h3 id="use-statements-use"><a class="header" href="#use-statements-use">Use Statements (use)</a></h3>
 <p>Import names the interface’s own declarations need:</p>
 <pre><code class="language-graphix">use super::{Client, Response};
-use sys::io::Stream;
+use sys::io::Read;
 </code></pre>
 <p>A <code>use</code> in the interface applies to the implementation automatically —
 don’t repeat it in the <code>.gx</code> file. It is a private import, not a
@@ -367,31 +368,58 @@ modules loaded at runtime, use the inline <code>sig { ... }</code> syntax descri
 <a href="./dynamic.html">Dynamic Modules</a> chapter. The signature syntax in dynamic modules
 uses the same declaration forms (<code>val</code>, <code>type</code>, <code>mod</code>) as interface files.</p>
 <h2 id="abstract-types"><a class="header" href="#abstract-types">Abstract Types</a></h2>
-<p>Abstract types allow you to hide the concrete representation of a type from users of
-your module. This is a powerful encapsulation mechanism that lets you change the
-internal representation without affecting code that uses your module.</p>
+<p>An abstract type hides the representation of a type from users of your
+module — the encapsulation that lets you change the internals without
+affecting code that uses the module. Graphix’s abstract types are
+<strong>nominal</strong>: a value of the type is a box carrying the type’s identity,
+minted only by the type’s constructor, so two abstract types with the
+same representation are different types at compile time <em>and</em> at
+runtime.</p>
 <h3 id="declaring-abstract-types"><a class="header" href="#declaring-abstract-types">Declaring Abstract Types</a></h3>
-<p>In an interface file, declare an abstract type by omitting the <code>= definition</code> part:</p>
+<p>In an interface file, declare an abstract type by omitting the body:</p>
 <pre><code class="language-graphix">type Handle;
 type Container&lt;'a&gt;;
 type NumericBox&lt;'a: Number&gt;;
 </code></pre>
-<p>The implementation file must provide a concrete definition for each abstract type:</p>
-<pre><code class="language-graphix">type Handle = { id: i64, name: string };
-type Container&lt;'a&gt; = Array&lt;'a&gt;;
-type NumericBox&lt;'a: Number&gt; = { value: 'a };
+<p>The implementation defines it with an <code>Abstract&lt;..&gt;</code> body around the
+representation:</p>
+<pre><code class="language-graphix">type Handle = Abstract&lt;{ id: i64, name: string }&gt;;
+type Container&lt;'a&gt; = Abstract&lt;Array&lt;'a&gt;&gt;;
+type NumericBox&lt;'a: Number&gt; = Abstract&lt;{ value: 'a }&gt;;
 </code></pre>
-<h3 id="how-abstract-types-work"><a class="header" href="#how-abstract-types-work">How Abstract Types Work</a></h3>
-<p>When code outside the module references an abstract type, it sees only the type name,
-not the underlying representation. This means:</p>
-<ul>
-<li>Users cannot construct values of the abstract type directly</li>
-<li>Users cannot pattern match on the internal structure</li>
-<li>Users must use functions exported by the module to create and manipulate values</li>
-</ul>
-<p>This provides true encapsulation - the implementation can change the concrete type
-without breaking any code that uses the module, as long as the exported functions
-still work.</p>
+<p><code>Abstract&lt;..&gt;</code> is legal only as the whole body of a <code>type</code> definition —
+the name is what gives the type its identity. A type hidden by an
+interface must be defined this way (or be a Rust-backed type, declared
+<code>type T;</code> on both sides); hiding a transparent alias is an error.</p>
+<h3 id="the-three-faces"><a class="header" href="#the-three-faces">The Three Faces</a></h3>
+<p>Inside the module — wherever the definition is visible — the type’s
+name is its constructor, <code>.0</code> reads the payload, and <code>T(pattern)</code>
+destructures it:</p>
+<pre><code class="language-graphix">type Counter = Abstract&lt;i64&gt;;
+
+let make = |x: i64| -&gt; Counter Counter(x);          // construct
+let get = |c: Counter| -&gt; i64 c.0;                  // payload
+let bump = |c: Counter| -&gt; Counter {                // destructure
+    let Counter(x) = c;
+    Counter(x + 1)
+};
+let sign = |c: Counter| -&gt; i64 select c {
+    Counter(x) if x &gt; 0 =&gt; 1,
+    Counter(0) =&gt; 0,
+    Counter(_) =&gt; -1
+}
+</code></pre>
+<p>The payload keeps its shape: for <code>Abstract&lt;{ a: i64, b: string }&gt;</code>,
+<code>x.0.a</code> reads a field and <code>T({ x.0 with a: 1 })</code> updates one.</p>
+<p>Outside the module all three are compile errors — users can only call
+the functions the interface exports. The type <em>test</em> <code>T as t</code> works
+everywhere, since it compares the tag:</p>
+<pre><code class="language-graphix">let v: [a::A, b::B] = ...;
+select v {
+    a::A as _ =&gt; "an A",
+    b::B as _ =&gt; "a B"
+}
+</code></pre>
 <h3 id="example-encapsulated-counter"><a class="header" href="#example-encapsulated-counter">Example: Encapsulated Counter</a></h3>
 <p><strong>counter.gxi</strong>:</p>
 <pre><code class="language-graphix">/// An opaque counter type
@@ -407,13 +435,15 @@ val get: fn(c: Counter) -&gt; i64;
 val increment: fn(#trig: Any, c: &amp;Counter) -&gt; null;
 </code></pre>
 <p><strong>counter.gx</strong>:</p>
-<pre><code class="language-graphix">// Implementation detail: counter is just an i64
-// We could change this to a struct later without breaking users
-type Counter = i64;
+<pre><code class="language-graphix">// We could change the representation later without breaking users
+type Counter = Abstract&lt;i64&gt;;
 
-let make = |x: i64| -&gt; Counter x;
-let get = |c: Counter| -&gt; i64 c;
-let increment = |#trig: Any, c: &amp;Counter| -&gt; null { *c &lt;- trig ~ *c + 1; null }
+let make = |x: i64| -&gt; Counter Counter(x);
+let get = |c: Counter| -&gt; i64 c.0;
+let increment = |#trig: Any, c: &amp;Counter| -&gt; null {
+    *c &lt;- Counter((trig ~ *c).0 + 1);
+    null
+}
 </code></pre>
 <p><strong>main.gx</strong>:</p>
 <pre><code class="language-graphix">mod counter;
@@ -422,6 +452,16 @@ let c = counter::make(0);
 counter::increment(#trig:null, &amp;c);
 let value = counter::get(c)  // 1
 </code></pre>
+<h3 id="public-newtypes"><a class="header" href="#public-newtypes">Public Newtypes</a></h3>
+<p>Nominal and hidden are independent. Put the <code>Abstract&lt;..&gt;</code> body in the
+interface and the type is nominal but constructible by anyone — a
+newtype whose representation is public:</p>
+<pre><code class="language-graphix">// interface
+type Meters = Abstract&lt;f64&gt;;
+val add: fn(a: Meters, b: Meters) -&gt; Meters;
+</code></pre>
+<p>A module with no interface file exports its definitions too, so its
+<code>Abstract&lt;..&gt;</code> types are public newtypes as well.</p>
 <h3 id="parameterized-abstract-types"><a class="header" href="#parameterized-abstract-types">Parameterized Abstract Types</a></h3>
 <p>Abstract types can have type parameters, allowing generic containers:</p>
 <pre><code class="language-graphix">// interface
@@ -430,9 +470,9 @@ val wrap: fn(x: 'a) -&gt; Box&lt;'a&gt;;
 val unwrap: fn(b: Box&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation
-type Box&lt;'a&gt; = { value: 'a };
-let wrap = |x: 'a| -&gt; Box&lt;'a&gt; { value: x };
-let unwrap = |b: Box&lt;'a&gt;| -&gt; 'a b.value
+type Box&lt;'a&gt; = Abstract&lt;{ value: 'a }&gt;;
+let wrap = |x: 'a| -&gt; Box&lt;'a&gt; Box({ value: x });
+let unwrap = |b: Box&lt;'a&gt;| -&gt; 'a b.0.value
 </code></pre>
 <h3 id="constrained-type-parameters"><a class="header" href="#constrained-type-parameters">Constrained Type Parameters</a></h3>
 <p>Type parameters on abstract types can have constraints. The interface and
@@ -443,9 +483,9 @@ val wrap: fn(x: 'a) -&gt; NumericWrapper&lt;'a&gt;;
 val double: fn(w: NumericWrapper&lt;'a&gt;) -&gt; 'a;
 </code></pre>
 <pre><code class="language-graphix">// implementation - same constraint required
-type NumericWrapper&lt;'a: Number&gt; = 'a;
-let wrap = |x: 'a| -&gt; NumericWrapper&lt;'a&gt; x;
-let double = |w: NumericWrapper&lt;'a&gt;| -&gt; 'a w + w
+type NumericWrapper&lt;'a: Number&gt; = Abstract&lt;'a&gt;;
+let wrap = |x: 'a| -&gt; NumericWrapper&lt;'a&gt; NumericWrapper(x);
+let double = |w: NumericWrapper&lt;'a&gt;| -&gt; 'a w.0 + w.0
 </code></pre>
 <h3 id="abstract-types-in-compound-types"><a class="header" href="#abstract-types-in-compound-types">Abstract Types in Compound Types</a></h3>
 <p>Abstract types can be used within other type definitions in the interface:</p>
@@ -456,21 +496,28 @@ type Container = { items: Array&lt;Element&gt; };
 </code></pre>
 <p>This allows you to export complex data structures while keeping the element type
 opaque.</p>
+<h3 id="equality-and-printing"><a class="header" href="#equality-and-printing">Equality and Printing</a></h3>
+<p>Two abstract values are equal when they carry the same tag and equal
+payloads; a value prints as its constructor applied to its payload
+(<code>Counter(5)</code>). The box costs one allocation per construction, so use
+abstract types for handles and newtypes rather than for hot data
+structures.</p>
 <h3 id="abstract-types-vs-type-aliases"><a class="header" href="#abstract-types-vs-type-aliases">Abstract Types vs Type Aliases</a></h3>
-<p>Don’t confuse abstract types with type aliases:</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Declaration</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>type T;</code></td><td>Abstract type - concrete definition hidden</td></tr>
-<tr><td><code>type T = i64;</code></td><td>Type alias - <code>T</code> is publicly known to be <code>i64</code></td></tr>
+<tr><td><code>type T;</code></td><td>Abstract type — nominal, representation hidden</td></tr>
+<tr><td><code>type T = Abstract&lt;i64&gt;;</code></td><td>Nominal newtype — representation public</td></tr>
+<tr><td><code>type T = i64;</code></td><td>Type alias — <code>T</code> <em>is</em> <code>i64</code>, structurally</td></tr>
 </tbody>
 </table>
 </div>
-<p>Use abstract types when you want encapsulation. Use type aliases when you want
-to give a convenient name to a type that users can still see and use directly.</p>
+<p>Use abstract types when you want encapsulation or a distinct identity.
+Use type aliases when you want to give a convenient name to a type that
+users can still see and use directly.</p>
 <h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
 <ol>
 <li><strong>Document in interfaces</strong>: Put documentation comments in the <code>.gxi</code> file since that’s what users see</li>

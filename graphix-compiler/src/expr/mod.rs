@@ -1,7 +1,7 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
-    typ::{TVar, Type},
+    typ::{FnType, TVar, Type},
 };
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
@@ -129,8 +129,7 @@ impl PartialOrd for Arg {
 pub struct Doc(pub Option<ArcStr>);
 
 /// A single `#[name(args, ...)]` / `#[name]` attribute attached above an
-/// expression. (Parsed and acted on by a later change; the field exists
-/// now so the `Decorations` shape is stable.)
+/// expression — `#[sync]`, `#[async]`, `#[tail_recursive]`, `#[native]`.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Attr {
@@ -140,17 +139,14 @@ pub struct Attr {
 
 /// Source decorations attached to the `Expr` they sit above — the `//`
 /// comment lines and `#[..]` attributes on their own line directly above
-/// the expression, plus any `trailing` comments dangling after the last
-/// expression of a block/file (the one position with no expression below
-/// to attach to). `None` for the overwhelming majority of expressions, so
-/// it costs one word and no allocation. Invisible to `Expr` equality
+/// the expression. `None` for the overwhelming majority of expressions,
+/// so it costs one word and no allocation. Invisible to `Expr` equality
 /// (comments don't affect semantics — see `PartialEq for Expr`).
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Decorations {
     pub comments: Arc<[ArcStr]>,
     pub attrs: Arc<[Attr]>,
-    pub trailing: Arc<[ArcStr]>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -158,7 +154,60 @@ pub struct Decorations {
 pub struct TypeDefExpr {
     pub name: ArcStr,
     pub params: Arc<[(TVar, Option<Type>)]>,
-    pub typ: Type,
+    pub body: TypeDefBody,
+}
+
+/// What a `type` definition says about its name
+/// (`design/nominal_abstract_types.md`).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum TypeDefBody {
+    /// `type T = typ` — a transparent alias of its body
+    Alias(Type),
+    /// `type T = Abstract<rep>` — a nominal type whose values are
+    /// `Value::Abstract` boxes minted only by its constructor `T(..)`;
+    /// `type T;` — the same with no representation in Graphix: either
+    /// an interface hiding a definition, or a Rust-backed type
+    Abstract(Option<Type>),
+}
+
+/// `trait Name { val m: fn(self, ..) -> T; val n: fn(self) -> U = |s| ..; .. }`
+/// (`design/traits.md`). Every method's signature mentions the
+/// receiver as the type `self`; a method with a `default` body is
+/// overridable, one without is required of every implementor.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct TraitExpr {
+    pub name: ArcStr,
+    pub methods: Arc<[TraitMethod]>,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct TraitMethod {
+    pub doc: Doc,
+    pub name: ArcStr,
+    pub typ: Arc<FnType>,
+    /// Index of the positional `self` parameter in `typ.args` — the
+    /// argument whose type selects the implementation at a call.
+    pub self_index: usize,
+    pub default: Option<Expr>,
+}
+
+/// `impl<'a: C, ..> Trait for Target { let m = ..; .. }`. `params` are
+/// the head's declared type variables (every one must occur in
+/// `target`), `constraints` their bounds (a tvar may repeat under
+/// `'a: A + B`), and `methods` the `let` bindings supplying the
+/// trait's methods — empty for an interface declaration
+/// (`impl Trait for Target;`).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct ImplExpr {
+    pub trait_name: ModPath,
+    pub params: Arc<[TVar]>,
+    pub constraints: Arc<[(TVar, Type)]>,
+    pub target: Type,
+    pub methods: Arc<[Expr]>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -210,6 +259,8 @@ impl fmt::Display for UseItem {
 #[pack(unwrapped)]
 pub enum SigKind {
     TypeDef(TypeDefExpr),
+    Trait(Arc<TraitExpr>),
+    Impl(Arc<ImplExpr>),
     Bind(BindSig),
     Module(ArcStr),
     Use { reexport: bool, names: Arc<[UseItem]> },
@@ -334,29 +385,83 @@ pub struct SelectExpr {
 pub enum ExprKind {
     NoOp,
     Constant(Value),
-    Module { name: ArcStr, value: ModuleKind },
+    Module {
+        name: ArcStr,
+        value: ModuleKind,
+    },
     ExplicitParens(Arc<Expr>),
-    Do { exprs: Arc<[Expr]> },
-    Use { reexport: bool, names: Arc<[UseItem]> },
+    Do {
+        exprs: Arc<[Expr]>,
+    },
+    Use {
+        reexport: bool,
+        names: Arc<[UseItem]>,
+    },
     Bind(Arc<BindExpr>),
-    Ref { name: ModPath },
-    Connect { name: ModPath, value: Arc<Expr>, deref: bool },
-    StringInterpolate { args: Arc<[Expr]> },
-    StructRef { source: Arc<Expr>, field: ArcStr },
-    TupleRef { source: Arc<Expr>, field: usize },
-    ArrayRef { source: Arc<Expr>, i: Arc<Expr> },
-    ArraySlice { source: Arc<Expr>, start: Option<Arc<Expr>>, end: Option<Arc<Expr>> },
-    MapRef { source: Arc<Expr>, key: Arc<Expr> },
+    Ref {
+        name: ModPath,
+    },
+    Connect {
+        name: ModPath,
+        value: Arc<Expr>,
+        deref: bool,
+    },
+    StringInterpolate {
+        args: Arc<[Expr]>,
+    },
+    StructRef {
+        source: Arc<Expr>,
+        field: ArcStr,
+    },
+    TupleRef {
+        source: Arc<Expr>,
+        field: usize,
+    },
+    ArrayRef {
+        source: Arc<Expr>,
+        i: Arc<Expr>,
+    },
+    ArraySlice {
+        source: Arc<Expr>,
+        start: Option<Arc<Expr>>,
+        end: Option<Arc<Expr>>,
+    },
+    MapRef {
+        source: Arc<Expr>,
+        key: Arc<Expr>,
+    },
     StructWith(StructWithExpr),
     Lambda(Arc<LambdaExpr>),
     TypeDef(TypeDefExpr),
-    TypeCast { expr: Arc<Expr>, typ: Type },
+    Trait(Arc<TraitExpr>),
+    Impl(Arc<ImplExpr>),
+    TypeCast {
+        expr: Arc<Expr>,
+        typ: Type,
+    },
     Apply(ApplyExpr),
-    Any { args: Arc<[Expr]> },
-    Array { args: Arc<[Expr]> },
-    Map { args: Arc<[(Expr, Expr)]> },
-    Tuple { args: Arc<[Expr]> },
-    Variant { tag: ArcStr, args: Arc<[Expr]> },
+    Any {
+        args: Arc<[Expr]>,
+    },
+    Array {
+        args: Arc<[Expr]>,
+    },
+    Map {
+        args: Arc<[(Expr, Expr)]>,
+    },
+    Tuple {
+        args: Arc<[Expr]>,
+    },
+    Variant {
+        tag: ArcStr,
+        args: Arc<[Expr]>,
+    },
+    /// `T(v)` — the constructor of the abstract type at `name`
+    /// (`design/nominal_abstract_types.md`)
+    Construct {
+        name: ModPath,
+        arg: Arc<Expr>,
+    },
     Struct(StructExpr),
     Select(SelectExpr),
     Qop(Arc<Expr>),
@@ -365,26 +470,85 @@ pub enum ExprKind {
     ByRef(Arc<Expr>),
     Deref(Arc<Expr>),
     Neg(Arc<Expr>),
-    Eq { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Ne { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Lt { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Gt { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Lte { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Gte { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    And { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Or { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Not { expr: Arc<Expr> },
-    Add { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedAdd { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Sub { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedSub { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Mul { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedMul { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Div { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedDiv { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Mod { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    CheckedMod { lhs: Arc<Expr>, rhs: Arc<Expr> },
-    Sample { lhs: Arc<Expr>, rhs: Arc<Expr> },
+    Eq {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Ne {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Lt {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Gt {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Lte {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Gte {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    And {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Or {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Not {
+        expr: Arc<Expr>,
+    },
+    Add {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedAdd {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Sub {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedSub {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Mul {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedMul {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Div {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedDiv {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Mod {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    CheckedMod {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
+    Sample {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
 }
 
 impl ExprKind {
@@ -528,8 +692,8 @@ pub struct Expr {
     pub pos: SourcePosition,
     pub kind: ExprKind,
     /// Comments/attributes on their own line directly above this
-    /// expression (and trailing dangling comments). `None` unless the
-    /// expression was decorated; not compared by equality.
+    /// expression. `None` unless the expression was decorated; not
+    /// compared by equality.
     pub dec: Option<Box<Decorations>>,
 }
 
@@ -557,14 +721,7 @@ impl fmt::Debug for Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(dec) = &self.dec {
-            for c in dec.comments.iter() {
-                writeln!(f, "//{c}")?;
-            }
-            for a in dec.attrs.iter() {
-                writeln!(f, "{a}")?;
-            }
-        }
+        print::write_leading(f, &self.dec)?;
         // Printing descends the whole tree, and error paths print
         // arbitrary user subexpressions (`bailat!`, the default
         // `emit_clif` blocker message).
@@ -574,15 +731,7 @@ impl fmt::Display for Expr {
 
 impl PrettyDisplay for Expr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        use std::fmt::Write;
-        if let Some(dec) = &self.dec {
-            for c in dec.comments.iter() {
-                writeln!(buf, "//{c}")?;
-            }
-            for a in dec.attrs.iter() {
-                writeln!(buf, "{a}")?;
-            }
-        }
+        print::write_leading(buf, &self.dec)?;
         self.kind.fmt_pretty(buf)
     }
 }
@@ -739,6 +888,14 @@ impl Expr {
             | ExprKind::StringInterpolate { args } => {
                 args.iter().fold(init, |init, e| e.fold(init, f))
             }
+            ExprKind::Construct { name: _, arg } => arg.fold(init, f),
+            ExprKind::Trait(t) => {
+                t.methods.iter().fold(init, |init, m| match &m.default {
+                    Some(e) => e.fold(init, f),
+                    None => init,
+                })
+            }
+            ExprKind::Impl(im) => im.methods.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::ArrayRef { source, i } => {
                 let init = source.fold(init, f);
                 i.fold(init, f)

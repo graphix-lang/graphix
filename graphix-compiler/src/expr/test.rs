@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgKind, FnArgType, FnType, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -37,6 +37,48 @@ fn pbytes() -> impl Strategy<Value = PBytes> {
 
 fn arcstr() -> impl Strategy<Value = ArcStr> {
     any::<String>().prop_map(ArcStr::from)
+}
+
+/// `#[name]` / `#[name(arg, ..)]`. The args are leaves rather than full
+/// expressions: an arg prints through `Display for Expr`, so a decorated
+/// one would put a comment line inside the brackets, and the recursion
+/// would have to be threaded through every caller of `decorations`.
+fn attr() -> impl Strategy<Value = Attr> {
+    (random_fname(), collection::vec(prop_oneof![constant(), reference()], 0..3))
+        .prop_map(|(name, args)| Attr { name, args: Arc::from_iter(args) })
+}
+
+/// The `//` comment lines and `#[..]` attributes an expression can carry.
+/// Comment text is any run short of a newline that does not open with `/`
+/// (that would read back as a `///` doc comment). `None` when there are
+/// none of either, as the parser leaves an undecorated expression.
+fn decorations() -> impl Strategy<Value = Option<Box<Decorations>>> {
+    let comment = "[ a-zA-Z0-9_,.!?*-]{0,24}".prop_map(ArcStr::from);
+    (collection::vec(comment, 0..3), collection::vec(attr(), 0..2)).prop_map(
+        |(comments, attrs)| {
+            if comments.is_empty() && attrs.is_empty() {
+                None
+            } else {
+                Some(Box::new(Decorations {
+                    comments: Arc::from_iter(comments),
+                    attrs: Arc::from_iter(attrs),
+                }))
+            }
+        },
+    )
+}
+
+/// `inner` with decorations above it. Legal ONLY where the parser
+/// captures decorations — an expression position (a block item, a call
+/// argument, the top level) or one of the heads that hand them to the
+/// expression below (a select arm, an impl method, a struct field).
+/// Decorating an operand (`1 + <decorated>`) would be an interior comment,
+/// a parse error by design.
+fn decorated(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> {
+    (inner, decorations()).prop_map(|(mut e, dec)| {
+        e.dec = dec;
+        e
+    })
 }
 
 fn value() -> impl Strategy<Value = Value> {
@@ -353,9 +395,17 @@ fn typexp() -> impl Strategy<Value = Type> {
                         rtype,
                         throws,
                         explicit_throws,
-                        quantifiers: Arc::from_iter(
-                            constraints.iter().map(|(a, _)| a.clone()),
-                        ),
+                        // one quantifier per NAME, like the parser
+                        // (`fn<'a: A, 'a: B>` is one variable, two conjuncts)
+                        quantifiers: {
+                            let mut names: Vec<ArcStr> = Vec::new();
+                            for (a, _) in constraints.iter() {
+                                if !names.contains(a) {
+                                    names.push(a.clone());
+                                }
+                            }
+                            Arc::from_iter(names)
+                        },
                         ..Default::default()
                     };
                     // Mirror the parser: quantifier constraints seed
@@ -421,6 +471,15 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                 .prop_map(|(all, tag, b)| {
                     StructurePattern::Variant { all, tag, binds: Arc::from_iter(b) }
                 }),
+            (option::of(random_fname()), typart(), inner.clone()).prop_map(
+                |(all, name, b)| {
+                    StructurePattern::Abstract {
+                        all,
+                        name: ModPath::from([name]),
+                        bind: Arc::new(b),
+                    }
+                }
+            ),
             (
                 option::of(random_fname()),
                 collection::vec((field_name(), inner.clone()), (1, 10)),
@@ -520,12 +579,126 @@ fn usestmt() -> impl Strategy<Value = Expr> {
 }
 
 fn typedef() -> impl Strategy<Value = Expr> {
-    (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), typexp()).prop_map(
-        |(name, params, typ)| {
+    let body = prop_oneof![
+        typexp().prop_map(TypeDefBody::Alias),
+        option::of(typexp()).prop_map(TypeDefBody::Abstract),
+    ];
+    (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), body).prop_map(
+        |(name, params, body)| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef(TypeDefExpr { name, params, typ }).to_expr_nopos()
+            ExprKind::TypeDef(TypeDefExpr { name, params, body }).to_expr_nopos()
         },
     )
+}
+
+/// A trait method signature: `fn(self, x: T, ..) -> R` — the receiver
+/// first, typed by the `self` variable.
+fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
+    (collection::vec((random_fname(), typexp()), 0..3), typexp()).prop_map(
+        |(args, rtype)| {
+            let recv = FnArgType {
+                kind: FnArgKind::Positional { name: Some(ArcStr::from("self")) },
+                typ: Type::TVar(TVar::empty_named(ArcStr::from("self"))),
+            };
+            let args = iter::once(recv).chain(args.into_iter().map(|(n, typ)| {
+                FnArgType { kind: FnArgKind::Positional { name: Some(n) }, typ }
+            }));
+            let ft = FnType {
+                args: Arc::from_iter(args),
+                vargs: None,
+                rtype,
+                throws: Type::Bottom,
+                explicit_throws: false,
+                ..Default::default()
+            };
+            // mirror the parser: same-named leaves of one signature share
+            // one cell (see typexp()'s fn-type arm)
+            ft.alias_tvars(&mut ahash::AHashMap::default());
+            Arc::new(ft)
+        },
+    )
+}
+
+macro_rules! trait_decl {
+    ($inner:expr) => {
+        (
+            typart(),
+            collection::vec(
+                (
+                    random_fname(),
+                    trait_method_sig(),
+                    option::of($inner),
+                    option::of(arcstr()),
+                ),
+                0..4,
+            ),
+        )
+            .prop_map(|(name, methods)| {
+                let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+                let methods = methods
+                    .into_iter()
+                    .filter(|(n, _, _, _)| seen.insert(n.clone()))
+                    .map(|(name, typ, default, doc)| TraitMethod {
+                        doc: Doc(doc),
+                        name,
+                        typ,
+                        self_index: 0,
+                        default,
+                    });
+                ExprKind::Trait(Arc::new(TraitExpr {
+                    name,
+                    methods: Arc::from_iter(methods),
+                }))
+                .to_expr_nopos()
+            })
+    };
+}
+
+macro_rules! impl_decl {
+    ($inner:expr) => {
+        (
+            collection::vec((tvar(), collection::vec(typexp(), 0..3)), 0..3),
+            typath(),
+            typexp(),
+            collection::vec(
+                (random_fname(), option::of(typexp()), $inner, decorations()),
+                0..3,
+            ),
+        )
+            .prop_map(|(params, trait_name, target, methods)| {
+                let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+                let params: Vec<(TVar, Vec<Type>)> = params
+                    .into_iter()
+                    .filter(|(tv, _)| seen.insert(tv.name.clone()))
+                    .collect();
+                let constraints = params
+                    .iter()
+                    .flat_map(|(tv, bs)| bs.iter().map(move |b| (tv.clone(), b.clone())));
+                let mut seen: ahash::AHashSet<ArcStr> = ahash::AHashSet::default();
+                let methods = methods
+                    .into_iter()
+                    .filter(|(n, _, _, _)| seen.insert(n.clone()))
+                    .map(|(name, typ, value, dec)| {
+                        let mut m = ExprKind::Bind(Arc::new(BindExpr {
+                            rec: false,
+                            pattern: StructurePattern::Bind(name),
+                            typ,
+                            value,
+                        }))
+                        .to_expr_nopos();
+                        m.dec = dec;
+                        m
+                    });
+                ExprKind::Impl(Arc::new(ImplExpr {
+                    trait_name,
+                    constraints: Arc::from_iter(constraints),
+                    params: Arc::from_iter(params.iter().map(|(tv, _)| tv.clone())),
+                    target,
+                    methods: Arc::from_iter(methods),
+                }))
+                .to_expr_nopos()
+            })
+    };
 }
 
 macro_rules! structref {
@@ -634,7 +807,14 @@ macro_rules! do_block {
     ($inner:expr) => {
         (
             collection::vec(
-                prop_oneof![typedef(), usestmt(), catch_stmt!($inner.clone()), $inner],
+                decorated(prop_oneof![
+                    typedef(),
+                    usestmt(),
+                    catch_stmt!($inner.clone()),
+                    trait_decl!($inner.clone()),
+                    impl_decl!($inner.clone()),
+                    $inner
+                ]),
                 (2, 10),
             ),
             any::<bool>(),
@@ -717,14 +897,17 @@ macro_rules! lambda {
 
 macro_rules! select {
     ($inner:expr) => {
-        ($inner, collection::vec((option::of($inner), pattern(), $inner), (1, 10)))
+        (
+            $inner,
+            collection::vec((option::of($inner), pattern(), decorated($inner)), (1, 10)),
+        )
             .prop_map(|(arg, arms)| build_pattern(arg, arms))
     };
 }
 
 macro_rules! structure {
     ($inner:expr) => {
-        collection::vec((field_name(), $inner), (1, 10)).prop_map(|mut a| {
+        collection::vec((field_name(), decorated($inner)), (1, 10)).prop_map(|mut a| {
             a.sort_by_key(|(n, _)| n.clone());
             a.dedup_by_key(|(n, _)| n.clone());
             ExprKind::Struct(StructExpr { args: Arc::from_iter(a) }).to_expr_nopos()
@@ -736,6 +919,15 @@ macro_rules! variant {
     ($inner:expr) => {
         (typart(), collection::vec($inner, (0, 10))).prop_map(|(tag, a)| {
             ExprKind::Variant { tag, args: Arc::from_iter(a) }.to_expr_nopos()
+        })
+    };
+}
+
+macro_rules! construct {
+    ($inner:expr) => {
+        (typart(), $inner).prop_map(|(name, a)| {
+            ExprKind::Construct { name: ModPath::from([name]), arg: Arc::new(a) }
+                .to_expr_nopos()
         })
     };
 }
@@ -805,7 +997,7 @@ macro_rules! binop {
 
 macro_rules! structwith {
     ($inner:expr) => {
-        ($inner, collection::vec((field_name(), $inner), (1, 10))).prop_map(
+        ($inner, collection::vec((field_name(), decorated($inner)), (1, 10))).prop_map(
             |(source, mut replace)| {
                 let source = Arc::new(source);
                 replace.sort_by_key(|(f, _)| f.clone());
@@ -878,8 +1070,64 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
             doc: Doc(doc),
             pos: Default::default(),
             ori: None,
+        }),
+        (trait_decl!(constant()), option::of(arcstr())).prop_map(|(mut t, doc)| {
+            match std::mem::replace(&mut t.kind, ExprKind::NoOp) {
+                ExprKind::Trait(t) => SigItem {
+                    kind: SigKind::Trait(t),
+                    doc: Doc(doc),
+                    pos: Default::default(),
+                    ori: None,
+                },
+                _ => unreachable!(),
+            }
+        }),
+        (impl_decl!(constant()), option::of(arcstr())).prop_map(|(mut i, doc)| {
+            match std::mem::replace(&mut i.kind, ExprKind::NoOp) {
+                ExprKind::Impl(i) => SigItem {
+                    kind: SigKind::Impl(Arc::new(ImplExpr {
+                        methods: Arc::from_iter([]),
+                        ..(*i).clone()
+                    })),
+                    doc: Doc(doc),
+                    pos: Default::default(),
+                    ori: None,
+                },
+                _ => unreachable!(),
+            }
         })
     ]
+}
+
+fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
+    dbg!(t0.name == t1.name)
+        && dbg!(t0.methods.len() == t1.methods.len())
+        && t0.methods.iter().zip(t1.methods.iter()).all(|(m0, m1)| {
+            dbg!(m0.name == m1.name)
+                && dbg!(m0.doc == m1.doc)
+                && dbg!(m0.self_index == m1.self_index)
+                && dbg!(check_type(&Type::Fn(m0.typ.clone()), &Type::Fn(m1.typ.clone())))
+                && match (&m0.default, &m1.default) {
+                    (Some(d0), Some(d1)) => dbg!(check(d0, d1)),
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+}
+
+fn check_impl(i0: &ImplExpr, i1: &ImplExpr) -> bool {
+    dbg!(i0.trait_name == i1.trait_name)
+        && dbg!(i0.params.len() == i1.params.len())
+        && i0.params.iter().zip(i1.params.iter()).all(|(a, b)| a.name == b.name)
+        && dbg!(i0.constraints.len() == i1.constraints.len())
+        && i0
+            .constraints
+            .iter()
+            .zip(i1.constraints.iter())
+            .all(|((a, ta), (b, tb))| a.name == b.name && check_type(ta, tb))
+        && dbg!(check_type(&i0.target, &i1.target))
+        && dbg!(i0.methods.len() == i1.methods.len())
+        && i0.methods.iter().zip(i1.methods.iter()).all(|(a, b)| check(a, b))
 }
 
 fn module_sandbox() -> impl Strategy<Value = Sandbox> {
@@ -1069,6 +1317,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             structure!(inner.clone().prop_map(add_parens)),
             structwith!(inner.clone().prop_map(add_parens)),
             variant!(inner.clone().prop_map(add_parens)),
+            construct!(inner.clone().prop_map(add_parens)),
             byref!(inner.clone().prop_map(add_parens)),
             deref!(inner.clone().prop_map(add_parens)),
             neg!(inner.clone().prop_map(add_parens)),
@@ -1101,7 +1350,19 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
 }
 
 fn expr() -> impl Strategy<Value = Expr> {
-    let leaf = prop_oneof![constant(), reference(), usestmt(), typedef(), module()];
+    decorated(undecorated_expr())
+}
+
+fn undecorated_expr() -> impl Strategy<Value = Expr> {
+    let leaf = prop_oneof![
+        constant(),
+        reference(),
+        usestmt(),
+        typedef(),
+        module(),
+        trait_decl!(constant()),
+        impl_decl!(constant())
+    ];
     leaf.prop_recursive(5, 100, 25, |inner| {
         prop_oneof![
             dynamic_module!(inner.clone()),
@@ -1126,6 +1387,7 @@ fn expr() -> impl Strategy<Value = Expr> {
             map!(inner.clone()),
             tuple!(inner.clone()),
             variant!(inner.clone()),
+            construct!(inner.clone()),
             structure!(inner.clone()),
             structwith!(inner.clone()),
         ]
@@ -1246,6 +1508,10 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
                     .all(|(p0, p1)| check_structure_pattern(p0, p1))
         }
         (
+            StructurePattern::Abstract { all: a0, name: n0, bind: b0 },
+            StructurePattern::Abstract { all: a1, name: n1, bind: b1 },
+        ) => a0 == a1 && n0 == n1 && check_structure_pattern(b0, b1),
+        (
             StructurePattern::Variant { all: a0, tag: t0, binds: p0 },
             StructurePattern::Variant { all: a1, tag: t1, binds: p1 },
         ) => {
@@ -1303,8 +1569,8 @@ fn check_opt(s0: &Option<Arc<Expr>>, s1: &Option<Arc<Expr>>) -> bool {
 }
 
 fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
-    let TypeDefExpr { name: name0, params: p0, typ: typ0 } = td0;
-    let TypeDefExpr { name: name1, params: p1, typ: typ1 } = td1;
+    let TypeDefExpr { name: name0, params: p0, body: body0 } = td0;
+    let TypeDefExpr { name: name1, params: p1, body: body1 } = td1;
     dbg!(name0 == name1)
         && dbg!(
             p0.len() == p1.len()
@@ -1317,7 +1583,14 @@ fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
                         }
                 })
         )
-        && dbg!(check_type(&typ0, &typ1))
+        && dbg!(match (body0, body1) {
+            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => check_type(t0, t1),
+            (TypeDefBody::Abstract(Some(t0)), TypeDefBody::Abstract(Some(t1))) => {
+                check_type(t0, t1)
+            }
+            (TypeDefBody::Abstract(None), TypeDefBody::Abstract(None)) => true,
+            _ => false,
+        })
 }
 
 fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
@@ -1355,11 +1628,42 @@ fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
                 SigItem { kind: SigKind::Module(n0), doc: d0, .. },
                 SigItem { kind: SigKind::Module(n1), doc: d1, .. },
             ) => n0 == n1 && d0 == d1,
+            (
+                SigItem { kind: SigKind::Trait(t0), doc: d0, .. },
+                SigItem { kind: SigKind::Trait(t1), doc: d1, .. },
+            ) => check_trait(t0, t1) && d0 == d1,
+            (
+                SigItem { kind: SigKind::Impl(i0), doc: d0, .. },
+                SigItem { kind: SigKind::Impl(i1), doc: d1, .. },
+            ) => check_impl(i0, i1) && d0 == d1,
             (_, _) => false,
         })
 }
 
+fn check_dec(d0: &Option<Box<Decorations>>, d1: &Option<Box<Decorations>>) -> bool {
+    match (d0, d1) {
+        (None, None) => true,
+        (Some(d0), Some(d1)) => {
+            dbg!(d0.comments == d1.comments)
+                && dbg!(d0.attrs.len() == d1.attrs.len())
+                && d0.attrs.iter().zip(d1.attrs.iter()).all(|(a0, a1)| {
+                    a0.name == a1.name
+                        && a0.args.len() == a1.args.len()
+                        && a0
+                            .args
+                            .iter()
+                            .zip(a1.args.iter())
+                            .all(|(e0, e1)| check(e0, e1))
+                })
+        }
+        _ => dbg!(false),
+    }
+}
+
 fn check(s0: &Expr, s1: &Expr) -> bool {
+    if !check_dec(&s0.dec, &s1.dec) {
+        return false;
+    }
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0.approx_eq(v1),
@@ -1367,6 +1671,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         | (ExprKind::Tuple { args: a0 }, ExprKind::Tuple { args: a1 }) => {
             a0.len() == a1.len() && a0.iter().zip(a1.iter()).all(|(e0, e1)| check(e0, e1))
         }
+        (
+            ExprKind::Construct { name: n0, arg: a0 },
+            ExprKind::Construct { name: n1, arg: a1 },
+        ) => n0 == n1 && check(a0, a1),
         (
             ExprKind::Variant { tag: t0, args: a0 },
             ExprKind::Variant { tag: t1, args: a1 },
@@ -1676,6 +1984,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             )
         }
         (ExprKind::TypeDef(td0), ExprKind::TypeDef(td1)) => check_typedef(td0, td1),
+        (ExprKind::Trait(t0), ExprKind::Trait(t1)) => check_trait(t0, t1),
+        (ExprKind::Impl(i0), ExprKind::Impl(i1)) => check_impl(i0, i1),
         (
             ExprKind::TypeCast { expr: expr0, typ: typ0 },
             ExprKind::TypeCast { expr: expr1, typ: typ1 },
@@ -1963,6 +2273,39 @@ mod tree_sitter_compat {
                 tree.root_node().to_sexp()
             );
         }
+    }
+
+    /// Attributes at every position the graphix parser captures a
+    /// decoration, and the shapes it admits: bare, args, args that are
+    /// themselves expressions. The proptest lane below generates
+    /// attributes too, but only over the expressions it builds — this
+    /// pins the syntax itself against the grammar.
+    #[test]
+    fn ts_attributes_parse() {
+        const SRCS: [&str; 6] = [
+            "#[sync]\nlet f = |x| x + 1",
+            "#[foo(1, \"two\", a::b)]\nlet f = 3",
+            "let f = |n| select n {\n  // above the pattern\n  #[native]\n  0 => 0,\n  k => k\n}",
+            "type Counter = Abstract<i64>;\nimpl Show for Counter {\n  #[sync]\n  let show = |c| \"x\"\n}",
+            "let s = {\n  #[native]\n  a: 1,\n  // and a comment\n  #[sync]\n  b: 2\n}",
+            "{\n  #[sync]\n  let a = 1;\n  #[async]\n  a + 1\n}",
+        ];
+        for src in SRCS {
+            assert_ts_parses(src);
+        }
+    }
+
+    /// An attribute is a node of its own, so an editor can color it —
+    /// if it were swallowed by the expression's extent there would be
+    /// nothing to match on.
+    #[test]
+    fn ts_attribute_is_a_node() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
+        let src = "#[foo(1)]\nlet f = 3";
+        let tree = parser.parse(src, None).unwrap();
+        let sexp = tree.root_node().to_sexp();
+        assert!(sexp.contains("attribute"), "no attribute node in {sexp}");
     }
 
     proptest! {

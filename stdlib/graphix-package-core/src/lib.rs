@@ -10,14 +10,20 @@ use graphix_compiler::{
     effects::EffectKind,
     err, errf,
     expr::{Expr, ExprId},
-    node::genn,
+    node::{coretraits, genn},
     typ::{FnType, TVal, Type, TypeRef},
 };
 use graphix_rt::GXRt;
 use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
-use std::{any::Any, collections::VecDeque, fmt::Debug, iter, time::Duration};
+use std::{
+    any::Any,
+    collections::VecDeque,
+    fmt::{Debug, Write},
+    iter,
+    time::Duration,
+};
 use tokio::time::Instant;
 
 pub(crate) mod buffer;
@@ -192,6 +198,55 @@ macro_rules! impl_abstract_arc {
             let id = uuid::Uuid::from_bytes([$($uuid),*]);
             netidx_value::Abstract::register::<$name>(id)
                 .expect(concat!("failed to register ", stringify!($name)))
+        });
+    };
+    ($name:ident, $wrapper_vis:vis static $wrapper:ident = $path:literal) => {
+        $crate::impl_abstract_arc!(@identity $name);
+        $crate::abstract_wrapper!($name, $wrapper_vis static $wrapper = $path);
+    };
+    (@identity $name:ident) => {
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                std::sync::Arc::ptr_eq(&self.inner, &other.inner)
+            }
+        }
+        impl Eq for $name {}
+        impl PartialOrd for $name {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for $name {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                std::sync::Arc::as_ptr(&self.inner).addr().cmp(&std::sync::Arc::as_ptr(&other.inner).addr())
+            }
+        }
+        impl std::hash::Hash for $name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                std::sync::Arc::as_ptr(&self.inner).hash(state)
+            }
+        }
+        $crate::impl_no_pack!($name);
+    };
+}
+
+/// The `LazyLock<AbstractWrapper<T>>` static for a Rust-backed abstract
+/// type, registered under the UUID DERIVED FROM ITS GRAPHIX PATH
+/// (`graphix_compiler::typ::abstract_uuid`). That derivation is what
+/// makes a runtime type test (`File as f`) exact for a type whose
+/// values Rust mints: the compiler knows the type's identity from its
+/// path alone, so it can recognize the value without the package
+/// telling it anything (`design/nominal_abstract_types.md`).
+#[macro_export]
+macro_rules! abstract_wrapper {
+    ($name:ty, $wrapper_vis:vis static $wrapper:ident = $path:literal) => {
+        $wrapper_vis static $wrapper: std::sync::LazyLock<
+            netidx_value::abstract_type::AbstractWrapper<$name>,
+        > = std::sync::LazyLock::new(|| {
+            netidx_value::Abstract::register::<$name>(
+                ::graphix_compiler::typ::abstract_uuid($path),
+            )
+            .expect(concat!("failed to register ", $path))
         });
     };
 }
@@ -468,62 +523,15 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        match self.cached.update_full(ctx, from, event) {
-            None => self.resident.ride(),
-            Some(t) if self.cached.any_bottom() => {
-                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
-                // arg is bottom — standing poison or the
-                // never-delivered phantom — so the invocation bottoms
-                // WITHOUT calling eval; authors never see bottoms.
-                // FreshBottom iff a delivery triggered this cycle
-                // (`triggers()` becomes the dense fired-bit rule at
-                // the 5b flip). No resident clobber: the value channel
-                // may re-surface the last genuine result on recovery.
-                TagValue::bottom_null(t.triggers())
-            }
-            Some(_) if self.cached.any_tainted() => {
-                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
-                // the CallSite gates every builtin's tainted arg
-                // productions to silence and the fused DynCall
-                // delivers taint-masked slots as absence (Eric's
-                // rulings 2026-07-19/20), so no poisoned delivery can
-                // reach these slots. If a new channel leaks one, emit
-                // the tainted placeholder (loud downstream) rather
-                // than replaying stale state — the SHARED placeholder,
-                // so the resident keeps the last genuine result.
-                TagValue::tainted_null()
-            }
-            Some(t) if t.is_fired() => match self.t.eval(ctx, &self.cached) {
-                Some(v) => self.resident.set(TagValue::fired(v)),
-                // eval produced nothing: ride the resident — the
-                // previous result re-surfaces stale, a never-set
-                // resident stays the phantom.
-                None => self.resident.ride(),
-            },
-            Some(_) if !self.resident.tag().is_bottom() => {
-                // stale refresh: surface the result slot on the value
-                // channel — eval does NOT re-run
-                self.resident.retag(Tag::STALE)
-            }
-            Some(_) => {
-                // ...unless there is NOTHING to surface. A result slot
-                // still holding its phantom has never been filled, and
-                // "re-surface the last result" is vacuous: the call
-                // produces no value at all, so a caller that needs one
-                // (a select arm whose body is `math::to_radians(f64:45.)`
-                // — every argument a constant, hence never a triggering
-                // delivery inside a frame) computes nothing at all,
-                // while the kernel recomputes per invocation and has
-                // the value. Establish the value channel by running
-                // `eval` ONCE; the result is STALE, so this is a value
-                // rule and not a firing one
-                // (`findings/arm-local-bind-aug2026/03`).
-                match self.t.eval(ctx, &self.cached) {
-                    Some(v) => self.resident.set(TagValue::stale(v)),
-                    None => self.resident.ride(),
-                }
-            }
-        }
+        // The whole EvalCached family runs under the value-hook loan
+        // (`coretraits::with_value_hooks`): a builtin whose eval
+        // compares or sorts Values — min/max, all, array::sort, the
+        // map:: operations — honors core Eq/Ord implementations at
+        // the value seam.
+        let (ev, cached, resident) = (&mut self.t, &mut self.cached, &mut self.resident);
+        coretraits::with_value_hooks(ctx, event, move |ctx, event| {
+            Self::update_inner(ev, cached, resident, ctx, from, event)
+        })
     }
 
     fn typecheck0(
@@ -608,6 +616,77 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args>;
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send;
+}
+
+impl<T> CachedArgs<T> {
+    fn update_inner<'a, R: Rt, E: UserEvent>(
+        ev: &mut T,
+        cached: &mut CachedVals,
+        resident: &'a mut TagValue,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut Event<E>,
+    ) -> &'a TagValue
+    where
+        T: EvalCached<R, E>,
+    {
+        match cached.update_full(ctx, from, event) {
+            None => resident.ride(),
+            Some(t) if cached.any_bottom() => {
+                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
+                // arg is bottom — standing poison or the
+                // never-delivered phantom — so the invocation bottoms
+                // WITHOUT calling eval; authors never see bottoms.
+                // FreshBottom iff a delivery triggered this cycle
+                // (`triggers()` becomes the dense fired-bit rule at
+                // the 5b flip). No resident clobber: the value channel
+                // may re-surface the last genuine result on recovery.
+                TagValue::bottom_null(t.triggers())
+            }
+            Some(_) if cached.any_tainted() => {
+                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
+                // the CallSite gates every builtin's tainted arg
+                // productions to silence and the fused DynCall
+                // delivers taint-masked slots as absence (Eric's
+                // rulings 2026-07-19/20), so no poisoned delivery can
+                // reach these slots. If a new channel leaks one, emit
+                // the tainted placeholder (loud downstream) rather
+                // than replaying stale state — the SHARED placeholder,
+                // so the resident keeps the last genuine result.
+                TagValue::tainted_null()
+            }
+            Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
+                Some(v) => resident.set(TagValue::fired(v)),
+                // eval produced nothing: ride the resident — the
+                // previous result re-surfaces stale, a never-set
+                // resident stays the phantom.
+                None => resident.ride(),
+            },
+            Some(_) if !resident.tag().is_bottom() => {
+                // stale refresh: surface the result slot on the value
+                // channel — eval does NOT re-run
+                resident.retag(Tag::STALE)
+            }
+            Some(_) => {
+                // ...unless there is NOTHING to surface. A result slot
+                // still holding its phantom has never been filled, and
+                // "re-surface the last result" is vacuous: the call
+                // produces no value at all, so a caller that needs one
+                // (a select arm whose body is `math::to_radians(f64:45.)`
+                // — every argument a constant, hence never a triggering
+                // delivery inside a frame) computes nothing at all,
+                // while the kernel recomputes per invocation and has
+                // the value. Establish the value channel by running
+                // `eval` ONCE; the result is STALE, so this is a value
+                // rule and not a firing one
+                // (`findings/arm-local-bind-aug2026/03`).
+                match ev.eval(ctx, cached) {
+                    Some(v) => resident.set(TagValue::stale(v)),
+                    None => resident.ride(),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2057,19 +2136,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
-            let v = tv.value_cloned();
-            if Some(&v) != self.0.as_ref() {
-                self.0 = Some(v.clone());
-                Some(v)
-            } else {
-                None
+        // the dedup comparison runs armed: a core Eq implementation
+        // decides what "the same value" means (the value seam)
+        let (last, out) = (&mut self.0, &mut self.1);
+        coretraits::with_value_hooks(ctx, event, |ctx, event| {
+            let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
+                let v = tv.value_cloned();
+                if Some(&v) != last.as_ref() {
+                    *last = Some(v.clone());
+                    Some(v)
+                } else {
+                    None
+                }
+            });
+            match res {
+                Some(v) => out.set(TagValue::fired(v)),
+                None => out.ride(),
             }
-        });
-        match res {
-            Some(v) => self.1.set(TagValue::fired(v)),
-            None => self.1.ride(),
-        }
+        })
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -2173,6 +2257,7 @@ struct Dbg {
     spec: Expr,
     dest: LogDest,
     typ: Type,
+    buf: String,
     out: TagValue,
 }
 
@@ -2192,6 +2277,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
             spec: from[1].spec().clone(),
             dest: LogDest::Stderr,
             typ: Type::Bottom,
+            buf: String::new(),
             out: TagValue::phantom(),
         }))
     }
@@ -2210,52 +2296,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         {
             self.dest = d;
         }
-        let ticked = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned());
-        let res = ticked.map(|v| {
-            let sink = match self.dest {
-                LogDest::Stdout | LogDest::Stderr => {
-                    ctx.libstate.get::<PrintSink>().cloned()
-                }
-                LogDest::Log(_) => None,
-            };
-            let tv = TVal { env: &ctx.env, typ: &self.typ, v: &v };
-            match (self.dest, sink) {
-                // Captured (the harness stdout oracle).
-                (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-                    use std::fmt::Write;
-                    let mut out = sink.0.lock();
-                    writeln!(out, "{} dbg({}): {}", self.spec.pos, self.spec, tv).unwrap()
-                }
-                (LogDest::Stderr, None) => {
-                    eprintln!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                }
-                (LogDest::Stdout, None) => {
-                    println!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                }
-                (LogDest::Log(level), _) => match level {
-                    Level::Trace => {
-                        log::trace!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Debug => {
-                        log::debug!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Info => {
-                        log::info!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Warn => {
-                        log::warn!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                    Level::Error => {
-                        log::error!("{} dbg({}): {}", self.spec.pos, self.spec, tv)
-                    }
-                },
-            };
-            v
+        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        else {
+            return self.out.ride();
+        };
+        self.buf.clear();
+        write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
+        // rendered under the value-hook loan: an abstract with a core
+        // Display implementation prints through it at the seam
+        let (buf, typ) = (&mut self.buf, &self.typ);
+        coretraits::with_value_hooks(ctx, event, |ctx, _| {
+            write!(buf, "{}", TVal { env: &ctx.env, typ, v: &v }).unwrap()
         });
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
+        emit_line(ctx, self.dest, &self.buf, "\n");
+        self.out.set(TagValue::fired(v))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2272,10 +2326,43 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
     }
 }
 
+/// Where a print builtin's output goes this cycle, and the line it
+/// writes there.
+fn emit_line<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    dest: LogDest,
+    line: &str,
+    suffix: &str,
+) {
+    let sink = match dest {
+        LogDest::Stdout | LogDest::Stderr => ctx.libstate.get::<PrintSink>().cloned(),
+        LogDest::Log(_) => None,
+    };
+    match (dest, sink) {
+        // Captured (the harness stdout oracle) — the sink receives
+        // exactly the bytes the process stream would have.
+        (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
+            let mut out = sink.0.lock();
+            out.push_str(line);
+            out.push_str(suffix);
+        }
+        (LogDest::Stdout, None) => print!("{line}{suffix}"),
+        (LogDest::Stderr, None) => eprint!("{line}{suffix}"),
+        (LogDest::Log(lvl), _) => match lvl {
+            Level::Trace => log::trace!("{line}"),
+            Level::Debug => log::debug!("{line}"),
+            Level::Info => log::info!("{line}"),
+            Level::Warn => log::warn!("{line}"),
+            Level::Error => log::error!("{line}"),
+        },
+    }
+}
+
 #[derive(Debug)]
 struct Log {
     scope: Scope,
     dest: LogDest,
+    buf: String,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
@@ -2290,7 +2377,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { scope: scope.clone(), dest: LogDest::Stdout }))
+        Ok(Box::new(Self {
+            scope: scope.clone(),
+            dest: LogDest::Stdout,
+            buf: String::new(),
+        }))
     }
 }
 
@@ -2309,30 +2400,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         }
         if let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
         {
-            let tv = TVal { env: &ctx.env, typ: from[1].typ(), v: &v };
-            let sink = match self.dest {
-                LogDest::Stdout | LogDest::Stderr => {
-                    ctx.libstate.get::<PrintSink>().cloned()
-                }
-                LogDest::Log(_) => None,
-            };
-            match (self.dest, sink) {
-                // Captured (the harness stdout oracle).
-                (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-                    use std::fmt::Write;
-                    let mut out = sink.0.lock();
-                    writeln!(out, "{}: {}", self.scope.lexical, tv).unwrap()
-                }
-                (LogDest::Stdout, None) => println!("{}: {}", self.scope.lexical, tv),
-                (LogDest::Stderr, None) => eprintln!("{}: {}", self.scope.lexical, tv),
-                (LogDest::Log(lvl), _) => match lvl {
-                    Level::Trace => log::trace!("{}: {}", self.scope.lexical, tv),
-                    Level::Debug => log::debug!("{}: {}", self.scope.lexical, tv),
-                    Level::Info => log::info!("{}: {}", self.scope.lexical, tv),
-                    Level::Warn => log::warn!("{}: {}", self.scope.lexical, tv),
-                    Level::Error => log::error!("{}: {}", self.scope.lexical, tv),
-                },
-            }
+            self.buf.clear();
+            write!(self.buf, "{}: ", self.scope.lexical).unwrap();
+            let typ = from[1].typ().clone();
+            let buf = &mut self.buf;
+            coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v: &v }).unwrap()
+            });
+            emit_line(ctx, self.dest, &self.buf, "\n");
         }
         TagValue::phantom_ref()
     }
@@ -2343,7 +2418,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
 }
 
 macro_rules! printfn {
-    ($type:ident, $name:literal, $print:ident, $eprint:ident, $suffix:literal) => {
+    ($type:ident, $name:literal, $suffix:literal) => {
         #[derive(Debug)]
         struct $type {
             dest: LogDest,
@@ -2373,7 +2448,6 @@ macro_rules! printfn {
                 from: &mut [Node<R, E>],
                 event: &mut Event<E>,
             ) -> &TagValue {
-                use std::fmt::Write;
                 if let Some(v) =
                     seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
                     && let Ok(d) = v.cast_to::<LogDest>()
@@ -2384,40 +2458,16 @@ macro_rules! printfn {
                     seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
                 {
                     self.buf.clear();
-                    match v {
-                        Value::String(s) => write!(self.buf, "{s}"),
-                        v => write!(
-                            self.buf,
-                            "{}",
-                            TVal { env: &ctx.env, typ: &from[1].typ(), v: &v }
-                        ),
-                    }
-                    .unwrap();
-                    let sink = match self.dest {
-                        LogDest::Stdout | LogDest::Stderr => {
-                            ctx.libstate.get::<PrintSink>().cloned()
+                    let typ = from[1].typ().clone();
+                    let buf = &mut self.buf;
+                    coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                        match &v {
+                            Value::String(s) => write!(buf, "{s}"),
+                            v => write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v }),
                         }
-                        LogDest::Log(_) => None,
-                    };
-                    match (self.dest, sink) {
-                        // Captured (the harness stdout oracle) — the
-                        // sink receives exactly the bytes the process
-                        // stream would have.
-                        (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-                            let mut out = sink.0.lock();
-                            out.push_str(&self.buf);
-                            out.push_str($suffix);
-                        }
-                        (LogDest::Stdout, None) => $print!("{}", self.buf),
-                        (LogDest::Stderr, None) => $eprint!("{}", self.buf),
-                        (LogDest::Log(lvl), _) => match lvl {
-                            Level::Trace => log::trace!("{}", self.buf),
-                            Level::Debug => log::debug!("{}", self.buf),
-                            Level::Info => log::info!("{}", self.buf),
-                            Level::Warn => log::warn!("{}", self.buf),
-                            Level::Error => log::error!("{}", self.buf),
-                        },
-                    }
+                        .unwrap()
+                    });
+                    emit_line(ctx, self.dest, &self.buf, $suffix);
                 }
                 TagValue::phantom_ref()
             }
@@ -2429,8 +2479,8 @@ macro_rules! printfn {
     };
 }
 
-printfn!(Print, "core_print", print, eprint, "");
-printfn!(Println, "core_println", println, eprintln, "\n");
+printfn!(Print, "core_print", "");
+printfn!(Println, "core_println", "\n");
 
 // ── Package registration ───────────────────────────────────────────
 

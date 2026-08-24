@@ -9,7 +9,7 @@ use crate::{
     expr::{Expr, ExprId, ExprKind},
     fusion::{
         LambdaCallInfo, intern,
-        kernel_abi::{self, AbiKind, AbstractRegistry},
+        kernel_abi::{self, AbiKind},
         lowering::BuiltinCallSiteInfo,
     },
     typ::Type,
@@ -353,16 +353,11 @@ pub(super) struct BodySpec<'a> {
     /// self-FuncRef import in `define_kernel_body`.
     pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
     /// The environment snapshot for TYPE RESOLUTION ONLY (#218): node
-    /// `typ` cells can carry `Type::Ref`s to abstract type names whose
-    /// concrete rep needs `env.lookup_ref` + the abstract registry
-    /// (`resolve_abstract`) before `abi_kind`/freeze can classify
-    /// them. NOT for binding lookups; those stay in the analysis
-    /// phase, per the BodyCx design.
+    /// `typ` cells can carry `Type::Ref`s whose definition needs
+    /// `env.lookup_ref` (`expand_refs`) before `abi_kind`/freeze can
+    /// classify them. NOT for binding lookups; those stay in the
+    /// analysis phase, per the BodyCx design.
     pub(super) type_env: Option<&'a Env>,
-    /// The compiling context's abstract-type registry — the fusion
-    /// classifiers (`abi_kind`/freeze/`resolve_abstract`) consult it to
-    /// peek through abstract types to their wire shape.
-    pub(super) registry: &'a AbstractRegistry,
     /// Base offset added to every DynCall `fn_index` this body bakes, so
     /// the body indexes its slots in the REGION-WIDE combined `dyn_slots`
     /// table (parent slots first, then each callee's). `0` for the parent
@@ -442,9 +437,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// `LowerCtx`, not in `self`), so reading it does NOT hold `cx`
     /// borrowed — a reader call can coexist with `&mut cx` in the same
     /// expression.
-    pub fn registry(&self) -> &'c AbstractRegistry {
-        self.ctx.registry
-    }
 
     /// FuncRef for a registered `emit_helpers` runtime helper.
     pub fn helper(&self, name: &str) -> Result<FuncRef> {
@@ -1359,7 +1351,7 @@ pub(super) fn emit_return_from_node<R: Rt, E: UserEvent>(
     return_type: &Type,
     node: &Node<R, E>,
 ) -> Result<()> {
-    match kernel_abi::abi_kind(cx.registry(), return_type) {
+    match kernel_abi::abi_kind(return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let cv = emit_owned_value_operand_node(cx, node)?;
             emit_kernel_return(cx, return_type, cv, CompositeSource::Owned)
@@ -1452,7 +1444,7 @@ pub(super) fn emit_kernel_return(
     // riding the disc in-band, and `Kernel::update`'s decode makes the
     // production (Fired/Stale/bottom). A bottomed result's payload is
     // the owned helper-safe placeholder; the decode frees it.
-    match kernel_abi::abi_kind(cx.registry(), return_type) {
+    match kernel_abi::abi_kind(return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
             drop_owned_composites(cx.b, cx.env, cx.ctx)?;

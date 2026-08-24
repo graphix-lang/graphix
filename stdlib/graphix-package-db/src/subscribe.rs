@@ -6,7 +6,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
-use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
+use netidx_value::{ValArray, Value};
 use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
@@ -60,15 +60,10 @@ impl Hash for SubscriptionValue {
 
 graphix_package_core::impl_no_pack!(SubscriptionValue);
 
-static SUBSCRIPTION_WRAPPER: LazyLock<AbstractWrapper<SubscriptionValue>> =
-    LazyLock::new(|| {
-        let id = uuid::Uuid::from_bytes([
-            0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x4a, 0x3b, 0x4c, 0x5d, 0x6e, 0x7f, 0x80,
-            0xa1, 0xb2, 0xc3,
-        ]);
-        Abstract::register::<SubscriptionValue>(id)
-            .expect("failed to register SubscriptionValue")
-    });
+graphix_package_core::abstract_wrapper!(
+    SubscriptionValue,
+    static SUBSCRIPTION_WRAPPER = "db::subscription::Subscription"
+);
 
 // ── Custom event ──────────────────────────────────────────────────
 

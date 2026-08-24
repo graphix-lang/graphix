@@ -46,7 +46,11 @@ mod modexp;
 use modexp::{module, sig_item, use_module};
 
 mod typexp;
+pub(crate) use typexp::quantifier_names;
 use typexp::{fntype, typ, typedef};
+
+mod traitexp;
+use traitexp::{impl_decl, trait_decl};
 
 mod lambdaexp;
 use lambdaexp::{apply_args, lambda};
@@ -102,7 +106,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "bytes", "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch",
-            "try", "self", "super", "package", "pub",
+            "try", "self", "super", "package", "pub", "trait", "impl",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -152,11 +156,12 @@ where
         })
 }
 
-// Whitespace ONLY — `//` comments are no longer skipped here. They are
-// captured exclusively by `leading_comments()` at the `expr()` entry, so a
-// comment anywhere else (interior, trailing, dangling) is a parse error:
-// a comment is legal only on its own line directly above an expression,
-// which makes "every comment is preserved in the AST" structural.
+// Whitespace ONLY — `//` comments are never skipped. They are captured by
+// `leading_decorations()`, at the `expr()` entry and ahead of the three
+// non-expression heads that hand them to the expression below (a select
+// arm's pattern, an impl method, a struct field's name — `decorate`), so
+// a comment anywhere else (interior, trailing, dangling) is a parse
+// error, which makes "every comment is preserved in the AST" structural.
 fn spaces<I>() -> impl Parser<I, Output = ()>
 where
     I: RangeStream<Token = char>,
@@ -199,10 +204,9 @@ where
 }
 
 // Parse a single `#[name]` or `#[name(arg, ...)]` attribute. The args are
-// full expressions (so `#[foo(1 + 2, "x")]` is legal). Like `leading_comments`,
-// an attribute is only ever consumed by `leading_decorations` at the `expr()`
-// entry, so it is legal exactly where a comment is — on its own line directly
-// above an expression. The leading `attempt(string("#["))` makes the branch
+// full expressions (so `#[foo(1 + 2, "x")]` is legal). An attribute is only
+// ever consumed by `leading_decorations`, so it is legal exactly where a
+// comment is. The leading `attempt(string("#["))` makes the branch
 // backtrack cleanly when there is no attribute, so it never collides with a
 // labeled call arg `#name` (which is `#` immediately followed by an ident).
 fn attribute<I>() -> impl Parser<I, Output = Attr>
@@ -227,14 +231,13 @@ where
 }
 
 // Capture the run of own-line `//` comments and `#[..]` attributes directly
-// above an expression, returning them as two flat lists (comments, attrs).
-// They may interleave in the source; the relative order between a comment and
-// an attribute is not retained (each printer emits comments then attrs in a
-// fixed order), which is fine because `Decorations` is invisible to `Expr`
-// equality. This replaces `leading_comments` at the `expr()` entry;
-// `leading_comments` itself is kept for the `.gxi` `sig_item` path.
-fn leading_decorations<I>()
--> impl Parser<I, Output = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>)>
+// above an expression (or one of the heads `decorate` names), returning them
+// as two flat lists (comments, attrs). They may interleave in the source; the
+// relative order between a comment and an attribute is not retained (each
+// printer emits comments then attrs in a fixed order), which is fine because
+// `Decorations` is invisible to `Expr` equality. `leading_comments` itself is
+// kept for the `.gxi` `sig_item` path.
+fn leading_decorations<I>() -> impl Parser<I, Output = Leading>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -260,6 +263,33 @@ where
             }
             (comments, attrs)
         })
+}
+
+/// The comments and attributes `leading_decorations` captured, in
+/// source order within each list.
+type Leading = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>);
+
+/// Give `e` the decorations captured directly above it. The capture
+/// point need not be the expression itself: what sits above a select
+/// arm's pattern, an impl method, or a struct field's name belongs to
+/// the expression that follows it — the arm's body, the method's
+/// binding, the field's value — ahead of anything that expression
+/// captured for itself, and the printers put it back above the pattern
+/// or the name.
+fn decorate(mut e: Expr, (mut comments, mut attrs): Leading) -> Expr {
+    if comments.is_empty() && attrs.is_empty() {
+        return e;
+    }
+    if let Some(own) = e.dec.take() {
+        let Decorations { comments: c, attrs: a } = *own;
+        comments.extend(c.iter().cloned());
+        attrs.extend(a.iter().cloned());
+    }
+    e.dec = Some(Box::new(Decorations {
+        comments: Arc::from_iter(comments.drain(..)),
+        attrs: Arc::from_iter(attrs.drain(..)),
+    }));
+    e
 }
 
 fn spaces1<I>() -> impl Parser<I, Output = ()>
@@ -515,7 +545,7 @@ where
         })
 }
 
-fn letbind<I>() -> impl Parser<I, Output = Expr>
+pub(super) fn letbind<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -574,13 +604,42 @@ where
     )
 }
 
+/// A value path: `x`, `m::x`, `Trait::m` (an uppercase interior
+/// segment names a trait, whose methods are reached like a module's
+/// items), or the bare receiver name `self` of an impl method.
+fn valpath<I>() -> impl Parser<I, Output = ModPath>
+where
+    I: RangeStream<Token = char>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(string("self").skip(not_prefix()).skip(not_followed_by(string("::"))))
+            .map(|_| ModPath::from([literal!("self")])),
+        (path_root(), sep_by1(choice((fname(), typname())), string("::"))).then(
+            |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+                let terminal_is_value = v
+                    .last()
+                    .and_then(|s| s.chars().next())
+                    .map(|c| c.is_lowercase())
+                    .unwrap_or(false);
+                if !terminal_is_value {
+                    return unexpected_any("expected a value name").left();
+                }
+                root.extend(v.drain(..));
+                value(ModPath(Path::from_iter(root.drain(..)))).right()
+            },
+        ),
+    ))
+}
+
 fn reference<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), modpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
+    (position(), valpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
 }
 
 fn qop<I, P>(p: P) -> impl Parser<I, Output = Expr>
@@ -656,7 +715,8 @@ where
                 sptoken('{'),
                 sptoken('}'),
                 spaces().with(sep_by1_tok(
-                    (pattern(), spstring("=>").with(expr())),
+                    (leading_decorations(), pattern(), spstring("=>").with(expr()))
+                        .map(|(dec, pat, body)| (pat, decorate(body, dec))),
                     csep(),
                     token('}'),
                 )),
@@ -690,52 +750,63 @@ where
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
 }
 
+/// The `name: value, name, ..` field list of a struct literal or a
+/// functional update: names unique (a reserved word needs the explicit
+/// form — it cannot be a reference), sorted by name; decorations above
+/// a field attach to its value; a shorthand's reference is minted at
+/// the field's own position.
+fn struct_fields<I>() -> impl Parser<I, Output = LPooled<Vec<(ArcStr, Expr)>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    let field = (
+        leading_decorations(),
+        position(),
+        fldname(),
+        spaces().with(optional(token(':').with(expr()))),
+    )
+        .then(|(dec, pos, name, v): (Leading, _, ArcStr, Option<Expr>)| {
+            let v = match v {
+                Some(v) => v,
+                None if RESERVED_BINDING.contains(&name.as_str()) => {
+                    return unexpected_any(
+                        "a reserved word field needs the explicit `name: value` form",
+                    )
+                    .left();
+                }
+                None => {
+                    ExprKind::Ref { name: ModPath::from([name.clone()]) }.to_expr(pos)
+                }
+            };
+            value((name, decorate(v, dec))).right()
+        });
+    sep_by1_tok(field, csep(), token('}')).then(
+        |mut fields: LPooled<Vec<(ArcStr, Expr)>>| {
+            let names = fields.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
+            if names.len() < fields.len() {
+                return unexpected_any("struct fields must be unique").left();
+            }
+            drop(names);
+            fields.sort_by_key(|(n, _)| n.clone());
+            value(fields).right()
+        },
+    )
+}
+
 fn structure<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (
-        position(),
-        between(
-            token('{'),
-            sptoken('}'),
-            spaces().with(sep_by1_tok(
-                (fldname(), spaces().with(optional(token(':').with(expr())))),
-                csep(),
-                token('}'),
-            )),
-        ),
+    (position(), between(token('{'), sptoken('}'), spaces().with(struct_fields()))).map(
+        |(pos, mut fields): (_, LPooled<Vec<(ArcStr, Expr)>>)| {
+            ExprKind::Struct(StructExpr { args: Arc::from_iter(fields.drain(..)) })
+                .to_expr(pos)
+        },
     )
-        .then(|(pos, mut exprs): (_, LPooled<Vec<(ArcStr, Option<Expr>)>>)| {
-            if exprs
-                .iter()
-                .any(|(n, e)| e.is_none() && RESERVED_BINDING.contains(&n.as_str()))
-            {
-                return unexpected_any(
-                    "a reserved word field needs the explicit `name: value` form",
-                )
-                .left();
-            }
-            let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
-            if s.len() < exprs.len() {
-                return unexpected_any("struct fields must be unique").left();
-            }
-            drop(s);
-            exprs.sort_by_key(|(n, _)| n.clone());
-            let args = exprs.drain(..).map(|(n, e)| match e {
-                Some(e) => (n, e),
-                None => {
-                    let e = ExprKind::Ref { name: [n.clone()].into() }.to_expr(pos);
-                    (n, e)
-                }
-            });
-            value(
-                ExprKind::Struct(StructExpr { args: Arc::from_iter(args) }).to_expr(pos),
-            )
-            .right()
-        })
 }
 
 fn map<I>() -> impl Parser<I, Output = Expr>
@@ -785,6 +856,26 @@ where
         })
 }
 
+/// `T(v)` — a constructor call of the abstract type at the capitalized
+/// path `T`. A capitalized last segment is what tells it from a call
+/// (bindings can't be capitalized).
+fn construct<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        attempt(typexp::typath().skip(spaces()).skip(token('('))),
+        expr(),
+        sptoken(')'),
+    )
+        .map(|(pos, name, arg, _)| {
+            ExprKind::Construct { name, arg: Arc::new(arg) }.to_expr(pos)
+        })
+}
+
 fn structwith<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -798,48 +889,17 @@ where
             sptoken('}'),
             (
                 ref_pexp().skip(space()).skip(spstring("with")).skip(space()),
-                sep_by1_tok(
-                    (spfldname(), spaces().with(optional(token(':').with(expr())))),
-                    csep(),
-                    token('}'),
-                ),
+                struct_fields(),
             ),
         ),
     )
-        .then(
-            |(pos, (source, mut exprs)): (
-                _,
-                (Expr, LPooled<Vec<(ArcStr, Option<Expr>)>>),
-            )| {
-                if exprs
-                    .iter()
-                    .any(|(n, e)| e.is_none() && RESERVED_BINDING.contains(&n.as_str()))
-                {
-                    return unexpected_any(
-                        "a reserved word field needs the explicit `name: value` form",
-                    )
-                    .left();
-                }
-                let s = exprs.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
-                if s.len() < exprs.len() {
-                    return unexpected_any("struct fields must be unique").left();
-                }
-                drop(s);
-                exprs.sort_by_key(|(n, _)| n.clone());
-                let exprs = exprs.drain(..).map(|(name, e)| match e {
-                    Some(e) => (name, e),
-                    None => {
-                        let e = ExprKind::Ref { name: ModPath::from([name.clone()]) }
-                            .to_expr(pos);
-                        (name, e)
-                    }
-                });
-                let e = ExprKind::StructWith(StructWithExpr {
+        .map(
+            |(pos, (source, mut fields)): (_, (Expr, LPooled<Vec<(ArcStr, Expr)>>))| {
+                ExprKind::StructWith(StructWithExpr {
                     source: Arc::new(source),
-                    replace: Arc::from_iter(exprs),
+                    replace: Arc::from_iter(fields.drain(..)),
                 })
-                .to_expr(pos);
-                value(e).right()
+                .to_expr(pos)
             },
         )
 }
@@ -915,6 +975,8 @@ parser! {
                 catch_stmt(),
                 try_removed(),
                 typedef(),
+                trait_decl(),
+                impl_decl(),
                 letbind(),
                 attempt(lambda()),
                 attempt(connect()),
@@ -928,21 +990,7 @@ parser! {
                 qop(reference()),
             )),
         )
-            .map(
-                |((comments, attrs), mut e): (
-                    (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>),
-                    Expr,
-                )| {
-                    if !comments.is_empty() || !attrs.is_empty() {
-                        e.dec = Some(Box::new(Decorations {
-                            comments: comments.iter().cloned().collect(),
-                            attrs: attrs.iter().cloned().collect(),
-                            trailing: Arc::from_iter(std::iter::empty::<ArcStr>()),
-                        }));
-                    }
-                    e
-                },
-            ))
+            .map(|(dec, e): (Leading, Expr)| decorate(e, dec)))
     }
 }
 

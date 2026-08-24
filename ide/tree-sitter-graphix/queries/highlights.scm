@@ -2,6 +2,13 @@
 (line_comment) @comment.line
 (doc_comment) @comment.block.documentation
 
+; -- Attributes -----------------------------------------------------
+; The brackets and the name color as one unit; an argument inside them
+; is an ordinary expression and picks up its colors from the rules
+; below.
+(attribute ["#[" "]"] @attribute)
+(attribute name: (identifier) @attribute)
+
 ; -- Keywords -------------------------------------------------------
 [
   "select"

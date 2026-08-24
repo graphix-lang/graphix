@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
+            window.path_to_searchindex_js = "../../searchindex-e725aa8e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-e4e99a5c.js"></script>
+        <script src="../../toc-f7a0005a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,22 +175,32 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="sysprocess"><a class="header" href="#sysprocess">sys::process</a></h1>
-<p>The <code>sys::process</code> module starts and manages local child processes. Stdio
-handles configured as <code>Pipe</code> are exposed as <code>sys::io::Stream&lt;\</code>Pipe&gt;`.</p>
-<pre><code class="language-graphix">use sys::io;
+<p>The <code>sys::process</code> module starts and manages local child processes. A
+stdio handle configured as <code>Pipe</code> is a <code>sys::process::Pipe</code>, which
+implements the <a href="io.html">sys::io</a> traits.</p>
+<pre><code class="language-graphix">use sys::io::{Read, Lines, Write, Close};
 
 type Proc;
 
-type Stdio = [
+/// One end of a pipe to a child process: the child's stdin (which the
+/// parent writes) or its stdout or stderr (which the parent reads).
+type Pipe;
+
+impl Read for Pipe;
+impl Lines for Pipe;
+impl Write for Pipe;
+impl Close for Pipe;
+
+type Redirect = [
   `Pipe,
   `Inherit,
   `Null,
 ];
 
 type StdioConfig = {
-  stdin: Stdio,
-  stdout: Stdio,
-  stderr: Stdio,
+  stdin: Redirect,
+  stdout: Redirect,
+  stderr: Redirect,
 };
 
 type SpawnOptions = {
@@ -206,9 +216,9 @@ type SpawnOptions = {
 type Child = {
   proc: Proc,
   pid: i64,
-  stdin: [io::Stream&lt;`Pipe&gt;, null],
-  stdout: [io::Stream&lt;`Pipe&gt;, null],
-  stderr: [io::Stream&lt;`Pipe&gt;, null],
+  stdin: [Pipe, null],
+  stdout: [Pipe, null],
+  stderr: [Pipe, null],
 };
 
 type ExitStatus = {
@@ -217,9 +227,9 @@ type ExitStatus = {
 };
 
 val stdio: fn(
-  ?#stdin: Stdio,
-  ?#stdout: Stdio,
-  ?#stderr: Stdio
+  ?#stdin: Redirect,
+  ?#stdout: Redirect,
+  ?#stderr: Redirect
 ) -&gt; StdioConfig;
 
 val options: fn(
@@ -268,7 +278,7 @@ multiple concurrent waiters are fine.</p>
   );
   let child = sys::process::spawn(options)?;
   let stdout = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let out = buffer::to_string(sys::io::read(stdout, u64:1024)?)?;
+  let out = buffer::to_string(sys::io::Read::read(stdout, u64:1024)?)?;
   let status = sys::process::wait(child.proc)?;
   status.success ~ out
 }

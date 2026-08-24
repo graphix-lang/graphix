@@ -14,6 +14,7 @@ mod maps;
 mod modules;
 mod organic_deltas;
 mod select;
+mod traits;
 mod tuples_structs;
 mod types;
 mod variants;

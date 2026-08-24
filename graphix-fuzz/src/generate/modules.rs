@@ -32,9 +32,9 @@ pub(super) struct GenModule {
 /// plain spelling and emits a `use super::{m0, …};` header, 1 rewrites
 /// references to `super::m<j>::…` inline, 2 to `package::m<j>::…`.
 fn sibling_qualified(n: &str) -> bool {
-    n.strip_prefix('m')
-        .and_then(|r| r.split_once("::"))
-        .is_some_and(|(digits, _)| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    n.strip_prefix('m').and_then(|r| r.split_once("::")).is_some_and(|(digits, _)| {
+        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// Walk the abstract-type MODULE fields nested in a vocabulary entry's
@@ -115,7 +115,11 @@ pub(super) fn gen_module(
     } else if idx > 0 {
         let list: Vec<String> = (0..idx).map(|j| format!("m{j}")).collect();
         let header = format!("use super::{{{}}};\n", list.join(", "));
-        if has_gxi { gxi.push_str(&header) } else { gx.push_str(&header) }
+        if has_gxi {
+            gxi.push_str(&header)
+        } else {
+            gx.push_str(&header)
+        }
         stats.use_vocab = true;
     }
     let mut public: Vec<(String, GenType)> = Vec::new();
@@ -285,8 +289,8 @@ pub(super) fn gen_module(
     // binds, later modules' bodies, and (via cross-module wiring
     // pinning a later f0's return to `mk`'s) other interfaces —
     // `m1.gxi` declaring `-> m0::T` resolves (probed 2026-07-08). In
-    // the bare-module variant the same paths hold with `m<i>::T`
-    // resolving as a transparent alias.
+    // the bare-module variant the same paths hold with `m<i>::T` a
+    // PUBLIC newtype (the `Abstract<..>` body is exported).
     let mut stmts = Vec::new();
     if chance(rng, cfg.p_abstract) {
         let concrete = match rng.below(3) {
@@ -294,17 +298,105 @@ pub(super) fn gen_module(
             1 => GenType::Tuple(vec![I64, I64]),
             _ => GenType::Array(Box::new(I64)),
         };
+        // the nominal faces (design/nominal_abstract_types.md): the
+        // constructor `T(..)`, the payload `.0`, the pattern `T(p)`
         let (mk_body, un_body) = match &concrete {
-            GenType::Num(NumTy::I64) => ("x".to_string(), "t".to_string()),
-            GenType::Tuple(_) => ("(x, x + i64:1)".to_string(), "t.0".to_string()),
-            _ => ("[x, x]".to_string(), "t[0]$".to_string()),
+            GenType::Num(NumTy::I64) => ("T(x)".to_string(), "t.0".to_string()),
+            GenType::Tuple(_) => {
+                ("T((x, x + i64:1))".to_string(), "{ let T((a, _)) = t; a }".to_string())
+            }
+            _ => ("T([x, x])".to_string(), "t.0[0]$".to_string()),
         };
         gxi.push_str("type T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n");
         gx.push_str(&format!(
-            "type T = {};\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
+            "type T = Abstract<{}>;\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
             concrete.render()
         ));
         let aty = GenType::Abstract { module: mname.clone() };
+        // A trait over T (design/traits.md): declared in the interface
+        // (with a default the impl may override), implemented for T,
+        // and a bounded generic `via` whose body dispatches per
+        // instance. Both enter the MAIN vocabulary as T -> i64 fns,
+        // so trait calls compose into arbitrary expressions: the
+        // static-dispatch, default-method, and annotation-bound
+        // (`fn<'a: Tr>`) surfaces.
+        if chance(rng, 0.6) {
+            let override_default = chance(rng, 0.5);
+            let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
+            let (sig_impl, body_impl) = if override_default {
+                (
+                    "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",
+                    format!(
+                        "impl Tr for T {{ let tv = |t| {un_body}; let tw = |t| {un_body} * i64:2 }};\nlet via = 'a: Tr |x: 'a| Tr::tw(x);\n"
+                    ),
+                )
+            } else {
+                (
+                    "impl Tr for T;\nval via: fn<'a: Tr>(x: 'a) -> i64;\n",
+                    format!(
+                        "impl Tr for T {{ let tv = |t| {un_body} }};\nlet via = 'a: Tr |x: 'a| Tr::tw(x);\n"
+                    ),
+                )
+            };
+            if has_gxi {
+                gxi.push_str(decl);
+                gxi.push_str(sig_impl);
+            } else {
+                gx.push_str(decl);
+                gx.push_str(
+                    "let via: fn<'a: Tr>(x: 'a) -> i64 = 'a: Tr |x: 'a| Tr::tw(x);\n",
+                );
+            }
+            if has_gxi {
+                gx.push_str(&body_impl);
+            } else {
+                gx.push_str(
+                    &body_impl.replace("let via = 'a: Tr |x: 'a| Tr::tw(x);\n", ""),
+                );
+            }
+            ctx.push(
+                format!("{mname}::Tr::tv"),
+                GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+            );
+            ctx.push(
+                format!("{mname}::via"),
+                GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+            );
+            stats.trait_call = true;
+        }
+        // The core traits (design/traits.md §8): an `Eq` whose answer
+        // differs from the structural one (parity of the payload) and
+        // a `Display` with its own spelling, reached through `==` on
+        // T itself (the lowered static call), `==` on arrays holding
+        // T (the hooked walk), and interpolation of T bare and nested.
+        if chance(rng, 0.5) {
+            let decls = "impl Eq for T;\nimpl Ord for T;\nimpl Display for T;\nval teq: fn(a: T, b: T) -> bool;\nval teqa: fn(a: T, b: T) -> bool;\nval tshow: fn(t: T) -> string;\nval tmap: fn(a: T, b: T) -> i64;\n";
+            let impls = "impl Eq for T { let eq = |a, b| un(a) % i64:2 == un(b) % i64:2 };\nimpl Ord for T { let cmp = |a, b| select (un(a) % i64:2, un(b) % i64:2) { (x, y) if x < y => `Less, (x, y) if x > y => `Greater, _ => `Equal } };\nimpl Display for T { let fmt = |t| \"T<[un(t)]>\" };\n";
+            let fns = "let teq = |a: T, b: T| -> bool a == b && (a <= b || a > b);\nlet teqa = |a: T, b: T| -> bool [a, a] == [b, a];\nlet tshow = |t: T| -> string \"[t]|[(t, i64:1)]\";\nlet tmap = |a: T, b: T| -> i64 { let m = {a => i64:1, b => i64:2}; map::len(m) + map::len(map::insert(m, a, i64:3)) };\n";
+            if has_gxi {
+                gxi.push_str(decls);
+            }
+            gx.push_str(impls);
+            gx.push_str(fns);
+            let f2 = GenType::Fn {
+                params: vec![aty.clone(), aty.clone()],
+                ret: Box::new(GenType::Bool),
+            };
+            ctx.push(format!("{mname}::teq"), f2.clone());
+            ctx.push(format!("{mname}::teqa"), f2);
+            ctx.push(
+                format!("{mname}::tmap"),
+                GenType::Fn {
+                    params: vec![aty.clone(), aty.clone()],
+                    ret: Box::new(I64),
+                },
+            );
+            ctx.push(
+                format!("{mname}::tshow"),
+                GenType::Fn { params: vec![aty.clone()], ret: Box::new(GenType::Str) },
+            );
+            stats.core_trait = true;
+        }
         ctx.push(
             format!("{mname}::mk"),
             GenType::Fn { params: vec![I64], ret: Box::new(aty.clone()) },

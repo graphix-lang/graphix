@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3e838236.js";
+            window.path_to_searchindex_js = "../searchindex-e725aa8e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e4e99a5c.js"></script>
+        <script src="../toc-f7a0005a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,13 +178,14 @@
 <p>The <code>xls</code> module reads spreadsheet files in xlsx, xls, ods, and xlsb
 formats (via calamine). Data is returned as a 2D array of primitive
 values.</p>
-<pre><code class="language-graphix">use sys::io::Stream;
-
-/// List sheet names in a workbook.
-val sheets: fn(input: [bytes, Stream&lt;'a&gt;]) -&gt; Result&lt;Array&lt;string&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+<pre><code class="language-graphix">/// List sheet names in a workbook.
+///
+/// To read a workbook from a stream, read it first —
+/// `xls::sheets(Read::read_all(f)?)`.
+val sheets: fn(input: bytes) -&gt; Result&lt;Array&lt;string&gt;, `XlsErr(string)&gt;;
 
 /// Read a sheet by name as a 2D array of rows.
-val read: fn(input: [bytes, Stream&lt;'a&gt;], sheet: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, [`XlsErr(string), `IOErr(string)]&gt;;
+val read: fn(input: bytes, sheet: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, `XlsErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">

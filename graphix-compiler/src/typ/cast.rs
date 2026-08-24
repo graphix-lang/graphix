@@ -18,16 +18,16 @@ use std::iter;
 #[bitflags]
 #[repr(u8)]
 pub enum IsAFlags {
-    /// When set, Type::Abstract matches ANY value. An abstract type's
-    /// representation is hidden, so a checked match is impossible from
-    /// outside its module — the one consumer (the `TVal` printer)
-    /// trusts the typechecker instead. Without the flag an abstract
-    /// matches nothing: runtime dispatch (`select`) must never claim a
-    /// value it can't verify. The old halfway reading (flag = match
-    /// `Value::Abstract` carriers only) mis-flagged every hidden-rep
-    /// abstract (a `list::List` result printed through the mismatch
-    /// diagnostic, whose unbounded Debug dump then overflowed the
-    /// stack — jul17a crash_000003).
+    /// When set, a `Type::Abstract` test accepts any RUST-BACKED
+    /// abstract value whose wrapper UUID is not the type's
+    /// path-derived one (`abstract_uuid`) — the lenient reading for
+    /// packages that still register ad-hoc UUIDs — the stdlib registers
+    /// path-derived ones (`abstract_wrapper!`), so this only covers a
+    /// third-party package that has not. A Graphix-minted box always
+    /// answers by its tag, and a non-abstract value never matches
+    /// (`design/nominal_abstract_types.md`). Consumers: the `TVal`
+    /// printer and INFERRED select predicates; an explicit `T as t` is
+    /// strict.
     MatchAbstract,
     /// When set, the type-blind leaves — `Any`, `⊥`, and an unbound
     /// tvar — match NOTHING instead of everything. `is_a` answers
@@ -52,9 +52,12 @@ impl Type {
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
-            Type::Set(s) | Type::Abstract { id: _, params: s } => Ok(for t in s.iter() {
+            Type::Set(s) => Ok(for t in s.iter() {
                 t.check_cast_int(env, hist)?
             }),
+            Type::Abstract { .. } => {
+                bail!("can't cast a value to an abstract type; use its constructor")
+            }
             Type::TVar(tv) => match &tv.read().typ.read().typ {
                 Some(t) => t.check_cast_int(env, hist),
                 None => bail!("can't cast a value to a free type variable"),
@@ -332,7 +335,22 @@ impl Type {
                 }
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
-            Type::Abstract { .. } => flags.contains(IsAFlags::MatchAbstract),
+            // A Graphix-minted box answers by its tag. A Rust-backed
+            // value answers by its wrapper UUID (`abstract_uuid` of
+            // the type's path) — or leniently, for packages whose
+            // wrappers still carry an ad-hoc UUID.
+            Type::Abstract { id, .. } => match v {
+                Value::Abstract(a) => {
+                    match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
+                        Some(g) => g.id == *id,
+                        None => {
+                            a.id().as_u64_pair().1 == id.inner()
+                                || flags.contains(IsAFlags::MatchAbstract)
+                        }
+                    }
+                }
+                _ => false,
+            },
             Type::Any => !flags.contains(IsAFlags::Strict),
             Type::Array(et) => match v {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),

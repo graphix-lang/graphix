@@ -948,6 +948,79 @@ unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
     TagValue::clean(unsafe { (*ptr).clone() })
 }
 
+/// Box `tv` as a value of the Graphix-minted abstract type `id` —
+/// the constructor `T(v)` (`design/nominal_abstract_types.md`).
+/// Consumes `tv`.
+unsafe fn graphix_abstract_wrap(id: u64, name: *const arcstr::ArcStr, tv: TagValue) -> TagValue {
+    let name = unsafe { (*name).clone() };
+    let id = crate::typ::AbstractId::from_inner(id);
+    TagValue::clean(crate::abstract_value::wrap(id, name, tv.value()))
+}
+
+safe fn graphix_abstract_get_i64(tv: TagValue) -> i64 {
+    abstract_payload_read(tv, read_slot_i64)
+}
+
+safe fn graphix_abstract_get_u64(tv: TagValue) -> u64 {
+    abstract_payload_read(tv, read_slot_u64)
+}
+
+safe fn graphix_abstract_get_i32(tv: TagValue) -> i32 {
+    abstract_payload_read(tv, read_slot_i32)
+}
+
+safe fn graphix_abstract_get_u32(tv: TagValue) -> u32 {
+    abstract_payload_read(tv, read_slot_u32)
+}
+
+safe fn graphix_abstract_get_i16(tv: TagValue) -> i16 {
+    abstract_payload_read(tv, read_slot_i16)
+}
+
+safe fn graphix_abstract_get_u16(tv: TagValue) -> u16 {
+    abstract_payload_read(tv, read_slot_u16)
+}
+
+safe fn graphix_abstract_get_i8(tv: TagValue) -> i8 {
+    abstract_payload_read(tv, read_slot_i8)
+}
+
+safe fn graphix_abstract_get_u8(tv: TagValue) -> u8 {
+    abstract_payload_read(tv, read_slot_u8)
+}
+
+safe fn graphix_abstract_get_f64(tv: TagValue) -> f64 {
+    abstract_payload_read(tv, read_slot_f64)
+}
+
+safe fn graphix_abstract_get_f32(tv: TagValue) -> f32 {
+    abstract_payload_read(tv, read_slot_f32)
+}
+
+safe fn graphix_abstract_get_bool(tv: TagValue) -> u8 {
+    abstract_payload_read(tv, read_slot_bool)
+}
+
+safe fn graphix_abstract_get_arcstr(tv: TagValue) -> arcstr::ArcStr {
+    let r = tv.with_value(|v| slot_arcstr(crate::abstract_value::payload(v)));
+    std::mem::forget(tv);
+    r
+}
+
+safe fn graphix_abstract_get_array(tv: TagValue) -> u64 {
+    let r = tv.with_value(|v| va_bits(slot_array(crate::abstract_value::payload(v)).clone()));
+    std::mem::forget(tv);
+    r
+}
+
+safe fn graphix_abstract_get_value(tv: TagValue) -> TagValue {
+    let r = tv.with_value(|v| {
+        TagValue::clean(crate::abstract_value::payload(v).cloned().unwrap_or(Value::Null))
+    });
+    std::mem::forget(tv);
+    r
+}
+
 // Value arithmetic (datetime/duration `ValueArith`) — see
 // [`value_arith_op`]. Codegen passes OWNED Values
 // (`ensure_owned_value` clones a Borrowed Local read, scalar operands
@@ -1385,6 +1458,16 @@ safe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
 /// (0) otherwise. One reader per family; every scalar element / struct
 /// field / variant payload helper composes these over a bounds-checked
 /// `.get()`.
+/// A BORROWED read of a Graphix-minted abstract value's payload (`.0`):
+/// the caller keeps owning `tv`. A non-abstract value reads as the
+/// shape's placeholder (the TOTAL-reads contract).
+fn abstract_payload_read<T: Default>(tv: TagValue, f: fn(&Value) -> T) -> T {
+    let r =
+        tv.with_value(|v| crate::abstract_value::payload(v).map(f).unwrap_or_default());
+    std::mem::forget(tv);
+    r
+}
+
 macro_rules! slot_readers {
     ($($fn:ident, $ty:ty, [$($variant:ident)|+];)+) => {
         $(fn $fn(v: &Value) -> $ty {

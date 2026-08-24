@@ -35,10 +35,10 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-3e838236.js";
+            window.path_to_searchindex_js = "../../searchindex-e725aa8e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../../toc-e4e99a5c.js"></script>
+        <script src="../../toc-f7a0005a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -270,20 +270,40 @@ val remove_file: fn(path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
 /// - `ReadWrite: must exist, read and write
 /// - `Create: create or truncate, read and write
 /// - `CreateNew: must not exist, read and write
-val open: fn(mode: Mode, path: string) -&gt; Result&lt;io::Stream&lt;`File&gt;, `IOError(string)&gt;;
-
-/// Seek to a position in the file. Returns the new position.
-val seek: fn(stream: io::Stream&lt;`File&gt;, pos: SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
+val open: fn(mode: Mode, path: string) -&gt; Result&lt;File, `IOError(string)&gt;;
 
 /// Get metadata for the open file.
-val fstat: fn(stream: io::Stream&lt;`File&gt;) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+val fstat: fn(file: File) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
 
 /// Truncate or extend the file to the specified length.
-val truncate: fn(stream: io::Stream&lt;`File&gt;, len: u64) -&gt; Result&lt;null, `IOError(string)&gt;;
+val truncate: fn(file: File, len: u64) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// An open file. It reads, writes, seeks, and closes.
+type File;
+
+/// A handle with a position in a finite resource.
+trait Seek {
+    /// Seek to a position. Returns the new position.
+    val seek: fn(self, pos: SeekFrom) -&gt; Result&lt;u64, `IOError(string)&gt;;
+};
+
+impl Read for File;
+impl Lines for File;
+impl Write for File;
+impl Close for File;
+impl Seek for File;
 </code></pre>
-<p>Once a file is opened with <code>sys::fs::open</code>, use <code>sys::io::read</code>,
-<code>sys::io::write</code>, and <code>sys::io::flush</code> for I/O — these work on any
-stream kind.</p>
+<p>An open <code>File</code> reads, writes and closes through the <a href="io.html">sys::io</a>
+traits, and seeks through <code>Seek</code>:</p>
+<pre><code class="language-graphix">use sys::fs::{self, *};
+use sys::io::{Read, Write, Close};
+
+let f = open(`Create, path)?;
+let written = Write::write_exact(f, buffer::from_string("hello"))?;
+let rewound = Seek::seek(f, written ~ `Start(u64:0))?;
+let text = buffer::to_string(Read::read_all(rewound ~ f)?)?;
+Close::close(text ~ f)?
+</code></pre>
 <h2 id="sysfswatch"><a class="header" href="#sysfswatch">sys::fs::watch</a></h2>
 <pre><code class="language-graphix">type Interest = [
     `Established,

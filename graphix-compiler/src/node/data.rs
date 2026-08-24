@@ -1,14 +1,14 @@
 use super::{compiler::compile, dense_gate, gather};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent, deref_typ,
-    expr::{Expr, ExprId, ExprKind, StructWithExpr},
+    Update, UserEvent, abstract_value, deref_typ,
+    expr::{Expr, ExprId, ExprKind, ModPath, StructWithExpr},
     fusion::emit::{
-        BodyCx, CompiledExpr, emit_struct_new_node, emit_struct_ref_node,
-        emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
-        emit_variant_new_node,
+        BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
+        emit_struct_new_node, emit_struct_ref_node, emit_struct_with_node,
+        emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
     },
-    typ::Type,
+    typ::{AbstractId, Type},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -720,12 +720,124 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
 }
 
+/// `T(v)`: the constructor of a Graphix-minted abstract type
+/// (`design/nominal_abstract_types.md`) — boxes its argument with the
+/// type's tag. Compiles only where the definition is visible.
+#[derive(Debug)]
+pub struct Construct<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub id: AbstractId,
+    pub name: ArcStr,
+    /// The representation at this instance's parameters — what `arg`
+    /// must be contained by.
+    pub rep: Type,
+    pub arg: Node<R, E>,
+    resident: TagValue,
+}
+
+impl<R: Rt, E: UserEvent> Construct<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        name: &ModPath,
+        arg: &Expr,
+    ) -> Result<Node<R, E>> {
+        let arg = compile(ctx, flags, arg.clone(), scope, top_id)?;
+        let td = ctx
+            .env
+            .lookup_typedef(&scope.lexical, name)?
+            .ok_or_else(|| anyhow!("unknown type {name}"))?;
+        let Type::Abstract { id, .. } = &td.typ else {
+            bail!("{name} is not an abstract type, so it has no constructor")
+        };
+        let id = *id;
+        let Some(r) = ctx.env.abstract_rep(id, &scope.lexical) else {
+            bail!(
+                "the definition of {name} is not visible here, so it cannot be constructed"
+            )
+        };
+        let (typ, rep) = r.instantiate(id);
+        let name = r.name.clone();
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            id,
+            name,
+            rep,
+            arg,
+            resident: TagValue::phantom(),
+        }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.arg.update(ctx, event);
+        let tag = tv.tag();
+        if tag.is_bottom() {
+            return if tag.triggers() {
+                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+            } else {
+                self.resident.ride()
+            };
+        }
+        let v = abstract_value::wrap(self.id, self.name.clone(), tv.value_cloned());
+        self.resident.set(TagValue::tagged(v, tag))
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.arg.refs(refs)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.arg.delete(ctx)
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.arg.sleep(ctx)
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.arg.reset_replay(ctx)
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.arg, self.arg.typecheck0(ctx))?;
+        wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.arg, self.arg.typecheck1(ctx))
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Construct(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_construct_node(cx, self.id, &self.name, &self.arg)
+    }
+}
+
 #[derive(Debug)]
 pub struct TupleRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub source: Node<R, E>,
     pub field: usize,
+    scope: ModPath,
     resident: TagValue,
 }
 
@@ -746,9 +858,22 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
                 ts.get(field).map(|t| t.clone()).unwrap_or_else(Type::empty_tvar)
             }
             Type::Error(t) => (**t).clone(),
+            Type::Abstract { id, params } if field == 0 => ctx
+                .env
+                .abstract_rep(*id, &scope.lexical)
+                .map(|r| r.instantiate_with(params))
+                .unwrap_or_else(Type::empty_tvar),
             _ => Type::empty_tvar(),
         };
-        Ok(Node::new(Self { spec, typ, source, field, resident: TagValue::phantom() }))
+        let scope = scope.lexical.clone();
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            source,
+            field,
+            scope,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
@@ -767,6 +892,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         let res = match v {
             Value::Array(a) => a.get(self.field).map(|v| v.clone()),
             Value::Error(v) => Some((*v).clone()),
+            Value::Abstract(_) if self.field == 0 => {
+                abstract_value::get(&v).map(|g| g.payload.clone())
+            }
             _ => None,
         };
         match res {
@@ -811,6 +939,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
                     bail!("no such field {}", self.field);
                 }
                 Ok((**t).clone())
+            },
+            Some(Type::Abstract { id, params }) => {
+                if self.field != 0 {
+                    bail!("no such field {}: an abstract type has only its payload .0", self.field);
+                }
+                match ctx.env.abstract_rep(*id, &self.scope) {
+                    Some(r) => Ok(r.instantiate_with(params)),
+                    None => bail!(
+                        "the definition of this abstract type is not visible here, so \
+                         its payload cannot be read"
+                    ),
+                }
             }
         );
         let etyp = wrap!(self, etyp)?;
@@ -827,6 +967,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
+        let abstract_source =
+            self.source.typ().with_deref(|t| matches!(t, Some(Type::Abstract { .. })));
+        if abstract_source {
+            emit_abstract_ref_node(cx, &self.source, &self.typ)
+        } else {
+            emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
+        }
     }
 }

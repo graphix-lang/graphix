@@ -7,6 +7,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::utils::Either;
 use netidx_derive::Pack;
@@ -33,7 +34,7 @@ mod normalize;
 pub(crate) use normalize::{NormKey, norm_key};
 mod print;
 mod setops;
-mod tval;
+pub(crate) mod tval;
 mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType};
@@ -74,17 +75,6 @@ struct RefHist<H: IsoPoolable> {
     probe_pins: LPooled<Vec<Type>>,
     epoch: u64,
     next_id: usize,
-    /// An Abstract-PAIR comparison returned false somewhere in this
-    /// walk — the verdict might flip if the abstract were seen through
-    /// its defining module, so a failure is classifiable
-    /// [`AbstractOpaque`] (retry via `privatize_type`). Sticky for the
-    /// walk: a set-member probe's abstract false can over-tag an
-    /// unrelated failure, which only costs a retry that fails honestly.
-    /// A failure with the flag CLEAR is final — no name resolution can
-    /// change it (the tree-wide `mentions_abstract` classification this
-    /// replaces silently dropped genuine mismatches back to dynamic
-    /// binding, soak-jul13b cluster A).
-    abstract_false: bool,
 }
 
 impl<H: IsoPoolable> Deref for RefHist<H> {
@@ -111,7 +101,6 @@ impl<H: IsoPoolable> RefHist<H> {
             probe_pins: LPooled::take(),
             epoch: 0,
             next_id: 0,
-            abstract_false: false,
         }
     }
 
@@ -239,11 +228,31 @@ pub struct AbstractId(u64);
 
 impl nohash::IsEnabled for AbstractId {}
 
+/// The UUID namespace every abstract type's identity is derived from:
+/// `abstract_uuid(path)` is the v5 UUID of the type's canonical path
+/// (`package::module::Name`) in this namespace — deterministic across
+/// parses, processes and builds, so the compile-time [`AbstractId`]
+/// and the runtime tag of a value agree everywhere
+/// (`design/nominal_abstract_types.md`).
+const ABSTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x1f, 0x64, 0x9a, 0x2e, 0x7b, 0xd5, 0x4c, 0x8a, 0x9f, 0x3e, 0x21, 0xb7, 0x5c, 0x0d,
+    0xe6, 0x42,
+]);
+
+/// The runtime UUID of the abstract type at `path`. Rust-backed abstract
+/// types register their `AbstractWrapper` under this so that a type test
+/// (`T as t`) can recognize their values by the type's path alone.
+pub fn abstract_uuid(path: &str) -> uuid::Uuid {
+    uuid::Uuid::new_v5(&ABSTRACT_NAMESPACE, path.as_bytes())
+}
+
 impl AbstractId {
-    pub fn new() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        AbstractId(NEXT.fetch_add(1, Ordering::Relaxed))
+    /// The identity of the abstract type `name` defined in `scope`:
+    /// the low 64 bits of [`abstract_uuid`] of its canonical path.
+    pub fn of(scope: &ModPath, name: &str) -> Self {
+        let path = format_compact!("{scope}::{name}");
+        let (_, lo) = abstract_uuid(&path).as_u64_pair();
+        AbstractId(lo)
     }
 
     pub fn inner(&self) -> u64 {
@@ -255,18 +264,39 @@ impl AbstractId {
     }
 }
 
-impl Default for AbstractId {
-    fn default() -> Self {
-        Self::new()
+/// The identity of a trait: the low 64 bits of a v5 UUID of its
+/// canonical path (`package::module::Name`), minted at declaration
+/// like [`AbstractId`] — so an interface's declaration and its
+/// implementation's re-declaration name ONE trait, and the global impl
+/// table keys on it (`design/traits.md` §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TraitId(u64);
+
+const TRAIT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x8c, 0x2b, 0x41, 0x9d, 0xe3, 0x07, 0x4f, 0x6a, 0xb1, 0x5d, 0x77, 0x0a, 0x2e, 0x93,
+    0xc8, 0x15,
+]);
+
+impl TraitId {
+    pub fn of(scope: &ModPath, name: &str) -> Self {
+        let path = format_compact!("{scope}::{name}");
+        let (_, lo) = uuid::Uuid::new_v5(&TRAIT_NAMESPACE, path.as_bytes()).as_u64_pair();
+        TraitId(lo)
+    }
+
+    pub fn inner(&self) -> u64 {
+        self.0
     }
 }
+
+impl nohash::IsEnabled for TraitId {}
 
 /// What a `TypeRef`'s name means: the snapshot of everything
 /// [`Type::lookup_ref`] reads from the env via `find_visible`. Held in
 /// the ref's write-once `resolved` cell so a ref first resolved in its
 /// NATIVE env becomes an env-independent value — later consumers get
 /// the same answer regardless of which env they hold (the def env's
-/// private view survives past the def env). Substitution of the ref's
+/// resolution survives past the def env). Substitution of the ref's
 /// `params` into `typ` stays per-call (pure given this snapshot).
 #[derive(Debug)]
 pub(crate) struct ResolvedRef {
@@ -296,64 +326,6 @@ impl ResolvedRef {
 
     pub(crate) fn canonical_scope(&self) -> &ModPath {
         &self.canonical_scope
-    }
-
-    /// Same VIEW, not just same definition: body ALLOCATION identity.
-    /// [`Self::same_def`]'s structural equality is blind to nested
-    /// resolution cells — an interface typedef body is registered
-    /// twice (`bind_sig` into the outer env; the resolver-injected
-    /// copy into the module env), and the two are structurally equal
-    /// yet carry different views: their nested refs fill from
-    /// different envs (abstract outside, concrete inside). The
-    /// privatize walk rebinds on view divergence, so it needs this
-    /// stronger test. Allocation-free bodies (primitives etc.) have
-    /// nothing nested to diverge — structural equality suffices there.
-    pub(crate) fn same_view(&self, other: &Self) -> bool {
-        if !Arc::ptr_eq(&self.params, &other.params) && self.params != other.params {
-            return false;
-        }
-        match (&self.typ, &other.typ) {
-            (Type::Bottom, Type::Bottom) | (Type::Any, Type::Any) => true,
-            (Type::Primitive(a), Type::Primitive(b)) => a == b,
-            (
-                Type::Abstract { id: a, params: pa },
-                Type::Abstract { id: b, params: pb },
-            ) => a == b && (Arc::ptr_eq(pa, pb) || pa == pb),
-            (Type::Ref(a), Type::Ref(b)) => {
-                Arc::ptr_eq(&a.resolved, &b.resolved) && a == b
-            }
-            (Type::Set(x), Type::Set(y))
-            | (Type::Tuple(x), Type::Tuple(y))
-            | (Type::Variant(_, x), Type::Variant(_, y)) => {
-                (**x).as_ptr() == (**y).as_ptr() && self.typ == other.typ
-            }
-            (Type::Struct(x), Type::Struct(y)) => (**x).as_ptr() == (**y).as_ptr(),
-            (Type::Fn(x), Type::Fn(y)) => Arc::ptr_eq(x, y),
-            (Type::Error(x), Type::Error(y))
-            | (Type::Array(x), Type::Array(y))
-            | (Type::ByRef(x), Type::ByRef(y)) => Arc::ptr_eq(x, y),
-            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-                Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
-            }
-            _ => false,
-        }
-    }
-
-    /// This resolution re-pointed at an abstract's PRIVATE body
-    /// template — the privatize bridge. `formals` are the registry's
-    /// positional param names; the ref's own params then substitute
-    /// through `lookup_ref` exactly as they did against the public
-    /// definition.
-    pub(crate) fn private_view(&self, formals: &[ArcStr], body: Type) -> Self {
-        ResolvedRef {
-            canonical_scope: self.canonical_scope.clone(),
-            pos: self.pos,
-            ori: self.ori.clone(),
-            params: Arc::from_iter(
-                formals.iter().map(|n| (TVar::empty_named(n.clone()), None)),
-            ),
-            typ: body,
-        }
     }
 }
 
@@ -443,25 +415,6 @@ impl TypeRef {
         Some(r.typ.replace_tvars(&known))
     }
 
-    /// This ref rebound to an explicit resolution in a FRESH,
-    /// pre-filled cell — the original (shared) cell is never
-    /// overwritten; that would leak this context's view into every
-    /// type aliasing the cell.
-    pub(crate) fn rebind_resolution(
-        &self,
-        params: Arc<[Type]>,
-        r: Arc<ResolvedRef>,
-    ) -> Self {
-        Self {
-            scope: self.scope.clone(),
-            name: self.name.clone(),
-            params,
-            pos: self.pos,
-            ori: self.ori.clone(),
-            resolved: Arc::new(Mutex::new(Some(r))),
-        }
-    }
-
     pub(crate) fn resolved(&self) -> Option<Arc<ResolvedRef>> {
         self.resolved.lock().clone()
     }
@@ -480,8 +433,8 @@ impl TypeRef {
     }
 
     /// PURE compute of what this ref's name means in `env` — never
-    /// reads or writes the cell. The privatize walk uses it to detect
-    /// a cell/env view divergence without disturbing the shared cell.
+    /// reads or writes the cell (a def-gate probe must not fill a
+    /// cell at a mid-compile registration horizon).
     pub(crate) fn resolve_pure(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
         env.resolve_visible(&self.scope, &self.name, crate::env::NameNs::Type, |s, n| {
             env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
@@ -536,10 +489,7 @@ impl TypeRef {
     /// list PACKAGE's type during an earlier sibling's def gate).
     /// Lazy expansion is order-correct: nested refs fill when a walk
     /// genuinely needs them, which happens at typecheck time under
-    /// the full env. Transitive seeding exists only as the EXPLICIT
-    /// [`Type::seed_refs`] walk, invoked where the timing is provably
-    /// safe (check_sig's registry copy — after the module body; the
-    /// privatize walk's rebinds — at program typecheck).
+    /// the full env.
     pub(crate) fn resolve_in(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
         self.resolve_in_raw(env).map(|(r, _)| r)
     }
@@ -669,22 +619,6 @@ impl PartialEq for Type {
 impl Default for Type {
     fn default() -> Self {
         Self::Bottom
-    }
-}
-
-/// Attached (as anyhow context) to `check_contains` failures where
-/// either side mentions a [`Type::Abstract`]: abstraction is opacity —
-/// the private↔public equivalence exists only through name resolution
-/// inside the defining module, so a recheck comparing across the
-/// boundary can fail without any semantic contradiction. Static call
-/// resolution uses this marker to discard an instance it cannot prove
-/// without crossing that boundary; other failures remain fatal.
-#[derive(Debug, Clone, Copy)]
-pub struct AbstractOpaque;
-
-impl std::fmt::Display for AbstractOpaque {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the check crossed an abstract-type boundary")
     }
 }
 
@@ -1210,6 +1144,104 @@ impl Type {
         }
     }
 
+    /// Apply the trait-in-type-position rule (`design/traits.md` §1):
+    /// a trait named as a PARAMETER's type (`fn(s: Read)`) is a fresh
+    /// bounded quantifier — `fn<'s: Read>(s: 's)`, one variable per
+    /// parameter, named `#s` so it cannot collide with a written name
+    /// and prints back as the trait — and a trait anywhere else (a
+    /// return type, a field, an element) is an error, because no value
+    /// has a trait as its type. Returns the rewritten type; the same
+    /// type when nothing changed.
+    pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
+        match self {
+            Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
+                "trait {} used as a type: a trait is a bound — write it as a \
+                 parameter's type (`fn(x: {})`) or a quantifier's (`fn<'a: {}>`)",
+                tr.name,
+                tr.name,
+                tr.name
+            ),
+            Type::Fn(ft) => {
+                let mut quantifiers: LPooled<Vec<ArcStr>> =
+                    ft.quantifiers.iter().cloned().collect();
+                let mut changed = false;
+                let mut args: LPooled<Vec<FnArgType>> = LPooled::take();
+                for (i, a) in ft.args.iter().enumerate() {
+                    let typ = match &a.typ {
+                        Type::Ref(tr) if env.trait_of_ref(tr).is_some() => {
+                            let name: ArcStr = match a.name() {
+                                Some(n) => format_compact!("#{n}").as_str().into(),
+                                None => format_compact!("#arg{i}").as_str().into(),
+                            };
+                            let tv = TVar::empty_named(name.clone());
+                            tv.add_cell_constraint(a.typ.clone());
+                            if !quantifiers.contains(&name) {
+                                quantifiers.push(name);
+                            }
+                            changed = true;
+                            Type::TVar(tv)
+                        }
+                        t => {
+                            let r = t.rewrite_trait_args(env)?;
+                            changed |= !r.ptr_eq_shallow(t);
+                            r
+                        }
+                    };
+                    args.push(FnArgType { kind: a.kind.clone(), typ });
+                }
+                let vargs = match &ft.vargs {
+                    None => None,
+                    Some(t) => {
+                        let r = t.rewrite_trait_args(env)?;
+                        changed |= !r.ptr_eq_shallow(t);
+                        Some(r)
+                    }
+                };
+                let rtype = ft.rtype.rewrite_trait_args(env)?;
+                changed |= !rtype.ptr_eq_shallow(&ft.rtype);
+                let throws = ft.throws.rewrite_trait_args(env)?;
+                changed |= !throws.ptr_eq_shallow(&ft.throws);
+                if !changed {
+                    return Ok(self.clone());
+                }
+                Ok(Type::Fn(Arc::new(FnType {
+                    args: Arc::from_iter(args.drain(..)),
+                    vargs,
+                    rtype,
+                    throws,
+                    explicit_throws: ft.explicit_throws,
+                    quantifiers: Arc::from_iter(quantifiers.drain(..)),
+                    lambda_ids: ft.lambda_ids.clone(),
+                })))
+            }
+            t => {
+                let mut err = None;
+                let r = t.cow_children(&mut |c| match c.rewrite_trait_args(env) {
+                    Ok(r) if r.ptr_eq_shallow(c) => None,
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        err = Some(e);
+                        None
+                    }
+                });
+                match err {
+                    Some(e) => Err(e),
+                    None => Ok(r.unwrap_or_else(|| self.clone())),
+                }
+            }
+        }
+    }
+
+    /// Same allocation or same leaf — the "unchanged" test for walks
+    /// that return `self.clone()` when nothing moved.
+    fn ptr_eq_shallow(&self, other: &Type) -> bool {
+        match (self, other) {
+            (Type::Fn(a), Type::Fn(b)) => Arc::ptr_eq(a, b),
+            (Type::TVar(a), Type::TVar(b)) => a == b,
+            (a, b) => a == b,
+        }
+    }
+
     pub fn scope_refs(&self, scope: &ModPath) -> Type {
         self.scope_refs_int(scope).unwrap_or_else(|| self.clone())
     }
@@ -1223,13 +1255,34 @@ impl Type {
 
     fn scope_refs_int_inner(&self, scope: &ModPath) -> Option<Type> {
         match self {
-            Type::TVar(tv) => Some(match tv.read().typ.read().typ.as_ref() {
-                None => Type::TVar(TVar::empty_named(tv.name.clone())),
-                Some(typ) => {
-                    let typ = typ.scope_refs(scope);
-                    Type::TVar(TVar::named(tv.name.clone(), typ))
+            Type::TVar(tv) => {
+                let (bound, cons) = {
+                    let cell = tv.read().typ.clone();
+                    let cell = cell.read();
+                    (cell.typ.clone(), cell.constraints.clone())
+                };
+                let fresh = match bound {
+                    None => TVar::empty_named(tv.name.clone()),
+                    Some(typ) => TVar::named(tv.name.clone(), typ.scope_refs(scope)),
+                };
+                // The re-minted cell keeps the conjunction: a
+                // quantifier bound written in an annotation
+                // (`fn<'a: Number>(x: 'a)`) lives only on the cell, and
+                // dropping it here made every annotated bound vacuous
+                // (2026-08-22). A conjunct that reaches this very cell
+                // is copied unscoped — re-scoping it would re-mint the
+                // cell inside it without end.
+                let addr = tv.cell_addr();
+                for c in cons.iter() {
+                    let c = if crate::typ::tvar::would_cycle_inner(addr, c) {
+                        c.clone()
+                    } else {
+                        c.scope_refs(scope)
+                    };
+                    fresh.add_cell_constraint(c);
                 }
-            }),
+                Some(Type::TVar(fresh))
+            }
             Type::Ref(tr) => {
                 let params =
                     Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));

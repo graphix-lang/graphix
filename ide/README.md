@@ -75,6 +75,7 @@ See `editors/zed/README.md` for Zed-specific instructions.
 
 Provides syntax highlighting for:
 - Comments (line and documentation)
+- Attributes (`#[sync]`, `#[native]`, ...)
 - Keywords (`let`, `mod`, `use`, `type`, `fn`, `select`, etc.)
 - Operators
 - Strings (including interpolation and raw strings)

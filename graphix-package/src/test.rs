@@ -10,6 +10,12 @@ static VENDOR_ONCE: Once = Once::new();
 // Serialize tests that spawn cargo builds. They're expensive in CPU,
 // memory, and disk, and concurrent cargo invocations sharing a target
 // dir will fight over the lock file.
+//
+// Those builds — and the one test that downloads a released crate — are
+// most of this workspace's test time and are the reason for the
+// `slow-tests` feature: they are marked `ignore` unless it is on, so
+// `cargo test --workspace` skips them and the release gate
+// (`--features slow-tests`) runs them. They still COMPILE either way.
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
 // Acquire BUILD_LOCK, recovering it if a previous holder panicked. The lock
@@ -118,6 +124,7 @@ fn stdlib_package_versions_match_graphix_package() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn download_source_extracts_package_at_expected_root() {
     let tmp = tempfile::tempdir().unwrap();
     let cratesio = crates_io_api::AsyncClient::new(
@@ -180,6 +187,7 @@ async fn update_cargo_toml_preserves_stdlib_and_features() {
 // reduced feature set and confirm dropped packages are genuinely gone from the
 // binary (not just absent from a recorded list). Real build, no stubs.
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn reduced_feature_build_drops_packages() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let _lock = build_lock();
@@ -251,6 +259,7 @@ fn write_vendor_config(dir: &Path, ws: &Path) {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn created_package_compiles() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     vendor(ws);
@@ -269,6 +278,7 @@ async fn created_package_compiles() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn build_standalone_produces_working_binary() {
     use tokio::io::AsyncBufReadExt;
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();

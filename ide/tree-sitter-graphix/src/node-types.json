@@ -1,6 +1,6 @@
 [
   {
-    "type": "abstract_type",
+    "type": "abstract_body",
     "named": true,
     "fields": {},
     "children": {
@@ -8,20 +8,88 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_type",
+          "named": true
+        },
+        {
+          "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "by_ref_type",
+          "named": true
+        },
+        {
+          "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "map_type",
+          "named": true
+        },
+        {
+          "type": "parenthesized_type",
+          "named": true
+        },
+        {
+          "type": "primitive_type",
+          "named": true
+        },
+        {
+          "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_type",
+          "named": true
+        },
+        {
+          "type": "struct_type",
+          "named": true
+        },
+        {
+          "type": "tuple_type",
+          "named": true
+        },
+        {
           "type": "type_identifier",
+          "named": true
+        },
+        {
+          "type": "type_variable",
+          "named": true
+        },
+        {
+          "type": "union_type",
+          "named": true
+        },
+        {
+          "type": "variant_type",
+          "named": true
+        },
+        {
+          "type": "wildcard_type",
           "named": true
         }
       ]
     }
   },
   {
-    "type": "any",
+    "type": "abstract_construct",
     "named": true,
     "fields": {},
     "children": {
       "multiple": true,
-      "required": false,
+      "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -67,11 +135,19 @@
           "named": true
         },
         {
+          "type": "construct_path",
+          "named": true
+        },
+        {
           "type": "deref",
           "named": true
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -139,6 +215,226 @@
           "named": true
         },
         {
+          "type": "trait_def",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "abstract_pattern",
+    "named": true,
+    "fields": {
+      "all": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "construct_path",
+          "named": true
+        },
+        {
+          "type": "structure_pattern",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "abstract_type",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "type_identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "any",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "catch_stmt",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
+          "named": true
+        },
+        {
+          "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
+          "named": true
+        },
+        {
           "type": "triple_string",
           "named": true
         },
@@ -181,6 +477,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "apply",
           "named": true
@@ -285,6 +585,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -334,6 +638,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -409,6 +717,10 @@
           "named": true
         },
         {
+          "type": "trait_def",
+          "named": true
+        },
+        {
           "type": "triple_string",
           "named": true
         },
@@ -467,6 +779,10 @@
       "required": false,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -516,6 +832,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -580,6 +900,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -652,6 +976,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -701,6 +1029,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -765,6 +1097,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -811,6 +1147,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -860,6 +1200,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -924,6 +1268,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -1006,6 +1354,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -1037,6 +1389,192 @@
     }
   },
   {
+    "type": "attribute",
+    "named": true,
+    "fields": {
+      "args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": ".",
+            "named": false
+          },
+          {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
+            "type": "any",
+            "named": true
+          },
+          {
+            "type": "apply",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "array_ref",
+            "named": true
+          },
+          {
+            "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "builtin_ref",
+            "named": true
+          },
+          {
+            "type": "by_ref",
+            "named": true
+          },
+          {
+            "type": "cast",
+            "named": true
+          },
+          {
+            "type": "catch_stmt",
+            "named": true
+          },
+          {
+            "type": "connect",
+            "named": true
+          },
+          {
+            "type": "deref",
+            "named": true
+          },
+          {
+            "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "let_binding",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map",
+            "named": true
+          },
+          {
+            "type": "map_ref",
+            "named": true
+          },
+          {
+            "type": "module",
+            "named": true
+          },
+          {
+            "type": "or_never",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qop",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "reference",
+            "named": true
+          },
+          {
+            "type": "select",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "struct",
+            "named": true
+          },
+          {
+            "type": "struct_ref",
+            "named": true
+          },
+          {
+            "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
+            "named": true
+          },
+          {
+            "type": "triple_string",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "tuple_ref",
+            "named": true
+          },
+          {
+            "type": "type_ascription",
+            "named": true
+          },
+          {
+            "type": "type_def",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "use",
+            "named": true
+          },
+          {
+            "type": "variant",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "binary_expression",
     "named": true,
     "fields": {},
@@ -1044,6 +1582,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -1094,6 +1636,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -1158,6 +1704,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -1224,6 +1774,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -1273,6 +1827,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -1337,6 +1895,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -1419,6 +1981,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -1457,6 +2023,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "abstract_type",
           "named": true
@@ -1530,6 +2100,10 @@
           "named": true
         },
         {
+          "type": "impl_def",
+          "named": true
+        },
+        {
           "type": "lambda",
           "named": true
         },
@@ -1594,6 +2168,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -1611,6 +2189,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -1695,6 +2277,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -1744,6 +2330,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -1808,6 +2398,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
             "named": true
           },
           {
@@ -1886,6 +2480,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -1939,6 +2537,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -1988,6 +2590,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -2055,6 +2661,10 @@
             "named": true
           },
           {
+            "type": "trait_def",
+            "named": true
+          },
+          {
             "type": "triple_string",
             "named": true
           },
@@ -2099,67 +2709,30 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
-          "type": "array_type",
-          "named": true
-        },
-        {
-          "type": "by_ref_type",
-          "named": true
-        },
-        {
-          "type": "error_type",
-          "named": true
-        },
-        {
-          "type": "function_type",
-          "named": true
-        },
-        {
-          "type": "map_type",
-          "named": true
-        },
-        {
-          "type": "parenthesized_type",
-          "named": true
-        },
-        {
-          "type": "primitive_type",
-          "named": true
-        },
-        {
-          "type": "ref_type",
-          "named": true
-        },
-        {
-          "type": "struct_type",
-          "named": true
-        },
-        {
-          "type": "tuple_type",
-          "named": true
-        },
-        {
-          "type": "type_identifier",
+          "type": "trait_bound",
           "named": true
         },
         {
           "type": "type_variable",
           "named": true
-        },
+        }
+      ]
+    }
+  },
+  {
+    "type": "constraint_or_var",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
         {
-          "type": "union_type",
+          "type": "trait_bound",
           "named": true
         },
         {
-          "type": "variant_type",
-          "named": true
-        },
-        {
-          "type": "wildcard_type",
+          "type": "type_variable",
           "named": true
         }
       ]
@@ -2181,6 +2754,25 @@
     }
   },
   {
+    "type": "construct_path",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "type_identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "deref",
     "named": true,
     "fields": {},
@@ -2188,6 +2780,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -2238,6 +2834,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -2302,6 +2902,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -2348,6 +2952,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -2397,6 +3005,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -2461,6 +3073,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -2540,6 +3156,10 @@
         },
         {
           "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_type",
           "named": true
         },
         {
@@ -2623,6 +3243,14 @@
         },
         {
           "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_param",
+          "named": true
+        },
+        {
+          "type": "self_type",
           "named": true
         },
         {
@@ -2754,6 +3382,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -2841,6 +3473,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -2876,6 +3512,114 @@
     }
   },
   {
+    "type": "impl_def",
+    "named": true,
+    "fields": {
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "abstract_type",
+            "named": true
+          },
+          {
+            "type": "array_type",
+            "named": true
+          },
+          {
+            "type": "by_ref_type",
+            "named": true
+          },
+          {
+            "type": "error_type",
+            "named": true
+          },
+          {
+            "type": "function_type",
+            "named": true
+          },
+          {
+            "type": "map_type",
+            "named": true
+          },
+          {
+            "type": "parenthesized_type",
+            "named": true
+          },
+          {
+            "type": "primitive_type",
+            "named": true
+          },
+          {
+            "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
+            "named": true
+          },
+          {
+            "type": "struct_type",
+            "named": true
+          },
+          {
+            "type": "tuple_type",
+            "named": true
+          },
+          {
+            "type": "type_identifier",
+            "named": true
+          },
+          {
+            "type": "type_variable",
+            "named": true
+          },
+          {
+            "type": "union_type",
+            "named": true
+          },
+          {
+            "type": "variant_type",
+            "named": true
+          },
+          {
+            "type": "wildcard_type",
+            "named": true
+          }
+        ]
+      },
+      "trait": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "type_path",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "constraint_or_var",
+          "named": true
+        },
+        {
+          "type": "doc_comment",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "interpolation",
     "named": true,
     "fields": {},
@@ -2883,6 +3627,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -2933,6 +3681,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -2997,6 +3749,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -3073,6 +3829,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "abstract_type",
           "named": true
         },
@@ -3149,6 +3909,10 @@
           "named": true
         },
         {
+          "type": "impl_def",
+          "named": true
+        },
+        {
           "type": "lambda",
           "named": true
         },
@@ -3213,6 +3977,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -3230,6 +3998,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -3300,6 +4072,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "abstract_type",
           "named": true
         },
@@ -3369,6 +4145,10 @@
         },
         {
           "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -3444,6 +4224,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -3465,6 +4249,10 @@
         },
         {
           "type": "throws_clause",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -3590,6 +4378,14 @@
           "named": true
         },
         {
+          "type": "self_param",
+          "named": true
+        },
+        {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -3698,6 +4494,10 @@
             "named": true
           },
           {
+            "type": "self_type",
+            "named": true
+          },
+          {
             "type": "struct_type",
             "named": true
           },
@@ -3734,6 +4534,10 @@
           {
             "type": ".",
             "named": false
+          },
+          {
+            "type": "abstract_construct",
+            "named": true
           },
           {
             "type": "any",
@@ -3785,6 +4589,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -3849,6 +4657,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
             "named": true
           },
           {
@@ -3938,6 +4750,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -3987,6 +4803,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -4051,6 +4871,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
             "named": true
           },
           {
@@ -4096,6 +4920,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -4145,6 +4973,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -4209,6 +5041,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
             "named": true
           },
           {
@@ -4255,6 +5091,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -4305,6 +5145,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -4369,6 +5213,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -4451,6 +5299,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -4492,6 +5344,10 @@
           {
             "type": ".",
             "named": false
+          },
+          {
+            "type": "abstract_construct",
+            "named": true
           },
           {
             "type": "any",
@@ -4543,6 +5399,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -4607,6 +5467,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
             "named": true
           },
           {
@@ -4708,6 +5572,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -4757,6 +5625,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -4824,6 +5696,10 @@
             "named": true
           },
           {
+            "type": "trait_def",
+            "named": true
+          },
+          {
             "type": "triple_string",
             "named": true
           },
@@ -4878,6 +5754,10 @@
       "required": false,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -4927,6 +5807,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -4994,6 +5878,10 @@
           "named": true
         },
         {
+          "type": "trait_def",
+          "named": true
+        },
+        {
           "type": "triple_string",
           "named": true
         },
@@ -5039,6 +5927,14 @@
         {
           "type": "identifier",
           "named": true
+        },
+        {
+          "type": "self_param",
+          "named": true
+        },
+        {
+          "type": "type_identifier",
+          "named": true
         }
       ]
     }
@@ -5056,6 +5952,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -5180,6 +6080,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -5229,6 +6133,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -5293,6 +6201,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -5375,6 +6287,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -5413,6 +6329,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "abstract_type",
           "named": true
@@ -5486,6 +6406,10 @@
           "named": true
         },
         {
+          "type": "impl_def",
+          "named": true
+        },
+        {
           "type": "lambda",
           "named": true
         },
@@ -5550,6 +6474,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -5571,6 +6499,10 @@
         },
         {
           "type": "structure_pattern",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -5671,6 +6603,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -5853,6 +6789,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -5902,6 +6842,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -5969,6 +6913,10 @@
             "named": true
           },
           {
+            "type": "trait_def",
+            "named": true
+          },
+          {
             "type": "triple_string",
             "named": true
           },
@@ -6013,6 +6961,16 @@
         }
       ]
     }
+  },
+  {
+    "type": "self_param",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "self_type",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "sig_bind",
@@ -6066,6 +7024,10 @@
           },
           {
             "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
             "named": true
           },
           {
@@ -6126,6 +7088,114 @@
     }
   },
   {
+    "type": "sig_impl_def",
+    "named": true,
+    "fields": {
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "abstract_type",
+            "named": true
+          },
+          {
+            "type": "array_type",
+            "named": true
+          },
+          {
+            "type": "by_ref_type",
+            "named": true
+          },
+          {
+            "type": "error_type",
+            "named": true
+          },
+          {
+            "type": "function_type",
+            "named": true
+          },
+          {
+            "type": "map_type",
+            "named": true
+          },
+          {
+            "type": "parenthesized_type",
+            "named": true
+          },
+          {
+            "type": "primitive_type",
+            "named": true
+          },
+          {
+            "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
+            "named": true
+          },
+          {
+            "type": "struct_type",
+            "named": true
+          },
+          {
+            "type": "tuple_type",
+            "named": true
+          },
+          {
+            "type": "type_identifier",
+            "named": true
+          },
+          {
+            "type": "type_variable",
+            "named": true
+          },
+          {
+            "type": "union_type",
+            "named": true
+          },
+          {
+            "type": "variant_type",
+            "named": true
+          },
+          {
+            "type": "wildcard_type",
+            "named": true
+          }
+        ]
+      },
+      "trait": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "type_path",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "constraint_or_var",
+          "named": true
+        },
+        {
+          "type": "doc_comment",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "sig_item",
     "named": true,
     "fields": {},
@@ -6138,7 +7208,15 @@
           "named": true
         },
         {
+          "type": "sig_impl_def",
+          "named": true
+        },
+        {
           "type": "sig_module",
+          "named": true
+        },
+        {
+          "type": "sig_trait_def",
           "named": true
         },
         {
@@ -6179,6 +7257,36 @@
     }
   },
   {
+    "type": "sig_trait_def",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "type_identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "doc_comment",
+          "named": true
+        },
+        {
+          "type": "trait_method",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "sig_type_def",
     "named": true,
     "fields": {
@@ -6196,6 +7304,10 @@
         "multiple": false,
         "required": false,
         "types": [
+          {
+            "type": "abstract_body",
+            "named": true
+          },
           {
             "type": "abstract_type",
             "named": true
@@ -6230,6 +7342,10 @@
           },
           {
             "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
             "named": true
           },
           {
@@ -6397,6 +7513,10 @@
       "required": false,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -6446,6 +7566,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -6514,6 +7638,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -6612,6 +7740,10 @@
             "named": false
           },
           {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
             "type": "any",
             "named": true
           },
@@ -6661,6 +7793,10 @@
           },
           {
             "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
             "named": true
           },
           {
@@ -6725,6 +7861,10 @@
           },
           {
             "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
             "named": true
           },
           {
@@ -6823,6 +7963,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "apply",
           "named": true
@@ -6988,6 +8132,10 @@
             "named": true
           },
           {
+            "type": "self_type",
+            "named": true
+          },
+          {
             "type": "struct_type",
             "named": true
           },
@@ -7027,6 +8175,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -7077,6 +8229,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -7148,6 +8304,10 @@
           "named": true
         },
         {
+          "type": "trait_def",
+          "named": true
+        },
+        {
           "type": "triple_string",
           "named": true
         },
@@ -7190,6 +8350,10 @@
       "multiple": false,
       "required": false,
       "types": [
+        {
+          "type": "abstract_pattern",
+          "named": true
+        },
         {
           "type": "array_pattern",
           "named": true
@@ -7242,6 +8406,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -7291,6 +8459,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -7355,6 +8527,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -7437,6 +8613,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -7462,6 +8642,385 @@
         },
         {
           "type": "wildcard_type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "trait_bound",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "abstract_type",
+          "named": true
+        },
+        {
+          "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "by_ref_type",
+          "named": true
+        },
+        {
+          "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "map_type",
+          "named": true
+        },
+        {
+          "type": "parenthesized_type",
+          "named": true
+        },
+        {
+          "type": "primitive_type",
+          "named": true
+        },
+        {
+          "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_type",
+          "named": true
+        },
+        {
+          "type": "struct_type",
+          "named": true
+        },
+        {
+          "type": "tuple_type",
+          "named": true
+        },
+        {
+          "type": "type_identifier",
+          "named": true
+        },
+        {
+          "type": "type_variable",
+          "named": true
+        },
+        {
+          "type": "union_type",
+          "named": true
+        },
+        {
+          "type": "variant_type",
+          "named": true
+        },
+        {
+          "type": "wildcard_type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "trait_def",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "type_identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "doc_comment",
+          "named": true
+        },
+        {
+          "type": "trait_method",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "trait_method",
+    "named": true,
+    "fields": {
+      "default": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": ".",
+            "named": false
+          },
+          {
+            "type": "abstract_construct",
+            "named": true
+          },
+          {
+            "type": "any",
+            "named": true
+          },
+          {
+            "type": "apply",
+            "named": true
+          },
+          {
+            "type": "array",
+            "named": true
+          },
+          {
+            "type": "array_ref",
+            "named": true
+          },
+          {
+            "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "builtin_ref",
+            "named": true
+          },
+          {
+            "type": "by_ref",
+            "named": true
+          },
+          {
+            "type": "cast",
+            "named": true
+          },
+          {
+            "type": "catch_stmt",
+            "named": true
+          },
+          {
+            "type": "connect",
+            "named": true
+          },
+          {
+            "type": "deref",
+            "named": true
+          },
+          {
+            "type": "do_block",
+            "named": true
+          },
+          {
+            "type": "impl_def",
+            "named": true
+          },
+          {
+            "type": "lambda",
+            "named": true
+          },
+          {
+            "type": "let_binding",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map",
+            "named": true
+          },
+          {
+            "type": "map_ref",
+            "named": true
+          },
+          {
+            "type": "module",
+            "named": true
+          },
+          {
+            "type": "or_never",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "qop",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "reference",
+            "named": true
+          },
+          {
+            "type": "select",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "struct",
+            "named": true
+          },
+          {
+            "type": "struct_ref",
+            "named": true
+          },
+          {
+            "type": "struct_with",
+            "named": true
+          },
+          {
+            "type": "trait_def",
+            "named": true
+          },
+          {
+            "type": "triple_string",
+            "named": true
+          },
+          {
+            "type": "tuple",
+            "named": true
+          },
+          {
+            "type": "tuple_ref",
+            "named": true
+          },
+          {
+            "type": "type_ascription",
+            "named": true
+          },
+          {
+            "type": "type_def",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          },
+          {
+            "type": "use",
+            "named": true
+          },
+          {
+            "type": "variant",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "abstract_type",
+            "named": true
+          },
+          {
+            "type": "array_type",
+            "named": true
+          },
+          {
+            "type": "by_ref_type",
+            "named": true
+          },
+          {
+            "type": "error_type",
+            "named": true
+          },
+          {
+            "type": "function_type",
+            "named": true
+          },
+          {
+            "type": "map_type",
+            "named": true
+          },
+          {
+            "type": "parenthesized_type",
+            "named": true
+          },
+          {
+            "type": "primitive_type",
+            "named": true
+          },
+          {
+            "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
+            "named": true
+          },
+          {
+            "type": "struct_type",
+            "named": true
+          },
+          {
+            "type": "tuple_type",
+            "named": true
+          },
+          {
+            "type": "type_identifier",
+            "named": true
+          },
+          {
+            "type": "type_variable",
+            "named": true
+          },
+          {
+            "type": "union_type",
+            "named": true
+          },
+          {
+            "type": "variant_type",
+            "named": true
+          },
+          {
+            "type": "wildcard_type",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "doc_comment",
           "named": true
         }
       ]
@@ -7498,6 +9057,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -7548,6 +9111,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -7612,6 +9179,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -7683,6 +9254,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "apply",
           "named": true
@@ -7823,6 +9398,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -7895,6 +9474,10 @@
         },
         {
           "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_type",
           "named": true
         },
         {
@@ -7987,8 +9570,12 @@
       },
       "type": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
+          {
+            "type": "abstract_body",
+            "named": true
+          },
           {
             "type": "abstract_type",
             "named": true
@@ -8023,6 +9610,10 @@
           },
           {
             "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
             "named": true
           },
           {
@@ -8109,6 +9700,10 @@
         },
         {
           "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_type",
           "named": true
         },
         {
@@ -8200,6 +9795,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
           "type": "any",
           "named": true
         },
@@ -8249,6 +9848,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -8313,6 +9916,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -8392,6 +9999,10 @@
         },
         {
           "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "self_type",
           "named": true
         },
         {
@@ -8587,6 +10198,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -8625,6 +10240,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
         {
           "type": "any",
           "named": true
@@ -8675,6 +10294,10 @@
         },
         {
           "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
           "named": true
         },
         {
@@ -8739,6 +10362,10 @@
         },
         {
           "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
           "named": true
         },
         {
@@ -8874,6 +10501,10 @@
           "named": true
         },
         {
+          "type": "self_type",
+          "named": true
+        },
+        {
           "type": "struct_type",
           "named": true
         },
@@ -8927,6 +10558,10 @@
   },
   {
     "type": "#",
+    "named": false
+  },
+  {
+    "type": "#[",
     "named": false
   },
   {
@@ -9066,6 +10701,10 @@
     "named": false
   },
   {
+    "type": "Abstract",
+    "named": false
+  },
+  {
     "type": "Any",
     "named": false
   },
@@ -9170,6 +10809,10 @@
     "named": false
   },
   {
+    "type": "for",
+    "named": false
+  },
+  {
     "type": "i16",
     "named": false
   },
@@ -9191,6 +10834,10 @@
   },
   {
     "type": "if",
+    "named": false
+  },
+  {
+    "type": "impl",
     "named": false
   },
   {
@@ -9267,6 +10914,10 @@
   },
   {
     "type": "throws",
+    "named": false
+  },
+  {
+    "type": "trait",
     "named": false
   },
   {

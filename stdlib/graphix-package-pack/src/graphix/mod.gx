@@ -1,3 +1,2 @@
-let read = |input: [bytes, Stream<'a>]| -> Result<'b, [`PackErr(string), `IOErr(string), `InvalidCast(string)]> 'pack_read;
-let write_bytes = |value: Any| -> Result<bytes, `PackErr(string)> 'pack_write_bytes;
-let write_stream = |stream: Stream<'a>, value: Any| -> Result<null, [`PackErr(string), `IOErr(string)]> 'pack_write_stream
+let read = |input: bytes| -> Result<'b, [`PackErr(string), `InvalidCast(string)]> 'pack_read;
+let write_bytes = |value: Any| -> Result<bytes, `PackErr(string)> 'pack_write_bytes

@@ -1,7 +1,8 @@
-use sys::io::Stream;
-
 /// List sheet names in a workbook.
-val sheets: fn(input: [bytes, Stream<'a>]) -> Result<Array<string>, [`XlsErr(string), `IOErr(string)]>;
+///
+/// To read a workbook from a stream, read it first —
+/// `xls::sheets(Read::read_all(f)?)`.
+val sheets: fn(input: bytes) -> Result<Array<string>, `XlsErr(string)>;
 
 /// Read a sheet by name as a 2D array of rows.
-val read: fn(input: [bytes, Stream<'a>], sheet: string) -> Result<Array<Array<PrimNoErr>>, [`XlsErr(string), `IOErr(string)]>;
+val read: fn(input: bytes, sheet: string) -> Result<Array<Array<PrimNoErr>>, `XlsErr(string)>;

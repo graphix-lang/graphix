@@ -95,7 +95,7 @@ run!(json_pretty, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_invalid, r#"{
-    let r: Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> = json::read("not json{{{");
+    let r: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("not json{{{");
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
@@ -117,14 +117,16 @@ run!(json_nested, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_stream_tcp, r#"{
+    use sys::io::{Read, Write};
+    use sys::tcp::Socket;
     type Msg = {age: i64, name: string};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
     let addr = sys::tcp::listener_addr(listener)?;
     let client = sys::tcp::connect(addr)?;
     let server = sys::tcp::accept(listener, client)?;
-    json::write_stream(client, {name: "alice", age: 30})?;
-    sys::tcp::shutdown(client)?;
-    let msg: Msg = json::read(server)?;
+    Write::write_exact(client, json::write_bytes({name: "alice", age: 30})?)?;
+    Socket::shutdown(client)?;
+    let msg: Msg = json::read(Read::read_all(server)?)?;
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
@@ -135,6 +137,8 @@ run!(json_stream_tcp, r#"{
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_stream_nested, r#"{
+    use sys::io::{Read, Write};
+    use sys::tcp::Socket;
     type Inner = {label: string, value: i64};
     type Outer = {items: Array<Inner>, count: i64};
     let listener = sys::tcp::listen("127.0.0.1:0")?;
@@ -142,9 +146,9 @@ run!(json_stream_nested, r#"{
     let client = sys::tcp::connect(addr)?;
     let server = sys::tcp::accept(listener, client)?;
     let data: Outer = {items: [{label: "a", value: 1}, {label: "b", value: 2}], count: 2};
-    json::write_stream(client, data)?;
-    sys::tcp::shutdown(client)?;
-    let out: Outer = json::read(server)?;
+    Write::write_exact(client, json::write_bytes(data)?)?;
+    Socket::shutdown(client)?;
+    let out: Outer = json::read(Read::read_all(server)?)?;
     let items = out.items;
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {

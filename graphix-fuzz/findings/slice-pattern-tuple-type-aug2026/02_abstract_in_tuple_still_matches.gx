@@ -35,11 +35,11 @@ val un: fn(t: T) -> i64;
 let k0: u8 = u8:2 / u8:1;
 let f0 = |v5: bool| "a";
 let f1 = |v6: &i64| -> string "graphix";
-type T = i64;
-let mk = |x: i64| -> T x;
-let un = |t: T| -> i64 t
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0
 // file-v1: m1.gx
-type T = (i64, i64);
-let mk = |x: i64| -> T (x, x + i64:1)
+type T = Abstract<(i64, i64)>;
+let mk = |x: i64| -> T T((x, x + i64:1))
 // file-v1: m2.gx
 true

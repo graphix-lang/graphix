@@ -1,15 +1,17 @@
+use crate::env::Map;
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent,
     compiler::compile,
-    env::Env,
+    env::{Env, ImplDef},
     errf,
     expr::{
         BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefExpr, parser,
+        Source, StructurePattern, TypeDefBody, TypeDefExpr, add_interface_modules,
+        parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
-    node::{Nop, bind::Bind},
+    node::{Nop, bind::Bind, traits},
     typ::{AbstractId, Type},
     wrap,
 };
@@ -19,7 +21,6 @@ use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
-use nohash::IntMap;
 use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
@@ -69,28 +70,95 @@ fn bind_sig(
                 }
             }
             SigKind::Bind(BindSig { name, typ }) => {
-                let typ = typ.scope_refs(&scope.lexical);
+                let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
                 typ.alias_tvars(&mut LPooled::take());
                 if env.lsp_mode {
                     typ.record_ide_refs(env, &scope.lexical);
                 }
+                let poly = matches!(typ, Type::Fn(_));
                 let bind =
                     env.bind_variable(&scope.lexical, name, typ, si.pos, si_ori.clone());
                 if let Doc(Some(s)) = &si.doc {
                     bind.doc = Some(s.clone());
                 }
+                if poly {
+                    let id = bind.id;
+                    env.poly_binds.insert_cow(id);
+                }
             }
             SigKind::TypeDef(td) => {
-                let typ = td.typ.scope_refs(&scope.lexical);
                 env.deftype(
                     &scope.lexical,
                     &td.name,
                     td.params.clone(),
-                    typ.clone(),
+                    &td.body,
+                    true,
                     si.doc.0.clone(),
                     si.pos,
                     si_ori,
                 )?;
+            }
+            SigKind::Trait(t) => {
+                let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &si_ori);
+                let sigs = t.methods.iter().map(|m| {
+                    let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
+                    (m.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
+                });
+                env.deftrait(
+                    &scope.lexical,
+                    &t.name,
+                    sigs,
+                    si.doc.0.clone(),
+                    si.pos,
+                    si_ori,
+                )?;
+            }
+            SigKind::Impl(im) => {
+                // a DECLARED implementation: its method bindings are
+                // minted here with the trait's signatures at the
+                // target, and the implementation's own registration
+                // of the same (trait, target) replaces it
+                let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)?
+                else {
+                    bail!("no trait `{}` in scope at {}", im.trait_name, si.pos)
+                };
+                let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
+                let (target, params) =
+                    traits::impl_head(env, &scope.lexical, &trait_def, im, true)
+                        .with_context(|| format!("at {}", si.pos))?;
+                if !im.methods.is_empty() {
+                    bail!(
+                        "an interface declares `impl {} for {target};` without a body",
+                        im.trait_name
+                    )
+                }
+                let bscope = scope.append_block("impl", ExprId::new().inner());
+                let mut methods: Map<CompactString, BindId> = Map::new();
+                for d in trait_def.methods.iter() {
+                    let typ = Type::Fn(Arc::new(traits::method_sig_at(
+                        &d.typ.reset_tvars(),
+                        &target,
+                    )));
+                    let bind = env.bind_variable(
+                        &bscope.lexical,
+                        &d.name,
+                        typ,
+                        si.pos,
+                        si_ori.clone(),
+                    );
+                    methods.insert_cow(d.name.as_str().into(), bind.id);
+                }
+                env.register_impl(Arc::new(ImplDef {
+                    trait_id,
+                    target,
+                    params,
+                    scope: bscope.lexical,
+                    methods,
+                    declared: true,
+                    pos: si.pos,
+                    ori: si_ori,
+                }))
+                .with_context(|| format!("at {}", si.pos))?;
             }
         }
     }
@@ -129,21 +197,56 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             }
             copy_sig!(binds);
             copy_sig!(typedefs);
+            copy_sig!(traits);
+            // a re-exported module's Graphix-minted abstracts are
+            // public exactly where their typedef entries are copied
+            let exported: LPooled<Vec<AbstractId>> = inner_env
+                .typedefs
+                .range::<ModPath, _>(&scope.lexical..)
+                .filter(|(path, _)| {
+                    buf.clear();
+                    write!(buf, "{}/", scope.lexical.0).unwrap();
+                    *path == &scope.lexical || path.starts_with(&*buf)
+                })
+                .flat_map(|(_, defs)| defs.into_iter())
+                .filter_map(|(_, td)| match (&td.typ, &td.rep) {
+                    (Type::Abstract { id, .. }, Some(_)) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            for id in exported.iter() {
+                env.publish_abstract_rep(*id);
+            }
         }
     }
+}
+
+/// A signature binding and the binding behind it: the implementation's
+/// own for a `val` or an overridden method, the trait's default for a
+/// method the implementation leaves to it. The module copies the
+/// inner production to the outer id every cycle (`Module::update`)
+/// and proxies the inner lambda for static resolution
+/// (`proxy_lambda_defs`). `owned` says the inner binding is the
+/// module's private one — its production moves out instead of being
+/// shared with the rest of the cycle, and a write to the outer id
+/// flows in.
+#[derive(Debug, Clone, Copy)]
+struct Proxy {
+    inner: BindId,
+    outer: BindId,
+    owned: bool,
 }
 
 fn check_sig<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     top_id: ExprId,
-    proxy: &mut IntMap<BindId, BindId>,
+    proxy: &mut Vec<Proxy>,
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
-    private_env: &Env,
 ) -> Result<()> {
     let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
-    let mut abstract_types: LPooled<IntMap<AbstractId, Type>> = LPooled::take();
+    let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
             && let Some(binds) = ctx.env.binds.get(&scope.lexical)
@@ -154,14 +257,14 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
             proxy_bind.typ.unbind_tvars();
-            proxy_bind.typ.sig_matches(&ctx.env, bind.typ(), &abstract_types).with_context(|| {
+            proxy_bind.typ.sig_matches(&ctx.env, bind.typ()).with_context(|| {
                 format!(
                     "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
                     proxy_bind.typ,
                     bind.typ()
                 )
             })?;
-            proxy.insert(id, *proxy_id);
+            proxy.push(Proxy { inner: id, outer: *proxy_id, owned: true });
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
             if ctx.env.lsp_mode {
@@ -181,10 +284,13 @@ fn check_sig<R: Rt, E: UserEvent>(
             let sig_td = TypeDefExpr {
                 name: td.name.clone(),
                 params: sig_td.params.clone(),
-                typ: sig_td.typ.clone(),
+                body: match (&sig_td.typ, &sig_td.rep) {
+                    (Type::Abstract { .. }, rep) => TypeDefBody::Abstract(rep.clone()),
+                    (typ, _) => TypeDefBody::Alias(typ.clone()),
+                },
             };
-            match &sig_td.typ {
-                Type::Abstract { id, params: _ } => {
+            match &sig_td.body {
+                TypeDefBody::Abstract(None) => {
                     for (tv0, con0) in td.params.iter() {
                         match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
                             Some((_, con1)) if con0 != con1 => {
@@ -210,29 +316,30 @@ fn check_sig<R: Rt, E: UserEvent>(
                             Some(_) => (),
                         }
                     }
-                    abstract_types.insert(*id, td.typ.clone());
-                    // Persist the private representation for scoped
-                    // static-instance checks and fusion ABI lowering.
-                    // The body is a fresh allocation whose ref cells
-                    // are empty, and check_sig runs under the OUTER
-                    // env — where these names resolve to the sig's
-                    // PUBLIC entries. Seed against the module's
-                    // private env so the stored body carries the
-                    // private view its names had where they were
-                    // written.
-                    let body = td.typ.scope_refs(&scope.lexical);
-                    body.seed_refs(private_env);
-                    ctx.fusion.abstract_registry.insert_scoped(
-                        *id,
-                        Arc::from_iter(td.params.iter().map(|(tv, _)| tv.name.clone())),
-                        body,
-                        scope.lexical.clone(),
-                    );
+                    let TypeDefBody::Abstract(_) = &td.body else {
+                        bail!(
+                            "{} is hidden by the interface, so its definition must be \
+                             `type {} = Abstract<..>` (a Rust-backed type declares \
+                             `type {};`)",
+                            td.name,
+                            td.name,
+                            td.name
+                        )
+                    };
+                    defined_abstracts.insert(td.name.clone());
                 }
                 _ => {
+                    let impl_body = match &td.body {
+                        TypeDefBody::Alias(t) => {
+                            TypeDefBody::Alias(t.scope_refs(&scope.lexical))
+                        }
+                        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
+                            rep.as_ref().map(|r| r.scope_refs(&scope.lexical)),
+                        ),
+                    };
                     if sig_td.name != td.name
                         || sig_td.params != td.params
-                        || sig_td.typ != td.typ.scope_refs(&scope.lexical)
+                        || sig_td.body != impl_body
                     {
                         bail!(
                             "signature mismatch in {}, expected {}, found {}",
@@ -248,12 +355,91 @@ fn check_sig<R: Rt, E: UserEvent>(
     for si in sig.items.iter() {
         let missing = match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
+            SigKind::Impl(im) => {
+                let trait_id = ctx
+                    .env
+                    .lookup_trait(&scope.lexical, &im.trait_name)?
+                    .expect("bound by bind_sig");
+                let target = im.target.scope_refs(&scope.lexical);
+                let declared =
+                    ctx.env.impl_entry(trait_id, &target)?.expect("bound by bind_sig");
+                let mut fulfilled = nodes.iter().filter_map(|n| {
+                    (&**n as &dyn Any).downcast_ref::<traits::Impl<R, E>>().filter(|i| {
+                        i.fulfils.as_ref().is_some_and(|d| Arc::ptr_eq(d, &declared))
+                    })
+                });
+                match (fulfilled.next(), fulfilled.next()) {
+                    (None, _) => true,
+                    (Some(_), Some(dup)) => bail!(
+                        "impl {} for {target} is implemented twice (at {})",
+                        im.trait_name,
+                        dup.spec().pos
+                    ),
+                    (Some(i), None) => {
+                        let trait_def = ctx
+                            .env
+                            .trait_def(trait_id)
+                            .cloned()
+                            .expect("bound by bind_sig");
+                        for (name, outer) in declared.methods.into_iter() {
+                            let (inner, owned) = match i.def.methods.get(name) {
+                                Some(id) => (*id, true),
+                                None => {
+                                    let default = trait_def
+                                        .methods
+                                        .iter()
+                                        .find(|m| m.name.as_str() == name.as_str())
+                                        .and_then(|m| m.default);
+                                    match default {
+                                        Some(id) => (id, false),
+                                        None => bail!(
+                                            "impl {} for {target} does not implement {name}",
+                                            im.trait_name
+                                        ),
+                                    }
+                                }
+                            };
+                            proxy.push(Proxy { inner, outer: *outer, owned });
+                            ctx.rt.ref_var(inner, top_id);
+                            ctx.rt.ref_var(*outer, top_id);
+                        }
+                        false
+                    }
+                }
+            }
+            SigKind::Trait(t) => {
+                // the implementation re-declares the trait (the
+                // interface's declaration is prepended to its body
+                // unless it wrote its own); a written re-declaration
+                // must agree with the interface
+                for n in nodes {
+                    if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
+                        && t2.name == t.name
+                        && (t2.methods.len() != t.methods.len()
+                            || t2.methods.iter().zip(t.methods.iter()).any(|(a, b)| {
+                                a.name != b.name
+                                    || format_compact!("{}", a.typ)
+                                        != format_compact!("{}", b.typ)
+                            }))
+                    {
+                        bail!(
+                            "trait {} is declared by the interface as {t}; the \
+                             implementation's {t2} does not match",
+                            t.name
+                        )
+                    }
+                }
+                false
+            }
             SigKind::TypeDef(TypeDefExpr {
-                typ: Type::Abstract { id, params: _ },
+                name,
+                body: TypeDefBody::Abstract(None),
                 ..
-            }) if !abstract_types.contains_key(id) => {
+            }) if !defined_abstracts.contains(name) => {
                 bail!(
-                    "abstract signature types must have a concrete definition in the implementation"
+                    "{name} is hidden by the interface, so the implementation must \
+                     define it: `type {name} = Abstract<..>`, or `type {name};` for \
+                     a Rust-backed type"
                 )
             }
             SigKind::Module(_)
@@ -288,7 +474,7 @@ pub struct Module<R: Rt, E: UserEvent> {
     env: Env,
     sig: Sig,
     pub(crate) scope: Scope,
-    proxy: IntMap<BindId, BindId>,
+    proxy: Vec<Proxy>,
     pub(crate) nodes: Box<[Node<R, E>]>,
     /// catch-statement indices in `nodes` (see `Block::catches`).
     pub(crate) catches: Box<[usize]>,
@@ -331,7 +517,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             source,
             dynamic_sig_env: Some(ctx.env.clone()),
             scope: scope.clone(),
-            proxy: IntMap::default(),
+            proxy: Vec::new(),
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
@@ -364,7 +550,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             source,
             dynamic_sig_env: None,
             scope: scope.clone(),
-            proxy: IntMap::default(),
+            proxy: Vec::new(),
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
@@ -383,29 +569,15 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
-        let exprs = parser::parse(ori)?;
+        // the signature's declarations apply to the loaded source
+        // exactly as a `.gxi`'s do to its file (the resolvers splice
+        // them the same way)
+        let exprs = add_interface_modules(parser::parse(ori)?, &self.sig);
         // the namespace table is a global registry (it survives the
         // privacy swap), so a recompile must scrub the previous
-        // source's imports explicitly or they'd accumulate — then
-        // re-register the SIG's own uses, which the scrub also took
+        // source's imports explicitly or they'd accumulate; the
+        // spliced signature items re-register the sig's own uses
         ctx.env.clear_names_under(&self.scope.lexical);
-        for si in self.sig.items.iter() {
-            if let SigKind::Use { reexport: false, names } = &si.kind {
-                let si_ori =
-                    si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
-                for item in names.iter() {
-                    super::compile_use_item(
-                        &mut ctx.env,
-                        &mut ctx.pending_imports,
-                        si.pos,
-                        &si_ori,
-                        &self.scope,
-                        false,
-                        item,
-                    )?;
-                }
-            }
-        }
         self.compile_inner(ctx, &exprs)
     }
 
@@ -436,9 +608,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             Ok((nodes, catches))
         });
         ctx.builtins_allowed = true;
-        let (mut nodes, catches) = nodes?;
+        let (nodes, catches) = nodes?;
         self.catches = catches;
-        let private_env = self.env.clone();
+        self.nodes = nodes.into_boxed_slice();
         match &mut self.dynamic_sig_env {
             None => check_sig(
                 ctx,
@@ -446,30 +618,72 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 &mut self.proxy,
                 &self.scope,
                 &self.sig,
-                &nodes,
-                &private_env,
+                &self.nodes,
             )?,
-            Some(env) => ctx.with_restored_mut(env, |ctx| {
-                check_sig(
-                    ctx,
-                    self.top_id,
-                    &mut self.proxy,
-                    &self.scope,
-                    &self.sig,
-                    &nodes,
-                    &private_env,
-                )
-            })?,
+            Some(env) => {
+                ctx.with_restored_mut(env, |ctx| {
+                    check_sig(
+                        ctx,
+                        self.top_id,
+                        &mut self.proxy,
+                        &self.scope,
+                        &self.sig,
+                        &self.nodes,
+                    )
+                })?;
+                // a load happens at run time, long after the batch
+                // walk that `typecheck1`s a static module's children
+                self.proxy_lambda_defs(ctx);
+                self.typecheck1_nodes(ctx)?;
+            }
         }
-        self.nodes = nodes.drain(..).collect();
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
     }
 
+    /// Interface re-exports: a caller references the public signature
+    /// binding's `BindId`, but the lambda lives on the impl binding
+    /// (recorded by its own `Bind::typecheck0`). Proxy each outer id
+    /// to its inner LambdaDef so cross-module calls resolve.
+    fn proxy_lambda_defs(&self, ctx: &mut ExecCtx<R, E>) {
+        for Proxy { inner, outer, .. } in self.proxy.iter() {
+            let hit = ctx.bind_to_lambda.contains_key(inner);
+            if crate::dbgenv::gxdbg_resolve() {
+                eprintln!("B2L-PROXY {inner:?} -> {outer:?} hit={hit}");
+            }
+            if let Some(fv) = ctx.bind_to_lambda.get(inner).cloned() {
+                ctx.bind_to_lambda.insert(*outer, fv);
+            }
+        }
+    }
+
+    /// Drive the children's `typecheck1` under the module's private
+    /// env (`finalize_lambda` reads `ctx.env`); it finalizes call
+    /// sites and runs the static resolution folded into
+    /// `CallSite::typecheck1`.
+    fn typecheck1_nodes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        let Self { env, nodes, catches, .. } = self;
+        ctx.with_restored_mut(env, |ctx| {
+            let mut catch = catches.iter().copied().peekable();
+            for (i, n) in nodes.iter_mut().enumerate() {
+                if catch.peek() == Some(&i) {
+                    catch.next();
+                    continue;
+                }
+                wrap!(n, n.typecheck1(ctx))?;
+            }
+            for i in catches.iter().rev() {
+                let n = &mut nodes[*i];
+                wrap!(n, n.typecheck1(ctx))?;
+            }
+            Ok(())
+        })
+    }
+
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for (id, proxy_id) in self.proxy.drain() {
-            ctx.rt.unref_var(id, self.top_id);
-            ctx.rt.unref_var(proxy_id, self.top_id);
+        for Proxy { inner, outer, .. } in self.proxy.drain(..) {
+            ctx.rt.unref_var(inner, self.top_id);
+            ctx.rt.unref_var(outer, self.top_id);
         }
         ctx.with_restored_mut(&mut self.env, |ctx| {
             for mut n in mem::take(&mut self.nodes) {
@@ -550,15 +764,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         if compiled {
             event.init = true;
         }
-        for (inner_id, proxy_id) in &self.proxy {
-            if let Some(tv) = event.variables.get(proxy_id) {
+        for Proxy { inner, outer, owned } in &self.proxy {
+            if *owned && let Some(tv) = event.variables.get(outer) {
                 let tv = tv.clone();
                 // the entry's tag flows through the proxy; the clean
                 // cache never holds a taint placeholder
                 if !tv.is_tainted() {
-                    ctx.rt.store_insert(*inner_id, TagValue::fired(tv.value_cloned()));
+                    ctx.rt.store_insert(*inner, TagValue::fired(tv.value_cloned()));
                 }
-                event.variables.insert(*inner_id, tv);
+                event.variables.insert(*inner, tv);
             }
         }
         {
@@ -578,13 +792,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
         }
         event.init = init;
-        for (inner_id, proxy_id) in &self.proxy {
-            if let Some(tv) = event.variables.remove(inner_id) {
-                if !tv.is_tainted() {
-                    ctx.rt.store_insert(*proxy_id, TagValue::fired(tv.value_cloned()));
-                }
-                event.variables.insert(*proxy_id, tv);
+        for Proxy { inner, outer, owned } in &self.proxy {
+            let tv = if *owned {
+                event.variables.remove(inner)
+            } else {
+                event.variables.get(inner).cloned()
+            };
+            let tv = match tv {
+                Some(tv) => tv,
+                // a shared inner binding (a trait default) may have
+                // produced long before this load: its standing value
+                // is the fresh outer binding's init view
+                None if compiled => match ctx.rt.store_value(inner) {
+                    Some(v) => TagValue::fired(v.clone()),
+                    None => continue,
+                },
+                None => continue,
+            };
+            if !tv.is_tainted() {
+                ctx.rt.store_insert(*outer, TagValue::fired(tv.value_cloned()));
             }
+            event.variables.insert(*outer, tv);
         }
         if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
@@ -653,49 +881,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))?;
-        // Interface re-exports: a caller references the public signature
-        // binding's `BindId`, but the lambda lives on the impl binding
-        // (recorded by its own `Bind::typecheck0` during `compile_inner`).
-        // Proxy each sig id to its impl's LambdaDef so cross-module calls
-        // resolve. All `typecheck0` precedes all `typecheck1`, so the
-        // entry is present before resolution consumes it.
-        for (impl_id, sig_id) in self.proxy.iter() {
-            let hit = ctx.bind_to_lambda.contains_key(impl_id);
-            if crate::dbgenv::gxdbg_resolve() {
-                eprintln!("B2L-PROXY {impl_id:?} -> {sig_id:?} hit={hit}");
-            }
-            if let Some(fv) = ctx.bind_to_lambda.get(impl_id).cloned() {
-                ctx.bind_to_lambda.insert(*sig_id, fv);
-            }
-        }
+        // All `typecheck0` precedes all `typecheck1`, so the proxied
+        // entries are present before resolution consumes them.
+        self.proxy_lambda_defs(ctx);
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
-        // Module children were typecheck0'd in `compile_inner` under the
-        // module env, but the main `typecheck1` walk doesn't reach them
-        // (this node only recurses `source`). Drive their `typecheck1`
-        // here under the restored env — to finalize call sites AND run the
-        // static resolution folded into `CallSite::typecheck1` (which the
-        // deleted `static_resolve` pass used to reach via its own walk).
-        // The restored env is required: `finalize_lambda` reads `ctx.env`.
-        let Self { env, nodes, catches, .. } = self;
-        ctx.with_restored_mut(env, |ctx| {
-            let mut catch = catches.iter().copied().peekable();
-            for (i, n) in nodes.iter_mut().enumerate() {
-                if catch.peek() == Some(&i) {
-                    catch.next();
-                    continue;
-                }
-                wrap!(n, n.typecheck1(ctx))?;
-            }
-            for i in catches.iter().rev() {
-                let n = &mut nodes[*i];
-                wrap!(n, n.typecheck1(ctx))?;
-            }
-            Ok(())
-        })
+        // the main walk recurses only `source`; the children were
+        // `typecheck0`'d in `compile_inner` under the module env
+        self.typecheck1_nodes(ctx)
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {

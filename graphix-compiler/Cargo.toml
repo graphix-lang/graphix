@@ -15,6 +15,9 @@ exclude = ["book", "../book"]
 [features]
 default = []
 krb5_iov = []
+# Tests measured in tens of seconds, run by the release gate
+# (`cargo test --workspace --features slow-tests`), not per session.
+slow-tests = []
 
 [dependencies]
 anyhow = { workspace = true }

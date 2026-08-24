@@ -16,7 +16,7 @@ use std::sync::{Arc, LazyLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::{StreamKind, StreamValue, get_stream, wrap_stream};
+use crate::{StreamKind, get_stream, stream_of, wrap_stdio};
 
 // ── IoRead ─────────────────────────────────────────────────────
 
@@ -127,9 +127,10 @@ async fn line_reader(
     }
 }
 
-/// `sys::io::lines` (BATCHED = false) and `sys::io::lines_batched`
+/// `Lines::lines` (BATCHED = false) and `Lines::lines_batched`
 /// (BATCHED = true): one event per line, or one array of every line the
-/// read made available.
+/// read made available. Shared by every stream kind — the trait
+/// implementations in the `.gx` files decide who gets them.
 #[derive(Debug)]
 pub(crate) struct IoLines<const BATCHED: bool> {
     id: BindId,
@@ -170,13 +171,11 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         if let Some(tv) = seam_value(from[0].update(ctx, event))
             && tv.is_fired()
             && !self.started
-            && let Value::Abstract(a) = tv.value_cloned()
-            && let Some(sv) = a.downcast_ref::<StreamValue>()
+            && let Some(stream) = stream_of(&tv.value_cloned())
         {
             self.started = true;
             let (tx, rx) = mpsc::channel(3);
             ctx.rt.watch_var(rx);
-            let stream = sv.inner.clone();
             let id = self.id;
             tokio::spawn(line_reader(stream, id, BATCHED, tx));
         }
@@ -383,7 +382,7 @@ impl EvalCachedAsync for IoStdinEv {
     }
 
     fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
-        async { wrap_stream(StreamKind::Stdin(tokio::io::stdin())) }
+        async { wrap_stdio(StreamKind::Stdin(tokio::io::stdin())) }
     }
 }
 
@@ -403,7 +402,7 @@ impl EvalCachedAsync for IoStdoutEv {
     }
 
     fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
-        async { wrap_stream(StreamKind::Stdout(tokio::io::stdout())) }
+        async { wrap_stdio(StreamKind::Stdout(tokio::io::stdout())) }
     }
 }
 
@@ -423,7 +422,7 @@ impl EvalCachedAsync for IoStderrEv {
     }
 
     fn eval((): Self::Args) -> impl Future<Output = Value> + Send {
-        async { wrap_stream(StreamKind::Stderr(tokio::io::stderr())) }
+        async { wrap_stdio(StreamKind::Stderr(tokio::io::stderr())) }
     }
 }
 

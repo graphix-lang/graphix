@@ -1,8 +1,10 @@
 # Nominal abstract types — box at the constructor
 
 Status: RULED 2026-08-22 (Eric): every graphix-defined abstract type is
-boxed; `list::List` goes transparent. Not yet built. Companion to
-`traits.md` §3, but its payoff is wider than trait dispatch.
+boxed; `list::List` goes transparent. BUILT the same day on branch
+`nominal-abstracts` (see CLAUDE.md "Nominal abstract types" for the
+as-built map). Companion to `traits.md` §3, but its payoff is wider
+than trait dispatch.
 
 ## The rule
 

@@ -29,6 +29,7 @@
   - [Parametric Polymorphism](./udt/polymorphic.md)
   - [Recursive Types](./udt/recursive.md)
   - [References](./udt/references.md)
+  - [Traits](./udt/traits.md)
 - [Modules](./modules/overview.md)
   - [Implementation Files](./modules/implementation.md)
   - [Interface Files](./modules/interfaces.md)

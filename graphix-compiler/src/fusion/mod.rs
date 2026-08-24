@@ -38,7 +38,7 @@ use crate::{
     expr::{Expr, ExprId, ExprKind, Origin},
     fusion::{
         kernel_abi::{KernelSig, freeze_for_abi_normalized},
-        lowering::{RegionInputKind, resolve_abstract},
+        lowering::{RegionInputKind, expand_refs},
     },
     node,
     node::genn,
@@ -223,15 +223,6 @@ pub struct FusionCtx {
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub stats: FusionStats,
-    /// Fusion-time registry mapping each abstract type's `AbstractId` to
-    /// its concrete implementation type. Written by `check_sig` during
-    /// typecheck; read by the fusion classifiers
-    /// ([`kernel_abi::freeze_for_abi`] / `abi_kind` / `resolve_abstract`)
-    /// to peek through an abstract type's opacity to its wire shape.
-    /// Owned per-context (not a process-global) so it drops with the
-    /// `ExecCtx` — `AbstractId`s are minted fresh per compile, so a
-    /// global would leak.
-    pub abstract_registry: kernel_abi::AbstractRegistry,
     /// The TOP expression id of the compile currently running — set by
     /// [`crate::compile`] before the fusion phase. `try_fuse` builds its
     /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
@@ -275,7 +266,6 @@ impl FusionCtx {
             )),
             enabled: true,
             stats: FusionStats::default(),
-            abstract_registry: kernel_abi::AbstractRegistry::default(),
             top_id: None,
             builtin_facts: ahash::AHashMap::default(),
             arm_region: std::sync::atomic::AtomicBool::new(false),
@@ -366,20 +356,18 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     // Resolve named/abstract type refs to their concrete rep BEFORE
     // freezing — `freeze_for_abi` is deliberately Env-free and rejects
     // `Type::Ref`, so an abstract-typed input needs the same
-    // `resolve_abstract` pre-pass the classic kernel-signature derivation
+    // `expand_refs` pre-pass the classic kernel-signature derivation
     // applies (#218). The feeder type stays UNRESOLVED — the runtime Ref
     // wants the type system's view; only the kernel-slot classification
     // (`kind`, which carries the frozen types) needs the concrete rep.
-    let resolved = resolve_abstract(&ctx.fusion.abstract_registry, &b.typ, &ctx.env);
+    let resolved = expand_refs(&b.typ, &ctx.env);
     // Normalized: a binding whose defining select has a never() arm
     // carries a Set polluted by the arm's late-bound TVar — the
     // resolve_tvars rung collapses it so the local threads as a region
     // input instead of silently de-fusing every consumer
     // (bench/stream_stats.gx's window-gate idiom).
-    let frozen =
-        kernel_abi::freeze_for_abi_normalized(&ctx.fusion.abstract_registry, &resolved)?;
-    let kind =
-        lowering::type_to_region_input_kind(&ctx.fusion.abstract_registry, frozen)?;
+    let frozen = kernel_abi::freeze_for_abi_normalized(&resolved)?;
+    let kind = lowering::type_to_region_input_kind(frozen)?;
     Some(FreeVarInput {
         bind_id: id,
         name: arcstr::ArcStr::from(b.name.as_str()),
@@ -440,7 +428,7 @@ pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
                 // (branch-based clone-vs-seed).
                 use kernel_abi::AbiKind;
                 let shape_ok = matches!(
-                    kernel_abi::abi_kind(&ctx.fusion.abstract_registry, b.node.typ()),
+                    kernel_abi::abi_kind(b.node.typ()),
                     Some(
                         AbiKind::Scalar(_)
                             | AbiKind::Array
@@ -625,6 +613,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 rec!(c)
             }
         }
+        NodeView::Construct(c) => rec!(&c.arg),
         NodeView::Array(a) => {
             for c in a.n.iter() {
                 rec!(c)
@@ -672,6 +661,12 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::And(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Or(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Lambda(_) => {}
+        NodeView::Impl(i) => {
+            rec!(&i.body);
+            for p in i.prototypes.iter() {
+                rec!(p)
+            }
+        }
         NodeView::Ref(_)
         | NodeView::Constant(_)
         | NodeView::TypeDef(_)
@@ -722,7 +717,7 @@ pub struct LambdaCallInfo {
     /// The callee's flat input types in signature order — formals
     /// first, captures appended (`KnownFusedFn::arg_types`, cloned
     /// from the `CachedKernel` at discovery). These were resolved
-    /// (`resolve_abstract`) and frozen at BUILD time, so they're the
+    /// (`expand_refs`) and frozen at BUILD time, so they're the
     /// caller's type authority for arg classification — freezing the
     /// caller-side node type instead re-rejects abstract Refs (#218),
     /// and env isn't available at emit time to resolve them. The
@@ -1046,9 +1041,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     if region_is_identity(node) {
         return Ok(None);
     }
-    let Some(return_type) =
-        freeze_region_return(&ctx.fusion.abstract_registry, node.typ(), &ctx.env)
-    else {
+    let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
         if crate::dbgenv::gxdbg_freeze_ret() {
             crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
                 eprintln!("FREEZE-RET-MISS {:?} typ={}", node.spec().id, node.typ());
@@ -1176,7 +1169,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             &callee_bodies,
             None,
             &ctx.env,
-            &ctx.fusion.abstract_registry,
             &lifted,
             // Region parent: frames reach its replay reset through the
             // FusedKernel node, so replay words are honored here.
@@ -1352,15 +1344,11 @@ pub(crate) fn non_scalar_basename_collision(
 /// `freeze_for_abi_normalized` because a select-rooted region's type is
 /// typecheck's raw arm union (`Set([i64, TVar→i64])`), which only
 /// freezes once flattened. On plain-freeze failure, retry through
-/// `resolve_abstract` (#218): a region returning an abstract-typed
+/// `expand_refs` (#218): a region returning an abstract-typed
 /// value (e.g. `Array<Elem>` with `Elem` an interface type) carries
 /// Refs the env-free freeze rejects; the resolved concrete rep IS
 /// the return ABI.
-pub(crate) fn freeze_region_return(
-    reg: &kernel_abi::AbstractRegistry,
-    typ: &Type,
-    env: &Env,
-) -> Option<Type> {
+pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     use kernel_abi::AbiKind;
     if crate::dbgenv::graphix_dbg_freeze() {
         let d = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
@@ -1371,14 +1359,14 @@ pub(crate) fn freeze_region_return(
             typ.resolve_tvars().normalize()
         );
     }
-    let return_type = match freeze_for_abi_normalized(reg, typ) {
+    let return_type = match freeze_for_abi_normalized(typ) {
         Some(t) => t,
         None => {
-            let resolved = resolve_abstract(reg, typ, env);
-            freeze_for_abi_normalized(reg, &resolved)?
+            let resolved = expand_refs(typ, env);
+            freeze_for_abi_normalized(&resolved)?
         }
     };
-    match kernel_abi::abi_kind(reg, &return_type) {
+    match kernel_abi::abi_kind(&return_type) {
         Some(
             AbiKind::Scalar(_)
             | AbiKind::Array

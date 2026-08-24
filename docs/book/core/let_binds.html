@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3e838236.js";
+            window.path_to_searchindex_js = "../searchindex-e725aa8e.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-e4e99a5c.js"></script>
+        <script src="../toc-f7a0005a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -202,6 +202,25 @@ y == "hello" // true
 <p>To document the public API of a module, use <code>///</code> documentation comments in
 <a href="../modules/interfaces.html">interface files</a>. Documentation is displayed in the
 shell during tab completion and made available by the LSP server.</p>
+<h2 id="comments"><a class="header" href="#comments">Comments</a></h2>
+<p>A <code>//</code> comment runs to the end of its line and belongs to whatever comes
+next: write it on its own line directly above an expression, a <code>select</code>
+arm, a method inside an <code>impl</code> block, or a field of a struct literal.</p>
+<pre><code class="language-graphix">// a counter, one step per cycle
+let n = 0;
+n &lt;- n + 1;
+select n {
+  // nothing has happened yet
+  0 =&gt; "waiting",
+  // every later step
+  k =&gt; "step [k]"
+}
+</code></pre>
+<p>Anywhere else is a parse error — after an expression on the same line
+(<code>x + 1; // no</code>), between an operator and its operand, or dangling before
+a closing <code>}</code> with nothing below it. The rule is what lets the parser keep
+every comment in the syntax tree, so tools that rewrite a program (the
+formatter, the REPL echo) never lose one.</p>
 
                     </main>
 

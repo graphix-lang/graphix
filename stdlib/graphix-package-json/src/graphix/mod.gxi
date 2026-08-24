@@ -1,13 +1,12 @@
-use sys::io::Stream;
-
-/// Parse JSON from a string, byte array, or I/O stream.
-val read: fn(input: [string, bytes, Stream<'a>]) -> Result<'b, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]>;
+/// Parse JSON from a string or bytes.
+///
+/// To parse a stream, read it first — `json::read(Read::read_all(f)?)`.
+val read: fn(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string.
 val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `JsonErr(string)>;
 
 /// Serialize a value to JSON bytes.
+///
+/// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
 val write_bytes: fn(?#pretty: bool, value: Any) -> Result<bytes, `JsonErr(string)>;
-
-/// Serialize a value and write JSON to a stream.
-val write_stream: fn(?#pretty: bool, stream: Stream<'a>, value: Any) -> Result<null, [`JsonErr(string), `IOErr(string)]>;
