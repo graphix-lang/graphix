@@ -76,7 +76,7 @@ corpus_count() { find "$repo/graphix-fuzz/findings" -name '*.gx' | wc -l | tr -d
 # differ per box for reasons that cannot affect a build.
 FINGERPRINT='cd ~/proj/graphix && find graphix-compiler graphix-rt graphix-package \
     graphix-derive graphix-shell graphix-fuzz stdlib Cargo.toml -type f \
-    \( -name "*.rs" -o -name "*.gx" -o -name "*.gxi" -o -name "*.toml" \) \
+    \( -name "*.rs" -o -name "*.gx" -o -name "*.gxi" -o -name "*.toml" -o -name "*.sh" \) \
     ! -path "*/target/*" ! -name "#*" ! -name ".#*" \
     | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-16'
 
@@ -303,7 +303,14 @@ EOF
         ok=1
     fi
     [[ ${n:-0} -ge 1 ]] || { warn "$(printf '%-8s NO CAMPAIGN PROCESS' "$name")"; ok=1; }
-    if [[ -n $a && -n $b && ${a%% *} -ge ${b%% *} ]]; then
+    # A missing sample is not a pass: the SECOND one must exist and be
+    # non-zero (proof the campaign checked something), and when both
+    # exist the second must exceed the first.
+    if [[ -z $b || ${b%% *} -eq 0 ]]; then
+        warn "$(printf '%-8s NO SUBJECTS CHECKED (samples: %s then %s)' \
+             "$name" "${a:-<none>}" "${b:-<none>}")"
+        ok=1
+    elif [[ -n $a && ${a%% *} -ge ${b%% *} ]]; then
         warn "$(printf '%-8s COUNTERS NOT ADVANCING (%s then %s)' "$name" "$a" "$b")"
         ok=1
     fi
