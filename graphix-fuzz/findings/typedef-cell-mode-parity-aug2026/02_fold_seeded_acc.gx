@@ -1,0 +1,5 @@
+// aug24a class G, third face (katana): the same typedef-cell skew where
+// the ill-typed `List` is the SOURCE of a collection HOF, so the
+// mismatch is reported from inside the fold's argument check. See 00 for
+// the mechanism.
+{let seed: [i64, null] = null; list::fold(`Cons(true, true), seed, true)}

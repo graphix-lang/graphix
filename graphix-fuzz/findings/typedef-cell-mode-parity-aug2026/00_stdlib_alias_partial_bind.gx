@@ -1,0 +1,22 @@
+// aug24a class G (campaign witness, hz0): COMPILE-MODE SKEW again, a
+// different mechanism from fusion-mutates-tvars-aug2026 and this one IS
+// oracle-visible — both modes reject, with DIFFERENT text:
+//
+//   graphix --check            .. type mismatch List<'a: unbound> does not contain `Cons(bool, bool)
+//   graphix --no-fusion --check .. type mismatch List<'a: bool>    does not contain `Cons(bool, bool)
+//
+// `Env::seed_typedef_refs` — the eager pass that fills every typedef's
+// carried resolution cells — ran inside `if ctx.fusion.enabled`, so the
+// STDLIB compiled with filled cells in the default mode and empty ones
+// under `--no-fusion`. A ref whose cell is filled and one whose cell is
+// empty take different paths through `contains` (`ref_id` keys identity
+// off the cell; `lookup_ref` resolves through it), so the failed
+// unification against `List<'a>` binds the call site's `'a` in one mode
+// and not the other. The verdict agreed; the inference channel did not,
+// which is the part that could have differed on a program that COMPILES.
+// A user-local typedef with the same shape always agreed — the skew
+// needed a typedef compiled in an earlier `compile()` call.
+//
+// Fixed by seeding in both modes (the pass is a typecheck-time fact, not
+// a fusion one): `seed_typedef_refs()` moved above the fusion gate.
+list::drop(i64:0, `Cons(true, true))

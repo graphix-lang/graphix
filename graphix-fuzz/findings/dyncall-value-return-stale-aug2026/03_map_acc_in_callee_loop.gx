@@ -1,0 +1,8 @@
+// aug24a (campaign witness, ryouko) — an independent re-find of this
+// class on the pre-fix binary, and the first face whose Value-shape
+// return is a MAP: `map::insert` accumulating through a `list::fold`
+// inside a `let rec` callee body. Every element of the driving
+// `array::iter` re-derived the callee, and the fold's constant-fed
+// DynCall adopted the dispatcher's disc raw instead of folding the args'
+// STALE bit into the result tag: interp 1 production, JIT 5.
+{let x = array::iter([i64:100, i64:2, i64:0, i64:0]); let rec f = |n: i64| {let l = list::from_array([("a", i64:1), ("b", i64:2), ("a", i64:10)]); let m = list::fold(l, {"" => i64:0}, |acc, (k, v)| map::insert(acc, k, v)); map::len(m)}; f(x - i64:1)}

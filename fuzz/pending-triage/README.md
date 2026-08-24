@@ -142,3 +142,38 @@ corpus-mutation source (~236M subjects); generate (~260M) and reactive
   rhs member now goes to the residue and aliases the bare lhs member.
   Consequence: three shapes that compiled by accident are rejected
   consistently now; annotate the result (`let v: i64 = select ..`).
+
+## The aug24a round (2026-08-24) — 4 findings, 2 classes, CLOSED
+
+Campaign aug24a (hz0/aieka/katana/ryouko on c9c1e7cb — the traits merge
+plus the aug22c park) ran ~4 hours before this redeploy: 4 divergences —
+hz0 2, katana 1, ryouko 1, aieka 0 — all four from corpus mutation.
+Pulled with the new `graphix-fuzz/fleet.sh pull`. Both classes closed the
+same day; the raw witnesses are removed and the pins carry the record.
+
+- **F — already fixed** (ryouko): the aug22c class D mechanism found
+  again, independently, on the pre-fix binary — `map::insert` folding a
+  MAP accumulator through `list::fold` inside a `let rec` callee body
+  (interp 1 production, JIT 5). It AGREES on `3450a07b` and is pinned as
+  `findings/dyncall-value-return-stale-aug2026/03_map_acc_in_callee_loop.gx`,
+  the first face of that class whose Value-shape return is a Map.
+- **G — `typedef-cell-mode-parity-aug2026`** (hz0 x2, katana): COMPILE-MODE
+  SKEW, a second mechanism in the family of
+  `fusion-mutates-tvars-aug2026` — but oracle-visible, because both modes
+  reject with DIFFERENT text (`List<'a: bool>` under `--no-fusion`,
+  `List<'a: unbound>` with fusion). `Env::seed_typedef_refs` — the eager
+  pass that fills every typedef's carried resolution cell — ran inside
+  `if ctx.fusion.enabled`, so the STDLIB compiled with filled cells in one
+  mode and empty cells in the other, and a ref whose cell is filled takes
+  a different path through `contains` than one whose cell is empty
+  (`ref_id` keys identity off the cell, `lookup_ref` resolves through it).
+  The failed unification bound the call site's `'a` in one mode only. The
+  verdict agreed here; the INFERENCE CHANNEL did not, which is the part
+  that could have differed on a program that compiles. A user-local
+  typedef of the same shape always agreed — the skew needs a typedef
+  compiled in an earlier `compile()` call, i.e. the stdlib.
+  Fixed by seeding in both modes: the pass is a typecheck-time fact
+  ("every name's final target is registered exactly here"), not a fusion
+  one, so `seed_typedef_refs()` moved above the fusion gate. The
+  `graphix-shell` `check_mode_parity` test now iterates over both witness
+  families.

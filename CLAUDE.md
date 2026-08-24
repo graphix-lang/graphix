@@ -1097,7 +1097,19 @@ coverage, not correctness).
   the pool has an environment-broken backstop (`BreakageWindow`): a
   majority of findings over a 200-subject window aborts the campaign
   instead of flooding the corpus at disk speed; finding-write failures
-  are fatal. `design/graphix_fuzz.md` §12.
+  are fatal. `design/graphix_fuzz.md` §12. **The fleet deploy is a
+  script, not a checklist**: `graphix-fuzz/fleet.sh`
+  (`deploy <new-camp> <base-seed> [old-camp]`, or its steps `pull`/
+  `stop`/`sync`/`launch`/`verify`/`status`) drives all four boxes from
+  one host table (name, sync method, workers, timeout scale, os), and
+  every step verifies with a FACT rather than a message: a stop by
+  `pgrep`, a sync by a CONTENT fingerprint over the build inputs (hz0
+  is rsync'd `--exclude .git`, so its `git log` is a lie by
+  construction; syncthing boxes are waited for and verified, NEVER
+  rsync'd into), and a launch by the campaign's own startup gate line,
+  whose corpus count comes from pins embedded at build time — so a
+  stale binary shows up as a count mismatch. Seeds are allocated
+  10M apart in host-table order from the base.
 - **`FusionStats`** (`fusion/mod.rs`): per-`ExecCtx` compile-time counters
   (`attempted`/`fused`/`failed: Vec<(ExprId, reason)>`), exposed via
   `GXHandle::fusion_stats()` / `TestCtx::fusion_stats()`. Read `failed` as a
@@ -1693,6 +1705,26 @@ The durable rules:
   slot and the inline emitter has no labeled-default binding), and a
   callback with ONLY labeled parameters is a type error
   (`FnType::first_positional`).
+
+## The aug24a round (2026-08-24)
+
+Four findings, two classes, both closed same day
+(`fuzz/pending-triage/README.md`). One re-found the aug22c class D
+mechanism on the pre-fix binary (pinned as a Map-valued face). The other
+is the durable rule:
+
+- **A pass the fusion gate owns must not change what the typechecker
+  sees.** `Env::seed_typedef_refs` ran inside `if ctx.fusion.enabled`,
+  so the stdlib compiled with filled typedef resolution cells in the
+  default mode and empty ones under `--no-fusion` — and a ref whose cell
+  is filled walks `contains` differently from one whose cell is empty
+  (`ref_id` keys identity off the cell; `lookup_ref` resolves through
+  it). Two modes, two inference channels; visible here only as a
+  diagnostic (`List<'a: bool>` vs `List<'a: unbound>`) because both
+  modes happened to reject. Seeding now runs in both modes — it is a
+  typecheck-time fact, not a fusion one. This is the second mechanism in
+  the `fusion-mutates-tvars-aug2026` family, and the
+  `graphix-shell` `check_mode_parity` test now covers both.
 
 ## The module system (open → use, 2026-08-22)
 

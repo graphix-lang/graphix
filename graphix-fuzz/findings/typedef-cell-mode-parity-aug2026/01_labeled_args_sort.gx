@@ -1,0 +1,4 @@
+// aug24a class G, second face (hz0): the same typedef-cell skew reached
+// through a builtin whose labeled arguments are checked before the
+// positional one. See 00 for the mechanism.
+list::sort(#dir: `Descending, #numeric: true, `Cons(true, "-c"))

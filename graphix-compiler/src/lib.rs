@@ -2266,9 +2266,14 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         ctx.env = env;
         return Err(e);
     }
+    // Every name's final target is registered exactly here — the one
+    // order-correct moment to fill typedef resolution cells. It runs in
+    // BOTH modes: a ref whose cell is filled and one whose cell is empty
+    // take different paths through `contains`, so seeding under the
+    // fusion gate alone made `--no-fusion` a different typechecker.
+    ctx.env.seed_typedef_refs();
     if ctx.fusion.enabled {
         let st = Instant::now();
-        ctx.env.seed_typedef_refs();
         if let Err(e) = fusion::fuse(&mut node, ctx) {
             ctx.env = env;
             return Err(e);
