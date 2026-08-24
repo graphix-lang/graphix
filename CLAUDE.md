@@ -1548,14 +1548,20 @@ every annotated `fn<'a: Number>` bound was vacuous; fixed. A VALUE
 occurrence of a generalized binding (`Env.poly_binds`: let-bound
 lambdas, gxi vals, dispatchers, `let g = f`) instantiates its
 signature in `Ref::typecheck0` like a call (same knots); a call site
-typechecks a `Ref` argument before its operand pre-bind. Not yet:
-trait params/assoc types (v2, post-release), `type T = A + B` trait
-aliases (write the bound inline), dynamic-module impl proxies (an
-`impl` declared by a dynamic module's interface has method bindings
-but no proxy to the loaded source, so a consumer compiled against it
-can't dispatch statically), and no `Hash` (nothing consults one —
-map keys ride `Ord`). Fusion coverage, not correctness: the
-union-dispatch select de-fuses, as do abstract patterns.
+typechecks a `Ref` argument before its operand pre-bind. A DECLARED
+impl (`impl T for X;` in an interface) is the entry of record
+(2026-08-24): the module's own `impl` FULFILS it and `check_sig`
+proxies the declared method bindings to the implementation's (or the
+trait's default) exactly as a `val` is proxied — so a consumer
+compiled before the implementation exists (a dynamic module's) or
+across a reload resolves to stable bindings. The same fix gave
+dynamically loaded sources the interface splice
+(`add_interface_modules`) and a `typecheck1` pass, which they never
+had (an ill-typed source used to load). Not yet: trait params/assoc
+types (v2, post-release), `type T = A + B` trait aliases (write the
+bound inline), and no `Hash` (nothing consults one — map keys ride
+`Ord`). Fusion coverage, not correctness: the union-dispatch select
+de-fuses, as do abstract patterns.
 
 **Core traits (2026-08-23, `design/traits.md` §12):** `Eq`/`Ord`/
 `Display` declared in core's gxi; THE VALUE SEAM: netidx's abstract
@@ -1626,7 +1632,11 @@ UUID on; `get_stream` reaches the shared cell from any of them.
   ad-hoc UUID now has values matching no type test — its own bug, in
   its own tests), and a CORE-trait impl for a Rust-backed abstract is
   REFUSED (`traits::check_target`: no payload for the impl to read, so
-  nothing would consult it). The tag test stays NOMINAL, not a full
+  nothing would consult it) — at the implementation's `impl` block,
+  never at an interface's `impl T for X;` (a hidden `type X;` has no
+  known representation at signature time; 2026-08-24, pinned by
+  `core_impl_interface_{declared,rust_backed_refused}`). The tag test
+  stays NOMINAL, not a full
   type check — parameters are not carried at runtime, so `Box<i64> as
   b` matches a `Box<string>` (minted and Rust-backed alike).
 - **API break**: `Read::read`, `Seek::seek`, `Socket::shutdown`;

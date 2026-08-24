@@ -508,12 +508,38 @@ re-mint now carries the (scoped) conjunction. Pinned by
 
 **Known limits (v1):** no trait parameters or associated types (§5);
 `type T = A + B` trait aliases are not built (write the bound
-inline); an `impl` declared by a DYNAMIC module's interface has
-method bindings but no proxy to the loaded source yet, so a consumer
-compiled against it cannot dispatch statically; the union-dispatch select
-de-fuses while abstract patterns do; `Hash` (§8) is not a trait —
-nothing consults one in v1 (map keys stay structural), so it would
-be dead API.
+inline); the union-dispatch select de-fuses while abstract patterns
+do; `Hash` (§8) is not a trait — nothing consults one in v1 (map keys
+stay structural), so it would be dead API.
+
+**A declared impl is the entry of record (2026-08-24).** `impl T for
+X;` in an interface registers a `declared` impl whose method bindings
+are minted from the trait's signatures at the target; the
+implementation's `impl T for X { .. }` in the same module FULFILS it
+(`Env::register_impl` returns the declaration instead of registering
+the implementation) and `check_sig` proxies each declared method
+binding to the binding behind it — the implementation's own for a
+method it writes, the trait's default for one it leaves — exactly as
+a `val` proxies (`node::module::Proxy`; the default's binding is
+SHARED with the rest of the cycle, so its production is copied, not
+moved, and a load feeds the declared binding from the default's
+standing value). Every consumer therefore resolves to the SAME
+bindings whether it compiled before or after the implementation
+exists, which is what a dynamic module needs: its consumers compile
+against the signature alone, and a reload mints fresh implementation
+bindings behind unchanged declared ones. Static modules take the same
+path (one mechanism; static resolution rides `bind_to_lambda` through
+the proxy as for vals). Found on the way: a dynamically loaded source
+was never `typecheck1`'d — no static resolution, no trait dispatch
+inside it, and an ill-typed source loaded (a bare
+`sys::net::subscribe(..)$` with an unconstrained return type, which a
+file rejects) — and the signature's declarations were not spliced
+into it as `add_interface_modules` does for a file, so a sig-declared
+trait was out of scope in the source it governed. Both fixed in
+`Module::compile_source`/`compile_inner`. Pinned by
+`trait_dynamic_impl_{dispatch,default,internal,reload,outer_trait,
+outer_default}`, `trait_dynamic_core_impl`,
+`trait_interface_outer_default`, `dynamic_module_typecheck1`.
 
 **A value occurrence is a call site (Eric, 2026-08-22):** a reference
 to a GENERALIZED binding — a let-bound lambda, an interface `val`, a
@@ -729,7 +755,12 @@ in turn is what makes trait dispatch over a UNION of them work
   `GxAbstract`, and a Rust-backed value has no payload for the
   implementation to read, so such an impl would compile and never be
   consulted. Their equality, ordering and printing stay the ones their
-  package defined. (This settles §12's open question.)
+  package defined. (This settles §12's open question.) The refusal is
+  the IMPLEMENTATION's, never an interface declaration's: at
+  signature time a hidden `type X;` has no representation yet, so a
+  gxi's `impl Display for X;` was refused as Rust-backed whatever the
+  module went on to define (2026-08-24; `check_target`'s `declared`
+  flag, pinned by `core_impl_interface_{declared,rust_backed_refused}`).
 
 **Two things the migration found in the compiler.** An interface's
 `impl` declaration is never spliced into the implementation, so it can

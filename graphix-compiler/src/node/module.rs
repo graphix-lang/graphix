@@ -7,7 +7,8 @@ use crate::{
     errf,
     expr::{
         BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefBody, TypeDefExpr, parser,
+        Source, StructurePattern, TypeDefBody, TypeDefExpr, add_interface_modules,
+        parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     node::{Nop, bind::Bind, traits},
@@ -20,7 +21,6 @@ use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
-use nohash::IntMap;
 use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
 use triomphe::Arc;
@@ -124,7 +124,7 @@ fn bind_sig(
                 };
                 let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
                 let (target, params) =
-                    traits::impl_head(env, &scope.lexical, &trait_def, im)
+                    traits::impl_head(env, &scope.lexical, &trait_def, im, true)
                         .with_context(|| format!("at {}", si.pos))?;
                 if !im.methods.is_empty() {
                     bail!(
@@ -221,10 +221,26 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
     }
 }
 
+/// A signature binding and the binding behind it: the implementation's
+/// own for a `val` or an overridden method, the trait's default for a
+/// method the implementation leaves to it. The module copies the
+/// inner production to the outer id every cycle (`Module::update`)
+/// and proxies the inner lambda for static resolution
+/// (`proxy_lambda_defs`). `owned` says the inner binding is the
+/// module's private one — its production moves out instead of being
+/// shared with the rest of the cycle, and a write to the outer id
+/// flows in.
+#[derive(Debug, Clone, Copy)]
+struct Proxy {
+    inner: BindId,
+    outer: BindId,
+    owned: bool,
+}
+
 fn check_sig<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     top_id: ExprId,
-    proxy: &mut IntMap<BindId, BindId>,
+    proxy: &mut Vec<Proxy>,
     scope: &Scope,
     sig: &Sig,
     nodes: &[Node<R, E>],
@@ -248,7 +264,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                     bind.typ()
                 )
             })?;
-            proxy.insert(id, *proxy_id);
+            proxy.push(Proxy { inner: id, outer: *proxy_id, owned: true });
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
             if ctx.env.lsp_mode {
@@ -345,10 +361,51 @@ fn check_sig<R: Rt, E: UserEvent>(
                     .lookup_trait(&scope.lexical, &im.trait_name)?
                     .expect("bound by bind_sig");
                 let target = im.target.scope_refs(&scope.lexical);
-                !ctx.env
-                    .impl_entry(trait_id, &target)?
-                    .map(|e| !e.declared)
-                    .unwrap_or(false)
+                let declared =
+                    ctx.env.impl_entry(trait_id, &target)?.expect("bound by bind_sig");
+                let mut fulfilled = nodes.iter().filter_map(|n| {
+                    (&**n as &dyn Any).downcast_ref::<traits::Impl<R, E>>().filter(|i| {
+                        i.fulfils.as_ref().is_some_and(|d| Arc::ptr_eq(d, &declared))
+                    })
+                });
+                match (fulfilled.next(), fulfilled.next()) {
+                    (None, _) => true,
+                    (Some(_), Some(dup)) => bail!(
+                        "impl {} for {target} is implemented twice (at {})",
+                        im.trait_name,
+                        dup.spec().pos
+                    ),
+                    (Some(i), None) => {
+                        let trait_def = ctx
+                            .env
+                            .trait_def(trait_id)
+                            .cloned()
+                            .expect("bound by bind_sig");
+                        for (name, outer) in declared.methods.into_iter() {
+                            let (inner, owned) = match i.def.methods.get(name) {
+                                Some(id) => (*id, true),
+                                None => {
+                                    let default = trait_def
+                                        .methods
+                                        .iter()
+                                        .find(|m| m.name.as_str() == name.as_str())
+                                        .and_then(|m| m.default);
+                                    match default {
+                                        Some(id) => (id, false),
+                                        None => bail!(
+                                            "impl {} for {target} does not implement {name}",
+                                            im.trait_name
+                                        ),
+                                    }
+                                }
+                            };
+                            proxy.push(Proxy { inner, outer: *outer, owned });
+                            ctx.rt.ref_var(inner, top_id);
+                            ctx.rt.ref_var(*outer, top_id);
+                        }
+                        false
+                    }
+                }
             }
             SigKind::Trait(t) => {
                 // the implementation re-declares the trait (the
@@ -417,7 +474,7 @@ pub struct Module<R: Rt, E: UserEvent> {
     env: Env,
     sig: Sig,
     pub(crate) scope: Scope,
-    proxy: IntMap<BindId, BindId>,
+    proxy: Vec<Proxy>,
     pub(crate) nodes: Box<[Node<R, E>]>,
     /// catch-statement indices in `nodes` (see `Block::catches`).
     pub(crate) catches: Box<[usize]>,
@@ -460,7 +517,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             source,
             dynamic_sig_env: Some(ctx.env.clone()),
             scope: scope.clone(),
-            proxy: IntMap::default(),
+            proxy: Vec::new(),
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
@@ -493,7 +550,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             source,
             dynamic_sig_env: None,
             scope: scope.clone(),
-            proxy: IntMap::default(),
+            proxy: Vec::new(),
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
@@ -512,29 +569,15 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
-        let exprs = parser::parse(ori)?;
+        // the signature's declarations apply to the loaded source
+        // exactly as a `.gxi`'s do to its file (the resolvers splice
+        // them the same way)
+        let exprs = add_interface_modules(parser::parse(ori)?, &self.sig);
         // the namespace table is a global registry (it survives the
         // privacy swap), so a recompile must scrub the previous
-        // source's imports explicitly or they'd accumulate — then
-        // re-register the SIG's own uses, which the scrub also took
+        // source's imports explicitly or they'd accumulate; the
+        // spliced signature items re-register the sig's own uses
         ctx.env.clear_names_under(&self.scope.lexical);
-        for si in self.sig.items.iter() {
-            if let SigKind::Use { reexport: false, names } = &si.kind {
-                let si_ori =
-                    si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
-                for item in names.iter() {
-                    super::compile_use_item(
-                        &mut ctx.env,
-                        &mut ctx.pending_imports,
-                        si.pos,
-                        &si_ori,
-                        &self.scope,
-                        false,
-                        item,
-                    )?;
-                }
-            }
-        }
         self.compile_inner(ctx, &exprs)
     }
 
@@ -565,8 +608,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             Ok((nodes, catches))
         });
         ctx.builtins_allowed = true;
-        let (mut nodes, catches) = nodes?;
+        let (nodes, catches) = nodes?;
         self.catches = catches;
+        self.nodes = nodes.into_boxed_slice();
         match &mut self.dynamic_sig_env {
             None => check_sig(
                 ctx,
@@ -574,28 +618,72 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 &mut self.proxy,
                 &self.scope,
                 &self.sig,
-                &nodes,
+                &self.nodes,
             )?,
-            Some(env) => ctx.with_restored_mut(env, |ctx| {
-                check_sig(
-                    ctx,
-                    self.top_id,
-                    &mut self.proxy,
-                    &self.scope,
-                    &self.sig,
-                    &nodes,
-                )
-            })?,
+            Some(env) => {
+                ctx.with_restored_mut(env, |ctx| {
+                    check_sig(
+                        ctx,
+                        self.top_id,
+                        &mut self.proxy,
+                        &self.scope,
+                        &self.sig,
+                        &self.nodes,
+                    )
+                })?;
+                // a load happens at run time, long after the batch
+                // walk that `typecheck1`s a static module's children
+                self.proxy_lambda_defs(ctx);
+                self.typecheck1_nodes(ctx)?;
+            }
         }
-        self.nodes = nodes.drain(..).collect();
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
     }
 
+    /// Interface re-exports: a caller references the public signature
+    /// binding's `BindId`, but the lambda lives on the impl binding
+    /// (recorded by its own `Bind::typecheck0`). Proxy each outer id
+    /// to its inner LambdaDef so cross-module calls resolve.
+    fn proxy_lambda_defs(&self, ctx: &mut ExecCtx<R, E>) {
+        for Proxy { inner, outer, .. } in self.proxy.iter() {
+            let hit = ctx.bind_to_lambda.contains_key(inner);
+            if crate::dbgenv::gxdbg_resolve() {
+                eprintln!("B2L-PROXY {inner:?} -> {outer:?} hit={hit}");
+            }
+            if let Some(fv) = ctx.bind_to_lambda.get(inner).cloned() {
+                ctx.bind_to_lambda.insert(*outer, fv);
+            }
+        }
+    }
+
+    /// Drive the children's `typecheck1` under the module's private
+    /// env (`finalize_lambda` reads `ctx.env`); it finalizes call
+    /// sites and runs the static resolution folded into
+    /// `CallSite::typecheck1`.
+    fn typecheck1_nodes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        let Self { env, nodes, catches, .. } = self;
+        ctx.with_restored_mut(env, |ctx| {
+            let mut catch = catches.iter().copied().peekable();
+            for (i, n) in nodes.iter_mut().enumerate() {
+                if catch.peek() == Some(&i) {
+                    catch.next();
+                    continue;
+                }
+                wrap!(n, n.typecheck1(ctx))?;
+            }
+            for i in catches.iter().rev() {
+                let n = &mut nodes[*i];
+                wrap!(n, n.typecheck1(ctx))?;
+            }
+            Ok(())
+        })
+    }
+
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for (id, proxy_id) in self.proxy.drain() {
-            ctx.rt.unref_var(id, self.top_id);
-            ctx.rt.unref_var(proxy_id, self.top_id);
+        for Proxy { inner, outer, .. } in self.proxy.drain(..) {
+            ctx.rt.unref_var(inner, self.top_id);
+            ctx.rt.unref_var(outer, self.top_id);
         }
         ctx.with_restored_mut(&mut self.env, |ctx| {
             for mut n in mem::take(&mut self.nodes) {
@@ -676,15 +764,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         if compiled {
             event.init = true;
         }
-        for (inner_id, proxy_id) in &self.proxy {
-            if let Some(tv) = event.variables.get(proxy_id) {
+        for Proxy { inner, outer, owned } in &self.proxy {
+            if *owned && let Some(tv) = event.variables.get(outer) {
                 let tv = tv.clone();
                 // the entry's tag flows through the proxy; the clean
                 // cache never holds a taint placeholder
                 if !tv.is_tainted() {
-                    ctx.rt.store_insert(*inner_id, TagValue::fired(tv.value_cloned()));
+                    ctx.rt.store_insert(*inner, TagValue::fired(tv.value_cloned()));
                 }
-                event.variables.insert(*inner_id, tv);
+                event.variables.insert(*inner, tv);
             }
         }
         {
@@ -704,13 +792,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
         }
         event.init = init;
-        for (inner_id, proxy_id) in &self.proxy {
-            if let Some(tv) = event.variables.remove(inner_id) {
-                if !tv.is_tainted() {
-                    ctx.rt.store_insert(*proxy_id, TagValue::fired(tv.value_cloned()));
-                }
-                event.variables.insert(*proxy_id, tv);
+        for Proxy { inner, outer, owned } in &self.proxy {
+            let tv = if *owned {
+                event.variables.remove(inner)
+            } else {
+                event.variables.get(inner).cloned()
+            };
+            let tv = match tv {
+                Some(tv) => tv,
+                // a shared inner binding (a trait default) may have
+                // produced long before this load: its standing value
+                // is the fresh outer binding's init view
+                None if compiled => match ctx.rt.store_value(inner) {
+                    Some(v) => TagValue::fired(v.clone()),
+                    None => continue,
+                },
+                None => continue,
+            };
+            if !tv.is_tainted() {
+                ctx.rt.store_insert(*outer, TagValue::fired(tv.value_cloned()));
             }
+            event.variables.insert(*outer, tv);
         }
         if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
@@ -779,49 +881,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))?;
-        // Interface re-exports: a caller references the public signature
-        // binding's `BindId`, but the lambda lives on the impl binding
-        // (recorded by its own `Bind::typecheck0` during `compile_inner`).
-        // Proxy each sig id to its impl's LambdaDef so cross-module calls
-        // resolve. All `typecheck0` precedes all `typecheck1`, so the
-        // entry is present before resolution consumes it.
-        for (impl_id, sig_id) in self.proxy.iter() {
-            let hit = ctx.bind_to_lambda.contains_key(impl_id);
-            if crate::dbgenv::gxdbg_resolve() {
-                eprintln!("B2L-PROXY {impl_id:?} -> {sig_id:?} hit={hit}");
-            }
-            if let Some(fv) = ctx.bind_to_lambda.get(impl_id).cloned() {
-                ctx.bind_to_lambda.insert(*sig_id, fv);
-            }
-        }
+        // All `typecheck0` precedes all `typecheck1`, so the proxied
+        // entries are present before resolution consumes them.
+        self.proxy_lambda_defs(ctx);
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
-        // Module children were typecheck0'd in `compile_inner` under the
-        // module env, but the main `typecheck1` walk doesn't reach them
-        // (this node only recurses `source`). Drive their `typecheck1`
-        // here under the restored env — to finalize call sites AND run the
-        // static resolution folded into `CallSite::typecheck1` (which the
-        // deleted `static_resolve` pass used to reach via its own walk).
-        // The restored env is required: `finalize_lambda` reads `ctx.env`.
-        let Self { env, nodes, catches, .. } = self;
-        ctx.with_restored_mut(env, |ctx| {
-            let mut catch = catches.iter().copied().peekable();
-            for (i, n) in nodes.iter_mut().enumerate() {
-                if catch.peek() == Some(&i) {
-                    catch.next();
-                    continue;
-                }
-                wrap!(n, n.typecheck1(ctx))?;
-            }
-            for i in catches.iter().rev() {
-                let n = &mut nodes[*i];
-                wrap!(n, n.typecheck1(ctx))?;
-            }
-            Ok(())
-        })
+        // the main walk recurses only `source`; the children were
+        // `typecheck0`'d in `compile_inner` under the module env
+        self.typecheck1_nodes(ctx)
     }
 
     fn view(&self) -> crate::NodeView<'_, R, E> {

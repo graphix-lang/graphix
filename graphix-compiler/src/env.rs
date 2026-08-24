@@ -978,17 +978,25 @@ impl Env {
 
     /// Register an implementation. One impl per (trait, target): a
     /// registration whose head unifies with an existing one is a
-    /// conflict, except that an implementation may replace the
-    /// interface declaration of the same (trait, target) it fulfils.
-    pub fn register_impl(&mut self, im: Arc<ImplDef>) -> Result<()> {
+    /// conflict — unless the existing one is the interface
+    /// DECLARATION of the same module (`impl T for X;`), which the
+    /// implementation FULFILS. The declaration stays the entry of
+    /// record: its method bindings are what every consumer resolves
+    /// to, whether it compiled before or after the implementation
+    /// loaded (a dynamic module's consumers compile first, and a
+    /// reload mints fresh implementation bindings), and the
+    /// implementation's methods proxy to them
+    /// (`node::module::check_sig`). Returns the fulfilled declaration.
+    pub fn register_impl(&mut self, im: Arc<ImplDef>) -> Result<Option<Arc<ImplDef>>> {
         let mut list: Vec<Arc<ImplDef>> =
             self.impls.get(&im.trait_id).map(|l| (**l).clone()).unwrap_or_default();
-        let mut replace = None;
-        for (i, other) in list.iter().enumerate() {
+        for other in list.iter() {
             if self.heads_overlap(&other.target, &im.target)? {
-                if other.declared && !im.declared {
-                    replace = Some(i);
-                    break;
+                if other.declared
+                    && !im.declared
+                    && Path::dirname(&*other.scope) == Path::dirname(&*im.scope)
+                {
+                    return Ok(Some(other.clone()));
                 }
                 bail!(
                     "conflicting implementation: {} is already implemented for {} at {}",
@@ -1002,12 +1010,9 @@ impl Env {
             }
         }
         let trait_id = im.trait_id;
-        match replace {
-            Some(i) => list[i] = im,
-            None => list.push(im),
-        }
+        list.push(im);
         self.impls.insert_cow(trait_id, Arc::new(list));
-        Ok(())
+        Ok(None)
     }
 
     pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) {

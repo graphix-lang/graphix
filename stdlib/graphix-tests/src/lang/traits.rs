@@ -706,3 +706,395 @@ run!(
         let result = buffer::to_string(Read::read_exact(m, u64:5)?)?
     "#
 );
+
+// ── Dynamic modules ─────────────────────────────────────────────────
+//
+// A dynamic module's signature declares an impl exactly as a gxi does;
+// the consumer compiles against the declaration before any source has
+// loaded, so its calls must reach whatever implementation the loaded
+// source registers — and re-reach it after a reload.
+
+const DYNAMIC_IMPL_DISPATCH: &str = r#"
+{
+    let source = """
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        let make = |x| Counter(x)
+    """;
+    sys::net::publish("/local/dimpl0", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            trait Show { val show: fn(self) -> string };
+            type Counter;
+            impl Show for Counter;
+            val make: fn(x: i64) -> Counter
+        };
+        source sys::net::subscribe("/local/dimpl0")?
+    };
+    select status {
+        error as e => never(dbg(e)),
+        null as _ => foo::Show::show(foo::make(9))
+    }
+}
+"#;
+
+run!(
+    trait_dynamic_impl_dispatch,
+    DYNAMIC_IMPL_DISPATCH,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(9)")
+);
+
+// The trait's default method, reached through the dynamic module.
+const DYNAMIC_IMPL_DEFAULT: &str = r#"
+{
+    let source = """
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        let make = |x| Counter(x)
+    """;
+    sys::net::publish("/local/dimpl1", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            trait Show {
+                val show: fn(self) -> string;
+                val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"
+            };
+            type Counter;
+            impl Show for Counter;
+            val make: fn(x: i64) -> Counter
+        };
+        source sys::net::subscribe("/local/dimpl1")?
+    };
+    select status {
+        error as e => never(dbg(e)),
+        null as _ => foo::Show::twice(foo::make(2))
+    }
+}
+"#;
+
+run!(
+    trait_dynamic_impl_default,
+    DYNAMIC_IMPL_DEFAULT,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(2) Counter(2)")
+);
+
+// The loaded source dispatches on its own implementation internally.
+const DYNAMIC_IMPL_INTERNAL: &str = r#"
+{
+    let source = """
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        let describe = |x| Show::show(Counter(x))
+    """;
+    sys::net::publish("/local/dimpl2", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            trait Show { val show: fn(self) -> string };
+            type Counter;
+            impl Show for Counter;
+            val describe: fn(x: i64) -> string
+        };
+        source sys::net::subscribe("/local/dimpl2")?
+    };
+    select status {
+        error as e => never(dbg(e)),
+        null as _ => foo::describe(4)
+    }
+}
+"#;
+
+run!(
+    trait_dynamic_impl_internal,
+    DYNAMIC_IMPL_INTERNAL,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(4)")
+);
+
+// A reload replaces the implementation; the consumer's call follows.
+const DYNAMIC_IMPL_RELOAD: &str = r#"
+{
+    let one = """
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "one" };
+        let make = |x| Counter(x)
+    """;
+    let two = """
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "two" };
+        let make = |x| Counter(x)
+    """;
+    let source = one;
+    sys::net::publish("/local/dimpl3", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            trait Show { val show: fn(self) -> string };
+            type Counter;
+            impl Show for Counter;
+            val make: fn(x: i64) -> Counter
+        };
+        source sys::net::subscribe("/local/dimpl3")?
+    };
+    let shown = select status {
+        error as e => never(dbg(e)),
+        null as _ => foo::Show::show(foo::make(1))
+    };
+    source <- select shown { "one" => two, _ => never() };
+    select shown { "two" => shown, _ => never() }
+}
+"#;
+
+run!(
+    trait_dynamic_impl_reload,
+    DYNAMIC_IMPL_RELOAD,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "two")
+);
+
+// The trait lives OUTSIDE the dynamic module; its signature imports
+// it, and the consumer dispatches through the outer trait's own name.
+run!(
+    trait_dynamic_impl_outer_trait,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(7)"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        let source = """
+            type Counter = Abstract<i64>;
+            impl Show for Counter { let show = |c| "Counter([c.0])" };
+            let make = |x| Counter(x)
+        """;
+        sys::net::publish("/local/dimpl4", source)?;
+        let status = mod foo dynamic {
+            sandbox whitelist [core];
+            sig {
+                use super::Show;
+                type Counter;
+                impl Show for Counter;
+                val make: fn(x: i64) -> Counter
+            };
+            source sys::net::subscribe("/local/dimpl4")?
+        };
+        let result = select status {
+            error as e => never(dbg(e)),
+            null as _ => Show::show(foo::make(7))
+        }
+    "#
+);
+
+// An outer trait's DEFAULT method through a dynamic module: the
+// default's binding produced at program start, long before the load,
+// so the declared method binding is fed from its standing value.
+run!(
+    trait_dynamic_impl_outer_default,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(2) Counter(2)"),
+    "/test.gx" => r#"
+        trait Show {
+            val show: fn(self) -> string;
+            val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"
+        };
+        let source = """
+            type Counter = Abstract<i64>;
+            impl Show for Counter { let show = |c| "Counter([c.0])" };
+            let make = |x| Counter(x)
+        """;
+        sys::net::publish("/local/dimpl5", source)?;
+        let status = mod foo dynamic {
+            sandbox whitelist [core];
+            sig {
+                use super::Show;
+                type Counter;
+                impl Show for Counter;
+                val make: fn(x: i64) -> Counter
+            };
+            source sys::net::subscribe("/local/dimpl5")?
+        };
+        let result = select status {
+            error as e => never(dbg(e)),
+            null as _ => Show::twice(foo::make(2))
+        }
+    "#
+);
+
+// The static twin: the declared impl's `twice` is the outer trait's
+// default, shared with the root's own i64 impl in the same cycle.
+run!(
+    trait_interface_outer_default,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::String(s)) if s == "Counter(2) Counter(2) / int 3 int 3")
+    },
+    "/test.gx" => r#"
+        trait Show {
+            val show: fn(self) -> string;
+            val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"
+        };
+        impl Show for i64 { let show = |x| "int [x]" };
+        mod m;
+        let result = "[Show::twice(m::make(2))] / [Show::twice(3)]"
+    "#,
+    "/test/m.gxi" => r#"
+        use super::Show;
+        type Counter;
+        impl Show for Counter;
+        val make: fn(x: i64) -> Counter
+    "#,
+    "/test/m.gx" => r#"
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        let make = |x| Counter(x)
+    "#
+);
+
+// A loaded source is `typecheck1`'d like a file: a module-level call
+// with a labeled default gets its default materialized.
+const DYNAMIC_MODULE_TC1: &str = r#"
+{
+    let source = """
+        let f = |#k = 10, x| x + k;
+        let g = f(2)
+    """;
+    sys::net::publish("/local/dtc1", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val g: i64 };
+        source sys::net::subscribe("/local/dtc1")?
+    };
+    select status {
+        error as e => never(dbg(e)),
+        null as _ => foo::g
+    }
+}
+"#;
+
+run!(dynamic_module_typecheck1, DYNAMIC_MODULE_TC1, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(12))
+));
+
+// A CORE trait declared by a dynamic module's signature: the value
+// seam's hook site resolves to the declared method binding, which the
+// loaded implementation feeds.
+const DYNAMIC_CORE_IMPL: &str = r#"
+{
+    let source = """
+        type Counter = Abstract<i64>;
+        impl Display for Counter { let fmt = |c| "C<[c.0]>" };
+        let make = |x| Counter(x)
+    """;
+    sys::net::publish("/local/dcore", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            type Counter;
+            impl Display for Counter;
+            val make: fn(x: i64) -> Counter
+        };
+        source sys::net::subscribe("/local/dcore")?
+    };
+    select status {
+        error as e => never(dbg(e)),
+        null as _ => "[foo::make(3)]"
+    }
+}
+"#;
+
+run!(
+    trait_dynamic_core_impl,
+    DYNAMIC_CORE_IMPL,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "C<3>")
+);
+
+// A parameterized DECLARED impl: consumers resolve to the declared
+// method bindings, which must instantiate afresh per call like the
+// implementation's own.
+run!(
+    trait_interface_declared_parameterized,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "i1,i2 btrue"),
+    "/test.gx" => r#"
+        mod m;
+        let a = m::Show::show([1, 2]);
+        let b = m::Show::show([true]);
+        let result = "[a] [b]"
+    "#,
+    "/test/m.gxi" => r#"
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64;
+        impl Show for bool;
+        impl<'a: Show> Show for Array<'a>;
+    "#,
+    "/test/m.gx" => r#"
+        impl Show for i64 { let show = |x| "i[x]" };
+        impl Show for bool { let show = |b| "b[b]" };
+        impl<'a: Show> Show for Array<'a> {
+            let show = |xs| str::join(#sep: ",", array::map(xs, Show::show))
+        }
+    "#
+);
+
+// A CORE trait declared by an interface for its own hidden abstract
+// type: whether the type is Graphix-minted or Rust-backed is the
+// implementation's to say, so the declaration is not refused.
+run!(
+    core_impl_interface_declared,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "C<3>"),
+    "/test.gx" => r#"
+        mod m;
+        let result = "[m::make(3)]"
+    "#,
+    "/test/m.gxi" => r#"
+        type Counter;
+        impl Display for Counter;
+        val make: fn(x: i64) -> Counter
+    "#,
+    "/test/m.gx" => r#"
+        type Counter = Abstract<i64>;
+        impl Display for Counter { let fmt = |c| "C<[c.0]>" };
+        let make = |x| Counter(x)
+    "#
+    ; FuseExpect::None
+);
+
+// ...and the implementation IS refused when the type turns out to be
+// Rust-backed.
+run!(
+    core_impl_interface_rust_backed_refused,
+    |v: Result<&Value>| {
+        matches!(&v, Err(e) if format!("{e:#}").contains("backed by Rust"))
+    },
+    "/test.gx" => r#"
+        mod m;
+        let result = 1
+    "#,
+    "/test/m.gxi" => r#"
+        type Counter;
+        impl Display for Counter;
+    "#,
+    "/test/m.gx" => r#"
+        type Counter;
+        impl Display for Counter { let fmt = |c| "never" }
+    "#
+    ; FuseExpect::None
+);
+
+// Two implementations of one declared impl in the same module.
+run!(
+    trait_interface_impl_twice,
+    |v: Result<&Value>| matches!(&v, Err(e) if format!("{e:#}").contains("implemented twice")),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::Show::show(m::make(1))
+    "#,
+    "/test/m.gxi" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Counter;
+        impl Show for Counter;
+        val make: fn(x: i64) -> Counter
+    "#,
+    "/test/m.gx" => r#"
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "one" };
+        impl Show for Counter { let show = |c| "two" };
+        let make = |x| Counter(x)
+    "#
+    ; FuseExpect::None
+);

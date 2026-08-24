@@ -253,7 +253,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
 #[derive(Debug)]
 pub struct Impl<R: Rt, E: UserEvent> {
     spec: Expr,
-    def: Arc<ImplDef>,
+    pub(crate) def: Arc<ImplDef>,
+    /// The interface declaration (`impl T for X;`) this
+    /// implementation fulfils, when there is one: the declaration is
+    /// the registered impl and `def`'s methods proxy to its bindings
+    /// (`Env::register_impl`).
+    pub(crate) fulfils: Option<Arc<ImplDef>>,
     trait_def: Arc<TraitDef>,
     pub(crate) body: Node<R, E>,
     /// For a core trait (`Eq`/`Ord`/`Display`), one never-run call
@@ -269,12 +274,16 @@ pub struct Impl<R: Rt, E: UserEvent> {
 /// rule); any other target only to the trait's package — a
 /// structural impl applies to every type of that shape program-wide,
 /// and only the trait's author answers for that (`design/traits.md`
-/// §4).
+/// §4). `declared` is an interface's `impl T for X;`: what kind of
+/// abstract a hidden `type X;` is becomes known only when the
+/// implementation defines it, and the implementation's own `impl`
+/// block (which the declaration requires) answers for that.
 pub(crate) fn check_target(
     env: &Env,
     scope: &ModPath,
     trait_def: &TraitDef,
     target: &Type,
+    declared: bool,
 ) -> Result<()> {
     let here = env.package_root(scope);
     let trait_pkg = env.package_root(&trait_def.scope);
@@ -294,7 +303,8 @@ pub(crate) fn check_target(
     // value carries none, so an implementation for one would compile
     // and never be called — refuse it rather than let it look like it
     // works.
-    if crate::node::coretraits::CoreTrait::of_id(trait_def.id).is_some()
+    if !declared
+        && crate::node::coretraits::CoreTrait::of_id(trait_def.id).is_some()
         && let Type::Abstract { id, .. } = &canonical
         && !env.abstract_minted(*id)
     {
@@ -360,6 +370,7 @@ pub(crate) fn impl_head(
     scope: &ModPath,
     trait_def: &TraitDef,
     im: &ImplExpr,
+    declared: bool,
 ) -> Result<(Type, Arc<[TVar]>)> {
     let target = im.target.scope_refs(scope);
     let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
@@ -386,7 +397,7 @@ pub(crate) fn impl_head(
             bail!("undeclared type variable '{name} in impl target {target}")
         }
     }
-    check_target(env, scope, trait_def, &target)?;
+    check_target(env, scope, trait_def, &target, declared)?;
     Ok((target, params))
 }
 
@@ -406,7 +417,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         let trait_def = ctx.env.trait_def(trait_id).cloned().ok_or_else(|| {
             anyhow::anyhow!("trait {} has no definition", im.trait_name)
         })?;
-        let (target, params) = impl_head(&ctx.env, &scope.lexical, &trait_def, im)
+        let (target, params) = impl_head(&ctx.env, &scope.lexical, &trait_def, im, false)
             .with_context(|| format!("at {}", spec.pos))?;
         // the methods: a block below the declaring module, the trait's
         // dispatchers glob-visible, each binding annotated with the
@@ -499,8 +510,18 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
-        ctx.env.register_impl(def.clone()).with_context(|| format!("at {}", spec.pos))?;
-        Ok(Node::new(Self { spec, def, trait_def, body, prototypes: Vec::new() }))
+        let fulfils = ctx
+            .env
+            .register_impl(def.clone())
+            .with_context(|| format!("at {}", spec.pos))?;
+        Ok(Node::new(Self {
+            spec,
+            def,
+            fulfils,
+            trait_def,
+            body,
+            prototypes: Vec::new(),
+        }))
     }
 
     /// The core-trait prototypes: a call site per method over
@@ -583,7 +604,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         for p in self.prototypes.iter_mut() {
             p.delete(ctx)
         }
-        ctx.env.unregister_impl(&self.def);
+        if self.fulfils.is_none() {
+            ctx.env.unregister_impl(&self.def);
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
