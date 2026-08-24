@@ -1,0 +1,7 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: true }], stdout: [] })
+// jit: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }], stdout: [] })
+// mutant: // schedule-v1: cap=16 events=128\n{[`Zigzag(let x = i64:10)]; x <- x + i64:1; i64:0}
+// minimized:
+// schedule-v1: cap=16 events=128
+{`Zigzag(let x = true); x <- x; true}

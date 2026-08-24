@@ -86,3 +86,101 @@ grants no init view (a first-ever call/dispatch still does, as the
 interp's `bound` dispatch does). See CLAUDE.md "Fusion / JIT
 subsystem" (the QUIET FLAG entry).
 
+
+## The aug22c round (2026-08-24) — 11 findings, 5 classes, parked
+
+Campaign aug22c (hz0/aieka/katana/ryouko on e9791a6a, the quiet-frame
+soak): ~2 days, 11 divergences — hz0 7, aieka 2, ryouko 2, katana 0 —
+pulled at the traits redeploy (aug24a). **All 11 reproduce on merged
+main (f60bbf2d)** under the release binary. None is traits-related:
+the campaign predates that merge and every witness is core language.
+Every one came from the corpus-mutation source (~236M subjects across
+the fleet); generate (~260M) and reactive (~281M) found nothing.
+
+### Class A — a `<-` target bound inside a literal loses its spin (5)
+
+`aug22c_selfconnect_spin_{00..04}.gx` (hz0 x4, ryouko x1). Shape: a
+`let` bound INSIDE a container literal that stands as a statement,
+then a self-connect.
+
+    {[i64:2, let x = true]; x <- x; true}
+    interp: [0:true …capped]      jit: [0:true]
+
+The values agree; the interp spins forever (the trace cap fires every
+epoch) and the JIT goes quiet after the first. The control says the
+interp is right: `{let x = true; x <- x; true}` — the same program with
+the bind in statement position — AGREES, and both engines cap (its
+region de-fuses, so "both" is really the node-walk twice). `x <- x` is
+a self-feeding connect: x fires, the RHS reads x and fires, the connect
+schedules the next cycle. Direction: in the fused form the lifted
+connect target does not re-trigger itself. Neighbours: the
+connect-instance-identity fix (e05a6c8b) and its write-only-let
+spinner family.
+
+### Class B — the same bind never publishes at all (2)
+
+`aug22c_connect_no_publish_{00,01}.gx` (hz0). One step past class A:
+the tail READS the connect target, and the JIT emits nothing at all —
+not even the initial value.
+
+    // schedule-v1: cap=16 events=128; in0=i64:1
+    {select let x = i64:1 {i64:0 => i64:0, _ => ["a", "b"]}; x <- x + i64:1; x - (in0 * i64:0)}
+    interp: [0:i64:1 1:i64:2 … 15:i64:16 …capped]; [ …capped]      jit: []; []
+
+Here the bind sits in a select SCRUTINEE (00) or in an outer array
+literal (01) — expression position again, so probably one class with A
+in two faces: A's tail is a constant and still emits at init, B's
+tail depends on x and emits nothing, which reads as "the kernel binding
+never publishes".
+
+### Class C — a labeled callback parameter eats the element (2)
+
+`aug22c_labeled_callback_{00,01}.gx` (aieka, hz0). The 45-character
+witness:
+
+    array::map([i64:7], |#foo: i64 = i64:42| foo)
+    interp: [0:[i64:42]]      jit: [0:[i64:7]]
+
+Two bugs stacked. First, the TYPECHECKER accepts a map callback with
+ZERO positional parameters when it has a labeled one with a default —
+`|a, b|` and `||` are both rejected at that same call site, so the
+arity check is counting the labeled parameter as filling the positional
+slot. Then the engines disagree about what the callback receives: the
+node-walk binds `foo` to its default and drops the element, the JIT
+marshals the element into the callback's first slot. 01 is the same
+shape with two labeled parameters and a struct result (`foo: i64:42`
+interp vs `foo: i64:0` jit) plus an extra epoch fire. The arity hole
+is the root worth fixing; the value divergence is downstream of a
+program that should not compile.
+
+### Class D — count over a nested map (1)
+
+`aug22c_nested_map_count_00.gx` (ryouko).
+
+    {let x = array::iter([i64:1, i64:2, i64:3, i64:4]);
+     let f = |n| array::map([n], |i| buffer::from_string("hello"));
+     let a = array::map([i64:-1, i64:1], |j| f(x));
+     let c = count(a);
+     select count(x) {i64:4 => c, _ => never()}}
+    interp: [4:i64:1]      jit: [4:i64:4]
+
+`count` of a value produced by a map whose callback calls a map-bodied
+lambda over an `array::iter` source: the JIT counts a production per
+element delivery, the interp one. Which cadence organic firing demands
+here is not derived yet — do that before touching either engine.
+
+### Class E — `?` in a map callback, and the node-walk is the suspect (1)
+
+`aug22c_qop_callback_00.gx` (aieka).
+
+    {let y = array::iter([i64:0, i64:2, i64:3, i64:4]);
+     let m = array::map([i64:1], |x| select i64:1 {i64:1 => str::parse("42")?, _ => y});
+     let c = m; c}
+    interp: []      jit: [0:[i64:42]]
+
+The scrutinee is a constant that matches the first arm, `str::parse`
+succeeds, and `?` on a non-error is the bare value — so the JIT's
+`[42]` is what the program says and the INTERP producing nothing is the
+side that needs explaining. Node-walk-is-canonical is a claim about the
+model, not an oracle: adjudicate this one against the intended
+semantics before assuming the kernel is wrong.
