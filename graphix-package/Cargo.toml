@@ -12,6 +12,12 @@ license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
 exclude = ["../book"]
 
+[features]
+# Tests that spawn a full cargo build or reach the network. Off by
+# default; the release gate runs `cargo test --workspace --features
+# slow-tests`.
+slow-tests = []
+
 [dependencies]
 crates_io_api = { workspace = true }
 cp_r = { workspace = true }

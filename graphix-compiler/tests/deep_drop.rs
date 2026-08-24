@@ -7,6 +7,10 @@
 //! friends are tested rather than merely present.
 //!
 //! Its own test binary because `set_max_nesting` is process-global.
+//!
+//! Behind the `slow-tests` feature (it costs ~40s): the guards it covers
+//! only move when a new recursion is added, so it runs at the release
+//! gate rather than every session.
 
 use graphix_compiler::expr::parser;
 
@@ -16,6 +20,7 @@ const STACK: usize = 512 * 1024;
 const DEPTH: usize = 50_000;
 
 #[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn deep_ast_drops_without_overflow() {
     parser::set_max_nesting(usize::MAX);
     std::thread::Builder::new()

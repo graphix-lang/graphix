@@ -989,6 +989,51 @@ Note, the compiler is designed to support multiple instances in a process,
 therefore tests should be designed to run in parallel, running with
 test-threads=1 should be avoided.
 
+### The `slow-tests` feature
+
+A handful of tests dominate the suite's wall time, and what they cover
+moves rarely — package builds, the stack-depth guards. They are marked
+`#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]`, so a
+plain `cargo test --workspace` skips them (they report as `ignored,
+slow-tests` — visible, not hidden) and the RELEASE GATE runs them:
+
+```bash
+cargo test --workspace --features slow-tests
+```
+
+They still COMPILE in the default build, so they cannot rot unnoticed.
+Behind the feature today:
+
+| test | crate | cost |
+|---|---|---|
+| `reduced_feature_build_drops_packages` | graphix-package | vendor.py + a full shell build |
+| `created_package_compiles` | graphix-package | `cargo check` of a generated package |
+| `build_standalone_produces_working_binary` | graphix-package | a full standalone build |
+| `download_source_extracts_package_at_expected_root` | graphix-package | downloads a released crate (needs network) |
+| `deep_ast_drops_without_overflow` | graphix-compiler | ~40s, 50k-deep AST teardown |
+| `deep_nesting_does_not_overflow` | graphix-shell | ~80s, 22 shapes x 2 depths in child processes |
+
+Measured 2026-08-24: **19.5 min of test wall time down to 6.1**, and
+`graphix-package` alone goes 705.8s -> 0.03s (its other 26 tests were
+never the cost). The rest stays in the default run on purpose —
+`graphix-tests` (174s, 2129 fixtures), the compiler proptests (33s),
+`examples_compile` (32s) and the GUI harness (23s) all find bugs on
+ordinary changes. So does `graphix-fuzz`'s 66s, which is ONE test:
+`jit_generated_sweep` runs 120 fixed-seed generated programs through
+both engines — the oracle in miniature, and the one gate here that
+works the way the fuzzer does. It also gets more reliable now that
+705s of concurrent cargo builds is gone: it had to re-check any
+timeout at 4x because the suite ran ~13x slower than a solo run.
+
+Gate a new test only when it is BOTH slow and testing something that
+moves rarely (a build, an environment, a hard limit); never gate a
+language-semantics test. Toggling the feature rebuilds the crates that
+declare it and their dependents, so the gate run pays one rebuild —
+use a separate `--target-dir` if you want to keep the incremental
+artifacts. A test that re-executes its own binary must pass
+`--include-ignored` to the child (see `deep_nesting.rs`), or the child
+skips the test and exits 0, which reads as success.
+
 Run the Graphix shell:
 ```bash
 cargo run --bin graphix                    # Start REPL
