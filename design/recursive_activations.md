@@ -540,14 +540,22 @@ Stays:
   tail loops (4a phase 1); the counter and the trip machinery go
   (§10) TOGETHER WITH the kernel stack trampoline (4b); pins
   re-blessed; fleet soak.
-- **P1c — the interp's activation cost** (surfaced by P1b; blocks the
-  value of everything after it). Two parts: the per-activation compile
-  (`bind`+`setup` ≈ 2ms — clone a compiled body instead of recompiling
-  it, the `interp_lazy_bind_cost.md` item C) and the superlinear term
-  (something per activation scans or copies something proportional to
-  depth — profile it; the suspects are the instance `Env` snapshot, the
-  `active_lambdas`/`Refs` scans and the frame variable maps). Target:
-  a 10k-element async map's first result in well under a second.
+- **P1c — the interp's activation cost** — PROFILED 2026-08-25 ("As
+  measured — P1c" below). The constant is FINE: ~8µs / ~15KB per
+  activation in release (the dev build's "2ms" was opt-level 0). The
+  superlinear term is ONE thing: the DYNAMIC SCOPE PATH. `Scope.dynamic`
+  is a flattened `Path` string, an activation's body compiles under its
+  call site's dynamic path, every `sel`/`do`/`ca` level appends a
+  component (`Path::append` copies the string and `is_canonical`
+  rescans it), and the arm's CallSite retains the result — one
+  ~11-byte-per-level string per activation, Σ = 2.0GB at 20k deep
+  (measured 2050MB), 78% of the cycles in `is_canonical`. Its only
+  consumer is the catch registry. Fix, if built: the dynamic scope
+  becomes a parent-linked chain carrying its catch (~200 lines, no
+  cloner, no second compile path). The flat per-slot cost is diffuse
+  (~40µs; 10k async slots in 0.4s) — live with it. The clone_rebind
+  resurrection is DEAD: the constant it would remove is 8µs. DECISION
+  PENDING (Eric, 2026-08-25: profile first, maybe live with it).
 - **P2 — the trait.** The hole in the type system (§7), `trait
   Collection` in core with the intrinsic impls under it, `list::
   to_array_rev`, the three pressure tests as fixtures, generator
@@ -579,3 +587,81 @@ Decided (Eric, 2026-08-24):
   until the numbers are in.
 
 **GO** (Eric, 2026-08-24).
+
+## As measured — P1c (2026-08-25)
+
+Release build (`-C force-frame-pointers=yes`, debug=1, stdlib minus
+gui/tui/http/db), 14 cores. Three subjects, N ∈ {2k, 5k, 10k, 20k}:
+`deep` = `n + f(n - 1)` (non-tail, sync — interprets only under
+`--no-fusion`), `atail` = `f(n ~ (n - 1), acc + n)` (async tail — an
+activation per iteration on both engines), `amap` =
+`array::map(array::init(N, |i| i), |x| x ~ (x * 2))` (flat async
+slots). Wall / max RSS; shell startup ≈ 0.03s / 36MB.
+
+| subject | mode | 2k | 5k | 10k | 20k |
+|---|---|---|---|---|---|
+| deep | `--no-fusion` | 0.11s / 67MB | 0.37s / 185MB | 1.19s / 568MB | 4.10s / 2050MB |
+| deep | fusion | 0.03s / 36MB | 0.03s | 0.03s | 0.03s / 39MB |
+| atail | either | 0.12s / 71MB | 0.40s / 193MB | 1.25s / 584MB | 4.44s / 2083MB |
+| amap | `--no-fusion` | 0.11s / 65MB | 0.22s / 115MB | 0.41s / 197MB | 0.83s / 359MB |
+| amap | fusion | 0.05s / 48MB | 0.10s / 65MB | 0.17s / 94MB | 0.32s / 153MB |
+
+Nesting: 10× depth = 37× time, 30× memory — the per-activation
+memory grows ~10 bytes × depth. Flat: ~40µs and ~15KB per slot,
+linear. `GRAPHIX_DBG_PERF` at deep 20k: binds=19735, bind 3987ms,
+setup 3863ms (the body compile), tc1 68ms, analyze 50ms; at amap 20k:
+binds=40000, bind 325ms — 8µs each.
+
+perf (`cycles:u`, the cpu_core event — this box is hybrid, the
+cpu_atom event holds 48 samples and misleads a report read top-down),
+deep 20k: `netidx_core::path::is_canonical` 78% SELF, every sample
+under `select::compile`'s per-arm `append_block("sel", …)` →
+`Scope::append` → `Path::append` → `Path::from`; 79% of all cycles
+under `CallSite::bind`, 45% under `setup_dynamic_bind`. amap 20k: no
+symbol above 11% — `avl::Node::make_mut` 10.8% (`env.by_id` COW
+inserts), `drop_in_place<avl::Node>` 4.5%, `GXRt::ref_var` 3.7%,
+`CallSite::update` 2.9%, `analysis::mark_recursion` 2.4%.
+
+**Mechanism.** `Scope { lexical, dynamic }` are both `ModPath`
+strings and `Scope::append` extends both. The dynamic half exists for
+one thing: the catch registry. A `catch` statement installs under
+`scope.dynamic + "#c<id>"` and the rest of its block compiles under
+that covered scope (error.rs, `Catch::compile`); `?` resolves its
+handler at compile time and a call site with a throwing callee at
+`typecheck0`, both via `Env::lookup_catch`, which walks
+`Path::dirnames(..).rev()` longest-prefix-first over
+`Env.catch: Map<ModPath, (BindId, ExprId)>`; the lambda def gate
+temporarily overrides the def scope's key with a faux catch that
+collects the body's `throws`; and an instantiated body compiles under
+its CALL SITE's dynamic scope (lambda.rs `InitFn`) so a `?` in a callee
+finds the caller's handler. Nothing else reads `.dynamic` (13 sites).
+So the dynamic scope is a parent chain spelled out as a string, and
+every activation re-spells its entire ancestry: one retained
+`ArcStr` of ~11 bytes × depth per level, Σ_{d≤20000} 11d ≈ 2.2GB —
+the measured 2050MB — plus an O(depth) copy and scan per append.
+
+**The fix, if built.** `DynScope(Arc<DynNode { parent: Option<DynScope>,
+catch: Option<(BindId, ExprId)> }>)` with `nearest` (the closest
+installed catch at or above) computed at creation; `Scope::append`
+mints a child (the dynamic half carries no text anyone reads);
+`Catch::compile` installs on the covered child as it creates it;
+`lookup_catch` reads `nearest`; the def gate compiles the body under a
+fresh faux-catch child instead of overriding and restoring an existing
+key; `Env.catch` disappears. Equivalence: both lookups run at
+compile/typecheck time after every covering catch is installed, and a
+catch only ever covers scopes created AFTER it (the rest of its block),
+so `nearest`-at-creation sees the same registry state — the one
+override, the def gate's, is what the faux child reproduces. O(1) per
+level in time and memory; deep 20k should land near the flat cost
+(~0.9s / ~300MB), and the interp's per-activation time drops ~4× on
+top of the memory. Est. ~200 lines. Not decided whether to build it now
+or live with the quadratic until the trait needs it.
+
+Measurement kit (scratchpad, this session): `deep_N.gx` / `atail_N.gx`
+/ `amap_N.gx`, `sweep.sh <bin> [--no-fusion]`, `prof.sh <name> <cmd>`
+(perf record + self/children reports). The profiling binary was built
+with `RUSTFLAGS="-C link-arg=-fuse-ld=mold -C target-cpu=native -C
+force-frame-pointers=yes" CARGO_PROFILE_RELEASE_DEBUG=1 cargo build
+--release -p graphix-shell --no-default-features --features
+array,str,map,sys,list,rand,re --target-dir ~/tmp/target/prof` (12m55s
+clean).

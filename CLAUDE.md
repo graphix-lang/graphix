@@ -1317,10 +1317,14 @@ in `run!` fixtures and bench programs). The decision is recorded in
   fresh segment (`graphix_grow_stack`); the per-activation block-tree
   walks are iterative; `GRAPHIX_STACK_BUDGET`/`set_stack_budget`
   (default unlimited; fuzz children 1GB) aborts a runaway like Ctrl-C.
-  Nine infinite-recursion pins retired (corpus 437). FOUND: the
-  interp's per-activation cost is superlinear (1ms→5ms, 37KB→110KB per
-  level from 2k to 20k deep; each activation compiles its body) — P1c,
-  the critical path for the async collection use.
+  Nine infinite-recursion pins retired (corpus 437). P1c PROFILED
+  2026-08-25 (release): the interp's per-activation CONSTANT is ~8µs /
+  ~15KB — fine, and the clone_rebind resurrection is dead; the
+  superlinear term is the DYNAMIC SCOPE PATH (`Scope.dynamic`, a
+  flattened `Path` string re-spelling the whole activation ancestry per
+  level for the catch registry: 2GB and 78% of cycles in
+  `is_canonical` at 20k deep). Fix if built = a parent-linked chain
+  carrying its catch (~200 lines); pending Eric's call.
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the
