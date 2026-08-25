@@ -145,6 +145,14 @@ where
         >,
     ),
 {
+    // Depth is bounded by memory; give every test runtime a stack budget
+    // so a fixture that recurses without end aborts (design/
+    // recursive_activations.md §5) instead of eating the box — a kernel
+    // grows stack at hundreds of MB/s. Generous enough for the 2M-deep
+    // fuzz probes; an explicit GRAPHIX_STACK_BUDGET still wins.
+    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+        graphix_compiler::set_stack_budget(1 << 30);
+    }
     init_inner(sub, register, resolvers, flags, false, setup).await
 }
 

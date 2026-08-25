@@ -12,7 +12,8 @@
 //   1, 2  -> print_const_once, print_hof_callback_once (below)
 //   3     -> already AGREEs on main; guarded by the regress corpus
 //            finding dyncall-fire-gate-aug2026 (must stay green)
-//   4     -> depth_trip_agrees (below)
+//   4     -> retired 2026-08-24: the depth trip it observed is gone
+//            (depth is bounded by memory, design/recursive_activations.md)
 //   5     -> re-pin verification at the flip (array::group)
 //   6, 14 -> stderr log cadence: not sink-capturable; adjudicated via
 //            the stdout-baseline diff + manual review at 5b
@@ -162,43 +163,6 @@ async fn print_hof_once_jit() -> Result<()> {
     print_hof_once(false).await
 }
 
-// ── Delta 4: a callee depth trip is a DELIVERED FreshBottom on both
-// engines, never a whole-kernel abort ──
-//
-// The missing_fire_epoch3_aug08e witness. Pre-flip: interp
-// [1, -1, 2] (the outer activation's `n - f(n-1)` rides its operand
-// cache past the second tripped f(-1)), jit [1, 2] (whole-kernel
-// abort discards the invocation; the first f(-1) agrees by
-// coincidence — fresh, no ride history). Post-flip BOTH engines
-// produce [1, 2]: the trip delivers FreshBottom at the tripping call
-// site, and under the bottom-propagates ruling (Q1) the operand-cache
-// ride is gone — `n - ⊥` is ⊥, no emission on either f(-1). (Derived,
-// not separately ruled: agreement is the ruled requirement; if the
-// flip lands agreeing on [1, -1, 2] instead, that needs a ruling
-// before this constant changes.)
-const DEPTH_TRIP: &str = r#"{
-  let x = array::iter([i64:0, i64:2, i64:0, i64:4]);
-  let m = x / i64:3;
-  let f = |k| select i64:-1 {i64:0 if m == i64:0 => i64:1, _ => i64:1};
-  let m = count(let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, _ => n - f(n - i64:1)});
-  f(x - i64:1)
-}"#;
-
-async fn depth_trip_agrees(fusion_disabled: bool) -> Result<()> {
-    let (values, _) = run_delta(DEPTH_TRIP, fusion_disabled).await?;
-    assert_eq!(as_i64s(&values), vec![1, 2]);
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn depth_trip_agrees_interp() -> Result<()> {
-    depth_trip_agrees(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn depth_trip_agrees_jit() -> Result<()> {
-    depth_trip_agrees(false).await
-}
 
 // ── Delta 13: a bottomed builtin arg bottoms the invocation — the arg
 // slot no longer rides its previous value ──

@@ -426,11 +426,6 @@ impl<X: GXExt> GX<X> {
         } else {
             tokio::task::block_in_place(run_nodes);
         }
-        // The call-depth counter resets per cycle — pure insurance
-        // against a leaked push, which would otherwise ratchet every
-        // later cycle toward a spurious depth limit. `abort` stays
-        // sticky for the run loop's pre-cycle shutdown check.
-        self.ctx.control.depth_reset();
         // Diagnostics produced OUTSIDE a node update (a callable
         // invocation, an extension cycle) have no top-level expr to
         // attribute; forward them unattributed rather than drop them.

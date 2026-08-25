@@ -198,14 +198,19 @@ Built-ins implement the `BuiltIn<R, E>` trait:
 - `init()`: Returns initialization function
 - `EFFECT` (default `Async`): sync/async classification — `Sync` iff every
   output appears on the same cycle as its trigger (fusion boundary otherwise)
-- `STATELESS` (default `false`): declare `true` iff deleting the builtin's
-  `Apply` and re-initing it fresh is unobservable — no cross-invocation state
-  (`count`/`sum` accumulate), no per-invocation effect (`print` emits), no
-  external-value mutation (`buffer::encode`); internal memos (a compiled
-  `Regex`, scratch buffers, a typecheck-derived cast type) are fine. Only
-  consulted for `Sync` builtins, by the transient-recursion gate
-  (`design/transient_recursion.md`) — a wrong `true` is a semantics bug, a
-  wrong `false` only costs memory.
+- `STATELESS` (default `false`): declare `true` iff an invocation's result
+  depends only on its arguments, never on prior invocations of the same
+  instance — no cross-invocation state (`count`/`sum`/`min`/`uniq`/`once`
+  accumulate or remember). Effects do NOT matter (`print`/`log`/`exit`
+  are stateless — each invocation emits once whichever instance runs
+  it), and internal memos/scratch buffers are fine. Only consulted for
+  `Sync` builtins, by the TAIL-LOOP COLLAPSE GATE
+  (`analysis::lambda_is_stateless`, `design/recursive_activations.md`
+  §2, 2026-08-24): a tail-recursive body reuses ONE activation across
+  its iterations only when every builtin it reaches is stateless;
+  otherwise each iteration owns an activation like a collection slot.
+  A wrong `true` is a semantics bug (iterations would share
+  per-iteration state), a wrong `false` only costs the loop.
 - `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
   semantic state — the arm-rewake RESTART builtins
   (`once`/`take`/`skip`/`hold`/`uniq`/`count`). Consulted by the fusion
@@ -469,10 +474,6 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GRAPHIX_DBG_REGION=1` — dump fused-region input wiring (name/BindId/
   type+deref/constraints/slot kind).
 - `GRAPHIX_DBG_FREEZE=1` — dump region freeze outcomes.
-- `GRAPHIX_DBG_DEPTH=1` — print the lambda id + `tail_loop` gate at every
-  call-depth-guard trip. The tool for "why didn't this recursion tail-loop" —
-  found the runtime-clone back-edge effect miss (soak jul08g div 4). (The
-  per-`mark_recursion`-decision print it once had is gone.)
 - `GXDBG_TAIL=1` — print every tail-loop dispatch pass (`TAILDBG`: lambda
   id, reentered/framed/init flags, the pass result value+tag, the pending
   tail call's rebind args). The tool for "what did this tail loop actually
@@ -873,7 +874,7 @@ enforces it):**
   tail-zero-iteration: ruled quiet 2026-08-13 (cceb0809), then the
   whole family REVERSED by organic firing 2026-08-14 — same-args
   re-dispatches FIRE at any iteration count now (delta 6; the
-  tail-zero pins carry superseded-cadence banners). DEPTH-TRIP SCOPE
+  tail-zero pins carry superseded-cadence banners). DEPTH-TRIP SCOPE (SUPERSEDED 2026-08-24: there is no depth limit any more — depth is bounded by memory on both engines, `design/recursive_activations.md` §4b; the trip machinery below is deleted)
   RULED 2026-08-14 (Eric): WHOLE-DERIVATION — a trip bottoms the
   entire call at the root with log::error at the trip (both engines;
   `ctx.depth_tripped` poisons the interp's unwind rides — scrutinee
@@ -1083,6 +1084,8 @@ coverage, not correctness).
   `GRAPHIX_FUZZ_CORPUS` (separate corpus dir PER campaign — shared dirs
   clobber), launch campaigns under `nice -n 19` (workers inherit —
   keeps interactive builds fast while soaks saturate the idle cores),
+  and note the pool gives every child `GRAPHIX_STACK_BUDGET=1GB` (a
+  runaway kernel recursion grows stack at ~350MB/s until the deadline),
   and launch from a campaign-private COPY of the binary (`cp` it to
   `~/tmp/target/fuzz/<campaign>/graphix-fuzz` first) — workers exec
   the binary path per subject, so a rebuild mid-campaign swaps code
@@ -1286,7 +1289,7 @@ in `run!` fixtures and bench programs). The decision is recorded in
 
 ### Design documents (`design/`)
 
-- `recursive_activations.md` — **DESIGNED 2026-08-24, not built:**
+- `recursive_activations.md` — **DESIGNED 2026-08-24; P1 (the semantics + memory-bounded depth) BUILT the same day:**
   recursion activations ARE collection slots. Amends Ruling 2: a tail
   call creates an activation; a tail loop collapses to ONE only when
   the body is STATELESS (not merely Sync — `count` in a tail call
@@ -1303,6 +1306,21 @@ in `run!` fixtures and bench programs). The decision is recorded in
   the fast path, and user structures implementing it in Graphix. v2
   trait parameters DEFERRED (thin client). Three pressure tests
   (newtype grid, deque, the admin browser tree).
+  AS BUILT (P1): `analysis::LambdaFacts` (effect + stateless in one
+  fixpoint), `lambda_is_stateless` gates the tail loop and
+  `#[tail_recursive]`; STATELESS redefined (cross-invocation STATE only)
+  and widened; `emit_body_tail` jumps only when the kernel has a loop
+  head (a stateful body's tail self-call is a native recursive call
+  with per-activation site blocks). NO DEPTH LIMIT: `Control` lost its
+  counter/trip/poison; the kernel checks `graphix_stack_check` at
+  self-call sites and re-enters through a per-kernel SPILL THUNK on a
+  fresh segment (`graphix_grow_stack`); the per-activation block-tree
+  walks are iterative; `GRAPHIX_STACK_BUDGET`/`set_stack_budget`
+  (default unlimited; fuzz children 1GB) aborts a runaway like Ctrl-C.
+  Nine infinite-recursion pins retired (corpus 437). FOUND: the
+  interp's per-activation cost is superlinear (1ms→5ms, 37KB→110KB per
+  level from 2k to 20k deep; each activation compiles its body) — P1c,
+  the critical path for the async collection use.
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the

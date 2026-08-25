@@ -217,6 +217,71 @@ run!(late_binding4, LATE_BINDING4, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
+// A tail call creates an activation like any other call; a tail loop
+// collapses to ONE activation only when its body is STATELESS
+// (design/recursive_activations.md §2). `count` is Sync and stateful,
+// so each iteration owns its `count`: 1 + 1 + 1 — what the fold twin
+// below gives — not the 6 (1 + 2 + 3) one reused activation produced.
+const TAIL_STATEFUL_PER_ITERATION: &str = r#"
+{
+  let rec go = |a: Array<i64>, acc: i64| -> i64 select a {
+    [] => acc,
+    [x, rest..] => go(rest, acc + count(x))
+  };
+  go([i64:10, i64:20, i64:30], i64:0)
+}
+"#;
+
+run!(tail_stateful_per_iteration, TAIL_STATEFUL_PER_ITERATION, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(3))
+); graphix_package_core::testing::FuseExpect::None);
+
+// The scalar shape FUSES (`max` is stateful — a running maximum over
+// its deliveries — but not a RESTART builtin, so the arm gate lets it
+// in): the kernel compiles the stateful body as native recursion and
+// each activation's DynCall site block owns its `max` — n per level,
+// 55 in all, not the 100 a shared running maximum gives.
+const TAIL_STATEFUL_SCALAR: &str = r#"
+{
+  let rec f = |n: i64, acc: i64| -> i64 select n {
+    i64:0 => acc,
+    _ => f(n - i64:1, acc + max(n))
+  };
+  f(i64:10, i64:0)
+}
+"#;
+
+run!(tail_stateful_scalar, TAIL_STATEFUL_SCALAR, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(55))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+const FOLD_STATEFUL_PER_SLOT: &str = r#"
+array::fold([i64:10, i64:20, i64:30], i64:0, |acc, x| acc + count(x))
+"#;
+
+run!(fold_stateful_per_slot, FOLD_STATEFUL_PER_SLOT, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(3))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// A stateless body still collapses: the same loop over `+` alone.
+const TAIL_STATELESS_COLLAPSES: &str = r#"
+{
+  let rec go = |a: Array<i64>, acc: i64| -> i64 select a {
+    [] => acc,
+    [x, rest..] => go(rest, acc + x)
+  };
+  go([i64:10, i64:20, i64:30], i64:0)
+}
+"#;
+
+run!(tail_stateless_collapses, TAIL_STATELESS_COLLAPSES, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(60))
+); graphix_package_core::testing::FuseExpect::None);
+
 const RECURSIVE_LAMBDA0: &str = r#"
 {
     let rec f = |x: i64| select x { x if x < 10 => f(x + 1), x => x };
@@ -996,36 +1061,32 @@ run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The call-depth guard (DEFAULT_MAX_CALL_DEPTH = 256), limit±1 in both
-// modes: each nested non-tail lambda dispatch counts one against the
-// shared Control counter (node-walk GXLambda::update; JIT lambda-call
-// sites), so the outer f(n) call is depth 1 and n = 255 is the deepest
-// argument that completes. At the limit the dispatch produces BOTTOM
-// (logged), like unchecked-arith failures — before the guard this was
-// a runtime-killing stack overflow at ~1,600 frames in the node-walk.
-// Tail self-calls are exempt on both sides (the 5M-deep
-// jit_deep_tail_probe pins that).
-const DEPTH_GUARD_UNDER_LIMIT: &str = r#"
+// Depth is bounded by memory, not a counter (design/recursive_activations.md
+// §4b): a non-tail recursion nests on heap segments in the node-walk
+// (`stack::ensure_sufficient`) and re-enters through the kernel's spill
+// thunk in the JIT (`graphix_stack_check`/`graphix_grow_stack`). The
+// former 256-deep call-depth limit bottomed this call; it completes now
+// in both modes. (Depth 1000 keeps the interp side quick — its cost per
+// activation is the open item, not the bound; the fuzz crate's
+// `jit_deep_nontail_probe` goes 2,000,000 deep on the kernel.)
+const DEEP_NONTAIL_RECURSION_COMPLETES: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
-  f(i64:255)
+  f(i64:1000)
 }
 "#;
 
-run!(depth_guard_under_limit, DEPTH_GUARD_UNDER_LIMIT, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(32640)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+run!(
+    deep_nontail_recursion_completes,
+    DEEP_NONTAIL_RECURSION_COMPLETES,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(500500))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
 
-// The at-limit sibling (f(256) → bottom in both modes) lives in the
-// fuzz findings corpus (findings/depth-guard-jul2026/) — empty-trace
-// agreement is a first-class assertion there, while the run! harness
-// has no runtime-bottom expectation (it would wait out its timeout).
-
-// Depth accounting with compiler-owned collection nodes: f(254) is 255
-// dispatch units and the collection callback is one more, exactly at
-// the 256 limit. The reserved collection marker is compiler plumbing,
-// not another user-lambda dispatch.
-const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
+// A collection node inside a non-tail recursion: the reserved
+// collection marker is compiler plumbing, not another lambda
+// dispatch, and the fold at the bottom of the chain fires once.
+const NONTAIL_RECURSION_WITH_FOLD_AT_BASE: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n {
     i64:0 => {
@@ -1039,19 +1100,16 @@ const DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT: &str = r#"
 "#;
 
 run!(
-    depth_guard_hof_unit_under_limit,
-    DEPTH_GUARD_HOF_UNIT_UNDER_LIMIT,
+    nontail_recursion_with_fold_at_base,
+    NONTAIL_RECURSION_WITH_FOLD_AT_BASE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42285))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A depth trip bottoms the CALL, not the kernel: the tripping f(256)
-// sits in fold's init argument, so the fold never dispatches (a call
-// waits for every arg), and
-// the trip stays LOCAL: the independent sibling fold still fires in
-// both modes (the former whole-kernel abort swallowed it — soak
-// jul07h, findings/depth-guard-jul2026/06).
-const DEPTH_TRIP_LOCAL_RECOVERY: &str = r#"
+// A recursion's result as a fold's init argument beside an
+// independent sibling fold: both fire (the former depth trip's
+// locality pin, now simply two folds).
+const NONTAIL_RESULT_AS_FOLD_INIT: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
   array::fold([i64:41], f(i64:256), |acc, x| x + i64:1);
@@ -1060,21 +1118,18 @@ const DEPTH_TRIP_LOCAL_RECOVERY: &str = r#"
 "#;
 
 run!(
-    depth_trip_local_recovery,
-    DEPTH_TRIP_LOCAL_RECOVERY,
+    nontail_result_as_fold_init,
+    NONTAIL_RESULT_AS_FOLD_INIT,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A rec lambda NESTED in another lambda's body tail-loops in BOTH
 // modes: the #203 resolution cascade (drive a resolved callee's body
-// through typecheck1 so nested sites resolve) used to be fusion-gated,
-// so under FusionDisabled `analysis::analyze` never saw lp's callsite
-// as resolved, never tail-marked it, and the interp stack-recursed
-// what the fused path looped — at depth 500 (past the 256 call-depth
-// guard) the interp bottomed while the JIT returned 125251
-// (fuzz/triage-fuzzer-v2/divergence_000008). The cascade now runs in
-// every mode.
+// through typecheck1 so nested sites resolve) runs in every mode, so
+// `analysis::analyze` sees lp's callsite as resolved under
+// FusionDisabled too and tail-marks it — the node-walk loops what the
+// fused path loops (fuzz/triage-fuzzer-v2/divergence_000008).
 const NESTED_TAIL_LOOP: &str = r#"
 {
   let f = |x: i64| -> i64 {

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e725aa8e.js";
+            window.path_to_searchindex_js = "searchindex-f5d79466.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f7a0005a.js"></script>
@@ -2248,23 +2248,45 @@ returns <code>[T, Error&lt;</code>ArithError(string)&gt;]`.</p>
 the <code>Number</code> type</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="recursion"><a class="header" href="#recursion">Recursion</a></h1>
-<p>Functions can be recursive. A function whose every recursive call is in tail
-position executes as a loop — constant stack, any depth. Non-tail recursion
-nests, and is bounded by a call-depth limit (256 by default, settable by the
-embedder): a call that exceeds the limit produces no value — the whole call
-bottoms at the root, and an error is logged, since hitting the limit usually
-means the program did something unintended.</p>
-<p>If you rely on a function being tail-recursive, assert it:</p>
+<p>Functions can be recursive. Every call creates an <em>activation</em>: the
+function’s body, live, with its own state — its subscriptions, its
+timers, its <code>count</code>s, its own bindings. A recursive call in tail
+position whose body holds no such state runs as a loop instead, one
+activation reused for every iteration, constant stack, any depth —
+nothing could tell the difference. A body that does hold state (an
+async operation, a stateful builtin such as <code>count</code> or <code>uniq</code>, a <code>&lt;-</code>
+to one of its own bindings) keeps an activation per iteration whatever
+the call position: each iteration owns its state, exactly as each
+element owns its callback in <code>array::map</code>.</p>
+<p>That is what makes recursion the way to write a reactive traversal:</p>
+<pre><code class="language-graphix">let rec publish_all = |paths: Array&lt;string&gt;, i: i64| select paths {
+  [] =&gt; null,
+  [p, rest..] =&gt; {
+    sys::net::publish(p, i)$;
+    publish_all(rest, i + 1)
+  }
+}
+</code></pre>
+<p>Every path gets its own publish site, retained across cycles. When the
+array changes, the activations are fed again by position, and those
+past the new end sleep.</p>
+<p>Depth is bounded by memory, not by a limit: non-tail recursion nests on
+heap-allocated stack segments, in the interpreter and in compiled code
+alike. An embedder may cap it with a stack budget
+(<code>graphix_compiler::set_stack_budget</code>, or <code>GRAPHIX_STACK_BUDGET</code> in
+bytes); a program that exceeds the budget is stopped the way Ctrl-C
+stops it.</p>
+<p>If you rely on a function running as a constant-space loop, assert it:</p>
 <pre><code class="language-graphix">#[tail_recursive]
 let rec sum_to = |n: i64, acc: i64| -&gt; i64 select n {
   0 =&gt; acc,
   _ =&gt; sum_to(n - 1, acc + n)
 }
 </code></pre>
-<p><code>#[tail_recursive]</code> is a compile-time check: if any recursive call is not in
-tail position (or the function does not recurse at all, or recurses mutually),
-the program does not compile. A function that passes the check cannot hit the
-call-depth limit through its own recursion.</p>
+<p><code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
+not in tail position, if the body is stateful or async, if the function
+does not recurse at all, or if it recurses mutually, the program does
+not compile.</p>
 <p>Two related assertions document a function’s timing: <code>#[sync]</code> asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and <code>#[async]</code> asserts the opposite.

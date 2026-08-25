@@ -243,46 +243,7 @@ pub(super) fn emit_scrut_ride(
     cx: &mut BodyCx,
     scrut: SelectScrut,
 ) -> Result<SelectScrut> {
-    let ride = emit_scrut_ride_inner(cx, scrut.clone())?;
-    // WHOLE-DERIVATION DEPTH TRIP (Eric's ruling 2026-08-14): while a
-    // trip unwinds, no ride may assemble a partial value out of
-    // history — the interp's `ctx.depth_tripped` poison, which the
-    // kernel used to get for free by having no interior ride storage
-    // at all. Per-activation blocks gave it that storage, so it needs
-    // the poison explicitly: fall back to the raw (tainted) scrutinee,
-    // which misses every arm and bottoms the derivation.
-    let f = cx.helper("graphix_depth_tripped")?;
-    let call = cx.b.ins().call(f, &[]);
-    let tripped = cx.b.inst_results(call)[0];
-    let tripped = cx.b.ins().icmp_imm(IntCC::NotEqual, tripped, 0);
-    Ok(match (ride, scrut) {
-        (
-            SelectScrut::Scalar { disc, value, prim },
-            SelectScrut::Scalar { disc: rd, value: rv, .. },
-        ) => SelectScrut::Scalar {
-            disc: cx.b.ins().select(tripped, rd, disc),
-            value: cx.b.ins().select(tripped, rv, value),
-            prim,
-        },
-        (
-            SelectScrut::Value { disc, payload },
-            SelectScrut::Value { disc: rd, payload: rp },
-        ) => SelectScrut::Value {
-            disc: cx.b.ins().select(tripped, rd, disc),
-            payload: cx.b.ins().select(tripped, rp, payload),
-        },
-        (
-            SelectScrut::Composite { disc, ptr },
-            SelectScrut::Composite { disc: rd, ptr: rp },
-        ) => SelectScrut::Composite {
-            disc: cx.b.ins().select(tripped, rd, disc),
-            ptr: cx.b.ins().select(tripped, rp, ptr),
-        },
-        (SelectScrut::Opaque { disc }, SelectScrut::Opaque { disc: rd }) => {
-            SelectScrut::Opaque { disc: cx.b.ins().select(tripped, rd, disc) }
-        }
-        (r, _) => r,
-    })
+    emit_scrut_ride_inner(cx, scrut)
 }
 
 fn emit_scrut_ride_inner(cx: &mut BodyCx, scrut: SelectScrut) -> Result<SelectScrut> {

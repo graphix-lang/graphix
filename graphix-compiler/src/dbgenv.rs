@@ -21,7 +21,6 @@ macro_rules! dbg_flag {
 dbg_flag!(graphix_dbg_bind, "GRAPHIX_DBG_BIND");
 dbg_flag!(graphix_dbg_bind_bt, "GRAPHIX_DBG_BIND_BT");
 dbg_flag!(graphix_dbg_cycle_bt, "GRAPHIX_DBG_CYCLE_BT");
-dbg_flag!(graphix_dbg_depth, "GRAPHIX_DBG_DEPTH");
 dbg_flag!(graphix_dbg_freeze, "GRAPHIX_DBG_FREEZE");
 dbg_flag!(graphix_dbg_invoke, "GRAPHIX_DBG_INVOKE");
 dbg_flag!(graphix_dbg_kernels, "GRAPHIX_DBG_KERNELS");

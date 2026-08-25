@@ -96,25 +96,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // fired-only filter (replay_frames Ruling A.2) is REPEALED:
         // dense consumers read staleness and bottomness off the tag.
         let res = self.inner.update(ctx, &mut self.feeders, event);
-        // A lambda dispatch inside the kernel hit the call-depth limit
-        // (the `graphix_depth_push` helper flagged it — native code
-        // can't push a diagnostic). Report the fused region's spec so
-        // the runtime's event stream can tell the user WHICH
-        // expression bottomed. Node-walk trips (including DynCall'd
-        // node-walk residue) report themselves and don't set the flag.
         // TAKE (Kernel::update only peeked — its production decision
         // left the flag for this diagnostic).
-        if ctx.control.take_depth_trip() {
-            log::error!(
-                "call depth limit ({}) exceeded in fused region {} — the                  derivation produced a settled bottom (raise via                  Control::set_max_call_depth)",
-                ctx.control.max_call_depth(),
-                self.spec
-            );
-            ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
-                limit: ctx.control.max_call_depth(),
-                spec: self.spec.clone(),
-            });
-        }
         res
     }
 

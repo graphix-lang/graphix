@@ -3217,6 +3217,15 @@ fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
     match tempfile::tempdir() {
         Ok(d) => {
             cmd.current_dir(d.path()).env("GRAPHIX_FUZZ_SANDBOXED", "1");
+            // Depth is bounded by memory, so a runaway non-tail
+            // recursion in a kernel grows stack at hundreds of MB/s
+            // until the subject deadline; the budget aborts it (a
+            // Timeout, like the deadline) before a box of workers
+            // runs out of memory. GRAPHIX_STACK_BUDGET (bytes) in the
+            // parent's environment overrides.
+            if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+                cmd.env("GRAPHIX_STACK_BUDGET", (1u64 << 30).to_string());
+            }
             // ADDRESS-SPACE RLIMIT per child (2026-08-13): under
             // unconditional transient retention a fib-tree subject
             // materializes its whole call tree of retained instances —
@@ -5443,6 +5452,32 @@ mod tests {
         assert!(
             out.agrees_with(&expected),
             "deep tail loop produced {out:?}, expected {expected:?}"
+        );
+    }
+
+    /// Depth is bounded by memory, not a counter: a 2,000,000-deep
+    /// NON-tail recursion runs as native recursion in the kernel and
+    /// re-enters through the spill thunk whenever the remaining stack
+    /// is inside the red zone (`graphix_stack_check`/
+    /// `graphix_grow_stack`, design/recursive_activations.md §4b). The
+    /// former 256 limit bottomed this at n = 256.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn jit_deep_nontail_probe() {
+        let code = "{ let rec f = |n: i64| -> i64 \
+                     select n { i64:0 => i64:0, _ => n + f(n - i64:1) }; \
+                     f(i64:2000000) }";
+        let (out, stats) =
+            run_program_with_stats(code, Mode::Jit, Duration::from_secs(60)).await;
+        assert!(
+            stats.fused > 0,
+            "deep non-tail probe did not fuse (attempted={}): {:?}",
+            stats.attempted,
+            stats.failed,
+        );
+        let expected = Outcome::single(Value::I64(2_000_001_000_000));
+        assert!(
+            out.agrees_with(&expected),
+            "deep non-tail recursion produced {out:?}, expected {expected:?}"
         );
     }
 

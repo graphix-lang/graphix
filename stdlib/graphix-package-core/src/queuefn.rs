@@ -269,6 +269,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             // call queues the predicate and dispatches across cycles.
             // The wrapper lambda is intrinsically async.
             intrinsic_effect: Mutex::new(EffectKind::Async),
+            stateless: std::sync::atomic::AtomicBool::new(false),
             // A queuefn wrapper is never self-recursive (it dispatches a
             // foreign predicate), so the analysis pass never marks it.
             recursion: Mutex::new(RecursionKind::NotRecursive),

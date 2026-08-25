@@ -18,7 +18,6 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use log::error;
 use netidx_core::pack::Pack;
 use netidx_core::utils::Either;
 use netidx_value::Value;
@@ -63,6 +62,12 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// NOT contribute here — those are handled at the call site via
     /// the lattice join with the resolved fn-arg's effect.
     pub intrinsic_effect: Mutex<EffectKind>,
+    /// Whether the body holds no per-activation state — every builtin it
+    /// reaches is `STATELESS`, no `<-` targets a binding of its own, and
+    /// every callee is stateless (`analysis::infer_effects`, the same
+    /// fixpoint as `intrinsic_effect`). A tail loop reuses one activation
+    /// only when this holds (`design/recursive_activations.md` §2).
+    pub stateless: AtomicBool,
     /// How this lambda recurses (none / non-tail / tail). Summary
     /// computed by `analysis::analyze`; see [`RecursionKind`]. Defaults
     /// to `NotRecursive` until the pass runs. The operational tail-loop
@@ -135,7 +140,6 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 pub struct GXLambda<R: Rt, E: UserEvent> {
     id: LambdaId,
     instance_id: LambdaInstanceId,
-    dispatch: LambdaDispatch,
     args: Box<[StructPatternNode]>,
     body: Node<R, E>,
     typ: Arc<FnType>,
@@ -170,12 +174,6 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// woken by a capture) reads phantom formals and its body
     /// early-bottoms (transient-prime-park/01 under the flip).
     first_dispatch: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum LambdaDispatch {
-    Graphix,
-    Collection,
 }
 
 /// True iff any of the body's external refs — formals or CAPTURES —
@@ -392,23 +390,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 }
             }
         }
-        // The call-depth guard: each nested (non-tail) lambda dispatch
-        // counts one against the shared limit; at the limit the
-        // dispatch produces BOTTOM (logged) instead of recursing the
-        // Rust stack to death. One entry = one unit — the tail loop
-        // below iterates inside this frame, so tail recursion is exempt
-        // in exactly the way it is in a JIT'd rebind-and-jump loop.
-        // Bottom (not a catchable error value): the callsite's static
-        // type has no error branch to carry one — the same reasoning as
-        // unchecked-arith overflow and div-by-zero (hot-path failures
-        // log and bottom; see `Control::max_call_depth`).
-        //
-        // Cooperative interrupt first: exponential-BREADTH recursion is
-        // depth-bounded but time-unbounded (2^n calls each under the
-        // depth limit — the fib-mutant wedge class), and only loop
-        // backedges polled the flag. One atomic load per dispatch makes
-        // a runaway call TREE abortable (Eric approved 2026-07-04; the
-        // JIT twin lives in graphix_depth_push).
+        // Cooperative interrupt: a runaway call TREE is time-unbounded
+        // and only loop backedges polled the flag, so one atomic load
+        // per dispatch makes it abortable (Eric approved 2026-07-04;
+        // the JIT twin is `graphix_stack_check` at self-call sites).
         if ctx.control.interrupted() {
             // abort ≠ bottom: an interrupted dispatch re-surfaces its
             // last result on the value channel
@@ -431,88 +416,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         {
             return self.resident.ride();
         }
-        let depth_pushed = match self.dispatch {
-            LambdaDispatch::Graphix => {
-                if !ctx.control.depth_push() {
-                    let limit = ctx.control.max_call_depth();
-                    if crate::dbgenv::graphix_dbg_depth() {
-                        eprintln!(
-                            "DEPTH TRIP lambda id={:?} tail_loop={}",
-                            self.id,
-                            self.tail_loop.load(Ordering::Relaxed)
-                        );
-                    }
-                    error!(
-                        "call depth limit ({limit}) exceeded in {} — deep non-tail \
-                         recursion produces a settled bottom (raise via \
-                         Control::set_max_call_depth)",
-                        self.body.spec()
-                    );
-                    ctx.diagnostics.push(crate::RtDiagnostic::CallDepthLimit {
-                        limit,
-                        spec: self.body.spec().clone(),
-                    });
-                    // A depth trip is a SETTLED, DELIVERED tainted
-                    // bottom (Eric's ruling 2026-07-23), not absence:
-                    // an identical retry re-trips deterministically
-                    // (the limit is structural, not a resource), so
-                    // re-evaluation must wait for a genuine input
-                    // event. Delivery matters doubly: (1) it matches
-                    // the kernel's abort-to-tainted-placeholder at the
-                    // call seam (the abort-seam divergence: an
-                    // acc-ignoring fold recovers from a delivered
-                    // tainted init in both modes, but blocked forever
-                    // on interp absence); (2) it breaks the tail-loop
-                    // wedge — under absence, the unwinding frames'
-                    // RETAINED tail arms re-fired off their own formal
-                    // deliveries and re-stashed pendings, spinning the
-                    // outermost loop through 256-deep descents inside
-                    // ONE never-ending cycle. A delivered taint makes
-                    // each unwinding select dispatch on the tainted
-                    // scrutinee (tainted bottom, no arm evaluation),
-                    // so no pending is stashed. Clearing the slot is
-                    // insurance against unenumerated stash shapes.
-                    // FRESH bottom (ruled delta 4): the trip is an
-                    // event with no value — under the sparse clamp it
-                    // still reads TAINT; post-flip it delivers
-                    // honestly on both engines.
-                    //
-                    // TRIGGERED dispatches only: a QUIET poll's
-                    // re-derivation re-trips deterministically (the
-                    // non-tail path re-drills every cycle — there is
-                    // no quiet-poll skip without frames to invalidate),
-                    // and an unconditional FRESH mint here re-fired the
-                    // settled bottom per cycle, clobbering a
-                    // same-cycle ref-write's Fired delivery to the
-                    // bound name (aug13k hz0 fuzz 000000 — the
-                    // non-tail sibling of the tail quiet-poll ride).
-                    // Nothing new happened: ride the settled resident.
-                    ctx.pending_tail_call = None;
-                    if !entry_fired && !inputs_triggered(&self.body, ctx, event) {
-                        return self.resident.ride();
-                    }
-                    // Whole-derivation bottom (Eric's ruling
-                    // 2026-08-14): poison the unwind — no ride may
-                    // assemble a partial value between here and the
-                    // derivation's root. The poison is the CONTROL's
-                    // shared bit (both evaluators trip and ride
-                    // against the same derivation), cleared by
-                    // depth_pop at pop-to-zero.
-                    ctx.control.set_trip_poison();
-                    return self
-                        .resident
-                        .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-                }
-                true
-            }
-            LambdaDispatch::Collection => false,
-        };
         *ctx.active_lambdas.entry(self.id).or_insert(0) += 1;
         let res = if !self.tail_loop.load(Ordering::Relaxed) {
             // Non-tail recursion nests the Rust stack one level per
-            // dispatch; `max_call_depth` bounds how many, but not how
-            // big a thread's stack is (an unoptimized build wants
-            // ~4MB for the default 256 and a tokio worker has 2MB).
+            // dispatch, on heap segments: depth is bounded by memory,
+            // not a counter (design/recursive_activations.md §4b).
             crate::stack::ensure_sufficient(|| self.body.update(ctx, event).clone())
         } else {
             // Sync self-tail-recursion: loop in place instead of recursing on
@@ -802,11 +710,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             }
             MapEntry::Vacant(_) => unreachable!("active_lambdas underflow"),
         }
-        if depth_pushed {
-            // depth_pop clears the shared trip poison at pop-to-zero —
-            // the derivation's root.
-            ctx.control.depth_pop();
-        }
         // Lend the body result — tag riding in the value — to the
         // owning CallSite through the resident. Bottom is a DELIVERED
         // production under dense delivery: the old depth-0
@@ -950,7 +853,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         Self::new_with_body(
             ctx,
             id,
-            LambdaDispatch::Graphix,
             typ,
             argspec,
             args,
@@ -975,7 +877,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         Self::new_with_body(
             ctx,
             id,
-            LambdaDispatch::Collection,
             typ.clone(),
             argspec,
             args,
@@ -988,8 +889,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     fn new_with_body(
         ctx: &mut ExecCtx<R, E>,
         id: LambdaId,
-        dispatch: LambdaDispatch,
-        typ: Arc<FnType>,
+            typ: Arc<FnType>,
         argspec: Arc<[Arg]>,
         args: &[Node<R, E>],
         scope: &Scope,
@@ -1024,7 +924,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         Ok(Self {
             id,
             instance_id: LambdaInstanceId::new(),
-            dispatch,
             args: Box::from_iter(argpats.drain(..)),
             typ,
             body,
@@ -1455,6 +1354,13 @@ impl Lambda {
                 }
                 Either::Right(name) => ctx.builtin_effect(name),
                 Either::Left(_) => EffectKind::Sync,
+            }),
+            stateless: AtomicBool::new(match &l.body {
+                Either::Right(name) if CollectionIntrinsic::from_name(name).is_some() => {
+                    true
+                }
+                Either::Right(name) => ctx.builtin_stateless(name),
+                Either::Left(_) => true,
             }),
             recursion: Mutex::new(RecursionKind::NotRecursive),
         });

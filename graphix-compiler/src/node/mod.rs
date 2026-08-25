@@ -1218,7 +1218,7 @@ fn part_type(t: &Type) -> Type {
 pub struct Connect<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub(super) node: Node<R, E>,
-    pub(super) id: BindId,
+    pub(crate) id: BindId,
 }
 
 impl<R: Rt, E: UserEvent> Connect<R, E> {

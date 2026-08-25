@@ -50,6 +50,19 @@ const TAIL_RECURSIVE_MIXED: &str = r#"
 
 run!(tail_recursive_mixed, TAIL_RECURSIVE_MIXED, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
 
+// `#[tail_recursive]` asserts a constant-space loop, and a loop is
+// constant-space only when its body is stateless: `count` gives every
+// iteration its own activation (design/recursive_activations.md §2).
+const TAIL_RECURSIVE_STATEFUL: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 select n { i64:0 => acc, _ => f(n - i64:1, acc + count(n)) };
+  f(i64:10, i64:0)
+}
+"#;
+
+run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
 // A vacuous assertion is an error: the function never recurses.
 const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
 {

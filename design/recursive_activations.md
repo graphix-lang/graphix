@@ -162,6 +162,51 @@ ruling (retain), measure, and treat reclamation of long-asleep
 activations as a runtime GC concern if it ever bites — not a
 semantics one, since sleep is pause.
 
+### As built — P1a (2026-08-24)
+
+- The fixpoint in `analysis::infer_effects` computes `LambdaFacts
+  { effect, stateless }` in one walk (`body_facts`/`node_facts`/
+  `callee_facts`), stored beside `intrinsic_effect` as
+  `LambdaDef::stateless`. A `<-` is state only when its target is one
+  of the body's own bindings (`Refs::with_bound` over the body); a
+  `ConnectDeref` is conservatively stateful; builtins read
+  `ctx.builtin_stateless`. The tail-loop gate reads
+  `lambda_is_stateless` (Sync ∧ stateless); `#[tail_recursive]` asserts
+  it (a stateful or async body fails the assertion — the async case was
+  a pre-existing hole, the attribute accepted a body that nests).
+- `STATELESS` was redefined to mean cross-invocation STATE only —
+  effects do not distinguish one activation from many — and its reach
+  widened accordingly: `dbg`, `log`, `error`, `now`, `exit`,
+  `join_path`, `tempdir_path`, `all`, the variadic divide,
+  `buffer::decode`, `hbs::render`. Its previous consumer (the
+  transient-recursion gate) is gone; this gate is the only one. Still
+  stateful, correctly: `count`, `sum`, `product`, `min`, `max`, `mean`,
+  `uniq`, `once`, `take`, `skip`, `hold`, `array::window`, the rand
+  family, `buffer::encode`, the http clients.
+- The kernel needed one seam: `emit_body_tail` intercepted every
+  tail-position self-call as a rebind-and-jump structurally, before
+  asking whether the kernel loops, so a stateful body reached
+  `emit_tail_rebind_jump` with no loop head ("TailCall in kernel
+  without has_tail_loop") and de-fused. It now jumps only when
+  `LowerCtx::tail.loop_head` exists; otherwise the self-call is the
+  ordinary native recursive call whose activation owns its DynCall
+  site blocks — and `f(n - 1, acc + max(n))` fuses and answers 55 on
+  both engines (`tail_stateful_scalar`).
+- Pins (`lang/functions.rs`): `tail_stateful_per_iteration` (`count`,
+  3 not 6 — interprets: the `[x, rest..]` slice pattern is the
+  pinned select residue, not the rule), `fold_stateful_per_slot` (the
+  fold twin, 3), `tail_stateless_collapses` (60, unchanged),
+  `tail_stateful_scalar` (55, fuses); `lang/attributes.rs`
+  `tail_recursive_stateful` (rejected). Coverage note: `count` inside a
+  select ARM still de-fuses through the P7 `SLEEP_RESTARTS` arm gate
+  whatever the loop does.
+- P0 measured first (interp, debug build): ~1.9 ms and ~28 KB per
+  recursion activation against ~0.7 ms and ~13 KB per MapQ slot —
+  2–3× the thing it generalizes, both dominated by the lazy-bind cost
+  `interp_lazy_bind_cost.md` already names. Not a blocker for the
+  semantics; a 10k-deque first result is ~20 s debug / a few seconds
+  release, and instance size is where to look if that bites.
+
 ## 4. Mechanism — the JIT
 
 Two independent pieces.
@@ -213,6 +258,59 @@ fresh segment per invocation) bounds depth at ~segment/frame, roughly
 1e4–1e5 — a large fixed number, not memory, and silent (a segfault)
 past it. Not acceptable as the resting state.
 
+### As built — P1b (2026-08-24)
+
+- **The counter is gone on both engines.** `Control` is the two
+  interrupt flags again; `DEFAULT_MAX_CALL_DEPTH`, `depth_push/pop`,
+  the trip and trip-poison bits, `RtDiagnostic::CallDepthLimit` (the
+  enum is empty; the runtime channel stays), `GRAPHIX_DBG_DEPTH`, the
+  five `graphix_depth_*` helpers, the scaffold's per-loop depth charge,
+  the scrutinee ride's poison read and the interp's `trip_poisoned`
+  ride gate are deleted. The interp's non-tail dispatch was already
+  under `ensure_sufficient`; nothing else changed there.
+- **The kernel trampoline.** `graphix_stack_check` (0 interrupted /
+  1 call / 2 grow) replaces `graphix_depth_push` at every SELF-call
+  site — the same helper-returned-flag branch shape, so the fast path
+  costs what the counter cost. On 2 the site spills its CLIF args to a
+  stack slot at an 8-byte stride and calls `graphix_grow_stack(thunk,
+  args, out)`, which runs the kernel's SPILL THUNK on a fresh 32MB
+  segment (`stacker::grow`); the thunk (`jit::define_spill_thunk`, one
+  per recursion-target kernel, declared before the body and defined
+  after it) loads the params typed as the signature declares, calls
+  the kernel, stores the two result words. Cross-kernel edges are
+  acyclic (mutual recursion de-fuses), so only self-calls check.
+  2,000,000 deep: 1.4s, 507MB — ~250 bytes of stack per level
+  (`jit_deep_nontail_probe`, `deep_nontail_recursion_completes`).
+- **The block-tree walks were the second recursion.** `Kernel::drop`'s
+  `free_self_block_tree` and the frame reset's `reset_self_block_tree`
+  recursed one Rust frame per activation, unguarded — invisible under
+  the 256 cap, a tokio-worker overflow at 20k on the first probe. Both
+  are explicit worklists now.
+- **The stack budget** (§5 in practice): `GRAPHIX_STACK_BUDGET` (bytes)
+  or `graphix_compiler::set_stack_budget`, unlimited by default; a
+  thread-local counts live grown segments, and a grow that would exceed
+  the budget ABORTS the runtime (`Control::abort`, the sticky shutdown
+  Ctrl-C arms — the node-walk still gets that one segment so it unwinds
+  at its next poll). The fuzz pool gives every child 1GB, because a
+  runaway kernel recursion otherwise grows stack at ~350MB/s until the
+  subject deadline, and a box runs 64–288 workers.
+- **Pins.** Nine campaign witnesses were INFINITE recursions that the
+  cap turned into agreeing bottoms (`f(n - 0)`, `select f(0) {..}`,
+  `f(f(x))`); they pin nothing without a cap and are retired —
+  corpus 446 → 437. The finite ones stay as "completes above 256"
+  witnesses. The harness already classifies an interp that exhausts
+  its CPU budget while the JIT's value stands as SLOW (AGREE), so a
+  deep legitimate recursion is not a divergence.
+- **The measurement that matters.** The interp's cost per activation
+  is SUPERLINEAR in depth: 1.1ms/37KB at 2k, 1.8ms/44KB at 5k,
+  5ms/110KB at 20k (a 20k-deep `n + f(n - 1)` is 102s and 2.2GB in
+  `--no-fusion`; the JIT does 2M in 1.4s). `GRAPHIX_DBG_PERF` puts
+  ~1ms in `bind` and ~0.8ms in `setup` per activation at 2k — each
+  activation COMPILES its body from the AST — and something else grows
+  with depth on top. This was hidden behind the cap. It is now the
+  critical path for everything async in this design (P2's slots
+  interpret by construction) and is P1c below.
+
 ## 5. Containment, and what a bound means now
 
 `atomic_recursion.md` already rules that a program may spin forever
@@ -239,16 +337,18 @@ trait Collection {
         = |c, f| filter_map(c, |x| select f(x) { true => x, false => null });
     val find: fn(self<'a>, f: fn(x: 'a) -> bool) -> ['a, null] = ..;
     val find_map: fn(self<'a>, f: fn(x: 'a) -> ['b, null]) -> ['b, null] = ..;
+    val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b>) -> self<'b>;
     val len: fn(self<'a>) -> i64 = |c| fold(c, 0, |n, _| n + 1);
 }
 ```
 
-- **Required**: `fold` (traversal) and `filter_map` (construction with
-  selection). `map`/`filter` derive from `filter_map`; `find`/
-  `find_map`/`len` from `fold`. Derived methods inherit the required
-  method's slots, so a user type gets per-slot semantics from two
-  hand-written recursions. `flat_map` needs a concat and is left out
-  (a `Monoid`-shaped trait, or the package function, later).
+- **Required**: `fold` (traversal), `filter_map` (construction with
+  selection) and `flat_map` (construction by concatenation — deriving
+  it needs an identity element, which no self argument can witness).
+  `map`/`filter` derive from `filter_map`; `find`/`find_map`/`len`
+  from `fold`. Derived methods inherit the required method's slots, so
+  a user type gets per-slot semantics from three hand-written
+  recursions.
 - **The blessed implementations** are the intrinsics, unchanged in
   mechanism: `impl Collection for Array { let map = 'array_map; let
   fold = 'array_fold; .. }` — the reserved marker names as impl
@@ -440,19 +540,42 @@ Stays:
   tail loops (4a phase 1); the counter and the trip machinery go
   (§10) TOGETHER WITH the kernel stack trampoline (4b); pins
   re-blessed; fleet soak.
+- **P1c — the interp's activation cost** (surfaced by P1b; blocks the
+  value of everything after it). Two parts: the per-activation compile
+  (`bind`+`setup` ≈ 2ms — clone a compiled body instead of recompiling
+  it, the `interp_lazy_bind_cost.md` item C) and the superlinear term
+  (something per activation scans or copies something proportional to
+  depth — profile it; the suspects are the instance `Env` snapshot, the
+  `active_lambdas`/`Refs` scans and the frame variable maps). Target:
+  a 10k-element async map's first result in well under a second.
 - **P2 — the trait.** The hole in the type system (§7), `trait
   Collection` in core with the intrinsic impls under it, `list::
   to_array_rev`, the three pressure tests as fixtures, generator
   vocabulary for traits (there is none yet — the aug24 soak note).
+- **P2b — the measurement.** Graphix bodies for every operation of
+  all three intrinsic collections, benchmarked against the intrinsics
+  on both engines (`bench/` self-timed corpus + the interp footprint
+  of P0); an intrinsic that is not worth its machinery is deleted,
+  per operation.
 - **P3 — coverage.** Per-iteration site blocks for stateful tail
   loops (4a phase 2); recursion-through-callback fusion.
 
-Open:
+Decided (Eric, 2026-08-24):
 
-- Retain or delete shrunk activations (§3). Recommendation: retain.
-- The trait's name (§6). Recommendation: `Collection`.
-- Whether `len` belongs in the trait at all, given its O(n) default.
-- `flat_map`/concat.
-- Whether List's impl should be the first Graphix-bodied one as the
-  proof of mechanism — decided by measurement against the flatten
-  loop's 142–151×, not by principle.
+- **Retain** shrunk activations to start. Expect to revisit; it is a
+  runtime/GC question and can change without touching semantics.
+- The trait is **`Collection`**.
+- **`len` stays** in the trait.
+- **`flat_map` is in the trait**, required (its callback returns
+  `self<'b>`, and deriving it needs an identity element no
+  self-argument can witness). Three required methods: `fold`,
+  `filter_map`, `flat_map`.
+- **Write Graphix bodies for ALL the intrinsics' operations** — Array,
+  List and Map — and measure them against the intrinsics on both
+  engines. "They're all short; if the intrinsics turn out not to be
+  worth what we thought they were worth then there's code we can
+  delete." The measurement decides what stays, per operation, not
+  principle. §6's "blessed implementations" paragraph is the position
+  until the numbers are in.
+
+**GO** (Eric, 2026-08-24).

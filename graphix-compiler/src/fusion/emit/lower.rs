@@ -38,6 +38,7 @@ pub(super) fn compile_into_function(
     b: &mut FunctionBuilder,
     kernel: &KernelSig,
     callee_refs: &BTreeMap<usize, FuncRef>,
+    self_thunk: Option<FuncRef>,
     helper_refs: &HelperRefs,
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
@@ -218,6 +219,7 @@ pub(super) fn compile_into_function(
         init_flag,
         quiet_flag,
         callee_refs,
+        self_thunk,
         helper_refs,
         init_override: std::cell::Cell::new(None),
         sel_fires: std::cell::RefCell::new(Vec::new()),
@@ -704,6 +706,10 @@ pub(crate) struct LowerCtx<'a> {
     /// pass the resulting refs in here. Empty for kernels with no
     /// lambda call sites.
     pub(super) callee_refs: &'a BTreeMap<usize, FuncRef>,
+    /// This kernel's spill thunk (`jit::define_spill_thunk`) when it is
+    /// a recursion target: the `graphix_grow_stack` entry a self-call
+    /// takes when the remaining stack is inside the red zone.
+    pub(super) self_thunk: Option<FuncRef>,
     /// `FuncRef`s for the `emit_helpers::*` runtime helpers.
     /// Declared in the current function before the FunctionBuilder
     /// is constructed (same constraint as `callee_refs`). Lookups

@@ -480,49 +480,6 @@ fn emit_loop_header(
     cx.b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
 }
 
-/// One call-depth unit covering a whole collection scaffold — the
-/// kernel twin of the node-walk's per-element callback dispatch.
-/// Every element dispatches at the same depth, so one enter/pop pair
-/// around the scaffold reproduces the trip point without per-element
-/// cost — and an EMPTY scaffold charges nothing at all, because the
-/// node-walk over an empty source never dispatches a callback (the
-/// aug02b finding: an unconditional charge tripped the kernel one
-/// recursion frame before the interp). On a trip the returned loop
-/// bound is zero — the inlined body, and any charged call sites
-/// inside it, must not run — and the result rides TAINT through
-/// `taint` (the node-walk's per-element dispatch yields bottom, so
-/// its HOF never emits; a tainted kernel result bottoms the same
-/// consumers). A trip leaves the counter un-incremented, so the
-/// returned CLAMPED bound is the pairing key: nonzero ⇔ counted —
-/// pass it to [`emit_depth_unit_exit`]. Every loop emitter calls
-/// both, once.
-fn emit_depth_unit(
-    cx: &mut BodyCx,
-    taint: &SlotFlags,
-    bound: ClifValue,
-) -> Result<ClifValue> {
-    let enter = cx.helper("graphix_depth_enter")?;
-    let call = cx.b.ins().call(enter, &[bound]);
-    let ok = cx.b.inst_results(call)[0];
-    let tripped = cx.b.ins().icmp_imm(IntCC::Equal, ok, 0);
-    let stale = cx.b.ins().iconst(types::I64, STALE);
-    let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
-    let synth = cx.b.ins().select(tripped, tainted, stale);
-    taint.fold(cx, synth);
-    let zero = cx.b.ins().iconst(types::I64, 0);
-    Ok(cx.b.ins().select(tripped, zero, bound))
-}
-
-/// Exit the [`emit_depth_unit`] entered before the loop, keyed on the
-/// clamped bound it returned (zero = never counted, nothing pops). An
-/// interrupt abort inside the loop skips this; the cycle-end
-/// `depth_reset` clears the leak (the cycle is being torn down anyway).
-fn emit_depth_unit_exit(cx: &mut BodyCx, bound: ClifValue) -> Result<()> {
-    let exit = cx.helper("graphix_depth_exit")?;
-    cx.b.ins().call(exit, &[bound]);
-    Ok(())
-}
-
 /// `i += 1; jump loop_header` — the loop back-edge. `i_now` is the
 /// caller's already-read counter value (its read position differs per
 /// scaffold and must be preserved).
@@ -940,7 +897,6 @@ where
     flags.fold(cx, disc);
     let n = cx.b.ins().select(oversize, zero, n);
     flags.set_len(n);
-    let n = emit_depth_unit(cx, &flags, n)?;
     let call = cx.b.ins().call(buf_new, &[n]);
     let buf = cx.b.inst_results(call)[0];
     register_hof_buf(cx.b, cx.ctx, buf);
@@ -982,7 +938,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, n)?;
     Ok((finalize_buf(cx, buf)?, flags, n_disc))
 }
 
@@ -1002,7 +957,6 @@ where
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     flags.set_len(len);
-    let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
     cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
@@ -1032,7 +986,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1054,7 +1007,6 @@ where
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     flags.set_len(len);
-    let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
     cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
@@ -1121,7 +1073,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1143,7 +1094,6 @@ where
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     flags.set_len(len);
-    let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
     cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
@@ -1215,7 +1165,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1252,7 +1201,6 @@ where
     adopt_owned_src(cx, &arr);
     let (len, buf) = input_sized_buf(cx, arr.ptr)?;
     flags.set_len(len);
-    let len = emit_depth_unit(cx, &flags, len)?;
     let i_var = init_counter(cx);
     cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
@@ -1289,7 +1237,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     let result = finalize_buf(cx, buf)?;
     drop_owned_src(cx, &arr)?;
     Ok((result, flags))
@@ -1514,7 +1461,6 @@ where
     // After the init emit — the node-walk evaluates fold's init at the
     // CALLER's depth level; only the per-element callback dispatch
     // enters a unit.
-    let len = emit_depth_unit(cx, &taint, len)?;
     let i_var = init_counter(cx);
     cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
@@ -1592,7 +1538,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     drop_owned_src(cx, &arr)?;
     let payload = cx.b.use_var(acc_var);
     let disc = cx.b.use_var(acc_disc_var);
@@ -1614,7 +1559,6 @@ where
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     flags.set_len(len);
-    let len = emit_depth_unit(cx, &flags, len)?;
     let found_var = cx.b.declare_var(types::I8);
     let zero8 = cx.b.ins().iconst(types::I8, 0);
     cx.b.def_var(found_var, zero8);
@@ -1697,7 +1641,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     let disc = cx.b.use_var(result_disc_var);
     let payload = cx.b.use_var(result_payload_var);
     drop_owned_src(cx, &arr)?;
@@ -1718,7 +1661,6 @@ where
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     flags.set_len(len);
-    let len = emit_depth_unit(cx, &flags, len)?;
     let found_var = cx.b.declare_var(types::I8);
     let zero8 = cx.b.ins().iconst(types::I8, 0);
     cx.b.def_var(found_var, zero8);
@@ -1781,7 +1723,6 @@ where
     cx.b.switch_to_block(loop_exit);
     cx.b.seal_block(loop_exit);
     cx.emit_slot_truncates()?;
-    emit_depth_unit_exit(cx, len)?;
     let disc = cx.b.use_var(result_disc_var);
     let payload = cx.b.use_var(result_payload_var);
     drop_owned_src(cx, &arr)?;

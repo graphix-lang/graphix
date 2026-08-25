@@ -400,9 +400,10 @@ Fired/Stale carry the value into the resident, bottoms free the
 placeholder and produce the shared FreshBottom/StaleBottom. A quiet
 poll rides the resident (the R1 skip); `TagValue::absent()` is GONE
 from the kernel output. Pending is reserved for genuine aborts and
-SPLIT BY CAUSE: a depth trip is a delivered FreshBottom
-(`peek_depth_trip` — `FusedKernel` still takes the flag for the
-diagnostic; missing_fire_epoch3_aug08e fixed), an interrupt rides.
+SPLIT BY CAUSE: a depth trip was a delivered FreshBottom
+(`peek_depth_trip`; missing_fire_epoch3_aug08e fixed — the trip and
+its flag are GONE since 2026-08-24, depth is bounded by memory,
+`recursive_activations.md` §4b), an interrupt rides.
 `builder.rs`'s depth-0 fired-only filter (replay_frames Ruling A.2)
 is repealed — `FusedKernel` forwards the honest production.
 

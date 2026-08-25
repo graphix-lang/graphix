@@ -426,6 +426,7 @@ pub(crate) struct TempDirPathEv;
 // transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "sys_tempdir_path";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -459,6 +460,7 @@ pub(crate) struct JoinPathEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "sys_join_path";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -558,6 +560,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     // exit consumes its arg and terminates the process; no future-cycle
     // output. Sync.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "sys_exit";
 
     fn init<'a, 'b, 'c, 'd>(

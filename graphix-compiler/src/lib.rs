@@ -24,6 +24,7 @@ pub mod node;
 pub mod node_shape;
 pub mod perfdbg;
 pub(crate) mod stack;
+pub use stack::set_stack_budget;
 pub mod tval;
 pub mod typ;
 
@@ -116,84 +117,30 @@ pub enum CtlFlag {
     Abort = 2,
 }
 
-/// The default [`Control::max_call_depth`]: the deepest chain of nested
-/// (non-tail) graphix-lambda dispatches either evaluator will enter
-/// before producing bottom instead. Sized from measurement (2026-07-03,
-/// dev profile, 2MiB tokio worker stacks): the node-walk's Rust stack
-/// dies at ≈1,600–1,800 nested dispatches for a small body and
-/// ≈1,300–1,600 for a heavy one (frame cost is dominated by the
-/// dispatch machinery, not body size), so 256 keeps ≥4x headroom below
-/// the worst measured case. Embedders with bigger stacks can raise it
-/// via [`Control::set_max_call_depth`]. Tail self-calls loop in place
-/// in both evaluators and are exempt.
-pub const DEFAULT_MAX_CALL_DEPTH: u32 = 256;
-
 /// A runtime diagnostic: a failure whose value-level outcome is BOTTOM
 /// by design (no value this cycle — nothing for `?`/`try` to catch),
 /// surfaced through the runtime's event stream so embedders and the
 /// shell can still tell the user WHICH expression produced nothing and
-/// why. Produced into [`ExecCtx::diagnostics`] at the trip site,
-/// drained by the runtime after each top-level node update.
+/// why. Produced into [`ExecCtx::diagnostics`] at the failure site,
+/// drained by the runtime after every cycle. No producer exists since
+/// the call-depth limit went (depth is bounded by memory,
+/// `design/recursive_activations.md` §4b); the channel stays for the
+/// next one.
 #[derive(Debug, Clone)]
-pub enum RtDiagnostic {
-    /// A nested (non-tail) lambda dispatch hit
-    /// [`Control::max_call_depth`] and produced bottom instead of
-    /// recursing. `spec` is the lambda body that was about to dispatch
-    /// (node-walk trip) or the fused region whose kernel aborted (JIT
-    /// trip).
-    CallDepthLimit { limit: u32, spec: Expr },
-}
+pub enum RtDiagnostic {}
 
 impl std::fmt::Display for RtDiagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RtDiagnostic::CallDepthLimit { limit, spec } => {
-                write!(
-                    f,
-                    "call depth limit ({limit}) exceeded — deep non-tail \
-                     recursion produced no value (raise via \
-                     Control::set_max_call_depth), at line {} column {} {}",
-                    spec.pos.line, spec.pos.column, spec.ori
-                )
-            }
-        }
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {}
     }
 }
 
-/// Lock-free [`CtlFlag`] set over an `AtomicU32`, plus the shared
-/// call-depth guard both evaluators count against. A loop polls
+/// Lock-free [`CtlFlag`] set over an `AtomicU32`. A loop polls
 /// [`Control::interrupted`] (any flag ⇒ abort); the run loop polls
 /// [`Control::aborted`] (Abort ⇒ shut down). See [`CtlFlag`].
 #[derive(Debug)]
 pub struct Control {
     flags: AtomicU32,
-    /// Current nested non-tail lambda-dispatch depth. ONE counter for
-    /// both evaluators — the node-walk pushes in `GXLambda::update`,
-    /// JIT'd kernels push at lambda-call sites via the
-    /// `graphix_depth_push`/`_pop` helpers — so an impure program that
-    /// interleaves kernel frames and node-walk frames is bounded by
-    /// the same limit as either alone.
-    depth: AtomicU32,
-    max_depth: AtomicU32,
-    /// Set by the JIT's `graphix_depth_push` helper when a kernel's
-    /// lambda dispatch hits the limit (native code can't push a
-    /// diagnostic itself); `FusedKernel::update` takes it after each
-    /// invocation and reports the kernel's spec. Node-walk trips
-    /// report directly and never set this.
-    depth_trip: AtomicBool,
-    /// The WHOLE-DERIVATION trip poison (Eric's ruling 2026-08-14),
-    /// shared by both evaluators like the depth counter itself: set at
-    /// ANY trip (node-walk or kernel), cleared when the shared depth
-    /// pops to zero — the tripped derivation's root. While set, no
-    /// ride between the trip and the root may assemble a partial value
-    /// out of history; beyond the root the delivered bottom is an
-    /// ordinary bottom. One bit for both engines because a derivation
-    /// interleaves them: a node-walk-residue trip inside a kernel
-    /// invocation must poison the kernel's scrutinee ride (aug18a
-    /// class 2, ride-too-narrow face), and a kernel trip that unwinds
-    /// to depth 0 within its own region must NOT poison a top-level
-    /// select in the same region (the ride-too-wide face).
-    trip_poison: AtomicBool,
 }
 
 impl Default for Control {
@@ -204,46 +151,7 @@ impl Default for Control {
 
 impl Control {
     pub fn new() -> Self {
-        Control {
-            flags: AtomicU32::new(0),
-            depth: AtomicU32::new(0),
-            max_depth: AtomicU32::new(DEFAULT_MAX_CALL_DEPTH),
-            depth_trip: AtomicBool::new(false),
-            trip_poison: AtomicBool::new(false),
-        }
-    }
-
-    /// Record a depth trip on the whole-derivation poison — see the
-    /// `trip_poison` field. Both evaluators' trip sites call this;
-    /// `depth_pop` clears it when the derivation's root unwinds.
-    pub fn set_trip_poison(&self) {
-        self.trip_poison.store(true, Ordering::Relaxed);
-    }
-
-    /// Is a depth trip unwinding right now (trip seen, root not yet
-    /// unwound)? Read by every ride site in both evaluators.
-    pub fn trip_poisoned(&self) -> bool {
-        self.trip_poison.load(Ordering::Relaxed)
-    }
-
-    /// Record that a JIT-side lambda dispatch hit the depth limit —
-    /// see the `depth_trip` field.
-    pub fn set_depth_trip(&self) {
-        self.depth_trip.store(true, Ordering::Relaxed);
-    }
-
-    /// Take (and clear) the JIT depth-trip flag.
-    pub fn take_depth_trip(&self) -> bool {
-        self.depth_trip.swap(false, Ordering::Relaxed)
-    }
-
-    /// Read the JIT depth-trip flag WITHOUT clearing it.
-    /// `Kernel::update` peeks to decide its production (a trip is a
-    /// delivered FreshBottom, not a silent abort —
-    /// missing_fire_epoch3_aug08e); the wrapping `FusedKernel` then
-    /// takes it for the diagnostic.
-    pub fn peek_depth_trip(&self) -> bool {
-        self.depth_trip.load(Ordering::Relaxed)
+        Control { flags: AtomicU32::new(0) }
     }
 
     /// Request that in-flight loops abort this cycle; the runtime keeps
@@ -275,58 +183,6 @@ impl Control {
     /// doesn't persist into the next cycle.
     pub fn clear_interrupt(&self) {
         self.flags.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
-    }
-
-    /// Enter one nested (non-tail) lambda dispatch. `false` = the depth
-    /// limit is reached — the caller must NOT dispatch and must produce
-    /// bottom instead (the counter is not left incremented). Paired
-    /// with [`depth_pop`](Self::depth_pop) after a `true` return. Fused
-    /// collection scaffolds enter through this too (one unit per
-    /// non-empty scaffold — every element dispatches at the same depth).
-    pub fn depth_push(&self) -> bool {
-        let d = self.depth.fetch_add(1, Ordering::Relaxed);
-        if d >= self.max_depth.load(Ordering::Relaxed) {
-            self.depth.fetch_sub(1, Ordering::Relaxed);
-            false
-        } else {
-            true
-        }
-    }
-
-    pub fn depth_pop(&self) {
-        if self.depth.fetch_sub(1, Ordering::Relaxed) == 1 {
-            // The derivation's root has unwound: the trip poison ends
-            // here — beyond the root a delivered bottom is an ordinary
-            // bottom (standing rules apply).
-            self.trip_poison.store(false, Ordering::Relaxed);
-        }
-    }
-
-    /// The current non-tail call depth (0 = no recursive dispatch in
-    /// flight on this context).
-    pub fn depth(&self) -> u32 {
-        self.depth.load(Ordering::Relaxed)
-    }
-
-    /// Reset the depth counter to zero. Called by the runtime at the
-    /// end of each cycle — pure insurance against a leaked push (a bug,
-    /// but one that would otherwise ratchet every later cycle toward a
-    /// spurious limit).
-    pub fn depth_reset(&self) {
-        self.depth.store(0, Ordering::Relaxed);
-        self.trip_poison.store(false, Ordering::Relaxed);
-    }
-
-    /// The non-tail call-depth limit (see [`DEFAULT_MAX_CALL_DEPTH`]).
-    pub fn max_call_depth(&self) -> u32 {
-        self.max_depth.load(Ordering::Relaxed)
-    }
-
-    /// Set the non-tail call-depth limit. Raising it beyond the default
-    /// requires correspondingly larger runtime thread stacks — the
-    /// default keeps ≥4x measured headroom on 2MiB stacks.
-    pub fn set_max_call_depth(&self, n: u32) {
-        self.max_depth.store(n, Ordering::Relaxed);
     }
 }
 
@@ -1181,17 +1037,22 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// to a current trigger). See `effects::EffectKind` and
     /// `design/whole_graph_fusion.md` for the rules and examples.
     const EFFECT: EffectKind = EffectKind::Async;
-    /// Whether deleting this builtin's `Apply` and re-initializing it
-    /// fresh is unobservable: the instance holds no cross-invocation
-    /// state (`count`/`sum`/`min` accumulate — NOT stateless) and each
-    /// invocation performs no external effect (`print`/`log` emit — NOT
-    /// stateless; an internal same-input memo cache is fine). Only
-    /// meaningful for `EFFECT = Sync` builtins (async builtins are
-    /// excluded upstream). Consulted by the transient-recursion gate
-    /// (`node::callsite::transient_body_ok`,
-    /// `design/transient_recursion.md`): a recursive callee instance
-    /// may be deleted when its call returns only if every builtin its
-    /// body calls is stateless. Conservative default: `false`.
+    /// Whether an invocation's result depends only on its arguments,
+    /// never on prior invocations of the same instance: the instance
+    /// holds no cross-invocation state (`count`/`sum`/`min`/`uniq`/
+    /// `once` accumulate or remember — NOT stateless). Effects do not
+    /// matter (`print`/`log`/`exit` are stateless: each invocation
+    /// emits once whichever instance runs it), and an internal
+    /// same-input memo or scratch buffer is fine. Only meaningful for
+    /// `EFFECT = Sync` builtins. Consulted by the tail-loop collapse
+    /// gate (`analysis::lambda_is_stateless`,
+    /// `design/recursive_activations.md` §2): a tail-recursive body
+    /// reuses ONE activation across its iterations only when every
+    /// builtin it reaches is stateless — otherwise each iteration owns
+    /// an activation, exactly as a collection slot does. A wrong `true`
+    /// is a semantics bug (two iterations would share what should be
+    /// per-iteration state); a wrong `false` only costs the loop.
+    /// Conservative default: `false`.
     const STATELESS: bool = false;
     /// Whether this builtin's `sleep` CLEARS semantic state — the
     /// documented arm-rewake RESTART builtins

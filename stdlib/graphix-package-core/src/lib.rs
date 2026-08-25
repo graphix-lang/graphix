@@ -900,6 +900,7 @@ struct ToError {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_error";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1144,6 +1145,7 @@ struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_all";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1228,6 +1230,7 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_divide";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2263,6 +2266,7 @@ struct Dbg {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_dbg";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2367,6 +2371,7 @@ struct Log {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_log";
 
     fn init<'a, 'b, 'c, 'd>(

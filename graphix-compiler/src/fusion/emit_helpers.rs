@@ -555,7 +555,7 @@ safe fn graphix_dyncall_pending_take() -> u8 {
 /// only the consumers that read it, like the node-walk, where a
 /// builtin's `None` silences only its downstream. Clearing is what
 /// keeps the pending flag meaning "genuine whole-kernel abort"
-/// (interrupt, depth trip, the return-gate force) for
+/// (interrupt, the return-gate force) for
 /// `Kernel::update`'s wrapper check.
 ///
 /// Returns 1 if pending was set, 0 otherwise.
@@ -604,126 +604,45 @@ safe fn graphix_interrupted() -> i8 {
     })
 }
 
-/// Enter one nested lambda dispatch against the shared call-depth
-/// guard (`Control::depth_push` — the SAME counter the node-walk's
-/// `GXLambda::update` pushes, so interleaved kernel/node-walk frames
-/// of an impure program are bounded together). Returns 1 when the
-/// dispatch may proceed (pair with `graphix_depth_pop` after the
-/// call), 0 at the limit — the call site must skip the call and abort
-/// the kernel to bottom, the same observable as the node-walk's
-/// guarded dispatch producing nothing. With no cycle in flight (null
-/// ptr) the dispatch proceeds unguarded.
-safe fn graphix_depth_push() -> i8 {
-    INTERRUPT_PTR.with(|c| {
+/// The kernel twin of `stack::ensure_sufficient` — depth is bounded
+/// by memory, not a counter (`design/recursive_activations.md` §4b):
+/// at every native self-call site the kernel asks whether the
+/// remaining stack is inside the red zone. 0 = interrupted (skip the
+/// dispatch), 1 = call directly, 2 = re-enter the callee on a fresh
+/// segment through [`graphix_grow_stack`]. Same red zone and segment
+/// as the node-walk's guard, so a derivation that interleaves the two
+/// grows the same way.
+safe fn graphix_stack_check() -> i8 {
+    let interrupted = INTERRUPT_PTR.with(|c| {
         let p = c.get();
-        if p.is_null() {
-            1
-        } else {
-            // Cooperative interrupt: a runaway call TREE (exponential
-            // breadth under the depth limit) only polled at loop
-            // backedges — checking here makes native non-tail
-            // recursion abortable, twinning GXLambda::update's poll.
-            // SAFETY: see `graphix_interrupted`.
-            if unsafe { (*p).interrupted() } {
-                return 0;
-            }
-            let ok = unsafe { (*p).depth_push() };
-            if !ok {
-                // Native code can't push an `RtDiagnostic` — flag the
-                // trip on the Control; `FusedKernel::update` takes it
-                // after the invocation and reports the kernel's spec.
-                // The whole-derivation poison is the separate shared
-                // bit, cleared by depth_pop at pop-to-zero.
-                unsafe {
-                    (*p).set_depth_trip();
-                    (*p).set_trip_poison();
-                }
-            }
-            i8::from(ok)
-        }
-    })
-}
-
-/// Is a call-depth trip unwinding right now? Reads the SHARED
-/// whole-derivation poison (Eric's ruling 2026-08-14): set at any
-/// trip on either evaluator, cleared when the shared depth pops to
-/// zero — the tripped derivation's root. Reading the kernel-local
-/// diagnostic latch here had the wrong extent both ways (aug18a
-/// class 2): it survived past the tripped call's root within a
-/// region (a top-level select's legal ride was refused), and a
-/// node-walk-residue trip inside the invocation never set it (the
-/// fused select rode across the trip).
-safe fn graphix_depth_tripped() -> i8 {
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        if p.is_null() {
+        // SAFETY: see `graphix_interrupted`.
+        !p.is_null() && unsafe { (*p).interrupted() }
+    });
+    if interrupted {
+        0
+    } else if stacker::remaining_stack().unwrap_or(0) < crate::stack::RED_ZONE {
+        if crate::stack::grow_exceeds_budget() {
+            abort_current_control();
             0
         } else {
-            // SAFETY: see `graphix_interrupted`.
-            i8::from(unsafe { (*p).trip_poisoned() })
+            2
         }
-    })
-}
-
-/// The fused HOF-loop twin of [`graphix_depth_push`]: enter the
-/// callback-dispatch level a scaffold loop's inlined body runs at.
-/// One unit covers the whole scaffold (every element dispatches at
-/// the same depth), and `bound == 0` charges NOTHING — the node-walk
-/// dispatches no callback over an empty source, so an empty scaffold
-/// must not move the shared counter (an off-by-one here shifts the
-/// trip point vs the interp at exactly the depth limit). 0 = the
-/// limit is reached: the loop must be skipped (bound zeroed) and its
-/// result tainted, matching the node-walk's per-element dispatch
-/// trip; the counter is not left incremented, so "counted" ⇔ the
-/// post-trip bound is nonzero — pair with `graphix_depth_exit` on
-/// that clamped bound. The interrupt is not polled here — the loop
-/// head polls per iteration.
-safe fn graphix_depth_enter(bound: i64) -> i8 {
-    if bound == 0 {
-        return 1;
+    } else {
+        1
     }
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        if p.is_null() {
-            1
-        } else {
-            // SAFETY: see `graphix_interrupted`.
-            let ok = unsafe { (*p).depth_push() };
-            if !ok {
-                unsafe {
-                    (*p).set_depth_trip();
-                    (*p).set_trip_poison();
-                }
-            }
-            i8::from(ok)
-        }
-    })
 }
 
-/// Exit a [`graphix_depth_enter`] unit. `bound` is the CLAMPED loop
-/// bound the scaffold ran with: zero means the unit was never counted
-/// (empty source, or a trip un-incremented it) and nothing pops.
-safe fn graphix_depth_exit(bound: i64) {
-    if bound == 0 {
-        return;
-    }
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        if !p.is_null() {
-            // SAFETY: see `graphix_interrupted`.
-            unsafe { (*p).depth_pop() }
-        }
-    })
-}
-
-safe fn graphix_depth_pop() {
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        if !p.is_null() {
-            // SAFETY: see `graphix_interrupted`.
-            unsafe { (*p).depth_pop() }
-        }
-    })
+/// Run a kernel's spill thunk on a fresh stack segment. `thunk` is the
+/// address of the kernel's `__spill` entry (`jit::define_spill_thunk`),
+/// `args` the caller's spilled parameter words (one 8-byte slot per
+/// CLIF param, in signature order), `out` two words the thunk fills
+/// with the (disc, payload) result.
+safe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
+    // SAFETY: `thunk` is a JIT function of the fixed spill signature
+    // this crate emits; `args`/`out` are stack slots of the calling
+    // kernel, live for the duration of the call.
+    let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(thunk as usize) };
+    crate::stack::grow(|| f(args, out))
 }
 
 /// The single registered DynCall entry point. Indirects through
@@ -1528,19 +1447,19 @@ pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
 
 /// Free a PER-ACTIVATION block tree ([`kernel_abi::SelfBlock`]) rooted
 /// at `vecptr` — one `Box<Vec<u64>>` per activation, each holding its
-/// own children at `slots`. Depth-first, so the Rust stack cost is the
-/// recursion DEPTH (bounded by `max_call_depth`), not the tree size.
-/// Called only from `Kernel::drop`: these blocks are instance memory,
-/// and instance death is the only thing that reclaims them.
+/// own children at `slots`. Iterative over an explicit worklist: the
+/// tree is as deep as the recursion was, and depth is bounded by
+/// memory. Called only from `Kernel::drop`: these blocks are instance
+/// memory, and instance death is the only thing that reclaims them.
 pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) {
-    if vecptr == 0 {
-        return;
-    }
-    let v = unsafe { Box::from_raw(vecptr as *mut Vec<u64>) };
-    for s in slots.iter() {
-        if let Some(child) = v.get(*s as usize) {
-            free_self_block_tree(*child, slots);
+    let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
+    work.push(vecptr);
+    while let Some(p) = work.pop() {
+        if p == 0 {
+            continue;
         }
+        let v = unsafe { Box::from_raw(p as *mut Vec<u64>) };
+        work.extend(slots.iter().filter_map(|s| v.get(*s as usize).copied()));
     }
 }
 
@@ -1549,20 +1468,21 @@ pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) {
 /// cached on one evaluation-frame iteration can't bridge the next at
 /// any depth. Semantic words (selection memory, first-call flags) and
 /// the honor header survive, exactly as they do in the flat case.
+/// Iterative like [`free_self_block_tree`], for the same reason.
 pub fn reset_self_block_tree(vecptr: u64, slots: &[u32], replay: &[u32]) {
-    if vecptr == 0 {
-        return;
-    }
-    let v = unsafe { &mut *(vecptr as *mut Vec<u64>) };
-    for r in replay.iter() {
-        if let Some(w) = v.get_mut(*r as usize) {
-            *w = 0;
+    let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
+    work.push(vecptr);
+    while let Some(p) = work.pop() {
+        if p == 0 {
+            continue;
         }
-    }
-    for s in slots.iter() {
-        if let Some(child) = v.get(*s as usize).copied() {
-            reset_self_block_tree(child, slots, replay);
+        let v = unsafe { &mut *(p as *mut Vec<u64>) };
+        for r in replay.iter() {
+            if let Some(w) = v.get_mut(*r as usize) {
+                *w = 0;
+            }
         }
+        work.extend(slots.iter().filter_map(|s| v.get(*s as usize).copied()));
     }
 }
 
@@ -1934,7 +1854,7 @@ safe fn graphix_record_jit_invocation() {
 //      consumers of that result bottom, matching the node-walk.
 //   5. After the wrapper returns, Kernel::update checks
 //      `DYNCALL_PENDING` (and resets it). A set flag now only means
-//      a GENUINE whole-kernel abort (interrupt poll, depth trip,
+//      a GENUINE whole-kernel abort (interrupt poll,
 //      the return-gate force): the kernel result is discarded and
 //      Kernel::update returns `None`.
 
@@ -2054,6 +1974,19 @@ thread_local! {
 /// lives in the runtime's `ExecCtx` for its whole lifetime.
 pub fn set_interrupt_ptr(control: &crate::Control) {
     INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
+}
+
+/// Abort the runtime whose control this thread is running under (the
+/// stack budget's containment — `stack::grow`). No runtime on this
+/// thread: nothing to abort.
+pub(crate) fn abort_current_control() {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        if !p.is_null() {
+            // SAFETY: see `graphix_interrupted`.
+            unsafe { (*p).abort() }
+        }
+    });
 }
 
 /// Bump the per-thread fused-kernel execution counter. Called from

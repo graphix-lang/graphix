@@ -83,6 +83,7 @@ impl Default for HbsRenderEv {
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "hbs_render";
 
     fn typecheck0(

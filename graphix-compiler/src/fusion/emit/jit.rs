@@ -973,6 +973,71 @@ struct DefinedBody {
 /// on its pre-declared `FuncId`. `funcids` must contain entries for
 /// the kernel itself and every callee its body's discovered lambda
 /// call sites reference.
+/// Declare a recursion target's SPILL THUNK: `fn(args: *const u64,
+/// out: *mut u64)` — the fixed-signature entry `graphix_grow_stack`
+/// re-enters the kernel through on a fresh stack segment when a
+/// self-call finds the remaining stack inside the red zone
+/// (`design/recursive_activations.md` §4b). Declared before the kernel
+/// body so the body can take its address; defined after it
+/// (`define_spill_thunk`), since it calls the kernel.
+fn declare_spill_thunk(jit: &mut JitCtx, fn_name: &str) -> Result<FuncId> {
+    use cranelift_codegen::ir::{AbiParam, Signature, types};
+    let symbol = jit.next_symbol(&format!("{fn_name}__spill"));
+    let mut sig = Signature::new(jit.module.isa().default_call_conv());
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    jit.module
+        .declare_function(&symbol, Linkage::Local, &sig)
+        .context("declare_function (spill thunk)")
+}
+
+/// Define a spill thunk's body: load every kernel parameter from the
+/// caller's spill block at an 8-byte stride (typed as the kernel's
+/// signature declares it), call the kernel, store its two result
+/// words to `out`.
+fn define_spill_thunk(
+    jit: &mut JitCtx,
+    thunk_id: FuncId,
+    kernel_id: FuncId,
+    kernel_sig: &cranelift_codegen::ir::Signature,
+) -> Result<()> {
+    use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature, types};
+    jit.module.clear_context(&mut jit.func_ctx);
+    jit.builder_ctx = FunctionBuilderContext::new();
+    let mut sig = Signature::new(jit.module.isa().default_call_conv());
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    jit.func_ctx.func.signature = sig;
+    jit.func_ctx.func.name =
+        cranelift_codegen::ir::UserFuncName::user(0, thunk_id.as_u32());
+    let kernel_ref = jit.module.declare_func_in_func(kernel_id, &mut jit.func_ctx.func);
+    let mut b = FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
+    let entry = b.create_block();
+    b.append_block_params_for_function_params(entry);
+    b.switch_to_block(entry);
+    b.seal_block(entry);
+    let args = b.block_params(entry)[0];
+    let out = b.block_params(entry)[1];
+    let vals: Vec<_> = kernel_sig
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            b.ins().load(p.value_type, MemFlags::trusted(), args, (8 * i) as i32)
+        })
+        .collect();
+    let call = b.ins().call(kernel_ref, &vals);
+    let results = b.inst_results(call).to_vec();
+    for (i, r) in results.iter().enumerate() {
+        b.ins().store(MemFlags::trusted(), *r, out, (8 * i) as i32);
+    }
+    b.ins().return_(&[]);
+    b.finalize();
+    jit.module
+        .define_function(thunk_id, &mut jit.func_ctx)
+        .context("define_function (spill thunk)")
+}
+
 fn define_kernel_body(
     jit: &mut JitCtx,
     kernel: &std::sync::Arc<KernelSig>,
@@ -997,6 +1062,11 @@ fn define_kernel_body(
     // (`assertion failed: func_ctx.is_empty()`). Clear here so one
     // failed compile can't poison every subsequent kernel in the
     // same per-context module.
+    let self_thunk_id = match body_emitter.spec.self_call {
+        Some(_) => Some(declare_spill_thunk(jit, &kernel.fn_name)?),
+        None => None,
+    };
+    let kernel_sig = sig.clone();
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig;
@@ -1054,6 +1124,8 @@ fn define_kernel_body(
             let fref = jit.module.declare_func_in_func(*fid, &mut jit.func_ctx.func);
             callee_refs.insert(*ptr, fref);
         }
+        let self_thunk = self_thunk_id
+            .map(|tid| jit.module.declare_func_in_func(tid, &mut jit.func_ctx.func));
         if callee_refs.len() != needed.len() {
             return Err(anyhow!(
                 "define_kernel_body: kernel `{}` calls a kernel with \
@@ -1087,6 +1159,7 @@ fn define_kernel_body(
             &mut builder,
             kernel,
             &callee_refs,
+            self_thunk,
             &helper_refs,
             &lazy_strings,
             &lazy_values,
@@ -1116,6 +1189,9 @@ fn define_kernel_body(
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (shared body)")?;
+    if let Some(tid) = self_thunk_id {
+        define_spill_thunk(jit, tid, func_id, &kernel_sig)?;
+    }
     // Post-define fact publication (the interior-sleep gate): callers
     // gate their reads on `defined`, so `has_sleep_restart` (stored at the
     // end of `compile_into_function`) is only consulted once final.

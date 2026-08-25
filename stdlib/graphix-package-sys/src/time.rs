@@ -301,6 +301,7 @@ pub(crate) struct Now {
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     // When trigger fires, samples the current time and emits same-cycle.
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "sys_time_now";
 
     fn init<'a, 'b, 'c, 'd>(

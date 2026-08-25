@@ -111,7 +111,8 @@ Interp:
 - Sleep-is-pause, the SLEEP_RESTARTS interior-sleep gate (about the
   interp's arm sleep, not firing).
 - The recursion STRUCTURE rulings: unconditional transient retention,
-  no park. Depth trips deliver FreshBottom.
+  no park. (Depth trips delivered FreshBottom until 2026-08-24; there
+  is no depth limit now — `recursive_activations.md` §4b.)
 - DynCall site identity (jul23f) — the state channel survives for it.
 
 ## Ruled deltas (each becomes a red→green fixture; the re-bless key)

@@ -14,7 +14,8 @@ use crate::{
 };
 use anyhow::{Result, anyhow};
 use cranelift_codegen::ir::{
-    BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
+    BlockArg, Inst, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
+    Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 
@@ -951,6 +952,21 @@ fn emit_site_block(
     }
 }
 
+fn callee_results(
+    cx: &mut BodyCx,
+    inst: Inst,
+    fn_name: &str,
+) -> Result<(ClifValue, ClifValue)> {
+    let results = cx.b.inst_results(inst);
+    if results.len() != 2 {
+        return Err(anyhow!(
+            "lambda call `{fn_name}`: callee returned {} values, expected 2",
+            results.len()
+        ));
+    }
+    Ok((results[0], results[1]))
+}
+
 pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
@@ -1226,50 +1242,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         clif_args.push(cv.disc);
         clif_args.push(cv.payload);
     }
-    // The call-depth guard (Phase 4): every non-tail lambda dispatch —
-    // cross-kernel calls AND value-position self-calls (native
-    // recursion) — enters one unit against the SHARED
-    // `Control::depth_push` counter the node-walk's `GXLambda::update`
-    // pushes, so both evaluators bottom at the same logical depth and
-    // an impure program's interleaved frames are bounded together. At
-    // the limit the CALL bottoms LOCALLY: skip the dispatch and
-    // continue with a #219 tainted, shape-safe placeholder — the same
-    // observable as the node-walk's guarded dispatch yielding nothing
-    // (its bottom silences only the call's consumers; a fold whose
-    // callback ignores the tripped value RECOVERS — the former
-    // whole-kernel abort here bottomed unrelated outputs, soak jul07h).
-    // The check runs AFTER argument marshalling: the unit must not be
-    // held while the args evaluate, because an arg containing a
-    // further self-call (`f(n - g(f(n - 1)))`) then charges TWO units
-    // per recursion level where the node-walk — whose CallSite
-    // evaluates args before `GXLambda::update` pushes — charges one,
-    // tripping the kernel at HALF the interp's depth (jul22a
-    // divergence, trip at n=128 of a 256 limit). The trip path
-    // therefore drops the already-marshalled owned args, exactly like
-    // the pending-abort path below. A failed push does not increment,
-    // so the trip path must NOT pop. Tail self-calls are exempt on
-    // both sides (rebind-and-jump here, the in-place loop there).
-    let call_bl = cx.b.create_block();
-    let trip_bl = cx.b.create_block();
-    let dmerge = cx.b.create_block();
-    cx.b.append_block_param(dmerge, types::I64);
-    cx.b.append_block_param(dmerge, ret_pay_ty);
-    {
-        let push = cx.helper("graphix_depth_push")?;
-        let call = cx.b.ins().call(push, &[]);
-        let ok = cx.b.inst_results(call)[0];
-        let valid = cx.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
-        cx.b.ins().brif(valid, call_bl, &[], trip_bl, &[]);
-    }
-    cx.b.switch_to_block(trip_bl);
-    cx.b.seal_block(trip_bl);
-    {
-        emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
-        let ph = emit_elem_placeholder(cx, if widen { node_typ } else { ret })?;
-        cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
-    }
-    cx.b.switch_to_block(call_bl);
-    cx.b.seal_block(call_bl);
     let func_ref =
         cx.ctx.callee_refs.get(&kernel_abi::kernel_key(&info.kernel)).ok_or_else(
             || {
@@ -1279,25 +1251,90 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                 )
             },
         )?;
-    let inst = cx.b.ins().call(*func_ref, &clif_args);
-    // Exit the depth-guard unit entered above. A callee that ABORTED
-    // (interrupt / its own deeper depth trip) still returns here
-    // normally (the abort path returns the pending sentinel), so the
-    // pop is unconditional.
-    {
-        let pop = cx.helper("graphix_depth_pop")?;
-        cx.b.ins().call(pop, &[]);
+    let dmerge = cx.b.create_block();
+    cx.b.append_block_param(dmerge, types::I64);
+    cx.b.append_block_param(dmerge, ret_pay_ty);
+    // The raw (disc, payload) pair from whichever entry ran the callee.
+    let rmerge = cx.b.create_block();
+    cx.b.append_block_param(rmerge, types::I64);
+    cx.b.append_block_param(rmerge, types::I64);
+    if is_self {
+        // Depth is bounded by memory, not a counter
+        // (design/recursive_activations.md §4b): a self-call whose
+        // remaining stack is inside the red zone re-enters the callee
+        // on a fresh segment through the kernel's spill thunk — the
+        // kernel twin of `stack::ensure_sufficient`. The same check
+        // carries the cooperative interrupt: an interrupted call skips
+        // the dispatch and continues with a tainted, shape-safe
+        // placeholder. Only self-calls need it: cross-kernel edges are
+        // acyclic (mutual recursion de-fuses), so their nesting is
+        // bounded by the program. The check runs AFTER argument
+        // marshalling, so an arg containing a further self-call is
+        // checked at its own site, and the abort path drops the
+        // already-marshalled owned args like the pending-abort path.
+        let abort_bl = cx.b.create_block();
+        let direct_bl = cx.b.create_block();
+        let call_bl = cx.b.create_block();
+        let grow_bl = cx.b.create_block();
+        let check = cx.helper("graphix_stack_check")?;
+        let call = cx.b.ins().call(check, &[]);
+        let flag = cx.b.inst_results(call)[0];
+        let interrupted = cx.b.ins().icmp_imm(IntCC::Equal, flag, 0);
+        cx.b.ins().brif(interrupted, abort_bl, &[], direct_bl, &[]);
+        cx.b.switch_to_block(direct_bl);
+        cx.b.seal_block(direct_bl);
+        let direct = cx.b.ins().icmp_imm(IntCC::Equal, flag, 1);
+        cx.b.ins().brif(direct, call_bl, &[], grow_bl, &[]);
+        cx.b.switch_to_block(abort_bl);
+        cx.b.seal_block(abort_bl);
+        emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
+        let ph = emit_elem_placeholder(cx, if widen { node_typ } else { ret })?;
+        cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
+        cx.b.switch_to_block(call_bl);
+        cx.b.seal_block(call_bl);
+        let inst = cx.b.ins().call(*func_ref, &clif_args);
+        let (r0, r1) = callee_results(cx, inst, fn_name)?;
+        cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
+        cx.b.switch_to_block(grow_bl);
+        cx.b.seal_block(grow_bl);
+        let thunk = cx.ctx.self_thunk.ok_or_else(|| {
+            anyhow!("lambda call `{fn_name}`: self-call in a kernel with no spill thunk")
+        })?;
+        let n = clif_args.len();
+        let slot = cx.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (8 * (n + 2)) as u32,
+            3,
+        ));
+        let base = cx.b.ins().stack_addr(types::I64, slot, 0);
+        for (i, v) in clif_args.iter().enumerate() {
+            cx.b.ins().store(MemFlags::trusted(), *v, base, (8 * i) as i32);
+        }
+        let out = cx.b.ins().iadd_imm(base, (8 * n) as i64);
+        let thunk = cx.b.ins().func_addr(types::I64, thunk);
+        let grow = cx.helper("graphix_grow_stack")?;
+        cx.b.ins().call(grow, &[thunk, base, out]);
+        let r0 = cx.b.ins().load(types::I64, MemFlags::trusted(), out, 0);
+        let r1 = cx.b.ins().load(types::I64, MemFlags::trusted(), out, 8);
+        cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
+    } else {
+        let inst = cx.b.ins().call(*func_ref, &clif_args);
+        let (r0, r1) = callee_results(cx, inst, fn_name)?;
+        cx.b.ins().jump(rmerge, &[BlockArg::Value(r0), BlockArg::Value(r1)]);
     }
-    // A callee that genuinely ABORTED (interrupt, depth trip) left
-    // `DYNCALL_PENDING` set and returned the pending sentinel — the
-    // zero pair, NOT a real value. Propagate the abort at the call
-    // site: drop the owned call args, drop this kernel's owned set,
-    // and jump to `pending_exit` with the flag still set (peek, not
-    // clear) so `Kernel::update` discards. Without this the sentinel
-    // would flow into downstream derefs and drops. Value-level
-    // bottoms never take this path — a callee's pended DynCall
-    // converts to a #219 tainted result at its own site and rides
-    // back IN-BAND in the returned disc.
+    cx.b.switch_to_block(rmerge);
+    cx.b.seal_block(rmerge);
+    let r0 = cx.b.block_params(rmerge)[0];
+    let r1 = cx.b.block_params(rmerge)[1];
+    // A callee that genuinely ABORTED (interrupt) left `DYNCALL_PENDING`
+    // set and returned the pending sentinel — the zero pair, NOT a real
+    // value. Propagate the abort at the call site: drop the owned call
+    // args, drop this kernel's owned set, and jump to `pending_exit`
+    // with the flag still set (peek, not clear) so `Kernel::update`
+    // discards. Without this the sentinel would flow into downstream
+    // derefs and drops. Value-level bottoms never take this path — a
+    // callee's pended DynCall converts to a #219 tainted result at its
+    // own site and rides back IN-BAND in the returned disc.
     {
         let peek = cx.helper("graphix_dyncall_pending_take")?;
         let call = cx.b.ins().call(peek, &[]);
@@ -1314,21 +1351,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(cont_bl);
         cx.b.seal_block(cont_bl);
     }
-    // Unified Value ABI: every callee returns the genuine two-word
-    // `(disc, payload)` Value pair, TAINT/STALE in-band in the disc.
-    // A value-typed consumer (`widen`) keeps the pair verbatim; a
-    // scalar-typed one narrows the payload to the prim's CLIF type
-    // for interior register use.
-    let (r0, r1) = {
-        let results = cx.b.inst_results(inst);
-        if results.len() != 2 {
-            return Err(anyhow!(
-                "lambda call `{fn_name}`: callee returned {} values, expected 2",
-                results.len()
-            ));
-        }
-        (results[0], results[1])
-    };
     let result = match kernel_abi::abi_kind(ret) {
         Some(AbiKind::Scalar(p)) if !widen => {
             CompiledExpr::new(r0, cast_u64_to_prim(cx.b, r1, p))

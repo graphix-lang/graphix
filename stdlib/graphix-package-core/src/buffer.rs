@@ -331,6 +331,7 @@ pub(crate) struct DecodeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_buffer_decode";
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

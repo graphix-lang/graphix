@@ -318,7 +318,13 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
         TailPosition::Leaf(n) => {
             // Self tail-call — checked BEFORE value emission. Matching
             // is by the self BindId (names shadow, ids don't — #206).
-            if let Some((sb, _)) = cx.ctx.self_call {
+            // Only a kernel that LOOPS jumps: a stateful body has no
+            // loop head (`tail_loop` is gated on statelessness), and
+            // its tail-position self-call is an ordinary native
+            // recursive call whose activation owns its site blocks.
+            if let Some((sb, _)) = cx.ctx.self_call
+                && cx.ctx.tail.loop_head.is_some()
+            {
                 if let NodeView::CallSite(cs) = n.view() {
                     if matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == *sb) {
                         return emit_self_tail_call(cx, cs);

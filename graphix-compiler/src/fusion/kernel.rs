@@ -1841,13 +1841,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             //   was computed — ride.
             if crate::dbgenv::graphix_dbg_invoke() {
                 eprintln!(
-                    "KERNEL RESULT {} PENDING trip={} fd={}",
-                    self.kernel.fn_name,
-                    ctx.control.peek_depth_trip(),
-                    ctx.frame_depth
+                    "KERNEL RESULT {} PENDING fd={}",
+                    self.kernel.fn_name, ctx.frame_depth
                 );
             }
-            if ctx.control.peek_depth_trip() || ctx.frame_depth > 0 {
+            if ctx.frame_depth > 0 {
                 return TagValue::bottom_null(true);
             }
             return self.resident.ride();

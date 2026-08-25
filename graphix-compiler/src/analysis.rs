@@ -230,39 +230,49 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
             return true;
         }
         let Some(d) = lambda_def(ctx, a.id) else { return true };
-        let failed: Option<anyhow::Error> = match a.kind {
-            crate::DefAssertionKind::Sync => {
-                (!d.intrinsic_effect.lock().is_sync()).then(|| {
-                    assertion_error(
-                        &a.spec,
-                        "#[sync]: this function is async — its body reaches \
+        let failed: Option<anyhow::Error> =
+            match a.kind {
+                crate::DefAssertionKind::Sync => (!d.intrinsic_effect.lock().is_sync())
+                    .then(|| {
+                        assertion_error(
+                            &a.spec,
+                            "#[sync]: this function is async — its body reaches \
                          an async builtin or an async callee",
-                    )
-                })
-            }
-            crate::DefAssertionKind::Async => {
-                d.intrinsic_effect.lock().is_sync().then(|| {
-                    assertion_error(
-                        &a.spec,
-                        "#[async]: this function is sync — nothing in its \
+                        )
+                    }),
+                crate::DefAssertionKind::Async => {
+                    d.intrinsic_effect.lock().is_sync().then(|| {
+                        assertion_error(
+                            &a.spec,
+                            "#[async]: this function is sync — nothing in its \
                          body defers an output to a later cycle",
-                    )
-                })
-            }
-            crate::DefAssertionKind::TailRecursive => match *d.recursion.lock() {
-                RecursionKind::TailRecursive => None,
-                RecursionKind::Recursive => Some(assertion_error(
-                    &a.spec,
-                    "#[tail_recursive]: this function recurses through a \
+                        )
+                    })
+                }
+                crate::DefAssertionKind::TailRecursive => match *d.recursion.lock() {
+                    RecursionKind::TailRecursive => (!lambda_is_stateless(ctx, d.id))
+                        .then(|| {
+                            assertion_error(
+                                &a.spec,
+                                "#[tail_recursive]: this function's body is stateful or \
+                         async (a stateful builtin such as `count`, a `<-` to one \
+                         of its own bindings, an async operation, or such a \
+                         callee) — every iteration then keeps its own \
+                         activation and the loop is not constant-space",
+                            )
+                        }),
+                    RecursionKind::Recursive => Some(assertion_error(
+                        &a.spec,
+                        "#[tail_recursive]: this function recurses through a \
                      non-tail self-call or mutual recursion — every \
                      recursive call must be in tail position",
-                )),
-                RecursionKind::NotRecursive => Some(assertion_error(
-                    &a.spec,
-                    "#[tail_recursive]: this function is not recursive",
-                )),
-            },
-        };
+                    )),
+                    RecursionKind::NotRecursive => Some(assertion_error(
+                        &a.spec,
+                        "#[tail_recursive]: this function is not recursive",
+                    )),
+                },
+            };
         match failed {
             Some(e) => {
                 err = Some(e);
@@ -351,12 +361,12 @@ fn infer_effects<R: Rt, E: UserEvent>(
         bodies.entry(g.id()).or_insert_with(|| g.body());
         self_ids.entry(*sb).or_insert_with(|| g.id());
     }
-    let mut eff: LPooled<IntMap<LambdaId, EffectKind>> =
-        bodies.keys().map(|id| (*id, EffectKind::Sync)).collect();
+    let mut eff: LPooled<IntMap<LambdaId, LambdaFacts>> =
+        bodies.keys().map(|id| (*id, LambdaFacts::PURE)).collect();
     loop {
         let mut changed = false;
         for (lid, body) in &*bodies {
-            let e = body_effect(body, &eff, &self_ids, ctx);
+            let e = body_facts(body, &eff, &self_ids, ctx);
             if eff.get(lid).copied() != Some(e) {
                 eff.insert(*lid, e);
                 changed = true;
@@ -368,24 +378,65 @@ fn infer_effects<R: Rt, E: UserEvent>(
     }
     for (lid, e) in &*eff {
         if let Some(d) = lambda_def(ctx, *lid) {
-            *d.intrinsic_effect.lock() = *e;
+            *d.intrinsic_effect.lock() = e.effect;
+            d.stateless.store(e.stateless, Ordering::Relaxed);
         }
     }
 }
 
-/// Fold the effect over one lambda body. `for_each_node` does not descend
+/// The two facts the fixpoint infers per lambda, both greatest
+/// fixpoints from an optimistic start: `effect` (`Sync` degrading to
+/// `Async`) and `stateless` (`true` degrading to `false` — the body
+/// holds no per-activation state: every builtin it reaches is
+/// `STATELESS`, no `<-` targets one of its own bindings, every callee
+/// is stateless). `stateless` is what lets a tail loop reuse ONE
+/// activation across its iterations (`design/recursive_activations.md`
+/// §2); everything else about a stateful Sync body is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LambdaFacts {
+    effect: EffectKind,
+    stateless: bool,
+}
+
+impl LambdaFacts {
+    const PURE: Self = Self { effect: EffectKind::Sync, stateless: true };
+    const ASYNC: Self = Self { effect: EffectKind::Async, stateless: false };
+
+    fn join(self, other: Self) -> Self {
+        Self {
+            effect: self.effect.join(other.effect),
+            stateless: self.stateless && other.stateless,
+        }
+    }
+}
+
+/// Fold the facts over one lambda body. `for_each_node` does not descend
 /// nested lambda bodies, so this sees only THIS body's own operations.
-fn body_effect<R: Rt, E: UserEvent>(
+/// A `<-` counts as state only when its target is one of the body's own
+/// bindings: writes to an outer variable land in the same cell whether
+/// one activation or many performs them.
+fn body_facts<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
-    eff: &IntMap<LambdaId, EffectKind>,
+    eff: &IntMap<LambdaId, LambdaFacts>,
     self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
-) -> EffectKind {
-    let mut acc = EffectKind::Sync;
+) -> LambdaFacts {
+    let mut refs = crate::Refs::default();
+    body.refs(&mut refs);
+    let mut local: LPooled<IntSet<BindId>> = LPooled::take();
+    refs.with_bound(|id| {
+        local.insert(id);
+    });
+    let mut acc = LambdaFacts::PURE;
     fusion::for_each_node(body, &mut |n| {
-        let e = node_effect(n, eff, self_ids, ctx);
-        if matches!(e, EffectKind::Async) && crate::dbgenv::gxdbg_effect() {
-            eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
+        let e = node_facts(n, eff, self_ids, &local, ctx);
+        if crate::dbgenv::gxdbg_effect() {
+            if e.effect.is_async() {
+                eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
+            }
+            if !e.stateless {
+                eprintln!("EFFECT-STATEFUL-NODE node={}", n.spec());
+            }
         }
         acc = acc.join(e);
     });
@@ -407,14 +458,15 @@ fn body_effect<R: Rt, E: UserEvent>(
 /// EffectKind is orthogonal to `stmt_subtree_effect_free` — a connect is
 /// *sync* yet NOT effect-free; dead-statement elimination must still keep
 /// it.)
-fn node_effect<R: Rt, E: UserEvent>(
+fn node_facts<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
-    eff: &IntMap<LambdaId, EffectKind>,
+    eff: &IntMap<LambdaId, LambdaFacts>,
     self_ids: &IntMap<BindId, LambdaId>,
+    local: &IntSet<BindId>,
     ctx: &ExecCtx<R, E>,
-) -> EffectKind {
+) -> LambdaFacts {
     match n.view() {
-        NodeView::CallSite(cs) => callee_effect(cs, eff, self_ids, ctx),
+        NodeView::CallSite(cs) => callee_facts(cs, eff, self_ids, ctx),
         // Genuinely cross-cycle: a sample (`~`) or `any` delivers on a
         // later cycle than its trigger; a catch handler reads an error
         // variable a cycle after the `?` writes it; a fused kernel may
@@ -427,7 +479,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         NodeView::Sample(_)
         | NodeView::Catch(_)
         | NodeView::Any(_)
-        | NodeView::FusedKernel(_) => EffectKind::Async,
+        | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         // Variable WRITES (`connect`, a handler-ful `?`'s error delivery)
         // and same-cycle error handling (`$`, a handler-less `?`) are
         // SYNC: the write/log happens this cycle; the genuine boundary is
@@ -437,10 +489,13 @@ fn node_effect<R: Rt, E: UserEvent>(
         // *write itself* fusing is gated structurally by `emit_clif`:
         // connect/qop-deliver emit the write; an unfusable case de-fuses
         // gracefully.)
-        NodeView::Connect(_)
-        | NodeView::ConnectDeref(_)
-        | NodeView::Qop(_)
-        | NodeView::OrNever(_) => EffectKind::Sync,
+        NodeView::Connect(c) => {
+            LambdaFacts { effect: EffectKind::Sync, stateless: !local.contains(&c.id) }
+        }
+        NodeView::ConnectDeref(_) => {
+            LambdaFacts { effect: EffectKind::Sync, stateless: false }
+        }
+        NodeView::Qop(_) | NodeView::OrNever(_) => LambdaFacts::PURE,
         // Pure same-cycle compute / construction / access / control flow.
         NodeView::Bind(_)
         | NodeView::Module(_)
@@ -490,7 +545,7 @@ fn node_effect<R: Rt, E: UserEvent>(
         | NodeView::Constant(_)
         | NodeView::TypeDef(_)
         | NodeView::Impl(_)
-        | NodeView::Nop(_) => EffectKind::Sync,
+        | NodeView::Nop(_) => LambdaFacts::PURE,
     }
 }
 
@@ -500,21 +555,26 @@ fn node_effect<R: Rt, E: UserEvent>(
 /// self-recursive sync body stays `Sync`. A builtin contributes its
 /// declared `EFFECT`. Anything else (a fn-typed parameter call, a dynamic
 /// dispatch) is conservatively `Async`.
-fn callee_effect<R: Rt, E: UserEvent>(
+fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
-    eff: &IntMap<LambdaId, EffectKind>,
+    eff: &IntMap<LambdaId, LambdaFacts>,
     self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
-) -> EffectKind {
+) -> LambdaFacts {
     // A resolved lambda missing from the LOCAL fixpoint map is one a
     // PRIOR pass analyzed (the subtree walks of `analyze_bound_callee`
     // only cover their subtree): read
     // its STORED fact instead of defaulting Async. Silently defaulting
     // misclassified runtime-bound callees whose definitions live outside
     // the local walk.
-    let known = |lid: LambdaId| -> EffectKind {
+    let known = |lid: LambdaId| -> LambdaFacts {
         eff.get(&lid).copied().unwrap_or_else(|| {
-            lambda_def(ctx, lid).map(|d| *d.intrinsic_effect.lock()).unwrap_or_default()
+            lambda_def(ctx, lid)
+                .map(|d| LambdaFacts {
+                    effect: *d.intrinsic_effect.lock(),
+                    stateless: d.stateless.load(Ordering::Relaxed),
+                })
+                .unwrap_or(LambdaFacts::ASYNC)
         })
     };
     if let Some(target) = cs.static_target() {
@@ -549,7 +609,10 @@ fn callee_effect<R: Rt, E: UserEvent>(
         {
             let key = (bind.scope.clone(), bind.name.clone());
             if let Some(info) = ctx.builtin_bindings.get(&key) {
-                return ctx.builtin_effect(info.name.as_str());
+                return LambdaFacts {
+                    effect: ctx.builtin_effect(info.name.as_str()),
+                    stateless: ctx.builtin_stateless(info.name.as_str()),
+                };
             }
         }
     }
@@ -557,7 +620,7 @@ fn callee_effect<R: Rt, E: UserEvent>(
     if crate::dbgenv::gxdbg_effect() {
         eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());
     }
-    EffectKind::Async
+    LambdaFacts::ASYNC
 }
 
 // ── Phase 3: recursion + tail marking ────────────────────────────────
@@ -626,7 +689,7 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         let structural = self_bind
             .is_some_and(|self_bind| lowering::structural_tail_loop(g, self_bind, ctx));
         if structural
-            && lambda_is_sync(ctx, g.id())
+            && lambda_is_stateless(ctx, g.id())
             && mark_tail_sites(g.body(), *instance, g.id())
         {
             g.set_tail_loop(true);
@@ -754,6 +817,16 @@ fn lambda_def<'a, R: Rt, E: UserEvent>(
     ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
 }
 
-fn lambda_is_sync<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, lid: LambdaId) -> bool {
-    lambda_def(ctx, lid).map(|d| d.intrinsic_effect.lock().is_sync()).unwrap_or(false)
+/// The tail-loop collapse gate (`design/recursive_activations.md` §2):
+/// a tail loop reuses ONE activation only when its body is stateless
+/// (which implies Sync). Any other body — async, or Sync but reaching
+/// a stateful builtin, a `<-` to its own binding, or a stateful callee
+/// — gets an activation per iteration, exactly like non-tail recursion
+/// and like a collection slot.
+fn lambda_is_stateless<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, lid: LambdaId) -> bool {
+    lambda_def(ctx, lid)
+        .map(|d| {
+            d.intrinsic_effect.lock().is_sync() && d.stateless.load(Ordering::Relaxed)
+        })
+        .unwrap_or(false)
 }
