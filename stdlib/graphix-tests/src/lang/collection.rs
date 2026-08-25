@@ -19,9 +19,7 @@ run!(
         use Collection::*;
         let r = map([1, 2, 3], |x| x * 2);
         let result = fold(r, 0, |a, x| a + x)
-    "#;
-    // ASPIRE: Jit (currently None) — the Array intrinsic reached through the trait dispatcher interprets.
-    FuseExpect::None
+    "#
 );
 
 // The list package's implementation: a reference head (`List<'_>`)
@@ -65,9 +63,7 @@ run!(
         use Collection::*;
         let total = |c: Collection| fold(c, 0, |a, x| a + x);
         let result = total([1, 2]) + total(list::from_array([3, 4]))
-    "#;
-    // ASPIRE: Jit (currently None) — per-instance resolution through a constructor-variable parameter interprets.
-    FuseExpect::None
+    "#
 );
 
 // Newtype delegation (pressure test 1): three required methods over

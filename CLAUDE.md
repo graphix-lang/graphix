@@ -1376,7 +1376,11 @@ in `run!` fixtures and bench programs). The decision is recorded in
   guard and was poisoned `cycle_refused` (examples_compile caught it —
   data_table_dashboard; pinned in `lang/functions.rs`). Open:
   body-annotation tvars are fresh (not the signature's);
-  trait-dispatched intrinsics interpret (P3).
+  trait dispatch to MARKER-bodied impls fuses (the premat
+fall-through, 2026-08-25 — `fold_trait` at parity); WRAPPER impl
+bodies (Map's values-fold — the trait-default shape) still
+interpret (P3 residue: the nested derived callback's call to the
+captured `f` doesn't resolve through the inner collection site).
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the

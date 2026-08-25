@@ -1035,6 +1035,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
                 {
                     self.resolve_trait_call(ctx, tm)?;
+                    return self.premat_fn_args(ctx);
                 }
                 return Ok(());
             }
@@ -1043,6 +1044,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             return Ok(());
         };
         self.resolve_static(ctx, def)?;
+        self.premat_fn_args(ctx)
+    }
+
+    /// Pre-materialize statically-known fn-typed args and re-drive the
+    /// bound instance's typecheck1 (per-callsite elaboration). Shared
+    /// by the ordinary static-resolution path and the trait-dispatch
+    /// path — a trait-dispatched HOF needs its callback registered
+    /// exactly like a direct call's, or a collection-bodied impl's
+    /// prototype can't resolve it and emission refuses (P2b:
+    /// `Collection::fold` interpreted at ~7800x the direct call).
+    fn premat_fn_args(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         // HOF callback pre-materialization: every fn-typed positional arg
         // whose function-valued arguments resolve to known lambdas (or
         // name a trait method, which the instance's call sites resolve

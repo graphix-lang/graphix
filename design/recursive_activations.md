@@ -977,8 +977,20 @@ bench/collection/ (19 self-timed benches, both engines, release,
 best-of-3; full table + notes in its README). The headline numbers:
 
 - Intrinsic vs trait dispatch: `array::fold` 0.28 ms vs
-  `Collection::fold` 2.21 s at 100k (~7800x) — dispatch interprets
-  (P3's price tag). Map's values-fold wrapper likewise (26 ms vs 4.9 s).
+  `Collection::fold` 2.21 s at 100k (~7800x) — dispatch interpreted
+  (P3's price tag). FIXED same day: the typecheck1 driver returned
+  early after `resolve_trait_call`, skipping the HOF
+  pre-materialization every ordinary static call falls into, so the
+  impl instance's callback never registered and the collection body
+  couldn't inline-emit. Now the block is `CallSite::premat_fn_args`,
+  called from both paths: `fold_trait` is at parity (0.31 ms) and the
+  `|c: Collection|` generic path fuses too (both ASPIRE fixtures
+  upgraded to Jit by the harness's own demand). Residue: a Graphix
+  WRAPPER impl body (Map's values-fold over `fold_pairs`) still
+  interprets — the nested derived callback's call to `f` doesn't
+  resolve through the inner collection site. That wrapper shape is
+  every trait DEFAULT body, so it is the named next target on the
+  road to deleting intrinsics.
 - Intrinsic vs Graphix recursion: the callback FORMAL (fn-typed) fails
   `structural_tail_loop`'s kind gate (finding 3), so every
   stdlib-shaped body (`|a, f, i, acc|`) native-recurses per level —

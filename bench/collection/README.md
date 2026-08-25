@@ -51,7 +51,7 @@ intrinsic row's jit time.
 | bench            | n    | jit       | node-walk | speedup |
 |------------------|------|-----------|-----------|---------|
 | `fold_intr`      | 100k | 0.28 ms   | 2.28 s    | 8082x   |
-| `fold_trait`     | 100k | 2.21 s    | 2.29 s    | 1x      |
+| `fold_trait`     | 100k | 0.31 ms   | 2.19 s    | 7150x   |
 | `fold_rec`       | 100k | 8.40 s    | 9.34 s    | 1x      |
 | `map_intr`       | 100k | 2.5 ms    | 4.60 s    | 1876x   |
 | `map_fmshape`    | 100k | 4.21 s    | 4.39 s    | 1x      |
@@ -68,14 +68,20 @@ intrinsic row's jit time.
 | `lfold_intr_4k`  | 4k   | 0.15 ms   | 62 ms     | 407x    |
 | `lfold_rec`      | 4k   | 0.29 s    | 0.29 s    | 1x      |
 | `mfold_intr`     | 100k | 26 ms     | 4.16 s    | 158x    |
-| `mfold_trait`    | 100k | 4.94 s    | 5.23 s    | 1x      |
+| `mfold_trait`    | 100k | 4.77 s    | 5.25 s    | 1x      |
 
 ## Reading the table
 
-- **Trait dispatch forfeits fusion entirely** (`fold_trait` 2.21 s vs
-  `fold_intr` 0.28 ms — ~7800x; `mfold_trait` likewise): the
-  dispatched call runs the intrinsic on the node-walk. This is the P3
-  item ("trait-dispatched intrinsics interpret") with its price tag.
+- **Trait dispatch fuses (FIXED)**: the resolved trait site now
+  falls through to HOF pre-materialization exactly like a direct
+  call (`CallSite::premat_fn_args`), and `fold_trait` went
+  2.21 s -> 0.31 ms — parity with the intrinsic; the generic
+  `|c: Collection|` path fuses too. The residue is `mfold_trait`:
+  Map's impl fold is a Graphix WRAPPER body (`fold_pairs` with a
+  derived callback closing over `f`), and the nested callback's call
+  to `f` doesn't statically resolve through the inner collection
+  site — the named next target, since every trait DEFAULT body is
+  this same wrapper shape.
 - **The hand-written recursion rows never collapse** (`fold_rec`,
   `map_push`, `lfold_rec`): the callback is a FORMAL, and a fn-typed
   formal fails `structural_tail_loop`'s kind gate — finding 3's widest
@@ -107,11 +113,12 @@ intrinsic row's jit time.
   `list_fold_sum` row (38 ms) — the flatten boundary improved since.
 
 **Per-operation verdict (the P2b question)**: every intrinsic stays.
-No Graphix body approaches its intrinsic while trait dispatch
-interprets (P3) and fn-typed formals block the tail loop (finding
-3); finding 2's quadratic arm consults are FIXED (shallow
-discriminators — `lfold_rec` 9.58 s -> 0.29 s), leaving the
-per-level activation as list recursion's remaining cost. The only
+Trait dispatch to a marker-bodied impl is FIXED (`fold_trait` at
+parity) and finding 2's quadratic arm consults are FIXED (shallow
+discriminators — `lfold_rec` 9.58 s -> 0.29 s). Still open: WRAPPER
+impl bodies (`mfold_trait` — the trait-default shape), fn-typed
+formals blocking the tail loop (finding 3), and the map-default
+widening. The only
 near-parity derivation (`map` via `init`) is gated on the
 default-body widening fix, and only for Array. Re-run this corpus
 after each of those lands — the verdicts are per-operation and may
