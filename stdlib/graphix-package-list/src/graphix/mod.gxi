@@ -41,6 +41,10 @@ val drop: fn(n: i64, l: List<'a>) -> List<'a>;
 /// Convert a list to an array. O(n).
 val to_array: fn(l: List<'a>) -> Array<'a>;
 
+/// The elements as an array in reverse order, in one walk — the finish
+/// for a front-to-back accumulator that consed as it went.
+val to_array_rev: fn(l: List<'a>) -> Array<'a>;
+
 /// Convert an array to a list. O(n).
 val from_array: fn(a: Array<'a>) -> List<'a>;
 
@@ -96,3 +100,5 @@ val iter: fn(l: List<'a>) -> 'a;
 
 /// Produce an update for each element, gated by clock updates.
 val iterq: fn(#clock: Any, l: List<'a>) -> 'a;
+
+impl Collection for List<'_>;

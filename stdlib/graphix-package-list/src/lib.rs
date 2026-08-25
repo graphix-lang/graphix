@@ -290,6 +290,25 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayEv {
 
 type ToArray = CachedArgs<ToArrayEv>;
 
+/// The list's elements as an array in REVERSE order, in one walk: the
+/// finish for a front-to-back accumulator that consed as it went.
+#[derive(Debug, Default)]
+struct ToArrayRevEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayRevEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const NAME: &str = "list_to_array_rev";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        let list = from.0[0].as_ref()?;
+        let a = to_array(list)?;
+        Some(Value::Array(ValArray::from_iter_exact(a.iter().rev().cloned())))
+    }
+}
+
+type ToArrayRev = CachedArgs<ToArrayRevEv>;
+
 #[derive(Debug, Default)]
 struct FromArrayEv;
 
@@ -651,6 +670,7 @@ graphix_derive::defpackage! {
         Tail,
         Take,
         ToArray,
+        ToArrayRev,
         Uncons,
         Unzip,
         Zip,

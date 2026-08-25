@@ -14,6 +14,9 @@ val filter_map: fn(m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> Option<('k2, 'v2)> thr
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
 val fold: fn(m: Map<'k, 'v>, init: 'acc, f: fn(acc: 'acc, kv: ('k, 'v)) -> 'acc throws 'e) -> 'acc throws 'e;
 
+/// The union of two maps; on a key present in both, `b`'s value.
+val union: fn(a: Map<'k, 'v>, b: Map<'k, 'v>) -> Map<'k, 'v>;
+
 /// return the length of the map
 val len: fn(m: Map<'k, 'v>) -> i64;
 

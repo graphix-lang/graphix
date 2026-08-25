@@ -78,6 +78,8 @@ pub(crate) fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Any
         | Type::Primitive(_)
         | Type::Abstract { .. }
+        | Type::App(..)
+        | Type::Hole
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::Variant(_, _) => None,
@@ -217,7 +219,15 @@ impl Type {
             return r.clone();
         }
         let r = match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) => None,
+            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Hole => None,
+            Type::App(c, a) => match (c.resolve_tvars_seen(cx), a.resolve_tvars_seen(cx))
+            {
+                (None, None) => None,
+                (c2, a2) => Some(Type::app(
+                    c2.unwrap_or_else(|| (**c).clone()),
+                    a2.unwrap_or_else(|| (**a).clone()),
+                )),
+            },
             Type::Abstract { id, params } => {
                 Self::cow_slice(params, |t| t.resolve_tvars_seen(cx))
                     .map(|params| Type::Abstract { id: *id, params })
@@ -317,7 +327,18 @@ impl Type {
             return r.clone();
         }
         let r = match self {
-            Type::Bottom | Type::Any | Type::Abstract { .. } | Type::Primitive(_) => None,
+            Type::Bottom
+            | Type::Any
+            | Type::Abstract { .. }
+            | Type::Primitive(_)
+            | Type::Hole => None,
+            Type::App(c, a) => match (c.normalize_int(cx), a.normalize_int(cx)) {
+                (None, None) => None,
+                (c2, a2) => Some(Type::app(
+                    c2.unwrap_or_else(|| (**c).clone()),
+                    a2.unwrap_or_else(|| (**a).clone()),
+                )),
+            },
             Type::Ref(tr) => Self::cow_slice(&tr.params, |t| t.normalize_int(cx))
                 .map(|params| Type::Ref(tr.with_params(params))),
             Type::TVar(tv) => {
@@ -393,6 +414,16 @@ impl Type {
                 }
             }
             (Type::Ref(TypeRef { .. }), _) | (_, Type::Ref(TypeRef { .. })) => None,
+            (Type::App(..), _)
+            | (_, Type::App(..))
+            | (Type::Hole, _)
+            | (_, Type::Hole) => {
+                if self == t {
+                    Some(self.clone())
+                } else {
+                    None
+                }
+            }
             (Type::Bottom, t) | (t, Type::Bottom) => Some(t.clone()),
             (Type::Any, _) | (_, Type::Any) => Some(Type::Any),
             (Type::Primitive(s0), Type::Primitive(s1)) => {

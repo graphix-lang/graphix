@@ -215,6 +215,13 @@ impl crate::typ::TVar {
                 // reads a Fn value's payload bits as a scalar (jul18c).
                 // No finite annotation-free type exists; reject.
                 if cell.cycle_refused {
+                    if crate::dbgenv::graphix_dbg_bind() {
+                        eprintln!(
+                            "SETTLE-INFINITE '{}({:x})",
+                            self.name,
+                            self.cell_addr()
+                        );
+                    }
                     bail!("{INFINITE_TYPE_MSG}")
                 }
                 drop(cell);
@@ -520,6 +527,43 @@ impl Type {
             });
         }
         match (self, t) {
+            // A constructor application against a reference decomposes
+            // the reference BY NAME — ahead of the expansion arm below.
+            // Every other pairing waits for its general arm at the end
+            // of this match, so ⊥, `Any` and an open cell keep theirs
+            // (⊥ fits, the cell binds to the application).
+            (Self::App(..), Self::Ref(_)) | (Self::Ref(_), Self::App(..)) => {
+                self.app_contains(flags, env, hist, t)
+            }
+            // ... and a cell bound to an application whose constructor
+            // has bound since is the filled type, seen before the
+            // reference on the other side expands
+            (Self::Ref(_), Self::TVar(_)) if t.app_behind().is_some() => {
+                let filled = t.app_behind().expect("checked");
+                self.contains_int(flags, env, hist, &filled)
+            }
+            (Self::TVar(_), Self::Ref(_)) if self.app_behind().is_some() => {
+                let filled = self.app_behind().expect("checked");
+                filled.contains_int(flags, env, hist, t)
+            }
+            // The hole is equal to itself and to nothing else; a cell
+            // never binds to it.
+            (Self::Hole, Self::Hole) => Ok(true),
+            (Self::Hole, Self::TVar(tv)) => {
+                let bound = tv.read().typ.read().typ.clone();
+                match bound {
+                    Some(b) => Self::Hole.contains_int(flags, env, hist, &b),
+                    None => Ok(false),
+                }
+            }
+            (Self::TVar(tv), Self::Hole) => {
+                let bound = tv.read().typ.read().typ.clone();
+                match bound {
+                    Some(b) => b.contains_int(flags, env, hist, &Self::Hole),
+                    None => Ok(false),
+                }
+            }
+            (Self::Hole, _) | (_, Self::Hole) => Ok(false),
             // cells_agree: name equality no longer implies same
             // meaning — two filled cells can hold different defs
             // (cross-env views of an interface name, REPL
@@ -701,8 +745,13 @@ impl Type {
                     .collect::<Result<AndAc>>()?
                     .0),
             (Self::ByRef(t0), Self::ByRef(t1)) => t0.contains_int(flags, env, hist, t1),
+            // two vars sharing one binding cell are already unified —
+            // without this arm the cycle guard below sees the walk
+            // reach "itself" through the shared cell and poisons both
             (Self::TVar(t0), Self::TVar(t1))
-                if t0.addr() == t1.addr() || t0.read().id == t1.read().id =>
+                if t0.addr() == t1.addr()
+                    || t0.read().id == t1.read().id
+                    || t0.same_cell(t1) =>
             {
                 Ok(true)
             }
@@ -1142,6 +1191,9 @@ impl Type {
                 }
                 Ok(r)
             }
+            (Self::App(..), _) | (_, Self::App(..)) => {
+                self.app_contains(flags, env, hist, t)
+            }
             (Self::Abstract { .. }, _) | (_, Self::Abstract { .. }) => Ok(false),
             (_, Self::Any)
             | (_, Self::TVar(_))
@@ -1197,6 +1249,88 @@ impl Type {
     /// only what it declares), for an inference cell always (the
     /// tvar merge carries the conjunct along); a typedef by its
     /// expansion; anything structural by the impl table.
+    /// A constructor application (`self<'a>`, `'c<'b>`) against another
+    /// type, either way round. A bound constructor is its filled type;
+    /// an open one meets the other side DECOMPOSED on its outermost form
+    /// (`app_split`: a reference by name, never expanded) and the pieces
+    /// unify — binding the constructor variable to the constructor,
+    /// which discharges its bound (`'c: Collection`) through `find_impl`
+    /// on that constructor. A type with no last parameter is not a
+    /// constructor and does not fit (`design/recursive_activations.md`
+    /// §7).
+    fn app_contains(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        t: &Self,
+    ) -> Result<bool> {
+        match (self, t) {
+            (Self::App(c0, a0), Self::App(c1, a1)) => {
+                match (Self::app_filled(c0, a0), Self::app_filled(c1, a1)) {
+                    (Some(f0), Some(f1)) => f0.contains_int(flags, env, hist, &f1),
+                    (Some(f0), None) => f0.contains_int(flags, env, hist, t),
+                    (None, Some(f1)) => self.contains_int(flags, env, hist, &f1),
+                    (None, None) => Ok(c0.contains_int(flags, env, hist, c1)?
+                        && a0.contains_int(flags, env, hist, a1)?),
+                }
+            }
+            (Self::App(c, a), t1) => match Self::app_filled(c, a) {
+                Some(filled) => filled.contains_int(flags, env, hist, t1),
+                None => match Self::app_split_for(c, t1, env)? {
+                    Some((ctor, last)) => {
+                        Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
+                            && a.contains_int(flags, env, hist, &last)?)
+                    }
+                    None => Ok(false),
+                },
+            },
+            (t0, Self::App(c, a)) => match Self::app_filled(c, a) {
+                Some(filled) => t0.contains_int(flags, env, hist, &filled),
+                None => match Self::app_split_for(c, t0, env)? {
+                    Some((ctor, last)) => {
+                        Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
+                            && last.contains_int(flags, env, hist, a)?)
+                    }
+                    None => Ok(false),
+                },
+            },
+            _ => unreachable!("app_contains without an application"),
+        }
+    }
+
+    /// Bind an open constructor variable to a constructor BY NAME. The
+    /// general walk expands a reference before it reaches the tvar
+    /// arms, so a variable meeting `List<'_>` would bind to the list's
+    /// union body and lose the name every later lookup keys on; the
+    /// constructor's trait bounds are still discharged (`find_impl` by
+    /// name). Anything but an open, non-rigid variable takes the
+    /// general walk.
+    fn bind_ctor(
+        c: &Self,
+        ctor: &Self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+    ) -> Result<bool> {
+        if let Self::TVar(cv) = c
+            && cv.read().typ.read().typ.is_none()
+            && !(flags.contains(ContainsFlags::RigidCheck) && cv.is_rigid())
+        {
+            if !cell_constraints_ok(cv, env, hist, ctor)? {
+                return Ok(false);
+            }
+            if flags.contains(ContainsFlags::InitTVars) && !cv.is_rigid() {
+                if crate::dbgenv::graphix_dbg_bind() {
+                    eprintln!("BIND ctor '{}({:x}) := {ctor:?}", cv.name, cv.cell_addr());
+                }
+                cv.read().typ.write().typ = Some(ctor.clone());
+            }
+            return Ok(true);
+        }
+        c.contains_int(flags, env, hist, ctor)
+    }
+
     fn trait_contains(
         tid: crate::typ::TraitId,
         flags: BitFlags<ContainsFlags>,
@@ -1242,6 +1376,11 @@ impl Type {
             }
             Self::Ref(tr) => match env.trait_of_ref(tr) {
                 Some(o) => Ok(o == tid),
+                // a constructor trait's reference is the named
+                // constructor itself: matched by name, never expanded
+                None if env.trait_def(tid).is_some_and(|d| d.hole) => {
+                    Ok(env.find_impl(tid, t)?.is_some())
+                }
                 None => {
                     let e = t.lookup_ref(env)?;
                     Self::trait_contains(tid, flags, env, hist, &e)

@@ -11,6 +11,7 @@ let reverse = |l: List<'a>| -> List<'a> 'list_reverse;
 let take = |n: i64, l: List<'a>| -> List<'a> 'list_take;
 let drop = |n: i64, l: List<'a>| -> List<'a> 'list_drop;
 let to_array = |l: List<'a>| -> Array<'a> 'list_to_array;
+let to_array_rev = |l: List<'a>| -> Array<'a> 'list_to_array_rev;
 let from_array = |a: Array<'a>| -> List<'a> 'list_from_array;
 let concat = |l: List<'a>, @args: List<'a>| -> List<'a> 'list_concat;
 let flatten = |l: List<List<'a>>| -> List<'a> 'list_flatten;
@@ -28,4 +29,15 @@ let filter_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> List<'b>
 let flat_map = |l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e| -> List<'b> throws 'e 'list_flat_map;
 let find = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e 'list_find;
 let find_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'list_find_map;
-let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold
+let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold;
+
+impl Collection for List<'_> {
+    let fold = |l, init, f| 'list_fold;
+    let filter_map = |l, f| 'list_filter_map;
+    let flat_map = |l, f| 'list_flat_map;
+    let map = |l, f| 'list_map;
+    let filter = |l, f| 'list_filter;
+    let find = |l, f| 'list_find;
+    let find_map = |l, f| 'list_find_map;
+    let len = |l| 'list_len
+}

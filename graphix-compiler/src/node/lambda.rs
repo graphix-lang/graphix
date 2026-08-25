@@ -1122,8 +1122,8 @@ impl Lambda {
                                 None => format_compact!("#arg{i}").as_str().into(),
                             };
                             let tv = TVar::empty_named(name);
-                            trait_quantifiers.push((tv.clone(), typ));
-                            Some(Type::TVar(tv))
+                            trait_quantifiers.push((tv.clone(), typ.clone()));
+                            Some(Type::trait_param(&ctx.env, tv, tr))
                         }
                         _ => Some(typ.rewrite_trait_args(&ctx.env)?),
                     }

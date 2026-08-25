@@ -1025,6 +1025,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // `Box<string>` (true of minted and Rust-backed alike).
         match &type_predicate {
             Type::Fn(_) => bail!("can't match on Fn type"),
+            Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
             Type::Bottom
             | Type::Abstract { .. }
             | Type::Any

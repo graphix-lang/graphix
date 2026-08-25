@@ -757,3 +757,132 @@ unbounded descent is a runaway on both engines". Fleet consequence: a
 mutated program whose base case is lost is common, and without the
 rule every one would have been a Timeout-vs-RuntimeErr finding at the
 3s campaign timeout.
+
+## As built — P2 (2026-08-25)
+
+The trait, its hole, and the three blessed implementations, as they
+landed (`c3be365f`'s successor commit). §6/§7 hold; the deviations are
+listed last.
+
+**The hole, in the type system** (`typ/mod.rs`, `typ/contains.rs`,
+`typ/print.rs`, `expr/parser/typexp.rs`): two `Type` forms — `App(ctor,
+arg)` (`self<'a>`, `'c<i64>`; a constructor variable applied to an
+element) and `Hole` (written `'_`, Eric's spelling: it reads as the
+elided parameter, it is explicit in a head, and it round-trips when a
+bound constructor prints). `Type::app` fills when the constructor is
+concrete; `decompose` is the syntactic split on the outermost form
+(Array → element, Map → value, a reference by NAME with its last
+parameter, an abstract likewise); `fill_hole` is its inverse. In
+`contains`: `(App, Ref)` before the reference-expansion arm (a name is
+decomposed, never expanded), the general `(App, _)`/`(_, App)` arms at
+the END of the dispatch so ⊥, `Any` and an open cell keep theirs (⊥
+fits; the cell binds to the application form), `app_contains` fills a
+bound constructor or decomposes the other side, and a cell bound to an
+application whose constructor has since bound is read as the filled
+type (`app_behind`) before a reference on the other side expands. The
+constructor variable binds to the constructor BY NAME (`bind_ctor`) —
+through the general walk it met the reference-expansion arm and bound
+to the list's union body, and every later lookup keys on the name.
+One recovery for receivers that lost their name: a cell bound through
+`contains` holds a typedef's EXPANSION (the documented rule), which
+decomposes to nothing; `app_split_for` unifies each registered head of
+the constructor variable's trait bounds, filled with a fresh element,
+against the receiver, and the head that contains it and thereby binds
+the element is the constructor. `Hole` is a leaf equal only to itself
+and never bound to; the two match sites the compiler could not guide
+(`kernel_abi`/emit) refuse through their catch-alls, so an application
+that ever reached codegen would de-fuse, never miscompile.
+
+**Constructor traits** (`env.rs`, `node/traits.rs`, `node/callsite.rs`):
+`TraitDef.hole` — a trait applies `self` in every signature or in none
+(mixed is an error at `deftrait`). An impl head must have exactly one
+hole, as the last parameter of its outermost form; a reference head
+(`List<'_>`) is owned by the package that defines the name (never
+expanded — its body is a union, an abstract's a box), a builtin
+constructor by the trait's package only. `find_impl` matches
+constructors (`Array<'_>` structurally, references by name).
+`resolve_trait_call` decomposes the resolved self type instead of
+expanding it; a receiver that does not decompose (a union of arrays)
+is refused as "not a type constructor". `trait_contains` on a
+reference under a constructor trait consults `find_impl` by name. The
+sugar `|c: Collection|` is `'c: Collection, c: 'c<'e>`
+(`Type::trait_param`, used by both minting sites — `Lambda::compile`
+had a duplicate of `rewrite_trait_args`' arm). `'_` anywhere but an
+impl head is refused at every annotation site.
+
+**The stdlib**: `trait Collection` in core's `mod.gxi` with the §6
+signatures (each callback `throws 'e`) and defaults for `map`,
+`filter`, `find`, `find_map`, `len`; `impl Collection for Array<'_>`
+and `impl<'k> Collection for Map<'k, '_>` in core (marker bodies —
+`'array_fold` etc. are compiler intrinsics, no package dependency; the
+Map impl folds/filters/maps VALUES over the pair intrinsics and
+`flat_map`s by union), `impl Collection for List<'_>` in the list
+package. `core_array_len`, `core_map_len`, `core_map_union` are core
+builtins (a builtin's name carries its registering package; the array
+and map packages bind their `len` to them, and map exposes `union`).
+`list::to_array_rev` (one walk) for accumulator finishes.
+
+**Found and fixed in the typechecker** (all pre-existing, all pinned by
+`lang/collection.rs` through the trait's defaults):
+
+1. A call site PRE-UNIFIED a declared parameter type with an
+   argument's type before typechecking the argument (`callsite.rs`,
+   both sites) — right for pushing parameter types into an unannotated
+   callback, but it also bound the callback's still-open RETURN cell to
+   the declared return on first contact (`Option<'b2>` ⊇ open cell
+   bound the cell to the whole option, and `'b2` could never equal the
+   generic wrapper's `'b`). `Type::pre_unify_arg` /
+   `FnType::pre_unify_params`: parameter positions only; the return is
+   judged after the body types. A generic `filter_map` wrapper
+   (`|xs, f| array::filter_map(xs, |x| f(x))`) was uncompilable before
+   this.
+2. `FnType::constrain_known` recorded a cell bound to a bare tvar (an
+   alias CHAIN, `TVar::alias`'s fallback) as a fact — a fresh unbound
+   conjunct that every later occurs check read as a cycle ("cannot
+   infer a finite type"). It follows the chain now.
+3. `Select::typecheck0`'s wildcard narrowing (the walk that teaches
+   `select n { 0 => .. }` its scrutinee is `i64`) ran on UNION
+   scrutinees and bound the open member to an arm's type test —
+   `select acc { null as _ => .., found => .. }` over `[e, null]` with
+   `e` open bound `e := null` and reported the second arm dead. A free
+   union member stays free: the walk skips union scrutinees.
+4. The TVar×TVar fast path in `contains_dispatch` compared tvar
+   identity (`addr`/`id`), not CELL identity — two vars already
+   aliased into one cell fell through to the cycle guard, whose walk
+   reaches "itself" through the shared cell, and both were poisoned
+   `cycle_refused` ("cannot infer a finite type" at settle if the cell
+   ends unbound). Latent forever; fix 1 exposed it by deferring the
+   return aliasing, so the rigid re-walk of a call site met the
+   signature's `'a` and a callback's return as a same-cell pair
+   (`array::init(4, |i| f("x"))` with `f`'s return still open — the
+   data_table_dashboard example, caught by `examples_compile`). A
+   same-cell pair is already unified: the fast path now answers true
+   (`TVar::same_cell`). Pinned by
+   `lang/functions.rs::open_return_callee_in_callback`.
+
+**Deviations from §7.** The hole is spelled `'_` rather than omitted.
+The `Ref → last param` decomposition is exact for a value whose type
+is still the name, and for one whose cell holds the expansion goes
+through the recovery above (the alternative — binding cells to names
+instead of expansions — is the right long-term shape, name-compressed
+inference everywhere, and a separate change). Union receivers fail at
+the argument check with a type mismatch rather than the dedicated
+message. Fusion coverage, not correctness: the Array intrinsic reached
+THROUGH the trait dispatcher interprets (the direct `array::map`
+fuses), as does a trait default over an abstract wrapper and a
+constructor-variable parameter's instance — ASPIRE annotations in the
+fixtures, P3's list.
+
+**Still open, deliberately.** A named type variable in a lambda BODY
+annotation (`let init: Option<'a> = null`) is a fresh cell, not the
+enclosing signature's `'a` — the typed-seed defaults work because the
+fresh cell unifies later, but `w3`-shaped code (annotating a nested
+callback's parameter with the outer `'a`) does not; Rust's rule (a
+body name means the definition's variable) is the candidate, and it
+needs the instance-time name→type map. Eric's call.
+
+Pins: `lang/collection.rs` (array/list/map through the trait, the
+generic parameter, the newtype with defaults, the user cons list with
+annotated module-level recursions, `find_map` default, and five
+rejections: union receiver, non-constructor head, filled head, `'_`
+outside a head, mixed `self`).

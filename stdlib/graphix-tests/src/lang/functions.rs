@@ -1917,3 +1917,27 @@ async fn labeled_only_callback_is_compile_error() {
         r.map(|(v, _)| v)
     );
 }
+
+// A HOF callback calling a lambda whose return cell is still open (a
+// trailing-`;` statement block) settled "cannot infer a finite type":
+// params-only pre-unification (P2) defers the return aliasing, so the
+// rigid re-walk met `'a` and the callback's return as two tvars ALREADY
+// sharing one cell — and the TVar×TVar fast path in `contains_dispatch`
+// compared tvar identity, not cell identity, so the cycle guard saw the
+// walk reach "itself" through the shared cell and poisoned both. A
+// same-cell pair is already unified; it now answers true. Found by
+// examples_compile (data_table_dashboard), 2026-08-25.
+const OPEN_RETURN_CALLEE_IN_CALLBACK: &str = r#"
+{
+  let f = |a: string| { print(a); };
+  let r = array::init(4, |i| f("x-[i]"));
+  i64:42
+}
+"#;
+
+run!(open_return_callee_in_callback, OPEN_RETURN_CALLEE_IN_CALLBACK, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::I64(42))
+));

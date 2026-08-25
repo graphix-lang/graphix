@@ -147,7 +147,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         } else {
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let typ = match typ {
-                Some(typ) => typ.scope_refs(&scope.lexical),
+                Some(typ) => typ.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
                 None => {
                     let typ = node.typ().clone();
                     let ptyp = pattern.infer_type_predicate(&ctx.env, &scope.lexical)?;

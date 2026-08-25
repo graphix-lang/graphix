@@ -61,6 +61,8 @@ fn would_cycle_seen_inner(
         // different (key, value) pairing and skip the value — its
         // children dedup individually instead.
         Type::Map { .. }
+        | Type::App(..)
+        | Type::Hole
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
@@ -440,12 +442,29 @@ impl TVar {
             let other_addr = Arc::as_ptr(&other.read().typ).addr();
             if self_addr != other_addr {
                 if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+                    if crate::dbgenv::graphix_dbg_bind() {
+                        eprintln!(
+                            "ALIAS-REFUSE-1 {}({:x}) -> {}({:x}): other reaches self; other bound={:?} cons={:?}",
+                            self.name,
+                            self_addr,
+                            other.name,
+                            other_addr,
+                            other.read().typ.read().typ,
+                            other.read().typ.read().constraints
+                        );
+                    }
                     self.mark_cycle_refused();
                     other.mark_cycle_refused();
                     return;
                 }
                 let scons = self.read().typ.read().constraints.clone();
                 if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
+                    if crate::dbgenv::graphix_dbg_bind() {
+                        eprintln!(
+                            "ALIAS-REFUSE-2 {}({:x}) -> {}({:x}): self cons reach other; cons={scons:?}",
+                            self.name, self_addr, other.name, other_addr
+                        );
+                    }
                     self.mark_cycle_refused();
                     other.mark_cycle_refused();
                     return;

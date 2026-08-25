@@ -31,4 +31,28 @@ let dbg = |#dest: [`Stdout, `Stderr, Log] = `Stderr, v: 'a| -> 'a 'core_dbg;
 let log = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_log;
 let print = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_print;
 let println = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_println;
-let throttle = |#rate: duration = duration:0.5s, v: 'a| -> 'a 'core_throttle
+let throttle = |#rate: duration = duration:0.5s, v: 'a| -> 'a 'core_throttle;
+
+let map_union = |a: Map<'k, 'v>, b: Map<'k, 'v>| -> Map<'k, 'v> 'core_map_union;
+let map_pairs = |m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> ('k2, 'v2) throws 'e| -> Map<'k2, 'v2> throws 'e 'map_map;
+let filter_map_pairs = |m: Map<'k, 'v>, f: fn(kv: ('k, 'v)) -> Option<('k2, 'v2)> throws 'e| -> Map<'k2, 'v2> throws 'e 'map_filter_map;
+let fold_pairs = |m: Map<'k, 'v>, init: 'b, f: fn(acc: 'b, kv: ('k, 'v)) -> 'b throws 'e| -> 'b throws 'e 'map_fold;
+
+impl Collection for Array<'_> {
+    let fold = |a, init, f| 'array_fold;
+    let filter_map = |a, f| 'array_filter_map;
+    let flat_map = |a, f| 'array_flat_map;
+    let map = |a, f| 'array_map;
+    let filter = |a, f| 'array_filter;
+    let find = |a, f| 'array_find;
+    let find_map = |a, f| 'array_find_map;
+    let len = |a| 'core_array_len
+};
+
+impl<'k> Collection for Map<'k, '_> {
+    let fold = |m, init, f| fold_pairs(m, init, |acc, (_, v)| f(acc, v));
+    let filter_map = |m, f| filter_map_pairs(m, |(k, v)| select f(v) { null as _ => null, r => (k, r) });
+    let flat_map = |m, f| fold_pairs(m, {}, |acc, (_, v)| map_union(acc, f(v)));
+    let map = |m, f| map_pairs(m, |(k, v)| (k, f(v)));
+    let len = |m| 'core_map_len
+}

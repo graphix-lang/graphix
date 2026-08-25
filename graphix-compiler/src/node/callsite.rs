@@ -1174,10 +1174,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Some(a) => a.typ.resolve_tvars(),
             None => bail!("{}::{} called without its self argument", def.name, m.name),
         };
-        while let Type::Ref(tr) = &self_t
-            && ctx.env.trait_of_ref(tr).is_none()
-        {
-            self_t = self_t.lookup_ref(&ctx.env)?;
+        if !def.hole {
+            while let Type::Ref(tr) = &self_t
+                && ctx.env.trait_of_ref(tr).is_none()
+            {
+                self_t = self_t.lookup_ref(&ctx.env)?;
+            }
         }
         if self_t.has_unbound() {
             if ctx.def_gate_depth > 0 {
@@ -1195,9 +1197,29 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(core) = crate::node::coretraits::CoreTrait::of_id(def.id) {
             return self.lower_core_call(ctx, core);
         }
-        if let Type::Set(members) = &self_t {
+        if let Type::Set(members) = &self_t
+            && !def.hole
+        {
             let members = members.clone();
             return self.lower_trait_union(ctx, &def, tm.index, &members);
+        }
+        // a constructor trait selects by the receiver's outermost form:
+        // the constructor, never the element (a reference by name)
+        if def.hole {
+            self_t = match Type::app_split(&self_t, &ctx.env)? {
+                Some((ctor, _)) => ctor,
+                None => {
+                    return Err(anyhow!(
+                        "cannot resolve {}::{}: {} is not a type constructor (it has no \
+                         last type parameter for {} to abstract over)",
+                        def.name,
+                        m.name,
+                        self_t,
+                        def.name
+                    )
+                    .context(ErrorContext((*self.spec).clone())));
+                }
+            };
         }
         let Some(im) = ctx.env.find_impl(def.id, &self_t)? else {
             return Err(anyhow!("no implementation of {} for {}", def.name, self_t)
@@ -2090,7 +2112,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     if matches!(n.view(), NodeView::Ref(_)) {
                         wrap!(n, n.typecheck0(ctx))?;
                     }
-                    farg.typ.contains(&ctx.env, n.typ())?;
+                    Type::pre_unify_arg(&ctx.env, &farg.typ, n.typ())?;
                     wrap!(n, n.typecheck0(ctx))?;
                     wrap!(n, farg.typ.check_contains(&ctx.env, &n.typ()))?;
                 }
@@ -2107,7 +2129,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                             if matches!(n.view(), NodeView::Ref(_)) {
                                 wrap!(n, n.typecheck0(ctx))?;
                             }
-                            typ.contains(&ctx.env, n.typ())?;
+                            Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
                             wrap!(n, n.typecheck0(ctx))?;
                             wrap!(n, typ.check_contains(&ctx.env, &n.typ()))?;
                         }

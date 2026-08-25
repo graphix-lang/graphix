@@ -1,8 +1,9 @@
-let len = |m: Map<'a, 'b>| -> i64 'map_len;
+let len = |m: Map<'a, 'b>| -> i64 'core_map_len;
 let get = |m: Map<'a, 'b>, k: 'a| -> Option<'b> 'map_get;
 let get_or = |m: Map<'a, 'b>, k: 'a, default: 'b| -> 'b 'map_get_or;
 let insert = |m: Map<'a, 'b>, k: 'a, v: 'b| -> Map<'a, 'b> 'map_insert;
 let remove = |m: Map<'a, 'b>, k: 'a| -> Map<'a, 'b> 'map_remove;
+let union = |a: Map<'a, 'b>, b: Map<'a, 'b>| -> Map<'a, 'b> 'core_map_union;
 let iter = |m: Map<'a, 'b>| -> ('a, 'b) 'map_iter;
 let iterq = |#clock: Any, m: Map<'a, 'b>| -> ('a, 'b) 'map_iterq;
 

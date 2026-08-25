@@ -256,9 +256,82 @@ structural form and logs a warning.
 Values compared where no Graphix code can run — on the wire, in the
 REPL's echo of a bare expression — compare and print structurally.
 
+## Constructor Traits: `Collection`
+
+A trait's receiver can be a type *constructor* rather than a type.
+Writing `self<'a>` in a method signature — `self` applied to an
+element type — makes the trait a constructor trait: a receiver's type
+is decomposed on its outermost form, its last type parameter becomes
+`'a`, and what remains (`Array<'_>`, `Map<string, '_>`, `List<'_>`, a
+program's own `Tree<'_>`) selects the implementation. Core's
+`Collection` is the one in the standard library:
+
+```graphix
+trait Collection {
+    val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
+    val filter_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> self<'b> throws 'e;
+    val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
+    val map: fn(self<'a>, f: fn(x: 'a) -> 'b throws 'e) -> self<'b> throws 'e
+        = |c, f| filter_map(c, |x| f(x));
+    // filter, find, find_map and len are defaults too
+};
+```
+
+`fold`, `filter_map` and `flat_map` are required; `map`, `filter`,
+`find`, `find_map` and `len` derive from them, and an implementation
+overrides any it can do better. Core implements it for `Array` and
+`Map` (a map is a collection of its *values*: `map(m, f)` keeps the
+keys), the list package for `List`, all three through their
+intrinsics — so `use Collection::*` makes `map(c, f)` mean the same
+thing whatever `c` is:
+
+```graphix
+use Collection::*;
+map([1, 2, 3], |x| x * 2);                           // [2, 4, 6]
+fold(list::from_array([1, 2, 3]), 0, |a, x| a + x);  // 6
+len(filter({"a" => 1, "b" => 20}, |v| v > 5))        // 1
+```
+
+An implementation's head names the constructor with the hole `'_` as
+its last parameter:
+
+```graphix
+type Bag<'a> = Abstract<Array<'a>>;
+impl Collection for Bag<'_> {
+    let fold = |b, init, f| array::fold(b.0, init, f);
+    let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+    let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+};
+use Collection::*;
+len(filter(Bag([1, 2, 3, 4]), |x| x > 2))            // 2, through the defaults
+```
+
+`'_` is legal only there. A program's own linear or tree structure
+implements the three methods as recursions — an activation per
+element, see [Recursion](../functions/recursion.md) — and gets the
+rest.
+
+A parameter typed by a constructor trait is a constructor variable
+applied to a fresh element, and each call site resolves it for its
+own receiver:
+
+```graphix
+let total = |c: Collection| fold(c, 0, |a, x| a + x);
+total([1, 2]) + total(list::from_array([3, 4]))      // 10
+```
+
+The receiver must have a last type parameter: a union of collections,
+a struct or a bare primitive is not a constructor, and an impl head
+whose last parameter is filled (`impl Collection for Bag<i64>`) is
+refused. A trait spells its receiver one way throughout — `self<'a>`
+in every signature, or `self` in every signature.
+
 ## Current limits
 
 - Traits take no type parameters and declare no associated types.
+- A constructor trait decomposes its receiver on the outermost form
+  only, and a union of collections has no implementation (dispatch
+  over a union receiver is for plain traits).
 - `Hash` is not a trait: map keys hash structurally.
 - A `==` or `<` whose implementation sits inside a composite (an
   `Array<Key>`) runs on the node-walk; one on the whole type is a

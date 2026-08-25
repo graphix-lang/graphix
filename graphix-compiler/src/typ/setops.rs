@@ -163,6 +163,16 @@ impl Type {
             }
             (Type::Bottom, t) | (t, Type::Bottom) => Ok(t.clone()),
             (Type::Any, _) | (_, Type::Any) => Ok(Type::Any),
+            (Type::App(..), _)
+            | (_, Type::App(..))
+            | (Type::Hole, _)
+            | (_, Type::Hole) => {
+                if self == t {
+                    Ok(self.clone())
+                } else {
+                    Ok(Type::Set(Arc::from_iter([self.clone(), t.clone()])))
+                }
+            }
             (Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty() => {
                 Ok(t.clone())
             }
@@ -341,6 +351,14 @@ impl Type {
                     }
                 }
             }
+            (Type::App(..), _)
+            | (_, Type::App(..))
+            | (Type::Hole, _)
+            | (_, Type::Hole) => Ok(if self == t {
+                Type::Primitive(BitFlags::empty())
+            } else {
+                self.clone()
+            }),
             (Type::Set(s0), Type::Set(s1)) => {
                 let mut s: LPooled<Vec<Type>> = LPooled::take();
                 for i in 0..s0.len() {

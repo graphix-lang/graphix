@@ -559,8 +559,26 @@ pub enum Type {
     Tuple(Arc<[Type]>),
     Struct(Arc<[(ArcStr, Type)]>),
     Variant(ArcStr, Arc<[Type]>),
-    Map { key: Arc<Type>, value: Arc<Type> },
-    Abstract { id: AbstractId, params: Arc<[Type]> },
+    Map {
+        key: Arc<Type>,
+        value: Arc<Type>,
+    },
+    Abstract {
+        id: AbstractId,
+        params: Arc<[Type]>,
+    },
+    /// A type constructor applied to one argument — `self<'a>` in a
+    /// trait signature, `'c<i64>` in generic code. The constructor is a
+    /// type variable that binds to a type with a [`Type::Hole`] in its
+    /// last parameter; once it is bound the application normalizes to
+    /// the filled type ([`Type::app`]). `design/recursive_activations.md`
+    /// §7.
+    App(Arc<Type>, Arc<Type>),
+    /// The hole in a type constructor, written `'_`: the last parameter
+    /// of a constructor trait's impl head (`impl Collection for
+    /// Array<'_>`), and what a constructor variable binds to. Legal
+    /// nowhere else.
+    Hole,
 }
 
 /// Structural equality (the derived relation), with content-Arc pointer
@@ -612,6 +630,13 @@ impl PartialEq for Type {
                 other,
                 Type::Abstract { id: i1, params: p1 } if i0 == i1 && slice_eq(p0, p1)
             ),
+            Type::App(c0, a0) => matches!(
+                other,
+                Type::App(c1, a1)
+                    if (Arc::ptr_eq(c0, c1) || c0 == c1)
+                        && (Arc::ptr_eq(a0, a1) || a0 == a1)
+            ),
+            Type::Hole => matches!(other, Type::Hole),
         }
     }
 }
@@ -655,8 +680,14 @@ impl Type {
         f: &mut impl FnMut(&Type) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) | Type::TVar(_) => {
-                ControlFlow::Continue(())
+            Type::Bottom
+            | Type::Any
+            | Type::Primitive(_)
+            | Type::TVar(_)
+            | Type::Hole => ControlFlow::Continue(()),
+            Type::App(c, a) => {
+                f(c)?;
+                f(a)
             }
             Type::Ref(tr) => {
                 for t in tr.params.iter() {
@@ -714,7 +745,18 @@ impl Type {
         f: &mut impl FnMut(&Type) -> Option<Type>,
     ) -> Option<Type> {
         match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) | Type::TVar(_) => None,
+            Type::Bottom
+            | Type::Any
+            | Type::Primitive(_)
+            | Type::TVar(_)
+            | Type::Hole => None,
+            Type::App(c, a) => match (f(c), f(a)) {
+                (None, None) => None,
+                (c2, a2) => Some(Type::app(
+                    c2.unwrap_or_else(|| (**c).clone()),
+                    a2.unwrap_or_else(|| (**a).clone()),
+                )),
+            },
             Type::Ref(tr) => Type::cow_slice(&tr.params, |t| f(t))
                 .map(|params| Type::Ref(tr.with_params(params))),
             Type::Abstract { id, params } => Type::cow_slice(params, |t| f(t))
@@ -746,6 +788,194 @@ impl Type {
         Type::TVar(TVar::default())
     }
 
+    /// Apply a constructor to an argument: a concrete constructor (a
+    /// type with a hole) is filled, a variable stays an application
+    /// until it binds.
+    pub fn app(ctor: Type, arg: Type) -> Type {
+        match &ctor {
+            Type::TVar(_) => Type::App(Arc::new(ctor), Arc::new(arg)),
+            c => c
+                .fill_hole(&arg)
+                .unwrap_or_else(|| Type::App(Arc::new(ctor), Arc::new(arg))),
+        }
+    }
+
+    /// A bound constructor's application, filled: the constructor
+    /// dereferenced through its cell and its hole replaced by `arg`.
+    /// `None` while the constructor is an open variable.
+    pub(crate) fn app_filled(ctor: &Type, arg: &Type) -> Option<Type> {
+        ctor.with_deref(|c| match c {
+            None | Some(Type::TVar(_)) => None,
+            Some(c) => c.fill_hole(arg),
+        })
+    }
+
+    /// The filled application behind a type variable: a cell bound to
+    /// `App(c, a)` whose constructor has since bound, which every walk
+    /// should see as the filled type.
+    pub(crate) fn app_behind(&self) -> Option<Type> {
+        match self {
+            Type::TVar(_) => self.with_deref(|t| match t {
+                Some(Type::App(c, a)) => Self::app_filled(c, a),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The other side of a constructor application: dereferenced, then
+    /// [`Self::decompose`]d — a reference with parameters by name, a
+    /// bare alias through its expansion.
+    pub(crate) fn app_split(t: &Type, env: &Env) -> Result<Option<(Type, Type)>> {
+        let Some(t) = t.with_deref(|t| t.cloned()) else { return Ok(None) };
+        if let Some(parts) = t.decompose() {
+            return Ok(Some(parts));
+        }
+        match &t {
+            Type::Ref(tr) if tr.params.is_empty() => Ok(t.lookup_ref(env)?.decompose()),
+            _ => Ok(None),
+        }
+    }
+
+    /// [`Self::app_split`] for a receiver that lost its name: a cell
+    /// bound through `contains` holds a typedef's EXPANSION (a list's
+    /// union), which decomposes to nothing. The constructor variable's
+    /// trait bounds name the candidates — each registered head of such
+    /// a trait, filled with a fresh element, is unified against the
+    /// receiver on a fresh instantiation, and the one that contains it
+    /// and thereby determines the element is the constructor.
+    pub(crate) fn app_split_for(
+        ctor: &Type,
+        t: &Type,
+        env: &Env,
+    ) -> Result<Option<(Type, Type)>> {
+        if let Some(parts) = Self::app_split(t, env)? {
+            return Ok(Some(parts));
+        }
+        let Some(t) = t.with_deref(|t| t.cloned()) else { return Ok(None) };
+        let Type::TVar(cv) = ctor else { return Ok(None) };
+        let cons = cv.read().typ.read().constraints.clone();
+        for c in cons.iter() {
+            let Type::Ref(tr) = c else { continue };
+            let Some(tid) = env.trait_of_ref(tr) else { continue };
+            let Some(heads) = env.impls.get(&tid) else { continue };
+            for im in heads.iter() {
+                if !matches!(im.target, Type::Ref(_)) {
+                    continue;
+                }
+                let head = im.target.reset_tvars();
+                let elem = Type::empty_tvar();
+                let Some(filled) = head.fill_hole(&elem) else { continue };
+                // the head contains the receiver AND that determined the
+                // element: a proper subtype (`[`Nil]` under `List<'_>`)
+                // leaves the element open and is not this constructor
+                if filled.contains(env, &t)? && elem.with_deref(|e| e.is_some()) {
+                    let r = (head.resolve_tvars(), elem.resolve_tvars());
+                    if crate::dbgenv::graphix_dbg_bind() {
+                        eprintln!("APP-SPLIT recovered ctor={:?} elem={:?}", r.0, r.1);
+                    }
+                    return Ok(Some(r));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// How a trait signature spells its receiver: `applied` if `self`
+    /// occurs as a constructor (`self<'a>`), `bare` if it occurs as a
+    /// type. A trait uses one form throughout.
+    pub(crate) fn self_shape(&self, applied: &mut bool, bare: &mut bool) {
+        match self {
+            Type::App(c, a) if matches!(&**c, Type::TVar(tv) if &*tv.name == "self") => {
+                *applied = true;
+                a.self_shape(applied, bare)
+            }
+            Type::TVar(tv) if &*tv.name == "self" => *bare = true,
+            t => t.for_each_child(&mut |c| c.self_shape(applied, bare)),
+        }
+    }
+
+    /// The number of holes in this type.
+    pub(crate) fn holes(&self) -> usize {
+        match self {
+            Type::Hole => 1,
+            t => {
+                let mut n = 0;
+                t.for_each_child(&mut |c| n += c.holes());
+                n
+            }
+        }
+    }
+
+    /// A call site's pre-unification of a declared parameter type with
+    /// an argument's type, run BEFORE the argument typechecks so an
+    /// unannotated callback's parameters take the declared types. A
+    /// function-typed argument unifies its parameter positions only
+    /// ([`FnType::pre_unify_params`]); anything else unifies whole.
+    pub(crate) fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
+        let d = declared.with_deref(|t| t.cloned());
+        let a = actual.with_deref(|t| t.cloned());
+        match (d, a) {
+            (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, &a),
+            _ => declared.contains(env, actual).map(|_| ()),
+        }
+    }
+
+    /// The type of a parameter whose written type is the trait `tr`:
+    /// the fresh bounded quantifier `tv`, applied to a fresh element
+    /// when the trait is a constructor trait (`|c: Collection|` ≡
+    /// `'c: Collection, c: 'c<'e>`).
+    pub(crate) fn trait_param(env: &Env, tv: TVar, tr: &TypeRef) -> Type {
+        let hole = env
+            .trait_of_ref(tr)
+            .and_then(|tid| env.trait_def(tid))
+            .is_some_and(|d| d.hole);
+        if hole {
+            Type::App(Arc::new(Type::TVar(tv)), Arc::new(Type::empty_tvar()))
+        } else {
+            Type::TVar(tv)
+        }
+    }
+
+    /// This type with its hole replaced by `arg`; `None` if it has no
+    /// hole (it is not a constructor).
+    pub fn fill_hole(&self, arg: &Type) -> Option<Type> {
+        match self {
+            Type::Hole => Some(arg.clone()),
+            t => t.cow_children(&mut |c| c.fill_hole(arg)),
+        }
+    }
+
+    /// The constructor form of this type — its last parameter replaced
+    /// by a hole — with that parameter; `None` if the outermost form
+    /// has no parameters (it is not a constructor). Decomposition is
+    /// syntactic, on the outermost form only: a reference is taken by
+    /// name, never expanded.
+    pub fn decompose(&self) -> Option<(Type, Type)> {
+        match self {
+            Type::Array(t) => Some((Type::Array(Arc::new(Type::Hole)), (**t).clone())),
+            Type::Map { key, value } => Some((
+                Type::Map { key: key.clone(), value: Arc::new(Type::Hole) },
+                (**value).clone(),
+            )),
+            Type::Ref(tr) if !tr.params.is_empty() => {
+                let n = tr.params.len() - 1;
+                let params = Arc::from_iter(
+                    tr.params.iter().take(n).cloned().chain(iter::once(Type::Hole)),
+                );
+                Some((Type::Ref(tr.with_params(params)), tr.params[n].clone()))
+            }
+            Type::Abstract { id, params } if !params.is_empty() => {
+                let n = params.len() - 1;
+                let ps = Arc::from_iter(
+                    params.iter().take(n).cloned().chain(iter::once(Type::Hole)),
+                );
+                Some((Type::Abstract { id: *id, params: ps }, params[n].clone()))
+            }
+            _ => None,
+        }
+    }
+
     fn iter_prims(&self) -> impl Iterator<Item = Self> {
         match self {
             Self::Primitive(p) => {
@@ -757,6 +987,8 @@ impl Type {
 
     pub fn is_defined(&self) -> bool {
         match self {
+            Self::App(c, a) => c.is_defined() && a.is_defined(),
+            Self::Hole => true,
             Self::Bottom
             | Self::Any
             | Self::Primitive(_)
@@ -828,8 +1060,14 @@ impl Type {
                 return;
             }
             match t {
-                Type::Bottom | Type::Any | Type::Primitive(_) | Type::Abstract { .. } => {
-                    ()
+                Type::Bottom
+                | Type::Any
+                | Type::Primitive(_)
+                | Type::Abstract { .. }
+                | Type::Hole => (),
+                Type::App(c, a) => {
+                    go(c, env, seen);
+                    go(a, env, seen)
                 }
                 Type::Ref(tr) => {
                     for p in tr.params.iter() {
@@ -1032,6 +1270,7 @@ impl Type {
         hist: &mut RefHist<AHashSet<Option<usize>>>,
     ) -> Option<Type> {
         match self {
+            Type::App(..) | Type::Hole => None,
             Type::Error(t) => match t.strip_error_int(env, hist) {
                 Some(t) => Some(t),
                 None => Some((**t).clone()),
@@ -1089,6 +1328,7 @@ impl Type {
     pub fn is_bot(&self) -> bool {
         match self {
             Type::Bottom => true,
+            Type::App(..) | Type::Hole => false,
             Type::Any
             | Type::Abstract { .. }
             | Type::TVar(_)
@@ -1123,6 +1363,7 @@ impl Type {
 
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {
         match self {
+            Self::App(..) | Self::Hole => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any
@@ -1153,6 +1394,12 @@ impl Type {
     /// has a trait as its type. Returns the rewritten type; the same
     /// type when nothing changed.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
+        if self.holes() > 0 {
+            bail!(
+                "'_ is the hole of a constructor trait's implementation target \
+                 (`impl Collection for Array<'_>`); it is not a type"
+            )
+        }
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
                 "trait {} used as a type: a trait is a bound — write it as a \
@@ -1179,7 +1426,7 @@ impl Type {
                                 quantifiers.push(name);
                             }
                             changed = true;
-                            Type::TVar(tv)
+                            Type::trait_param(env, tv, tr)
                         }
                         t => {
                             let r = t.rewrite_trait_args(env)?;

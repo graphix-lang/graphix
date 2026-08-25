@@ -40,6 +40,50 @@ trait Display {
     val fmt: fn(self) -> string
 };
 
+/// A collection: a type constructor whose values can be traversed and
+/// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
+/// program implements it for. `self<'a>` is the constructor applied to
+/// the element type. `fold`, `filter_map` and `flat_map` are required;
+/// the rest derive from them, and an implementation overrides what it
+/// can do better (the built-in collections override all of them).
+/// `use Collection::*` makes the methods callable bare, and `map(c, f)`
+/// then does the same thing whatever `c` is. A parameter typed
+/// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
+trait Collection {
+    /// fold the elements, front to back
+    val fold: fn(self<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
+    /// the elements `f` maps to a value, in order
+    val filter_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> self<'b> throws 'e;
+    /// the concatenation of `f` over the elements
+    val flat_map: fn(self<'a>, f: fn(x: 'a) -> self<'b> throws 'e) -> self<'b> throws 'e;
+    /// `f` over every element
+    val map: fn(self<'a>, f: fn(x: 'a) -> 'b throws 'e) -> self<'b> throws 'e
+        = |c, f| filter_map(c, |x| f(x));
+    /// the elements `f` accepts
+    val filter: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> self<'a> throws 'e
+        = |c, f| filter_map(c, |x| select f(x) { true => x, false => null });
+    /// the first element `f` accepts
+    val find: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e
+        = |c, f| {
+            let init: Option<'a> = null;
+            fold(c, init, |acc, x| select acc {
+                null as _ => select f(x) { true => x, false => null },
+                found => found
+            })
+        };
+    /// the first value `f` maps an element to
+    val find_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> Option<'b> throws 'e
+        = |c, f| {
+            let init: Option<'b> = null;
+            fold(c, init, |acc, x| select acc { null as _ => f(x), found => found })
+        };
+    /// the number of elements
+    val len: fn(self<'a>) -> i64 = |c| fold(c, 0, |n, _| n + 1)
+};
+
+impl Collection for Array<'_>;
+impl<'k> Collection for Map<'k, '_>;
+
 type Pos = {
     line: i32,
     column: i32

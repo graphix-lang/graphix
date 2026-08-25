@@ -17,6 +17,11 @@ impl Type {
         match self {
             Self::Abstract { id, params } if params.is_empty() => write!(f, "abstract"),
             Self::Abstract { id, params: _ } => write!(f, "<abstract#{}>", id.0),
+            Self::App(c, a) => match Type::app_filled(c, a) {
+                Some(filled) => write!(f, "{filled}"),
+                None => write!(f, "{c}<{a}>"),
+            },
+            Self::Hole => write!(f, "'_"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(TypeRef { scope: _, name, params, .. }) => {
@@ -136,7 +141,7 @@ impl Type {
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         match self {
-            Self::Abstract { .. } => writeln!(buf, "{self}"),
+            Self::Abstract { .. } | Self::App(..) | Self::Hole => writeln!(buf, "{self}"),
             Self::Bottom => writeln!(buf, "_"),
             Self::Any => writeln!(buf, "Any"),
             Self::Ref(TypeRef { scope: _, name, params, .. }) => {

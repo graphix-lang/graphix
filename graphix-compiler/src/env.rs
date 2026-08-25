@@ -165,6 +165,13 @@ pub struct TraitDef {
     /// method dispatchers are bound (`Trait::method`, `use Trait::*`).
     pub path: ModPath,
     pub methods: Arc<[TraitMethodDef]>,
+    /// A CONSTRUCTOR trait: every signature applies `self` (`self<'a>`),
+    /// so the receiver's type is a type constructor — an impl head
+    /// names one with its last parameter as the hole (`Array<'_>`), a
+    /// call selects by the receiver's outermost form, and `'c:
+    /// Collection` makes `'c` a constructor variable
+    /// (`design/recursive_activations.md` §7).
+    pub hole: bool,
     pub doc: Option<ArcStr>,
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
@@ -879,7 +886,16 @@ impl Env {
         }
         self.modules.insert_cow(path.clone());
         let mut defs: LPooled<Vec<TraitMethodDef>> = LPooled::take();
+        let (mut applied, mut bare) = (false, false);
         for (mname, typ, self_index, has_default) in methods {
+            Type::Fn(typ.clone()).self_shape(&mut applied, &mut bare);
+            if applied && bare {
+                bail!(
+                    "trait {name}: `self` is a type constructor (`self<'a>`) in one \
+                     signature and a type in another; a trait spells its receiver one \
+                     way throughout"
+                )
+            }
             let bind = self.bind_variable(
                 &path,
                 &mname,
@@ -907,6 +923,7 @@ impl Env {
             scope: scope.clone(),
             path,
             methods: Arc::from_iter(defs.drain(..)),
+            hole: applied,
             doc,
             pos,
             ori,
@@ -1070,9 +1087,16 @@ impl Env {
             } else {
                 im.target.reset_tvars()
             };
-            if head.contains(self, t)? && t.contains(self, &head)? {
+            let (hc, tc) = (head.contains(self, t)?, t.contains(self, &head)?);
+            if crate::dbgenv::graphix_dbg_bind() {
+                eprintln!("FIND-IMPL head={head:?} t={t:?} head>=t={hc} t>=head={tc}");
+            }
+            if hc && tc {
                 return Ok(Some(im.clone()));
             }
+        }
+        if crate::dbgenv::graphix_dbg_bind() {
+            eprintln!("FIND-IMPL none for {t:?}");
         }
         Ok(None)
     }

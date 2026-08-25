@@ -664,7 +664,9 @@ impl FnType {
             // clone the binding OUT of the cell guards before acting —
             // add_cell_constraint write-locks the same cell (lock
             // discipline, see CLAUDE.md emit contracts)
-            let bound = tv.read().typ.read().typ.clone();
+            // through an alias CHAIN (a cell bound to another tvar is
+            // not a fact about the type, its target may be)
+            let bound = Type::TVar(tv.clone()).with_deref(|t| t.cloned());
             if closed_only {
                 match &bound {
                     Some(t)
@@ -964,6 +966,32 @@ impl FnType {
     pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {
         if !self.contains(env, other)? {
             bail!("Fn type mismatch {self} does not contain {other}")
+        }
+        Ok(())
+    }
+
+    /// The PARAMETER positions of [`Self::contains`] alone — the
+    /// contravariant unification that pushes a declared signature's
+    /// parameter types into an argument function before its body is
+    /// typechecked. Its return and throws are left alone: they are what
+    /// the body determines, and unifying them here bound an open
+    /// return cell to the declared type on first contact (a
+    /// `filter_map` callback's return met `Option<'b>` before `f(x)`
+    /// had typed, and became the whole option).
+    pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
+        let flags = ContainsFlags::AliasTVars | ContainsFlags::InitTVars;
+        let mut hist = RefHist::new(LPooled::take());
+        let sul = self.first_positional();
+        let tul = t.first_positional();
+        for a in &self.args[..sul] {
+            if let FnArgKind::Labeled { name: l, .. } = &a.kind
+                && let Some(o) = t.args.iter().find(|a| a.label() == Some(l))
+            {
+                o.typ.contains_int(flags, env, &mut hist, &a.typ)?;
+            }
+        }
+        for (t, s) in t.args[tul..].iter().zip(self.args[sul..].iter()) {
+            t.typ.contains_int(flags, env, &mut hist, &s.typ)?;
         }
         Ok(())
     }

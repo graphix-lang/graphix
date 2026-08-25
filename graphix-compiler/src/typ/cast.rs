@@ -49,6 +49,9 @@ impl Type {
         hist: &mut RefHist<AHashSet<Option<usize>>>,
     ) -> Result<()> {
         match self {
+            Type::App(..) | Type::Hole => {
+                bail!("can't cast a value to a type constructor")
+            }
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
@@ -105,6 +108,7 @@ impl Type {
             return Ok(v);
         }
         match self {
+            Type::App(..) | Type::Hole => bail!("can't cast {v} to a type constructor"),
             Type::Bottom => bail!("can't cast {v} to Bottom"),
             Type::Fn(_) => bail!("can't cast {v} to a function"),
             Type::Abstract { id: _, params: _ } => {
@@ -320,6 +324,7 @@ impl Type {
             // Latent until e86d18c1 made an inferred pattern predicate
             // load-bearing at runtime — before that nothing called
             // `is_a` on these patterns at all.
+            Type::App(..) | Type::Hole => false,
             Type::Ref(TypeRef { scope, name, .. }) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {

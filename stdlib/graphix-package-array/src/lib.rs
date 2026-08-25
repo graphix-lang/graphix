@@ -164,29 +164,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
 type Window = CachedArgs<WindowEv>;
 
 #[derive(Debug, Default)]
-struct LenEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "array_len";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::Array(a)) => Some(Value::I64(a.len() as i64)),
-            Some(_) | None => None,
-        }
-    }
-
-    // `array::len(arr)` lowers to a pure array-length read (a
-    // length read off the array kernel input) — no DynCall needed. Only
-    // fuses when the array arg resolves to a kernel input; otherwise
-    // `None` falls back to DynCall.
-}
-
-type Len = CachedArgs<LenEv>;
-
-#[derive(Debug, Default)]
 struct FlattenEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
@@ -708,7 +685,6 @@ graphix_derive::defpackage! {
         Iota,
         Iter,
         IterQ,
-        Len,
         PushBack,
         PushFront,
         Sort,

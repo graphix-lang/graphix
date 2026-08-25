@@ -804,7 +804,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // `|n, acc| select n { 0 => .., _ => .. }` learns n: i64;
             // without a wildcard the coverage checks below perform the
             // same narrowing.
-            if itype != Type::Primitive(BitFlags::empty()) {
+            // ... but not a UNION scrutinee: its open members are what
+            // the arms discriminate, and this walk would bind one to an
+            // arm predicate (`select acc { null as _ => .., found => .. }`
+            // over `[e, null]` with `e` open bound `e := null`, and the
+            // wildcard arm died). A free union member stays free.
+            let union_scrut = match self.arg.node.typ().with_deref(|t| t.cloned()) {
+                Some(Type::Set(_)) => true,
+                Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(&ctx.env)?, Type::Set(_)),
+                _ => false,
+            };
+            if itype != Type::Primitive(BitFlags::empty()) && !union_scrut {
                 let _ = itype.contains(&ctx.env, &self.arg.node.typ())?;
             }
         } else {

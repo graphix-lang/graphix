@@ -154,9 +154,13 @@ where
 {
     choice((
         attempt(string("self").skip(not_prefix()).skip(not_followed_by(sptoken(':'))))
-            .map(|_| FnArgType {
+            .with(optional(attempt(between(sptoken('<'), sptoken('>'), typ()))))
+            .map(|arg| FnArgType {
                 kind: FnArgKind::Positional { name: Some(literal!("self")) },
-                typ: self_tvar(),
+                typ: match arg {
+                    None => self_tvar(),
+                    Some(arg) => Type::App(Arc::new(self_tvar()), Arc::new(arg)),
+                },
             }),
         (fname().skip(sptoken(':')), typ()).map(|(name, typ)| FnArgType {
             kind: FnArgKind::Positional { name: Some(name.into()) },
@@ -419,8 +423,17 @@ parser! {
             }),
             attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
             attempt(string("self").skip(not_prefix()).skip(not_followed_by(string("::"))))
-                .map(|_| self_tvar()),
-            tvar().map(|tv| Type::TVar(tv)),
+                .with(optional(attempt(between(sptoken('<'), sptoken('>'), typ()))))
+                .map(|arg| match arg {
+                    None => self_tvar(),
+                    Some(arg) => Type::App(Arc::new(self_tvar()), Arc::new(arg)),
+                }),
+            attempt(string("'_").skip(not_prefix())).map(|_| Type::Hole),
+            (tvar(), optional(attempt(between(sptoken('<'), sptoken('>'), typ()))))
+                .map(|(tv, arg)| match arg {
+                    None => Type::TVar(tv),
+                    Some(arg) => Type::App(Arc::new(Type::TVar(tv)), Arc::new(arg)),
+                }),
             typref(),
         ))))
     }

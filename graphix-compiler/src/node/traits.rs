@@ -287,6 +287,27 @@ pub(crate) fn check_target(
 ) -> Result<()> {
     let here = env.package_root(scope);
     let trait_pkg = env.package_root(&trait_def.scope);
+    // A constructor trait's reference head IS the named constructor —
+    // never expanded (a list's body is a union, a newtype's an
+    // abstract): it belongs to the package that defines the name, like
+    // an abstract type does.
+    if trait_def.hole
+        && let Type::Ref(tr) = target
+        && env.trait_of_ref(tr).is_none()
+    {
+        let type_pkg = tr
+            .resolve_in(env)
+            .map(|r| env.package_root(r.canonical_scope()).to_string())
+            .unwrap_or_default();
+        if here != trait_pkg && here != type_pkg {
+            bail!(
+                "impl {} for {target}: a named type's implementation must live in the \
+                 type's package ({type_pkg}) or the trait's ({trait_pkg})",
+                trait_def.name
+            )
+        }
+        return Ok(());
+    }
     let canonical = match target {
         Type::Ref(tr) => {
             if env.trait_of_ref(tr).is_some() {
@@ -396,6 +417,25 @@ pub(crate) fn impl_head(
         if !known.contains_key(name) {
             bail!("undeclared type variable '{name} in impl target {target}")
         }
+    }
+    let holes = target.holes();
+    if trait_def.hole {
+        if holes != 1 || !matches!(target.decompose(), Some((_, Type::Hole))) {
+            bail!(
+                "impl {} for {target}: {} is a constructor trait, so its target names a \
+                 type constructor with the last parameter left as the hole '_ \
+                 (`Array<'_>`, `Map<'k, '_>`, `List<'_>`)",
+                trait_def.name,
+                trait_def.name
+            )
+        }
+    } else if holes != 0 {
+        bail!(
+            "impl {} for {target}: '_ is the hole of a constructor trait's target, and \
+             {} applies `self` as a type, not a constructor",
+            trait_def.name,
+            trait_def.name
+        )
     }
     check_target(env, scope, trait_def, &target, declared)?;
     Ok((target, params))

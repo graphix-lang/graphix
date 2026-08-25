@@ -14,24 +14,6 @@ use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug};
 
 #[derive(Debug, Default)]
-struct LenEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "map_len";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::Map(m)) => Some(Value::I64(m.len() as i64)),
-            Some(_) | None => None,
-        }
-    }
-}
-
-type Len = CachedArgs<LenEv>;
-
-#[derive(Debug, Default)]
 struct GetEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
@@ -264,7 +246,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
 
 graphix_derive::defpackage! {
     builtins => [
-        Len,
         Get,
         GetOr,
         Insert,

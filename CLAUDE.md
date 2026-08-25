@@ -463,8 +463,14 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 ### Permanent debug env vars (fusion/typecheck)
 
 - `GRAPHIX_DBG_BIND=1` — print every `InitTVars` tvar bind in `contains`
-  (name, cell addr, bound type). The tool for "who bound this cell" —
-  found the select-arm greedy narrowing (soak jul05 item 12) twice.
+  (name, cell addr, bound type), plus `FIND-IMPL` (each impl head tried
+  against a receiver, both verdicts), `APP-SPLIT` (a constructor
+  recovered through the heads), `BIND ctor` (a constructor variable
+  bound by name) and `SETTLE-INFINITE` (the cell an occurs-check
+  refusal left unbound). The tool for "who bound this cell" — found
+  the select-arm greedy narrowing (soak jul05 item 12) twice, and the
+  P2 trio (pre-unified return cell, alias-chain fact, union-scrutinee
+  narrowing) in one afternoon.
 - `GRAPHIX_DBG_KERNELS=1` — print each lambda kernel built by
   `build_lambda_kernel` (name + frozen return type + AbiKind). Locates
   which per-slot/cross-kernel callee actually compiled. Also prints
@@ -1338,7 +1344,32 @@ in `run!` fixtures and bench programs). The decision is recorded in
   language, and
   which limit stops a runaway first is a race between the two engines'
   descent speeds (JIT 0.84s vs node-walk 16.7s to 1GB), not a property
-  of the program.
+  of the program. **P2 BUILT 2026-08-25** ("As built — P2"): the hole
+  is two `Type` forms (`App(ctor, arg)`, `Hole` spelled `'_`),
+  constructor traits (`TraitDef.hole`; every signature applies `self`
+  or none), impl heads `Array<'_>`/`Map<'k, '_>`/`List<'_>` (a
+  reference head is owned by the name's package, never expanded),
+  dispatch by decomposition on the receiver's outermost form with a
+  recovery through the registered heads for cells that hold a
+  typedef's expansion, constructor variables bound BY NAME, and the
+  sugar `|c: Collection|` ≡ `'c: Collection, c: 'c<'e>`. `trait
+  Collection` (fold/filter_map/flat_map required; map/filter/find/
+  find_map/len defaults) in core's gxi, `impl` for Array and Map in
+  core (marker bodies; `core_array_len`/`core_map_len`/`core_map_union`
+  builtins), for List in the list package (+ `to_array_rev`). THREE
+  pre-existing typechecker bugs fell out through the defaults: the
+  call site's pre-unification bound a callback's open RETURN cell
+  (now parameters only — `Type::pre_unify_arg`), `constrain_known`
+  recorded alias chains as facts, and the select's wildcard narrowing
+  bound a union scrutinee's open member to an arm's type test. Book:
+  `udt/traits.md` "Constructor Traits". A FOURTH pre-existing bug was
+  exposed by the first fix's order change and fixed same day: the
+  TVar×TVar `contains` fast path compared tvar identity, not cell
+  identity, so an already-unified same-cell pair fell into the cycle
+  guard and was poisoned `cycle_refused` (examples_compile caught it —
+  data_table_dashboard; pinned in `lang/functions.rs`). Open:
+  body-annotation tvars are fresh (not the signature's);
+  trait-dispatched intrinsics interpret (P3).
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the
@@ -1404,6 +1435,17 @@ in `run!` fixtures and bench programs). The decision is recorded in
   rationale.
 - `representable_bottom.md` — bottom semantics (the taint channel).
 - `graphix_fuzz.md` — the differential fuzzer.
+- `typecheck_fuzzing.md` — **designed 2026-08-25, build after P2:**
+  fuzzing the ACCEPTANCE plane without a parallel typechecker (the
+  decision oracle is the GIR trap; refused). Three oracles that can't
+  drift: well-typed-by-construction generation, metamorphic
+  acceptance-preserving transforms (graded SOUND/EXPECTED/EXPLORATORY
+  — let-extract is the unification-ORDER probe that triggers the P2
+  bug family), and the checker's own printed inferences re-inserted as
+  annotations. Property is `--check` acceptance only — transforms may
+  change runtime semantics freely. Rides the fuzzer chassis
+  (typemorph/typemorph-scan, TypeFlip findings, HDD "still flips"
+  property, fresh-process determinism guard for the jul22e class).
 - `collection_intrinsics.md` — **current:** the Array/List/Map HOFs as
   compiler-owned Nodes (reserved marker names → `CollectionIntrinsic` →
   MapQ/FoldQ nodes; per-slot interpreted semantics + inline CLIF loops).

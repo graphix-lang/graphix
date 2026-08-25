@@ -4,6 +4,7 @@ mod arrays;
 mod attributes;
 mod basics;
 mod byref;
+mod collection;
 mod datetime;
 mod dense_deltas;
 mod errors;

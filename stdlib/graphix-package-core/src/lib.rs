@@ -2489,8 +2489,73 @@ printfn!(Println, "core_println", "\n");
 
 // ── Package registration ───────────────────────────────────────────
 
+/// `array::len` — registered here (the array package binds the name)
+/// because core's `Collection` implementation for `Array` needs it.
+#[derive(Debug, Default)]
+struct ArrayLenEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const NAME: &str = "core_array_len";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match &from.0[0] {
+            Some(Value::Array(a)) => Some(Value::I64(a.len() as i64)),
+            Some(_) | None => None,
+        }
+    }
+}
+
+type ArrayLen = CachedArgs<ArrayLenEv>;
+
+/// `map::len` — registered here for the `Collection` implementation
+/// for `Map`; the map package binds the name.
+#[derive(Debug, Default)]
+struct MapLenEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const NAME: &str = "core_map_len";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match &from.0[0] {
+            Some(Value::Map(m)) => Some(Value::I64(m.len() as i64)),
+            Some(_) | None => None,
+        }
+    }
+}
+
+type MapLen = CachedArgs<MapLenEv>;
+
+/// `map::union` — the union of two maps, the second's value on a key in
+/// both. In core for `Collection::flat_map` over `Map`.
+#[derive(Debug, Default)]
+struct MapUnionEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const NAME: &str = "core_map_union";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match (&from.0[0], &from.0[1]) {
+            (Some(Value::Map(a)), Some(Value::Map(b))) => {
+                Some(Value::Map(a.union(b, |_, _, v| Some(v.clone()))))
+            }
+            _ => None,
+        }
+    }
+}
+
+type MapUnion = CachedArgs<MapUnionEv>;
+
 graphix_derive::defpackage! {
     builtins => [
+        ArrayLen,
+        MapLen,
+        MapUnion,
         IsErr,
         FilterErr,
         ToError,

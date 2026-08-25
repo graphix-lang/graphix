@@ -50,6 +50,10 @@ impl Type {
                     }
                 }
             }
+            (Type::App(..), _)
+            | (_, Type::App(..))
+            | (Type::Hole, _)
+            | (_, Type::Hole) => Ok(self == t),
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
                     if t0.contains_int(fl, env, hist, &Type::Primitive(t1.into()))? {

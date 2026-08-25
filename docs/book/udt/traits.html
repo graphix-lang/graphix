@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f5d79466.js";
+            window.path_to_searchindex_js = "../searchindex-bb1d467c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-f7a0005a.js"></script>
@@ -369,9 +369,67 @@ its fellow bottom keys. A <code>fmt</code> that produces nothing prints the
 structural form and logs a warning.</p>
 <p>Values compared where no Graphix code can run — on the wire, in the
 REPL’s echo of a bare expression — compare and print structurally.</p>
+<h2 id="constructor-traits-collection"><a class="header" href="#constructor-traits-collection">Constructor Traits: <code>Collection</code></a></h2>
+<p>A trait’s receiver can be a type <em>constructor</em> rather than a type.
+Writing <code>self&lt;'a&gt;</code> in a method signature — <code>self</code> applied to an
+element type — makes the trait a constructor trait: a receiver’s type
+is decomposed on its outermost form, its last type parameter becomes
+<code>'a</code>, and what remains (<code>Array&lt;'_&gt;</code>, <code>Map&lt;string, '_&gt;</code>, <code>List&lt;'_&gt;</code>, a
+program’s own <code>Tree&lt;'_&gt;</code>) selects the implementation. Core’s
+<code>Collection</code> is the one in the standard library:</p>
+<pre><code class="language-graphix">trait Collection {
+    val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    val map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; self&lt;'b&gt; throws 'e
+        = |c, f| filter_map(c, |x| f(x));
+    // filter, find, find_map and len are defaults too
+};
+</code></pre>
+<p><code>fold</code>, <code>filter_map</code> and <code>flat_map</code> are required; <code>map</code>, <code>filter</code>,
+<code>find</code>, <code>find_map</code> and <code>len</code> derive from them, and an implementation
+overrides any it can do better. Core implements it for <code>Array</code> and
+<code>Map</code> (a map is a collection of its <em>values</em>: <code>map(m, f)</code> keeps the
+keys), the list package for <code>List</code>, all three through their
+intrinsics — so <code>use Collection::*</code> makes <code>map(c, f)</code> mean the same
+thing whatever <code>c</code> is:</p>
+<pre><code class="language-graphix">use Collection::*;
+map([1, 2, 3], |x| x * 2);                           // [2, 4, 6]
+fold(list::from_array([1, 2, 3]), 0, |a, x| a + x);  // 6
+len(filter({"a" =&gt; 1, "b" =&gt; 20}, |v| v &gt; 5))        // 1
+</code></pre>
+<p>An implementation’s head names the constructor with the hole <code>'_</code> as
+its last parameter:</p>
+<pre><code class="language-graphix">type Bag&lt;'a&gt; = Abstract&lt;Array&lt;'a&gt;&gt;;
+impl Collection for Bag&lt;'_&gt; {
+    let fold = |b, init, f| array::fold(b.0, init, f);
+    let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+    let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+};
+use Collection::*;
+len(filter(Bag([1, 2, 3, 4]), |x| x &gt; 2))            // 2, through the defaults
+</code></pre>
+<p><code>'_</code> is legal only there. A program’s own linear or tree structure
+implements the three methods as recursions — an activation per
+element, see <a href="../functions/recursion.html">Recursion</a> — and gets the
+rest.</p>
+<p>A parameter typed by a constructor trait is a constructor variable
+applied to a fresh element, and each call site resolves it for its
+own receiver:</p>
+<pre><code class="language-graphix">let total = |c: Collection| fold(c, 0, |a, x| a + x);
+total([1, 2]) + total(list::from_array([3, 4]))      // 10
+</code></pre>
+<p>The receiver must have a last type parameter: a union of collections,
+a struct or a bare primitive is not a constructor, and an impl head
+whose last parameter is filled (<code>impl Collection for Bag&lt;i64&gt;</code>) is
+refused. A trait spells its receiver one way throughout — <code>self&lt;'a&gt;</code>
+in every signature, or <code>self</code> in every signature.</p>
 <h2 id="current-limits"><a class="header" href="#current-limits">Current limits</a></h2>
 <ul>
 <li>Traits take no type parameters and declare no associated types.</li>
+<li>A constructor trait decomposes its receiver on the outermost form
+only, and a union of collections has no implementation (dispatch
+over a union receiver is for plain traits).</li>
 <li><code>Hash</code> is not a trait: map keys hash structurally.</li>
 <li>A <code>==</code> or <code>&lt;</code> whose implementation sits inside a composite (an
 <code>Array&lt;Key&gt;</code>) runs on the node-walk; one on the whole type is a
