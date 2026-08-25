@@ -30,7 +30,7 @@ provably contains the map stage in both modes.
 Sizes: 100k for the linear Array/List/Map rows, 500k for the find
 pair, 10k for the O(n²)-by-representation rows (`map_push`,
 `flatmap_*` — each step copies the array), 4k for the list-recursion
-pair (`lfold_rec`'s arm consults are O(remaining) today — see below).
+pair (sized under the pre-discriminator quadratic; the row is post-fix).
 
 ## The semantic face
 
@@ -66,7 +66,7 @@ intrinsic row's jit time.
 | `flatmap_fold`   | 10k  | 1.59 s    | 2.29 s    | 1x      |
 | `lfold_intr`     | 100k | 4.3 ms    | 2.27 s    | 526x    |
 | `lfold_intr_4k`  | 4k   | 0.15 ms   | 62 ms     | 407x    |
-| `lfold_rec`      | 4k   | 9.58 s    | 9.61 s    | 1x      |
+| `lfold_rec`      | 4k   | 0.29 s    | 0.29 s    | 1x      |
 | `mfold_intr`     | 100k | 26 ms     | 4.16 s    | 158x    |
 | `mfold_trait`    | 100k | 4.94 s    | 5.23 s    | 1x      |
 
@@ -82,10 +82,13 @@ intrinsic row's jit time.
   face, since every stdlib-shaped Graphix body threads `f` as a
   parameter. They native-recurse per level on both engines (correct
   and memory-bounded since the `is_a_int` guard, but no loop).
-- **`lfold_rec` is quadratic on top** (finding 2's cost face): each
-  arm consult walks the remaining chain, so 4k elements take 9.6 s
-  against the intrinsic's 0.15 ms — ~62,000x. The measured curve
-  (1k/2k/4k/8k = 0.55/1.97/9.6/49.4 s) is clean O(n^2).
+- **`lfold_rec` was quadratic on top** (finding 2's cost face): each
+  arm consult walked the remaining chain — 9.58 s at 4k, curve
+  0.55/1.97/9.6/49.4 s at 1k/2k/4k/8k, clean O(n^2). FIXED same day
+  by the shallow arm discriminators (`Type::shallow_discriminant`):
+  the curve is linear (0.050/0.096/0.201/0.414 s — 119x at 8k) and
+  the row above is post-fix. The residual ~1900x to `lfold_intr_4k`
+  is finding 3's per-level activation, no longer the type test.
 - **`map_fmshape` loses fusion where `filter_fmshape` keeps it**: the
   map default's callback returns bare `'b` in `Option<'b>` position
   (the trait default body), and that widening de-fuses the loop;
@@ -105,8 +108,10 @@ intrinsic row's jit time.
 
 **Per-operation verdict (the P2b question)**: every intrinsic stays.
 No Graphix body approaches its intrinsic while trait dispatch
-interprets (P3), fn-typed formals block the tail loop (finding 3),
-and recursive-ADT matching is quadratic (finding 2). The only
+interprets (P3) and fn-typed formals block the tail loop (finding
+3); finding 2's quadratic arm consults are FIXED (shallow
+discriminators — `lfold_rec` 9.58 s -> 0.29 s), leaving the
+per-level activation as list recursion's remaining cost. The only
 near-parity derivation (`map` via `init`) is gated on the
 default-body widening fix, and only for Array. Re-run this corpus
 after each of those lands — the verdicts are per-operation and may

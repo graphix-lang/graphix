@@ -367,10 +367,26 @@ impl Type {
                 _ => false,
             },
             Type::Any => !flags.contains(IsAFlags::Strict),
+            // Shallowified predicates (`shallow_discriminant`) test the
+            // runtime class alone — without these two arms an
+            // `Array<Any>`/`Map<Any, Any>` test still walks every
+            // element to learn nothing.
+            Type::Array(et)
+                if matches!(&**et, Type::Any) && !flags.contains(IsAFlags::Strict) =>
+            {
+                matches!(v, Value::Array(_))
+            }
             Type::Array(et) => match v {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
                 _ => false,
             },
+            Type::Map { key, value }
+                if matches!(&**key, Type::Any)
+                    && matches!(&**value, Type::Any)
+                    && !flags.contains(IsAFlags::Strict) =>
+            {
+                matches!(v, Value::Map(_))
+            }
             Type::Map { key, value } => match v {
                 Value::Map(m) => m.into_iter().all(|(k, v)| {
                     key.is_a_int(env, hist, flags, k)
@@ -447,5 +463,210 @@ impl Type {
     /// return true if v is structurally compatible with the type, with flags
     pub fn is_a_with(&self, env: &Env, flags: BitFlags<IsAFlags>, v: &Value) -> bool {
         self.is_a_int(env, &mut LPooled::take(), flags, v)
+    }
+
+    /// The shallow discriminator for a select arm's INFERRED type
+    /// predicate. `Some(shallow)` when telling `self`'s values apart
+    /// from the OTHER members of `scrutinee` needs only each value's
+    /// outermost shape: the returned type is `self` with every payload
+    /// position replaced by `Any`, so `is_a` on it costs O(arity)
+    /// instead of walking the VALUE (a `Cons('a, List<'a>)` predicate
+    /// walked the whole remaining chain per consult — O(len) per
+    /// match, quadratic per traversal; P2b's fold_list fixture,
+    /// 2026-08-25). `None` = keep the full walk: the scrutinee's
+    /// members can't be enumerated (Any, an unbound tvar, a Ref
+    /// cycle), two members share an outermost shape (`[`A(i64),
+    /// `A(string)]`, the e86d18c1 tuple-vs-array class), or nothing
+    /// in the predicate carries a payload (the full walk is already
+    /// O(1) and shallowing gains nothing).
+    ///
+    /// Soundness leans on the predicate being INFERRED: typecheck
+    /// unified it against the scrutinee member it denotes, so when
+    /// exactly one member overlaps a payload-carrying shape that
+    /// member is the predicate's own, and dropping payload checks
+    /// cannot change a verdict for any value the scrutinee's static
+    /// type admits. Explicit predicates (`x as T`) are the user's
+    /// claim and keep the strict deep test at the caller.
+    pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
+        let mut scrut: LPooled<Vec<Type>> = LPooled::take();
+        let mut seen: LPooled<Vec<(usize, usize)>> = LPooled::take();
+        flatten_union_members(scrutinee, env, &mut scrut, &mut seen)?;
+        let mut sfacts: LPooled<Vec<MemberFacts>> = LPooled::take();
+        for m in scrut.iter() {
+            sfacts.push(member_facts(m));
+        }
+        let mut preds: LPooled<Vec<Type>> = LPooled::take();
+        seen.clear();
+        flatten_union_members(self, env, &mut preds, &mut seen)?;
+        let mut out: LPooled<Vec<Type>> = LPooled::take();
+        let mut changed = false;
+        for p in preds.iter() {
+            let pf = member_facts(p);
+            if pf.exact {
+                out.push(p.clone());
+                continue;
+            }
+            if let Some(pa) = &pf.arr {
+                let n = sfacts
+                    .iter()
+                    .filter(|mf| mf.arr.as_ref().is_some_and(|ma| arr_overlap(pa, ma)))
+                    .count();
+                if n != 1 {
+                    return None;
+                }
+            }
+            if pf.map && sfacts.iter().filter(|mf| mf.map).count() != 1 {
+                return None;
+            }
+            if pf.error && sfacts.iter().filter(|mf| mf.error).count() != 1 {
+                return None;
+            }
+            out.push(shallowify(p));
+            changed = true;
+        }
+        if !changed {
+            return None;
+        }
+        Some(if out.len() == 1 {
+            out.pop().unwrap()
+        } else {
+            Type::Set(triomphe::Arc::from(out.drain(..).collect::<Vec<_>>()))
+        })
+    }
+}
+
+/// A flattened union member's runtime footprint. Variants, tuples,
+/// structs and arrays all inhabit `Value::Array`; `arr` is the
+/// member's constraint within that class (the other classes are
+/// disjoint by representation, so only same-class members can shadow
+/// each other). `exact` = the member's full `is_a` already costs O(1)
+/// (no payload walk), so it can neither gain from shallowing nor be
+/// mis-claimed by it.
+struct MemberFacts {
+    arr: Option<(Option<ArcStr>, ArrCon)>,
+    map: bool,
+    error: bool,
+    exact: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArrCon {
+    Len(usize),
+    AnyLen,
+}
+
+fn member_facts(t: &Type) -> MemberFacts {
+    let f = |arr, map, error, exact| MemberFacts { arr, map, error, exact };
+    match t {
+        Type::Primitive(bits) => f(
+            bits.contains(Typ::Array).then_some((None, ArrCon::AnyLen)),
+            bits.contains(Typ::Map),
+            bits.contains(Typ::Error),
+            true,
+        ),
+        Type::Variant(_, ps) if ps.is_empty() => f(None, false, false, true),
+        Type::Variant(tag, ps) => {
+            f(Some((Some(tag.clone()), ArrCon::Len(ps.len() + 1))), false, false, false)
+        }
+        Type::Tuple(ts) => f(Some((None, ArrCon::Len(ts.len()))), false, false, false),
+        Type::Struct(fs) => f(Some((None, ArrCon::Len(fs.len()))), false, false, false),
+        Type::Array(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
+        Type::Map { .. } => f(None, true, false, false),
+        Type::Error(_) => f(None, false, true, false),
+        Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(_) | Type::Bottom => {
+            f(None, false, false, true)
+        }
+        // `flatten_union_members` never yields these; exact = never
+        // shallowed, never a footprint — inert either way.
+        Type::Any
+        | Type::Set(_)
+        | Type::Ref(_)
+        | Type::TVar(_)
+        | Type::App(..)
+        | Type::Hole => f(None, false, false, true),
+    }
+}
+
+fn arr_overlap(
+    (ptag, pcon): &(Option<ArcStr>, ArrCon),
+    (mtag, mcon): &(Option<ArcStr>, ArrCon),
+) -> bool {
+    match (pcon, mcon) {
+        (ArrCon::AnyLen, _) | (_, ArrCon::AnyLen) => true,
+        (ArrCon::Len(a), ArrCon::Len(b)) => {
+            a == b
+                && match (ptag, mtag) {
+                    (Some(pt), Some(mt)) => pt == mt,
+                    // a tuple/struct of the right length can shape
+                    // like a variant (slot 0 a string) — conservative
+                    _ => true,
+                }
+        }
+    }
+}
+
+fn shallowify(t: &Type) -> Type {
+    match t {
+        Type::Variant(tag, ps) => Type::Variant(
+            tag.clone(),
+            triomphe::Arc::from(ps.iter().map(|_| Type::Any).collect::<Vec<_>>()),
+        ),
+        Type::Tuple(ts) => Type::Tuple(triomphe::Arc::from(
+            ts.iter().map(|_| Type::Any).collect::<Vec<_>>(),
+        )),
+        Type::Struct(fs) => Type::Struct(triomphe::Arc::from(
+            fs.iter().map(|(n, _)| (n.clone(), Type::Any)).collect::<Vec<_>>(),
+        )),
+        Type::Array(_) => Type::Array(triomphe::Arc::new(Type::Any)),
+        Type::Map { .. } => Type::Map {
+            key: triomphe::Arc::new(Type::Any),
+            value: triomphe::Arc::new(Type::Any),
+        },
+        Type::Error(_) => Type::Error(triomphe::Arc::new(Type::Any)),
+        t => t.clone(),
+    }
+}
+
+fn flatten_union_members(
+    t: &Type,
+    env: &Env,
+    out: &mut LPooled<Vec<Type>>,
+    seen: &mut LPooled<Vec<(usize, usize)>>,
+) -> Option<()> {
+    match t {
+        Type::Set(ts) => {
+            for t in ts.iter() {
+                flatten_union_members(t, env, out, seen)?;
+            }
+            Some(())
+        }
+        Type::Ref(TypeRef { scope, name, .. }) => {
+            let key = (
+                (scope.as_ref() as *const _ as *const u8).addr(),
+                (name.as_ref() as *const _ as *const u8).addr(),
+            );
+            if seen.contains(&key) {
+                return None;
+            }
+            seen.push(key);
+            let res = match t.lookup_ref(env) {
+                Ok(t) => flatten_union_members(&t, env, out, seen),
+                Err(_) => None,
+            };
+            seen.pop();
+            res
+        }
+        Type::TVar(tv) => {
+            let bound = tv.read().typ.read().typ.clone();
+            match bound {
+                Some(t) => flatten_union_members(&t, env, out, seen),
+                None => None,
+            }
+        }
+        Type::Any | Type::App(..) | Type::Hole => None,
+        t => {
+            out.push(t.clone());
+            Some(())
+        }
     }
 }

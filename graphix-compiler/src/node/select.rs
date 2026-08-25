@@ -75,6 +75,10 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// recovers (design/activation_state.md, Eric 2026-08-20).
     consulted: u64,
     resident: TagValue,
+    /// Set on the first update, when each arm's shallow type
+    /// discriminator is sealed against the settled scrutinee type
+    /// ([`PatternNode::seal_shallow`]).
+    shallow_sealed: bool,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -96,6 +100,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             tail_position: std::sync::atomic::AtomicBool::new(false),
             consulted: 0,
             resident: TagValue::phantom(),
+            shallow_sealed: false,
         })
     }
 
@@ -138,6 +143,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             tail_position: std::sync::atomic::AtomicBool::new(false),
             consulted: 0,
             resident: TagValue::phantom(),
+            shallow_sealed: false,
         }))
     }
 }
@@ -201,6 +207,13 @@ fn range_covered(k: usize, exact: bool, exacts: &[usize], rest: Option<usize>) -
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        if !self.shallow_sealed {
+            self.shallow_sealed = true;
+            let scrut = self.arg.node.typ().clone();
+            for (pat, _) in self.arms.iter_mut() {
+                pat.seal_shallow(&ctx.env, &scrut);
+            }
+        }
         let Self {
             selected,
             arg,
@@ -210,6 +223,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             tail_position,
             consulted,
             resident,
+            shallow_sealed: _,
         } = self;
         // Per-arm guard production tags for THE CONSULTED-GUARD RULE
         // (design/activation_state.md, Eric 2026-08-20): only guards
@@ -613,6 +627,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             tail_position: _,
             consulted: _,
             resident: _,
+            shallow_sealed: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -631,6 +646,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             tail_position: _,
             consulted: _,
             resident: _,
+            shallow_sealed: _,
         } = self;
         arg.sleep(ctx);
         for (pat, arg) in arms {
@@ -667,6 +683,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             tail_position: _,
             consulted: _,
             resident: _,
+            shallow_sealed: _,
         } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
@@ -687,6 +704,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             tail_position: _,
             consulted: _,
             resident: _,
+            shallow_sealed: _,
         } = self;
         arg.node.refs(refs);
         for (pat, arm) in arms {

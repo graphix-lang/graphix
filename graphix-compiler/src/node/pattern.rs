@@ -989,6 +989,11 @@ pub(super) enum ArmMatch {
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
+    /// The O(1) shallow discriminator for an INFERRED predicate,
+    /// sealed against the select's settled scrutinee type at the
+    /// first consult ([`Type::shallow_discriminant`]); `None` = run
+    /// the full `is_a` walk.
+    pub shallow_predicate: Option<Type>,
     pub structure_predicate: StructPatternNode,
     pub guard: Option<Held<R, E>>,
 }
@@ -1058,6 +1063,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         Ok(PatternNode {
             explicit_type_predicate: explicit,
             type_predicate,
+            shallow_predicate: None,
             structure_predicate,
             guard,
         })
@@ -1130,6 +1136,29 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// bottoms (no held-verdict ride: a previous delivery's verdict
     /// cannot route this one). `GuardFalse`/`Matched` are definitive
     /// sound verdicts.
+    /// Seal the shallow discriminator for this arm's INFERRED
+    /// predicate against the select's scrutinee type. Called lazily
+    /// at the select's first consult — every tvar the predicate
+    /// carries is settled by then, and the result is a pure function
+    /// of static types (not semantic state: sleep/replay never clear
+    /// it).
+    pub(super) fn seal_shallow(&mut self, env: &Env, scrutinee: &Type) {
+        if !self.explicit_type_predicate {
+            self.shallow_predicate =
+                self.type_predicate.shallow_discriminant(env, scrutinee);
+            if crate::dbgenv::gxdbg_shallow() {
+                eprintln!(
+                    "SHALLOW {} => {}",
+                    self.type_predicate,
+                    match &self.shallow_predicate {
+                        Some(t) => format!("{t}"),
+                        None => "deep".into(),
+                    }
+                );
+            }
+        }
+    }
+
     pub(super) fn arm_match(&self, env: &Env, v: &Value) -> ArmMatch {
         // The type predicate holds whether it was WRITTEN or INFERRED.
         // Skipping the inferred one treated the structural test as a
@@ -1161,6 +1190,8 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // must never claim a value it cannot verify.
         let typed = if self.explicit_type_predicate {
             self.type_predicate.is_a(env, v)
+        } else if let Some(shallow) = &self.shallow_predicate {
+            shallow.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         } else {
             self.type_predicate.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         };

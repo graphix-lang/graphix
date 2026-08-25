@@ -542,6 +542,10 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   found the `merge_tag` fired-bit loss in one run by showing
   `call[0] produced tag=64` (fresh bottom) against `prod=Some(96)`
   (standing), which is the whole bug.
+- `GXDBG_SHALLOW=1` — print each select arm's sealed shallow
+  discriminator (`SHALLOW <pred> => <shallow>|deep`) at the select's
+  first consult. The tool for "did this arm's type test stay O(1) or
+  fall back to the deep walk" (`Type::shallow_discriminant`).
 - `GXDBG_RESOLVE=1` — print every static-resolution read (`RESOLVE`:
   spec, BindId, unstable/b2l/cached hit), the index writes
   (`B2L-INS` at Bind tc0, `B2L-PROXY` at interface re-export

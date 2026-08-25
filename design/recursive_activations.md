@@ -923,7 +923,25 @@ fixture face crashed the test process on its first run.
    rule), an engine asymmetry. OPEN: give the interp arm test the same
    discrimination when tag+arity uniquely determine the member within
    the scrutinee's STATIC union — the deep payload walk adds nothing
-   there, the static type already proves it.
+   there, the static type already proves it. BUILT same day:
+   Type::shallow_discriminant (typ/cast.rs) — at the select's first
+   consult each arm's INFERRED predicate is sealed against the
+   settled scrutinee type: the scrutinee's members are flattened
+   (Refs resolved seen-guarded, bound tvars deref'd; Any/unbound/
+   cycle => keep the deep walk), and a payload-carrying predicate
+   shape (variant/tuple/struct/array/map/error) is replaced by its
+   outermost form (payloads => Any, plus is_a short-circuits for
+   Array<Any>/Map<Any,Any>) iff exactly ONE member overlaps its
+   runtime footprint — same tag+arity twins, tuple-vs-array
+   (e86d18c1's class) and any-length arrays beside other
+   Value::Array members all refuse and keep the deep walk, as do
+   explicit (x as T) predicates (the user's claim stays strict).
+   Consults drop to O(arity); the list-recursion curve went linear
+   (debug: 5.1s -> 0.98s at 1k, x2 per doubling after; release 49.4s -> 0.41s at 8k). Sealing is
+   lazy (no new compile pass) and sits on PatternNode (seal_shallow,
+   sealed at Select::update's first pass); GXDBG_SHALLOW=1 prints
+   each seal decision. Pinned by shallow_ambiguous_same_tag_union /
+   shallow_mixed_union_dispatch (lang/select.rs).
 
 3. **`structural_tail_loop`'s formal-kind gate denies the tail driver
    by a kernel-ABI condition — on BOTH backends** (OPEN — design
@@ -965,8 +983,12 @@ best-of-3; full table + notes in its README). The headline numbers:
   `structural_tail_loop`'s kind gate (finding 3), so every
   stdlib-shaped body (`|a, f, i, acc|`) native-recurses per level —
   `fold_rec` 8.4 s vs 0.28 ms at 100k. On List the quadratic arm
-  consult (finding 2) stacks on top: 9.6 s at 4k vs 0.15 ms (~62,000x;
+  consult (finding 2) stacked on top: 9.6 s at 4k vs 0.15 ms (~62,000x;
   measured curve 0.55/1.97/9.6/49.4 s at 1k/2k/4k/8k — clean O(n^2)).
+  FIXED same day (shallow discriminators): the curve is linear
+  (0.050/0.096/0.201/0.414 s — 119x at 8k), lfold_rec is 0.29 s, and
+  the residual ~1900x to the intrinsic is finding 3's per-level
+  activation.
 - Trait DEFAULT bodies over the intrinsics: filter's fuses at 1.9x the
   intrinsic (fine); map's DE-FUSES (the bare-`'b`-as-`Option<'b>`
   callback widening — a fusion-coverage bug; fixed, the default would

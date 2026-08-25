@@ -1729,3 +1729,44 @@ run!(union_arm_annotated, UNION_ARM_ANNOTATED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(42))
 ));
+
+// ---- Shallow arm discriminators (Type::shallow_discriminant,
+// 2026-08-25): an INFERRED arm predicate over an enumerable scrutinee
+// union is sealed to an outermost-shape test at the select's first
+// consult. These pin the two boundary cases: an ambiguous union
+// (same tag, same arity — must stay on the deep walk, and dispatch
+// by the explicit predicates), and a mixed union where the shallow
+// test is active and must produce the same dispatch the deep walk
+// did. Union type-test dispatch interprets, hence FuseExpect::None.
+
+run!(
+    shallow_ambiguous_same_tag_union,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    "/test.gx" => r#"
+        type E = [`A(i64), `A(string)];
+        let pick = |v: E| -> i64 select v {
+            `A(i64) as `A(x) => x * 10,
+            `A(string) as `A(s) => str::len(s)
+        };
+        let result = pick(`A(2)) + pick(`A("x"))
+    "#;
+    graphix_package_core::testing::FuseExpect::None
+);
+
+run!(
+    shallow_mixed_union_dispatch,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3241))),
+    "/test.gx" => r#"
+        type V = [`Pair(i64, i64), `One(i64), `Nil, string, Array<i64>];
+        let score = |v: V| -> i64 select v {
+            `Pair(a, b) => a + b,
+            `One(x) => x * 10,
+            `Nil => 1000,
+            string as s => str::len(s) * 100,
+            Array<i64> as a => array::len(a) * 1000
+        };
+        let result = score(`Pair(20, 1)) + score(`One(2))
+            + score(`Nil) + score("xx") + score([1, 2])
+    "#;
+    graphix_package_core::testing::FuseExpect::None
+);
