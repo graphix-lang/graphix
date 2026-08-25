@@ -215,3 +215,118 @@ run!(
     "#;
     FuseExpect::None
 );
+
+// ---- P2b cross-implementation agreement (the semantic face of
+// bench/collection/): the intrinsic, the trait default's body shape,
+// and a hand-written Graphix recursion must agree on VALUES. The
+// harness adds the cross-engine axis; bench/collection/ holds the
+// timed differential over the same shapes.
+
+run!(
+    collection_bodies_fold_array,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let src = array::init(200, |i| i);
+        let rec fold_go = |a: Array<i64>, f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
+            select i < array::len(a) {
+                true => fold_go(a, f, i + 1, f(acc, a[i]$)),
+                false => acc
+            };
+        let a = array::fold(src, 7, |a, x| a + x);
+        let b = Collection::fold(src, 7, |a, x| a + x);
+        let c = fold_go(src, |a, x| a + x, 0, 7);
+        let result = (a == b) && (b == c)
+    "#
+);
+
+run!(
+    collection_bodies_map_array,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let src = array::init(64, |i| i);
+        let rec map_go = |a: Array<i64>, f: fn(x: i64) -> i64, i: i64, out: Array<i64>| -> Array<i64>
+            select i < array::len(a) {
+                true => map_go(a, f, i + 1, array::push(out, f(a[i]$))),
+                false => out
+            };
+        let a = array::map(src, |x| x * 3 + 1);
+        let b = array::filter_map(src, |x| x * 3 + 1);
+        let c = array::init(array::len(src), |i| src[i]$ * 3 + 1);
+        let d = map_go(src, |x| x * 3 + 1, 0, []);
+        let result = (a == b) && (b == c) && (c == d)
+    "#
+);
+
+run!(
+    collection_bodies_filter_array,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let src = array::init(64, |i| i);
+        let a = array::filter(src, |x| x % 2 == 0);
+        let b = array::filter_map(src, |x| select x % 2 == 0 {
+            true => x,
+            false => null
+        });
+        let result = a == b
+    "#
+);
+
+run!(
+    collection_bodies_find_array,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let src = array::init(64, |i| i);
+        let ffold = |a: Array<i64>, target: i64| -> [i64, null] {
+            let init: [i64, null] = null;
+            array::fold(a, init, |acc, x| select acc {
+                null as _ => select x == target { true => x, false => null },
+                found => found
+            })
+        };
+        let a1 = array::find(src, |x| x == 40);
+        let b1 = ffold(src, 40);
+        let a2 = array::find(src, |x| x == 999);
+        let b2 = ffold(src, 999);
+        let result = (a1 == b1) && (a2 == b2)
+    "#
+);
+
+run!(
+    collection_bodies_flat_map_array,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let src = array::init(64, |i| i);
+        let empty: Array<i64> = [];
+        let a = array::flat_map(src, |x| [x, x * 2]);
+        let b = array::fold(src, empty, |acc, x| array::concat(acc, [x, x * 2]));
+        let result = a == b
+    "#
+);
+
+run!(
+    collection_bodies_fold_list,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let l = list::init(200, |i| i);
+        let rec lfold_go = |l: list::List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
+            select l {
+                `Cons(x, rest) => lfold_go(rest, f, f(acc, x)),
+                `Nil => acc
+            };
+        let a = list::fold(l, 7, |a, x| a + x);
+        let b = lfold_go(l, |a, x| a + x, 7);
+        let result = a == b
+    "#
+);
+
+run!(
+    collection_bodies_fold_map,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
+    "/test.gx" => r#"
+        let empty: Map<i64, i64> = {};
+        let m = array::fold(array::init(200, |i| i), empty, |m, i| map::insert(m, i, i * 2));
+        let a = map::fold(m, 0, |acc, (_, v)| acc + v);
+        let b = Collection::fold(m, 0, |acc, v| acc + v);
+        let result = a == b
+    "#
+);

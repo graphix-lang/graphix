@@ -1,0 +1,12 @@
+// P2b: map fold through Collection — the impl is a Graphix body over
+// the pairs intrinsic (values-fold wrapper + dispatch).
+let n = 100000;
+let empty: Map<i64, i64> = {};
+let src = array::fold(array::init(n, |i| i), empty, |m, i| map::insert(m, i, i));
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = Collection::fold(src, seed, |acc, v| acc + v);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("mfold_trait n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

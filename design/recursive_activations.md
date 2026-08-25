@@ -886,3 +886,96 @@ generic parameter, the newtype with defaults, the user cons list with
 annotated module-level recursions, `find_map` default, and five
 rejections: union receiver, non-constructor head, filled head, `'_`
 outside a head, mixed `self`).
+
+## Found during P2b (2026-08-25)
+
+The P2b differential corpus — bench/collection/ (timed, intrinsic vs
+trait dispatch vs trait-default body vs hand-written Graphix recursion)
+plus the `collection_bodies_*` value-agreement fixtures in
+lang/collection.rs — found four issues before any timing ran: the
+fixture face crashed the test process on its first run.
+
+1. **`--check` never runs `analysis::analyze`** (MUST FIX — Eric,
+   2026-08-25). `check_inner` (graphix-rt/src/gx.rs) compiles
+   per-statement via `compile_stmt` and deletes the nodes; only the
+   load path's `compile()` reaches the analyze call at its tail
+   (graphix-compiler/src/lib.rs — "Runs ALWAYS", but check never gets
+   there). Consequences: the def assertions
+   (`#[tail_recursive]`/`#[sync]`/`#[async]`) are verified only at
+   load — a program with a false assertion passes `--check` and fails
+   at run — and check is a THIRD compile channel (the
+   check_mode_parity family). Witness: `GXDBG_EFFECT=1 --check` prints
+   0 lines on a program that prints 1600 under load.
+
+2. **Runtime type tests recursed unguarded through VALUE depth**
+   (FIXED same day: `Type::is_a_int` runs under `ensure_sufficient`,
+   typ/cast.rs). `arm_match` (node/pattern.rs) runs each arm's
+   inferred type predicate through `is_a`; the Variant arm recurses
+   into payloads, so on a recursive ADT — `` `Cons('a, List<'a>) `` —
+   ONE arm consult walks the entire remaining chain on native stack. A
+   Graphix-recursion fold over a 1000-element list aborted the process
+   in release (~200 in the debug test harness, which is how the
+   fixture found it); the intrinsic never trips it (no per-cons deep
+   predicate). The guard makes it correct (memory-bounded). The COST
+   stands: each consult is O(remaining), so a recursive list traversal
+   is O(n²) — bench/collection's lfold_rec row is the number. The
+   kernel twin tests tag+arity in O(1) (the aug-07 representation+arity
+   rule), an engine asymmetry. OPEN: give the interp arm test the same
+   discrimination when tag+arity uniquely determine the member within
+   the scrutinee's STATIC union — the deep payload walk adds nothing
+   there, the static type already proves it.
+
+3. **`structural_tail_loop`'s formal-kind gate denies the tail driver
+   by a kernel-ABI condition — on BOTH backends** (OPEN — design
+   question). Formals must freeze to Prim/Array/Tuple/Struct
+   (fusion/lowering.rs); String, Variant, Nullable, Map and
+   Value-shaped (every recursive ADT) formals fail, and since the gate
+   deliberately keeps the backends in lockstep, both run a tail-SHAPED
+   recursion as native per-level recursion: no constant space, an
+   activation per level. `|l: List<..>|` traversals, `|s: string|`
+   accumulators, `[T, null]` state loops, Map builders — common
+   shapes. TAILDBG shows 0 passes; the i64-formal twin shows one per
+   iteration. Options: split the seam (the interp loops whatever
+   analysis blesses — tail structure + Sync + stateless — since its
+   frame rebind needs no ABI freeze; the kernel keeps its subset and
+   native-recurses with the P1 trampoline otherwise), or widen the
+   kernel's loopable kinds. Collapse is unobservable for stateless
+   bodies (Ruling 2), so what the lockstep protects here is space
+   parity, not semantics.
+
+4. **`#[tail_recursive]` passes where the loop does not collapse**
+   (OPEN — follows 3). The assert checks
+   `RecursionKind::TailRecursive` + `lambda_is_stateless`
+   (analysis.rs `check_def_assertions`); the operational flag
+   additionally requires the formal-kind gate. The book sells the
+   attribute as the constant-space guarantee; a List-formal function
+   passes the assert and native-recurses. Either the assert consults
+   the same seam, or fixing 3 interp-side closes the gap and the
+   kernel's native+trampoline residue gets documented honestly.
+
+## As measured — P2b first cut (2026-08-25)
+
+bench/collection/ (19 self-timed benches, both engines, release,
+best-of-3; full table + notes in its README). The headline numbers:
+
+- Intrinsic vs trait dispatch: `array::fold` 0.28 ms vs
+  `Collection::fold` 2.21 s at 100k (~7800x) — dispatch interprets
+  (P3's price tag). Map's values-fold wrapper likewise (26 ms vs 4.9 s).
+- Intrinsic vs Graphix recursion: the callback FORMAL (fn-typed) fails
+  `structural_tail_loop`'s kind gate (finding 3), so every
+  stdlib-shaped body (`|a, f, i, acc|`) native-recurses per level —
+  `fold_rec` 8.4 s vs 0.28 ms at 100k. On List the quadratic arm
+  consult (finding 2) stacks on top: 9.6 s at 4k vs 0.15 ms (~62,000x;
+  measured curve 0.55/1.97/9.6/49.4 s at 1k/2k/4k/8k — clean O(n^2)).
+- Trait DEFAULT bodies over the intrinsics: filter's fuses at 1.9x the
+  intrinsic (fine); map's DE-FUSES (the bare-`'b`-as-`Option<'b>`
+  callback widening — a fusion-coverage bug; fixed, the default would
+  be a 2 ms row); find's is 4 orders off (unfused double select);
+  flat_map's pays O(n^2) concat AND interprets. `map` via `init` is
+  the one parity derivation (2.6 ms vs 2.5 ms), Array-only.
+
+VERDICT (per the phase question "what stays"): every intrinsic stays.
+The deletion question is not answerable until P3 (trait-dispatch
+fusion), the map-default widening fix, and the finding-3 gate decision
+land — re-run the corpus after each. The measurement's real product
+this round was the four findings above plus the widening bug.

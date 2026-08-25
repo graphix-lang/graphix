@@ -1,0 +1,13 @@
+// P2b: array flat_map derived in Graphix — fold + concat (Array has
+// the empty [] the generic derivation lacks). O(n^2) by copying.
+let n = 10000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let empty: Array<i64> = [];
+let flat = array::fold(src, empty, |acc, x| array::concat(acc, [x + seed, x * 2]));
+let result = array::fold(flat, 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("flatmap_fold n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

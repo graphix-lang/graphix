@@ -1,0 +1,16 @@
+// P2b: array find as the trait DEFAULT body — fold carrying an
+// Option accumulator.
+let n = 500000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let target = seed % n;
+let init: [i64, null] = null;
+let result = array::fold(src, init, |acc, x| select acc {
+    null as _ => select x == target { true => x, false => null },
+    found => found
+});
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("find_fold n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

@@ -1,0 +1,18 @@
+// P2b: list fold written in Graphix — natural tail recursion over the
+// transparent Cons/Nil union. n=4k: each arm consult runs the full
+// inferred type predicate over the remaining chain (O(len) per match),
+// so this is quadratic today; compare against lfold_intr_4k.
+let n = 4000;
+let src = list::init(n, |i| i);
+let rec lfold_go = |l: list::List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
+    select l {
+        `Cons(x, rest) => lfold_go(rest, f, f(acc, x)),
+        `Nil => acc
+    };
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = lfold_go(src, |a, x| a + x, seed);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("lfold_rec n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

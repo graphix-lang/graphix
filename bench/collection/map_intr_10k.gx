@@ -1,0 +1,10 @@
+// P2b: array map intrinsic at n=10k — the fair twin for map_push.
+let n = 10000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = array::fold(array::map(src, |x| x * 3 + seed), 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("map_intr_10k n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

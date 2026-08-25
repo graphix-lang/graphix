@@ -1,0 +1,11 @@
+// P2b: array find — the intrinsic (scans all slots by rule).
+let n = 500000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let target = seed % n;
+let result = array::find(src, |x| x == target);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("find_intr n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

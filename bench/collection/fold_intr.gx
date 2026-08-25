@@ -1,0 +1,10 @@
+// P2b: array fold — the intrinsic (baseline, fold_sum's shape).
+let n = 100000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = array::fold(src, seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("fold_intr n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

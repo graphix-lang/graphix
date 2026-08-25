@@ -1,0 +1,10 @@
+// P2b: list fold intrinsic at n=10k — the fair twin for lfold_rec (quadratic arm consults cap its n).
+let n = 4000;
+let src = list::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = list::fold(src, seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("lfold_intr_4k n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

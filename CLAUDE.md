@@ -350,7 +350,10 @@ and the netidx `literal()` boundary) via the `GrowStack` combinator in
 `node_const_value`; `Type::{contains_int, normalize_int,
 scope_refs_int}`; `would_cycle_seen`; `freeze_for_abi_d`;
 `StructurePattern`'s walks in both `expr/pattern.rs` and
-`node/pattern.rs`; and the node-walk's non-tail lambda dispatch.
+`node/pattern.rs`; the node-walk's non-tail lambda dispatch; and
+`Type::is_a_int` (a runtime type test recurses through VALUE
+structure, so a recursive ADT makes its depth program-driven —
+found by P2b's fold_list fixture, 2026-08-25).
 
 **`Node` is a newtype, not `Box<dyn Update>`.** That is what makes the
 tree passes tractable: its inherent methods shadow the nine recursive

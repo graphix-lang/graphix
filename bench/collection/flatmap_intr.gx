@@ -1,0 +1,10 @@
+// P2b: array flat_map — the intrinsic, two elements out per element in.
+let n = 10000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = array::fold(array::flat_map(src, |x| [x + seed, x * 2]), 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("flatmap_intr n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

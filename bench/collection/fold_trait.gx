@@ -1,0 +1,11 @@
+// P2b: array fold through Collection trait dispatch — same intrinsic
+// body; measures dispatch + trait-call fusion coverage.
+let n = 100000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = Collection::fold(src, seed, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("fold_trait n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

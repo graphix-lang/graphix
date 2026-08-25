@@ -1,0 +1,10 @@
+// P2b: array filter — the intrinsic, consumed by an intrinsic fold.
+let n = 100000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = array::fold(array::filter(src, |x| (x + seed) % 2 == 0), 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("filter_intr n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

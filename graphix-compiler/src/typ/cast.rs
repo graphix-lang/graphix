@@ -303,6 +303,16 @@ impl Type {
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {
+        crate::stack::ensure_sufficient(|| self.is_a_int_inner(env, hist, flags, v))
+    }
+
+    fn is_a_int_inner(
+        &self,
+        env: &Env,
+        hist: &mut AHashSet<(usize, usize)>,
+        flags: BitFlags<IsAFlags>,
+        v: &Value,
+    ) -> bool {
         match self {
             // `hist` is the CURRENT PATH, not a visited set: the entry
             // comes back out on the way up.

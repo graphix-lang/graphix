@@ -1,0 +1,18 @@
+// P2b: array map written in Graphix — tail recursion + array::push.
+// n=10k: each push copies the array, so this is O(n^2) by
+// representation; compare against map_intr_10k.
+let n = 10000;
+let src = array::init(n, |i| i);
+let rec map_go = |a: Array<i64>, f: fn(x: i64) -> i64, i: i64, out: Array<i64>| -> Array<i64>
+    select i < array::len(a) {
+        true => map_go(a, f, i + 1, array::push(out, f(a[i]$))),
+        false => out
+    };
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let mapped = map_go(src, |x| x * 3 + seed, 0, []);
+let result = array::fold(mapped, 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("map_push n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)
