@@ -2145,8 +2145,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         if let Some(t) = ftype.throws.with_deref(|t| t.cloned()) {
-            match ctx.env.lookup_catch(&self.scope.dynamic) {
-                Ok((id, _)) => {
+            match self.scope.dynamic.catch() {
+                Some((id, _)) => {
                     if let Some(bind) = ctx.env.by_id.get(&id)
                         && let Type::TVar(tv) = &bind.typ
                     {
@@ -2158,8 +2158,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         };
                     }
                 }
-                Err(_) if t == Type::Bottom => (), // it doesn't throw any errors
-                Err(_) => {
+                None if t == Type::Bottom => (), // it doesn't throw any errors
+                None => {
                     if self
                         .flags
                         .contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)

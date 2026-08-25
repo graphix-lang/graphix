@@ -58,17 +58,31 @@ planning (see the commit for details):
   files are wrapped in one synthetic Do so file toplevel is block position).
   `try` stays reserved and errors with a pointer to the new form.
 - A catch opens an IMPLICIT NESTED SCOPE: subsequent siblings compile with
-  the dynamic path extended by a `c<id>` segment (lexical path unchanged —
-  post-catch exports stay visible), reproducing the old nested-try path
-  discipline for all three lookup clocks (Qop compile, callsite typecheck,
-  late instance binds). Same-block second catch = shadowing; handler
-  rethrow resolves to the predecessor (handlers compile before their own
-  registration).
+  the dynamic scope extended by a node carrying the handler (lexical path
+  unchanged — post-catch exports stay visible), reproducing the old
+  nested-try path discipline for all three lookup clocks (Qop compile,
+  callsite typecheck, late instance binds). Same-block second catch =
+  shadowing; handler rethrow resolves to the predecessor (handlers compile
+  before their own registration). AMENDED 2026-08-25: the dynamic scope is
+  `DynScope`, a parent-linked chain with ONE NODE PER HANDLER INSTALL and
+  nothing else — `Scope::append` (blocks, arms, lambdas, modules) extends
+  the lexical path only. It was a flattened `Path` string that every
+  block/arm level extended alongside the lexical path, and since an
+  instantiated body starts from its CALL SITE's dynamic scope, a recursion
+  re-spelled its whole ancestry once per activation: 2GB and 78% of the
+  interpreter's cycles at 20k deep (`design/recursive_activations.md`,
+  "As built — P1c"). A body that installs no handler now shares its
+  caller's scope outright; one that does adds one node per activation,
+  which is the chain's legitimate length.
 - Blocks/module bodies run catches LAST, INNERMOST FIRST, in update and
   both typecheck passes — the try-era handler-after-body order that makes
   same-cycle Vacant-insert delivery (including inner-handler rethrow) land.
 - The `catch(e: T)` constraint (parsed-but-dead under try) is now checked
   against the accumulated error union at typecheck1.
-- env.catch carries (BindId, top); cross-top deliveries (REPL: catch in an
-  earlier input) take the `set_var` next-cycle path. The shell threads a
-  session scope so a toplevel catch covers later inputs.
+- The covering node carries (BindId, top) — there is no registry:
+  `DynScope::catch()` IS the lookup (`Env.catch`/`lookup_catch` died
+  2026-08-25 with the chain; the lambda def gate compiles its body under a
+  faux-catch CHILD of the def scope instead of overriding a key and
+  restoring it). Cross-top deliveries (REPL: catch in an earlier input)
+  take the `set_var` next-cycle path. The shell threads a session scope so
+  a toplevel catch covers later inputs.

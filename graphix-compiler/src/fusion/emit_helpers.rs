@@ -622,7 +622,7 @@ safe fn graphix_stack_check() -> i8 {
         0
     } else if stacker::remaining_stack().unwrap_or(0) < crate::stack::RED_ZONE {
         if crate::stack::grow_exceeds_budget() {
-            abort_current_control();
+            crate::stack::budget_abort();
             0
         } else {
             2
@@ -1979,12 +1979,12 @@ pub fn set_interrupt_ptr(control: &crate::Control) {
 /// Abort the runtime whose control this thread is running under (the
 /// stack budget's containment — `stack::grow`). No runtime on this
 /// thread: nothing to abort.
-pub(crate) fn abort_current_control() {
+pub(crate) fn abort_current_control_budget() {
     INTERRUPT_PTR.with(|c| {
         let p = c.get();
         if !p.is_null() {
             // SAFETY: see `graphix_interrupted`.
-            unsafe { (*p).abort() }
+            unsafe { (*p).abort_budget() }
         }
     });
 }

@@ -433,3 +433,70 @@ async fn catch_repl_cross_input() -> anyhow::Result<()> {
         }
     }
 }
+
+// A handler installed inside a recursive body belongs to ITS
+// activation: every level's `?` reaches the handler its own body
+// installed, and the handlers are three distinct state cells.
+const CATCH_PER_ACTIVATION: &str = r#"
+{
+    let rec f = |n: i64| -> i64 select n {
+        0 => 0,
+        _ => {
+            let hit = never();
+            catch(e) hit <- e ~ n;
+            error(`Boom)?;
+            hit + f(n - 1)
+        }
+    };
+    f(3)
+}
+"#;
+
+run!(catch_per_activation, CATCH_PER_ACTIVATION, |v: Result<&Value>| match v {
+    Ok(Value::I64(6)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A callee's handler covers the callee's body only — the caller's
+// `?` after the call still reaches the caller's own handler.
+const CATCH_IN_CALLEE_STAYS_IN_CALLEE: &str = r#"
+{
+    let outer = never();
+    catch(e) outer <- e ~ 1;
+    let g = || {
+        let inner = never();
+        catch(e) inner <- e ~ 10;
+        error(`A)?;
+        inner
+    };
+    let v = g();
+    error(`B)?;
+    v + outer
+}
+"#;
+
+run!(catch_in_callee_stays_in_callee, CATCH_IN_CALLEE_STAYS_IN_CALLEE, |v: Result<&Value>| match v {
+    Ok(Value::I64(11)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A `?` in a body that installs no handler reaches the CALLER's: the
+// dynamic scope follows the call chain, and a body that installs
+// nothing shares its call site's scope outright.
+const CATCH_THROUGH_CALL: &str = r#"
+{
+    let caught = never();
+    catch(e) caught <- e ~ 1;
+    let f = |x: i64| -> i64 {
+        error(`A)?;
+        x
+    };
+    let v = f(5);
+    v + caught
+}
+"#;
+
+run!(catch_through_call, CATCH_THROUGH_CALL, |v: Result<&Value>| match v {
+    Ok(Value::I64(6)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

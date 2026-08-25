@@ -532,8 +532,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         if super::coretraits::CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());
         }
-        let scope =
-            Scope { lexical: self.def.scope.clone(), dynamic: self.def.scope.clone() };
+        let scope = Scope { lexical: self.def.scope.clone(), ..Scope::root() };
         let top_id = self.spec.id;
         for (k, (_, bind)) in self.def.methods.clone().into_iter().enumerate() {
             let Some(ftype) = super::coretraits::method_ftype(&ctx.env, *bind) else {

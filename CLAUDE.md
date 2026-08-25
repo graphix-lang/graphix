@@ -149,7 +149,11 @@ Key types:
 - `Expr`: Immutable AST representation with `ExprKind` variants
 - `Node<R, E>`: `Box<dyn Update<R, E>>` - compiled graph node
 - `ExecCtx<R, E>`: Execution context holding builtins, environment, runtime
-- `Scope`: Lexical and dynamic module path information
+- `Scope`: the lexical path (module + block nesting, a `ModPath`) and the
+  dynamic scope (`DynScope`: the chain of error handlers visible to a `?`,
+  one node per `catch` install, following the CALL chain — an instantiated
+  body starts from its call site's; `Scope::append` extends the lexical
+  path only, `Scope::with_catch` the dynamic one)
 
 ### Node Graph Execution
 
@@ -1317,14 +1321,24 @@ in `run!` fixtures and bench programs). The decision is recorded in
   fresh segment (`graphix_grow_stack`); the per-activation block-tree
   walks are iterative; `GRAPHIX_STACK_BUDGET`/`set_stack_budget`
   (default unlimited; fuzz children 1GB) aborts a runaway like Ctrl-C.
-  Nine infinite-recursion pins retired (corpus 437). P1c PROFILED
-  2026-08-25 (release): the interp's per-activation CONSTANT is ~8µs /
-  ~15KB — fine, and the clone_rebind resurrection is dead; the
-  superlinear term is the DYNAMIC SCOPE PATH (`Scope.dynamic`, a
-  flattened `Path` string re-spelling the whole activation ancestry per
-  level for the catch registry: 2GB and 78% of cycles in
-  `is_canonical` at 20k deep). Fix if built = a parent-linked chain
-  carrying its catch (~200 lines); pending Eric's call.
+  Nine infinite-recursion pins retired (corpus 437). P1c PROFILED AND
+  BUILT 2026-08-25 (release profile): the interp's per-activation
+  CONSTANT is ~8µs / ~15KB — fine, and the clone_rebind resurrection is
+  dead; the superlinear term was the DYNAMIC SCOPE PATH (`Scope.dynamic`
+  was a flattened `Path` string that every block/arm level extended and
+  that re-spelled the whole activation ancestry per level: 2GB and 78%
+  of cycles in `is_canonical` at 20k deep). Now `Scope::append` is
+  lexical-only and `DynScope` is a parent-linked chain with one node
+  per handler install (`Env.catch`/`lookup_catch` deleted): deep 20k
+  `--no-fusion` 4.10s/2050MB → 0.52s/236MB, linear; pinned by
+  `graphix-shell/tests/recursion_memory.rs` + `lang/errors.rs`
+  `catch_per_activation`. HARNESS RULE from its regress: a stack-budget
+  abort is `Outcome::Timeout` (`CtlFlag::Budget` on the runtime's
+  `Control`, `GXHandle::budget_aborted()`) — containment is outside the
+  language, and
+  which limit stops a runaway first is a race between the two engines'
+  descent speeds (JIT 0.84s vs node-walk 16.7s to 1GB), not a property
+  of the program.
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the

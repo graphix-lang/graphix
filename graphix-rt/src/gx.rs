@@ -805,7 +805,7 @@ impl<X: GXExt> GX<X> {
                     let path =
                         ModPath(netidx_core::path::Path::root().append(s.as_str()));
                     self.ctx.env.unbind_scope_subtree(&path);
-                    Scope { lexical: path.clone(), dynamic: path }
+                    Scope { lexical: path, ..Scope::root() }
                 }
             };
             let (ori, exprs) = self.load_exprs(source).await?;

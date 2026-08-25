@@ -38,6 +38,19 @@ pub fn set_stack_budget(bytes: usize) {
     STACK_BUDGET.store(bytes, Ordering::Relaxed);
 }
 
+/// Abort the running runtime because a recursion exceeded the budget —
+/// the one exit for both engines (the node-walk's [`grow`], the
+/// kernel's `graphix_stack_check`), so the log line and the
+/// `CtlFlag::Budget` mark are the same whichever descended.
+pub(crate) fn budget_abort() {
+    log::error!(
+        "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
+         (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
+        STACK_BUDGET.load(Ordering::Relaxed)
+    );
+    crate::fusion::emit_helpers::abort_current_control_budget();
+}
+
 thread_local! {
     /// Bytes of grown segments currently live on this thread.
     static GROWN: Cell<usize> = const { Cell::new(0) };
@@ -68,12 +81,7 @@ pub(crate) fn grow_exceeds_budget() -> bool {
 /// unwind at its next interrupt poll instead of overflowing here.
 pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     if grow_exceeds_budget() {
-        log::error!(
-            "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
-             (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
-            STACK_BUDGET.load(Ordering::Relaxed)
-        );
-        crate::fusion::emit_helpers::abort_current_control();
+        budget_abort();
     }
     GROWN.with(|g| g.set(g.get() + SEGMENT));
     let r = stacker::grow(SEGMENT, f);

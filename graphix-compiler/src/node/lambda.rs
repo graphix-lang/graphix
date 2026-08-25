@@ -850,16 +850,9 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         body: Expr,
     ) -> Result<Self> {
         let origin = body.ori.clone();
-        Self::new_with_body(
-            ctx,
-            id,
-            typ,
-            argspec,
-            args,
-            scope,
-            origin,
-            |ctx, _| compile(ctx, flags, body, scope, tid),
-        )
+        Self::new_with_body(ctx, id, typ, argspec, args, scope, origin, |ctx, _| {
+            compile(ctx, flags, body, scope, tid)
+        })
     }
 
     pub(super) fn new_collection(
@@ -889,7 +882,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     fn new_with_body(
         ctx: &mut ExecCtx<R, E>,
         id: LambdaId,
-            typ: Arc<FnType>,
+        typ: Arc<FnType>,
         argspec: Arc<[Arg]>,
         args: &[Node<R, E>],
         scope: &Scope,
@@ -1463,8 +1456,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 ori: Arc::new(Origin::default()),
             },
         );
-        let prev_catch =
-            ctx.env.catch.insert_cow(def.scope.dynamic.clone(), (faux_id, ExprId::new()));
+        let gate_scope = def.scope.with_catch((faux_id, ExprId::new()));
         // DECLARED (named) signature tvars are RIGID for the DURATION
         // of this def gate: the body must be well-typed for ARBITRARY
         // 'a, so a concrete body type can't bind (and thereby escape)
@@ -1486,7 +1478,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         let res = (def.init)(
-            &def.scope,
+            &gate_scope,
             ctx,
             &mut faux_args,
             BindMode::Definition,
@@ -1557,10 +1549,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);
-        match prev_catch {
-            Some(id) => ctx.env.catch.insert_cow(def.scope.dynamic.clone(), id),
-            None => ctx.env.catch.remove_cow(&def.scope.dynamic),
-        };
         for tv in named_tvs.values() {
             tv.clear_rigid();
         }

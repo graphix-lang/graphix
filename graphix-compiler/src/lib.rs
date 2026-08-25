@@ -115,6 +115,10 @@ pub enum CFlag {
 pub enum CtlFlag {
     Interrupt = 1,
     Abort = 2,
+    /// Set beside `Abort` when the STACK BUDGET stopped the runtime
+    /// (`stack::budget_abort`): a harness can tell that containment
+    /// from a runtime error of the program's own.
+    Budget = 4,
 }
 
 /// A runtime diagnostic: a failure whose value-level outcome is BOTTOM
@@ -164,6 +168,17 @@ impl Control {
     /// before the next cycle. Sticky — never cleared.
     pub fn abort(&self) {
         self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
+    }
+
+    /// [`Self::abort`], marked as the stack budget's doing.
+    pub fn abort_budget(&self) {
+        self.flags
+            .fetch_or(CtlFlag::Abort as u32 | CtlFlag::Budget as u32, Ordering::Release);
+    }
+
+    /// True if the stack budget aborted this runtime.
+    pub fn budget_aborted(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & (CtlFlag::Budget as u32) != 0
     }
 
     /// True if any control flag is set — the signal a loop polls to
@@ -1970,18 +1985,21 @@ pub(crate) struct PendingImport {
     pub(crate) ori: triomphe::Arc<expr::Origin>,
 }
 
+/// The lexical and dynamic scope of a point in a program. The lexical
+/// half is a path that names the point in the source (module and
+/// block nesting); the dynamic half is the chain of installed error
+/// handlers visible to a `?` there, which follows the CALL chain: an
+/// instantiated body starts from its call site's dynamic scope and its
+/// definition's lexical scope.
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub lexical: ModPath,
-    pub dynamic: ModPath,
+    pub dynamic: DynScope,
 }
 
 impl Scope {
     pub fn append<S: AsRef<str> + ?Sized>(&self, s: &S) -> Self {
-        Self {
-            lexical: ModPath(self.lexical.append(s)),
-            dynamic: ModPath(self.dynamic.append(s)),
-        }
+        Self { lexical: ModPath(self.lexical.append(s)), dynamic: self.dynamic.clone() }
     }
 
     /// Append a generated block-scope component (do/fn/sel/ca level).
@@ -1989,8 +2007,77 @@ impl Scope {
         self.append(block_component(kind, id).as_str())
     }
 
+    /// The scope covered by a handler installed here.
+    pub fn with_catch(&self, catch: (BindId, ExprId)) -> Self {
+        Self { lexical: self.lexical.clone(), dynamic: self.dynamic.with_catch(catch) }
+    }
+
     pub fn root() -> Self {
-        Self { lexical: ModPath::root(), dynamic: ModPath::root() }
+        Self { lexical: ModPath::root(), dynamic: DynScope::root() }
+    }
+}
+
+/// The dynamic scope: the chain of installed error handlers visible
+/// at a point, innermost first. One node per handler install and
+/// nothing else — an activation whose body installs no handler shares
+/// its caller's scope outright, so the chain is as long as the number
+/// of handlers between a point and the program root, never as long as
+/// the call chain. Each node names the handler's error-variable bind
+/// and the top the handler node lives under (cross-top deliveries
+/// take the `set_var` path).
+#[derive(Clone, Default)]
+pub struct DynScope(Option<triomphe::Arc<DynNode>>);
+
+struct DynNode {
+    catch: (BindId, ExprId),
+    parent: DynScope,
+}
+
+impl DynScope {
+    pub fn root() -> Self {
+        Self(None)
+    }
+
+    pub fn with_catch(&self, catch: (BindId, ExprId)) -> Self {
+        Self(Some(triomphe::Arc::new(DynNode { catch, parent: self.clone() })))
+    }
+
+    /// The innermost visible handler, if any.
+    pub fn catch(&self) -> Option<(BindId, ExprId)> {
+        self.0.as_ref().map(|n| n.catch)
+    }
+
+    /// The number of handlers visible from here.
+    pub fn depth(&self) -> usize {
+        let mut n = 0;
+        let mut cur = self.0.as_ref();
+        while let Some(node) = cur {
+            n += 1;
+            cur = node.parent.0.as_ref();
+        }
+        n
+    }
+}
+
+impl std::fmt::Debug for DynScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DynScope(depth: {}, catch: {:?})", self.depth(), self.catch())
+    }
+}
+
+/// The chain can be as deep as a recursion that installs a handler per
+/// activation, so the default drop glue's recursion into `parent` is
+/// unwound into a loop: each node whose only owner was its child is
+/// taken apart here, never inside a nested drop.
+impl Drop for DynNode {
+    fn drop(&mut self) {
+        let mut next = self.parent.0.take();
+        while let Some(arc) = next {
+            match triomphe::Arc::try_unwrap(arc) {
+                Ok(mut node) => next = node.parent.0.take(),
+                Err(_) => break,
+            }
+        }
     }
 }
 

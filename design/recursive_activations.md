@@ -554,8 +554,10 @@ Stays:
   becomes a parent-linked chain carrying its catch (~200 lines, no
   cloner, no second compile path). The flat per-slot cost is diffuse
   (~40µs; 10k async slots in 0.4s) — live with it. The clone_rebind
-  resurrection is DEAD: the constant it would remove is 8µs. DECISION
-  PENDING (Eric, 2026-08-25: profile first, maybe live with it).
+  resurrection is DEAD: the constant it would remove is 8µs. BUILT
+  2026-08-25 ("As built — P1c" below): lexical-only `Scope::append` AND
+  the chain, since a `catch` in a recursive body is a shape Eric wants
+  to work — deep 20k `--no-fusion` 4.10s/2050MB → 0.52s/236MB.
 - **P2 — the trait.** The hole in the type system (§7), `trait
   Collection` in core with the intrinsic impls under it, `list::
   to_array_rev`, the three pressure tests as fixtures, generator
@@ -665,3 +667,93 @@ force-frame-pointers=yes" CARGO_PROFILE_RELEASE_DEBUG=1 cargo build
 --release -p graphix-shell --no-default-features --features
 array,str,map,sys,list,rand,re --target-dir ~/tmp/target/prof` (12m55s
 clean).
+
+## As built — P1c (2026-08-25)
+
+Eric's question that settled the design: *why extend the dynamic scope
+per iteration at all?* The dynamic scope has exactly one kind of event
+that must move it — a handler install — and everything else on it was
+the lexical half's business copied over by `Scope::append`. So both
+halves of the fix landed together:
+
+- **`Scope::append` is lexical-only.** Blocks, select arms, catch
+  handler bodies, lambda defs, impls and modules extend the lexical
+  path and inherit the dynamic scope unchanged. A recursion whose body
+  installs no handler shares its caller's dynamic scope across every
+  activation: zero per-level cost.
+- **`DynScope` is a parent-linked chain, one node per handler install**
+  (`lib.rs`: `DynScope(Option<Arc<DynNode { catch: (BindId, ExprId),
+  parent }>>)`). `Catch::compile` covers the rest of its block with
+  `scope.with_catch(..)`; `?` (compile) and a throwing call site
+  (`typecheck0`) read `scope.dynamic.catch()` — the node IS the
+  registry, so `Env.catch`, `lookup_catch`, its `restore_lexical_env`
+  clones and its `unbind_scope_subtree` sweep are deleted. The lambda
+  def gate compiles the body under a faux-catch CHILD of the def scope
+  (`def.scope.with_catch(faux)`) instead of overriding the def scope's
+  key and restoring it afterwards. A recursion whose body DOES install
+  a handler adds one node per activation — the chain's legitimate
+  length, O(1) per level, and the case the lexical-only change alone
+  would have left quadratic (Eric: "catch in the body is something I
+  could see being useful, so we have to handle it").
+- Equivalence with the string registry: both lookups run at
+  compile/typecheck time after every covering catch is installed, and a
+  catch covers only scopes created after it (the rest of its block), so
+  reading the covering node at lookup sees exactly what the longest-
+  prefix walk saw. The only registry MUTATION was the def gate's
+  override, which the faux child reproduces (the def-time body's `?`s
+  resolve to the faux bind, collecting the body's throws; instances
+  compiled at call sites never see it, as before). The core-trait
+  prototype scope (`traits.rs build_prototypes`) and the rt's
+  initial-scope compile (`gx.rs`) start from `DynScope::root()` — they
+  used the module path as a dynamic path, which could only ever have
+  found a catch installed at exactly that module level.
+- The chain can be as deep as a handler-per-activation recursion, so
+  `DynNode`'s drop is unwound into a loop (`Arc::try_unwrap` down the
+  parent chain), per the stack-discipline rule for destructors, and its
+  `Debug` prints depth + innermost catch rather than the chain.
+
+Measured (release, quiet box; before → after):
+
+| subject, `--no-fusion` | 10k | 20k |
+|---|---|---|
+| deep `n + f(n-1)` | 1.19s / 568MB → 0.28s / 134MB | 4.10s / 2050MB → 0.52s / 236MB |
+| async tail | 1.25s / 584MB → 0.35s / 151MB | 4.44s / 2083MB → 0.69s / 271MB |
+| flat async map | 0.41s / 197MB → 0.41s / 196MB | 0.83s / 359MB → 0.84s / 360MB |
+
+The nested cases are linear now (~25µs, ~10KB per activation above the
+36MB base); the flat case is untouched, as it should be. The after
+profile is diffuse — typecheck (`RefHist::new`, `contains_dispatch`,
+`settle_terminal`), `env.by_id` COW, pool take/drop — nothing above 3%.
+`GRAPHIX_DBG_PERF` deep 20k: bind 725ms / setup 535ms over ~18k binds.
+
+Pins: `lang/errors.rs` `catch_per_activation` (a handler in a recursive
+body belongs to its activation — three distinct cells sum to 6),
+`catch_in_callee_stays_in_callee`, `catch_through_call` (a body that
+installs nothing reaches the caller's handler); `graphix-shell/tests/
+recursion_memory.rs` runs 20k interpreted activations in a child and
+bounds peak RSS at 800MB (debug peaks at ~420MB now; the string form
+peaked past 2GB in either build) — 10s in debug, so it runs un-gated.
+
+**What the release regress found (4 "regressions", 0 semantics).** The
+four surviving depth-trip-era pins whose programs are UNBOUNDED
+DESCENTS (`f(x - 1)` at `x = 0`: `03_soak_trip_adjacent`,
+`01_depth_trip_then_refwrite`, `trip-poison-extent/01,02`) came back
+`interp: Timeout` vs `jit: RuntimeErr(runtime did not respond)`. Both
+engines hit the SAME 1GB stack budget — the JIT in 0.84s, the node-walk
+in 16.7s (4.7GB of activations at ~1.7KB of native stack each) — and
+the regress deadline is 3s, so which containment fired first was a
+race the faster interp had just moved. Under `atomic_recursion.md`
+containment is outside the language, so the harness now says so: a
+budget abort sets `CtlFlag::Budget` beside `Abort` on the runtime's
+`Control` (`stack::budget_abort`, the ONE exit for both engines — the
+kernel's `graphix_stack_check` used to abort silently, without the log
+line or any mark), `GXHandle::budget_aborted()` reads it, and the fuzz
+runner maps a `RuntimeErr` from a budget-aborted runtime to
+`Outcome::Timeout` — one outcome for a runaway whichever limit stops
+it, attributed to the subject's own runtime (regress runs subjects
+concurrently in one process, so a global counter could have credited
+one subject's abort to another). The pins stay: they now pin "an
+unbounded descent is a runaway on both engines". Fleet consequence: a
+mutated program whose base case is lost is common, and without the
+rule every one would have been a Timeout-vs-RuntimeErr finding at the
+3s campaign timeout.

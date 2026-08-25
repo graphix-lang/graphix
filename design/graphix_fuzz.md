@@ -237,7 +237,12 @@ while absolute cycle numbers are not. `first_difference()` classifies:
 CapMismatch` — the discriminant participates in `bucket()` so the
 minimizer can't morph a firing bug into a value bug. A bottom program is
 instant empty-trace agreement (no sleeps); `Timeout` narrowly means "wedged
-evaluator".
+evaluator" — or, since 2026-08-25, a runaway the STACK BUDGET aborted:
+the runner maps a `RuntimeErr` from a runtime whose `Control` carries
+`CtlFlag::Budget` (`GXHandle::budget_aborted()`) to `Timeout`, because
+the deadline and the budget are the same containment and which one stops
+an unbounded descent first is a race between the engines' descent speeds
+(JIT 0.84s vs node-walk 16.7s to 1GB), not a property of the program.
 
 **Injection schedules** ride a one-line comment header on the program text —
 `// schedule-v1: cap=64 events=512; in0=i64:3 in1=f64:1.5; in0=i64:4`

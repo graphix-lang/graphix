@@ -685,6 +685,13 @@ impl<X: GXExt> GXHandle<X> {
         self.0.control.interrupt()
     }
 
+    /// True if the stack budget aborted this runtime
+    /// (`graphix_compiler::set_stack_budget`) — containment, not a
+    /// result of the program's.
+    pub fn budget_aborted(&self) -> bool {
+        self.0.control.budget_aborted()
+    }
+
     /// Shut the runtime down, breaking any wedged loop first. Unlike
     /// dropping the handle, this can be called *while commands are in
     /// flight* (it borrows `&self`, rather than consuming the last

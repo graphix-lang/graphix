@@ -101,7 +101,9 @@ pub enum Outcome {
     /// The runtime neither quiesced nor hit the trace budget within
     /// the wall-clock backstop — a wedged evaluator, or a program that
     /// spins forever without its `result` ever firing (only firing
-    /// cycles count against the budget).
+    /// cycles count against the budget) — or the stack budget aborted
+    /// it first: both are containment outside the language, and a
+    /// runaway stopped by either is the same outcome.
     Timeout,
 }
 
@@ -498,6 +500,15 @@ pub async fn run_program_with_stats_routed(
         let mut lines: Vec<String> = sink.take().lines().map(|l| l.to_string()).collect();
         lines.sort_unstable();
         t.stdout = lines;
+    }
+    // A stack-budget abort is CONTAINMENT, like the deadline: the
+    // runtime it stops reports a RuntimeErr, and the deadline would have
+    // reported Timeout on the same runaway a little later — which of the
+    // two fires first is a race between how fast each engine descends
+    // (the JIT exhausts a 1GB budget in under a second, the node-walk
+    // in ~17s), not a property of the program. One outcome for both.
+    if matches!(outcome, Outcome::RuntimeErr(_)) && ctx.rt.budget_aborted() {
+        outcome = Outcome::Timeout;
     }
     // A Timeout means the evaluator may be WEDGED in sync code (a
     // runaway native loop, a huge node-walk loop) — a wedged runtime

@@ -1,6 +1,6 @@
 use crate::{
     BindId,
-    expr::{ExprId, ModPath, Origin, Sandbox, TypeDefBody},
+    expr::{ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
         Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite,
@@ -303,10 +303,6 @@ pub struct Env {
     /// module path roots from anywhere. Populated by package
     /// registration; survives the lexical swap like `names`.
     pub package_roots: Set<ArcStr>,
-    /// Installed catch handlers by DYNAMIC scope path: the handler's
-    /// error-variable bind and the TOP the handler node lives under
-    /// (cross-top deliveries must take the `set_var` path).
-    pub catch: Map<ModPath, (BindId, ExprId)>,
     /// Append-only mirror of every `(scope, name) → BindId` ever
     /// created via `bind_variable`. Used by IDE tooling for cursor
     /// → scope completion: it exposes lambda parameters and other
@@ -351,7 +347,6 @@ impl Env {
             package_roots: _,
             modules,
             typedefs,
-            catch,
             ide_binds,
             lsp_mode: _,
             ide: _,
@@ -368,7 +363,6 @@ impl Env {
         *poly_binds = Set::new();
         *modules = Set::new();
         *typedefs = Map::new();
-        *catch = Map::new();
         *ide_binds = Map::new();
     }
 
@@ -389,7 +383,6 @@ impl Env {
             typedefs: other.typedefs,
             traits: other.traits,
             by_id: self.by_id.clone(),
-            catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             names: self.names.clone(),
             abstract_reps: self.abstract_reps.clone(),
@@ -411,7 +404,6 @@ impl Env {
             typedefs: mem::take(&mut other.typedefs),
             traits: mem::take(&mut other.traits),
             by_id: self.by_id.clone(),
-            catch: self.catch.clone(),
             byref_chain: self.byref_chain.clone(),
             names: self.names.clone(),
             abstract_reps: self.abstract_reps.clone(),
@@ -1096,15 +1088,6 @@ impl Env {
         })
     }
 
-    /// lookup the nearest catch handler in this scope: the handler's
-    /// error-variable bind id and its top
-    pub fn lookup_catch(&self, scope: &ModPath) -> Result<(BindId, ExprId)> {
-        match Path::dirnames(&scope.0).rev().find_map(|scope| self.catch.get(scope)) {
-            Some(id) => Ok(*id),
-            None => bail!("there is no catch visible in {scope}"),
-        }
-    }
-
     /// lookup binds in scope that match the specified partial
     /// name. This is intended to be used for IDEs and interactive
     /// shells, and is not used by the compiler.
@@ -1546,14 +1529,6 @@ impl Env {
             .collect();
         for s in &*mod_scopes {
             self.modules.remove_cow(s);
-        }
-        let catch_scopes: LPooled<Vec<ModPath>> = (&self.catch)
-            .into_iter()
-            .filter(|(s, _)| scope_is_under(s, scope))
-            .map(|(s, _)| s.clone())
-            .collect();
-        for s in &*catch_scopes {
-            self.catch.remove_cow(s);
         }
         removed
     }

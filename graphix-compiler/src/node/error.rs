@@ -161,15 +161,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         // rethrowing `?` inside it resolves to a predecessor catch in
         // the same block or an outer one — never to itself.
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
-        let covered = Scope {
-            lexical: scope.lexical.clone(),
-            dynamic: ModPath(
-                scope
-                    .dynamic
-                    .append(crate::block_component("c", spec.id.inner()).as_str()),
-            ),
-        };
-        ctx.env.catch.insert_cow(covered.dynamic.clone(), (bind_id, top_id));
+        let covered = scope.with_catch((bind_id, top_id));
         let node = Node::new(Self {
             spec,
             handler,
@@ -285,7 +277,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         e: &Expr,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
-        let id = match ctx.env.lookup_catch(&scope.dynamic).ok() {
+        let id = match scope.dynamic.catch() {
             None => {
                 if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
                     bail!(
