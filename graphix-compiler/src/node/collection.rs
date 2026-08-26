@@ -540,6 +540,28 @@ fn is_unit_or_null(typ: &Type) -> bool {
     matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
 }
 
+/// Whether a FROZEN type admits `null` — filter_map's drop marker.
+/// Conservative: an unknown shape answers true, so the caller keeps
+/// the interpreted path (a coverage loss, never a wrong answer).
+fn frozen_may_be_null(t: &Type) -> bool {
+    t.with_deref(|t| match t {
+        Some(Type::Primitive(p)) => p.contains(netidx_value::Typ::Null),
+        Some(Type::Set(ms)) => ms.iter().any(frozen_may_be_null),
+        Some(
+            Type::Array(_)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Variant(_, _)
+            | Type::Fn(_)
+            | Type::Error(_)
+            | Type::Map { .. }
+            | Type::Abstract { .. }
+            | Type::ByRef(_),
+        ) => false,
+        _ => true,
+    })
+}
+
 /// Fold the loop's [`scaffold::SlotFlags`] and the source's firing
 /// into the emitted result — the shared tail of every kind emitter.
 fn finish_loop_result(
@@ -1875,14 +1897,23 @@ fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
     let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
         return Ok(None);
     };
     let Some(output_element) = kernel_abi::nullable_inner(&output_type) else {
+        // A TOTAL callback: its return type has no null member, so it
+        // can never produce the `Null` that filter_map drops — this
+        // filter_map IS map (the trait map DEFAULT's shape,
+        // `|c, f| filter_map(c, |x| f(x))`). Emit the map loop.
+        // A type that MAY be null (or an unknown shape) keeps the
+        // interpreted path.
+        if frozen_may_be_null(&output_type) {
+            return Ok(None);
+        }
+        return emit_map_kind(cx, source, body, param, element_type, flavor);
+    };
+    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
+    else {
         return Ok(None);
     };
     if is_unit_or_null(&output_element) {

@@ -44,32 +44,32 @@ run found the `is_a_int` unguarded value-depth recursion (a 200-element
 ## Results
 
 Release build, best-of-3 per mode, 2026-08-25 (full re-sweep after
-the invariant-formals arc).
+the map-default widening fix).
 Grouped by family; `1x` = the shape does not fuse (jit == node-walk),
 and the honest differential is that row's jit time against the
 intrinsic row's jit time.
 
 | bench            | n    | jit       | node-walk | speedup |
 |------------------|------|-----------|-----------|---------|
-| `fold_intr`      | 100k | 0.26 ms   | 2.18 s    | 8257x   |
-| `fold_trait`     | 100k | 0.27 ms   | 2.17 s    | 8085x   |
-| `fold_rec`       | 100k | 16.3 ms   | 0.26 s    | 16x     |
-| `map_intr`       | 100k | 2.4 ms    | 4.28 s    | 1783x   |
-| `map_fmshape`    | 100k | 1.86 s    | 4.38 s    | 2x      |
-| `map_init`       | 100k | 2.4 ms    | 4.89 s    | 2062x   |
-| `map_intr_10k`   | 10k  | 0.23 ms   | 0.29 s    | 1286x   |
-| `map_push`       | 10k  | 0.35 s    | 0.53 s    | 1.5x    |
-| `filter_intr`    | 100k | 1.3 ms    | 2.77 s    | 2142x   |
-| `filter_fmshape` | 100k | 2.2 ms    | 3.66 s    | 1647x   |
-| `find_intr`      | 500k | 1.6 ms    | 7.13 s    | 4556x   |
-| `find_fold`      | 500k | 30.0 s    | 32.0 s    | 1x      |
-| `flatmap_intr`   | 10k  | 1.5 ms    | 0.57 s    | 380x    |
-| `flatmap_fold`   | 10k  | 1.57 s    | 2.21 s    | 1x      |
-| `lfold_intr`     | 100k | 4.1 ms    | 2.23 s    | 543x    |
-| `lfold_intr_4k`  | 4k   | 0.15 ms   | 62 ms     | 410x    |
-| `lfold_rec`      | 4k   | 0.29 s    | 0.28 s    | 1x      |
-| `mfold_intr`     | 100k | 25 ms     | 4.01 s    | 161x    |
-| `mfold_trait`    | 100k | 4.71 s    | 5.25 s    | 1x      |
+| `fold_intr`      | 100k | 0.31 ms   | 2.17 s    | 7070x   |
+| `fold_trait`     | 100k | 0.27 ms   | 2.17 s    | 8046x   |
+| `fold_rec`       | 100k | 13.7 ms   | 0.27 s    | 19x     |
+| `map_intr`       | 100k | 2.4 ms    | 4.24 s    | 1781x   |
+| `map_fmshape`    | 100k | 2.3 ms    | 4.31 s    | 1835x   |
+| `map_init`       | 100k | 2.4 ms    | 4.72 s    | 1963x   |
+| `map_intr_10k`   | 10k  | 0.28 ms   | 0.31 s    | 1117x   |
+| `map_push`       | 10k  | 0.36 s    | 0.54 s    | 1.5x    |
+| `filter_intr`    | 100k | 1.2 ms    | 2.83 s    | 2319x   |
+| `filter_fmshape` | 100k | 3.3 ms    | 3.54 s    | 1060x   |
+| `find_intr`      | 500k | 1.7 ms    | 7.15 s    | 4184x   |
+| `find_fold`      | 500k | 29.7 s    | 31.5 s    | 1x      |
+| `flatmap_intr`   | 10k  | 1.5 ms    | 0.56 s    | 381x    |
+| `flatmap_fold`   | 10k  | 1.53 s    | 2.25 s    | 1x      |
+| `lfold_intr`     | 100k | 4.1 ms    | 2.15 s    | 525x    |
+| `lfold_intr_4k`  | 4k   | 0.15 ms   | 60 ms     | 404x    |
+| `lfold_rec`      | 4k   | 0.30 s    | 0.29 s    | 1x      |
+| `mfold_intr`     | 100k | 26 ms     | 4.05 s    | 155x    |
+| `mfold_trait`    | 100k | 4.63 s    | 5.10 s    | 1x      |
 
 ## Reading the table
 
@@ -106,33 +106,35 @@ intrinsic row's jit time.
   the curve is linear (0.050/0.096/0.201/0.414 s — 119x at 8k) and
   the row above is post-fix. The residual ~1900x to `lfold_intr_4k`
   is finding 3's per-level activation, no longer the type test.
-- **`map_fmshape` loses fusion where `filter_fmshape` keeps it**: the
+- **`map_fmshape` is at parity (widening FIXED, 2026-08-25)**: the
   map default's callback returns bare `'b` in `Option<'b>` position
-  (the trait default body), and that widening de-fuses the loop;
-  filter's callback produces the union itself and fuses at 1.9x the
-  intrinsic. A fusion-coverage bug worth its own fix — with it, the
-  map DEFAULT would be a 2-ms row.
-- **`map_init` matches the intrinsic** (2.6 ms vs 2.5 ms): `map`
-  derived as `init(len(a), |i| f(a[i]))` is free under the JIT — the
-  one place the measurement found a deletable-candidate path, blocked
-  only by the default-body fusion bug above (and Array-only: `init`
-  is index-based).
+  (the trait default body, `|c, f| filter_map(c, |x| f(x))`). A TOTAL
+  callback — return type provably null-free — can never produce the
+  `Null` filter_map drops, so the emitter routes it to the MAP loop:
+  2.3 ms vs `map_intr`'s 2.4 ms. A may-be-null or unknown-shaped
+  return keeps the interpreted path (`frozen_may_be_null`,
+  conservative).
+- **`map_init` matches the intrinsic** (2.4 ms vs 2.4 ms): `map`
+  derived as `init(len(a), |i| f(a[i]))` is free under the JIT. With
+  the widening fixed, Array `map` now has TWO parity derivations
+  (via `filter_map`-with-total-callback and via `init`) — the first
+  deletable-candidate operation.
 - **`find_fold` is the worst derivation**: unfused plus a per-element
   double select over the Option accumulator — 31.5 s vs 1.7 ms.
 - **`flatmap_fold`** pays O(n^2) concat copies AND doesn't fuse.
 - `lfold_intr` at 4.3 ms/100k is ~9x faster than the 2026-07
   `list_fold_sum` row (38 ms) — the flatten boundary improved since.
 
-**Per-operation verdict (the P2b question)**: every intrinsic stays.
-Trait dispatch to a marker-bodied impl is FIXED (`fold_trait` at
-parity), finding 2's quadratic arm consults are FIXED (shallow
-discriminators — `lfold_rec` 9.58 s -> 0.29 s), and finding 3's
-formal-kind gate is FIXED for loop-invariant formals (`fold_rec`
-8.40 s -> 16.3 ms). Still open: WRAPPER impl bodies (`mfold_trait` —
-the trait-default shape, which also gates fn-formal FORWARDING), the
-map-default widening, and Value-kind loop-CARRIED rebinds
-(`lfold_rec`'s per-level activation). The only
-near-parity derivation (`map` via `init`) is gated on the
-default-body widening fix, and only for Array. Re-run this corpus
-after each of those lands — the verdicts are per-operation and may
-flip.
+**Per-operation verdict (the P2b question)**: every intrinsic stays
+for now, but Array `map` is the first deletable CANDIDATE — two
+parity derivations (`filter_map`-with-total-callback at 2.3 ms and
+`init` at 2.4 ms vs the intrinsic's 2.4 ms). Fixed this round: trait
+dispatch to a marker-bodied impl (`fold_trait` at parity), finding
+2's quadratic arm consults (shallow discriminators — `lfold_rec`
+9.58 s -> 0.29 s), finding 3's formal-kind gate for loop-invariant
+formals (`fold_rec` 8.40 s -> 13.7 ms), and the map-default widening
+(`map_fmshape` 4.21 s -> 2.3 ms). Still open: WRAPPER impl bodies
+(`mfold_trait` — the trait-default shape, which also gates fn-formal
+FORWARDING) and Value-kind loop-CARRIED rebinds (`lfold_rec`'s
+per-level activation). Re-run this corpus after each of those
+lands — the verdicts are per-operation and may flip.

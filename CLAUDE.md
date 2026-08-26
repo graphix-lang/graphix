@@ -1393,7 +1393,10 @@ id (`JitEnv::lookup_id` — closed missed-fusion item 1), and
 collection-marker lambdas refuse `build_lambda_kernel` explicitly;
 `fold_rec` 8.4s -> 16.3ms JIT / 0.26s interp — both engines loop;
 residue: loop-CARRIED Value rebinds (lfold_rec) + fn-formal
-forwarding).
+forwarding); map-default widening FIXED (2026-08-25 — a TOTAL
+filter_map callback routes to the map loop, `filter_map(c, total f)`
+IS `map`; map_fmshape 4.21s -> 2.3ms, parity with map_intr — Array
+`map` is the first deletable candidate, two parity derivations).
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the

@@ -1056,10 +1056,19 @@ best-of-3; full table + notes in its README). The headline numbers:
   be a 2 ms row); find's is 4 orders off (unfused double select);
   flat_map's pays O(n^2) concat AND interprets. `map` via `init` is
   the one parity derivation (2.6 ms vs 2.5 ms), Array-only.
+  The widening FIXED same evening: a TOTAL filter_map callback
+  (frozen return provably null-free — `frozen_may_be_null`,
+  conservative) can never produce the `Null` the intrinsic drops, so
+  `emit_filter_map_kind` routes it to the MAP loop — filter_map with
+  a total callback IS map. `map_fmshape` 4.21 s -> 2.3 ms, parity
+  with `map_intr`; Array `map` now has TWO parity derivations and is
+  the first deletable CANDIDATE (pinned:
+  filter_map_total_callback, lang/collection.rs).
 
 VERDICT (per the phase question "what stays"): every intrinsic stays.
 The deletion question is not answerable until the WRAPPER-premat
-residue (trait-default bodies), the map-default widening fix, and the
-carried-Value rebind widening land — re-run the corpus after each
-(P3 and finding 3's invariant face landed same day). The measurement's real product
+residue (trait-default bodies) and the carried-Value rebind widening
+land — re-run the corpus after each (P3, finding 3's invariant face,
+and the map-default widening all landed same day; Array `map` is the
+first deletable candidate, two parity derivations). The measurement's real product
 this round was the four findings above plus the widening bug.

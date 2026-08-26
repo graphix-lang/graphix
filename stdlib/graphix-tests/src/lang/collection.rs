@@ -326,3 +326,20 @@ run!(
         let result = a == b
     "#
 );
+
+// A TOTAL filter_map callback (no null in its return type) can never
+// produce the Null the intrinsic drops, so the emitter routes it to
+// the map loop — the trait map DEFAULT's shape
+// (`|c, f| filter_map(c, |x| f(x))`) fuses (P2b map-default widening,
+// 2026-08-25).
+const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
+{
+  let a = array::init(10, |i| i);
+  array::fold(array::filter_map(a, |x| x * 3 + 1), 0, |s, x| s + x)
+}
+"#;
+
+run!(filter_map_total_callback, FILTER_MAP_TOTAL_CALLBACK, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(145))
+); graphix_package_core::testing::FuseExpect::Jit);
