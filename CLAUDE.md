@@ -1130,10 +1130,11 @@ coverage, not correctness).
   `stop`/`sync`/`launch`/`verify`/`status`) drives all four boxes from
   one host table (name, sync method, workers, timeout scale, os), and
   every step verifies with a FACT rather than a message: a stop by
-  `pgrep`, a sync by a CONTENT fingerprint over the build inputs (hz0
-  is rsync'd `--exclude .git`, so its `git log` is a lie by
-  construction; syncthing boxes are waited for and verified, NEVER
-  rsync'd into), and a launch by the campaign's own startup gate line,
+  `pgrep`, a sync by a CONTENT fingerprint over the build inputs (EVERY box
+  is rsync'd `--exclude .git` since 2026-08-26 — the syncthing wait
+  stalled deploys on propagation lag, and same-bytes rsync reconciles
+  with syncthing cleanly — so no box's own `git log` says anything
+  about the tree it runs), and a launch by the campaign's own startup gate line,
   whose corpus count comes from pins embedded at build time — so a
   stale binary shows up as a count mismatch. Seeds are allocated
   10M apart in host-table order from the base.

@@ -30,11 +30,19 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # name : sync method : workers : timeout scale : os
 # Seeds are allocated in THIS order, 10M apart from the base — the round
 # map in memory records the base, so the order is load-bearing.
+# Sync method is rsync for EVERY box (2026-08-26, Eric's call): the
+# old syncthing-wait path stalled deploys on propagation lag (katana
+# sat TREE STALE past SYNC_WAIT while the rest of the fleet verified),
+# and a stale tree can strike any box at any deploy. rsync pushes the
+# same bytes syncthing would deliver, so the two reconcile without
+# conflict copies; the fingerprint check still gates the launch. The
+# cost, now fleet-wide: remote .git is excluded, so a box's own
+# `git log` says nothing about the tree it runs (long true of hz0).
 HOSTS=(
     "hz0:rsync:160:1:linux"
-    "aieka:sync:288:4:linux"
-    "katana:sync:64:4:darwin"
-    "ryouko:sync:85:1:linux"
+    "aieka:rsync:288:4:linux"
+    "katana:rsync:64:4:darwin"
+    "ryouko:rsync:85:1:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}
