@@ -236,14 +236,26 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let mut inner = ctx.clone();
                 let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
                 let body = gen_typed(&inner, rng, e, d.min(2));
-                Some(format!("array::map({src}, |{binder}| {body})"))
+                // The trait road (a third of draws): `Collection::map`
+                // on the Array receiver dispatches through the
+                // constructor trait to the blessed impl — and map IS a
+                // trait DEFAULT, the wrapper-body surface.
+                Some(if rng.below(3) == 0 {
+                    format!("Collection::map({src}, |{binder}| {body})")
+                } else {
+                    format!("array::map({src}, |{binder}| {body})")
+                })
             }
             1 => {
                 let src = gen_typed(ctx, rng, ty, d);
                 let mut inner = ctx.clone();
                 let binder = callback_binder(&mut inner, rng, e, &[]);
                 let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
-                Some(format!("array::filter({src}, |{binder}| {body})"))
+                Some(if rng.below(3) == 0 {
+                    format!("Collection::filter({src}, |{binder}| {body})")
+                } else {
+                    format!("array::filter({src}, |{binder}| {body})")
+                })
             }
             // LIST HOFs, roundtrip-wrapped so the target type stays
             // Array (from_array → list HOF → to_array). Exercises the
@@ -316,6 +328,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 // no-match Null is the B7 seam over the FLATTENED
                 // length).
                 Some(format!("list::find(list::from_array({src}), |{binder}| {body})"))
+            } else if rng.below(3) == 0 {
+                Some(format!("Collection::find({src}, |{binder}| {body})"))
             } else {
                 Some(format!("array::find({src}, |{binder}| {body})"))
             }
@@ -355,6 +369,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!(
                     "list::fold(list::from_array({src}), {init}, |{acc}, {binder}| {body})"
                 ))
+            } else if rng.below(3) == 0 {
+                Some(format!("Collection::fold({src}, {init}, |{acc}, {binder}| {body})"))
             } else {
                 Some(format!("array::fold({src}, {init}, |{acc}, {binder}| {body})"))
             }

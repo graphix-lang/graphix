@@ -199,6 +199,15 @@ pub struct GenStats {
     /// a module implements `Eq`/`Display` for its abstract type and
     /// compares/prints it
     pub core_trait: bool,
+    /// A module declared a SECOND abstract implementing the same
+    /// trait and exported a union-self fn (`lower_trait_union`).
+    pub trait_union: bool,
+    /// A trait-bounded HOF over `Array<'a: Tr>` — dispatch inside a
+    /// collection callback.
+    pub bounded_hof: bool,
+    /// A Collection-generic fn (`|c: Collection|`) registered at
+    /// several constructor types.
+    pub collection_generic: bool,
     /// A module exported a non-fn `val` constant.
     pub iface_const: bool,
     /// A module fn impl carried NO return annotation (interface-checked
@@ -615,6 +624,9 @@ mod test {
         let (mut dynmod, mut comp_iface, mut xmod, mut abst) = (0, 0, 0, 0);
         let mut trait_call = 0;
         let mut core_trait = 0;
+        let mut trait_union = 0;
+        let mut bounded_hof = 0;
+        let mut collection_generic = 0;
         let (mut konst, mut unret, mut refop) = (0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
@@ -631,6 +643,9 @@ mod test {
             abst += s.abstract_value as usize;
             trait_call += s.trait_call as usize;
             core_trait += s.core_trait as usize;
+            trait_union += s.trait_union as usize;
+            bounded_hof += s.bounded_hof as usize;
+            collection_generic += s.collection_generic as usize;
             konst += s.iface_const as usize;
             unret += s.unannotated_ret as usize;
             refop += s.ref_op as usize;
@@ -648,6 +663,9 @@ mod test {
             ("first-class abstract value", abst),
             ("trait declared+implemented+called", trait_call),
             ("core Eq/Display implemented+used", core_trait),
+            ("trait union dispatch exported", trait_union),
+            ("trait-bounded HOF exported", bounded_hof),
+            ("Collection-generic fn exported", collection_generic),
             ("exported constant", konst),
             ("unannotated-return impl", unret),
             ("reference op", refop),

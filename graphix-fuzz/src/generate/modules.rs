@@ -363,6 +363,51 @@ pub(super) fn gen_module(
                 GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
             );
             stats.trait_call = true;
+            // UNION dispatch (`lower_trait_union`): a SECOND abstract
+            // implementing the same trait, and a fn whose self is the
+            // union of the two — the synthesized dispatch select.
+            if chance(rng, 0.5) {
+                let decl = "type T2;\nval mk2: fn(x: i64) -> T2;\nimpl Tr for T2;\nval both: fn(v: [T, T2]) -> i64;\n";
+                let body = "type T2 = Abstract<i64>;\nlet mk2 = |x: i64| -> T2 T2(x);\nimpl Tr for T2 { let tv = |t| t.0 };\nlet both = |v: [T, T2]| -> i64 Tr::tv(v);\n";
+                if has_gxi {
+                    gxi.push_str(decl);
+                }
+                gx.push_str(body);
+                // `both` is callable with EITHER member; register at T
+                // so organic call sites route the first member, and
+                // seed one T2-routed call as a statement.
+                ctx.push(
+                    format!("{mname}::both"),
+                    GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+                );
+                let arg = exprs::gen_typed(ctx, rng, &I64, 1);
+                let w = ctx.fresh();
+                stmts.push(format!("let {w} = {mname}::both({mname}::mk2({arg}))"));
+                ctx.push(w, I64);
+                stats.trait_union = true;
+            }
+            // A trait-bounded HOF over Array<'a: Tr>: dispatch inside
+            // a collection callback (the prototype/premat surface).
+            if chance(rng, 0.5) {
+                let decl = "val tsum: fn<'a: Tr>(xs: Array<'a>) -> i64;\n";
+                let body = "let tsum = 'a: Tr |xs: Array<'a>| -> i64 array::fold(xs, i64:0, |acc, x| acc + Tr::tv(x));\n";
+                if has_gxi {
+                    gxi.push_str(decl);
+                    gx.push_str(body);
+                } else {
+                    gx.push_str(
+                        "let tsum: fn<'a: Tr>(xs: Array<'a>) -> i64 = 'a: Tr |xs: Array<'a>| -> i64 array::fold(xs, i64:0, |acc, x| acc + Tr::tv(x));\n",
+                    );
+                }
+                ctx.push(
+                    format!("{mname}::tsum"),
+                    GenType::Fn {
+                        params: vec![GenType::Array(Box::new(aty.clone()))],
+                        ret: Box::new(I64),
+                    },
+                );
+                stats.bounded_hof = true;
+            }
         }
         // The core traits (design/traits.md §8): an `Eq` whose answer
         // differs from the structural one (parity of the payload) and
@@ -396,6 +441,30 @@ pub(super) fn gen_module(
                 GenType::Fn { params: vec![aty.clone()], ret: Box::new(GenType::Str) },
             );
             stats.core_trait = true;
+        }
+        // A Collection-GENERIC fn (`|c: Collection|` — the constructor
+        // trait's sugar, design/recursive_activations.md §7),
+        // registered at BOTH an Array and a Map parameter type so call
+        // sites dispatch across constructors (decomposition on the
+        // receiver's outermost form).
+        if chance(rng, 0.5) {
+            let decl = "val csize: fn(c: Collection) -> i64;\n";
+            let body = "let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1);\n";
+            if has_gxi {
+                gxi.push_str(decl);
+            }
+            gx.push_str(body);
+            for pty in [
+                GenType::Array(Box::new(I64)),
+                GenType::Map(Box::new(I64)),
+                GenType::Array(Box::new(GenType::Str)),
+            ] {
+                ctx.push(
+                    format!("{mname}::csize"),
+                    GenType::Fn { params: vec![pty], ret: Box::new(I64) },
+                );
+            }
+            stats.collection_generic = true;
         }
         ctx.push(
             format!("{mname}::mk"),
