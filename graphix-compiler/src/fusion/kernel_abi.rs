@@ -1303,6 +1303,20 @@ pub struct KernelSig {
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
     /// (CLIF) accordingly.
     pub has_tail_loop: bool,
+    /// Formal source positions with NO param slot: fn-typed formals
+    /// whose value is never needed at run time — every body use is a
+    /// statically-resolved call (baked at build, keyed by the
+    /// resolution fingerprint), and every self-call passes the formal
+    /// through unchanged. Callers skip the arg entirely
+    /// (`emit_lambda_call_node`); the tail rebind never sees it.
+    pub skipped_args: Vec<u32>,
+    /// Formal source positions that KEEP their param slot but are
+    /// passed unchanged by every self-call — never rebound by the tail
+    /// loop (the rebind would be the identity), which is what frees
+    /// their kind from the loop gate (an invariant String/Variant/
+    /// Value formal loops; a loop-carried one still de-fuses the
+    /// loop).
+    pub tail_invariant: Vec<u32>,
     /// Post-define facts for the interior-sleep gate (P7): `defined`
     /// flips true when the kernel body's CLIF define completes, and
     /// `has_sleep_restart` records whether the body TRANSITIVELY reaches a
@@ -1335,6 +1349,8 @@ impl Clone for KernelSig {
             lifted: self.lifted.clone(),
             return_type: self.return_type.clone(),
             has_tail_loop: self.has_tail_loop,
+            skipped_args: self.skipped_args.clone(),
+            tail_invariant: self.tail_invariant.clone(),
             defined: AtomicBool::new(self.defined.load(Relaxed)),
             has_sleep_restart: AtomicBool::new(self.has_sleep_restart.load(Relaxed)),
             site_desc: std::sync::atomic::AtomicU64::new(self.site_desc.load(Relaxed)),

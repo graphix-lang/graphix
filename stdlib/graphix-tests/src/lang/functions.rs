@@ -856,8 +856,10 @@ run!(two_monomorphizations_one_region, TWO_MONOMORPHIZATIONS_ONE_REGION, |v: Res
 ); graphix_package_core::testing::FuseExpect::Jit);
 
 // A fold-callback body whose local (`e`) shares a name with a nested
-// callee's parameter. It pins BindId-based resolution even though the
-// nested call currently keeps this collection on the node-walk.
+// callee's parameter. It pins BindId-based resolution — and since the
+// loop-invariant-formals arc (2026-08-25: the synthetic genn-Ref
+// id-only lookup) the nested rec-callee call fuses, so the collection
+// compiles too (missed-fusion item 1 closed).
 const FOLD_CALLBACK_NAME_COLLISION: &str = r#"
 {
   let rec pair = |e: i64| -> i64 select e { 0 => 0, _ => e * 10 };
@@ -874,7 +876,7 @@ run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, |v: Result<
 >| matches!(
     v,
     Ok(Value::I64(21))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // An ABANDONED kernel-closure build (the base arm's select-with-error-
 // arm de-fuses the rec lambda) used to leave declared-but-undefined
@@ -1941,3 +1943,112 @@ run!(open_return_callee_in_callback, OPEN_RETURN_CALLEE_IN_CALLBACK, |v: Result<
     v,
     Ok(Value::I64(42))
 ));
+
+// ── Loop-invariant formals (P2b finding 3, 2026-08-25) ──────────────
+// A formal every self-call passes through UNCHANGED (the arg is the
+// formal's own Ref) is never rebound — the rebind would be the
+// identity — so its kind doesn't gate the tail loop, and an fn-typed
+// invariant formal drops out of the kernel signature entirely (its
+// body uses are statically-resolved calls). The stdlib-body shape:
+// recursion threading a callback parameter.
+
+const FN_INVARIANT_TAIL_LOOP: &str = r#"
+{
+  let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
+    select i {
+      0 => acc,
+      _ => fold_go(f, i - 1, f(acc, i))
+    };
+  fold_go(|a, x| a + x, 10, 0)
+}
+"#;
+
+run!(fn_invariant_tail_loop, FN_INVARIANT_TAIL_LOOP, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(55))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// An invariant STRING formal: kept as a kernel slot (a value the body
+// reads) but never rebound, so the String-rebind refusal no longer
+// blocks the loop.
+const STRING_INVARIANT_TAIL_LOOP: &str = r#"
+{
+  let rec label = |tag: string, n: i64, acc: i64| -> string
+    select n {
+      0 => "[tag]:[acc]",
+      _ => label(tag, n - 1, acc + n)
+    };
+  label("sum", 10, 0)
+}
+"#;
+
+run!(string_invariant_tail_loop, STRING_INVARIANT_TAIL_LOOP, |v: Result<&Value>| match v
+{
+    Ok(Value::String(s)) => &**s == "sum:55",
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Two call sites, one recursive helper, two DIFFERENT callbacks with
+// identical types. The kernel bakes its instance's callback
+// resolution as a CLIF call, so the cache key carries the resolution
+// fingerprint — without it the second site would run the first
+// site's callback (the aliasing this fixture would catch as 3003 or
+// 8008 instead of 3008).
+const FN_FORMAL_TWO_CALLBACKS: &str = r#"
+{
+  let rec ap = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n {
+      0 => acc,
+      _ => ap(f, n - 1, f(acc))
+    };
+  ap(|x| x + 1, 3, 0) * 1000 + ap(|x| x * 2, 3, 1)
+}
+"#;
+
+run!(fn_formal_two_callbacks, FN_FORMAL_TWO_CALLBACKS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(3008))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// A NON-invariant fn formal (a self-call rebinds it to a new lambda)
+// keeps the old refusal — a rebind slot can't carry a LambdaDef — and
+// the values still agree between engines (the interp dispatches the
+// rebound callback dynamically).
+const FN_FORMAL_REBOUND: &str = r#"
+{
+  let rec g = |f: fn(x: i64) -> i64, n: i64| -> i64
+    select n {
+      0 => f(0),
+      _ => g(|x| x + 100, n - 1)
+    };
+  g(|x| x + 1, 0) * 1000 + g(|x| x + 1, 2)
+}
+"#;
+
+run!(fn_formal_rebound, FN_FORMAL_REBOUND, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1100))
+); graphix_package_core::testing::FuseExpect::None);
+
+// Forwarding: a helper passes its fn formal on to another helper
+// without calling it. The forwarding site's fingerprint records the
+// forwarded arg's resolution, so the two `call2` instances key two
+// kernels (each baking its own `call1` variant) instead of sharing
+// one. ASPIRE: Jit (currently None) — `call1`'s instance doesn't
+// statically resolve a FORWARDED fn formal (`f(x)` falls to the
+// undiscovered-builtin path), the same nested-premat mechanism as the
+// trait-default wrapper residue (mfold_trait). When that lands this
+// flips to Jit and the two-kernel keying assertion goes live; the
+// value assertion already catches any aliasing.
+const FN_FORMAL_FORWARDED: &str = r#"
+{
+  let call1 = |f: fn(x: i64) -> i64, x: i64| -> i64 f(x);
+  let call2 = |f: fn(x: i64) -> i64, x: i64| -> i64 call1(f, x) + 100;
+  call2(|x| x + 1, 1) * 1000 + call2(|x| x * 10, 1)
+}
+"#;
+
+run!(fn_formal_forwarded, FN_FORMAL_FORWARDED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(102110))
+); graphix_package_core::testing::FuseExpect::None);

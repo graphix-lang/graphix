@@ -10,7 +10,7 @@ written another way:
   corpus (`fold_sum`, `map_fold`, …).
 - **`*_trait`** — the same intrinsic reached through `Collection::…`
   trait dispatch. Same body; measures dispatch + the trait-call fusion
-  gap (trait-dispatched intrinsics interpret — the P3 item).
+  gap (closed — the P3 premat fall-through).
 - **`*_fmshape` / `find_fold` / `flatmap_fold` / `map_init`** — the
   trait DEFAULT's body shape written out directly (`map` as
   `filter_map` with a total callback, `find` as a fold carrying an
@@ -43,32 +43,33 @@ run found the `is_a_int` unguarded value-depth recursion (a 200-element
 
 ## Results
 
-Release build, best-of-3 per mode, 2026-08-25 (post `is_a_int` guard).
+Release build, best-of-3 per mode, 2026-08-25 (full re-sweep after
+the invariant-formals arc).
 Grouped by family; `1x` = the shape does not fuse (jit == node-walk),
 and the honest differential is that row's jit time against the
 intrinsic row's jit time.
 
 | bench            | n    | jit       | node-walk | speedup |
 |------------------|------|-----------|-----------|---------|
-| `fold_intr`      | 100k | 0.28 ms   | 2.28 s    | 8082x   |
-| `fold_trait`     | 100k | 0.31 ms   | 2.19 s    | 7150x   |
-| `fold_rec`       | 100k | 8.40 s    | 9.34 s    | 1x      |
-| `map_intr`       | 100k | 2.5 ms    | 4.60 s    | 1876x   |
-| `map_fmshape`    | 100k | 4.21 s    | 4.39 s    | 1x      |
-| `map_init`       | 100k | 2.6 ms    | 4.99 s    | 1936x   |
-| `map_intr_10k`   | 10k  | 0.24 ms   | 0.32 s    | 1338x   |
-| `map_push`       | 10k  | 1.80 s    | 2.10 s    | 1x      |
-| `filter_intr`    | 100k | 1.3 ms    | 2.86 s    | 2285x   |
-| `filter_fmshape` | 100k | 2.3 ms    | 3.60 s    | 1534x   |
-| `find_intr`      | 500k | 1.7 ms    | 7.55 s    | 4421x   |
-| `find_fold`      | 500k | 31.5 s    | 32.9 s    | 1x      |
-| `flatmap_intr`   | 10k  | 2.1 ms    | 0.60 s    | 294x    |
-| `flatmap_fold`   | 10k  | 1.59 s    | 2.29 s    | 1x      |
-| `lfold_intr`     | 100k | 4.3 ms    | 2.27 s    | 526x    |
-| `lfold_intr_4k`  | 4k   | 0.15 ms   | 62 ms     | 407x    |
-| `lfold_rec`      | 4k   | 0.29 s    | 0.29 s    | 1x      |
-| `mfold_intr`     | 100k | 26 ms     | 4.16 s    | 158x    |
-| `mfold_trait`    | 100k | 4.77 s    | 5.25 s    | 1x      |
+| `fold_intr`      | 100k | 0.26 ms   | 2.18 s    | 8257x   |
+| `fold_trait`     | 100k | 0.27 ms   | 2.17 s    | 8085x   |
+| `fold_rec`       | 100k | 16.3 ms   | 0.26 s    | 16x     |
+| `map_intr`       | 100k | 2.4 ms    | 4.28 s    | 1783x   |
+| `map_fmshape`    | 100k | 1.86 s    | 4.38 s    | 2x      |
+| `map_init`       | 100k | 2.4 ms    | 4.89 s    | 2062x   |
+| `map_intr_10k`   | 10k  | 0.23 ms   | 0.29 s    | 1286x   |
+| `map_push`       | 10k  | 0.35 s    | 0.53 s    | 1.5x    |
+| `filter_intr`    | 100k | 1.3 ms    | 2.77 s    | 2142x   |
+| `filter_fmshape` | 100k | 2.2 ms    | 3.66 s    | 1647x   |
+| `find_intr`      | 500k | 1.6 ms    | 7.13 s    | 4556x   |
+| `find_fold`      | 500k | 30.0 s    | 32.0 s    | 1x      |
+| `flatmap_intr`   | 10k  | 1.5 ms    | 0.57 s    | 380x    |
+| `flatmap_fold`   | 10k  | 1.57 s    | 2.21 s    | 1x      |
+| `lfold_intr`     | 100k | 4.1 ms    | 2.23 s    | 543x    |
+| `lfold_intr_4k`  | 4k   | 0.15 ms   | 62 ms     | 410x    |
+| `lfold_rec`      | 4k   | 0.29 s    | 0.28 s    | 1x      |
+| `mfold_intr`     | 100k | 25 ms     | 4.01 s    | 161x    |
+| `mfold_trait`    | 100k | 4.71 s    | 5.25 s    | 1x      |
 
 ## Reading the table
 
@@ -82,12 +83,22 @@ intrinsic row's jit time.
   to `f` doesn't statically resolve through the inner collection
   site — the named next target, since every trait DEFAULT body is
   this same wrapper shape.
-- **The hand-written recursion rows never collapse** (`fold_rec`,
-  `map_push`, `lfold_rec`): the callback is a FORMAL, and a fn-typed
-  formal fails `structural_tail_loop`'s kind gate — finding 3's widest
-  face, since every stdlib-shaped Graphix body threads `f` as a
-  parameter. They native-recurse per level on both engines (correct
-  and memory-bounded since the `is_a_int` guard, but no loop).
+- **The hand-written recursion rows collapse (finding 3 FIXED,
+  2026-08-25)**: a formal every self-call passes through unchanged is
+  LOOP-INVARIANT — never rebound — so its kind no longer gates
+  `structural_tail_loop`, and an invariant fn-typed formal drops out
+  of the kernel signature entirely (its body uses are statically-
+  resolved calls; the kernel cache key gained a resolution
+  fingerprint so two sites with different callbacks key two
+  kernels). With the premat wiring's synthetic Refs resolving by id,
+  `fold_rec` went 8.40 s -> 16.3 ms JIT and 9.34 s -> 0.26 s
+  node-walk (the interp tail loop applies too); `map_push` collapses
+  on both engines and is copy-bound (each push copies the array,
+  hence 1.5x). The remaining ~60x to `fold_intr` is per-iteration
+  call overhead (`array::len` + `a[i]$` DynCalls, the cross-kernel
+  `f` call), not activation cost. `lfold_rec` still native-recurses
+  per level: its List formal is loop-CARRIED and Value-shaped, and
+  the rebind carries Prim/Array/Tuple/Struct only.
 - **`lfold_rec` was quadratic on top** (finding 2's cost face): each
   arm consult walked the remaining chain — 9.58 s at 4k, curve
   0.55/1.97/9.6/49.4 s at 1k/2k/4k/8k, clean O(n^2). FIXED same day
@@ -114,11 +125,13 @@ intrinsic row's jit time.
 
 **Per-operation verdict (the P2b question)**: every intrinsic stays.
 Trait dispatch to a marker-bodied impl is FIXED (`fold_trait` at
-parity) and finding 2's quadratic arm consults are FIXED (shallow
-discriminators — `lfold_rec` 9.58 s -> 0.29 s). Still open: WRAPPER
-impl bodies (`mfold_trait` — the trait-default shape), fn-typed
-formals blocking the tail loop (finding 3), and the map-default
-widening. The only
+parity), finding 2's quadratic arm consults are FIXED (shallow
+discriminators — `lfold_rec` 9.58 s -> 0.29 s), and finding 3's
+formal-kind gate is FIXED for loop-invariant formals (`fold_rec`
+8.40 s -> 16.3 ms). Still open: WRAPPER impl bodies (`mfold_trait` —
+the trait-default shape, which also gates fn-formal FORWARDING), the
+map-default widening, and Value-kind loop-CARRIED rebinds
+(`lfold_rec`'s per-level activation). The only
 near-parity derivation (`map` via `init`) is gated on the
 default-body widening fix, and only for Array. Re-run this corpus
 after each of those lands — the verdicts are per-operation and may

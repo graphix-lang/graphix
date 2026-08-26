@@ -62,13 +62,23 @@ use super::{
 /// drops. Drops every owned non-slot local above the param mark
 /// (per-iteration lets would leak otherwise), truncates the
 /// compile-time env back to the params, and jumps to the loop head.
+/// One tail-call rebind: the kernel param slot index (among
+/// `KernelSig::params` — skipped fn formals leave holes in the FORMAL
+/// numbering, and invariant formals are omitted entirely, so the
+/// pairing is explicit rather than positional), the new value, its
+/// composite provenance, and its taint bit.
+pub(super) struct TailRebind {
+    pub(super) slot: usize,
+    pub(super) val: CompiledExpr,
+    pub(super) source: CompositeSource,
+    pub(super) taint: ClifValue,
+}
+
 pub(super) fn emit_tail_rebind_jump(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
     ctx: &LowerCtx,
-    new_vals: smallvec::SmallVec<[CompiledExpr; 8]>,
-    sources: &[CompositeSource],
-    taints: &[ClifValue],
+    rebinds: smallvec::SmallVec<[TailRebind; 8]>,
 ) -> Result<()> {
     let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
@@ -83,13 +93,13 @@ pub(super) fn emit_tail_rebind_jump(
     // empty and assume all params are scalar in declaration order.
     // Drive the rebind positionally in that case.
     if ctx.tail.call_slots.is_none() {
-        debug_assert_eq!(new_vals.len(), ctx.tail.param_mark);
-        for (i, v) in new_vals.iter().enumerate() {
-            let vv = env.locals[i].vv;
+        debug_assert!(rebinds.len() <= ctx.tail.param_mark);
+        for r in rebinds.iter() {
+            let vv = env.locals[r.slot].vv;
             let old_p = b.use_var(vv.payload);
             let old_d = b.use_var(vv.disc);
-            let p = b.ins().select(taints[i], old_p, v.payload);
-            let d = b.ins().select(taints[i], old_d, v.disc);
+            let p = b.ins().select(r.taint, old_p, r.val.payload);
+            let d = b.ins().select(r.taint, old_d, r.val.disc);
             b.def_var(vv.payload, p);
             b.def_var(vv.disc, d);
         }
@@ -100,8 +110,8 @@ pub(super) fn emit_tail_rebind_jump(
     let slots = ctx.tail.call_slots.unwrap();
     // Slots cover EVERY kernel value param (they double as the
     // runtime arg layout — `arg_layout`, kernel.rs); a tail call
-    // rebinds only the leading FORMALS.
-    debug_assert!(new_vals.len() <= slots.len());
+    // rebinds only the loop-CARRIED formals.
+    debug_assert!(rebinds.len() <= slots.len());
     use kernel_abi::AbiParamKind;
     let drop_helper = ctx
         .helper_refs
@@ -111,7 +121,8 @@ pub(super) fn emit_tail_rebind_jump(
         .helper_refs
         .get("graphix_valarray_clone")
         .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
-    for ((i, slot), v) in slots.iter().enumerate().zip(new_vals.iter()) {
+    for r in rebinds.iter() {
+        let slot = &slots[r.slot];
         match slot.kind.abi() {
             AbiParamKind::Scalar(_) => {
                 let vv = env
@@ -122,8 +133,8 @@ pub(super) fn emit_tail_rebind_jump(
                     .vv;
                 let old_p = b.use_var(vv.payload);
                 let old_d = b.use_var(vv.disc);
-                let p = b.ins().select(taints[i], old_p, v.payload);
-                let d = b.ins().select(taints[i], old_d, v.disc);
+                let p = b.ins().select(r.taint, old_p, r.val.payload);
+                let d = b.ins().select(r.taint, old_d, r.val.disc);
                 b.def_var(vv.payload, p);
                 b.def_var(vv.disc, d);
             }
@@ -144,24 +155,24 @@ pub(super) fn emit_tail_rebind_jump(
                 let keep_bl = b.create_block();
                 let replace_bl = b.create_block();
                 let cont_bl = b.create_block();
-                b.ins().brif(taints[i], keep_bl, &[], replace_bl, &[]);
+                b.ins().brif(r.taint, keep_bl, &[], replace_bl, &[]);
                 b.seal_block(keep_bl);
                 b.seal_block(replace_bl);
                 b.switch_to_block(replace_bl);
-                let newp = if sources[i] == CompositeSource::Borrowed {
-                    let call = b.ins().call(clone_helper, &[v.payload]);
+                let newp = if r.source == CompositeSource::Borrowed {
+                    let call = b.ins().call(clone_helper, &[r.val.payload]);
                     b.inst_results(call)[0]
                 } else {
-                    v.payload
+                    r.val.payload
                 };
                 let old = b.use_var(vv.payload);
                 b.ins().call(drop_helper, &[old]);
                 b.def_var(vv.payload, newp);
-                b.def_var(vv.disc, v.disc);
+                b.def_var(vv.disc, r.val.disc);
                 b.ins().jump(cont_bl, &[]);
                 b.switch_to_block(keep_bl);
-                if sources[i] == CompositeSource::Owned {
-                    b.ins().call(drop_helper, &[v.payload]);
+                if r.source == CompositeSource::Owned {
+                    b.ins().call(drop_helper, &[r.val.payload]);
                 }
                 b.ins().jump(cont_bl, &[]);
                 b.seal_block(cont_bl);
@@ -171,9 +182,10 @@ pub(super) fn emit_tail_rebind_jump(
                 return Err(anyhow!("JIT: variant tail-call rebind not yet supported"));
             }
             AbiParamKind::Nullable => {
-                // The tail-loop gate (`build_lambda_kernel`'s
-                // all-formals-Prim/Array/Tuple/Struct check) keeps
-                // Nullable formals out of tail loops, so this is
+                // The tail-loop gate keeps Nullable formals out of
+                // the REBIND set (a loop-CARRIED formal must be
+                // Prim/Array/Tuple/Struct; an invariant Nullable
+                // formal has a slot but is never rebound), so this is
                 // unreachable in practice. Err keeps the codegen safe
                 // if the gating ever drifts.
                 return Err(anyhow!(
@@ -1243,10 +1255,11 @@ pub fn node_loop_invariant_ref<R: Rt, E: UserEvent>(
     loop {
         match n.view() {
             NodeView::Ref(r) => {
-                let Some(name) = ref_local_name(n.spec()) else {
-                    return false;
+                let l = match ref_local_name(n.spec()) {
+                    Some(name) => cx.env.lookup(r.id, name),
+                    None => cx.env.lookup_id(r.id),
                 };
-                return cx.env.lookup(r.id, name).is_some_and(|l| l.depth == 0);
+                return l.is_some_and(|l| l.depth == 0);
             }
             NodeView::ExplicitParens(p) => n = &*p.n,
             NodeView::Block(blk) => match blk.children.last() {

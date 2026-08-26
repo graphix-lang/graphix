@@ -23,9 +23,9 @@ use super::{
         value_disc,
     },
     body::{
-        BodyCx, emit_kernel_bottom, emit_kernel_return, emit_return_from_node,
-        emit_tail_rebind_jump, ensure_owned_composite_src, ensure_owned_value_src,
-        node_composite_source,
+        BodyCx, TailRebind, emit_kernel_bottom, emit_kernel_return,
+        emit_return_from_node, emit_tail_rebind_jump, ensure_owned_composite_src,
+        ensure_owned_value_src, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
     nodes::emit_elem_placeholder,
@@ -533,11 +533,30 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
         return Err(anyhow!("emit_clif: labeled args on a self tail-call"));
     }
+    let (skipped, invariant) = match cx.ctx.self_call {
+        Some((_, info)) => {
+            (info.kernel.skipped_args.clone(), info.kernel.tail_invariant.clone())
+        }
+        None => (Vec::new(), Vec::new()),
+    };
     let n = spec_apply.args.len();
-    let mut new_vals: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
-    let mut sources: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
-    let mut taints: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
+    let mut rebinds: smallvec::SmallVec<[TailRebind; 8]> = smallvec::SmallVec::new();
+    let mut slot_idx = 0usize;
     for i in 0..n {
+        let iu = i as u32;
+        // A SKIPPED fn formal has no slot at all; an INVARIANT formal
+        // keeps its slot but every self-call passes it through
+        // unchanged — the rebind would be the identity. Neither arg is
+        // emitted (both are the formal's own `Ref`, pure by the
+        // invariance test that admitted them).
+        if skipped.contains(&iu) {
+            continue;
+        }
+        let slot = slot_idx;
+        slot_idx += 1;
+        if invariant.contains(&iu) {
+            continue;
+        }
         let arg = cs
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
@@ -551,11 +570,11 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         // loop-carried previous value at the rebind. `is_tainted`
         // folds to const-false for a proven-fresh disc — no branch on
         // the hot path.
-        taints.push(is_tainted(cx.b, cv.disc));
-        new_vals.push(cv);
-        sources.push(node_composite_source(arg));
+        let taint = is_tainted(cx.b, cv.disc);
+        let source = node_composite_source(arg);
+        rebinds.push(TailRebind { slot, val: cv, source, taint });
     }
-    emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, new_vals, &sources, &taints)
+    emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }
 
 /// Bind one `let local = value` into the env by the value's runtime

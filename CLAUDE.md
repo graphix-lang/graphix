@@ -1277,11 +1277,13 @@ error (the honesty census below), never silently unchecked.
 The remaining missed-fusion tail (each pinned by a `#[native]` de-fuse test or an
 ASPIRE comment where noted):
 
-1. **HOF callback calling a nested/rec local lambda** — simple captured-local
-   calls now resolve (per-callsite elaboration + `for_each_emitted_node`
-   discovery), but a rec callee inside a fold callback still keeps the
-   collection on the node-walk (pinned by `fold_callback_name_collision`,
-   FuseExpect::None).
+1. **HOF callback calling a nested/rec local lambda** — CLOSED 2026-08-25:
+   the premat wiring's synthetic genn-Refs (NOP spec, no name) resolve by
+   BindId in the emitter (`JitEnv::lookup_id`), so the rec callee inside a
+   fold callback fuses (`fold_callback_name_collision` upgraded to
+   FuseExpect::Jit by the harness's own demand). Residue: fn-formal
+   FORWARDING still interprets (`fn_formal_forwarded`, ASPIRE — the
+   wrapper-premat item).
 2. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
    `JitEnv::truncate` emits no drops), nested/non-scalar variant payloads,
    owned scrutinees in TAIL position (no merge point to drop at).
@@ -1380,7 +1382,18 @@ in `run!` fixtures and bench programs). The decision is recorded in
 fall-through, 2026-08-25 — `fold_trait` at parity); WRAPPER impl
 bodies (Map's values-fold — the trait-default shape) still
 interpret (P3 residue: the nested derived callback's call to the
-captured `f` doesn't resolve through the inner collection site).
+captured `f` doesn't resolve through the inner collection site);
+finding-3 formal-kind gate FIXED for LOOP-INVARIANT formals
+(2026-08-25 — a formal every self-call passes unchanged is never
+rebound, so its kind doesn't gate the tail loop and an invariant fn
+formal drops out of the kernel sig (`KernelSig::skipped_args`); the
+kernel cache key carries a resolution FINGERPRINT (same types +
+different callbacks => two kernels), synthetic genn-Refs resolve by
+id (`JitEnv::lookup_id` — closed missed-fusion item 1), and
+collection-marker lambdas refuse `build_lambda_kernel` explicitly;
+`fold_rec` 8.4s -> 16.3ms JIT / 0.26s interp — both engines loop;
+residue: loop-CARRIED Value rebinds (lfold_rec) + fn-formal
+forwarding).
 - `activation_state.md` — **RULED 2026-08-20, Ruling 1 BUILT same
   day** (interp own_sound/own_bottom split + three-valued is_match;
   kernel SelFires/undetermined chain/sel_fires scope stack): the

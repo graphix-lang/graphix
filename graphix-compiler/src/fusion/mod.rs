@@ -204,7 +204,12 @@ pub struct FusionCtx {
     /// keys on its pointer identity.
     pub kernels: parking_lot::Mutex<
         std::collections::BTreeMap<
-            (LambdaId, std::sync::Arc<FnType>, lowering::QopCoverage),
+            (
+                LambdaId,
+                std::sync::Arc<FnType>,
+                lowering::QopCoverage,
+                lowering::FnResolutions,
+            ),
             lowering::CachedKernel,
         >,
     >,
@@ -1471,6 +1476,8 @@ pub(crate) fn sig_from_inputs<'k>(
         fn_params: Vec::new(),
         return_type,
         has_tail_loop: false,
+        skipped_args: Vec::new(),
+        tail_invariant: Vec::new(),
         lifted: Vec::new(),
         defined: std::sync::atomic::AtomicBool::new(false),
         has_sleep_restart: std::sync::atomic::AtomicBool::new(false),

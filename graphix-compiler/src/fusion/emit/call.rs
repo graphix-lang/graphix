@@ -1022,6 +1022,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // way. A node whose actual emission shape disagrees with the
     // signature type Errs in the per-slot extractors below (build
     // time, de-fuse).
+    let skipped = &info.kernel.skipped_args;
     let n_formal =
         info.arg_types.len().checked_sub(info.captures.len()).ok_or_else(|| {
             anyhow!(
@@ -1029,16 +1030,18 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                  captures — discovery drift"
             )
         })?;
-    if ftype.args.len() != n_formal {
+    if ftype.args.len() != n_formal + skipped.len() {
         return Err(anyhow!(
             "lambda call `{fn_name}`: call-site FnType has {} formals, \
-             kernel signature has {n_formal} — de-fuse",
-            ftype.args.len()
+             kernel signature has {n_formal} (+{} skipped fn) — de-fuse",
+            ftype.args.len(),
+            skipped.len()
         ));
     }
     let mut slots: poolshark::local::LPooled<Vec<LambdaCallSlot<R, E>>> =
         poolshark::local::LPooled::take();
     let mut pos = 0usize;
+    let mut sig_idx = 0usize;
     for (i, fa) in ftype.args.iter().enumerate() {
         let node = match &fa.kind {
             FnArgKind::Positional { .. } => {
@@ -1049,7 +1052,16 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             FnArgKind::Labeled { name, .. } => cs.arg_named(name),
         }
         .ok_or_else(|| anyhow!("lambda call `{fn_name}`: missing call-site arg node"))?;
-        slots.push(LambdaCallSlot::Arg(node, info.arg_types[i].clone()));
+        // A SKIPPED fn formal: the callee kernel has no slot for it —
+        // the callee's uses are statically-resolved calls baked at
+        // build time (keyed by the resolution fingerprint), so the
+        // value is never consumed. The arg node (a lambda literal or
+        // a Ref) is pure; don't emit it.
+        if skipped.contains(&(i as u32)) {
+            continue;
+        }
+        slots.push(LambdaCallSlot::Arg(node, info.arg_types[sig_idx].clone()));
+        sig_idx += 1;
     }
     for cap in &info.captures {
         slots.push(LambdaCallSlot::Cap(cap));

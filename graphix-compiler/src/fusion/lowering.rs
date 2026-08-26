@@ -982,20 +982,159 @@ fn resolve_abstract_node<'a>(
 /// two kernels (catch-callsite-coverage-aug2026).
 pub(crate) type QopCoverage = smallvec::SmallVec<[u64; 4]>;
 
-fn qop_coverage<R: Rt, E: UserEvent>(body: &Node<R, E>) -> QopCoverage {
+/// The lambda-RESOLUTION fingerprint of a lambda instance's body: for
+/// every statically-resolved lambda call site (deterministic
+/// node-visit order), the callee's `LambdaId`, plus the resolved
+/// identity of each fn-typed argument the site forwards (a lambda
+/// literal's own id; a `Ref`'s `bind_to_lambda` entry — the
+/// per-callsite elaboration channel). Part of the kernel cache key:
+/// two call sites of one lambda can agree on every TYPE and still
+/// resolve an fn-typed formal or capture to two different callbacks,
+/// and a kernel BAKES those resolutions as CLIF calls — sharing it
+/// across such instances would run the first site's callback for the
+/// second. An unresolvable forwarded fn arg records `u64::MAX`; a
+/// body with one can't emit that call anyway (its kernel never
+/// defines), so colliding markers never share live code.
+pub(crate) type FnResolutions = smallvec::SmallVec<[u64; 4]>;
+
+fn body_fingerprint<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    ec: &ExecCtx<R, E>,
+) -> (QopCoverage, FnResolutions) {
     let mut cov = QopCoverage::new();
-    crate::fusion::for_each_node(body, &mut |n| {
-        if let NodeView::Qop(q) = n.view() {
-            match q.id {
-                Some((bind, top)) => {
-                    cov.push(bind.inner());
-                    cov.push(top.inner());
+    let mut res = FnResolutions::new();
+    crate::fusion::for_each_node(body, &mut |n| match n.view() {
+        NodeView::Qop(q) => match q.id {
+            Some((bind, top)) => {
+                cov.push(bind.inner());
+                cov.push(top.inner());
+            }
+            None => cov.push(u64::MAX),
+        },
+        NodeView::CallSite(cs) => {
+            let Some(crate::ApplyView::Lambda(callee)) = cs.resolved_apply() else {
+                return;
+            };
+            res.push(callee.id().inner());
+            each_arg_node(cs, &mut |a: &Node<R, E>| {
+                if !is_fn_shaped(a.typ(), &ec.env) {
+                    return;
                 }
-                None => cov.push(u64::MAX),
+                let id = match a.view() {
+                    NodeView::Lambda(l) => l.lambda_id::<R, E>().map(|id| id.inner()),
+                    NodeView::Ref(r) => ec.bind_to_lambda.get(&r.id).and_then(|v| {
+                        v.downcast_ref::<crate::LambdaDef<R, E>>().map(|d| d.id.inner())
+                    }),
+                    _ => None,
+                };
+                res.push(id.unwrap_or(u64::MAX));
+            });
+        }
+        _ => (),
+    });
+    (cov, res)
+}
+
+/// Visit each of a call site's arg Nodes in source order (labeled args
+/// resolved by name, positionals by running positional count).
+fn each_arg_node<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    f: &mut impl FnMut(&Node<R, E>),
+) {
+    let mut pos = 0usize;
+    for (label, _) in cs.spec_args().clone().iter() {
+        let n = match label {
+            Some(name) => cs.arg_named(name),
+            None => {
+                let n = cs.arg_positional(pos);
+                pos += 1;
+                n
+            }
+        };
+        if let Some(n) = n {
+            f(n)
+        }
+    }
+}
+
+/// Is this type an fn type once tvars deref and (for `Ref` aliases)
+/// the name expands? The formal/arg classification the fn-skip and
+/// the resolution fingerprint share.
+fn is_fn_shaped(t: &Type, env: &Env) -> bool {
+    t.with_deref(|t| match t {
+        Some(Type::Fn(_)) => true,
+        Some(r @ Type::Ref(_)) => {
+            expand_refs(r, env).with_deref(|t| matches!(t, Some(Type::Fn(_))))
+        }
+        _ => false,
+    })
+}
+
+/// Formal positions passed UNCHANGED by every self-call in the body:
+/// the arg at that position is exactly a `Ref` to the formal's own
+/// binding, so a tail-loop rebind of it is the identity. Such a
+/// formal needs no rebind slot, which frees it from the loop's
+/// register-loopable kind gate — and lets an fn-typed formal drop out
+/// of the kernel signature entirely (its only uses are
+/// statically-resolved calls). Vacuously all-true (for single-name
+/// formals) when the body has no self-calls; a destructured formal is
+/// never invariant. Walks like [`self_calls_abi_consistent`]:
+/// `for_each_node` skips nested lambda bodies (a self-call there is a
+/// mutual edge that de-fuses at its own call site).
+pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    self_bind: Option<BindId>,
+) -> smallvec::SmallVec<[bool; 8]> {
+    let ids: smallvec::SmallVec<[Option<BindId>; 8]> =
+        g.args().iter().map(|p| p.single_bind_id()).collect();
+    let mut inv: smallvec::SmallVec<[bool; 8]> =
+        ids.iter().map(|id| id.is_some()).collect();
+    let Some(sb) = self_bind else { return inv };
+    // Per-formal call-site lookup: positional formals index the
+    // positional arg list by their position AMONG positionals.
+    enum ALook {
+        Pos(usize),
+        Named(ArcStr),
+    }
+    let looks: smallvec::SmallVec<[ALook; 8]> = {
+        let mut p = 0usize;
+        g.typ()
+            .args
+            .iter()
+            .map(|fa| match &fa.kind {
+                FnArgKind::Positional { .. } => {
+                    let k = p;
+                    p += 1;
+                    ALook::Pos(k)
+                }
+                FnArgKind::Labeled { name, .. } => ALook::Named(name.clone()),
+            })
+            .collect()
+    };
+    fusion::for_each_node(g.body(), &mut |n| {
+        let NodeView::CallSite(cs) = n.view() else { return };
+        if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb) {
+            return;
+        }
+        for i in 0..inv.len() {
+            if !inv[i] {
+                continue;
+            }
+            let arg = match &looks[i] {
+                ALook::Pos(p) => cs.arg_positional(*p),
+                ALook::Named(name) => cs.arg_named(name),
+            };
+            let keep = matches!(
+                (ids[i], arg),
+                (Some(fid), Some(a))
+                    if matches!(a.view(), NodeView::Ref(r) if r.id == fid)
+            );
+            if !keep {
+                inv[i] = false;
             }
         }
     });
-    cov
+    inv
 }
 
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
@@ -1005,6 +1144,19 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     ec: &mut ExecCtx<R, E>,
 ) -> Option<CachedKernel> {
     let self_bind = g.self_bind();
+    // A COLLECTION-bodied lambda (`array::fold` and family) never
+    // takes the cross-kernel call path: its call sites inline-emit the
+    // scaffold loop via the Apply hook (`GXLambda::emit_clif` →
+    // `emit_clif_call`), consulted before `lambda_site`. A standalone
+    // kernel for the marker body would never be called — and its
+    // define FAILS (a callee body can't claim the select-ride state
+    // the scaffold context provides), which would de-fuse the whole
+    // region. The fn-formal freeze refusal used to guard this by
+    // accident; the invariant-formal skip removed it, so refuse
+    // explicitly.
+    if matches!(g.body().view(), NodeView::MapQ(_) | NodeView::FoldQ(_)) {
+        return None;
+    }
     // Cache key: (LambdaId, the CALL SITE's resolved FnType, the
     // instance body's CATCH COVERAGE). `resolve_tvars` deep-clones,
     // dereffing every TVar to its bound concrete type, so
@@ -1022,8 +1174,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // covered site's error delivery
     // (catch-callsite-coverage-aug2026).
     let resolved_typ = std::sync::Arc::new(site_ftype.resolve_tvars());
-    let coverage = qop_coverage(g.body());
-    let key = (g.id(), resolved_typ, coverage);
+    let (coverage, fn_resolutions) = body_fingerprint(g.body(), ec);
+    let key = (g.id(), resolved_typ, coverage, fn_resolutions);
     if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
         return Some(cached);
     }
@@ -1036,8 +1188,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let variant = {
         let kernels = ec.fusion.kernels.lock();
         kernels
-            .range((key.0, key.1.clone(), QopCoverage::new())..)
-            .take_while(|((id, ft, _), _)| *id == key.0 && *ft == key.1)
+            .range((key.0, key.1.clone(), QopCoverage::new(), FnResolutions::new())..)
+            .take_while(|((id, ft, _, _), _)| *id == key.0 && *ft == key.1)
             .count()
     };
     let kernel_name: ArcStr = if variant == 0 {
@@ -1100,9 +1252,12 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let typ = g.typ();
     let mut inputs: LPooled<Vec<(ArcStr, RegionInputKind, Option<BindId>)>> =
         LPooled::take();
-    // The frozen kernel-ABI slot type of each formal, kept for the
-    // recursive-self-call ABI check below (#21).
-    let mut formal_kts: LPooled<Vec<Type>> = LPooled::take();
+    // The frozen kernel-ABI slot type of each formal (source position,
+    // frozen type), kept for the recursive-self-call ABI check below
+    // (#21). Positions, because skipped fn formals leave holes.
+    let mut formal_kts: LPooled<Vec<(usize, Type)>> = LPooled::take();
+    let inv = invariant_formals(g, self_bind);
+    let mut skipped_args: Vec<u32> = Vec::new();
     for (i, fa) in typ.args.iter().enumerate() {
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
@@ -1110,6 +1265,21 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             _ => return None,
         };
         let arg_typ = expand_refs(&fa.typ, &ec.env);
+        // An fn-typed formal is never a VALUE slot. When every
+        // self-call passes it through unchanged, its value is never
+        // needed at run time — the body's uses are statically-resolved
+        // calls (the fn-capture precedent: if the body actually needs
+        // it as a value, body emission fails and the build is
+        // discarded). Drop it from the signature; callers skip the
+        // arg. A self-call that REBINDS an fn formal keeps the old
+        // refusal — a rebind slot can't carry a LambdaDef.
+        if is_fn_shaped(&arg_typ, &ec.env) {
+            if inv[i] && matches!(fa.kind, FnArgKind::Positional { .. }) {
+                skipped_args.push(i as u32);
+                continue;
+            }
+            return None;
+        }
         let kt = kernel_abi::freeze_for_abi_normalized(&arg_typ)?;
         let kind = type_to_region_input_kind(kt.clone())?;
         let id = g.args().get(i).and_then(|p| p.single_bind_id());
@@ -1131,8 +1301,14 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             }
         }
         inputs.push((name, kind, id));
-        formal_kts.push(kt);
+        formal_kts.push((i, kt));
     }
+    let tail_invariant: Vec<u32> = inv
+        .iter()
+        .enumerate()
+        .filter(|(i, v)| **v && !skipped_args.contains(&(*i as u32)))
+        .map(|(i, _)| i as u32)
+        .collect();
     // Closure conversion: every binding the body references but
     // doesn't bind itself is a capture. Lift each value-typed capture
     // into an extra positional kernel arg (after the formal args).
@@ -1221,12 +1397,11 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // Self-recursion: the body references its own binding. With a
     // self tail-call present, the kernel compiles to a rebind-and-jump
     // loop (`has_tail_loop`) instead of a native recursive call —
-    // constant stack at any depth. The JIT's tail-call rebind handles
-    // Scalar and ValArray slots only, and only the formal params are
-    // rebound (captures are loop-invariant within one kernel
-    // invocation), so the loop is gated on every FORMAL being one of
-    // those kinds; otherwise self-calls stay plain native recursion
-    // (correct, native stack depth).
+    // constant stack at any depth. Only LOOP-CARRIED formals are
+    // rebound (captures and invariant formals are loop-invariant
+    // within one invocation), so the loop is gated on every CARRIED
+    // formal being a rebind-supported kind; otherwise self-calls stay
+    // plain native recursion (correct, native stack depth).
     let is_rec = g.self_recursive();
     // A recursive self-call is a SECOND source of values for the formals
     // (besides the outer call). If inference resolved a formal to the
@@ -1264,6 +1439,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         }
     };
     sig.has_tail_loop = has_tail;
+    sig.skipped_args = skipped_args;
+    sig.tail_invariant = tail_invariant;
     // Discover sync builtin/cast/qop Apply sites in the body so they
     // fuse as DynCalls (the same prepass `try_fuse` runs on a region
     // root). `fn_params` installs the slots on the sig; `apply_sites`
@@ -1303,9 +1480,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
 /// interpreter's per-`GXLambda` `tail_loop` gate (which
 /// `analysis::analyze` additionally sync-gates). ONE seam, so the two
 /// backends can never disagree on WHICH lambdas loop: `g` is
-/// self-recursive w.r.t. `self_bind`, every formal is a register-loopable
-/// kind (`Prim`/`Array`/`Tuple`/`Struct` — what the rebind-and-jump loop
-/// can carry; other kinds keep native / per-cycle recursion), and the
+/// self-recursive w.r.t. `self_bind`, every LOOP-CARRIED formal is a
+/// register-loopable kind (`Prim`/`Array`/`Tuple`/`Struct` — what the
+/// rebind-and-jump loop can carry; other kinds keep native recursion —
+/// INVARIANT formals are exempt, they are never rebound), and the
 /// body has a self-call in tail position. NOT sync-gated here — fusion
 /// excludes effect on purpose (a fusable body is sync by construction;
 /// an effect-inference false-negative must never flip a JIT loop to
@@ -1336,11 +1514,20 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
     if g.typ().vargs.is_some() {
         return false;
     }
-    // Every formal must be positional AND a register-loopable kind (the
-    // same classification `build_lambda_kernel` derives for its slots).
-    for fa in g.typ().args.iter() {
+    // Every formal must be positional, and every LOOP-CARRIED formal a
+    // register-loopable kind (the same classification
+    // `build_lambda_kernel` derives for its slots). An INVARIANT
+    // formal — passed unchanged by every self-call — is never rebound
+    // (the rebind would be the identity), so its kind doesn't gate the
+    // loop: an fn/String/Variant/Value formal threaded unchanged
+    // through a tail recursion loops on both engines.
+    let inv = invariant_formals(g, Some(self_bind));
+    for (i, fa) in g.typ().args.iter().enumerate() {
         if !matches!(fa.kind, FnArgKind::Positional { .. }) {
             return false;
+        }
+        if inv[i] {
+            continue;
         }
         let arg_typ = expand_refs(&fa.typ, &ec.env);
         let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
@@ -1403,7 +1590,7 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
 fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: BindId,
-    formal_kts: &[Type],
+    formal_kts: &[(usize, Type)],
     ec: &ExecCtx<R, E>,
 ) -> bool {
     let mut ok = true;
@@ -1415,8 +1602,8 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
         if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind) {
             return;
         }
-        for (i, formal_kt) in formal_kts.iter().enumerate() {
-            let Some(arg) = cs.arg_positional(i) else {
+        for (i, formal_kt) in formal_kts.iter() {
+            let Some(arg) = cs.arg_positional(*i) else {
                 ok = false;
                 return;
             };

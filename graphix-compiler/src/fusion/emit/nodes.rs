@@ -144,12 +144,17 @@ pub(crate) fn emit_ref_node(
     // locals). The disc already carries the binding's #219 taint (a
     // tainted param disc from the ABI, or a let's computed disc).
     let _ = typ;
-    let name = ref_local_name(spec)
-        .ok_or_else(|| anyhow!("emit_clif: Ref spec isn't an ExprKind::Ref"))?;
+    // A SYNTHETIC Ref (`genn::reference` — premat/elaboration wiring)
+    // has the shared NOP spec and no name: resolve it by id alone.
+    let name = ref_local_name(spec);
     let (vv, kind) = {
-        if cx.env.lookup(id, name).is_none() && crate::dbgenv::gxdbg_refmiss() {
+        let l = match name {
+            Some(name) => cx.env.lookup(id, name),
+            None => cx.env.lookup_id(id),
+        };
+        if l.is_none() && crate::dbgenv::gxdbg_refmiss() {
             eprintln!(
-                "REFMISS `{name}` id={id:?} locals={:?}",
+                "REFMISS `{name:?}` id={id:?} locals={:?}",
                 cx.env
                     .locals
                     .iter()
@@ -157,10 +162,12 @@ pub(crate) fn emit_ref_node(
                     .collect::<Vec<_>>()
             );
         }
-        let l = cx
-            .env
-            .lookup(id, name)
-            .ok_or_else(|| anyhow!("emit_clif: undefined local `{name}` ({id:?})"))?;
+        let l = l.ok_or_else(|| {
+            anyhow!(
+                "emit_clif: undefined local `{}` ({id:?})",
+                name.unwrap_or("<synthetic>")
+            )
+        })?;
         (l.vv, l.kind)
     };
     let disc = cx.b.use_var(vv.disc);

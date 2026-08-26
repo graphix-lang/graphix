@@ -944,8 +944,9 @@ fixture face crashed the test process on its first run.
    shallow_mixed_union_dispatch (lang/select.rs).
 
 3. **`structural_tail_loop`'s formal-kind gate denies the tail driver
-   by a kernel-ABI condition — on BOTH backends** (OPEN — design
-   question). Formals must freeze to Prim/Array/Tuple/Struct
+   by a kernel-ABI condition — on BOTH backends** (FIXED 2026-08-25
+   for the wide face — loop-INVARIANT formals; BUILT record below).
+   Formals must freeze to Prim/Array/Tuple/Struct
    (fusion/lowering.rs); String, Variant, Nullable, Map and
    Value-shaped (every recursive ADT) formals fail, and since the gate
    deliberately keeps the backends in lockstep, both run a tail-SHAPED
@@ -960,6 +961,45 @@ fixture face crashed the test process on its first run.
    kernel's loopable kinds. Collapse is unobservable for stateless
    bodies (Ruling 2), so what the lockstep protects here is space
    parity, not semantics.
+   BUILT same evening — the invariant-formals cut: a formal every
+   self-call passes through UNCHANGED (the arg is the formal's own
+   Ref — `invariant_formals`, fusion/lowering.rs) is never rebound,
+   so the kind gate applies only to loop-CARRIED formals, in the ONE
+   shared predicate (both engines still agree on which lambdas
+   loop). An invariant fn-typed formal drops out of the kernel
+   signature entirely (`KernelSig::skipped_args` — the fn-capture
+   precedent: its body uses are statically-resolved calls; callers
+   skip the arg, and `emit_self_tail_call` rebinds by explicit slot
+   index, skipping invariant slots). Two prerequisites fell out:
+   (a) the kernel cache key gained a RESOLUTION FINGERPRINT
+   (`FnResolutions` — per static lambda call site the callee's
+   LambdaId plus each forwarded fn-typed arg's resolution): a kernel
+   BAKES its instance's callback resolutions as CLIF calls, and two
+   sites agreeing on every TYPE can still resolve different
+   callbacks — the latent instance-aliasing hazard the skip would
+   have made live (pinned by fn_formal_two_callbacks; latent for fn
+   CAPTURES already, unreachable only because fn formals killed
+   every such build). (b) The premat wiring's SYNTHETIC Refs
+   (genn::reference — NOP spec, no name) resolve by BindId alone in
+   the emitter (`JitEnv::lookup_id`) — which also closed
+   missed-fusion item 1 (the rec callee inside a fold callback;
+   fold_callback_name_collision upgraded to Jit by the harness's own
+   demand). One guard: a COLLECTION-bodied lambda refuses
+   `build_lambda_kernel` explicitly — its sites inline the scaffold
+   via the Apply hook, and the fn-formal freeze failure was the
+   accidental guard keeping the marker's undefinable kernel out of
+   region builds (the fold/filter jit probes caught it). Measured
+   (release): `fold_rec` 8.40 s -> 16.3 ms JIT / 9.34 s -> 0.26 s
+   node-walk (the interp tail loop applies too; the ~60x left to the
+   intrinsic is per-iteration DynCall/call overhead, not
+   activations); `map_push` collapses on both engines (copy-bound).
+   Residue: loop-CARRIED String/Variant/Nullable/Value formals keep
+   native per-level recursion (`lfold_rec` — widening the rebind
+   kinds is the remaining cut), and fn-formal FORWARDING still
+   interprets (fn_formal_forwarded, ASPIRE — the wrapper-premat
+   residue). Pins: fn_invariant_tail_loop,
+   string_invariant_tail_loop, fn_formal_two_callbacks,
+   fn_formal_rebound, fn_formal_forwarded (lang/functions.rs).
 
 4. **`#[tail_recursive]` passes where the loop does not collapse**
    (OPEN — follows 3). The assert checks
@@ -970,6 +1010,10 @@ fixture face crashed the test process on its first run.
    passes the assert and native-recurses. Either the assert consults
    the same seam, or fixing 3 interp-side closes the gap and the
    kernel's native+trampoline residue gets documented honestly.
+   NARROWED 2026-08-25 by the invariant-formals cut: fn/String-
+   invariant shapes genuinely loop now; the remaining
+   assert-vs-collapse gap is loop-CARRIED String/Variant/Value
+   formals (List traversals).
 
 ## As measured — P2b first cut (2026-08-25)
 
@@ -1000,7 +1044,12 @@ best-of-3; full table + notes in its README). The headline numbers:
   FIXED same day (shallow discriminators): the curve is linear
   (0.050/0.096/0.201/0.414 s — 119x at 8k), lfold_rec is 0.29 s, and
   the residual ~1900x to the intrinsic is finding 3's per-level
-  activation.
+  activation. FIXED same evening for the wide face (the
+  invariant-formals cut, finding 3): `fold_rec` 8.4 s -> 16.3 ms JIT
+  / 0.26 s interp — both engines loop; the ~60x left to the
+  intrinsic is per-iteration DynCall/call overhead. `lfold_rec`'s
+  loop-CARRIED Value formal keeps the per-level activation (the
+  remaining cut).
 - Trait DEFAULT bodies over the intrinsics: filter's fuses at 1.9x the
   intrinsic (fine); map's DE-FUSES (the bare-`'b`-as-`Option<'b>`
   callback widening — a fusion-coverage bug; fixed, the default would
@@ -1009,7 +1058,8 @@ best-of-3; full table + notes in its README). The headline numbers:
   the one parity derivation (2.6 ms vs 2.5 ms), Array-only.
 
 VERDICT (per the phase question "what stays"): every intrinsic stays.
-The deletion question is not answerable until P3 (trait-dispatch
-fusion), the map-default widening fix, and the finding-3 gate decision
-land — re-run the corpus after each. The measurement's real product
+The deletion question is not answerable until the WRAPPER-premat
+residue (trait-default bodies), the map-default widening fix, and the
+carried-Value rebind widening land — re-run the corpus after each
+(P3 and finding 3's invariant face landed same day). The measurement's real product
 this round was the four findings above plus the widening bug.
