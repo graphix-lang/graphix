@@ -2491,7 +2491,7 @@ fn schedule_reductions(s: &schedule::Schedule) -> Vec<schedule::Schedule> {
 /// program just confirms "still all-Timeout" quickly.
 pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
     use tokio::task::JoinSet;
-    let par = parallelism();
+    let par = regress_parallelism();
     let entries = corpus::REGRESSION_CORPUS;
     let mut set: JoinSet<(usize, Option<Divergence>, bool)> = JoinSet::new();
     let mut next = 0usize;
@@ -3044,6 +3044,57 @@ fn parallelism() -> usize {
         return n;
     }
     std::thread::available_parallelism().map(|n| n.get() * 8).unwrap_or(16)
+}
+
+/// Physical memory, best effort. `None` on an unreadable platform —
+/// callers fall back conservatively.
+fn total_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let s = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb = s
+            .lines()
+            .find(|l| l.starts_with("MemTotal:"))?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<u64>()
+            .ok()?;
+        Some(kb * 1024)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        String::from_utf8(out.stdout).ok()?.trim().parse::<u64>().ok()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// [`parallelism`] bounded by MEMORY for the in-process regress gate.
+/// Each regress slot runs BOTH engines in this one process
+/// (`check_classified` join!s them), and the runaway-recursion pins
+/// legitimately grow toward the stack budget before containment stops
+/// them — so the worst case is par × ~2 stacks plus each slot's
+/// runtime heap, and cores×8 ignores it entirely: aieka's aug26a
+/// launch (36 cores → par 288 on a 62GB box, with scale=4 timeouts
+/// letting runaways reach the budget instead of dying at the 3s
+/// timeout) ran this gate TWICE — soak.sh's pre-launch run passed,
+/// the campaign process's own startup run was OOM-killed mid-corpus
+/// (the log just stops: no panic, no summary line, and wait_for_gate
+/// never saw its line). A conservative 3GB per in-flight slot against
+/// HALF of RAM keeps the worst case inside the box. The cap applies
+/// even under an explicit `GRAPHIX_FUZZ_PAR`: that knob shares
+/// CHILD-PROCESS load between campaigns, and honoring it here would
+/// re-open the same coin-flip in every campaign process's startup
+/// gate.
+fn regress_parallelism() -> usize {
+    let mem = total_memory_bytes().unwrap_or(16 << 30);
+    parallelism().min((((mem / 2) / (3 << 30)) as usize).max(2))
 }
 
 /// Source C campaign: generate valid programs from scratch (type-directed)
