@@ -277,8 +277,8 @@ async fn main() -> Result<()> {
         && match args.get(1).map(String::as_str) {
             Some(
                 "check-one" | "check-batch" | "gen-batch" | "detcheck-one"
-                | "selfcheck-one" | "minimize-one" | "gen-check" | "regress"
-                | "fusecheck" | "leakcheck",
+                | "selfcheck-one" | "minimize-one" | "typemorph-one" | "gen-check"
+                | "regress" | "fusecheck" | "leakcheck",
             ) => true,
             Some("check" | "run") => {
                 if let Some(f) = args.get_mut(2) {
@@ -724,6 +724,72 @@ async fn main() -> Result<()> {
                 | graphix_fuzz::Outcome::RuntimeErr(_) => std::process::exit(0),
             }
         }
+        // Hidden: the typemorph child — base program on stdin, verdict
+        // lines to the FILE named by argv[2] (never stdout: the checked
+        // program can own the process streams). One warmed runtime
+        // checks the base and every transform candidate.
+        Some("typemorph-one") => {
+            let out = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("typemorph-one <outfile>"))?;
+            let code = read_stdin()?;
+            let text =
+                match graphix_fuzz::typemorph_subject(code.trim(), timeout(), 3).await {
+                    Ok(rep) => rep.render(),
+                    Err(e) => format!("HARNESS {e}\n"),
+                };
+            std::fs::write(&out, text)?;
+        }
+        // One-shot triage: apply every applicable transform to <file>,
+        // report acceptance flips (each confirmed in a second fresh
+        // child before it is believed).
+        Some("typemorph") => {
+            let f = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("typemorph <file>"))?;
+            let code = std::fs::read_to_string(&f)?;
+            let flips =
+                graphix_fuzz::typemorph_scan(vec![(f.clone(), code)], timeout()).await;
+            for (name, detail) in &flips {
+                println!("TYPEFLIP {name} {detail}");
+            }
+            if flips.is_empty() {
+                println!("typemorph: no flips");
+            } else {
+                std::process::exit(1);
+            }
+        }
+        // The acceptance-plane gate (design/typecheck_fuzzing.md):
+        // corpus + n generated subjects, every applicable transform
+        // probed per subject, flips confirmed in a fresh process.
+        Some("typemorph-scan") => {
+            let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100);
+            let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
+            let mut programs: Vec<(String, String)> =
+                graphix_fuzz::corpus::REGRESSION_CORPUS
+                    .iter()
+                    .map(|(name, prog)| (name.to_string(), prog.to_string()))
+                    .collect();
+            let corpus_n = programs.len();
+            let mut rng = graphix_fuzz::mutate::Rng::new(seed);
+            for i in 0..n {
+                programs.push((format!("gen#{i}"), gen_one(&mut rng)));
+            }
+            let total = programs.len();
+            let flips = graphix_fuzz::typemorph_scan(programs, timeout()).await;
+            for (name, detail) in &flips {
+                println!("TYPEFLIP {name}: {detail}");
+            }
+            println!(
+                "typemorph-scan: {total} programs ({corpus_n} corpus + {n} generated), {} flips",
+                flips.len()
+            );
+            if !flips.is_empty() {
+                std::process::exit(1);
+            }
+        }
         // The determinism gate: run every Exact-tier corpus finding
         // (plus N generated programs) in TWO fresh child processes each
         // — each child gets its own ASLR — and compare normalized CLIF
@@ -1060,11 +1126,12 @@ async fn main() -> Result<()> {
             }
         }
         _ => bail!(
-            "usage: graphix-fuzz <check|run|minimize> <file>  |  \
+            "usage: graphix-fuzz <check|run|minimize|typemorph> <file>  |  \
              graphix-fuzz soak [iters] [seed] [fuzz:generate:reactive]  |  \
              graphix-fuzz <fuzz|generate> [iters] [seed] [--reactive]  |  \
              graphix-fuzz <gen|gen-check> [n] [seed] [--reactive]  |  \
              graphix-fuzz reactive-check [n] [seed]  |  \
+             graphix-fuzz typemorph-scan [n] [seed]  |  \
              graphix-fuzz selfcheck [iters] [seed]  |  graphix-fuzz regress"
         ),
     }

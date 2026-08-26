@@ -66,7 +66,16 @@ fn collect_preorder(e: &Expr, out: &mut Vec<Expr>) {
     for_each_child(e, &mut |c| collect_preorder(c, out));
 }
 
-fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
+/// The canonical preorder as a flat clone list — index `i` here is the
+/// same node [`replace`] addresses. Shared with `typemorph`'s site
+/// enumeration.
+pub(crate) fn preorder(e: &Expr) -> Vec<Expr> {
+    let mut out = Vec::new();
+    collect_preorder(e, &mut out);
+    out
+}
+
+pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
     use ExprKind::*;
     match &e.kind {
         NoOp

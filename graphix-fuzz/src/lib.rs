@@ -26,6 +26,7 @@ pub mod generate;
 pub mod mutate;
 pub mod schedule;
 pub mod trace;
+pub mod typemorph;
 
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -2489,6 +2490,265 @@ fn schedule_reductions(s: &schedule::Schedule) -> Vec<schedule::Schedule> {
 /// corpus is clean. Uses a short per-program timeout: a regression
 /// surfaces fast (crash / value mismatch), and a legitimately-bottom
 /// program just confirms "still all-Timeout" quickly.
+// ─── typemorph: metamorphic typecheck probes ───
+// (typemorph.rs holds the transforms; design/typecheck_fuzzing.md P1)
+
+/// Verdict of one acceptance check (`--check` semantics: compile +
+/// typecheck + analyze, never execute).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmVerdict {
+    Accept,
+    Reject(String),
+    /// The check didn't finish inside its budget — a MEASUREMENT
+    /// failure; no flip may be filed on it.
+    Hung,
+}
+
+/// One subject's typemorph report: the base verdict, each probe's
+/// verdict (probes run only when the base accepts), and the count of
+/// candidates the printer failed to round-trip.
+pub struct TmReport {
+    pub base: TmVerdict,
+    pub probes: Vec<(String, TmVerdict)>,
+    pub noparse: usize,
+}
+
+impl TmReport {
+    /// The line protocol the `typemorph-one` child writes to its
+    /// verdict FILE (never stdout — the checked program can own the
+    /// process streams).
+    pub fn render(&self) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        match &self.base {
+            TmVerdict::Accept => s.push_str("BASE accept\n"),
+            TmVerdict::Reject(e) => {
+                let _ = writeln!(s, "BASE reject {e}");
+            }
+            TmVerdict::Hung => s.push_str("BASE hung\n"),
+        }
+        let _ = writeln!(s, "NOPARSE {}", self.noparse);
+        for (id, v) in &self.probes {
+            match v {
+                TmVerdict::Accept => {
+                    let _ = writeln!(s, "PROBE {id} accept");
+                }
+                TmVerdict::Hung => {
+                    let _ = writeln!(s, "PROBE {id} hung");
+                }
+                TmVerdict::Reject(e) => {
+                    let _ = writeln!(s, "FLIP {id} {e}");
+                }
+            }
+        }
+        s
+    }
+}
+
+/// The normalized HEAD of a rejection: the innermost cause (the last
+/// non-empty line of the anyhow Debug chain) with digit runs collapsed
+/// so positions and fresh-counter ids don't split dedup buckets.
+fn tm_error_head(e: &str) -> String {
+    let line = e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let mut out = String::new();
+    let mut in_digits = false;
+    for c in line.chars() {
+        if c.is_ascii_digit() {
+            if !in_digits {
+                out.push('N');
+                in_digits = true;
+            }
+        } else {
+            in_digits = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Run one subject's metamorphic probes against a single warmed
+/// runtime. Each acceptance check goes through
+/// `GXHandle::check_with_resolvers`: a check never executes (its
+/// compiled nodes are deleted) and the env is restored per call, so
+/// one runtime checks the base and every candidate hermetically — the
+/// stdlib init is paid once, not per probe. Probes run only when the
+/// base ACCEPTS: the transforms are acceptance-preserving, so
+/// accept→reject is the finding; a rejected base has nothing to
+/// preserve.
+pub async fn typemorph_subject(
+    code: &str,
+    per_check: Duration,
+    cap: usize,
+) -> Result<TmReport, String> {
+    let (sched, body) = schedule::Schedule::parse(code)?;
+    let (cspec, body) = callable::CallSpec::parse(body)?;
+    let (body, files) = files::split(&body)?;
+    let (probes, noparse) = typemorph::probes(body, cap);
+    let compose = |body_text: &str| {
+        let t = sched.render(&files::render(body_text, &files));
+        match &cspec {
+            Some(c) => c.render(&t),
+            None => t,
+        }
+    };
+    let (tx, _rx) = mpsc::channel(64);
+    let sink = graphix_package_core::PrintSink::default();
+    let ctx =
+        init_with_flags_and_setup(tx, REGISTER, vec![], Mode::Jit.flags(), move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
+        })
+        .await
+        .map_err(|e| format!("runtime init failed: {e:?}"))?;
+    async fn check_accept(ctx: &TestCtx, full: &str, per_check: Duration) -> TmVerdict {
+        let subj = match Subject::parse(full, "test") {
+            Ok(s) => s,
+            Err(e) => return TmVerdict::Reject(tm_error_head(&e)),
+        };
+        let resolver = VfsResolver::new(subj.table.clone());
+        let text = subj.compile_text();
+        let fut = ctx.rt.check_with_resolvers(
+            graphix_compiler::expr::Source::Internal(ArcStr::from(text)),
+            vec![resolver.into()],
+            None,
+        );
+        match tokio::time::timeout(per_check, fut).await {
+            Err(_) => TmVerdict::Hung,
+            Ok(Ok(_)) => TmVerdict::Accept,
+            Ok(Err(e)) => TmVerdict::Reject(tm_error_head(&format!("{e:?}"))),
+        }
+    }
+    let base = check_accept(&ctx, &compose(body), per_check).await;
+    let mut results = Vec::new();
+    if base == TmVerdict::Accept {
+        for p in &probes {
+            let v = check_accept(&ctx, &compose(&p.body), per_check).await;
+            results.push((p.id(), v));
+        }
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
+    Ok(TmReport { base, probes: results, noparse })
+}
+
+/// Spawn the `typemorph-one` child on one subject and return its
+/// verdict-file text. Mirrors `detcheck_one_pair`'s spawn discipline:
+/// sandbox declared before the child handle, verdicts through a file
+/// inside the sandbox, kill_on_drop under an outer deadline.
+pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, String> {
+    use std::process::Stdio;
+    let mut cmd = tokio::process::Command::new(child_exe());
+    let sandbox = sandbox_cwd(&mut cmd);
+    let out_path = sandbox.path().join("tm-verdicts");
+    cmd.arg("typemorph-one")
+        .arg(&out_path)
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        stdin.write_all(prog.as_bytes()).await.map_err(|e| format!("stdin: {e}"))?;
+    }
+    // base + 6 kinds × the per-kind cap, one warmed init, plus slack.
+    let deadline = per_check * 25 + Duration::from_secs(60);
+    match tokio::time::timeout(deadline, child.wait()).await {
+        Err(_) => return Err("child deadline".into()),
+        Ok(Err(e)) => return Err(format!("wait: {e}")),
+        Ok(Ok(_)) => (),
+    }
+    std::fs::read_to_string(&out_path).map_err(|e| format!("verdicts: {e}"))
+}
+
+fn tm_flips(report: &str) -> Vec<(String, String)> {
+    report
+        .lines()
+        .filter_map(|l| l.strip_prefix("FLIP "))
+        .filter_map(|l| {
+            l.split_once(' ').map(|(id, head)| (id.to_string(), head.to_string()))
+        })
+        .collect()
+}
+
+/// The scan: one child per program; a subject reporting flips is
+/// CONFIRMED by a second fresh child (transforms are deterministic, so
+/// the same probe id must flip again). An unconfirmed flip is reported
+/// as its own class — the acceptance face of the jul22e determinism
+/// family, never a TypeFlip.
+pub async fn typemorph_scan(
+    programs: Vec<(String, String)>,
+    per_check: Duration,
+) -> Vec<(String, String)> {
+    use tokio::task::JoinSet;
+    let par = (parallelism() / 2).max(1);
+    let mut set: JoinSet<(usize, Result<String, String>)> = JoinSet::new();
+    let mut next = 0usize;
+    let spawn_one =
+        |set: &mut JoinSet<(usize, Result<String, String>)>, i: usize, prog: String| {
+            set.spawn(async move { (i, typemorph_child(&prog, per_check).await) });
+        };
+    while next < programs.len() && set.len() < par {
+        spawn_one(&mut set, next, programs[next].1.clone());
+        next += 1;
+    }
+    let mut out = Vec::new();
+    let mut noparse_total = 0usize;
+    while let Some(res) = set.join_next().await {
+        if let Ok((i, r)) = res {
+            match r {
+                Err(e) => out.push((programs[i].0.clone(), format!("harness: {e}"))),
+                Ok(rep) => {
+                    noparse_total += rep
+                        .lines()
+                        .find_map(|l| l.strip_prefix("NOPARSE "))
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let flips = tm_flips(&rep);
+                    if !flips.is_empty() {
+                        match typemorph_child(&programs[i].1, per_check).await {
+                            Err(e) => out.push((
+                                programs[i].0.clone(),
+                                format!("harness (confirm): {e}"),
+                            )),
+                            Ok(rep2) => {
+                                let again: std::collections::HashSet<String> =
+                                    tm_flips(&rep2)
+                                        .into_iter()
+                                        .map(|(id, _)| id)
+                                        .collect();
+                                for (id, head) in flips {
+                                    if again.contains(&id) {
+                                        out.push((
+                                            programs[i].0.clone(),
+                                            format!("{id}: {head}"),
+                                        ));
+                                    } else {
+                                        out.push((
+                                            programs[i].0.clone(),
+                                            format!(
+                                                "{id}: UNCONFIRMED (fresh-process flap)"
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if next < programs.len() {
+            spawn_one(&mut set, next, programs[next].1.clone());
+            next += 1;
+        }
+    }
+    if noparse_total > 0 {
+        eprintln!("typemorph: {noparse_total} candidates failed print->parse round trip");
+    }
+    out
+}
+
 pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
     use tokio::task::JoinSet;
     let par = regress_parallelism();
