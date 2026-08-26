@@ -263,6 +263,17 @@ impl Type {
                 }
                 Ok(())
             }
+            // A constructor application (`fn(c: Collection)` elaborates
+            // both sides to `App('#c, '_elem)`) matches component-wise —
+            // without this arm the pair fell through to the catch-all
+            // and an INTERFACE-DECLARED Collection-generic fn could
+            // never compile (found by gen-check the day the generator
+            // learned the vocabulary: collection-generic-call 0/8).
+            (Self::App(c0, a0), Self::App(c1, a1)) => {
+                c0.sig_matches_int(env, c1, tvar_map, hist)?;
+                a0.sig_matches_int(env, a1, tvar_map, hist)
+            }
+            (Self::Hole, Self::Hole) => Ok(()),
             (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(

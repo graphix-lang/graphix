@@ -174,6 +174,29 @@ run!(
 // there is one member to dispatch on; resolving the cells without
 // normalizing left the bottom standing and demanded an impl for it
 // (`sys::process`'s `[Pipe, null]` stdin, through Write).
+// An INTERFACE-DECLARED Collection-generic fn: `fn(c: Collection)`
+// elaborates to `App('#c, '_elem)` on both the gxi and the impl side,
+// and `sig_matches_int` had no App arm — the pair fell to the
+// catch-all and no module could export such a fn (found by gen-check
+// the day the generator learned the constructor-trait vocabulary:
+// collection-generic-call 0/8 DEAD ARM). Called at BOTH an Array and
+// a Map so the dispatch decomposes two constructors through one
+// export.
+run!(
+    collection_generic_interface_declared,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    "/test.gx" => r#"
+mod m;
+let result = m::csize([i64:1, i64:2, i64:3]) + m::csize({"a" => i64:1, "b" => i64:2})
+"#,
+    "/test/m.gxi" => r#"
+val csize: fn(c: Collection) -> i64;
+"#,
+    "/test/m.gx" => r#"
+let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1)
+"#
+    ; graphix_package_core::testing::FuseExpect::None);
+
 run!(
     trait_dispatch_never_arm_union,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(3)"),
