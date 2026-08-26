@@ -1,0 +1,15 @@
+// aug25a class A (the 81-finding flood): ACCEPTED by the typechecker
+// while the array twin and the let-bound twin were refused — then the
+// engines diverged downstream on `acc + <fn value>`. Mechanism:
+// pre-unification binds the map call's return cell to fold's
+// `List<'a>` EXPANSION (element cell 'a unbound); the callback
+// returns a FUNCTION, so its def gate generalizes — the rtype cell
+// unbinds to None with the fn kept as a constraint — and map's 'b
+// aliases that open cell; the rtype write-back then compared
+// [`Cons('a, ..), `Nil] == [`Cons('b, ..), `Nil] with Type::eq,
+// whose TVar arm calls two distinct unbound cells equal, and the
+// whole-set fast arm's by-NAME alias_tvars merged nothing — 'a and
+// 'b never met. The union_identical rule ("a collapse on TVar::eq
+// drops the discarded cell's future binding") now guards contains'
+// equality fast paths too. Both engines must refuse this program.
+list::fold(list::map(list::from_array([true, true, true]), |x| dbg), i64:1, |acc, x| acc + x)

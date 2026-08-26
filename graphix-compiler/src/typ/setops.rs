@@ -10,7 +10,12 @@ use poolshark::local::LPooled;
 use std::iter;
 use triomphe::Arc;
 
-/// Structural identity for union-collapse decisions. Exactly
+/// Structural identity for union-collapse decisions, and for the
+/// param dedup under `RefHist::ref_id`'s cycle keys — identity
+/// decisions where "equal" must not rest on None == None across
+/// distinct cells. (`contains`' Set equality fast paths instead keep
+/// loose `Type::eq` and WELD the pairs it compared — `link_equal` in
+/// contains.rs.) Exactly
 /// `Type::eq` EXCEPT that two unbound TVars are identical only when
 /// they share a cell: `TVar::eq` calls None == None equal, and a
 /// collapse on that verdict discards a cell whose future binding may

@@ -1173,6 +1173,32 @@ run!(rtype_rejects_error_arm, RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
+// A fn-valued element must not slip through a recursive-type HOF
+// chain (aug25a class A). The pieces: pre-unification binds the map
+// call's return cell to fold's `List<'a>` EXPANSION; the callback
+// returns a FUNCTION, so its def gate generalizes — the rtype cell
+// unbinds back to None with the fn recorded as a constraint — and
+// map's `'b` aliases that still-open cell; the rtype write-back then
+// compared `[Cons('a, ..), Nil] == [Cons('b, ..), Nil]` with
+// `Type::eq`, whose TVar arm calls two distinct unbound cells equal,
+// and the whole-set fast arm's by-NAME alias_tvars merged nothing —
+// `'a` and `'b` never met, and `acc + <fn>` typechecked. The fast
+// arms now demand `union_identical` (same CELL, not same shape). A
+// non-fn element never triggered it: a concrete return stays bound,
+// the eq fails, and the real walk commits.
+run!(
+    list_map_fn_element_fold_rejected,
+    |v: Result<&Value>| matches!(v, Err(_)),
+    "/test.gx" => r#"
+        list::fold(
+            list::map(list::from_array([true]), |x| hold),
+            i64:0,
+            |acc, x| acc + x
+        )
+    "#;
+    graphix_package_core::testing::FuseExpect::None
+);
+
 const CALLSITE_REJECTS_NULLABLE_RETURN: &str = r#"
 {
   let a = array::init(i64:3, |i| {

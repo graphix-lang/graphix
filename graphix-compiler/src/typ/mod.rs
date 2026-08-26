@@ -202,7 +202,11 @@ impl<H: IsoPoolable> RefHist<H> {
                 let params = &tr.params;
                 let entries = self.ref_ids.entry(def_addr).or_default();
                 for &(ref p, id) in entries.iter() {
-                    if **p == **params {
+                    if p.len() == params.len()
+                        && p.iter()
+                            .zip(params.iter())
+                            .all(|(a, b)| setops::union_identical(a, b))
+                    {
                         return Some(id);
                     }
                 }

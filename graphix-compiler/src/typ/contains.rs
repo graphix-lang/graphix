@@ -100,6 +100,99 @@ fn cell_constraints_ok(
     Ok(true)
 }
 
+/// Weld the tvar cells of two LOOSELY-equal types (`Type::eq`, whose
+/// TVar arm calls two distinct unbound cells equal). The Set equality
+/// fast paths below skip the committing walk on that verdict — sound
+/// for the VALUE but not for the FUTURE: two open cells that compared
+/// equal must share fate, or the discarded side's later binding never
+/// reaches the survivor (the `union_identical` rule surfacing in
+/// `contains`: a List expansion's `'a` element never met the map
+/// instance's `'b := Fn`, and `acc + <fn value>` typechecked — aug25a
+/// class A). The weld is by POSITION, not by name — the by-name
+/// `alias_tvars` these arms used merged nothing when the sides spell
+/// their tvars differently. `TVar::alias`/`alias_cells` carry the
+/// occurs check, so a self-reaching link refuses and marks
+/// `cycle_refused` exactly as the by-name path did — the μ-type
+/// rejection channel (`rec_return_self_rejects`) survives, where a
+/// strict-equality fallthrough to the general walk instead
+/// MATERIALIZED the infinite type as a copy chain and washed the
+/// refusal.
+fn link_equal(t0: &Type, t1: &Type) {
+    crate::stack::ensure_sufficient(|| link_equal_inner(t0, t1))
+}
+
+fn link_equal_inner(t0: &Type, t1: &Type) {
+    match (t0, t1) {
+        (Type::TVar(a), Type::TVar(b)) => {
+            if a.same_cell(b) {
+                return;
+            }
+            // Deref-clone before recursing — see the `(TVar, Any)`
+            // arm's guard-across-recursion note.
+            let ab = a.read().typ.read().typ.clone();
+            let bb = b.read().typ.read().typ.clone();
+            match (ab, bb) {
+                (None, None) => {
+                    let af = a.read().frozen;
+                    let bf = b.read().frozen;
+                    if af && bf {
+                        a.alias_cells(b)
+                    } else if af {
+                        b.alias(a)
+                    } else {
+                        a.alias(b)
+                    }
+                }
+                (Some(x), Some(y)) => link_equal(&x, &y),
+                // Unreachable under an eq-true verdict (None == Some
+                // is false); linking nothing keeps inference looser,
+                // which at worst rejects.
+                _ => (),
+            }
+        }
+        (Type::Fn(f0), Type::Fn(f1)) => {
+            for (a, b) in f0.args.iter().zip(f1.args.iter()) {
+                link_equal(&a.typ, &b.typ);
+            }
+            if let (Some(a), Some(b)) = (&f0.vargs, &f1.vargs) {
+                link_equal(a, b);
+            }
+            link_equal(&f0.rtype, &f1.rtype);
+            link_equal(&f0.throws, &f1.throws);
+        }
+        (Type::Ref(r0), Type::Ref(r1)) => {
+            for (a, b) in r0.params.iter().zip(r1.params.iter()) {
+                link_equal(a, b);
+            }
+        }
+        (Type::Set(a), Type::Set(b))
+        | (Type::Tuple(a), Type::Tuple(b))
+        | (Type::Variant(_, a), Type::Variant(_, b))
+        | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
+            for (x, y) in a.iter().zip(b.iter()) {
+                link_equal(x, y);
+            }
+        }
+        (Type::Struct(a), Type::Struct(b)) => {
+            for ((_, x), (_, y)) in a.iter().zip(b.iter()) {
+                link_equal(x, y);
+            }
+        }
+        (Type::Array(a), Type::Array(b))
+        | (Type::Error(a), Type::Error(b))
+        | (Type::ByRef(a), Type::ByRef(b)) => link_equal(a, b),
+        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+            link_equal(k0, k1);
+            link_equal(v0, v1);
+        }
+        (Type::App(c0, a0), Type::App(c1, a1)) => {
+            link_equal(c0, c1);
+            link_equal(a0, a1);
+        }
+        _ => (),
+    }
+}
+
 impl crate::typ::TVar {
     /// Bind a constrained-unbound cell to its conjunction's witness —
     /// the narrowest conjunct every other conjunct contains. Bound and
@@ -438,6 +531,9 @@ impl Type {
             &mut hist,
             t,
         )?;
+        if crate::dbgenv::graphix_dbg_bind() {
+            eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
+        }
         if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
@@ -591,7 +687,12 @@ impl Type {
                 let t0 = hist.expand_ref(t0, t0_id, env, raw)?;
                 let t1 = hist.expand_ref(t1, t1_id, env, raw)?;
                 match hist.get(&(t0_id, t1_id)) {
-                    Some(r) => Ok(*r),
+                    Some(r) => {
+                        if crate::dbgenv::graphix_dbg_bind() && !raw {
+                            eprintln!("REF-MEMO-HIT ({t0_id:?},{t1_id:?}) -> {r}");
+                        }
+                        Ok(*r)
+                    }
                     None => {
                         hist.insert((t0_id, t1_id), true);
                         let r = t0.contains_int(flags, env, hist, &t1);
@@ -999,9 +1100,7 @@ impl Type {
             (Self::Set(s0), Self::Set(s1)) if Arc::ptr_eq(s0, s1) => Ok(true),
             (t0 @ Self::Set(_), t1 @ Self::Set(_)) if t0 == t1 => {
                 if flags.contains(ContainsFlags::InitTVars) {
-                    let mut known = LPooled::take();
-                    t0.alias_tvars(&mut known);
-                    t1.alias_tvars(&mut known);
+                    link_equal(t0, t1);
                 }
                 Ok(true)
             }
@@ -1030,12 +1129,16 @@ impl Type {
                     // recursion in the general arm below. As residue it
                     // would bind the bare tvar to a set containing its
                     // own cell, which the occurs check refuses.
-                    if m.with_deref(|md| matches!(md, Some(md) if t0 == md)) {
-                        if flags.contains(ContainsFlags::InitTVars) {
-                            let mut known = LPooled::take();
-                            t0.alias_tvars(&mut known);
-                            m.alias_tvars(&mut known);
+                    let reflexive = m.with_deref(|md| match md {
+                        Some(md) if t0 == md => {
+                            if flags.contains(ContainsFlags::InitTVars) {
+                                link_equal(t0, md);
+                            }
+                            true
                         }
+                        _ => false,
+                    });
+                    if reflexive {
                         continue;
                     }
                     // An rhs member that IS one of the lhs's own tvar
@@ -1111,9 +1214,7 @@ impl Type {
                     match s0.iter().find(|c| *c == m) {
                         Some(c) => {
                             if flags.contains(ContainsFlags::InitTVars) {
-                                let mut known = LPooled::take();
-                                c.alias_tvars(&mut known);
-                                m.alias_tvars(&mut known);
+                                link_equal(c, m);
                             }
                         }
                         None => {
@@ -1161,6 +1262,12 @@ impl Type {
                 let bare = |t0: &&Self| matches!(t0, Self::TVar(tv) if tv.read().typ.read().typ.is_none());
                 let members =
                     || s.iter().filter(|t0| !bare(t0)).chain(s.iter().filter(bare));
+                if crate::dbgenv::graphix_dbg_bind() {
+                    eprintln!(
+                        "SET-T {} >= {t} whole={whole_ok} prims={prims_ok}",
+                        Self::Set(s.clone())
+                    );
+                }
                 match (whole_ok, prims_ok) {
                     (false, false) => Ok(false),
                     // prefer prims when valid — narrowest TVar bindings
@@ -1396,12 +1503,16 @@ impl Type {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.contains_int(
+        let r = self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
             env,
             &mut RefHist::new(LPooled::take()),
             t,
-        )
+        );
+        if crate::dbgenv::graphix_dbg_bind() {
+            eprintln!("CONTAINS {self} >= {t} -> {r:?}");
+        }
+        r
     }
 
     pub fn contains_with_flags(

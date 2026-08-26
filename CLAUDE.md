@@ -469,11 +469,18 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   (name, cell addr, bound type), plus `FIND-IMPL` (each impl head tried
   against a receiver, both verdicts), `APP-SPLIT` (a constructor
   recovered through the heads), `BIND ctor` (a constructor variable
-  bound by name) and `SETTLE-INFINITE` (the cell an occurs-check
-  refusal left unbound). The tool for "who bound this cell" — found
-  the select-arm greedy narrowing (soak jul05 item 12) twice, and the
-  P2 trio (pre-unified return cell, alias-chain fact, union-scrutinee
-  narrowing) in one afternoon.
+  bound by name), `SETTLE-INFINITE` (the cell an occurs-check
+  refusal left unbound), `CHK-CONTAINS`/`CONTAINS` (every top-level
+  unification's operands and verdict — a passing check that prints NO
+  interior events between them concluded on a fast path without
+  committing anything), `SET-T` (the general Set⊇t arm's whole/prims
+  probe verdicts) and `REF-MEMO-HIT` (the ref-expansion cycle memo
+  answering a pair). The tool for "who bound this cell" — found the
+  select-arm greedy narrowing (soak jul05 item 12) twice, the P2 trio
+  (pre-unified return cell, alias-chain fact, union-scrutinee
+  narrowing) in one afternoon, and the aug25a Set-equality fast-path
+  hole (the verdict prints are what made "true with zero events"
+  visible).
 - `GRAPHIX_DBG_KERNELS=1` — print each lambda kernel built by
   `build_lambda_kernel` (name + frozen return type + AbiKind). Locates
   which per-slot/cross-kernel callee actually compiled. Also prints

@@ -177,3 +177,48 @@ same day; the raw witnesses are removed and the pins carry the record.
   one, so `seed_typedef_refs()` moved above the fusion gate. The
   `graphix-shell` `check_mode_parity` test now iterates over both witness
   families.
+
+## The aug25a flood (2026-08-26) — 82 divergences, TWO classes, both fixed
+
+The first fleet round over the traits/P2 merge (campaign binaries at
+6e62fff3). 81 of 82 findings are one class; neither is new to the
+campaign's delta.
+
+- **A — `set-eq-drops-cell-link-aug2026`** (the flood; every box):
+  `list::fold(list::map(l, |x| <fn value>), i64:0, |acc, x| acc + x)`
+  ACCEPTED by the typechecker (`acc + <fn>`), array twin and let-bound
+  twin both refused; the engines then diverged downstream. The
+  DIVERGENCE first appears at 1c64ba3d (the genn-Ref lookup let the
+  region fuse), but the ACCEPTANCE hole predates the campaign.
+  Mechanism, confirmed by twin bind traces (string element vs fn
+  element): pre-unification binds the map call's return cell to
+  fold's `List<'a>` EXPANSION; a callback returning a FUNCTION is
+  generalized at its def gate (`unbind_tvars` — rtype cell back to
+  None, fn kept as a constraint), so map's `'b` aliases a still-open
+  cell; the rtype write-back then compared
+  ``[`Cons('a, ..), `Nil] == [`Cons('b, ..), `Nil]`` with `Type::eq`,
+  whose TVar arm calls two distinct unbound cells equal, and the
+  whole-set fast arm's by-NAME `alias_tvars` merged nothing — `'a`
+  and `'b` never met, verdict true, zero commits. A concrete element
+  stays BOUND (`Some(string)`), fails the eq, and takes the
+  committing walk — the entire fn-specificity. Fixed by holding
+  `contains`' equality fast paths (whole-set arm, member pre-pass,
+  residue reflexive check, `ref_id` param dedup) to
+  `union_identical` — the documented union-collapse rule ("a collapse
+  on `TVar::eq` drops the discarded cell's future binding") applied
+  to its other consumer. Pins:
+  `findings/set-eq-drops-cell-link-aug2026/` + graphix-tests
+  `list_map_fn_element_fold_rejected`. Found with the new
+  `CHK-CONTAINS` verdict prints: a passing check with zero interior
+  events between its operands and its verdict is a fast path that
+  committed nothing.
+- **B — `arith-widened-cell-aug2026`** (ryouko, aieka; fixed 64fbdaf3):
+  `filter_err({let x = f64:0. * f64:0.; x})` — the consumer's
+  parameter type (`['a, Error<'e>]`) widened the multiply's result
+  cell, the let classified two words wide, the arith emitted a bare
+  F64, and `bind_local` PANICKED cranelift — the runtime thread
+  aborted and the oracle read `CompileErr("runtime did not respond")`.
+  A panic, not a wedge; any narrow scalar triggers it. Arith now
+  widens to the representation its own type declares
+  (`widen_to_declared_repr`). Pins:
+  `findings/arith-widened-cell-aug2026/`.
