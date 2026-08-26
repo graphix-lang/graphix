@@ -896,16 +896,18 @@ lang/collection.rs — found four issues before any timing ran: the
 fixture face crashed the test process on its first run.
 
 1. **`--check` never runs `analysis::analyze`** (MUST FIX — Eric,
-   2026-08-25). `check_inner` (graphix-rt/src/gx.rs) compiles
-   per-statement via `compile_stmt` and deletes the nodes; only the
-   load path's `compile()` reaches the analyze call at its tail
-   (graphix-compiler/src/lib.rs — "Runs ALWAYS", but check never gets
-   there). Consequences: the def assertions
-   (`#[tail_recursive]`/`#[sync]`/`#[async]`) are verified only at
-   load — a program with a false assertion passes `--check` and fails
-   at run — and check is a THIRD compile channel (the
-   check_mode_parity family). Witness: `GXDBG_EFFECT=1 --check` prints
-   0 lines on a program that prints 1600 under load.
+   2026-08-25). **FIXED — verified 2026-08-26:** `compile_stmt` (the
+   per-statement entry `check_inner` drives) carries the analyze call
+   itself now (graphix-compiler/src/lib.rs, "Runs ALWAYS"), and
+   `compile()` is a thin wrapper over it — one compile channel, not
+   three. Witnesses re-run green: `--check` rejects a false
+   `#[tail_recursive]` with analysis.rs's own message, and
+   `GXDBG_EFFECT=1 --check` prints 84 lines on soak-dash. Pinned by
+   `graphix-shell/tests/check_runs_analyze.rs`. (Original record: the
+   analyze call sat only at `compile()`'s tail, past where
+   `check_inner` stopped — the def assertions were verified only at
+   load, and `GXDBG_EFFECT=1 --check` printed 0 lines on a program
+   that prints 1600 under load.)
 
 2. **Runtime type tests recursed unguarded through VALUE depth**
    (FIXED same day: `Type::is_a_int` runs under `ensure_sufficient`,
