@@ -167,6 +167,26 @@ run!(
     ; FuseExpect::None
 );
 
+// A `never()` arm types as a cell that resolves to bottom, and the
+// select's type is the union of its arms' CELLS — so the narrowing
+// idiom `select opt { null as _ => never(), s => s }` hands dispatch a
+// self type of `[⊥, Counter]`. Bottom is the identity of the union, so
+// there is one member to dispatch on; resolving the cells without
+// normalizing left the bottom standing and demanded an impl for it
+// (`sys::process`'s `[Pipe, null]` stdin, through Write).
+run!(
+    trait_dispatch_never_arm_union,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(3)"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        let opt: [Counter, null] = Counter(3);
+        let c = select opt { null as _ => never(), s => s };
+        let result = Show::show(c)
+    "#
+);
+
 // A trait method as a higher-order argument: the callback's call sites
 // resolve by the element type.
 run!(

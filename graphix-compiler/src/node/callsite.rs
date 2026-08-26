@@ -1182,8 +1182,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let m = &def.methods[tm.index];
         let Some(ftype) = self.ftype.as_ref() else { return Ok(()) };
+        // NORMALIZE, not just resolve: dispatch reasons per union
+        // member, so the self type has to be in union normal form. A
+        // `never()` select arm types as a cell that resolves to `⊥`,
+        // and `resolve_tvars` alone leaves it standing as a member —
+        // `[⊥, Pipe]` then demanded an impl of Write for `⊥`.
         let mut self_t = match ftype.args.get(m.self_index) {
-            Some(a) => a.typ.resolve_tvars(),
+            Some(a) => a.typ.resolve_tvars().normalize(),
             None => bail!("{}::{} called without its self argument", def.name, m.name),
         };
         if !def.hole {
