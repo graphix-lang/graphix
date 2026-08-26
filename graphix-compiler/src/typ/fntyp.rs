@@ -310,7 +310,7 @@ impl FnType {
     /// vargs / rtype / throws), by name. The retired constraints
     /// list's tvars shared these cells by construction (phase B), so
     /// this is the complete cell set every list walker used to reach.
-    fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
+    pub(crate) fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         for arg in self.args.iter() {
             arg.typ.collect_tvars(&mut known);

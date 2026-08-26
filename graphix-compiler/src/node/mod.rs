@@ -1019,6 +1019,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             } else {
                 wrap!(n, n.typecheck1(ctx))?
             }
+            // Per-STATEMENT settle drain (see `drain_pending_settles`):
+            // a later statement's resolution reads settled facts, so
+            // each statement's deferred settles land before the next
+            // statement resolves — the CURRENT frame only: entries an
+            // enclosing resolution owns live in ITS frame and are not
+            // reachable here.
+            wrap!(n, crate::drain_pending_settles(ctx))?;
         }
         for i in self.catches.iter().rev() {
             let n = &mut self.children[*i];
@@ -1027,6 +1034,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             } else {
                 wrap!(n, n.typecheck1(ctx))?
             }
+            wrap!(n, crate::drain_pending_settles(ctx))?;
         }
         Ok(())
     }

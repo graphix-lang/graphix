@@ -1215,6 +1215,25 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
+// The call site's terminal settle runs LAST in typecheck1, after the
+// callback finalizations — those are WRITERS, and a generalized
+// fn-valued argument's cells bind only there (an inline callback binds
+// during tc0's arg loop and never meets the settle). Settling between
+// static resolution and the finalize loops ⊥-settled find_map's `'b`
+// before the extracted callback's return could bind it: the same
+// program compiled inline and failed extracted with "Option<_> does
+// not contain [i64, null]" (typemorph let-extract, return-side face,
+// 3 corpus hits).
+run!(
+    extracted_callback_settles_after_finalize,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    "/test.gx" => r#"
+        let a = [(i64:0, i64:1), (i64:2, i64:3)];
+        let g = |(k, v)| select k == i64:2 { true => v, false => null };
+        let result = array::find_map(a, g)
+    "#
+);
+
 const CALLSITE_REJECTS_NULLABLE_RETURN: &str = r#"
 {
   let a = array::init(i64:3, |i| {

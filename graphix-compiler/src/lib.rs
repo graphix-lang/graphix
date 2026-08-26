@@ -1690,6 +1690,35 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub(crate) resolving_lambdas:
         Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingLambda>>>,
     pub(crate) resolving_sites: Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+    /// DEFERRED terminal settles, a stack of FRAMES — one per
+    /// resolution scope. Each call site's `typecheck1` pushes its
+    /// resolved signature into the CURRENT frame instead of settling
+    /// in place; statement boundaries (Block/Module children,
+    /// `compile_stmt`'s tail) drain the current frame, so a later
+    /// statement's resolution (trait dispatch reading its self type —
+    /// a never() arm's cell must already be ⊥) sees settled facts
+    /// exactly as it did when sites settled in place — INCLUDING the
+    /// statements of a lambda body typechecked inside an instance
+    /// re-drive, which get their own frame. A site's re-drives run
+    /// under a fresh frame, and whatever remains when the re-drive
+    /// returns (entries whose cells the SITE's resolution owns — the
+    /// collection prototype's signature) merges UP to the parent frame
+    /// and drains only after the enclosing writers have run: settling
+    /// them in place ⊥-settled find_map's `'b` mid-resolution, and the
+    /// extracted-callback spelling failed "Option<_> does not contain
+    /// [i64, null]" while the inline spelling compiled. A settle is
+    /// sound only after every writer in its scope has run — the
+    /// jul22e discriminator's premise, made structural. Entries:
+    /// (resolved sig, the site's own rtype cell, defaulted-arg cells
+    /// exempt from settling, the site spec for error context).
+    pub(crate) pending_settles: Vec<
+        Vec<(
+            typ::FnType,
+            Option<typ::TVar>,
+            ahash::AHashSet<usize>,
+            triomphe::Arc<expr::Expr>,
+        )>,
+    >,
     /// All state owned by the fusion subsystem — the JIT module,
     /// kernel caches, abstract-type registry, builtin effects, and the
     /// compile-time fusion flags/counters. Grouped into one struct so
@@ -1831,6 +1860,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 nohash::IntMap::default(),
             )),
             resolving_sites: Arc::new(parking_lot::Mutex::new(nohash::IntSet::default())),
+            pending_settles: vec![Vec::new()],
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             pending_imports: Vec::new(),
@@ -2122,6 +2152,29 @@ pub fn compile<R: Rt, E: UserEvent>(
     compile_stmt(ctx, flags, scope, spec).map(|(n, _)| n)
 }
 
+/// Drain the DEFERRED terminal settles (see
+/// [`ExecCtx::pending_settles`]): run after each TOP-LEVEL statement
+/// (Block/Module children, gated on no re-drive being in progress)
+/// and at `compile_stmt`'s tail — by then every writer for the
+/// drained sites has run, the sound moment for the jul22e
+/// discriminator (open + unconstrained cells settle, refused ones
+/// error), and a LATER statement's resolution (trait dispatch reads
+/// its self type; the never()-arm cell must already be ⊥) sees the
+/// settled facts exactly as it did when sites settled in place. Push
+/// order = inner sites first; each entry is dependency-ordered
+/// internally by `settle_terminal`.
+pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<()> {
+    use ::anyhow::Context as _;
+    let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
+    for (ft, rtc, defaulted, spec) in pending.iter() {
+        ft.settle_terminal(&ctx.env, rtc.as_ref(), defaulted)
+            .with_context(|| expr::ErrorContext((**spec).clone()))?;
+    }
+    Ok(())
+}
+
 /// [`compile`] for statement-list drivers that compile top-level
 /// expressions ONE AT A TIME (the shell REPL, `compile_root`, the
 /// checker) instead of through a file's synthetic `Do` wrap: a
@@ -2153,6 +2206,8 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     ctx.attr_absorbed.lock().clear();
     ctx.pending_imports.clear();
     ctx.predeclared_mods.clear();
+    ctx.pending_settles.clear();
+    ctx.pending_settles.push(Vec::new());
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
     let env = ctx.env.clone();
@@ -2201,6 +2256,12 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         return Err(e);
     }
     if let Err(e) = node.typecheck1(ctx) {
+        ctx.pending_settles.clear();
+        ctx.pending_settles.push(Vec::new());
+        ctx.env = env;
+        return Err(e);
+    }
+    if let Err(e) = drain_pending_settles(ctx) {
         ctx.env = env;
         return Err(e);
     }

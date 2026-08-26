@@ -671,10 +671,18 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                     continue;
                 }
                 wrap!(n, n.typecheck1(ctx))?;
+                // Per-STATEMENT settle drain (see
+                // `drain_pending_settles`): a later statement's
+                // resolution reads settled facts, so each statement's
+                // deferred settles land before the next statement
+                // resolves — the CURRENT frame only; entries an
+                // enclosing resolution owns live in ITS frame.
+                wrap!(n, crate::drain_pending_settles(ctx))?;
             }
             for i in catches.iter().rev() {
                 let n = &mut nodes[*i];
                 wrap!(n, n.typecheck1(ctx))?;
+                wrap!(n, crate::drain_pending_settles(ctx))?;
             }
             Ok(())
         })

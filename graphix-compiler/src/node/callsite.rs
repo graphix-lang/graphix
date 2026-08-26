@@ -680,6 +680,69 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Some(ftype)
     }
 
+    /// The resolution half of `typecheck1`, bracketed by the caller's
+    /// cell PROTECTION: static resolution (whose re-drives typecheck
+    /// interior call sites), per-lambda finalization, then the
+    /// labeled-default check. Split out so protection unwinds on every
+    /// error path — the ctx outlives a failed compile in check/LSP
+    /// runtimes, and a leaked protected cell would poison later
+    /// settles.
+    fn typecheck1_resolve(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        ftype: &FnType,
+    ) -> Result<()> {
+        self.try_static_resolve(ctx)?;
+        self.refresh_static_ftype();
+        let resolved = ftype.resolve_tvars();
+        let spec = self.spec.clone();
+        // The callee's own identities, against the whole resolved type.
+        for id in ftype.lambda_ids.ids().iter().copied() {
+            finalize_lambda::<R, E>(ctx, id, &resolved, &spec)?;
+        }
+        // Callbacks: every lambda reachable through a fn-typed argument,
+        // against that arg's resolved fn type. (Replaces the old
+        // `hof_idmap`, which only saw bare `Type::Fn` args and merged
+        // callback ids into the callee — polluting derived closures.)
+        let mut fts: LPooled<Vec<TArc<FnType>>> = LPooled::take();
+        for arg in resolved.args.iter() {
+            fts.clear();
+            collect_fn_arms(&arg.typ, &mut fts);
+            for ft in fts.iter() {
+                for id in ft.lambda_ids.ids().iter().copied() {
+                    finalize_lambda::<R, E>(ctx, id, ft, &spec)?;
+                }
+            }
+        }
+        // Labeled-default type check — now sound: in this second pass the
+        // closure is complete, so `len() == 1` truly means "exactly one
+        // possible callee." Runs AFTER static resolution, whose
+        // `prepare_bind` replaced the typecheck0 Nop placeholders with the
+        // per-site COMPILED default nodes — so the check reads the real
+        // default's type, and its unification is what binds a
+        // defaulted-arg cell the terminal settle deliberately left open
+        // (`rand::rand(#clock:1)`: `'a := f64` from the `0.0`/`1.0`
+        // defaults). A dynamically-dispatched site still holds Nops here
+        // (typed as the arg's own tvar — the check is vacuous) and the
+        // cell stays unbound.
+        if ftype.lambda_ids.ids().len() == 1 {
+            for farg in ftype.args.iter() {
+                let name = match &farg.kind {
+                    FnArgKind::Labeled { name, has_default: true } => name,
+                    _ => continue,
+                };
+                let def_typ = match self.args.get(&ArgKey::Named(name.clone())) {
+                    Some(a) if a.is_default => a.node.as_ref().map(|n| n.typ().clone()),
+                    _ => continue,
+                };
+                if let Some(dt) = def_typ {
+                    wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn setup_static_bind(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1188,7 +1251,27 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // and `resolve_tvars` alone leaves it standing as a member —
         // `[⊥, Pipe]` then demanded an impl of Write for `⊥`.
         let mut self_t = match ftype.args.get(m.self_index) {
-            Some(a) => a.typ.resolve_tvars().normalize(),
+            Some(a) => {
+                // Trait dispatch is STATIC — it must decide on the
+                // self type HERE, so it forces the otherwise-DEFERRED
+                // terminal settle of the self type's cells
+                // (`pending_settles` drains at the statement boundary;
+                // dispatch is the one mid-typecheck1 consumer of
+                // settled facts): a never() arm's open unconstrained
+                // cell settles ⊥ and the normalize below drops it from
+                // the union, exactly as the statement-boundary settle
+                // would have. A writer that would still have bound the
+                // cell meets the settled value loudly at its own
+                // check, never a silently wrong dispatch.
+                {
+                    let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                    a.typ.collect_tvars(&mut tvs);
+                    for (_, tv) in tvs.drain() {
+                        wrap!(self, tv.settle_or_bottom(&ctx.env))?;
+                    }
+                }
+                a.typ.resolve_tvars().normalize()
+            }
             None => bail!("{}::{} called without its self argument", def.name, m.name),
         };
         if !def.hole {
@@ -2249,24 +2332,57 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             Some(ftype) => ftype.clone(),
             None => return Ok(()),
         };
-        self.try_static_resolve(ctx)?;
+        // A fresh settle FRAME for this site's re-drives (see
+        // `ExecCtx::pending_settles`): statement boundaries inside the
+        // re-driven bodies drain their own frame, and whatever remains
+        // when the resolution returns — entries whose cells THIS
+        // resolution owns, like a collection prototype's signature —
+        // merges up and drains only after this site's writers have
+        // run.
+        ctx.pending_settles.push(Vec::new());
+        let res = self.typecheck1_resolve(ctx, &ftype);
+        let leftover = ctx.pending_settles.pop().expect("settle frame");
+        ctx.pending_settles.last_mut().expect("root settle frame").extend(leftover);
+        res?;
         // Terminal settle for still-unbound constrained cells: bind each
         // to its conjunction's witness. Deferred from typecheck0 (where
         // the old eager version WAS the wide-binder of observations
         // #3/#4) so annotations and settled inference get the whole
-        // typecheck0 phase to narrow the cells first. Walks the LIVE
-        // ftype structure, never the stored constraints list — a list
-        // tvar orphans when unification re-points its arg's cell.
+        // typecheck0 phase to narrow the cells first — and run LAST in
+        // this pass, after the finalize loops (Eric's ruling
+        // 2026-08-26): the jul22e discriminator ("open + unconstrained
+        // at terminal settle → error/⊥") is sound only once every
+        // writer has run, and the CALLBACK finalizations above are
+        // writers — a generalized fn-valued argument's cells bind only
+        // there (inline callbacks bind in tc0's arg loop). Settling
+        // between static resolution and the finalize loops ⊥-settled
+        // find_map's `'b` before the extracted callback's return could
+        // bind it: "Option<_> does not contain [i64, null]" (typemorph
+        // let-extract, return-side face). Walks the LIVE ftype
+        // structure, never the stored constraints list — a list tvar
+        // orphans when unification re-points its arg's cell.
         //
         // Cells reachable from an OMITTED defaulted labeled arg are
         // exempt: that arg's type belongs to its default EXPRESSION,
-        // which compiles at static resolution (`setup_static_bind`, driven
-        // from `try_static_resolve` above) and binds the cell through
-        // the apply's own arg unification — settling first would
-        // foreclose it (`rand::rand(#clock:1)` must get `'a := f64`
-        // from the `0.0`/`1.0` defaults, not `[Int, Float]` wide). A
-        // dynamically-dispatched site leaves them unbound: fusion
-        // refuses (de-fuse) and the node-walk is type-tolerant.
+        // which compiles at static resolution (`setup_static_bind`,
+        // driven from `try_static_resolve` above) and binds the cell
+        // through the apply's own arg unification and the
+        // labeled-default check above — a dynamically-dispatched site
+        // leaves them unbound: fusion refuses (de-fuse) and the
+        // node-walk is type-tolerant.
+        // The terminal settle is DEFERRED to the statement boundary
+        // (`compile_stmt` drains `ctx.pending_settles` once typecheck1
+        // has completed for the whole statement): a settle is sound
+        // only after every writer has run, and writers live at every
+        // level above an interior site — the parent's finalize loops,
+        // an enclosing collection node's prototype-return check
+        // (find_map's `'b`, ⊥-settled mid-resolution, failed the
+        // extracted-callback spelling with "Option<_> does not contain
+        // [i64, null]" while the inline spelling compiled — typemorph
+        // let-extract, return-side face). Each site still contributes
+        // its own resolved signature, so instance cells get their
+        // witnesses (fusion) and the μ-refusal channel fires at the
+        // drain.
         {
             let mut dtv: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for farg in ftype.args.iter() {
@@ -2277,7 +2393,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     farg.typ.collect_tvars(&mut dtv);
                 }
             }
-            let defaulted: LPooled<AHashSet<usize>> =
+            let defaulted: AHashSet<usize> =
                 dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
             // The call's OWN result cell joins the settle set: for a
             // callee whose declared rtype is the LITERAL ⊥ (`never()`)
@@ -2295,57 +2411,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             // `FnType::settle_terminal` (the jul22e settle-order
             // flap).
             let rtc = match &self.rtype {
-                Type::TVar(tv) => Some(tv),
+                Type::TVar(tv) => Some(tv.clone()),
                 _ => None,
             };
-            wrap!(self, ftype.settle_terminal(&ctx.env, rtc, &defaulted))?;
-        }
-        self.refresh_static_ftype();
-        let resolved = ftype.resolve_tvars();
-        let spec = self.spec.clone();
-        // The callee's own identities, against the whole resolved type.
-        for id in ftype.lambda_ids.ids().iter().copied() {
-            finalize_lambda::<R, E>(ctx, id, &resolved, &spec)?;
-        }
-        // Callbacks: every lambda reachable through a fn-typed argument,
-        // against that arg's resolved fn type. (Replaces the old
-        // `hof_idmap`, which only saw bare `Type::Fn` args and merged
-        // callback ids into the callee — polluting derived closures.)
-        let mut fts: LPooled<Vec<TArc<FnType>>> = LPooled::take();
-        for arg in resolved.args.iter() {
-            fts.clear();
-            collect_fn_arms(&arg.typ, &mut fts);
-            for ft in fts.iter() {
-                for id in ft.lambda_ids.ids().iter().copied() {
-                    finalize_lambda::<R, E>(ctx, id, ft, &spec)?;
-                }
-            }
-        }
-        // Labeled-default type check — now sound: in this second pass the
-        // closure is complete, so `len() == 1` truly means "exactly one
-        // possible callee." Runs AFTER static resolution, whose
-        // `prepare_bind` replaced the typecheck0 Nop placeholders with the
-        // per-site COMPILED default nodes — so the check reads the real
-        // default's type, and its unification is what binds a
-        // defaulted-arg cell the terminal settle deliberately left open
-        // (`rand::rand(#clock:1)`: `'a := f64` from the `0.0`/`1.0`
-        // defaults). A dynamically-dispatched site still holds Nops here
-        // (typed as the arg's own tvar — the check is vacuous) and the
-        // cell stays unbound.
-        if ftype.lambda_ids.ids().len() == 1 {
-            for farg in ftype.args.iter() {
-                let name = match &farg.kind {
-                    FnArgKind::Labeled { name, has_default: true } => name,
-                    _ => continue,
-                };
-                let def_typ = match self.args.get(&ArgKey::Named(name.clone())) {
-                    Some(a) if a.is_default => a.node.as_ref().map(|n| n.typ().clone()),
-                    _ => continue,
-                };
-                if let Some(dt) = def_typ {
-                    wrap!(self.fnode, farg.typ.check_contains(&ctx.env, &dt))?;
-                }
-            }
+            ctx.pending_settles.last_mut().expect("root settle frame").push((
+                ftype.clone(),
+                rtc,
+                defaulted,
+                self.spec.clone(),
+            ));
         }
         Ok(())
     }
