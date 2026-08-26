@@ -1199,6 +1199,22 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
+// Parens are transparent: `let rec f = (|n| …)` is the bare spelling.
+// The rec check tested the value's kind syntactically and refused
+// ExplicitParens(Lambda) — typemorph's parens-wrap (SOUND grade) hit
+// it 14 times on the first corpus sweep.
+run!(
+    rec_through_parens,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => r#"
+        let rec f = (|n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n - i64:1) });
+        let result = f(i64:3)
+    "#;
+    // ASPIRE: the rec lambda-def extraction also keys on the bare
+    // Lambda node, so the parens spelling node-walks (values agree).
+    graphix_package_core::testing::FuseExpect::None
+);
+
 const CALLSITE_REJECTS_NULLABLE_RETURN: &str = r#"
 {
   let a = array::init(i64:3, |i| {

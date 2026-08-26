@@ -119,7 +119,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
-            match value {
+            // Parens are transparent everywhere else, so look through
+            // them here too: `let rec f = (|n| …)` refused while the
+            // bare spelling compiled (typemorph parens-wrap, SOUND
+            // grade — 14 corpus hits on the first sweep). The check is
+            // purely syntactic; the value compiles generically below.
+            let mut v = value;
+            while let ExprKind::ExplicitParens(inner) = &v.kind {
+                v = inner;
+            }
+            match v {
                 Expr { kind: ExprKind::Lambda(_), .. } => (),
                 _ => bail!("let rec may only be used for lambdas"),
             }
