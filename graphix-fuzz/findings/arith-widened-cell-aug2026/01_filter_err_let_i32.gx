@@ -1,0 +1,5 @@
+// The narrow-INTEGER face of 00: the payload word is I32, the local is
+// declared I64. Kept separate because the widening a scalar needs on
+// the way into a Value word is sign-aware, and an integer face would
+// catch a wrong extension that the float face cannot see.
+filter_err({let x = i32:1 + i32:1; x})

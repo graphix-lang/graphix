@@ -718,6 +718,7 @@ macro_rules! arith_emit_clif {
             $crate::fusion::emit::emit_arith_node(
                 cx,
                 $crate::node::op::BinOp::$base,
+                &self.typ,
                 &self.lhs,
                 &self.rhs,
             )

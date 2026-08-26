@@ -1,0 +1,13 @@
+// A node must emit the representation its own TYPE declares — every
+// consumer classifies on `abi_kind(node.typ())`. Arithmetic computes in
+// the OPERANDS' register scalar, and here `filter_err`'s parameter
+// (`['a, Error<'e>]`) unified into the multiply's unbound `'a: Number`
+// cell, so the let's value classified TWO WORDS WIDE while the arith
+// emitted a bare F64. `bind_local` declared the local I64 and defined
+// it with an F64: cranelift PANICS ("declared type of variable var3
+// doesn't match type of value v20"), which aborts the runtime thread —
+// the oracle sees "runtime did not respond". Any narrow scalar does it
+// (f32/i32/u32); i64 hid it, its payload word being I64 already.
+// Found aug25a (ryouko divergence_000012, aieka divergence_000009);
+// present at 6e62fff3, so older than that campaign's delta.
+filter_err({let x = f64:0. * f64:0.; x})

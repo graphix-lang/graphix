@@ -214,9 +214,35 @@ pub(crate) fn emit_ref_node(
 /// routes to the `ValueArith` mirror first (netidx `Value` arithmetic
 /// via the `graphix_value_<op>` helpers, both operands OWNED since the
 /// helpers consume).
+/// A node must emit the representation its own TYPE declares, because
+/// every consumer classifies on `abi_kind(node.typ())`. Arithmetic
+/// computes in the OPERANDS' register scalar, and a result cell that a
+/// consumer's parameter type widened (`filter_err(..)`'s
+/// `['a, Error<'e>]` unifying into an unbound `'a: Number`) classifies
+/// two words wide — so widen the scalar into its Value form. A scalar's
+/// disc IS its value disc, so only the payload moves.
+fn widen_to_declared_repr(
+    cx: &mut BodyCx,
+    out_typ: &Type,
+    prim: PrimType,
+    cv: CompiledExpr,
+) -> CompiledExpr {
+    match kernel_abi::freeze_for_abi_normalized(out_typ)
+        .as_ref()
+        .and_then(|t| kernel_abi::abi_kind(t))
+    {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            let payload = scalar_to_payload_i64(cx.b, prim, cv.payload);
+            CompiledExpr::new(cv.disc, payload)
+        }
+        _ => cv,
+    }
+}
+
 pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: BinOp,
+    out_typ: &Type,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
@@ -298,11 +324,13 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         // and loop bodies poison (any bottomed element production
         // taints the collection — `map` agrees with the hand-written
         // array literal; downstream holding is the STORE's job).
-        return Ok(CompiledExpr::new(disc, value));
+        let cv = CompiledExpr::new(disc, value);
+        return Ok(widen_to_declared_repr(cx, out_typ, prim, cv));
     }
     let value = compile_bin(cx.b, op, prim, l, r)?;
     let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
-    Ok(CompiledExpr::new(disc, value))
+    let cv = CompiledExpr::new(disc, value);
+    Ok(widen_to_declared_repr(cx, out_typ, prim, cv))
 }
 
 /// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
