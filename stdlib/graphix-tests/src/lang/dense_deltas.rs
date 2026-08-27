@@ -163,7 +163,6 @@ async fn print_hof_once_jit() -> Result<()> {
     print_hof_once(false).await
 }
 
-
 // ── Delta 13: a bottomed builtin arg bottoms the invocation — the arg
 // slot no longer rides its previous value ──
 //

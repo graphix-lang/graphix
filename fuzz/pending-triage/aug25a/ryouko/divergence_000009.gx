@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
+// jit: Trace(Trace { epochs: [Epoch { events: [(0, Null)], capped: false }], stdout: [] })
+// mutant: {type T = (string, i64); let l: list::List<T> = list::from_array({let l = list::from_array([i64:1, i64:2, i64:3]); list::to_array(list::flat_map(l, |x| select x {i64:2 => list::from_array([]), _ => list::from_array([x, x * i64:10])}))}); list::find(l, |(k, _): T| k == "bar")}
+// minimized:
+{type T = (string, i64); let l: list::List<T> = list::from_array({let l = list::from_array([i64:1, i64:2, i64:3]); list::to_array(list::flat_map(l, |x| select x {i64:2 => list::from_array([]), _ => list::from_array([x, x * i64:10])}))}); list::find(l, |(k, _): T| k == "bar")}

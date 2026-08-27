@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
+// jit: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }], stdout: [] })
+// mutant: {let v = list::fold(list::map(list::from_array([i64:1, i64:2, i64:3]), |x| list::to_array), i64:0, |acc, x| acc + x); v % i64:-1}
+// minimized:
+{let v = list::fold(list::map(list::from_array([i64:1, i64:2, i64:3]), |x| list::to_array), i64:0, |acc, x| x); v % i64:-1}

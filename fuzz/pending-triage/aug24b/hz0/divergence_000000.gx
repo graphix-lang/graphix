@@ -1,0 +1,6 @@
+// bisect: fusion/JIT bug (final values, interp != jit)
+// interp: Trace(Trace { epochs: [Epoch { events: [(4, I64(300))], capped: false }], stdout: [] })
+// jit: Trace(Trace { epochs: [Epoch { events: [(1, I64(100))], capped: false }], stdout: [] })
+// mutant: {let clock = sys::io::stderr(null) ~ i64:1; let values = [i64:100, i64:200, i64:300]; hold(#clock, array::iter(values))}
+// minimized:
+{let clock = sys::io::stderr(null) ~ i64:1; let values = [i64:100, i64:200, i64:300]; hold(#clock, array::iter(values))}
