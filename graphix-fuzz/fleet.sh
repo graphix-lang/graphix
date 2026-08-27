@@ -43,6 +43,7 @@ HOSTS=(
     "aieka:rsync:288:4:linux"
     "katana:rsync:64:4:darwin"
     "ryouko:rsync:85:1:linux"
+    "mazikeen:rsync:14:4:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}

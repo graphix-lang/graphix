@@ -25,7 +25,7 @@
 use tui::{table::{table, cell, row}, block::block, text, line, style};
 use sys::io::{Write, Close, Lines};
 
-let hosts = ["ryouko", "hz0", "aieka", "katana"];
+let hosts = ["ryouko", "hz0", "aieka", "katana", "mazikeen"];
 
 // Runs on the remote box, fed through `bash -s` on stdin rather than as
 // an ssh command line: three of these boxes have fish login shells, and
