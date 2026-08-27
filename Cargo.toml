@@ -5,6 +5,7 @@ lto = true
 debug = false
 
 [profile.dev]
+opt-level = "s"
 debug = false
 
 [workspace.dependencies]
