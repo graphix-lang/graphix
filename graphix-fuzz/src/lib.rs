@@ -945,9 +945,15 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // becoming-selected transitions straddle a `tcp::connect`
         // arrival — flaps 3/5 in EITHER mode; de-asynced it agrees
         // deterministically).
+        // `hold(#clock, v)` is ARRIVAL-ORDER-sensitive rather than
+        // fire-count-sensitive: its output is defined by where the
+        // clock lands relative to v's deliveries, so an async clock
+        // (`sys::io::stderr(null) ~ 1`) settles on whichever element
+        // was held when the reply arrived — 300, 200, 200 across three
+        // interp runs (aug24b hz0 divergence_000000).
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
-            "queue(", "take(", "skip(", "window(", "iterq",
+            "queue(", "take(", "skip(", "window(", "iterq", "hold(",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
             return OracleTier::Excluded;

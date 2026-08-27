@@ -222,3 +222,54 @@ campaign's delta.
   widens to the representation its own type declares
   (`widen_to_declared_repr`). Pins:
   `findings/arith-widened-cell-aug2026/`.
+
+## The aug24b + aug25a residue (2026-08-27) — 3 findings, 3 classes, CLOSED
+
+What was left in the directory after the aug25a record: aug24b's one
+divergence (hz0) and 107 aug25a files (the README's 82 plus what the
+fleet kept pulling on the old binaries before it was stopped). All 107
+re-run through the fixed tree: 105 AGREE (classes A and B above); the
+two that still diverged, both ryouko, were new classes.
+
+- **hold-async-clock-aug2026** (aug24b hz0 divergence_000000; oracle
+  fix, no engine change): `hold(#clock, array::iter([100, 200, 300]))`
+  with `clock = sys::io::stderr(null) ~ 1`. Interp settled 300, 200,
+  200 across three runs; the JIT 100 every time — `hold` emits
+  whichever element was held when the clock LANDS, and an async
+  clock's arrival cycle is a race. Deterministic clocks (`i64:1`,
+  `never()`, `once(..)`) agree on both engines. `hold(` joins the
+  oracle's fire-count-sensitive list: a `sys::` program naming it is
+  Excluded instead of compared at final values.
+- **C — bound-cell-cycle-accepts-aug2026** (ryouko divergence_000006;
+  fixed in `contains`): `src <- [i64:0, src]` under an INFERRED
+  `Array<'a: Array<'b>>` typed, where the annotated twin refuses. The
+  connect's check is `Array<'a> ⊇ Array<'e>` with `'e := [i64,
+  Array<'a>]` — two BOUND cells, `'a` reachable from `'e` — and the
+  TVar×TVar arm's cycle refusal answered TRUE and marked both cells
+  for the terminal settle, which never consults a bound cell. An i64
+  then reached a slot typed `Array<i64>`; the JIT read it as an array
+  and counted 4 fires of the nested map to the interp's 2. Both bound
+  cells now walk their bindings like any two bound cells (the occurs
+  check at every bind keeps the walk finite; a pair memo answers a
+  revisit coinductively), and the general walk says `Array<'b> ⊇
+  i64` — false. Pins: `findings/bound-cell-cycle-accepts-aug2026/`,
+  graphix-tests `connect_self_nesting_*`.
+- **D — init-over-limit-aug2026/02** (ryouko divergence_000027; fixed
+  in `emit_init_loop`): `fold(init(iter([0, MAX]), |i| i),
+  count(iter([1, 2])), ..)` — on the over-limit cycle the interp
+  bottoms the fold (`[1:1]`), the JIT emitted the fired init
+  (`[1:1 2:2]`). The kernel's over-limit path forced `TAINT | STALE`
+  into the count's disc, so the init region published a STANDING
+  bottom (`Tag(96)`, never published by the bind — the store kept the
+  previous `[]`) where the interp's MapQ publishes a FRESH one
+  (`Tag(64)`); the fold kernel was then invoked with the source
+  `present, not fired` and folded a quiet empty array under a fired
+  init. Force only TAINT: validity (`exact_stale`, the slot tables)
+  keys on TAINT, and the count's own fired-bit makes the bottom fresh.
+  A constant init hid this on both engines by the fired-bit alone.
+  Pins: `findings/init-over-limit-aug2026/02_*`, graphix-tests
+  `fold_over_oversize_init_bottoms`.
+
+Same day, from the typemorph lane rather than a campaign: the
+block-wrap μ class (8 corpus flips) closed by making the μ-collapse
+look through binding cells — see CLAUDE.md's `let rec` bullet.

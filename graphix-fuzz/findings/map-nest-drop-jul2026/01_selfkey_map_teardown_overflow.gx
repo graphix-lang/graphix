@@ -18,4 +18,9 @@
 // unbounded cross-cycle growth reaches it. netidx's own workspace
 // lock should get the same bump for the release (its req 2.1.0
 // admits it).
-{let m = {{let h = |s: {a: i64, b: i64}| s.a + s.b; let g = |x: i64, y: i64| h({ a: x, b: y }); g(i64:3, i64:4)} => i64:1, "b" => i64:2, "c" => i64:3}; m <- {"d" => i64:4, m => i64:5}; let clock = i64:1; let (_, v) = map::iterq(#clock, m); array::group(v, |n, _| {let m: Map<string, i64> = {}; n == i64:-9223372036854775808})}
+// `m: Map<Any, i64>` (2026-08-27): the inferred `Map<[i64, string], i64>`
+// admitted the map as its own key only through the bound-cell cycle
+// acceptance hole (bound-cell-cycle-accepts-aug2026); with that
+// closed the growth needs the honest key type to keep pinning the
+// teardown observable rather than a compile error.
+{let m: Map<Any, i64> = {{let h = |s: {a: i64, b: i64}| s.a + s.b; let g = |x: i64, y: i64| h({ a: x, b: y }); g(i64:3, i64:4)} => i64:1, "b" => i64:2, "c" => i64:3}; m <- {"d" => i64:4, m => i64:5}; let clock = i64:1; let (_, v) = map::iterq(#clock, m); array::group(v, |n, _| {let m: Map<string, i64> = {}; n == i64:-9223372036854775808})}

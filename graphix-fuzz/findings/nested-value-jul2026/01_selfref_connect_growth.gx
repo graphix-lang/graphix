@@ -21,5 +21,10 @@
 // abort. Known-remaining recursive paths: derived Debug, serde
 // derive, the value-literal parser.
 // mutant: soak jul07c fuzz/crash_000001
+// `a: Array<Any>` (2026-08-27): the original inferred `Array<[i64, null]>`
+// and the self-nesting connect typed only through the bound-cell
+// cycle acceptance hole (bound-cell-cycle-accepts-aug2026); with that
+// closed the growth needs the honest element type to keep pinning
+// the runtime observable rather than a compile error.
 // minimized:
-{let a = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let clock: Any = let tm = sys::time::timer(duration:0.05s, false); let v = array::iterq(#clock, a); clock <- v; filter(v, |x| x == i64:8)}
+{let a: Array<Any> = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let clock: Any = let tm = sys::time::timer(duration:0.05s, false); let v = array::iterq(#clock, a); clock <- v; filter(v, |x| x == i64:8)}

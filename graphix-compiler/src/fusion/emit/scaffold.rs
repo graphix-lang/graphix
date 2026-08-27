@@ -883,12 +883,17 @@ where
     // freed every per-slot word the interp retains. Force the taint
     // into the count's disc: `exact_stale` then keeps its stored
     // length, the slot chains read invalid (no truncate), and the
-    // caller's firing wrap sees the source tainted. The clamped-0
-    // loop bound stays (the interp's retained-slot walk on the
-    // oversize cycle delivers no elements; slot-interior deps missing
-    // their tick that cycle is the documented interior-state
-    // residual).
-    let forced_bits = cx.b.ins().iconst(types::I64, TAINT | STALE);
+    // caller's firing wrap sees the source tainted. The count's own
+    // STALE bit rides through: a count that FIRED over the limit is a
+    // FRESH bottom (the interp's MapQ publishes one), and forcing
+    // STALE made it a standing one — the bind never published it, the
+    // store kept the previous array, and a downstream fold read a
+    // quiet empty source under a fired init (init-over-limit-aug2026/
+    // 02). The clamped-0 loop bound stays (the interp's retained-slot
+    // walk on the oversize cycle delivers no elements; slot-interior
+    // deps missing their tick that cycle is the documented
+    // interior-state residual).
+    let forced_bits = cx.b.ins().iconst(types::I64, TAINT);
     let forced_disc = cx.b.ins().bor(n_disc, forced_bits);
     let n_disc = cx.b.ins().select(oversize, forced_disc, n_disc);
     let stale = cx.b.ins().iconst(types::I64, STALE);

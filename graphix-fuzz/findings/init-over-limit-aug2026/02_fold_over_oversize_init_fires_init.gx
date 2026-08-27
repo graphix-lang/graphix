@@ -1,0 +1,8 @@
+// The over-limit `array::init` is bottom-with-retained-state on both
+// engines — but a FOLD over it whose init argument FIRES on the
+// over-limit cycle emitted that init on the JIT (`[1:1 2:2]`) where
+// the node-walk bottoms the fold (`[1:1]`): bottom in, bottom out. A
+// constant init stays quiet on both engines by the fired-bit alone,
+// which is what hid the missing taint (aug25a ryouko divergence_000027,
+// minimized: `fold(init(iter([0,0,0,MAX]), |i| true), iter([true..]), |acc, x| x)`).
+{let n = array::iter([i64:0, i64:9223372036854775807]); array::fold(array::init(n, |i| i), count(array::iter([i64:1, i64:2])), |acc, x| x + i64:2)}

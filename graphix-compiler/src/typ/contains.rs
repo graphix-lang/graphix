@@ -890,6 +890,7 @@ impl Type {
                 enum ActOrRecurse {
                     Act(Act, Option<Type>),
                     Recurse(Type, Type),
+                    Memo(Type, Type, usize, usize),
                     Refuse,
                 }
                 let act = {
@@ -918,6 +919,21 @@ impl Type {
                         }
                         (Some(b), None) if cyc1 => {
                             ActOrRecurse::Recurse(b.clone(), tt1.clone())
+                        }
+                        // Two BOUND cells, one reachable from the other's
+                        // binding, decide like any two bound cells: walk
+                        // the bindings. Every bind is occurs-checked, so
+                        // neither binding reaches its own cell and the
+                        // walk bottoms out; the pair memo answers a
+                        // revisit coinductively (and bounds the walk if a
+                        // bind ever slips the check). Refusing here
+                        // returned TRUE and marked cells that never
+                        // settle — `src <- [i64:2, src]` typed under an
+                        // inferred `Array<'a: Array<'b>>` and an i64
+                        // reached a slot the JIT read as an array (aug25a
+                        // ryouko divergence_000006).
+                        (Some(b0), Some(b1)) if cyc0 || cyc1 => {
+                            ActOrRecurse::Memo(b0.clone(), b1.clone(), addr0, addr1)
                         }
                         _ if cyc0 || cyc1 => ActOrRecurse::Refuse,
                         (Some(t0), Some(t1)) => {
@@ -996,6 +1012,16 @@ impl Type {
                     }
                     ActOrRecurse::Recurse(a, b) => {
                         return a.contains_int(flags, env, hist, &b);
+                    }
+                    ActOrRecurse::Memo(a, b, addr0, addr1) => {
+                        let key = (Some(addr0), Some(addr1));
+                        if let Some(r) = hist.get(&key) {
+                            return Ok(*r);
+                        }
+                        hist.insert(key, true);
+                        let r = a.contains_int(flags, env, hist, &b);
+                        hist.remove(&key);
+                        return r;
                     }
                     ActOrRecurse::Act(act, bound) => (act, bound),
                 };

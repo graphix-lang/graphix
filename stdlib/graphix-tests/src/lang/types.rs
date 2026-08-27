@@ -765,3 +765,61 @@ run!(
     |v: Result<&Value>| matches!(v, Err(_));
     graphix_package_core::testing::FuseExpect::None
 );
+
+// Two BOUND cells, one reachable from the other's binding, decide by
+// walking the bindings like any two bound cells. The TVar×TVar cycle
+// refusal used to answer TRUE and mark the cells for the terminal
+// settle — which never consults a bound cell — so this connect typed
+// under an inferred `Array<'a: Array<'b>>` (`'a ⊇ 'e`, `'e := [i64,
+// Array<'a>]`) while its annotated twin was refused, and an i64 reached
+// a slot the JIT read as an array (aug25a ryouko divergence_000006).
+const CONNECT_SELF_NESTING_REJECTED: &str = r#"
+{
+  let src = [[i64:10]];
+  src <- [i64:2, src];
+  array::map(src, |ys| array::map(ys, |y| y))
+}
+"#;
+
+run!(
+    connect_self_nesting_rejected,
+    CONNECT_SELF_NESTING_REJECTED,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+const CONNECT_SELF_NESTING_ANNOTATED_REJECTED: &str = r#"
+{
+  let src: Array<Array<i64>> = [[i64:10]];
+  src <- [i64:2, src];
+  src
+}
+"#;
+
+run!(
+    connect_self_nesting_annotated_rejected,
+    CONNECT_SELF_NESTING_ANNOTATED_REJECTED,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The well-typed resize (`array::push`) still types and both engines
+// count every fire of the nested map.
+const CONNECT_PUSH_NESTING_TYPES: &str = r#"
+{
+  let x = array::iter([i64:1, i64:2, i64:3, i64:-1]);
+  let m = x / i64:3;
+  let src = [[i64:10]];
+  src <- select count(x % i64:2) { i64:2 => array::push(src, [i64:2]), _ => never() };
+  let a = array::map(src, |ys| array::map(ys, |y| select i64:0 { i64:0 if m == i64:0 => i64:42, _ => i64:2 }));
+  let c = count(a);
+  select count(x) { i64:4 => c, _ => never() }
+}
+"#;
+
+run!(
+    connect_push_nesting_types,
+    CONNECT_PUSH_NESTING_TYPES,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4)));
+    graphix_package_core::testing::FuseExpect::Jit
+);

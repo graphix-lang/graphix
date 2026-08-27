@@ -1,0 +1,9 @@
+// `hold(#clock, v)` emits whichever v was held when the clock lands, so
+// with an ASYNC clock the settled value is the arrival cycle's: three
+// interp runs gave 300, 200, 200 while the JIT's (slower first cycle)
+// gave 100 every time (aug24b hz0 divergence_000000). Deterministic
+// clocks agree on both engines (`i64:1`, `never()`, `once(..)`); the
+// value depends on the IO race, not the engine. The oracle now tiers
+// `hold(` with the fire-count-sensitive builtins: a `sys::` program
+// naming it is Excluded rather than compared at final values.
+{let clock = sys::io::stderr(null) ~ i64:1; let values = [i64:100, i64:200, i64:300]; hold(#clock, array::iter(values))}

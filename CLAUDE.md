@@ -731,7 +731,17 @@ enforces it):**
   |n, acc| f` is refused at its DEFINITION (the old refuse-and-continue
   only rejected when a consumer settled the cell; a statement-position
   call typed and ran). Pins: `lang/types.rs` `rec_block_*`,
-  `rec_return_self_{block,statement}_rejects`.
+  `rec_return_self_{block,statement}_rejects`. The same arm's refusal
+  for TWO BOUND cells (one reachable from the other's binding) was an
+  ACCEPTANCE HOLE (aug25a ryouko 06, same day): it answered true and
+  marked cells for a terminal settle that never consults a bound
+  cell, so `src <- [i64:2, src]` typed under an inferred
+  `Array<'a: Array<'b>>` and an i64 reached a slot the JIT read as an
+  array. Bound pairs now walk their bindings (finite by the occurs
+  check at every bind; a `hist` pair memo answers a revisit
+  coinductively). Only the both-OPEN constraint-graph cycle still
+  refuses. Pins: `connect_self_nesting_*`,
+  `findings/bound-cell-cycle-accepts-aug2026/`.
 - `select` **exhaustiveness is enforced for bare-variant arm sets**
   (2026-07-06): `` `A ``/`` `B `` arms are NOT wildcards
   (`StructPatternNode::matches_anything` drives the wildcard test, not
@@ -1113,7 +1123,7 @@ coverage, not correctness).
   one reduction in 200 checks). `selfcheck`
   (same-mode-vs-itself, 100% required) gates oracle soundness; `rand::`/
   `sys::`/`http::` programs are excluded from divergence recording (async
-  IO races trace quiescence). `detcheck [n] [seed]` is the fusion-shape
+  IO races trace quiescence; `hold(` joined the fire-count-sensitive list 2026-08-27 — its output is defined by where an async clock LANDS, aug24b hz0). `detcheck [n] [seed]` is the fusion-shape
   DETERMINISM gate (#19): every Exact-tier corpus program (+n generated)
   runs to quiescence in two fresh child processes (fresh ASLR each) with
   `GRAPHIX_DUMP_CLIF=1`, and the counter-normalized dumps must match — a

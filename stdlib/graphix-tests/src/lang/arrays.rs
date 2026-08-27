@@ -363,6 +363,22 @@ run!(init_runaway_local_bottom, INIT_RUNAWAY_LOCAL_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A fold over the over-limit init whose INIT ARGUMENT fires on the
+// over-limit cycle: the source is bottom, so the fold is bottom — the
+// last value stands from the cycle before (aug25a ryouko
+// divergence_000027: the JIT emitted the fired init, 2, over the
+// retained empty array).
+const FOLD_OVER_OVERSIZE_INIT_BOTTOMS: &str = r#"
+{
+  let n = array::iter([i64:0, i64:9223372036854775807]);
+  array::fold(array::init(n, |i| i), count(array::iter([i64:1, i64:2])), |acc, x| x + i64:2)
+}
+"#;
+
+run!(fold_over_oversize_init_bottoms, FOLD_OVER_OVERSIZE_INIT_BOTTOMS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // ── composite / string fold ACCUMULATORS as native loops ─────────────
 // The fold scaffold's acc was register-scalar-only; tuple/struct/array/
 // string accs rode the per-slot FoldQ path. Now the loop OWNS a
