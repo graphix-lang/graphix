@@ -717,7 +717,21 @@ enforces it):**
   μ-equation collapses (`'r ⊇ [T, 'r]` binds `'r := T`) and a self-call arg
   that disagrees with the entry call's narrowing is a def-time compile error.
   The prior "polymorphic" admission was unsound (the orphaned cell widened
-  the signature to Any and crashed the JIT).
+  the signature to Any and crashed the JIT). The collapse LOOKS THROUGH
+  BINDING CELLS (2026-08-27, the typemorph block-wrap class — 8 corpus
+  flips): `{let t = select .. f(..) ..; t}` holds `[T, 'r]` in the
+  block's cell and the return check is `'r ⊇ 't`; the TVar×TVar arm's
+  cycle guard refused that two-cell knot BEFORE dereferencing the bound
+  side (it was guarding the copy fast path, which would have bound the
+  infinite type). With exactly one side open and the other's binding
+  reaching it, the arm now takes the general walk against the binding,
+  so the block spelling inherits the bare spelling's verdict — collapse
+  or refusal — and `contains_mismatch` reports an open cell the other
+  side reaches with the infinite-type wording. Consequence: `let rec f =
+  |n, acc| f` is refused at its DEFINITION (the old refuse-and-continue
+  only rejected when a consumer settled the cell; a statement-position
+  call typed and ran). Pins: `lang/types.rs` `rec_block_*`,
+  `rec_return_self_{block,statement}_rejects`.
 - `select` **exhaustiveness is enforced for bare-variant arm sets**
   (2026-07-06): `` `A ``/`` `B `` arms are NOT wildcards
   (`StructPatternNode::matches_anything` drives the wildcard test, not

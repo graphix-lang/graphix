@@ -39,6 +39,20 @@ pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: uni
      contains itself (e.g. a function that returns itself); declare a \
      named recursive type and annotate the binding";
 
+/// Is `a` an open cell that `b` reaches — the occurs-check failure a
+/// walk reports as a mismatch (`'r ⊇ fn(..) -> 'r`)? The infinite type
+/// the wording describes, caught at the unification instead of at a
+/// consumer's settle.
+fn open_cell_reaches(a: &Type, b: &Type) -> bool {
+    match a {
+        Type::TVar(tv) => {
+            let open = tv.read().typ.read().typ.is_none();
+            open && tv.would_cycle(b)
+        }
+        _ => false,
+    }
+}
+
 /// Does `t` reach a cell that is open, unconstrained, and
 /// `cycle_refused` — the [`TVar::settle_or_bottom`] rejection predicate
 /// applied without settling? Pure read; descends tvar bindings and
@@ -542,7 +556,11 @@ impl Type {
         // unconstrained, `cycle_refused` cell is the infinite type the
         // occurs check refused, surfacing at a consumer; report it as
         // the settle path does.
-        if type_has_refused_open_cell(self) || type_has_refused_open_cell(t) {
+        if type_has_refused_open_cell(self)
+            || type_has_refused_open_cell(t)
+            || open_cell_reaches(self, t)
+            || open_cell_reaches(t, self)
+        {
             return anyhow::anyhow!("{INFINITE_TYPE_MSG}");
         }
         anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
@@ -865,11 +883,6 @@ impl Type {
                     LeftCopy,
                     CellMerge,
                 }
-                if t0.would_cycle(tt1) || t1.would_cycle(tt0) {
-                    t0.mark_cycle_refused();
-                    t1.mark_cycle_refused();
-                    return Ok(true);
-                }
                 // Both-bound recursion happens OUTSIDE the guard block:
                 // recursing with these four guards held self-deadlocks
                 // when the walk revisits either cell and binds it (see
@@ -877,6 +890,7 @@ impl Type {
                 enum ActOrRecurse {
                     Act(Act, Option<Type>),
                     Recurse(Type, Type),
+                    Refuse,
                 }
                 let act = {
                     let t0 = t0.read();
@@ -886,20 +900,26 @@ impl Type {
                     if addr0 == addr1 {
                         return Ok(true);
                     }
-                    if would_cycle_inner(addr0, tt1) || would_cycle_inner(addr1, tt0) {
-                        if crate::dbgenv::graphix_dbg_cycle_bt() {
-                            eprintln!(
-                                "CYCLE-REFUSED-PAIR ({addr0:x},{addr1:x})\n{}",
-                                std::backtrace::Backtrace::force_capture()
-                            );
-                        }
-                        t0.typ.write().cycle_refused = true;
-                        t1.typ.write().cycle_refused = true;
-                        return Ok(true);
-                    }
+                    let cyc0 = would_cycle_inner(addr0, tt1);
+                    let cyc1 = would_cycle_inner(addr1, tt0);
                     let t0i = t0.typ.read();
                     let t1i = t1.typ.read();
                     match (&t0i.typ, &t1i.typ) {
+                        // An open cell meeting a BOUND cell whose binding
+                        // reaches it is the μ-shape spelled through a
+                        // binding: `let t = select .. f(..) ..; t` holds
+                        // `[T, 'r]` in the block's cell and the return
+                        // check is `'r ⊇ 't`. A copy would bind the
+                        // infinite type, so take the general walk against
+                        // the binding, where the bare spelling
+                        // `'r ⊇ [T, 'r]` already collapses (or refuses).
+                        (None, Some(b)) if cyc0 => {
+                            ActOrRecurse::Recurse(tt0.clone(), b.clone())
+                        }
+                        (Some(b), None) if cyc1 => {
+                            ActOrRecurse::Recurse(b.clone(), tt1.clone())
+                        }
+                        _ if cyc0 || cyc1 => ActOrRecurse::Refuse,
                         (Some(t0), Some(t1)) => {
                             ActOrRecurse::Recurse(t0.clone(), t1.clone())
                         }
@@ -961,6 +981,19 @@ impl Type {
                     }
                 };
                 let (act, bound) = match act {
+                    ActOrRecurse::Refuse => {
+                        if crate::dbgenv::graphix_dbg_cycle_bt() {
+                            eprintln!(
+                                "CYCLE-REFUSED-PAIR ({:x},{:x})\n{}",
+                                t0.cell_addr(),
+                                t1.cell_addr(),
+                                std::backtrace::Backtrace::force_capture()
+                            );
+                        }
+                        t0.mark_cycle_refused();
+                        t1.mark_cycle_refused();
+                        return Ok(true);
+                    }
                     ActOrRecurse::Recurse(a, b) => {
                         return a.contains_int(flags, env, hist, &b);
                     }

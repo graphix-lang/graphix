@@ -663,3 +663,105 @@ run!(
     |v: Result<&Value>| matches!(v, Err(_));
     graphix_package_core::testing::FuseExpect::None
 );
+
+// The μ-collapse (`'r ⊇ [T, 'r]` binds `'r := T`) must look through a
+// binding cell: a block-wrapped body holds `[T, 'r]` in the block's
+// own cell and the return check becomes `'r ⊇ 't`. The TVar×TVar arm
+// used to refuse that two-cell knot as an infinite type (typemorph
+// block-wrap, 8 corpus hits, 2026-08-27); it now takes the general
+// walk against the binding, so the block spelling types exactly like
+// the bare one — collapse, multi-member collapse, and refusal alike.
+const REC_BLOCK_BODY_COLLAPSES: &str = r#"
+{
+  let rec f = |x: i64| { let t = select x { 0 => 0, _ => f(x - 1) }; t };
+  f(3)
+}
+"#;
+
+run!(
+    rec_block_body_collapses,
+    REC_BLOCK_BODY_COLLAPSES,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+const REC_NESTED_BLOCK_COLLAPSES: &str = r#"
+{
+  let rec f = |x: i64| {
+    let t = { let u = select x { 0 => 0, _ => f(x - 1) }; u };
+    t
+  };
+  f(3)
+}
+"#;
+
+run!(
+    rec_nested_block_collapses,
+    REC_NESTED_BLOCK_COLLAPSES,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)));
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+const REC_BLOCK_MULTI_MEMBER_COLLAPSES: &str = r#"
+{
+  let rec f = |x: i64| { let t = select x { 0 => 0, 1 => "a", _ => f(x - 1) }; t };
+  f(3)
+}
+"#;
+
+// ASPIRE: the `[i64, string]`-returning recursive callee node-walks
+// (union/string cross-kernel return); upgrade when that lands.
+run!(
+    rec_block_multi_member_collapses,
+    REC_BLOCK_MULTI_MEMBER_COLLAPSES,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a");
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// A genuine infinite type through the cell (`'r ⊇ [Array<i64>,
+// Array<'r>]`) is still refused, as its bare spelling is.
+const REC_BLOCK_INFINITE_REJECTS: &str = r#"
+{
+  let rec f = |x: i64| { let t = select x { 0 => [0], _ => [f(x - 1)] }; t };
+  f(3)
+}
+"#;
+
+run!(
+    rec_block_infinite_rejects,
+    REC_BLOCK_INFINITE_REJECTS,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+const REC_RETURN_SELF_BLOCK_REJECTS: &str = r#"
+{
+  let a = [0, 0, {let rec f = |n, acc| { let t = f; t }; f(0, buffer::to_string)}, 4, 0];
+  array::map(a, |x| x > 3)
+}
+"#;
+
+run!(
+    rec_return_self_block_rejects,
+    REC_RETURN_SELF_BLOCK_REJECTS,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The self-returning fn is refused at its DEFINITION now. The old
+// refuse-and-continue path only rejected when a consumer settled the
+// return cell (the array element union above); a call in statement
+// position typed and ran, printing the lambda.
+const REC_RETURN_SELF_STATEMENT_REJECTS: &str = r#"
+{
+  let rec f = |n, acc| f;
+  f(0, 1)
+}
+"#;
+
+run!(
+    rec_return_self_statement_rejects,
+    REC_RETURN_SELF_STATEMENT_REJECTS,
+    |v: Result<&Value>| matches!(v, Err(_));
+    graphix_package_core::testing::FuseExpect::None
+);
