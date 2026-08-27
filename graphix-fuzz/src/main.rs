@@ -261,6 +261,17 @@ async fn main() -> Result<()> {
     // address-space limit (the parent can no longer install it through
     // `pre_exec` without losing posix_spawn — see `sandbox_cwd`).
     graphix_fuzz::apply_mem_limit();
+    // Children get GRAPHIX_STACK_BUDGET at spawn (lib.rs); the MASTER
+    // never did, so an in-process runaway recursion — the regress gate
+    // (`"$binary" regress`), `generate`, the oracle — grew stack
+    // segments at ~350MB/s until the per-program timeout. At
+    // TIMEOUT_SCALE=4 that is ~14GB per runaway before it aborts, and
+    // enough overlap OOMs the process: the aug27a startup gate died mid
+    // sequential-retry on aieka (scale 4) while a scale-1 run passed.
+    // Cap this process like the children so a runaway aborts to Timeout.
+    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+        graphix_compiler::set_stack_budget(1 << 30);
+    }
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");
