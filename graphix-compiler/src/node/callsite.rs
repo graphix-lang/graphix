@@ -1001,6 +1001,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             resolved_ftype: instance_ftype.clone(),
             first_update: true,
         };
+        // Per-callsite elaboration: register the fn-typed args under the
+        // instance's param BindIds BEFORE typechecking the instance body,
+        // so both direct calls to and captures of a fn parameter resolve
+        // in this one downward pass (see `register_fn_params`). Held
+        // through the whole body typecheck, removed after.
+        let (param_binds, trait_param_binds) =
+            self.register_fn_params(ctx, &instance_ftype);
         let resolving = ctx.resolving_lambdas.clone();
         let previous = instance.map(|instance| {
             resolving.lock().insert(
@@ -1030,6 +1037,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             },
         );
         self.refresh_static_ftype().expect("static callee must have an apply");
+        Self::unregister_fn_params(ctx, param_binds, trait_param_binds);
         if let Some(previous) = previous {
             match previous {
                 Some(active) => {
@@ -1097,8 +1105,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 if let NodeView::Ref(r) = self.fnode.view()
                     && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
                 {
-                    self.resolve_trait_call(ctx, tm)?;
-                    return self.premat_fn_args(ctx);
+                    // Both paths funnel through `resolve_static`, which
+                    // registers the callee's fn-params before typechecking
+                    // its body (per-callsite elaboration).
+                    return self.resolve_trait_call(ctx, tm);
                 }
                 return Ok(());
             }
@@ -1106,125 +1116,95 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
             return Ok(());
         };
-        self.resolve_static(ctx, def)?;
-        self.premat_fn_args(ctx)
+        self.resolve_static(ctx, def)
     }
 
-    /// Pre-materialize statically-known fn-typed args and re-drive the
-    /// bound instance's typecheck1 (per-callsite elaboration). Shared
-    /// by the ordinary static-resolution path and the trait-dispatch
-    /// path — a trait-dispatched HOF needs its callback registered
-    /// exactly like a direct call's, or a collection-bodied impl's
-    /// prototype can't resolve it and emission refuses (P2b:
-    /// `Collection::fold` interpreted at ~7800x the direct call).
-    fn premat_fn_args(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // HOF callback pre-materialization: every fn-typed positional arg
-        // whose function-valued arguments resolve to known lambdas (or
-        // name a trait method, which the instance's call sites resolve
-        // by their element types).
-        let ftype = match self.resolved_ftype() {
-            Some(ft) => ft.clone(),
-            None => return Ok(()),
+    /// Register this call site's statically-known fn-typed args under the
+    /// resolved INSTANCE's param BindIds — the per-callsite elaboration
+    /// channel. [`Self::resolve_static`] calls this right BEFORE
+    /// typechecking the instance body, so the registration is in scope
+    /// for the WHOLE downward body typecheck: the instance's own call
+    /// sites resolve calls to the lambda parameter (`f(v)`) like a lambda
+    /// binding, and — crucially — a nested lambda that CLOSES OVER the
+    /// parameter (a trait-default wrapper body's `filter_map(c, |x|
+    /// f(x))`) resolves in the same pass, because its instance is created
+    /// mid-typecheck while the registration is still live. Returns the
+    /// registered BindIds for [`Self::unregister_fn_params`] to remove
+    /// after the body typecheck; records the persistent
+    /// forward-resolution snapshot the kernel cache key
+    /// (`FnResolutions`) reads once the b2l entries are gone. Per-instance
+    /// BindIds are fresh per callsite, so there is no cross-site
+    /// contamination; a recursive callee registers once (its self-calls
+    /// reuse the resolving instance without re-registering), so no
+    /// separate back-edge guard is needed. A trait-dispatched HOF needs
+    /// this exactly like a direct call, or a collection-bodied impl's
+    /// prototype can't resolve its callback and emission refuses (P2b).
+    fn register_fn_params(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        ftype: &FnType,
+    ) -> (LPooled<Vec<BindId>>, LPooled<Vec<BindId>>) {
+        let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        let mut trait_param_binds: LPooled<Vec<BindId>> = LPooled::take();
+        let apply = match self.callee.apply() {
+            Some(a) => a,
+            None => return (param_binds, trait_param_binds),
         };
-        let mut fn_arg_targets: smallvec::SmallVec<[(usize, Value); 4]> =
-            smallvec::SmallVec::new();
-        let mut trait_arg_targets: smallvec::SmallVec<[(usize, TraitMethodRef); 2]> =
-            smallvec::SmallVec::new();
+        let ApplyView::Lambda(g) = apply.view() else {
+            return (param_binds, trait_param_binds);
+        };
         for (i, farg) in ftype.args.iter().enumerate() {
             if !farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
                 continue;
             }
+            let Some(id) = g.args().get(i).and_then(|p| p.single_bind_id()) else {
+                continue;
+            };
             let Some(arg_node) = self.arg_positional(i) else { continue };
             match arg_node.view() {
                 NodeView::Lambda(l) => {
-                    fn_arg_targets.push((i, l.def_value().clone()));
+                    let fv = l.def_value().clone();
+                    if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
+                        ctx.fn_forward_resolutions.insert(id, def.id);
+                    }
+                    ctx.bind_to_lambda.insert(id, fv);
+                    param_binds.push(id);
                 }
                 NodeView::Ref(r) => {
                     if ctx.unstable_bindings.contains(&r.id) {
                         continue;
                     }
-                    if let Some(fv) = ctx.bind_to_lambda.get(&r.id) {
-                        fn_arg_targets.push((i, fv.clone()));
-                    } else if let Some(tm) = ctx.env.trait_methods.get(&r.id) {
-                        trait_arg_targets.push((i, *tm));
+                    if let Some(fv) = ctx.bind_to_lambda.get(&r.id).cloned() {
+                        if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
+                            ctx.fn_forward_resolutions.insert(id, def.id);
+                        }
+                        ctx.bind_to_lambda.insert(id, fv);
+                        param_binds.push(id);
+                    } else if let Some(tm) = ctx.env.trait_methods.get(&r.id).copied() {
+                        ctx.env.trait_methods.insert_cow(id, tm);
+                        trait_param_binds.push(id);
                     }
                 }
                 _ => {}
             }
         }
-        if fn_arg_targets.is_empty() && trait_arg_targets.is_empty() {
-            return Ok(());
+        (param_binds, trait_param_binds)
+    }
+
+    /// Undo [`Self::register_fn_params`] after the instance body
+    /// typecheck (the `fn_forward_resolutions` snapshot is deliberately
+    /// permanent — the fingerprint reads it at fusion time).
+    fn unregister_fn_params(
+        ctx: &mut ExecCtx<R, E>,
+        mut param_binds: LPooled<Vec<BindId>>,
+        mut trait_param_binds: LPooled<Vec<BindId>>,
+    ) {
+        for id in param_binds.drain(..) {
+            ctx.bind_to_lambda.remove(&id);
         }
-        let Some(apply) = self.callee.apply_mut() else {
-            return Ok(());
-        };
-        // Per-callsite elaboration: when the bound
-        // callee is a user lambda, register each statically-known
-        // fn-typed arg under the INSTANCE's arg-pattern BindId in
-        // `bind_to_lambda` for the duration of the re-driven body
-        // typecheck1 below. The instance's body callsites then
-        // statically resolve calls to the lambda parameter (`f(v)`)
-        // exactly like calls to a lambda
-        // binding — per-instance BindIds are fresh per callsite, so
-        // there is no cross-site contamination by construction, and
-        // fusion needs no special HOF callback path.
-        let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
-        let mut trait_param_binds: LPooled<Vec<BindId>> = LPooled::take();
-        if let ApplyView::Lambda(g) = apply.view() {
-            for (idx, fv) in &fn_arg_targets {
-                if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
-                    ctx.bind_to_lambda.insert(id, fv.clone());
-                    param_binds.push(id);
-                }
-            }
-            for (idx, tm) in &trait_arg_targets {
-                if let Some(id) = g.args().get(*idx).and_then(|p| p.single_bind_id()) {
-                    ctx.env.trait_methods.insert_cow(id, *tm);
-                    trait_param_binds.push(id);
-                }
-            }
+        for id in trait_param_binds.drain(..) {
+            ctx.env.trait_methods.remove_cow(&id);
         }
-        // For a user-lambda callee this re-drives the body walk, during
-        // which still-unbound nested sites re-attempt static resolution
-        // with the param bindings above in scope.
-        //
-        // BACK-EDGE GUARD, keyed on the CALL SITE (spec ExprId), not
-        // the callee: a RECURSIVE callee whose self-call passes a
-        // fn-typed arg re-derives its own body here — each level
-        // pre-materializes the param (fresh per-instance BindIds every
-        // time, so the param-binds scoping never converges) and
-        // re-drives again until the compiler stack overflows
-        // (soak-jul12l crash_000000: `let rec sum_to = |n, acc| …
-        // sum_to(n - 1, acc)` with a lambda-valued acc; reachable
-        // since the flap fix made the outer arg's resolution
-        // deterministic). The self-call SITE is shared across
-        // instances (specs are Arc'd), so re-entry means recursion —
-        // while legitimate nesting (map-in-map: same CALLEE, different
-        // sites) must still re-drive (keying on the callee's LambdaId
-        // skipped the inner map's elaboration and broke its captures —
-        // nested_hof_capture_element_and_grandparent). A re-entered
-        // site stays dynamic (the interp tail loop owns it).
-        let site = self.spec.id.inner();
-        let resolving = ctx.resolving_sites.clone();
-        if resolving.lock().insert(site) {
-            let res = apply.typecheck1(ctx, &mut [], &ftype);
-            resolving.lock().remove(&site);
-            for id in param_binds.drain(..) {
-                ctx.bind_to_lambda.remove(&id);
-            }
-            for id in trait_param_binds.drain(..) {
-                ctx.env.trait_methods.remove_cow(&id);
-            }
-            res?;
-        } else {
-            for id in param_binds.drain(..) {
-                ctx.bind_to_lambda.remove(&id);
-            }
-            for id in trait_param_binds.drain(..) {
-                ctx.env.trait_methods.remove_cow(&id);
-            }
-        }
-        Ok(())
     }
 
     /// Resolve a call through a trait method's dispatcher to an

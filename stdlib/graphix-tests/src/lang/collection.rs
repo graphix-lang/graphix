@@ -87,8 +87,13 @@ run!(
             v => len(b) * 100 + v
         }
     "#;
-    // ASPIRE: Jit (currently None) — a trait default over an abstract wrapper interprets.
-    FuseExpect::None
+    // The default bodies (`filter`/`map`/`find`) fuse now that
+    // `resolve_static` registers the fn-param before the body typecheck,
+    // so their derived callback `|x| f(x)` resolves the captured method.
+    // Still partial: `len`'s `fold(c, 0, |n,_| n+1)` and the abstract
+    // `Bag` payload paths node-walk (separate blockers), so this asserts
+    // only that fusion now happens.
+    FuseExpect::Jit
 );
 
 // A linear structure the program defines (pressure test 2's shape): a

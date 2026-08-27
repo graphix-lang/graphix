@@ -1551,7 +1551,11 @@ const INLANG_MAP: &str = r#"
 }
 "#;
 
-// The generic wrapper instantiates independently at each call site.
+// The generic wrapper instantiates independently at each call site. The
+// fold callback `|acc, v| array::push(acc, f(v))` closes over the
+// wrapper's fn formal `f` — capture-forwarding, resolved because
+// `resolve_static` registers the fn-param before typechecking the body,
+// so the two instantiations (i64, string) fuse and key two kernels.
 run!(inlang_map, INLANG_MAP, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => match &t[..] {
         [Value::Array(a), Value::Array(b)] => {
@@ -1562,7 +1566,7 @@ run!(inlang_map, INLANG_MAP, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // The param knot must not leak the callsite's narrowing into the def:
 // `x + i64:1` under `-> 'a` stays polymorphic (the flagless operand
@@ -2092,15 +2096,15 @@ run!(fn_formal_rebound, FN_FORMAL_REBOUND, |v: Result<&Value>| matches!(
 ); graphix_package_core::testing::FuseExpect::None);
 
 // Forwarding: a helper passes its fn formal on to another helper
-// without calling it. The forwarding site's fingerprint records the
-// forwarded arg's resolution, so the two `call2` instances key two
-// kernels (each baking its own `call1` variant) instead of sharing
-// one. ASPIRE: Jit (currently None) — `call1`'s instance doesn't
-// statically resolve a FORWARDED fn formal (`f(x)` falls to the
-// undiscovered-builtin path), the same nested-premat mechanism as the
-// trait-default wrapper residue (mfold_trait). When that lands this
-// flips to Jit and the two-kernel keying assertion goes live; the
-// value assertion already catches any aliasing.
+// without calling it. The forwarded formal resolves because
+// `resolve_static` registers the fn-param before typechecking the
+// instance body, so the nested `call1(f, x)` sees `call2`'s param `f`
+// in scope. The two `call2` instances forward different callbacks
+// through `call1`, and the fingerprint records the forwarded arg's
+// resolution (`fn_forward_resolutions`, since the b2l entry is torn
+// down by fusion time), so they key two kernels instead of sharing one
+// — the value assertion catches the aliasing (110 vs 102 in the low
+// part).
 const FN_FORMAL_FORWARDED: &str = r#"
 {
   let call1 = |f: fn(x: i64) -> i64, x: i64| -> i64 f(x);
@@ -2112,4 +2116,4 @@ const FN_FORMAL_FORWARDED: &str = r#"
 run!(fn_formal_forwarded, FN_FORMAL_FORWARDED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(102110))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);

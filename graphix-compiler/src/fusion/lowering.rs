@@ -1022,9 +1022,20 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
                 }
                 let id = match a.view() {
                     NodeView::Lambda(l) => l.lambda_id::<R, E>().map(|id| id.inner()),
-                    NodeView::Ref(r) => ec.bind_to_lambda.get(&r.id).and_then(|v| {
-                        v.downcast_ref::<crate::LambdaDef<R, E>>().map(|d| d.id.inner())
-                    }),
+                    NodeView::Ref(r) => ec
+                        .bind_to_lambda
+                        .get(&r.id)
+                        .and_then(|v| {
+                            v.downcast_ref::<crate::LambdaDef<R, E>>()
+                                .map(|d| d.id.inner())
+                        })
+                        // A forwarded fn formal's b2l entry is torn down
+                        // by the time fusion fingerprints the body; the
+                        // persistent snapshot keeps the distinguishing
+                        // resolution (fn_formal_forwarded).
+                        .or_else(|| {
+                            ec.fn_forward_resolutions.get(&r.id).map(|id| id.inner())
+                        }),
                     _ => None,
                 };
                 res.push(id.unwrap_or(u64::MAX));

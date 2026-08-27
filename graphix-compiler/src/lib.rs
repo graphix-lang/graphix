@@ -1689,7 +1689,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas:
         Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingLambda>>>,
-    pub(crate) resolving_sites: Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
+    /// Per-callsite-instance param BindId → the `LambdaId` it was
+    /// FORWARDED (`premat_fn_args`, the successful re-drive path only).
+    /// A forwarded fn formal's `bind_to_lambda` entry is scoped to its
+    /// re-drive and gone by fusion time, but the kernel cache key
+    /// (`FnResolutions`) must still distinguish two instances that
+    /// forward different callbacks through the same callee — this is the
+    /// persistent record the fingerprint reads when the b2l entry has
+    /// been torn down. Keyed by fresh instance BindIds, so a stale entry
+    /// is reachable only from its own instance body (collision-free); the
+    /// guard-blocked recursive-rebind path deliberately records nothing,
+    /// so a shared recursive instance can't be clobbered.
+    pub(crate) fn_forward_resolutions: IntMap<BindId, LambdaId>,
     /// DEFERRED terminal settles, a stack of FRAMES — one per
     /// resolution scope. Each call site's `typecheck1` pushes its
     /// resolved signature into the CURRENT frame instead of settling
@@ -1859,7 +1870,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             resolving_lambdas: Arc::new(parking_lot::Mutex::new(
                 nohash::IntMap::default(),
             )),
-            resolving_sites: Arc::new(parking_lot::Mutex::new(nohash::IntSet::default())),
+            fn_forward_resolutions: IntMap::default(),
             pending_settles: vec![Vec::new()],
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
