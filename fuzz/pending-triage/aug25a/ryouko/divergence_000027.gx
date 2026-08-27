@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
-// jit: Trace(Trace { epochs: [Epoch { events: [(4, I64(4))], capped: false }], stdout: [] })
-// mutant: array::fold(array::init(array::iter([i64:-100, i64:-1, i64:0, i64:9223372036854775807]), |i| i + i64:1), {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let src = [i64:0]; src <- select count(x) {i64:2 => [i64:0, i64:1], _ => never()}; let a = array::map(src, |i| select i64:0 {i64:0 if m == i64:0 => i64:1, _ => i64:2}); let c = count(a); select count(x) {i64:4 => c, _ => never()}}, |acc, x| x + i64:2)
-// minimized:
-array::fold(array::init(array::iter([i64:-100, i64:-1, i64:0, i64:9223372036854775807]), |i| i), {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x; let src = [i64:0]; let a = array::map; let c = count(a); count(x)}, |acc, x| x + i64:2)

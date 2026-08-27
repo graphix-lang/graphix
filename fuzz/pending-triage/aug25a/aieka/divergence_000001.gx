@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
-// jit: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 4 }, slice: [String(""), String(""), String(""), String("")] }) })))))], capped: false }], stdout: [] })
-// mutant: {let a = str::split_escaped(#esc: "\\", #sep: ",", "/bin/sh")?; array::map({let l = list::from_array([i64:1, i64:2, i64:3]); list::to_array(list::flat_map(l, |x| select x {i64:2 => list::from_array([]), _ => list::from_array([x, x * i64:10])}))}, |s| str::trim(s))}
-// minimized:
-array::map({let l = list::from_array([i64:1, i64:2, i64:3]); list::to_array(list::flat_map(l, |x| select x {i64:2 => list::from_array([]), _ => list::from_array([x, x * i64:10])}))}, |s| str::trim(s))

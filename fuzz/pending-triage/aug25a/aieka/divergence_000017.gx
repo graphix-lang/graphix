@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [], capped: false }], stdout: [] })
-// jit: Trace(Trace { epochs: [Epoch { events: [(0, I64(0))], capped: false }], stdout: [] })
-// mutant: list::fold(list::map(list::from_array([i64:1, {let err0: Error<Any> = never(); let f = |i: i64| {catch(e) err0 <- e; let a = ["@P", i64:2, i64:3]; any(a[i]?, i64:0 - i64:1)}; ((f(i64:0), f(i64:9))).0}, i64:3]), |x| |(k, _)| k == i64:2), i64:0, |acc, x| acc + x)
-// minimized:
-list::fold(list::map(list::from_array([true, {let f = |i: i64| {i64:0 - i64:1}; f(i64:0)}, true]), |x| |(k, _)| k), i64:0, |acc, x| acc + x)
