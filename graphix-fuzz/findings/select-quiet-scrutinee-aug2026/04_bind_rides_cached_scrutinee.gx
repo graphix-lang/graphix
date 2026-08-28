@@ -1,10 +1,15 @@
-// Pattern binds RIDE the cached scrutinee (probe t27): v2 delivers 2
-// once (the fold init on the empty source), selecting `n => n + in0`;
-// every later fold run div0-bottoms, so the scrutinee is quiet while
-// in0 keeps firing. The interp's bind n rides 2 and the body
-// recomputes with the fresh dep: epochs emit 2, 2, 9 (= 2 + 7). With
-// the scrutinee ride the bind extracts from the substituted cached
-// value and inherits its STALE — the body fires only from in0.
+// Pattern binds BOTTOM under THE SELECTION RIDE (Eric's ruling
+// 2026-08-27, superseding the aug06ghz0 scrutinee VALUE ride): v2
+// delivers 2 once (the fold init on the empty source), selecting
+// `n => cast<i64>(n)$ + in0`; every later fold run div0-FIRES-bottoms,
+// so the scrutinee is a FRESH bottom while in0 keeps firing. The held
+// selection survives, but the scrutinee has no value this cycle, so the
+// bind n is a fresh bottom (NOT the cached 2) — `cast(n)` bottoms and
+// `$` PROPAGATES the fresh bottom (it rides its resident only on a
+// STALE bottom), so the arm bottoms: epochs emit 2, then nothing, then
+// nothing. The kernel's `install_arm_binds` derives the scalar bind
+// from the real (fresh-bottom) scrutinee disc on the dispatch path — the
+// interp bind poison inherits the same fresh/stale, so both agree.
 // schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
 {
 	let v0: Array<i64> = [];

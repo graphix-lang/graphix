@@ -150,8 +150,10 @@ run!(
             v => v
         }
     "#;
-    // ASPIRE: Jit (currently None) — a trait default over an abstract wrapper interprets.
-    FuseExpect::None
+    // The return-position `select` over `find_map`'s nullable result fuses
+    // since THE SELECTION RIDE dropped the scrutinee-value cache (a
+    // value-shaped scrutinee no longer needs resident storage).
+    FuseExpect::Jit
 );
 
 // A union receiver is not a constructor.

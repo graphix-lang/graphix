@@ -235,25 +235,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             smallvec::SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx, event);
         let bottomed = arg.tag.is_tainted();
-        // THE SCRUTINEE RIDE (Eric's ruling 2026-08-07, aug06ghz0):
-        // a bottomed scrutinee WITH history rides — the standing
-        // selection lives on against the CACHED value (pattern binds
-        // ride it stale; a guard-dep fire re-matches against it; a
-        // flip re-selects and fires becoming-selected). Only a
-        // no-history bottom (the aug04b phantom rule) bottoms the
-        // whole select — the early return after the guard tick below.
-        let ride = bottomed && arg.value.is_some();
+        // GUARDED selects keep the aug06ghz0 VALUE ride (a bottom
+        // scrutinee re-matches the cached value, re-evaluating guards);
+        // GUARD-LESS selects take THE SELECTION RIDE (Eric's ruling
+        // 2026-08-27) — see below.
+        let has_guards = arms.iter().any(|(p, _)| p.guard.is_some());
+        // THE SELECTION RIDE (Eric's ruling 2026-08-27, superseding the
+        // aug06ghz0 value ride for guard-less selects): a bottomed
+        // scrutinee holds its SELECTION — the taken arm survives, so a
+        // subscription / own-dep arm keeps firing — but NOT its value.
+        // Keyed on the persistent selection index (`SelCell`), never a
+        // cached scrutinee value: storing the arm index is all the ride
+        // needs. On the ride the scrutinee has no value this cycle, so
+        // the arm's pattern binds go bottom (poisoned below); an arm body
+        // reading a bind bottoms, while one firing on its own deps still
+        // fires. A no-selection bottom (the aug04b phantom rule) bottoms
+        // the whole select.
+        let ride = bottomed
+            && if has_guards { arg.value.is_some() } else { selected.get().is_some() };
         // "The scrutinee has a bindable value view this cycle": a
-        // value-bearing production, or the ride.
-        let arg_up = !bottomed || ride;
+        // value-bearing production, or the GUARDED ride. A guard-less
+        // bottom scrutinee never binds from its (absent) value.
+        let arg_up = !bottomed || (has_guards && ride);
         // Arm binds carry the SCRUTINEE's production tag (the kernel's
         // arm-bind disc carry): a stale scrutinee production — a
         // framed re-derivation from a quiet entry — binds STALE
-        // leaves; a wake with NO production this update (a guard-flip
-        // re-selection) binds the value channel. Firing comes from the
-        // selection/emission rules, never from the binds themselves
-        // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing).
-        let bind_tag = if ride { Tag::STALE } else { arg_prod };
+        // leaves. Firing comes from the selection/emission rules, never
+        // from the binds themselves (Eric's ruling 2026-07-18,
+        // tail_jump_fired_plumbing).
+        let bind_tag = if has_guards && ride { Tag::STALE } else { arg_prod };
         macro_rules! bind {
             ($i:expr) => {
                 bind!($i, bind_tag)
@@ -358,6 +368,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 resident.ride()
             };
         }
+        // THE SELECTION RIDE: a guard-less bottom scrutinee holds the
+        // selection but POISONS the held arm's binds — the scrutinee has
+        // no value this cycle, so an arm body reading a bind bottoms (it
+        // fires on its own deps instead). The real bind overwrites this
+        // when the scrutinee next carries a value. (Guarded selects keep
+        // the value ride and its cached binds.)
+        if ride && !has_guards {
+            if let Some(i) = selected.get() {
+                // The poisoned bind inherits the SCRUTINEE's bottom tag,
+                // not a hardcoded stale: a FRESH-bottom scrutinee (a
+                // fired-and-bottomed delivery — a fold div0-firing) makes
+                // the bind a fresh bottom, so an arm's interior `$`/`~`
+                // PROPAGATES it (the arm bottoms); a STANDING bottom makes
+                // it stale, so `$` rides its resident. This is exactly the
+                // kernel's `install_arm_binds`, which derives the bind disc
+                // from the real (fresh-or-stale) scrutinee disc on the
+                // dispatch path — bind poisoning is the interp twin.
+                let btag = if arg_prod.triggers() {
+                    Tag::FRESH_BOTTOM
+                } else {
+                    Tag::STALE_BOTTOM
+                };
+                arms[i].0.structure_predicate.ids(&mut |id| {
+                    event.variables.insert(id, TagValue::tagged(Value::Null, btag));
+                    if ctx.frame_depth == 0 {
+                        ctx.rt.store_insert(id, TagValue::tagged(Value::Null, btag));
+                    }
+                });
+            }
+        }
         if crate::dbgenv::graphix_dbg_select() {
             eprintln!(
                 "SELECT[{}] upd init={} fd={} arg_up={arg_up} pat_up={pat_up} sel={:?} argc={:?} vars={}",
@@ -399,7 +439,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             Taken(Option<usize>),
             Undet,
         }
-        let chain = if !arg_trig && !pat_up {
+        // A guard-less bottom scrutinee never RE-MATCHES: it has no value
+        // to match against, so the selection is held (the ride above).
+        // The held arm still fires via the Quiet path on its own deps.
+        // A guarded bottom scrutinee keeps re-matching the cached value.
+        let chain = if (bottomed && !has_guards) || (!arg_trig && !pat_up) {
             ChainOut::Quiet
         } else {
             match arg.value.as_ref() {

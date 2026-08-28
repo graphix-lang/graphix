@@ -314,7 +314,23 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
             Ok(())
         }
         TailPosition::Parens(ep) => emit_body_tail(cx, &ep.n, ret),
-        TailPosition::Select(s) => emit_select_node_tail(cx, s, ret),
+        TailPosition::Select(s) => {
+            // Outside a tail LOOP no arm can tail-jump (that needs
+            // `loop_head`; a self-call otherwise emits as a native call),
+            // so the select is an ordinary value expression: emit it
+            // VALUE-position — which carries THE SELECTION RIDE via its
+            // dispatch word (`emit_select_node`) — and return the result.
+            // This is where a return-position guard-less select rides its
+            // held arm on a bottom scrutinee (the select-quiet-scrutinee /
+            // select-merge-taint-ride corpus). The tail emitter stays for
+            // the genuine loop spine, whose arms terminate by jump/return
+            // and whose scrutinee is loop plumbing (no cross-cycle ride).
+            if cx.ctx.tail.loop_head.is_none() {
+                emit_return_from_node(cx, ret, node)
+            } else {
+                emit_select_node_tail(cx, s, ret)
+            }
+        }
         TailPosition::Leaf(n) => {
             // Self tail-call — checked BEFORE value emission. Matching
             // is by the self BindId (names shadow, ids don't — #206).
@@ -457,6 +473,9 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         scrut_bfired,
+        // Tail-position selects handle a tainted scrutinee with their
+        // own placeholder-bottom path above; no value-position dispatch.
+        None::<super::lower::SelWord>,
         &mut |cx, body, mark, fires| {
             arm_index.set(arm_index.get() + 1);
             // A prologue guard's SOUND fire is one of this select's

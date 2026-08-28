@@ -440,7 +440,7 @@ const SELECT_SLICE_COVER_PREFIX: &str = r#"
 
 run!(select_slice_cover_prefix, SELECT_SLICE_COVER_PREFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(69)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // An exact-length ladder under the rest form: 0 and 1 by exact arms,
 // [2, ∞) by the rest arm.
@@ -604,7 +604,7 @@ run!(
     select_slice_partial_wildcard_live,
     SELECT_SLICE_PARTIAL_WILDCARD_LIVE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(69))) };
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 const SELECT_SLICE_REFUT_THEN_COVER_LIVE: &str = r#"
@@ -622,7 +622,7 @@ run!(
     select_slice_refut_then_cover_live,
     SELECT_SLICE_REFUT_THEN_COVER_LIVE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(-30))) };
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A refutable ELEMENT pattern only matches some arrays of its length —

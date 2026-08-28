@@ -240,10 +240,15 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
 /// channel → de-fuse: a pass-through here is a KNOWN divergence, not
 /// a documented residual (Eric's bar 2026-08-07).
 pub(super) fn emit_scrut_ride(
-    cx: &mut BodyCx,
+    _cx: &mut BodyCx,
     scrut: SelectScrut,
 ) -> Result<SelectScrut> {
-    emit_scrut_ride_inner(cx, scrut)
+    // THE SELECTION RIDE (Eric's ruling 2026-08-27): the scrutinee value
+    // is NOT cached. A bottom scrutinee flows through TAINTED; the
+    // selection survives via the SelWord (the stored arm index), and the
+    // tainted-scrutinee dispatch in `emit_select_arms` runs the held arm
+    // with its (naturally tainted → bottom) binds.
+    Ok(scrut)
 }
 
 fn emit_scrut_ride_inner(cx: &mut BodyCx, scrut: SelectScrut) -> Result<SelectScrut> {
@@ -341,7 +346,16 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
     };
-    let scrut = emit_scrut_ride(cx, scrut)?;
+    // Guarded selects keep the value ride (a bottom scrutinee re-matches
+    // the cached value, re-evaluating guards); guard-less selects take
+    // THE SELECTION RIDE (Eric's ruling 2026-08-27): no value cache, the
+    // held arm dispatches by its stored index on a bottom scrutinee.
+    let has_guards = sel.arms.iter().any(|(p, _)| p.guard.is_some());
+    let scrut = if has_guards {
+        emit_scrut_ride_inner(cx, scrut)?
+    } else {
+        emit_scrut_ride(cx, scrut)?
+    };
     // Every merge shape phis (disc, payload) — the scrutinee's taint
     // rides the disc into every arm result, so there's no separate
     // validity phi and no possibly-bottom-scrutinee gate (#219).
@@ -390,7 +404,21 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
             _ => {}
         });
     }
-    let sel_state = if has_arm_lift || has_arm_sites {
+    // THE SELECTION RIDE dispatches to the held arm by stored index on a
+    // bottom scrutinee — but only for a SCALAR scrutinee, where the arm's
+    // bind IS the scrutinee value carried with its taint (a bottom
+    // scrutinee makes it a bottom bind, no read). A composite scrutinee's
+    // structural binds read INTERIOR pointers computed in the pattern's
+    // condition stage (which dominates only the clean-match edge, not the
+    // dispatch edge — a CLIF SSA violation), and the reads themselves are
+    // unsafe on a bottom placeholder (empty array / `unreachable_unchecked`
+    // variant payload); a variant/nullable/value scrutinee has the same
+    // read hazard. Those keep the miss-trap bottom (the pre-ride behavior),
+    // which agrees with the interp's poisoned-bind ride whenever the arm
+    // reads its binds. The word is still claimed for interior state
+    // (arm-lift / call sites) regardless.
+    let ride_dispatch = !has_guards && matches!(scrut_kind, AbiKind::Scalar(_));
+    let sel_state = if has_arm_lift || has_arm_sites || ride_dispatch {
         let claimed = match cx.claim_state_word() {
             Some(off) => {
                 let sp = cx.state_ptr();
@@ -414,12 +442,13 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
             Some(w) => Some(w),
             None => {
                 return Err(anyhow!(
-                    "emit_clif: no wake-init memory available for a select \
-                     arm holding {} — de-fuse",
+                    "emit_clif: no selection-word memory for a select ({}) — de-fuse",
                     if has_arm_lift {
                         "a lifted connect target (requires the per-instance word)"
-                    } else {
+                    } else if has_arm_sites {
                         "interior call sites"
+                    } else {
+                        "the selection-ride index dispatch"
                     }
                 ));
             }
@@ -427,6 +456,9 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     } else {
         None
     };
+    // The selection word doubles as the dispatch word ONLY for a scalar
+    // scrutinee's ride; otherwise it carries just interior wake-init state.
+    let dispatch = if ride_dispatch { sel_state } else { None };
     let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
         cx,
@@ -435,6 +467,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         scrut_bfired,
+        dispatch,
         &mut |cx, body, mark, fires| {
             let idx = arm_index.get();
             arm_index.set(idx + 1);
@@ -1003,6 +1036,19 @@ fn emit_composite_pattern_cond(
 pub(super) struct SelFires {
     pub(super) sound_stale: Option<ClifValue>,
     pub(super) bfired: Option<ClifValue>,
+    /// THE SELECTION RIDE: the scrutinee disc the arm-result FOLD reads
+    /// (`propagate_taint` / `scrut_stale`), path-dependent when a
+    /// `dispatch` word is present. On the clean-match entry it is the
+    /// real scrutinee disc (organic firing: a fired/bottom scrutinee
+    /// folds into the result); on the BOTTOM-scrutinee dispatch entry
+    /// it is a neutral `STALE` — the held arm fires on its OWN deps, so
+    /// the scrutinee's taint must not bottom it and its (absent) fire
+    /// must not upgrade it. `None` = no dispatch (guarded / tail without
+    /// a ride word): the fold uses the plain scrutinee disc. The `record`
+    /// step keeps the real (tainted) disc regardless, so it correctly
+    /// declines to store on the ride. Interp twin: the `emit!` macro's
+    /// `own_bottom`-only scrutinee contribution on the Quiet path.
+    pub(super) fold_scrut_disc: Option<ClifValue>,
 }
 
 pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
@@ -1016,6 +1062,13 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // quiet stale — the ride serves re-match and operands, never the
     // emission's bottomness (THE BOTTOM-OUT RULE).
     scrut_bfired: Option<ClifValue>,
+    // THE SELECTION RIDE (guard-less selects): the word holding the
+    // stored arm index. On a bottom scrutinee the match chain is skipped
+    // and control jumps to the HELD arm's block by that index (its binds
+    // come out tainted from the tainted scrutinee); `None` = the old
+    // value-ride behavior (guarded selects), routing a bottom to the
+    // miss trap.
+    dispatch: Option<SelWord>,
     // (cx, arm body, env mark, fires): see [`SelFires`].
     emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, SelFires) -> Result<()>,
     // The final-arm miss handler (reached only under a tainted
@@ -1164,6 +1217,25 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         (sv, fv)
     };
     let mut undet_bl: Option<Block> = None;
+    // THE SELECTION RIDE dispatch (guard-less selects): a CLEAN scrutinee
+    // runs the match chain below (which records the taken index via the
+    // arm emitter); a BOTTOM scrutinee skips the match and jumps to the
+    // HELD arm's block by its stored index. The arm bodies are shared —
+    // `install_arm_binds` inside each derives its binds from the
+    // scrutinee SSA (tainted on the bottom path → bottom binds) — so they
+    // seal only after the dispatch's jumps are emitted below.
+    let mut matched_blocks: Vec<Block> = Vec::new();
+    let dispatch_bl = if dispatch.is_some() {
+        let d = cx.b.create_block();
+        let m = cx.b.create_block();
+        let tainted = is_tainted(cx.b, sdisc);
+        cx.b.ins().brif(tainted, d, &[], m, &[]);
+        cx.b.switch_to_block(m);
+        cx.b.seal_block(m);
+        Some(d)
+    } else {
+        None
+    };
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
         let is_last = i == n - 1;
         // A composite structural pattern (tuple/struct/slice) stages its
@@ -1200,21 +1272,38 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // final fail block runs `emit_miss` (a tainted bottom), which is
         // dead code for an exhaustive non-tainted scrutinee.
         let matched = cx.b.create_block();
+        if dispatch.is_some() {
+            matched_blocks.push(matched);
+            // The fold-disc block param (THE SELECTION RIDE): the clean
+            // match passes the real scrutinee disc, the bottom dispatch
+            // passes a neutral STALE — see `SelFires::fold_scrut_disc`.
+            cx.b.append_block_param(matched, types::I64);
+        }
         let fail: Option<Block> = match early_fail {
             Some(f) => Some(f),
             None if pcond.is_some() || has_guard => Some(cx.b.create_block()),
             None => None,
         };
+        let matched_args: smallvec::SmallVec<[BlockArg; 1]> = if dispatch.is_some() {
+            smallvec::smallvec![BlockArg::Value(sdisc)]
+        } else {
+            smallvec::SmallVec::new()
+        };
         match pcond {
             Some(c) => {
-                cx.b.ins().brif(c, matched, &[], fail.unwrap(), &[]);
+                cx.b.ins().brif(c, matched, &matched_args, fail.unwrap(), &[]);
             }
             None => {
-                cx.b.ins().jump(matched, &[]);
+                cx.b.ins().jump(matched, &matched_args);
             }
         }
         cx.b.switch_to_block(matched);
-        cx.b.seal_block(matched);
+        // Under the selection ride the dispatch adds a second predecessor
+        // (the bottom-scrutinee jump-by-index), so this block is sealed
+        // after that jump is emitted below, not here.
+        if dispatch.is_none() {
+            cx.b.seal_block(matched);
+        }
         let mark = cx.env.mark();
         install_arm_binds(cx, &binds, scrut, None)?;
         if let Some(g) = &pat.guard {
@@ -1259,11 +1348,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
-        {
+        if dispatch.is_none() {
             // The tainted-take gate (see the miss-block comment above):
             // a matched arm under a tainted scrutinee must not run its
             // body — no selection exists to fire and the body's site
-            // caches must not see the evaluation.
+            // caches must not see the evaluation. Under THE SELECTION
+            // RIDE (dispatch) the tainted case never reaches here — it
+            // jumps to the held arm by index instead — and the clean
+            // match path is already gated tainted-free by the top branch,
+            // so no gate is needed.
             let body_ok = cx.b.create_block();
             let clean = is_untainted(cx.b, sdisc);
             cx.b.ins().brif(clean, body_ok, &[], miss_bl, &[]);
@@ -1279,8 +1372,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // including this arm; a taken arm's consulted guards are all
         // sound by construction (bottoms stopped the chain), so
         // `bfired` carries only the scrutinee axis.
-        let fires =
-            SelFires { sound_stale: Some(cx.b.use_var(acc_sound)), bfired: scrut_bfired };
+        // On the dispatch path the arm-result fold reads the neutral
+        // STALE carried in `matched`'s block param (the clean match passes
+        // the real disc); without dispatch the fold uses the plain disc.
+        let fold_scrut_disc =
+            if dispatch.is_some() { Some(cx.b.block_params(matched)[0]) } else { None };
+        let fires = SelFires {
+            sound_stale: Some(cx.b.use_var(acc_sound)),
+            bfired: scrut_bfired,
+            fold_scrut_disc,
+        };
         let arm_res = emit_arm(cx, body, mark, fires);
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
         arm_res?;
@@ -1327,6 +1428,46 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             }
         };
         emit_undet(cx, undet_stale)?;
+    }
+    // THE SELECTION RIDE dispatch block: a bottom scrutinee jumps here.
+    // Read the held arm index (idx+1; 0 = never selected) and jump to
+    // that arm's shared block, where `install_arm_binds` derives its
+    // (now tainted → bottom) binds and the body fires on its own deps. A
+    // never-selected hold has no arm — bottom, like the miss trap.
+    if let (Some(d), Some(disp)) = (dispatch_bl, dispatch) {
+        cx.b.switch_to_block(d);
+        cx.b.seal_block(d);
+        let idx = match disp {
+            SelWord::Sure(addr) => {
+                cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0)
+            }
+            // A null base is a fresh transient activation with no
+            // memory — no held selection, so no dispatch (bottom).
+            SelWord::Guarded { base, addr } => {
+                let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                let loaded = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+                let zero = cx.b.ins().iconst(types::I64, 0);
+                cx.b.ins().select(has, loaded, zero)
+            }
+        };
+        // The neutral fold disc handed to the HELD arm: untainted + stale
+        // (the scrutinee bottomed — no fire, no taint contribution). The
+        // arm decides its own bottomness/firing; `scrut_bfired` (a
+        // fresh-bottom delivery) still drives the arm's bottom-out.
+        let stale = cx.b.ins().iconst(types::I64, STALE);
+        for (i, mb) in matched_blocks.iter().enumerate() {
+            let next = cx.b.create_block();
+            let hit = cx.b.ins().icmp_imm(IntCC::Equal, idx, (i as i64) + 1);
+            cx.b.ins().brif(hit, *mb, &[BlockArg::Value(stale)], next, &[]);
+            cx.b.switch_to_block(next);
+            cx.b.seal_block(next);
+        }
+        emit_miss(cx)?;
+        // Every matched block now has all its predecessors (the clean
+        // match brif above and this dispatch jump) — seal them.
+        for mb in &matched_blocks {
+            cx.b.seal_block(*mb);
+        }
     }
     Ok(())
 }
@@ -2002,10 +2143,16 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     // scrutinee arrives disc|STALE from `emit_scrut_ride`, so a bottom
     // delivery with history stays quiet here (the ride axis).
     cx.ctx.init_override.set(prev_override);
+    // The FOLD disc is path-dependent under THE SELECTION RIDE: the real
+    // scrutinee disc on a clean match, a neutral STALE when the held arm
+    // was reached by the bottom-scrutinee dispatch (so its taint doesn't
+    // bottom a firing arm and its absent fire doesn't upgrade a quiet
+    // one). `record` above still consulted the real `scrut_disc`.
+    let fold_disc = fires.fold_scrut_disc.unwrap_or(scrut_disc);
     let base = clean_disc(cx.b, disc);
-    let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
+    let d = propagate_taint(cx.b, base, &[disc, fold_disc]);
     let d = propagate_stale(cx.b, d, &[disc]);
-    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
+    let scrut_stale = cx.b.ins().band_imm(fold_disc, STALE);
     let d = fold_stale(cx.b, d, scrut_stale);
     let d = match fires.sound_stale {
         Some(gs) => fold_stale(cx.b, d, gs),
