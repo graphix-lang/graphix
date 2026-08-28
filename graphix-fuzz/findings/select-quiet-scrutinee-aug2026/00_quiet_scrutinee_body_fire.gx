@@ -7,12 +7,13 @@
 // then 7 — body production, not a ride). Pre-fix the phantom-arm
 // gate (0a0014eb) routed every tainted-scrutinee take to miss —
 // conflating never-selected with selected-but-quiet — and the jit
-// swallowed both fires. Fixed by THE SCRUTINEE RIDE (emit_scrut_ride,
-// the input twin of the merge taint cache): a tainted delivery with
-// history substitutes the CACHED scrutinee (disc | STALE) at the
-// select boundary, so the ordinary chain re-matches on real values
-// and the taken arm's body runs; no history still routes to miss
-// (the aug04b phantom rule preserved).
+// swallowed both fires. Under THE UNIFIED RIDE (Eric's ruling
+// 2026-08-28, superseding the 2026-08-07 scrutinee VALUE cache) a
+// bottom scrutinee HOLDS the last selection by INDEX (no cache, no
+// pattern re-match) and jumps to the held arm; its bind (v2) comes out
+// bottom but the body reads in0, which fires on its own deps, so the
+// arm emits the fresh value. A never-selected hold has no index and
+// still routes to miss (the aug04b phantom rule preserved).
 // schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
 {
 	let v0: Array<i64> = [];

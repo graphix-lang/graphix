@@ -839,40 +839,54 @@ enforces it):**
   its one state, collection slots are activations): the standing selection
   lives on when a delivery bottoms upstream — a bottomed delivery is
   NOT an own-fire, the taken arm's body fires on its own deps.
-  **SUPERSEDED for GUARD-LESS SCALAR selects by THE SELECTION RIDE
-  (Eric's ruling 2026-08-27):** such a select no longer caches its
-  scrutinee VALUE — only the SELECTION (arm index, `SelCell`) survives
-  a bottom. The held arm fires on its own deps, but its scalar pattern
-  bind BOTTOMS (inheriting the scrutinee's fresh/stale tag), so an arm
-  body reading the bind bottoms while one firing on its own deps still
-  fires; an arm's interior `$`/`~` RIDES its resident only on a
-  STALE-bottom bind, PROPAGATES on a FRESH one (`select v2 { n =>
-  cast(n)$ + in0 }` bottoms on a fold's div0-FIRE, which is a fresh
-  bottom). Kernel: `emit_scrut_ride` is a PASS-THROUGH; the held arm is
-  reached by a stored-index DISPATCH in `emit_select_arms` (a
-  `matched`-block fold-disc param carries a neutral STALE on the
-  dispatch edge so the arm's own production drives,
-  `SelFires::fold_scrut_disc`). **SCALAR scrutinees only** — a
-  guarded select, OR a NON-SCALAR (composite/variant/nullable/value)
-  scrutinee, keeps the VALUE ride (`emit_scrut_ride_inner`): a
-  non-scalar bind DESTRUCTURES the scrutinee, which the index dispatch
-  can't reproduce off a bottom placeholder (empty array /
-  `unreachable_unchecked` variant payload) and whose interior pointers
-  break `matched`-block dominance, so both engines ride the cached
-  value there and agree (`use_value_ride = has_guards || !scalar` in
-  the kernel; `sel_ride = !has_guards && scalar_scrut` gates the interp
-  poison in `Select::update`, both using `abi_kind == Scalar`).
-  EXTENDING the selection ride to non-scalar scrutinees (a bottom-bind
-  read_block that passes bind values as `matched` params) is the
-  follow-up; until then non-scalar keeps the value ride's
-  resident-storage de-fuse (`hof_nullable_map` / the slice-in-lambda
-  fixtures stay None). Non-loop return-position selects route through
-  the VALUE emitter (`emit_body_tail` → `emit_return_from_node` when
-  `loop_head.is_none()`) so a scalar one carries the dispatch; the tail
-  emitter stays for the loop spine. No-history taint still misses (the
-  aug04b phantom rule); a select whose taken arm is bottom emits
-  FreshBottom per fired input (op-consistency; not language-observable
-  — delta 4).
+  **SUPERSEDED by THE UNIFIED RIDE (Eric's ruling 2026-08-28)**, which
+  retires BOTH the 2026-08-07 scrutinee VALUE cache AND the 2026-08-27
+  scalar-only selection ride: no select — scalar or not, guarded or not
+  — caches its scrutinee value. On a bottom scrutinee the SELECTION (arm
+  index, `SelCell` / `SelWord`) survives and the held arm is run
+  directly; it is NEVER re-matched (no flip). The held arm's pattern
+  binds are POISONED to bottom (inheriting the delivery's fresh/stale
+  tag via `arg_prod.triggers()`), so a bind-reading body bottoms while
+  one firing on its OWN deps still fires; an interior `$`/`~` RIDES its
+  resident only on a STALE-bottom bind, PROPAGATES on a FRESH one
+  (`select v2 { n => cast(n)$ + in0 }` bottoms on a fold's div0-FIRE, a
+  fresh bottom). Only the HELD arm's guard is consulted, re-evaluated
+  over the bottomed binds (`held_guard()` → `HeldGuard::{Take, Bottom,
+  False}` in node/pattern.rs): no guard or a sound-TRUE guard runs the
+  arm; a guard whose current channel is bottom OR is sound-FALSE bottoms
+  the whole select (the held selection could not be re-affirmed) — same
+  as the interp's undet path. Interp (node/select.rs): the `ride` path
+  poisons the held arm's binds before the guard tick and the chain
+  consults `held_guard()`; `ctx.reset_selection` (lib.rs), armed by the
+  core-trait seam (coretraits.rs), clears `SelCell` per dispatch so a
+  reused comparator select does not inherit a prior pair's selection.
+  Kernel (fusion/emit/select.rs): `emit_scrut_ride` is a PASS-THROUGH
+  and the held arm is reached by a stored-index DISPATCH; **THE READ
+  BLOCK** reads every arm's bind VALUES on the clean-match edge (where
+  the pattern's interior SSA — a nested pattern's child pointer, a
+  suffix's length — all dominates) and threads them into the shared arm
+  block as params, so the dispatch edge (a second predecessor) passes a
+  zero placeholder per value and the bind's disc (from the scrutinee
+  disc, which the top branch proved tainted on that edge) bottoms it —
+  this is what lets NESTED composite patterns (`([a,b], c)`,
+  `{foo:[a,b,..], ..}`) fuse. `matched` block params: the fold-disc
+  (neutral STALE on dispatch so the held arm's own production drives —
+  `SelFires::fold_scrut_disc`), `from_dispatch` (routes a capture-only
+  guard-false to bottom, not fall-through), then one per bind value.
+  DISPATCH-ELIGIBLE: scalar, nullable, variant, and array/tuple/struct
+  (nested included); a bare VALUE has no known layout and DE-FUSES — the
+  node-walk runs the identical ride, so this loses fusion, never
+  correctness. The value cache (`emit_scrut_ride_inner`,
+  `emit_scalar_taint_cache_claimed`, `emit_value_taint_cache_borrowed`,
+  `emit_taint_cache_at`) is DELETED; `hof_nullable_map`, the
+  slice-in-lambda fixtures, `collection_find_map_default`, and the three
+  `select_slice_*` fixtures now FUSE (upgraded None→Jit). Non-loop
+  return-position selects route through the VALUE emitter
+  (`emit_body_tail` → `emit_return_from_node` when `loop_head.is_none()`)
+  so they carry the dispatch; the tail emitter stays for the loop spine.
+  No-history taint still misses (the aug04b phantom rule); a select
+  whose taken arm is bottom emits FreshBottom per fired input
+  (op-consistency; not language-observable — delta 4).
 - **THE RECURSION RULING (Eric, 2026-08-13; firing clause amended by
   organic firing 2026-08-14):** recursion fires like the hand-inlined
   chain of distinct functions — under organic firing this holds with

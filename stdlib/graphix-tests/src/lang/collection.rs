@@ -150,12 +150,10 @@ run!(
             v => v
         }
     "#;
-    // ASPIRE: Jit (currently None) — the return-position `select` over
-    // `find_map`'s NULLABLE result keeps the VALUE ride (a non-scalar
-    // scrutinee is not on THE SELECTION RIDE), whose cached-value resident
-    // has no storage here, so it de-fuses; a trait default over an
-    // abstract wrapper also interprets.
-    FuseExpect::None
+    // The return-position `select` over `find_map`'s NULLABLE result fuses
+    // via THE UNIFIED RIDE's index dispatch (a value-shaped scrutinee's
+    // bind reads the disc/payload directly, no cache).
+    FuseExpect::Jit
 );
 
 // A union receiver is not a constructor.

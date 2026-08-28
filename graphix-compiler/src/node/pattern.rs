@@ -985,6 +985,20 @@ pub(super) enum ArmMatch {
     Matched,
 }
 
+/// The held arm's guard verdict on THE UNIFIED RIDE — see
+/// [`PatternNode::held_guard`].
+pub(super) enum HeldGuard {
+    /// No guard, or the guard is sound-true: run the held arm (bottom
+    /// binds).
+    Take,
+    /// The guard's current channel is bottom — undecidable, the select
+    /// bottoms and the selection holds.
+    Bottom,
+    /// The guard fired sound-false — the arm's condition failed, the
+    /// select bottoms.
+    False,
+}
+
 #[derive(Debug)]
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
@@ -1155,6 +1169,29 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
                         None => "deep".into(),
                     }
                 );
+            }
+        }
+    }
+
+    /// THE UNIFIED RIDE (Eric's ruling 2026-08-28): on a bottom
+    /// scrutinee the select holds its selection and consults ONLY the
+    /// held arm's guard, re-evaluated against the (now bottom) binds —
+    /// no structure re-test, no cached value. This reads the guard's
+    /// ALREADY-TICKED production (`update` ran it this cycle over the
+    /// poisoned binds): a bottom channel is undecidable, a sound-false
+    /// verdict deselects, and no-guard / sound-true rides the held arm.
+    pub(super) fn held_guard(&self) -> HeldGuard {
+        match &self.guard {
+            None => HeldGuard::Take,
+            Some(g) => {
+                if g.tag.is_bottom() {
+                    HeldGuard::Bottom
+                } else {
+                    match g.value.as_ref().and_then(|v| v.clone().get_as::<bool>()) {
+                        Some(true) => HeldGuard::Take,
+                        Some(false) | None => HeldGuard::False,
+                    }
+                }
             }
         }
     }

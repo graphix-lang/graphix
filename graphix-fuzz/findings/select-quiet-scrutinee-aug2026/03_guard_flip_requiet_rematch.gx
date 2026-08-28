@@ -1,12 +1,13 @@
-// Guard-flip RE-MATCH against the cached scrutinee (probe t26): on
-// epoch 2 the guard's dep flips true while the scrutinee stays quiet
-// (fold div0). The interp re-matches the CACHED v2 (still 0) with
-// the CURRENT guard → re-selects arm 0 → becoming-selected fire of
-// 100. With the scrutinee ride this is just the record step working:
-// the substituted scrutinee is valid, the re-match lands on a
-// different arm, woke = 1, the arm's current value emits FIRED.
-// Epoch 1 (guard dep fires false, no flip, quiet scrutinee) must
-// stay QUIET in both modes — same-selection re-match is woke = 0.
+// THE UNIFIED RIDE (Eric's ruling 2026-08-28) — NO re-match, NO flip.
+// Historical name: this once tested a guard-flip RE-MATCH against a
+// CACHED scrutinee. Under the unified ride a bottom scrutinee HOLDS the
+// last selection (arm 1, the `_`, chosen at init when v2 = 0 and g is
+// false) and re-runs only THAT arm's guard over bottomed binds — it
+// never re-matches the pattern. So when the fold bottoms (v0 = [0] →
+// a / a div0) the held `_` arm has no guard, takes unconditionally, and
+// its const body fires only at init → quiet. The guard g flipping true
+// on in0 = 7 is IRRELEVANT (arm 0 is not the held arm), so there is no
+// becoming-selected fire of 100. Trace: [-1]; []; [] in both modes.
 // schedule-v1: cap=96 events=768; in0=i64:0; in0=i64:7
 {
 	let g = false;

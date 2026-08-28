@@ -1155,19 +1155,17 @@ run!(hof_str_used_twice, HOF_STR_USED_TWICE, |v: Result<&Value>| {
 
 // Value-shape (Nullable) ELEMENT read path: bind_elem's Value arm +
 // drop_owned_elem exercised on the node-walk. The BODY here `select`s over
-// the owned value element. None: a NON-SCALAR (nullable) scrutinee is not
-// on THE SELECTION RIDE (Eric's ruling 2026-08-27 — that is scalar-only);
-// it keeps the aug06ghz0 VALUE ride, whose cached-value resident has no
-// storage channel in a lambda-kernel instance body, so it de-fuses.
-// ASPIRE: extend the selection ride (bottom-bind index dispatch) to
-// value-shaped scrutinees, which needs no scrutinee resident.
+// the owned value element, and fuses via THE UNIFIED RIDE's index dispatch
+// (Eric's ruling 2026-08-28): a value-shaped scrutinee's bind reads the
+// disc/payload directly, so it needs no scrutinee resident — the old
+// value-ride storage de-fuse is gone.
 const HOF_NULLABLE_MAP: &str = r#"
 array::map([1, null], |v| select v { i64 as n => n, null as _ => i64:0 })
 "#;
 run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 2]>()),
     Ok(Ok([1, 0]))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // Value-shape (variant) ELEMENT in a filter whose predicate is a `==`
 // (ValueEq, fuses) rather than a select — so the value-element read + the

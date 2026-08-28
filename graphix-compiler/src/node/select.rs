@@ -4,10 +4,7 @@ use crate::{
     Update, UserEvent,
     expr::{Expr, ExprId, ExprKind, Pattern},
     format_with_flags,
-    fusion::{
-        emit::{BodyCx, CompiledExpr, emit_select_node},
-        kernel_abi::{self, AbiKind},
-    },
+    fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     node::pattern::PatternNode,
     typ::Type,
     wrap,
@@ -82,13 +79,6 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// discriminator is sealed against the settled scrutinee type
     /// ([`PatternNode::seal_shallow`]).
     shallow_sealed: bool,
-    /// Sealed with `shallow_sealed`: the scrutinee freezes to a register
-    /// SCALAR (`AbiKind::Scalar`). THE SELECTION RIDE (bind poisoning on a
-    /// bottom scrutinee) applies only to a guard-less SCALAR select; a
-    /// non-scalar scrutinee keeps the VALUE ride (cached-value re-match),
-    /// mirroring the kernel's `use_value_ride` split so both engines agree
-    /// on which mechanism a bottom scrutinee uses.
-    scalar_scrut: bool,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -111,7 +101,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             consulted: 0,
             resident: TagValue::phantom(),
             shallow_sealed: false,
-            scalar_scrut: false,
         })
     }
 
@@ -155,7 +144,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             consulted: 0,
             resident: TagValue::phantom(),
             shallow_sealed: false,
-            scalar_scrut: false,
         }))
     }
 }
@@ -222,12 +210,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         if !self.shallow_sealed {
             self.shallow_sealed = true;
             let scrut = self.arg.node.typ().clone();
-            // Same predicate as the kernel's `scalar_scrut`: a register
-            // scalar takes THE SELECTION RIDE; anything else keeps the
-            // value ride (see the field doc).
-            self.scalar_scrut = kernel_abi::freeze_for_abi_normalized(&scrut)
-                .and_then(|t| kernel_abi::abi_kind(&t))
-                .is_some_and(|k| matches!(k, AbiKind::Scalar(_)));
             for (pat, _) in self.arms.iter_mut() {
                 pat.seal_shallow(&ctx.env, &scrut);
             }
@@ -242,9 +224,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted,
             resident,
             shallow_sealed: _,
-            scalar_scrut,
         } = self;
-        let scalar_scrut = *scalar_scrut;
         // Per-arm guard production tags for THE CONSULTED-GUARD RULE
         // (design/activation_state.md, Eric 2026-08-20): only guards
         // the chain CONSULTS — structure-matching arms at or above the
@@ -255,36 +235,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             smallvec::SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx, event);
         let bottomed = arg.tag.is_tainted();
-        let has_guards = arms.iter().any(|(p, _)| p.guard.is_some());
-        // THE SELECTION RIDE (Eric's ruling 2026-08-27) applies to a
-        // GUARD-LESS SCALAR select: a bottomed scrutinee holds its
-        // SELECTION — the taken arm survives, so a subscription / own-dep
-        // arm keeps firing — but NOT its value. Keyed on the persistent
-        // selection index (`SelCell`), never a cached scrutinee value; the
-        // scalar bind is poisoned to a bottom below, so an arm reading it
-        // bottoms while one firing on its own deps still fires. A GUARDED
-        // select, or a NON-SCALAR scrutinee, keeps the aug06ghz0 VALUE
-        // ride instead (re-match the cached value, re-evaluating guards
-        // and re-binding the destructured binds) — a non-scalar bind
-        // destructures the scrutinee, which the kernel's index dispatch
-        // cannot reproduce off a bottom placeholder, so both engines ride
-        // the value there and agree. A no-selection bottom (the aug04b
-        // phantom rule) bottoms the whole select.
-        let sel_ride = !has_guards && scalar_scrut;
-        let ride = bottomed
-            && if sel_ride { selected.get().is_some() } else { arg.value.is_some() };
-        // "The scrutinee has a bindable value view this cycle": a
-        // value-bearing production, or the VALUE ride. A selection-ride
-        // (guard-less scalar) bottom scrutinee never binds from its
-        // (absent) value.
-        let arg_up = !bottomed || (!sel_ride && ride);
+        // THE UNIFIED RIDE (Eric's ruling 2026-08-28): a bottomed
+        // scrutinee with a HELD selection holds the arm INDEX and bottoms
+        // everything the scrutinee feeds — no cached value, no re-match,
+        // no flip, uniform across scalar/non-scalar and guarded/guard-less
+        // (the value ride is gone). The held arm's binds are POISONED to a
+        // bottom (below, before the guard tick, so the guard re-evaluates
+        // against them too), so an arm body or guard reading a bind bottoms
+        // while one firing on its own deps still fires. Only the held arm's
+        // guard is consulted; a no-selection bottom (the aug04b phantom
+        // rule) bottoms the whole select.
+        let ride = bottomed && selected.get().is_some();
+        // A bottom scrutinee has no value view to bind from — the poison
+        // provides the (bottom) binds; nothing binds from `arg.value`.
+        let arg_up = !bottomed;
         // Arm binds carry the SCRUTINEE's production tag (the kernel's
-        // arm-bind disc carry): a stale scrutinee production — a
-        // framed re-derivation from a quiet entry — binds STALE
-        // leaves. Firing comes from the selection/emission rules, never
-        // from the binds themselves (Eric's ruling 2026-07-18,
-        // tail_jump_fired_plumbing).
-        let bind_tag = if !sel_ride && ride { Tag::STALE } else { arg_prod };
+        // arm-bind disc carry): a stale scrutinee production — a framed
+        // re-derivation from a quiet entry — binds STALE leaves. Firing
+        // comes from the selection/emission rules, never from the binds
+        // themselves (Eric's ruling 2026-07-18, tail_jump_fired_plumbing).
+        let bind_tag = arg_prod;
         macro_rules! bind {
             ($i:expr) => {
                 bind!($i, bind_tag)
@@ -294,6 +264,27 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     arms[$i].0.bind_event(ctx, event, arg, $tag);
                 }
             }};
+        }
+        // Poison the held arm's binds BEFORE the guard tick, so the held
+        // guard re-evaluates against the bottom binds (the interp twin of
+        // the kernel's tainted-scrutinee dispatch). The tag inherits the
+        // scrutinee's fresh/stale: a FRESH-bottom (fired-and-bottomed)
+        // scrutinee makes a fresh bottom bind, so an arm's interior `$`/`~`
+        // PROPAGATES it; a STANDING bottom makes it stale, so `$` rides.
+        if ride {
+            if let Some(i) = selected.get() {
+                let btag = if arg_prod.triggers() {
+                    Tag::FRESH_BOTTOM
+                } else {
+                    Tag::STALE_BOTTOM
+                };
+                arms[i].0.structure_predicate.ids(&mut |id| {
+                    event.variables.insert(id, TagValue::tagged(Value::Null, btag));
+                    if ctx.frame_depth == 0 {
+                        ctx.rt.store_insert(id, TagValue::tagged(Value::Null, btag));
+                    }
+                });
+            }
         }
         // The pattern/guard tick runs even for a tainted scrutinee
         // (binds skipped — a placeholder can't be bound): guards are
@@ -389,36 +380,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 resident.ride()
             };
         }
-        // THE SELECTION RIDE: a guard-less SCALAR bottom scrutinee holds
-        // the selection but POISONS the held arm's bind — the scrutinee
-        // has no value this cycle, so an arm body reading the bind bottoms
-        // (it fires on its own deps instead). The real bind overwrites
-        // this when the scrutinee next carries a value. (Guarded or
-        // non-scalar selects keep the value ride and its cached binds.)
-        if ride && sel_ride {
-            if let Some(i) = selected.get() {
-                // The poisoned bind inherits the SCRUTINEE's bottom tag,
-                // not a hardcoded stale: a FRESH-bottom scrutinee (a
-                // fired-and-bottomed delivery — a fold div0-firing) makes
-                // the bind a fresh bottom, so an arm's interior `$`/`~`
-                // PROPAGATES it (the arm bottoms); a STANDING bottom makes
-                // it stale, so `$` rides its resident. This is exactly the
-                // kernel's `install_arm_binds`, which derives the bind disc
-                // from the real (fresh-or-stale) scrutinee disc on the
-                // dispatch path — bind poisoning is the interp twin.
-                let btag = if arg_prod.triggers() {
-                    Tag::FRESH_BOTTOM
-                } else {
-                    Tag::STALE_BOTTOM
-                };
-                arms[i].0.structure_predicate.ids(&mut |id| {
-                    event.variables.insert(id, TagValue::tagged(Value::Null, btag));
-                    if ctx.frame_depth == 0 {
-                        ctx.rt.store_insert(id, TagValue::tagged(Value::Null, btag));
-                    }
-                });
-            }
-        }
         if crate::dbgenv::graphix_dbg_select() {
             eprintln!(
                 "SELECT[{}] upd init={} fd={} arg_up={arg_up} pat_up={pat_up} sel={:?} argc={:?} vars={}",
@@ -460,12 +421,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             Taken(Option<usize>),
             Undet,
         }
-        // A SELECTION-RIDE (guard-less scalar) bottom scrutinee never
-        // RE-MATCHES: it has no value to match against, so the selection
-        // is held (the ride above). The held arm still fires via the Quiet
-        // path on its own deps. A guarded or non-scalar bottom scrutinee
-        // keeps re-matching the cached value (the value ride).
-        let chain = if (bottomed && sel_ride) || (!arg_trig && !pat_up) {
+        // THE UNIFIED RIDE: a bottom scrutinee never RE-MATCHES (no value
+        // to match against). The selection is held; consult ONLY the held
+        // arm's guard, re-run this cycle over the poisoned (bottom) binds.
+        // Sound-true / no guard rides the held arm on its own deps; a
+        // bottom (undecidable) or sound-false verdict bottoms the select,
+        // selection state holds. No flip.
+        let chain = if bottomed {
+            use super::pattern::HeldGuard;
+            let i = selected.get().expect("ride implies a held selection");
+            *consulted = if arms[i].0.guard.is_some() && i < 64 { 1 << i } else { 0 };
+            match arms[i].0.held_guard() {
+                HeldGuard::Take => ChainOut::Taken(Some(i)),
+                HeldGuard::Bottom | HeldGuard::False => ChainOut::Undet,
+            }
+        } else if !arg_trig && !pat_up {
             ChainOut::Quiet
         } else {
             match arg.value.as_ref() {
@@ -694,7 +664,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
-            scalar_scrut: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -714,7 +683,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
-            scalar_scrut: _,
         } = self;
         arg.sleep(ctx);
         for (pat, arg) in arms {
@@ -742,6 +710,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // UNCHANGED selections, and contradicting fused region
         // kernels, whose selection words are semantic and survive
         // `Kernel::reset_replay`.
+        //
+        // EXCEPT under `ctx.reset_selection` (the core-trait dispatch
+        // seam): a reused comparator site is a FRESH logical invocation,
+        // so its selection MUST clear — the unified ride would otherwise
+        // hold a previous pair's arm on a bottoming pair and return a
+        // stale ordering (the core-bottom-key fixture).
+        if ctx.reset_selection {
+            self.selected.set(None);
+        }
         let Self {
             selected: _,
             arg,
@@ -752,7 +729,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
-            scalar_scrut: _,
         } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
@@ -774,7 +750,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
-            scalar_scrut: _,
         } = self;
         arg.node.refs(refs);
         for (pat, arm) in arms {

@@ -27,9 +27,8 @@ use poolshark::local::LPooled;
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        const_stale_gate, emit_scalar_taint_cache_claimed,
-        emit_value_taint_cache_borrowed, is_tainted, is_untainted, prim_to_value_disc,
-        propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
+        const_stale_gate, is_tainted, is_untainted, prim_to_value_disc, propagate_flags,
+        propagate_stale, propagate_taint, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src, fold_stale,
@@ -220,95 +219,22 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     ids
 }
 
-/// THE SCRUTINEE RIDE (Eric's ruling 2026-08-07): the select's
-/// scrutinee is a taint-cache position like the merge on the output
-/// side — the interp's Select holds its scrutinee in a `Cached` slot,
-/// and on cycles where the scrutinee produces nothing (an interior
-/// bottom upstream) the standing selection lives on against that
-/// CACHED value: guard-dep fires RE-MATCH against it (probe t26 —
-/// a guard flip re-selects and fires becoming-selected), pattern
-/// binds RIDE it (probe t27 — the body recomputes cached-bind ⊕
-/// fresh-dep), and the taken arm's body fires on its own deps
-/// (aug06ghz0). Substituting the cached scrutinee (disc | STALE) at
-/// the boundary makes the WHOLE chain reproduce all of that with no
-/// special dispatch: pattern tests run on real values, the record
-/// step sees a valid scrutinee (a same-arm re-match is woke = 0 —
-/// quiet; a guard-flip re-match records and fires), and STALE rides
-/// into the binds so bodies fire only from their own inputs. A
-/// no-history taint passes through to the per-arm gates → miss (the
-/// aug04b phantom-arm rule: no selection was ever made). No storage
-/// channel → de-fuse: a pass-through here is a KNOWN divergence, not
-/// a documented residual (Eric's bar 2026-08-07).
+/// THE UNIFIED RIDE (Eric's ruling 2026-08-28, superseding THE
+/// SCRUTINEE RIDE's 2026-08-07 value cache and THE SELECTION RIDE's
+/// 2026-08-27 scalar-only dispatch): the scrutinee value is NEVER
+/// cached. A bottom scrutinee flows through TAINTED; the SELECTION
+/// survives via the `SelWord` (the stored arm index), and the
+/// tainted-scrutinee DISPATCH in `emit_select_arms` jumps straight to
+/// the held arm — no pattern re-match — with its binds bottomed (THE
+/// READ BLOCK threads their clean-edge values as block params, zeroed on
+/// the dispatch edge; the bind disc inherits the tainted scrutinee's, so
+/// the value is never observed). This is a pure pass-through — the ride
+/// is entirely in the dispatch.
 pub(super) fn emit_scrut_ride(
     _cx: &mut BodyCx,
     scrut: SelectScrut,
 ) -> Result<SelectScrut> {
-    // THE SELECTION RIDE (Eric's ruling 2026-08-27): the scrutinee value
-    // is NOT cached. A bottom scrutinee flows through TAINTED; the
-    // selection survives via the SelWord (the stored arm index), and the
-    // tainted-scrutinee dispatch in `emit_select_arms` runs the held arm
-    // with its (naturally tainted → bottom) binds.
     Ok(scrut)
-}
-
-fn emit_scrut_ride_inner(cx: &mut BodyCx, scrut: SelectScrut) -> Result<SelectScrut> {
-    match scrut {
-        SelectScrut::Scalar { disc, value, prim } => {
-            let cv =
-                emit_scalar_taint_cache_claimed(cx, prim, CompiledExpr::new(disc, value))
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: no scrutinee-ride storage for a scalar \
-                     scrutinee — de-fuse"
-                        )
-                    })?;
-            Ok(SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim })
-        }
-        SelectScrut::Value { disc, payload } => {
-            let cv =
-                emit_value_taint_cache_borrowed(cx, CompiledExpr::new(disc, payload))?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: no scrutinee-ride storage for a \
-                             value-shaped scrutinee — de-fuse"
-                        )
-                    })?;
-            Ok(SelectScrut::Value { disc: cv.disc, payload: cv.payload })
-        }
-        SelectScrut::Composite { disc, ptr } => {
-            let cv = emit_value_taint_cache_borrowed(cx, CompiledExpr::new(disc, ptr))?
-                .ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: no scrutinee-ride storage for a composite \
-                         scrutinee — de-fuse"
-                )
-            })?;
-            Ok(SelectScrut::Composite { disc: cv.disc, ptr: cv.payload })
-        }
-        // Opaque scrutinees (string / composite with only Ignore/guard
-        // arms) carry no chain-readable value — only the DISC drives
-        // the gates and the record step, so the resident is the last
-        // CLEAN disc in one replay word (0 = none).
-        SelectScrut::Opaque { disc } => {
-            let Some(off) = cx.claim_state_word_replay() else {
-                return Err(anyhow!(
-                    "emit_clif: no scrutinee-ride storage for an opaque \
-                     scrutinee — de-fuse"
-                ));
-            };
-            let sp = cx.state_ptr();
-            let tainted = is_tainted(cx.b, disc);
-            let cur = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-            let clean = clean_disc(cx.b, disc);
-            let new = cx.b.ins().select(tainted, cur, clean);
-            cx.b.ins().store(MemFlags::trusted(), new, sp, off);
-            let have = cx.b.ins().icmp_imm(IntCC::NotEqual, cur, 0);
-            let use_cache = cx.b.ins().band(tainted, have);
-            let sub = cx.b.ins().bor_imm(cur, STALE);
-            let d = cx.b.ins().select(use_cache, sub, disc);
-            Ok(SelectScrut::Opaque { disc: d })
-        }
-    }
 }
 
 pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
@@ -346,26 +272,42 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
     };
-    // THE SELECTION RIDE (Eric's ruling 2026-08-27) applies to GUARD-LESS
-    // SCALAR selects: no value cache, the held arm dispatches by its
-    // stored index on a bottom scrutinee (its scalar bind carries the
-    // scrutinee's taint, so it bottoms cleanly). A guarded select, or a
-    // NON-scalar scrutinee, keeps the value ride (`emit_scrut_ride_inner`
-    // — re-match the cached scrutinee): a non-scalar scrutinee's binds
-    // DESTRUCTURE it, and the dispatch can't reproduce those binds off a
-    // bottom placeholder (empty array / `unreachable_unchecked` variant
-    // payload) without a bottom-bind read_block refactor. The interp
-    // agrees: `Select::update` poisons binds only for a scalar scrutinee,
-    // and rides the value otherwise. Extending the selection ride to
-    // non-scalar scrutinees is the follow-up.
-    let has_guards = sel.arms.iter().any(|(p, _)| p.guard.is_some());
-    let scalar_scrut = matches!(scrut_kind, AbiKind::Scalar(_));
-    let use_value_ride = has_guards || !scalar_scrut;
-    let scrut = if use_value_ride {
-        emit_scrut_ride_inner(cx, scrut)?
-    } else {
-        emit_scrut_ride(cx, scrut)?
-    };
+    // THE UNIFIED RIDE (Eric's ruling 2026-08-28): a bottom scrutinee
+    // holds the arm INDEX and bottoms everything it feeds — no value
+    // cache. `emit_scrut_ride` is a pure pass-through and the held arm is
+    // reached by a stored-index DISPATCH. Every arm's binds are read on
+    // the clean-match edge (THE READ BLOCK in `emit_select_arms`, where
+    // the pattern's interior SSA all dominates) and threaded into the
+    // shared arm block as params; the dispatch edge passes a zero
+    // placeholder per bind value, and the bind's disc — derived from the
+    // scrutinee disc, which the top branch proved tainted on that edge —
+    // bottoms it regardless. So a SCALAR, value-shaped (NULLABLE /
+    // VARIANT), and COMPOSITE scrutinee (including NESTED patterns, whose
+    // leaves read a child interior pointer that can't cross the dispatch
+    // edge otherwise) all lower fully, guarded or not — the guard
+    // re-evaluates over the tainted binds on the dispatch path (a
+    // bind-reading guard bottoms via the prologue's `gbot`; a capture-only
+    // guard's false routes to bottom, not to the next arm). A bare VALUE
+    // has no known layout, so it DE-FUSES — the node-walk runs the
+    // identical unified ride (`Select::update`), so this loses fusion,
+    // never correctness.
+    let dispatch_ok = matches!(
+        scrut_kind,
+        AbiKind::Scalar(_)
+            | AbiKind::Nullable
+            | AbiKind::Variant
+            | AbiKind::Array
+            | AbiKind::Tuple
+            | AbiKind::Struct
+    );
+    if !dispatch_ok {
+        return Err(anyhow!(
+            "emit_clif: the unified select ride is not lowered for a bare \
+             {scrut_kind:?} scrutinee (no known layout for the held arm's \
+             binds) — de-fuse (the node-walk runs the same ride)"
+        ));
+    }
+    let scrut = emit_scrut_ride(cx, scrut)?;
     // Every merge shape phis (disc, payload) — the scrutinee's taint
     // rides the disc into every arm result, so there's no separate
     // validity phi and no possibly-bottom-scrutinee gate (#219).
@@ -414,20 +356,12 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
             _ => {}
         });
     }
-    // THE SELECTION RIDE dispatches to the held arm by stored index on a
-    // bottom scrutinee — but only for a SCALAR scrutinee, where the arm's
-    // bind IS the scrutinee value carried with its taint (a bottom
-    // scrutinee makes it a bottom bind, no read). A composite scrutinee's
-    // structural binds read INTERIOR pointers computed in the pattern's
-    // condition stage (which dominates only the clean-match edge, not the
-    // dispatch edge — a CLIF SSA violation), and the reads themselves are
-    // unsafe on a bottom placeholder (empty array / `unreachable_unchecked`
-    // variant payload); a variant/nullable/value scrutinee has the same
-    // read hazard. Those keep the miss-trap bottom (the pre-ride behavior),
-    // which agrees with the interp's poisoned-bind ride whenever the arm
-    // reads its binds. The word is still claimed for interior state
-    // (arm-lift / call sites) regardless.
-    let ride_dispatch = !has_guards && scalar_scrut;
+    // THE UNIFIED RIDE dispatches to the held arm by stored index on a
+    // bottom scrutinee. Guarded / non-scalar selects already de-fused
+    // above, so this is always a guard-less scalar select: the arm's bind
+    // IS the scrutinee value carried with its taint, so a bottom scrutinee
+    // makes it a bottom bind with no read. The word holds the index.
+    let ride_dispatch = true;
     let sel_state = if has_arm_lift || has_arm_sites || ride_dispatch {
         let claimed = match cx.claim_state_word() {
             Some(off) => {
@@ -1231,10 +1165,12 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     // runs the match chain below (which records the taken index via the
     // arm emitter); a BOTTOM scrutinee skips the match and jumps to the
     // HELD arm's block by its stored index. The arm bodies are shared —
-    // `install_arm_binds` inside each derives its binds from the
-    // scrutinee SSA (tainted on the bottom path → bottom binds) — so they
-    // seal only after the dispatch's jumps are emitted below.
-    let mut matched_blocks: Vec<Block> = Vec::new();
+    // `install_arm_binds_from_values` inside each binds from the block's
+    // value params (read on the clean edge, zero on the dispatch edge) —
+    // so they seal only after the dispatch's jumps are emitted below. Each
+    // entry carries its bind-value params' prim types so the dispatch
+    // index-chain can pass a matching zero const per value.
+    let mut matched_blocks: Vec<(Block, smallvec::SmallVec<[PrimType; 8]>)> = Vec::new();
     let dispatch_bl = if dispatch.is_some() {
         let d = cx.b.create_block();
         let m = cx.b.create_block();
@@ -1281,21 +1217,51 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // tainted (missing) scrutinee. That's no longer a refusal — the
         // final fail block runs `emit_miss` (a tainted bottom), which is
         // dead code for an exhaustive non-tainted scrutinee.
+        //
+        // THE READ BLOCK (THE UNIFIED RIDE): on the dispatch path, read
+        // every arm bind's VALUE here — in the clean/stage block, where
+        // the pattern's interior SSA (child pointers, the suffix length)
+        // all dominates — and thread them into `matched` as params. The
+        // bottom-scrutinee dispatch edge passes a zero placeholder per
+        // value; the bind's disc (derived from the scrutinee disc, which
+        // the top branch proved tainted on that edge) bottoms it
+        // regardless, so the placeholder is never observed. This is what
+        // lets a NESTED composite pattern fuse.
+        let bind_vals: smallvec::SmallVec<[(PrimType, ClifValue); 8]> =
+            if dispatch.is_some() {
+                read_arm_bind_values(cx, &binds, scrut)?
+            } else {
+                smallvec::SmallVec::new()
+            };
         let matched = cx.b.create_block();
         if dispatch.is_some() {
-            matched_blocks.push(matched);
-            // The fold-disc block param (THE SELECTION RIDE): the clean
-            // match passes the real scrutinee disc, the bottom dispatch
-            // passes a neutral STALE — see `SelFires::fold_scrut_disc`.
+            // Two dispatch params (THE UNIFIED RIDE): the fold-disc — the
+            // clean match passes the real scrutinee disc, the bottom
+            // dispatch a neutral STALE (`SelFires::fold_scrut_disc`) — and
+            // `from_dispatch` (i8): 0 on the clean match, 1 on the bottom
+            // dispatch, so a guard-FALSE routes to the next arm (clean) or
+            // to bottom (dispatch — no fall-through). Then one param per
+            // bind VALUE.
             cx.b.append_block_param(matched, types::I64);
+            cx.b.append_block_param(matched, types::I8);
+            for (prim, _) in &bind_vals {
+                cx.b.append_block_param(matched, prim_to_clif(*prim));
+            }
+            matched_blocks.push((matched, bind_vals.iter().map(|(p, _)| *p).collect()));
         }
         let fail: Option<Block> = match early_fail {
             Some(f) => Some(f),
             None if pcond.is_some() || has_guard => Some(cx.b.create_block()),
             None => None,
         };
-        let matched_args: smallvec::SmallVec<[BlockArg; 1]> = if dispatch.is_some() {
-            smallvec::smallvec![BlockArg::Value(sdisc)]
+        let matched_args: smallvec::SmallVec<[BlockArg; 4]> = if dispatch.is_some() {
+            let clean = cx.b.ins().iconst(types::I8, 0);
+            let mut a: smallvec::SmallVec<[BlockArg; 4]> =
+                smallvec::smallvec![BlockArg::Value(sdisc), BlockArg::Value(clean)];
+            for (_, v) in &bind_vals {
+                a.push(BlockArg::Value(*v));
+            }
+            a
         } else {
             smallvec::SmallVec::new()
         };
@@ -1315,7 +1281,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.seal_block(matched);
         }
         let mark = cx.env.mark();
-        install_arm_binds(cx, &binds, scrut, None)?;
+        if dispatch.is_some() {
+            // THE READ BLOCK: bind from the value params (after the two
+            // dispatch params) — real on the clean edge, zero on the
+            // dispatch edge (the bind's disc bottoms it there).
+            let vals: smallvec::SmallVec<[ClifValue; 8]> =
+                cx.b.block_params(matched)[2..].iter().copied().collect();
+            install_arm_binds_from_values(cx, &binds, scrut, &vals)?;
+        } else {
+            install_arm_binds(cx, &binds, scrut, None)?;
+        }
         if let Some(g) = &pat.guard {
             let eff = match guard_vals[i] {
                 // Prologue-computed: a guard with interior state, a
@@ -1354,7 +1329,32 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
             };
             let body_blk = cx.b.create_block();
-            cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
+            // A guard-FALSE: on the clean match, fall through to the next
+            // arm (`fail`); on the bottom dispatch, the held arm's guard
+            // definitively failed, so the select bottoms — route to the
+            // UNDET path (like the interp's `HeldGuard::False`), whose
+            // freshness folds the guard's own fire, rather than the miss
+            // trap's scrutinee-only staleness. A bind-reading guard never
+            // reaches here on the dispatch path (its `gbot`/tainted disc
+            // sent it to undet already); this is the capture-only case.
+            if dispatch.is_some() {
+                let gf = cx.b.create_block();
+                let from_dispatch = cx.b.block_params(matched)[1];
+                let ub = match undet_bl {
+                    Some(b) => b,
+                    None => {
+                        let b = cx.b.create_block();
+                        undet_bl = Some(b);
+                        b
+                    }
+                };
+                cx.b.ins().brif(eff, body_blk, &[], gf, &[]);
+                cx.b.switch_to_block(gf);
+                cx.b.seal_block(gf);
+                cx.b.ins().brif(from_dispatch, ub, &[], fail.unwrap(), &[]);
+            } else {
+                cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
+            }
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
@@ -1465,17 +1465,26 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // arm decides its own bottomness/firing; `scrut_bfired` (a
         // fresh-bottom delivery) still drives the arm's bottom-out.
         let stale = cx.b.ins().iconst(types::I64, STALE);
-        for (i, mb) in matched_blocks.iter().enumerate() {
+        let one = cx.b.ins().iconst(types::I8, 1);
+        for (i, (mb, prims)) in matched_blocks.iter().enumerate() {
             let next = cx.b.create_block();
             let hit = cx.b.ins().icmp_imm(IntCC::Equal, idx, (i as i64) + 1);
-            cx.b.ins().brif(hit, *mb, &[BlockArg::Value(stale)], next, &[]);
+            // The held arm's binds come out bottom (the scrutinee disc is
+            // tainted on this edge), so each bind VALUE is a zero
+            // placeholder of its prim type.
+            let mut args: smallvec::SmallVec<[BlockArg; 4]> =
+                smallvec::smallvec![BlockArg::Value(stale), BlockArg::Value(one)];
+            for prim in prims {
+                args.push(BlockArg::Value(zero_const(cx.b, *prim)));
+            }
+            cx.b.ins().brif(hit, *mb, &args, next, &[]);
             cx.b.switch_to_block(next);
             cx.b.seal_block(next);
         }
         emit_miss(cx)?;
         // Every matched block now has all its predecessors (the clean
         // match brif above and this dispatch jump) — seal them.
-        for mb in &matched_blocks {
+        for (mb, _) in &matched_blocks {
             cx.b.seal_block(*mb);
         }
     }
@@ -1968,6 +1977,98 @@ fn install_arm_binds(
                 bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
             }
         }
+    }
+    Ok(())
+}
+
+/// THE READ BLOCK (THE UNIFIED RIDE): read every arm bind's VALUE in the
+/// CURRENT (clean-match / stage) block — where the pattern's interior SSA
+/// (a nested pattern's child pointer, a suffix's length) all dominates —
+/// returning `(prim, value)` per bind IN ORDER. The caller threads these
+/// as `matched` block params so the shared arm block reads them from a
+/// register that dominates through BOTH edges (the clean match and the
+/// bottom-scrutinee dispatch), which the raw reads cannot. Every read is
+/// pure and total (the getters return 0 out of range / off a wrong shape),
+/// so reading speculatively — even when this arm's condition then fails —
+/// is safe; the value is simply unused.
+fn read_arm_bind_values(
+    cx: &mut BodyCx,
+    binds: &smallvec::SmallVec<[SelectArmBind; 8]>,
+    scrut: SelectScrut,
+) -> Result<smallvec::SmallVec<[(PrimType, ClifValue); 8]>> {
+    let mut out: smallvec::SmallVec<[(PrimType, ClifValue); 8]> = smallvec::SmallVec::new();
+    for bind in binds {
+        let (prim, value) = match bind {
+            SelectArmBind::Scrut(_) => {
+                let SelectScrut::Scalar { value, prim, .. } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: scrutinee bind without a scalar scrutinee"
+                    ));
+                };
+                (prim, value)
+            }
+            SelectArmBind::NullableScalar { prim, .. } => {
+                let SelectScrut::Value { payload, .. } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: nullable scalar bind without a value scrutinee"
+                    ));
+                };
+                (*prim, cast_u64_to_prim(cx.b, payload, *prim))
+            }
+            SelectArmBind::Payload { idx, prim, .. } => {
+                let SelectScrut::Value { disc, payload } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: payload bind without a variant scrutinee"
+                    ));
+                };
+                let helper = cx.helper(variant_payload_helper(*prim)?)?;
+                let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
+                let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
+                (*prim, cx.b.inst_results(call)[0])
+            }
+            SelectArmBind::Elem { idx, prim, ptr, .. } => {
+                (*prim, read_scrut_elem(cx, *ptr, *idx, *prim)?)
+            }
+        };
+        out.push((prim, value));
+    }
+    Ok(out)
+}
+
+/// THE READ BLOCK matched-region installer: bind each of `binds` from its
+/// pre-read `values` block param (in order), with the disc derived from
+/// the SCRUTINEE disc (`scrut.disc()` dominates the arm block and carries
+/// the right per-path taint — the top branch routed a tainted scrutinee to
+/// the dispatch edge, so a held arm's binds come out bottom there without
+/// any masking). Every bind is a register scalar.
+fn install_arm_binds_from_values(
+    cx: &mut BodyCx,
+    binds: &smallvec::SmallVec<[SelectArmBind; 8]>,
+    scrut: SelectScrut,
+    values: &[ClifValue],
+) -> Result<()> {
+    let sdisc = scrut.disc();
+    for (bind, &value) in binds.iter().zip(values) {
+        let (id, prim) = match bind {
+            SelectArmBind::Scrut(id) => {
+                let SelectScrut::Scalar { prim, .. } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: scrutinee bind without a scalar scrutinee"
+                    ));
+                };
+                (*id, prim)
+            }
+            SelectArmBind::NullableScalar { id, prim }
+            | SelectArmBind::Payload { id, prim, .. }
+            | SelectArmBind::Elem { id, prim, .. } => (*id, *prim),
+        };
+        let name: ArcStr =
+            compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+        // The bind fires iff the scrutinee fired and bottoms iff it
+        // bottomed — inherit the scrutinee's STALE/TAINT.
+        let base = scalar_disc(cx.b, prim);
+        let disc = propagate_flags(cx.b, base, &[sdisc]);
+        bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(id));
     }
     Ok(())
 }

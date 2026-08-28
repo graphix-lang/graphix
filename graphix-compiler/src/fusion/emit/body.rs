@@ -1000,22 +1000,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Some((idx * 8) as i32)
     }
 
-    /// [`claim_site_word`](Self::claim_site_word) for REPLAY memory in
-    /// a CALLEE body — the site twin of
-    /// [`claim_state_word_replay`](Self::claim_state_word_replay).
-    /// Returns `(word, header)` byte offsets: the word is recorded on
-    /// the [`SiteLayout`] (`replay`) for the caller's reset
-    /// registration, and the block-shared HONOR header (claimed with
-    /// the first replay word) gates the cache — see
-    /// [`LowerCtx::site_replay_hdr`]. Refused inside scaffold loops
-    /// (one per-call-site word would alias slots — the jul10h rule).
-    pub(crate) fn claim_site_word_replay(&self) -> Option<(i32, i32)> {
-        let hdr = self.ensure_site_replay_hdr()?;
-        let off = self.claim_site_word()?;
-        self.ctx.site.replay.borrow_mut().push((off / 8) as u32);
-        Some((off, hdr))
-    }
-
     /// This callee body's block-shared HONOR header, claiming it on
     /// first use. Its VALUE is written by whoever allocates this
     /// body's block, and it gates every replay word in the block: a
