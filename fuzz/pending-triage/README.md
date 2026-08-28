@@ -273,3 +273,38 @@ two that still diverged, both ryouko, were new classes.
 Same day, from the typemorph lane rather than a campaign: the
 block-wrap μ class (8 corpus flips) closed by making the μ-collapse
 look through binding cells — see CLAUDE.md's `let rec` bullet.
+
+## The aug27a round (2026-08-28) — 6 divergences, 5 pre-existing classes, DEFERRED
+
+Campaign aug27a (hz0/aieka/katana/ryouko/mazikeen on the pre-unified-ride
+binary) pulled at the aug28a redeploy — the redeploy that put THE UNIFIED
+RIDE (select-on-bottom, 7d36a526) on the fleet. 6 divergences: hz0 3,
+aieka 1, katana 1, ryouko 1, mazikeen 0. Re-checked against 7d36a526.
+**None is the select-on-bottom class; none was introduced by the merge** —
+confirmed by re-check + fusion breakdown (the one slice-select case
+de-fuses, its divergence is upstream arm-body fusion, not the ride). One
+self-resolved async artifact + 5 real pre-existing classes, all mapping to
+known families; DEFERRED (this session's scope was select-on-bottom). Raw
+witnesses parked on disk under `aug27a/` (untracked).
+
+- **hz0/000001 — async artifact, NOT a bug**: `array::group(sys::tcp::
+  listen(..))` — interp `[]` vs jit `[TcpListener]`. AGREES on re-check;
+  a `sys::tcp` quiescence race that should have been `sys::`-excluded from
+  divergence recording and slipped through. Worth checking the exclusion
+  covers `array::group` over a `sys::` stream.
+- **aieka/000000 — static/dynamic type mismatch** (aug06f / union-leaf
+  family): `select a {[init.., x] => x * i64:100, _ => 0}` where `a`'s
+  runtime slice element is an error-array but the arm-body `x * 100` fuses
+  with `x` typed `Scalar(I64)` (`kernel param x doesn't match the compiled
+  Scalar(I64) slot`). The select itself de-fuses (slice-suffix @/head); the
+  wrong answer is the arm-body kernel reading a wider-than-declared value.
+- **katana/000000 — labeled-callback-param** (aug22c class): `array::init(3,
+  |#foo: i64 = 42, x| x)` — interp `f64:0.` vs jit `i64:0` (a type
+  divergence); the labeled-default callback reaches a scalar-typed slot.
+- **hz0/000000 — recursive HOF fn-formal**: `ap(|x| n, 3, 0)` inside a
+  `let rec`; interp terminates, **jit spins (Timeout)**. fn-formal
+  forwarding family.
+- **hz0/000002 — recursive HOF closure-capture**: `fold_go(|a, x| a + acc +
+  1, 10, 0)` capturing the outer `acc`; interp 10 vs jit 0.
+- **ryouko/000000 — `list::find` with `once` in the tail**: `list::find(
+  Cons(0, Cons(3, once)), |x| true)`; interp emits no event, jit emits one.
