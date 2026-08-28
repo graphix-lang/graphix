@@ -195,7 +195,11 @@ val csize: fn(c: Collection) -> i64;
     "/test/m.gx" => r#"
 let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1)
 "#
-    ; graphix_package_core::testing::FuseExpect::None);
+    // The `c: Collection` param is `App(self, 'e)`; `abi_kind`/
+    // `freeze_for_abi` now reduce that constructor application, so the
+    // fold kernel builds and the generic function fuses over both the
+    // Array and Map call.
+    ; graphix_package_core::testing::FuseExpect::Jit);
 
 run!(
     trait_dispatch_never_arm_union,

@@ -273,6 +273,23 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // A nominal abstract is an opaque `Value::Abstract` box
             // whatever its representation (`nominal_abstract_types.md`).
             Type::Abstract { .. } => return Some(AbiKind::Value),
+            // A constructor-trait application `self<'a>` (a Collection
+            // default's result type): reduce it. `Type::app` keeps an
+            // App whose ctor is a TVar, so the reduction never fired at
+            // typecheck — the ctor is `self`, bound to e.g.
+            // `Abstract<Bag>[Hole]`. Deref both sides OUT of the guards
+            // (lock discipline, above), fill the hole, and classify the
+            // result.
+            Type::App(c, a) => {
+                let cd = c.with_deref(|t| t.cloned());
+                let ad = a.with_deref(|t| t.cloned());
+                return match (cd, ad) {
+                    (Some(cd), Some(ad)) => {
+                        cd.fill_hole(&ad).and_then(|r| abi_kind_d(&r, seen))
+                    }
+                    _ => None,
+                };
+            }
             // A ref reaches here through instance signatures, which
             // stay name-compressed. Its carried resolution cell makes it
             // expandable WITHOUT an env; an empty cell (or a recursive
@@ -671,6 +688,21 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                     params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                 let mut frozen = frozen?;
                 Some(Type::Abstract { id: *id, params: Arc::from_iter(frozen.drain(..)) })
+            }
+            // A constructor-trait application `self<'a>` — reduce it the
+            // same way `abi_kind` does (the ctor is a bound TVar, so
+            // `Type::app` never fired the reduction): deref both sides
+            // out of their guards, fill the hole, freeze the result.
+            Type::App(c, a) => {
+                let cd = c.with_deref(|t| t.cloned());
+                let ad = a.with_deref(|t| t.cloned());
+                match (cd, ad) {
+                    (Some(cd), Some(ad)) => {
+                        let r = cd.fill_hole(&ad)?;
+                        freeze_for_abi_d(&r, seen)
+                    }
+                    _ => None,
+                }
             }
             // Name-compressed instance-signature refs expand through
             // their carried resolution cell (env-free); an empty cell

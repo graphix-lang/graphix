@@ -1222,7 +1222,21 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         let gt = g.typ().resolve_tvars();
         let st = &*key.1;
         let args_agree = gt.args.len() == st.args.len()
-            && gt.args.iter().zip(st.args.iter()).all(|(a, b)| a.typ == b.typ);
+            && gt.args.iter().zip(st.args.iter()).all(|(a, b)| {
+                // A fn-typed arg is never an ABI value slot — it is
+                // skipped (invariant) or refuses the build (rebound),
+                // and WHICH callback it resolves to is keyed separately
+                // by `FnResolutions`, not by this type. Its structure
+                // differs benignly between instance and site (a
+                // resolved callback settles `throws _`, the site keeps
+                // the trait's `throws 'e`), so require only that both
+                // are fn-shaped, never structural equality.
+                if is_fn_shaped(&a.typ, &ec.env) || is_fn_shaped(&b.typ, &ec.env) {
+                    is_fn_shaped(&a.typ, &ec.env) && is_fn_shaped(&b.typ, &ec.env)
+                } else {
+                    a.typ == b.typ
+                }
+            });
         if !args_agree || gt.vargs != st.vargs || gt.rtype != st.rtype {
             log::trace!(
                 "build_lambda_kernel: site mono {} disagrees with lambda \
