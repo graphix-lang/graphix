@@ -839,37 +839,40 @@ enforces it):**
   its one state, collection slots are activations): the standing selection
   lives on when a delivery bottoms upstream — a bottomed delivery is
   NOT an own-fire, the taken arm's body fires on its own deps.
-  **SUPERSEDED for GUARD-LESS selects by THE SELECTION RIDE (Eric's
-  ruling 2026-08-27):** a guard-less select no longer caches its
+  **SUPERSEDED for GUARD-LESS SCALAR selects by THE SELECTION RIDE
+  (Eric's ruling 2026-08-27):** such a select no longer caches its
   scrutinee VALUE — only the SELECTION (arm index, `SelCell`) survives
-  a bottom. The held arm fires on its own deps, but its pattern binds
-  BOTTOM (inheriting the scrutinee's fresh/stale tag), so an arm body
-  reading a bind bottoms while one firing on its own deps still fires;
-  an arm's interior `$`/`~` RIDES its resident only on a STALE-bottom
-  bind, PROPAGATES on a FRESH one (`select v2 { n => cast(n)$ + in0 }`
-  bottoms on a fold's div0-FIRE, which is a fresh bottom). Kernel:
-  `emit_scrut_ride` is a PASS-THROUGH; the held arm is reached by a
-  stored-index DISPATCH in `emit_select_arms` (a `matched`-block
-  fold-disc param carries a neutral STALE on the dispatch edge so the
-  arm's own production drives, `SelFires::fold_scrut_disc`). SCALAR
-  scrutinees only — a composite/variant/nullable/value scrutinee's
-  structural binds can't be safely read off a bottom placeholder (empty
-  array / `unreachable_unchecked` payload) and the dispatch's second
-  `matched` predecessor breaks the interior-pointer dominance; those
-  keep the MISS-TRAP bottom, which agrees whenever the arm reads its
-  binds. Non-loop return-position selects route through the VALUE
-  emitter (`emit_body_tail` → `emit_return_from_node` when
-  `loop_head.is_none()`) so they carry the dispatch; the tail emitter
-  stays for the loop spine. Dropping the scrutinee-value cache DELETES
-  the storage-de-fuse, so value-shaped scrutinees fuse in lambda-kernel
-  instance bodies (the `hof_nullable_map` ASPIRE, achieved). GUARDED
-  selects KEEP the value ride (`emit_scrut_ride_inner` — a bottom
-  scrutinee re-matches the cached value, re-evaluating guards). The
-  interp twin is the bind-poison in `Select::update` (`ride &&
-  !has_guards`), whose poison tag inherits the scrutinee's fresh/stale.
-  No-history taint still misses (the aug04b phantom rule); a select
-  whose taken arm is bottom emits FreshBottom per fired input
-  (op-consistency; not language-observable — delta 4).
+  a bottom. The held arm fires on its own deps, but its scalar pattern
+  bind BOTTOMS (inheriting the scrutinee's fresh/stale tag), so an arm
+  body reading the bind bottoms while one firing on its own deps still
+  fires; an arm's interior `$`/`~` RIDES its resident only on a
+  STALE-bottom bind, PROPAGATES on a FRESH one (`select v2 { n =>
+  cast(n)$ + in0 }` bottoms on a fold's div0-FIRE, which is a fresh
+  bottom). Kernel: `emit_scrut_ride` is a PASS-THROUGH; the held arm is
+  reached by a stored-index DISPATCH in `emit_select_arms` (a
+  `matched`-block fold-disc param carries a neutral STALE on the
+  dispatch edge so the arm's own production drives,
+  `SelFires::fold_scrut_disc`). **SCALAR scrutinees only** — a
+  guarded select, OR a NON-SCALAR (composite/variant/nullable/value)
+  scrutinee, keeps the VALUE ride (`emit_scrut_ride_inner`): a
+  non-scalar bind DESTRUCTURES the scrutinee, which the index dispatch
+  can't reproduce off a bottom placeholder (empty array /
+  `unreachable_unchecked` variant payload) and whose interior pointers
+  break `matched`-block dominance, so both engines ride the cached
+  value there and agree (`use_value_ride = has_guards || !scalar` in
+  the kernel; `sel_ride = !has_guards && scalar_scrut` gates the interp
+  poison in `Select::update`, both using `abi_kind == Scalar`).
+  EXTENDING the selection ride to non-scalar scrutinees (a bottom-bind
+  read_block that passes bind values as `matched` params) is the
+  follow-up; until then non-scalar keeps the value ride's
+  resident-storage de-fuse (`hof_nullable_map` / the slice-in-lambda
+  fixtures stay None). Non-loop return-position selects route through
+  the VALUE emitter (`emit_body_tail` → `emit_return_from_node` when
+  `loop_head.is_none()`) so a scalar one carries the dispatch; the tail
+  emitter stays for the loop spine. No-history taint still misses (the
+  aug04b phantom rule); a select whose taken arm is bottom emits
+  FreshBottom per fired input (op-consistency; not language-observable
+  — delta 4).
 - **THE RECURSION RULING (Eric, 2026-08-13; firing clause amended by
   organic firing 2026-08-14):** recursion fires like the hand-inlined
   chain of distinct functions — under organic firing this holds with

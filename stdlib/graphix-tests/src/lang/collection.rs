@@ -150,10 +150,12 @@ run!(
             v => v
         }
     "#;
-    // The return-position `select` over `find_map`'s nullable result fuses
-    // since THE SELECTION RIDE dropped the scrutinee-value cache (a
-    // value-shaped scrutinee no longer needs resident storage).
-    FuseExpect::Jit
+    // ASPIRE: Jit (currently None) — the return-position `select` over
+    // `find_map`'s NULLABLE result keeps the VALUE ride (a non-scalar
+    // scrutinee is not on THE SELECTION RIDE), whose cached-value resident
+    // has no storage here, so it de-fuses; a trait default over an
+    // abstract wrapper also interprets.
+    FuseExpect::None
 );
 
 // A union receiver is not a constructor.

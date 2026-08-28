@@ -346,12 +346,22 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
     };
-    // Guarded selects keep the value ride (a bottom scrutinee re-matches
-    // the cached value, re-evaluating guards); guard-less selects take
-    // THE SELECTION RIDE (Eric's ruling 2026-08-27): no value cache, the
-    // held arm dispatches by its stored index on a bottom scrutinee.
+    // THE SELECTION RIDE (Eric's ruling 2026-08-27) applies to GUARD-LESS
+    // SCALAR selects: no value cache, the held arm dispatches by its
+    // stored index on a bottom scrutinee (its scalar bind carries the
+    // scrutinee's taint, so it bottoms cleanly). A guarded select, or a
+    // NON-scalar scrutinee, keeps the value ride (`emit_scrut_ride_inner`
+    // — re-match the cached scrutinee): a non-scalar scrutinee's binds
+    // DESTRUCTURE it, and the dispatch can't reproduce those binds off a
+    // bottom placeholder (empty array / `unreachable_unchecked` variant
+    // payload) without a bottom-bind read_block refactor. The interp
+    // agrees: `Select::update` poisons binds only for a scalar scrutinee,
+    // and rides the value otherwise. Extending the selection ride to
+    // non-scalar scrutinees is the follow-up.
     let has_guards = sel.arms.iter().any(|(p, _)| p.guard.is_some());
-    let scrut = if has_guards {
+    let scalar_scrut = matches!(scrut_kind, AbiKind::Scalar(_));
+    let use_value_ride = has_guards || !scalar_scrut;
+    let scrut = if use_value_ride {
         emit_scrut_ride_inner(cx, scrut)?
     } else {
         emit_scrut_ride(cx, scrut)?
@@ -417,7 +427,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // which agrees with the interp's poisoned-bind ride whenever the arm
     // reads its binds. The word is still claimed for interior state
     // (arm-lift / call sites) regardless.
-    let ride_dispatch = !has_guards && matches!(scrut_kind, AbiKind::Scalar(_));
+    let ride_dispatch = !has_guards && scalar_scrut;
     let sel_state = if has_arm_lift || has_arm_sites || ride_dispatch {
         let claimed = match cx.claim_state_word() {
             Some(off) => {
