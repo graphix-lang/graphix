@@ -38,12 +38,19 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # conflict copies; the fingerprint check still gates the launch. The
 # cost, now fleet-wide: remote .git is excluded, so a box's own
 # `git log` says nothing about the tree it runs (long true of hz0).
+# Workers = 8x cores, uniform across the fleet where the RAM allows it
+# (2026-08-28, Eric's call). aieka proves the ceiling: 288 workers (8x36)
+# on 62G runs with headroom, so every box here — all 54-62G except
+# katana's 16G — clears 8x at its core count. hz0 20c=160, aieka 36c=288,
+# katana 8c=64, ryouko 32c=256, mazikeen 14c=112. Oversubscription hides
+# the per-subject off-CPU gap (compile/spawn) that left a 1:1 box idling
+# at ~50%.
 HOSTS=(
     "hz0:rsync:160:1:linux"
     "aieka:rsync:288:4:linux"
     "katana:rsync:64:4:darwin"
-    "ryouko:rsync:85:1:linux"
-    "mazikeen:rsync:14:4:linux"
+    "ryouko:rsync:256:1:linux"
+    "mazikeen:rsync:112:4:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}
