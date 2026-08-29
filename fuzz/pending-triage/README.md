@@ -274,7 +274,7 @@ Same day, from the typemorph lane rather than a campaign: the
 block-wrap μ class (8 corpus flips) closed by making the μ-collapse
 look through binding cells — see CLAUDE.md's `let rec` bullet.
 
-## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 3 fixed, 1 non-bug, 1 deferred
+## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 5 fixed, 1 non-bug, CLOSED
 
 Campaign aug27a (hz0/aieka/katana/ryouko/mazikeen on the pre-unified-ride
 binary) pulled at the aug28a redeploy — the redeploy that put THE UNIFIED
@@ -337,10 +337,18 @@ Raw witnesses parked on disk under `aug27a/` (untracked).
   with the full `def_typ`. Pins: graphix-tests
   `labeled_callback_{outer_shadow,default_used}`.
 
-One DEFERRED — a firing-semantics adjudication (re-verified 2026-08-28):
+- **ryouko/000000 — FIXED (bfda0913)**: NOT a firing adjudication — a
+  recursive-type soundness hole. `list::find(Cons(0, Cons(3, once)), |x|
+  true)` (`once` a builtin Fn value in a Cons tail) was ACCEPTED at depth
+  >= 2 while depth 1 and an explicit `: List` annotation both rejected;
+  the two engines then diverged over the unsound value (interp `[]` / jit
+  `[0]`). `contains`' cycle memo keyed every non-Ref RHS to one `None`,
+  so the outer `List<'a> >= Cons(i64, Cons(i64, Fn))` and the inner
+  `List<'a> >= Cons(i64, Fn)` collided and the deep `Fn` was never
+  checked. Fix: content-typed non-Refs get a distinct memo id (finite
+  RHS never needed the memo); Any/primitives keep `None`. Pins:
+  graphix-tests `recursive_fn_tail_rejected_at_every_depth`,
+  `recursive_list_find`.
 
-- **ryouko/000000 — non-firing builtin value as List data**: `list::find(
-  Cons(0, Cons(3, once)), |x| true)` — a bare `once` (a builtin function
-  value) embedded in a Cons TAIL position; interp emits no event, jit
-  emits one. A firing-semantics adjudication around a value that never
-  fires embedded in a data structure. Narrow.
+All six aug27a divergences resolved: 5 real classes fixed (A/B/C/D/E),
+1 async non-bug. The round is CLOSED.
