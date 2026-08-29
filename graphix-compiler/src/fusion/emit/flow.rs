@@ -352,6 +352,42 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
     }
 }
 
+/// Can a tail-loop spine select's scrutinee ever RIDE — bottom on some
+/// loop iterations after a prior iteration selected an arm? THE UNIFIED
+/// RIDE (Eric 2026-08-29, "crazy in, crazy out") holds a select's
+/// selection across a tail loop's iterations and, on a bottom scrutinee,
+/// RUNS the held arm — for a spine select that arm is the recursive jump,
+/// so the loop continues past the bottoming iteration. The interp does
+/// this; the kernel tail spine keeps no per-iteration selection, so it
+/// can't. A ride needs a scrutinee that is non-bottom on some iterations
+/// and bottom on others: a bare formal RIDES its previous value (never
+/// bottoms — lambda.rs None-arg rebind), and a loop-invariant capture is
+/// constant (bottom from iteration 0, with no held selection to ride, or
+/// never). So only a scrutinee carrying a bottom-producing op that VARIES
+/// with the loop rides. A scrutinee built solely from Ref / Constant /
+/// comparison / boolean never rides and stays fused; anything else
+/// de-fuses so the node-walk runs the ride (aug28b hz0 divergence_000000,
+/// aieka divergence_000001).
+fn scrut_cannot_ride<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut ok = true;
+    crate::fusion::for_each_node(node, &mut |n| match n.view() {
+        NodeView::Ref(_)
+        | NodeView::Constant(_)
+        | NodeView::ExplicitParens(_)
+        | NodeView::Eq(_)
+        | NodeView::Ne(_)
+        | NodeView::Lt(_)
+        | NodeView::Lte(_)
+        | NodeView::Gt(_)
+        | NodeView::Gte(_)
+        | NodeView::And(_)
+        | NodeView::Or(_)
+        | NodeView::Not(_) => {}
+        _ => ok = false,
+    });
+    ok
+}
+
 /// Tail-position select: the shared pattern chain with arms that
 /// TERMINATE (return or self tail-call jump) instead of widening to a
 /// merge block.
@@ -382,6 +418,16 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         return Err(anyhow!(
             "emit_clif: tail select arm holds a lifted connect target — \
              no selection memory in a recursive body"
+        ));
+    }
+    // A spine select whose scrutinee can bottom mid-loop would need the
+    // per-iteration selection ride the tail spine doesn't keep — de-fuse
+    // (see `scrut_cannot_ride`). Only reachable inside a loop; a
+    // non-loop tail select routed through the value emitter above.
+    if cx.ctx.tail.loop_head.is_some() && !scrut_cannot_ride(&sel.arg.node) {
+        return Err(anyhow!(
+            "emit_clif: tail-loop select scrutinee can bottom mid-loop — \
+             the node-walk runs the selection ride"
         ));
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
