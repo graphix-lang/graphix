@@ -1055,9 +1055,20 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         // A SKIPPED fn formal: the callee kernel has no slot for it —
         // the callee's uses are statically-resolved calls baked at
         // build time (keyed by the resolution fingerprint), so the
-        // value is never consumed. The arg node (a lambda literal or
-        // a Ref) is pure; don't emit it.
+        // value is never consumed. The arg node is USUALLY pure (a
+        // lambda literal or a Ref), so don't emit it — but it may be a
+        // block carrying an EFFECT the node-walk performs (`{z <- z+1;
+        // g}`), and skipping that drops the effect (aug28b: a `<-`
+        // spinner in a discarded fn arg quiesced the kernel where the
+        // node-walk spun forever). De-fuse so the node-walk runs it —
+        // effects de-fuse, never silently skip.
         if skipped.contains(&(i as u32)) {
+            if !super::flow::stmt_subtree_effect_free(node) {
+                return Err(anyhow!(
+                    "lambda call `{fn_name}`: skipped fn-formal arg carries \
+                     an effect — de-fuse so the node-walk runs it"
+                ));
+            }
             continue;
         }
         slots.push(LambdaCallSlot::Arg(node, info.arg_types[sig_idx].clone()));

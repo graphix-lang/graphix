@@ -1,0 +1,12 @@
+// A `<-` spinner inside a DISCARDED fn-typed argument was dropped by the
+// JIT: `f = |a, b| true` ignores `a`, whose value is Fn-typed (`str::len`),
+// so `a` is a loop-invariant fn formal that drops out of the kernel sig
+// (skipped_args). `emit_lambda_call_node` then skipped emitting the arg
+// node on the premise it is "a lambda literal or a Ref (pure)" — but here
+// it is a BLOCK carrying a connect (`x <- x`), so skipping it dropped the
+// effect: the node-walk spun forever (capped) where the kernel quiesced.
+// Fix (call.rs): a skipped fn-formal arg that is NOT effect-free de-fuses
+// so the node-walk runs it. Both engines now spin (capped) — a `<-`
+// spinner is a live reactive effect, value discarded or not.
+// aug28b aieka divergence_000000.
+{let f = |a, b| true; f({let x = i64:0; x <- x; str::len}, true)}

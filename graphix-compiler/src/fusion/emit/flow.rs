@@ -54,7 +54,7 @@ use super::{
 /// wrong-bottoms the region (soak finding
 /// corpus-generate/divergence_000000, 2026-07-03). Everything else
 /// the direct emitter can encounter is value-only.
-fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::Connect(_) | NodeView::ConnectDeref(_) | NodeView::CallSite(_) => {

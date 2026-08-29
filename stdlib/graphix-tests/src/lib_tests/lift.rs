@@ -263,6 +263,21 @@ async fn tail_fold_retrigger_reads_rebound_formal() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connect_in_discarded_fn_arg_still_runs() -> Result<()> {
+    // Regression (findings/skipped-fn-arg-effect-aug2026): a `<-` spinner
+    // inside a DISCARDED fn-typed argument. `f = |a, b| z` ignores `a`,
+    // whose value is Fn-typed (`str::len`), so `a` is a skipped fn formal —
+    // but its arg block carries `z <- z + 1`, a live effect. The JIT once
+    // dropped it (kernel quiesced at 0) by skipping the arg's emission; it
+    // now de-fuses so the node-walk runs the effect. Both modes count up.
+    assert_stream(
+        "{ let z = 0; let f = |a, b| z; f({ z <- z + 1; str::len }, true) }",
+        &[0, 1, 2, 3, 4],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn region_over_64_inputs_agrees() -> Result<()> {
     // 70 self-feeding counters summed: every cycle each +1, so the stream
     // steps by 70. Pin the differential (node-walk == jit) over a few cycles.
