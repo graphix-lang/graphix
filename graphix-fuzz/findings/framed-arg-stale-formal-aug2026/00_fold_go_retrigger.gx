@@ -1,0 +1,15 @@
+// A tail-loop fold re-triggered by a fresh seed (epoch 1) folded to the
+// WRONG sum on the NODE-WALK: the loop-control `i` decremented correctly
+// (9,8,7..0) but the `i` passed to the callback `f(acc, i)` was the STALE
+// entry-formal 10 on every step, so acc grew by 10 each iteration → 100
+// instead of 55. The JIT was correct (55). Root cause: inside a frame the
+// store holds the pre-frame value (R3: frames never write the store), a
+// stale DynCall arg was never published to the cycle-scoped overlay, and
+// the callee reads the distinct ARG id — which the formal overlay
+// read-through does not cover — so it saw the pre-frame `i`. Fix
+// (node/callsite.rs): a stale non-bottom arg in a frame publishes its
+// current frame-overlay value onto the arg id (honest STALE tag). The
+// aug13i stale-entry-formal shape, surfacing through an fn-formal call.
+// aug28b aieka divergence_000002 / ryouko divergence_000000. Both epochs
+// are now 55 on both engines.
+{let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64 select i {i64:0 => acc, _ => fold_go(f, i - i64:1, f(acc, i))}; fold_go(|a, x| a + x, i64:10, {let s = i64:0; s <- i64:0; s})}

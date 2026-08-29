@@ -1685,6 +1685,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
                     set.push(arg.id);
+                } else if ctx.frame_depth > 0 && !tag.is_bottom() {
+                    // Inside a frame the store holds the STALE pre-frame
+                    // value (R3: frames never write the store), so a
+                    // rebound loop formal read as a STALE DynCall arg
+                    // would reach the callee as the pre-frame value: the
+                    // callee reads the distinct ARG id, which the formal
+                    // overlay read-through (the store-read premise above)
+                    // does NOT cover. Publish the current frame-overlay
+                    // value onto the arg id through the cycle-scoped
+                    // overlay (withdrawn with `set`), honest STALE tag —
+                    // a value-channel refresh, not a fire, so the callee
+                    // still fires off its own fresh operands. This is the
+                    // frame-only stale backfill, re-narrowed to the arg
+                    // channel: without it a tail loop's `f(acc, i)` read a
+                    // stale entry-formal `i` on every re-triggered
+                    // dispatch (aug28b fold_go, the aug13i shape).
+                    let tv = tv.clone();
+                    event.variables.insert(arg.id, tv);
+                    set.push(arg.id);
                 }
             }
         }

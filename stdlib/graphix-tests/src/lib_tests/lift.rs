@@ -244,6 +244,25 @@ async fn fold_captured_body_fires_then_quiesces() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tail_fold_retrigger_reads_rebound_formal() -> Result<()> {
+    // Regression (findings/framed-arg-stale-formal-aug2026): a hand-written
+    // tail-loop fold `fold_go` re-triggered by a fresh seed. Epoch 0 folds
+    // 1..10 onto seed 0 → 55; epoch 1 (seed lands = 6) → 61. The node-walk
+    // once returned 106 in epoch 1: inside the re-triggered frame the
+    // callback `f(acc, i)` read the STALE entry-formal `i` (10) instead of
+    // the rebound loop `i`, so it added 10 every step (0→10→20→…→100, +6).
+    // The rebound formal now reaches the DynCall through the cycle-scoped
+    // overlay. Both modes agree on [55, 61].
+    assert_stream(
+        "{ let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64 \
+           select i { 0 => acc, _ => fold_go(f, i - 1, f(acc, i)) }; \
+           fold_go(|a, x| a + x, 10, { let s = 0; s <- array::fold([1, 2, 3], 0, |acc, e| acc + e); s }) }",
+        &[55, 61],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn region_over_64_inputs_agrees() -> Result<()> {
     // 70 self-feeding counters summed: every cycle each +1, so the stream
     // steps by 70. Pin the differential (node-walk == jit) over a few cycles.
