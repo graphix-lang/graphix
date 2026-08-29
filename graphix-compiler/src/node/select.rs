@@ -661,15 +661,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // UNCHANGED selections, and contradicting fused region
         // kernels, whose selection words are semantic and survive
         // `Kernel::reset_replay`.
-        //
-        // EXCEPT under `ctx.reset_selection` (the core-trait dispatch
-        // seam): a reused comparator site is a FRESH logical invocation,
-        // so its selection MUST clear — the unified ride would otherwise
-        // hold a previous pair's arm on a bottoming pair and return a
-        // stale ordering (the core-bottom-key fixture).
-        if ctx.reset_selection {
-            self.selected.set(None);
-        }
         let Self {
             selected: _,
             arg,

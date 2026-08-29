@@ -232,18 +232,13 @@ fn call_hook<R: Rt, E: UserEvent>(
                 }
                 Ok(mut s) => {
                     // Every dispatch is a FRESH logical invocation: a
-                    // reused site otherwise carries history across
-                    // dispatches — the ride re-emits the PREVIOUS pair's
-                    // answer when this pair's computation bottoms (found
-                    // by the bottom-key fixture: sort's comparator
-                    // returned stale orderings). `reset_replay` clears
-                    // replay caches; `reset_selection` additionally makes
-                    // it forget any held select SELECTION, which the
-                    // unified ride (Eric 2026-08-28) would otherwise hold
-                    // across these independent invocations.
-                    ctx.reset_selection = true;
+                    // reused site otherwise carries replay caches across
+                    // dispatches (a bottoming pair once re-emitted the
+                    // previous pair's answer). A held select SELECTION
+                    // needs no clearing here — a bottoming pair's select
+                    // bottoms at its scrutinee (BOTTOM SCRUTINEE ⇒ BOTTOM
+                    // SELECT) before the selection is consulted.
                     s.site.reset_replay(ctx);
-                    ctx.reset_selection = false;
                     for (id, v) in s.args.iter().zip(args.iter()) {
                         ctx.rt.store_insert(*id, TagValue::fired((*v).clone()));
                         event.variables.insert(*id, TagValue::fired((*v).clone()));

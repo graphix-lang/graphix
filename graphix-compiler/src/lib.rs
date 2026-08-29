@@ -1802,15 +1802,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dispatch saves/resets it on entry and applies it in the
     /// result-tag derivation (`node/lambda.rs`).
     pub(crate) tail_scrut_fired: bool,
-    /// Set by the core-trait dispatch seam around its per-dispatch
-    /// `reset_replay` (node/coretraits.rs): a reused comparator site is a
-    /// FRESH logical invocation, so its select must forget its held
-    /// SELECTION (`SelCell`) too — the unified ride would otherwise re-run
-    /// a previous pair's held arm on a bottoming pair. `reset_replay`
-    /// preserves the selection for FRAMES by design (2026-07-16), so the
-    /// seam signals the full reset through this flag rather than the
-    /// signature. Off everywhere else.
-    pub(crate) reset_selection: bool,
     /// Pending definition assertions (see [`DefAssertion`]): stamped at
     /// compile, verified and removed at `analysis::analyze`'s tail once the
     /// asserted definition is reached by the analysis. Persistent across
@@ -1891,7 +1882,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             frame_depth: 0,
             frame_init: false,
             tail_scrut_fired: false,
-            reset_selection: false,
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),
