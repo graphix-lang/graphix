@@ -1,0 +1,10 @@
+// BOTTOM SCRUTINEE ⇒ BOTTOM SELECT, and `hold` is the explicit recovery
+// (Eric's ruling 2026-08-29, the bottom-ride deletion). `array::iter`
+// streams 1, 0, 2; `10 / x` bottoms on the x=0 cycle. Wrapping the
+// scrutinee in `hold(#clock: x, s)` holds the last non-bottom value (10)
+// across that cycle, so the select never sees a bottom scrutinee and
+// keeps producing (10, 10, 5) instead of bottoming out (10, [], 5). This
+// is the answer to "why did we need the ride": a user who wants the
+// selected arm to persist across a bottom writes `hold`, rather than the
+// select silently riding its last selection. Both engines agree.
+{let x = array::iter([i64:1, i64:0, i64:2]); let s = i64:10 / x; select hold(#clock: x, s) {i64:0 => i64:-1, v => v}}

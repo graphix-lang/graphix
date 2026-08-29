@@ -1,3 +1,8 @@
+// SUPERSEDED 2026-08-29 (the bottom-ride deletion): the ride this
+// fixture pinned is gone. A bottom scrutinee now BOTTOMS the select on
+// both engines (no held-arm ride), so this program agrees by bottoming
+// out. The historical description below documents the deleted behavior.
+//
 // The shape that killed chain-walk gating designs: under a tainted
 // scrutinee the PLACEHOLDER (0) matches `u8:0 => -1`, but the
 // standing selection is `_` (v2 settled u8:1 via the fold init

@@ -1,0 +1,4 @@
+// The twin WITHOUT hold: the same `10 / x` scrutinee bottoms the select
+// on the x=0 cycle (no ride, no held-arm continuation). Both engines
+// bottom out that cycle and emit 10, then bottom, then 5.
+{let x = array::iter([i64:1, i64:0, i64:2]); let s = i64:10 / x; select s {i64:0 => i64:-1, v => v}}

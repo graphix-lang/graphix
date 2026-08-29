@@ -1,3 +1,8 @@
+// SUPERSEDED 2026-08-29 (the bottom-ride deletion): the ride this
+// fixture pinned is gone. A bottom scrutinee now BOTTOMS the select on
+// both engines (no held-arm ride), so this program agrees by bottoming
+// out. The historical description below documents the deleted behavior.
+//
 // Quiet-scrutinee body-driven fire (aug06ghz0 reactive, Eric's
 // ruling 2026-08-07): selection is OBSERVABLE MEMORY — a STANDING
 // selection whose scrutinee delivers nothing this cycle (the fold

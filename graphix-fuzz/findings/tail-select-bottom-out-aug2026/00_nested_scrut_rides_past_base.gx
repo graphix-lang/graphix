@@ -1,0 +1,11 @@
+// BOTTOM SCRUTINEE ⇒ BOTTOM SELECT in a tail loop (Eric's ruling
+// 2026-08-29, the bottom-ride deletion). The outer select is the tail
+// spine; its scrutinee is the INNER select, which bottoms at the base
+// case (`1 % 0` = bottom at n=0). With the ride deleted the select
+// BOTTOMS there — no held-arm continuation — so the recursion returns
+// bottom and the program emits []. Both engines agree, and the tail loop
+// FUSES (the old ride-defuse of a computed scrutinee is gone). Before the
+// deletion the interp rode the held `_` arm to n=-1 and emitted 0 while
+// the kernel bottomed (interp [0] vs jit []); this pins that they now
+// both bottom out. aug28b hz0 divergence_000000.
+{let n = i64:10; let rec ap = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64 select select n {m if m <= i64:0 => i64:1 % m, m => f(m)} {i64:0 => acc, _ => ap(f, n - i64:1, acc)}; ap(|x| n, i64:3, i64:0)}

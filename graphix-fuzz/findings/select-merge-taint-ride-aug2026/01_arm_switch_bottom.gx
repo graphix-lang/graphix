@@ -1,3 +1,8 @@
+// SUPERSEDED 2026-08-29 (the bottom-ride deletion): the ride this
+// fixture pinned is gone. A bottom scrutinee now BOTTOMS the select on
+// both engines (no held-arm ride), so this program agrees by bottoming
+// out. The historical description below documents the deleted behavior.
+//
 // aug01b reactive divergence_000000 (2026-08-02): the select MERGE is an
 // interior-bottom taint ORIGIN — its producing site changes when the
 // selection switches, so a newly-taken arm that bottoms (100 % 0) has no

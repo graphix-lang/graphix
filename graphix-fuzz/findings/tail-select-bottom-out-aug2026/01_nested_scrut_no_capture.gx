@@ -1,0 +1,4 @@
+// The same bottom-out class without a capture (`f = |x| x + 1`): the
+// base case bottoms (`2 % 0`), the tail spine bottoms out, and both
+// engines emit []. aug28b aieka divergence_000001.
+{let rec ap = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64 select select n {m if m <= i64:0 => i64:2 % m, m => f(m)} {i64:0 => acc, _ => ap(f, n - i64:1, acc)}; ap(|x| x + i64:1, i64:3, i64:0) * i64:1}
