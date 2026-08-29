@@ -435,3 +435,20 @@ well-typed under `--check` (genuine adjudications), all fixed same day.
 
 Gates after all three: regress 445/0, selfcheck OK, graphix-tests 2276/0,
 FuseExpect audit 0 mismatches. aug28a still open (unrelated).
+
+### Closeout (2026-08-29)
+
+The class-1 "Open follow-on" (cross-dispatch selection reset) is RESOLVED,
+not deferred: the bottom-ride deletion made a bottoming scrutinee bottom
+the select before any held selection is consulted, so no reset is needed
+anywhere. `ctx.reset_selection` — the core-trait comparator seam that
+cleared a reused site's held selection per dispatch — was likewise
+confirmed dead and REMOVED (`d4ebb79e`); `core_bottom_key_rule` stays
+green. Final gates: regress 449/0, selfcheck OK (1787/0 flaky),
+graphix-tests 2276/0.
+
+At the aug29a redeploy the stale aug28b binary was pulled one last time: 5
+divergences (aieka 3, hz0 1, ryouko 1), and ALL FIVE re-check AGREE on the
+fixed tree — every one a re-discovery of a class this arc fixed, nothing
+novel. The raw pull is discarded (nothing to triage); the pins live in
+`findings/`. aug28a remains the only open item.
