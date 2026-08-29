@@ -447,9 +447,6 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         scrut_kind,
         &scrut_typ,
         scrut_bfired,
-        // Tail-position selects handle a tainted scrutinee with their
-        // own placeholder-bottom path above; no value-position dispatch.
-        None::<super::lower::SelWord>,
         &mut |cx, body, mark, fires| {
             arm_index.set(arm_index.get() + 1);
             // A prologue guard's SOUND fire is one of this select's
