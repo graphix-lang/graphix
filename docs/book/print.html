@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-bb1d467c.js";
+            window.path_to_searchindex_js = "searchindex-7946328f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f7a0005a.js"></script>
@@ -3159,6 +3159,21 @@ own receiver:</p>
 <pre><code class="language-graphix">let total = |c: Collection| fold(c, 0, |a, x| a + x);
 total([1, 2]) + total(list::from_array([3, 4]))      // 10
 </code></pre>
+<p><code>|c: Collection|</code> hides the constructor, which is enough when the
+result is not the same shape (<code>total</code> returns a scalar). To <em>preserve</em>
+the container — return the same kind of collection with a new element
+— name the constructor and apply it:</p>
+<pre><code class="language-graphix">let sqr = 'c: Collection, 'a: Number |c: 'c&lt;'a&gt;| -&gt; 'c&lt;'a&gt; map(c, |n| n * n);
+sqr([1, 2, 3])                                       // Array&lt;i64&gt; [1, 4, 9]
+sqr({"a" =&gt; 2, "b" =&gt; 3})                            // Map&lt;string, i64&gt;
+</code></pre>
+<p><code>'c: Collection</code> binds the constructor; <code>'c&lt;'a&gt;</code> applies it to the
+element, so <code>-&gt; 'c&lt;'a&gt;</code> returns the <em>same</em> container: an <code>Array</code> in
+yields an <code>Array</code> out, a <code>Map</code> a <code>Map</code> — checked, not widened to “some
+collection.” The bound stays on <code>'c</code>, the constructor; the <code>&lt;'a&gt;</code> only
+marks where it is applied. <code>'a: Number</code> constrains the element. (There
+is no <code>'c&lt;'a&gt;: Collection</code> quantifier form: the bound belongs on the
+constructor <code>'c</code>, not on the application.)</p>
 <p>The receiver must have a last type parameter: a union of collections,
 a struct or a bare primitive is not a constructor, and an impl head
 whose last parameter is filled (<code>impl Collection for Bag&lt;i64&gt;</code>) is

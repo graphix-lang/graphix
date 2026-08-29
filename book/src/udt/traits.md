@@ -320,6 +320,25 @@ let total = |c: Collection| fold(c, 0, |a, x| a + x);
 total([1, 2]) + total(list::from_array([3, 4]))      // 10
 ```
 
+`|c: Collection|` hides the constructor, which is enough when the
+result is not the same shape (`total` returns a scalar). To *preserve*
+the container — return the same kind of collection with a new element
+— name the constructor and apply it:
+
+```graphix
+let sqr = 'c: Collection, 'a: Number |c: 'c<'a>| -> 'c<'a> map(c, |n| n * n);
+sqr([1, 2, 3])                                       // Array<i64> [1, 4, 9]
+sqr({"a" => 2, "b" => 3})                            // Map<string, i64>
+```
+
+`'c: Collection` binds the constructor; `'c<'a>` applies it to the
+element, so `-> 'c<'a>` returns the *same* container: an `Array` in
+yields an `Array` out, a `Map` a `Map` — checked, not widened to "some
+collection." The bound stays on `'c`, the constructor; the `<'a>` only
+marks where it is applied. `'a: Number` constrains the element. (There
+is no `'c<'a>: Collection` quantifier form: the bound belongs on the
+constructor `'c`, not on the application.)
+
 The receiver must have a last type parameter: a union of collections,
 a struct or a bare primitive is not a constructor, and an impl head
 whose last parameter is filled (`impl Collection for Bag<i64>`) is
