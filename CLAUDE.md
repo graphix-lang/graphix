@@ -818,75 +818,43 @@ enforces it):**
   machinery (`|n| i64:7` still fires once: consts fire at init only).
   The ruled deltas + the red→green fixture protocol live in
   `organic_deltas.rs`; the design doc holds the deletion inventory.
-  **THE SCRUTINEE RIDE** (Eric's ruling 2026-08-07, aug06ghz0 — the
-  bottom axis, UNTOUCHED by organic firing; NARROWED 2026-08-20 by
-  `design/activation_state.md`, BUILT same day — THE BOTTOM-OUT RULE:
-  held state serves selection survival, re-matching, and operand
-  service, never the cycle's output bottomness; `hold` is the
-  explicit tool, and the ride's re-emission face is deleted. Refined
-  same day by THE CONSULTED-GUARD RULE (Ruling 1a): a select
-  consults arms top-down (structure first, guard second); a
-  consulted guard whose CURRENT channel is bottom makes the
-  selection UNDECIDABLE — the chain stops, selection state holds,
-  the select bottoms whatever else fired; guards of structure-failed
-  or below-the-stop arms are irrelevant on both planes. The GUARD
-  RIDES are DELETED on both engines (the aug13b held-bool mechanism
-  is superseded — its observables survive via the chain-stop), and
-  the mid-loop guard-bottom residue dissolved with them (tail and
-  native twins agree). Companion ruling:
-  STATE MULTIPLICITY = ACTIVATION MULTIPLICITY — non-tail recursion
-  is an activation per level, a tail loop is ONE activation reusing
-  its one state, collection slots are activations): the standing selection
-  lives on when a delivery bottoms upstream — a bottomed delivery is
-  NOT an own-fire, the taken arm's body fires on its own deps.
-  **SUPERSEDED by THE UNIFIED RIDE (Eric's ruling 2026-08-28)**, which
-  retires BOTH the 2026-08-07 scrutinee VALUE cache AND the 2026-08-27
-  scalar-only selection ride: no select — scalar or not, guarded or not
-  — caches its scrutinee value. On a bottom scrutinee the SELECTION (arm
-  index, `SelCell` / `SelWord`) survives and the held arm is run
-  directly; it is NEVER re-matched (no flip). The held arm's pattern
-  binds are POISONED to bottom (inheriting the delivery's fresh/stale
-  tag via `arg_prod.triggers()`), so a bind-reading body bottoms while
-  one firing on its OWN deps still fires; an interior `$`/`~` RIDES its
-  resident only on a STALE-bottom bind, PROPAGATES on a FRESH one
-  (`select v2 { n => cast(n)$ + in0 }` bottoms on a fold's div0-FIRE, a
-  fresh bottom). Only the HELD arm's guard is consulted, re-evaluated
-  over the bottomed binds (`held_guard()` → `HeldGuard::{Take, Bottom,
-  False}` in node/pattern.rs): no guard or a sound-TRUE guard runs the
-  arm; a guard whose current channel is bottom OR is sound-FALSE bottoms
-  the whole select (the held selection could not be re-affirmed) — same
-  as the interp's undet path. Interp (node/select.rs): the `ride` path
-  poisons the held arm's binds before the guard tick and the chain
-  consults `held_guard()`; `ctx.reset_selection` (lib.rs), armed by the
-  core-trait seam (coretraits.rs), clears `SelCell` per dispatch so a
-  reused comparator select does not inherit a prior pair's selection.
-  Kernel (fusion/emit/select.rs): `emit_scrut_ride` is a PASS-THROUGH
-  and the held arm is reached by a stored-index DISPATCH; **THE READ
-  BLOCK** reads every arm's bind VALUES on the clean-match edge (where
-  the pattern's interior SSA — a nested pattern's child pointer, a
-  suffix's length — all dominates) and threads them into the shared arm
-  block as params, so the dispatch edge (a second predecessor) passes a
-  zero placeholder per value and the bind's disc (from the scrutinee
-  disc, which the top branch proved tainted on that edge) bottoms it —
-  this is what lets NESTED composite patterns (`([a,b], c)`,
-  `{foo:[a,b,..], ..}`) fuse. `matched` block params: the fold-disc
-  (neutral STALE on dispatch so the held arm's own production drives —
-  `SelFires::fold_scrut_disc`), `from_dispatch` (routes a capture-only
-  guard-false to bottom, not fall-through), then one per bind value.
-  DISPATCH-ELIGIBLE: scalar, nullable, variant, and array/tuple/struct
-  (nested included); a bare VALUE has no known layout and DE-FUSES — the
-  node-walk runs the identical ride, so this loses fusion, never
-  correctness. The value cache (`emit_scrut_ride_inner`,
-  `emit_scalar_taint_cache_claimed`, `emit_value_taint_cache_borrowed`,
-  `emit_taint_cache_at`) is DELETED; `hof_nullable_map`, the
-  slice-in-lambda fixtures, `collection_find_map_default`, and the three
-  `select_slice_*` fixtures now FUSE (upgraded None→Jit). Non-loop
-  return-position selects route through the VALUE emitter
-  (`emit_body_tail` → `emit_return_from_node` when `loop_head.is_none()`)
-  so they carry the dispatch; the tail emitter stays for the loop spine.
-  No-history taint still misses (the aug04b phantom rule); a select
-  whose taken arm is bottom emits FreshBottom per fired input
-  (op-consistency; not language-observable — delta 4).
+  **BOTTOM SCRUTINEE ⇒ BOTTOM SELECT (Eric's ruling 2026-08-29,
+  `6991e2ad`/`7a564fa9` — the bottom-ride deletion).** A select whose
+  scrutinee bottoms produces nothing this cycle, full stop — no held-arm
+  re-run — even when the selected arm is an active async producer; the
+  user writes `hold` on the scrutinee to persist the last value across a
+  bottom cycle. This retires the whole ride lineage (THE SCRUTINEE RIDE's
+  2026-08-07 value cache, the 2026-08-27 scalar selection ride, THE
+  UNIFIED RIDE's 2026-08-28 stored-index dispatch) as the same
+  stored-selection mistake organic firing deleted everywhere else. WHAT
+  SURVIVES — never the ride: a STALE-PRESENT scrutinee (a value that did
+  NOT fire this cycle) still routes the taken arm's OWN fires through the
+  retained selection (`ChainOut::Quiet` in node/select.rs reads
+  `selected` and emits the arm's production). That is what makes
+  `select p { null => 42, p => subscribe(p) }` update when subscribe
+  updates — organic own-firing, not a bottom ride. node-walk: a
+  `bottomed` scrutinee returns bottom (fresh iff it triggered, else rides
+  the resident VALUE channel — not the selection); the ride
+  bind-poisoning, `held_guard`/`HeldGuard`, and `own_bottom` are gone.
+  kernel (fusion/emit/select.rs): the value emitter passes `dispatch=None`,
+  so a tainted scrutinee bottoms through the miss trap exactly as the tail
+  emitter always did — `emit_scrut_ride`, THE READ BLOCK, the index
+  dispatch, and the scrutinee-shape gate are deleted, so a bare VALUE
+  scrutinee now fuses. Both engines bottom out, so the class-1 tail-loop
+  de-fuse is reverted and computed-scrutinee tail loops fuse again. Pins:
+  `findings/{select-bottom-out-hold,tail-select-bottom-out}-aug2026`; the
+  re-adjudicated ride fixtures (`select-merge-taint-ride`,
+  `select-quiet-scrutinee`) carry superseded banners. **THE
+  CONSULTED-GUARD RULE (Ruling 1a, Eric 2026-08-20) still holds:** a
+  select consults arms top-down (structure first, guard second); a
+  consulted guard whose CURRENT channel is bottom makes the selection
+  UNDECIDABLE — the chain stops, the select bottoms whatever else fired;
+  guards of structure-failed or below-the-stop arms are irrelevant. The
+  GUARD RIDES were already deleted (the aug13b held-bool mechanism; its
+  observables survive via the chain-stop). Companion ruling:
+  STATE MULTIPLICITY = ACTIVATION MULTIPLICITY — non-tail recursion is an
+  activation per level, a tail loop is ONE activation reusing its one
+  state, collection slots are activations.
 - **THE RECURSION RULING (Eric, 2026-08-13; firing clause amended by
   organic firing 2026-08-14):** recursion fires like the hand-inlined
   chain of distinct functions — under organic firing this holds with
@@ -1779,8 +1747,9 @@ interpolation, the print family; unarmed (off-thread, no impls) =
 structural. Dispatch: `ExecCtx.core_hook_sites` — per `(trait,
 AbstractId)` a sticky resolved-or-None entry with a POOL of call
 sites (fresh per re-entrant activation), args via `event.variables`,
-`reset_replay` before EVERY dispatch (a reused site's scrutinee ride
-re-emitted the previous pair's answer on a bottoming pair). THE
+`reset_replay` before EVERY dispatch (a reused site's replay caches
+must not carry the previous pair's answer into a bottoming pair; the
+scrutinee ride that once compounded this is deleted). THE
 BOTTOM-KEY RULE (Eric): a bottoming impl resolves per KEY like NaN —
 bottom keys (self-probe `cmp(k,k)` bottoms) below real keys, equal
 to each other; pair-bottom-with-real-keys warns + Equal; a bottoming
