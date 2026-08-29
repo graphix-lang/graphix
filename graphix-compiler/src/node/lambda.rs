@@ -895,6 +895,24 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         if args.len() != argspec.len() {
             bail!("arity mismatch, expected {} arguments", argspec.len())
         }
+        // `argspec` and `typ.args` are parallel — one pattern per
+        // signature parameter. A narrower `typ` (fewer params than the
+        // lambda actually declares) makes the zip below TRUNCATE the
+        // param patterns, silently dropping the tail parameters: a
+        // collection callback typed by the HOF's declared
+        // `fn(x: 'a) -> 'b` against a user lambda `|#foo = 42, x|`
+        // kept only `foo` (bound to its default) and dropped the
+        // positional `x`, so the element was never delivered and the
+        // body's `x` fell through to an outer binding (aug27a katana).
+        // Bail so a Dynamic-mode dispatch retries with the full
+        // definition signature (`def_typ`), which has the right arity.
+        if argspec.len() != typ.args.len() {
+            bail!(
+                "instance signature has {} parameters, the definition has {}",
+                typ.args.len(),
+                argspec.len()
+            )
+        }
         let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
             let pattern = StructPatternNode::compile(

@@ -350,3 +350,44 @@ run!(filter_map_total_callback, FILTER_MAP_TOTAL_CALLBACK, |v: Result<&Value>| m
     v,
     Ok(Value::I64(145))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A collection callback with a labeled-DEFAULT parameter before its
+// positional one, instantiated against the HOF's narrow declared type
+// (`fn(x: 'a) -> 'b`), used to TRUNCATE the lambda's param patterns —
+// the zip kept `foo` (bound to its default) and dropped the positional
+// `x`, so the element was never delivered and the body's `x` fell
+// through to an outer binding of the same name (aug27a katana: interp
+// f64:0. / jit i64:0, both wrong — should be 2). The instance now
+// carries both params (a narrow instance signature bails so the
+// dynamic dispatch retries with the full definition signature).
+const LABELED_CALLBACK_OUTER_SHADOW: &str = r#"
+{
+  let x = f64:0.;
+  {
+    let a = array::init(i64:3, |#foo: i64 = i64:42, x| x);
+    array::fold(a, i64:0, |acc, x| x)
+  }
+}
+"#;
+
+run!(labeled_callback_outer_shadow, LABELED_CALLBACK_OUTER_SHADOW,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
+    graphix_package_core::testing::FuseExpect::Jit);
+
+// The labeled default is actually READ in the body (foo + x): foo uses
+// its default 42, x is the element, and the outer `x` must NOT leak.
+// (42+10)+(42+20)+(42+30) = 186; the truncation bug gave 42+0. each.
+const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
+{
+  let x = f64:0.;
+  array::fold(
+    array::map([i64:10, i64:20, i64:30], |#foo: i64 = i64:42, x| foo + x),
+    i64:0,
+    |a, e| a + e
+  )
+}
+"#;
+
+run!(labeled_callback_default_used, LABELED_CALLBACK_DEFAULT_USED,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(186)));
+    graphix_package_core::testing::FuseExpect::Jit);
