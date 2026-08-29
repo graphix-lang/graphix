@@ -352,3 +352,21 @@ Raw witnesses parked on disk under `aug27a/` (untracked).
 
 All six aug27a divergences resolved: 5 real classes fixed (A/B/C/D/E),
 1 async non-bug. The round is CLOSED.
+
+## The aug28a round (2026-08-28) — 1 divergence, NEW class, pulled at the aug28b redeploy
+
+Campaign aug28a (the unified-ride binary, pre aug27a fixes) pulled before
+the aug28b redeploy. 1 divergence (aieka); re-checked on the aug27a-fixed
+binary and it STILL reproduces — a NEW class, none of A–E.
+
+- **aieka/000000 — reactive fold-in-guard / array::group divergence**
+  (well-typed, re-verified 2026-08-28 on the fixed binary): `{let x =
+  array::iter([1,2,3,4]); let m = x / MAX; let rec f = |n| select n {0 =>
+  select array::fold(["a","bb","ccc"], 0, |acc, s| str::len(s)) {0 if m
+  == 0 => 1, _ => 2}, _ => f(n-1)}; array::group(f(3), |n, _| n >= 3)}` —
+  interp `[]` vs jit `[2:[2,2,2]]`. A reactive program: `array::iter`
+  streams, `m` derives from it, and a `let rec` whose base case is a
+  guarded select over an `array::fold` result feeds `array::group`. The
+  interp emits no event; the jit emits a grouped `[2,2,2]`. DEFERRED —
+  needs its own triage (fold-in-guard reactivity, or an array::iter
+  fire-count/streaming-timing question). Parked under `aug28a/`.
