@@ -154,13 +154,32 @@ the retained instance itself, so the driver would save nothing that
 matters. If the per-activation footprint turns out to be the problem
 (§9 P0), the fix is instance size, not the driver.
 
-**Retention vs deletion** (open, §11): MapQ DELETES excess slots on
-shrink; recursion RETAINS them asleep (the retention ruling: "let the
-user run out of memory"). A deque that grows to 100k and shrinks to
-10 keeps 100k sleeping instances. The recommendation is to keep the
-ruling (retain), measure, and treat reclamation of long-asleep
-activations as a runtime GC concern if it ever bites — not a
-semantics one, since sleep is pause.
+**Retention vs deletion** (RESOLVED 2026-08-29 — recursion adopts
+MapQ's rule). The open question was whether recursion should RETAIN
+excess activations asleep (as it did) or DELETE them like MapQ deletes
+excess slots on shrink. It was reframed as a SEMANTICS question, not
+just memory: retaining an unreached depth's state and RESUMING it on
+re-descent is a per-depth `count(e)` whose value depends on the loop's
+depth history — unpredictable, and inconsistent with MapQ, whose
+regrown slots are fresh. Since a recursion activation IS a collection
+slot, recursion now follows the identical rule: **a depth not reached
+this cycle is deleted immediately; re-reaching it is a fresh
+activation.** Interp built (`99387e17`): a scoped `ctx.shrink_unwind`
+flag, set only while `Select::update` sleeps an arm it actively
+DESELECTS (a genuine shrink, not a whole-recursion pause), makes a
+recursive-edge `CallSite::sleep` delete its callee (cascade) instead of
+retaining it; cleared crossing a callee body (`GXLambda::sleep`) so a
+whole-recursion pause and external calls in the deselected arm retain
+(sleep-is-pause). `sleep is pause` still holds for arms that PERSIST; a
+slot that ceases to exist is deleted. The distinction: an arm is a
+fixed position (pause/resume), a recursion depth is a transient
+invocation (delete/fresh). Deferred (memory-only, transparent): the JIT
+`SelfBlock` free on unwind — a fused recursion carries no observable
+per-depth state (stateful de-fuses), so the differential agrees without
+it; the JIT still retains its block tree until Drop. If oscillation
+thrash from immediate delete+realloc ever bites, add a reset-on-reuse
+pool to BOTH systems (semantically identical, avoids the churn) — the
+refinement noted at the ruling.
 
 ### As built — P1a (2026-08-24)
 

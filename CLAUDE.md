@@ -970,6 +970,28 @@ enforces it):**
   de-fuses any select whose arm reaches one (kernels have no per-arm
   sleep initiator — `findings/sleep-restart-gate-aug2026/`). Pinned by
   `sleep-preserves-caches-jul2026/`.
+- **RECURSION SHRINK = DELETE, not pause** (Eric's ruling 2026-08-29,
+  `99387e17`; `design/recursive_activations.md` "Retention vs
+  deletion"): a recursion activation IS a collection slot, so it obeys
+  MapQ's rule — a depth NOT reached this cycle is deleted immediately,
+  and re-reaching it is a FRESH activation (not a resume of its pre-dip
+  state; per-depth `count(e)` no longer depends on the loop's depth
+  history). Sleep-is-pause still holds for arms that PERSIST (a fixed
+  select arm resumes); the new line is that a slot which CEASES TO
+  EXIST is deleted — an arm is a fixed position, a recursion depth is a
+  transient invocation. Mechanism (interp): `ctx.shrink_unwind`, set
+  only while `Select::update` sleeps an arm it ACTIVELY deselects (a
+  shrink), makes a recursive-edge (`is_recursive_edge`, a cyclic-SCC
+  edge) `CallSite::sleep` delete its callee (cascade) rather than
+  retain it; cleared crossing a callee body (`GXLambda::sleep`), so a
+  whole-recursion PAUSE (an outer arm deselecting the entire call) and
+  an external call in the deselected arm both retain. Steady-state deep
+  recursion never deletes (the callee stays bound); a dip deletes; a
+  re-deepen re-binds fresh under the wake's init view. JIT `SelfBlock`
+  free on unwind is a DEFERRED memory-only follow-up (fused recursions
+  carry no observable per-depth state — stateful de-fuses — so the
+  differential agrees without it). Pinned by
+  `recursion_shrink_deletes_unreached_activations` (lift.rs).
 - **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
   state must be the call site's OWN history — a compiled callee
   body's interior builtin is ONE `graphix_dyncall` instruction
