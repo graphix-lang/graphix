@@ -370,3 +370,61 @@ binary and it STILL reproduces — a NEW class, none of A–E.
   interp emits no event; the jit emits a grouped `[2,2,2]`. DEFERRED —
   needs its own triage (fold-in-guard reactivity, or an array::iter
   fire-count/streaming-timing question). Parked under `aug28a/`.
+
+## The aug28b round (2026-08-29) — 5 divergences, 3 classes, all fixed
+
+Campaign aug28b (hz0/aieka/katana/ryouko/mazikeen/washu-chan on the
+aug27a-fixed binary, f3e5543c) pulled ~1 day in: 5 divergences — aieka 3,
+hz0 1, ryouko 1 (aieka/000002 ≡ ryouko/000000, one class two boxes).
+katana/mazikeen/washu-chan 0. Triaged 2026-08-29; three classes, all
+well-typed under `--check` (genuine adjudications), all fixed same day.
+
+- **Class 1 — `tail-select-ride-defuse-aug2026`** (hz0/000000,
+  aieka/000001; fixed ecdf127f): THE UNIFIED RIDE in a tail-loop spine.
+  `select select n {m if m <= 0 => 1 % m, m => f(m)} {0 => acc, _ =>
+  ap(f, n-1, acc)}` — the spine holds its `_` selection across n=3,2,1,
+  so at n=0 (`1 % 0` bottoms) the bottom scrutinee RUNS the held arm (the
+  recursive jump) and the loop continues to n=-1, where `1 % -1 = 0`
+  matches the base and emits acc=0. The interp does this (`[0]`); the
+  kernel tail spine keeps no per-iteration selection and bottomed out
+  (`[]`). Eric ruled (2026-08-29) the interp is right — the unified ride
+  applies uniformly, "crazy in, crazy out," no special case. A scrutinee
+  only rides if it can bottom MID-loop: a bare formal rides its previous
+  value (never bottoms), a loop-invariant capture is constant (bottoms
+  from iteration 0 with no held selection, or never). So a scrutinee
+  built solely from Ref/Const/comparison/boolean never rides and stays
+  fused (the 120-185x family selects on the loop variable — untouched);
+  anything else de-fuses to the node-walk (`emit_select_node_tail` +
+  `scrut_cannot_ride`). Open follow-on: Eric ruled a tail loop should
+  RESET its selection per dispatch on the interp too (the cross-dispatch
+  ride sub-case). With the de-fuse, ride-capable selects run node-walk in
+  both modes, so this is NOT needed for interp/jit agreement, only for
+  semantic purity — and a broad reset (clearing every select's selection
+  on a framed re-trigger) REGRESSED `kernel-frame-init-const-fire`, whose
+  value-position nested select `select (v2 /? 42) {..}` became a spurious
+  re-selection fire where it must stay quiet (stale scrutinee). A correct
+  reset must target only ride-capable/spine selects; deferred pending a
+  narrower design.
+- **Class 2 — `skipped-fn-arg-effect-aug2026`** (aieka/000000; fixed
+  7c1e7e14): a `<-` spinner inside a DISCARDED fn-typed argument was
+  dropped by the JIT. `f = |a, b| true` ignores `a`, whose value is
+  Fn-typed (`str::len`), so `a` is a loop-invariant fn formal that leaves
+  the kernel sig (skipped_args); `emit_lambda_call_node` skipped emitting
+  the arg node on the premise it is pure. When the arg is a block with a
+  connect, skipping it dropped the effect: node-walk spun (capped) where
+  the kernel quiesced. An effectful skipped arg now de-fuses (effects
+  de-fuse, never silently skip); pure ones still fuse.
+- **Class 3 — `framed-arg-stale-formal-aug2026`** (aieka/000002 ≡
+  ryouko/000000; fixed 15d386a6): a NODE-WALK bug (the JIT was right). A
+  tail-loop fold re-triggered by a fresh seed folded to 100 instead of 55
+  in epoch 1: the loop-control `i` decremented right, but the `i` passed
+  to the callback `f(acc, i)` was the stale entry-formal 10 every step.
+  Inside a frame the store holds the pre-frame value (R3), a stale DynCall
+  arg was never published to the cycle-scoped overlay, and the callee
+  reads the distinct arg id (not the formal the overlay read-through
+  covers). A stale non-bottom arg in a frame now publishes its current
+  frame-overlay value onto the arg id. The aug13i stale-entry-formal
+  shape, through an fn-formal call.
+
+Gates after all three: regress 445/0, selfcheck OK, graphix-tests 2276/0,
+FuseExpect audit 0 mismatches. aug28a still open (unrelated).
