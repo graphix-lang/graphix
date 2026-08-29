@@ -235,19 +235,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             smallvec::SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx, event);
         let bottomed = arg.tag.is_tainted();
-        // THE UNIFIED RIDE (Eric's ruling 2026-08-28): a bottomed
-        // scrutinee with a HELD selection holds the arm INDEX and bottoms
-        // everything the scrutinee feeds — no cached value, no re-match,
-        // no flip, uniform across scalar/non-scalar and guarded/guard-less
-        // (the value ride is gone). The held arm's binds are POISONED to a
-        // bottom (below, before the guard tick, so the guard re-evaluates
-        // against them too), so an arm body or guard reading a bind bottoms
-        // while one firing on its own deps still fires. Only the held arm's
-        // guard is consulted; a no-selection bottom (the aug04b phantom
-        // rule) bottoms the whole select.
-        let ride = bottomed && selected.get().is_some();
-        // A bottom scrutinee has no value view to bind from — the poison
-        // provides the (bottom) binds; nothing binds from `arg.value`.
+        // BOTTOM SCRUTINEE ⇒ BOTTOM SELECT (Eric's ruling 2026-08-29):
+        // full stop, no ride. A select whose scrutinee bottoms produces
+        // nothing this cycle even if the currently-selected arm is an
+        // active async producer — the user writes `hold` on the scrutinee
+        // to persist the last value if they care. The retained selection
+        // still routes the taken arm's OWN fires on a stale-PRESENT
+        // scrutinee (the `ChainOut::Quiet` path below); that is organic
+        // own-firing, not the deleted bottom ride. The old unified ride
+        // (hold the arm index, re-run it over ⊥-poisoned binds, consult
+        // the held guard) is gone.
+        // A bottom scrutinee has no value view to bind from.
         let arg_up = !bottomed;
         // Arm binds carry the SCRUTINEE's production tag (the kernel's
         // arm-bind disc carry): a stale scrutinee production — a framed
@@ -264,27 +262,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     arms[$i].0.bind_event(ctx, event, arg, $tag);
                 }
             }};
-        }
-        // Poison the held arm's binds BEFORE the guard tick, so the held
-        // guard re-evaluates against the bottom binds (the interp twin of
-        // the kernel's tainted-scrutinee dispatch). The tag inherits the
-        // scrutinee's fresh/stale: a FRESH-bottom (fired-and-bottomed)
-        // scrutinee makes a fresh bottom bind, so an arm's interior `$`/`~`
-        // PROPAGATES it; a STANDING bottom makes it stale, so `$` rides.
-        if ride {
-            if let Some(i) = selected.get() {
-                let btag = if arg_prod.triggers() {
-                    Tag::FRESH_BOTTOM
-                } else {
-                    Tag::STALE_BOTTOM
-                };
-                arms[i].0.structure_predicate.ids(&mut |id| {
-                    event.variables.insert(id, TagValue::tagged(Value::Null, btag));
-                    if ctx.frame_depth == 0 {
-                        ctx.rt.store_insert(id, TagValue::tagged(Value::Null, btag));
-                    }
-                });
-            }
         }
         // The pattern/guard tick runs even for a tainted scrutinee
         // (binds skipped — a placeholder can't be bound): guards are
@@ -363,17 +340,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
             (sound, anyfire, cbot)
         };
-        // A NO-HISTORY bottomed scrutinee can't be matched (nothing to
-        // ride — the aug04b phantom rule): the whole select bottoms. A
-        // triggering delivery is a fresh bottom; a standing one rides
-        // the resident.
-        // A NO-HISTORY bottom select CONSULTS no guards (there is no
-        // value view to match against), so their productions are not
-        // consumed — the settled bottom stays quiet on unrelated
-        // guard fires (the aug13l select-miss-standing-fresh ruling;
-        // re-minting fresh here clobbered a same-cycle ref-write
-        // every epoch). Only the scrutinee delivery is consumed.
-        if bottomed && !ride {
+        // A bottom scrutinee bottoms the select, full stop (no ride).
+        // The guards ticked above (their productions are not CONSUMED — a
+        // bottom select consults no guards, so it stays quiet on
+        // unrelated guard fires; the aug13l select-miss-standing-fresh
+        // ruling). A triggering delivery is a fresh bottom; a standing
+        // one rides the resident (the value channel is unchanged — this
+        // is not the deleted selection ride).
+        if bottomed {
             return if arg_prod.triggers() {
                 resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             } else {
@@ -415,27 +389,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // selection stays VALUE-DRIVEN (R1; see the once_tainted
         // note below).
         let arg_trig =
-            !bottomed && (arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up));
+            arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up);
         enum ChainOut {
             Quiet,
             Taken(Option<usize>),
             Undet,
         }
-        // THE UNIFIED RIDE: a bottom scrutinee never RE-MATCHES (no value
-        // to match against). The selection is held; consult ONLY the held
-        // arm's guard, re-run this cycle over the poisoned (bottom) binds.
-        // Sound-true / no guard rides the held arm on its own deps; a
-        // bottom (undecidable) or sound-false verdict bottoms the select,
-        // selection state holds. No flip.
-        let chain = if bottomed {
-            use super::pattern::HeldGuard;
-            let i = selected.get().expect("ride implies a held selection");
-            *consulted = if arms[i].0.guard.is_some() && i < 64 { 1 << i } else { 0 };
-            match arms[i].0.held_guard() {
-                HeldGuard::Take => ChainOut::Taken(Some(i)),
-                HeldGuard::Bottom | HeldGuard::False => ChainOut::Undet,
-            }
-        } else if !arg_trig && !pat_up {
+        // A non-bottom scrutinee (bottom returned above): a quiet cycle
+        // (no scrutinee trigger, no guard fire) rides the retained
+        // selection through `ChainOut::Quiet`; otherwise re-match.
+        let chain = if !arg_trig && !pat_up {
             ChainOut::Quiet
         } else {
             match arg.value.as_ref() {
@@ -480,9 +443,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
         };
         let (own_sound, own_anyfire, consulted_bottom) = scoped(*consulted);
-        // The scrutinee axis (class 5): a fresh-bottom delivery under
-        // the ride is a consumed bottom fire.
-        let own_bottom = bottomed && arg_prod.triggers();
         // Fold a tail-spine select's SOUND own-fires into the
         // dispatch-wide accumulator (the kernel's `tail_scrut_stale`,
         // applied at every `emit_kernel_return`) — the only channel
@@ -511,15 +471,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         None
                     }
                 } else if t.is_bottom() {
-                    if t.triggers() || own_sound || own_bottom {
+                    if t.triggers() || own_sound {
                         Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     } else {
                         None
                     }
                 } else if t.is_fired() || own_sound {
                     $v.map(|v| TagValue::tagged(v, Tag::FIRED))
-                } else if own_bottom {
-                    Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 } else {
                     $v.map(|v| TagValue::tagged(v, Tag::STALE))
                 }
@@ -585,12 +543,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     // (aug03 reactive/000000). The observable firing
                     // still comes from the emission rules alone. The
                     // in-frame tail spine keeps the scrutinee's honest
-                    // tag (per-jump re-selections are loop plumbing),
-                    // and a RIDE wake binds the value channel. The old
-                    // FIRED external seeding is gone: the arm's refs
-                    // read the store under the forced init view (R2) —
-                    // wake WITHOUT refill.
-                    let wake_tag = if tail || ride {
+                    // tag (per-jump re-selections are loop plumbing).
+                    // The old FIRED external seeding is gone: the arm's
+                    // refs read the store under the forced init view (R2)
+                    // — wake WITHOUT refill.
+                    let wake_tag = if tail {
                         bind_tag
                     } else if arg_prod.triggers() {
                         // a genuinely-triggering scrutinee delivery
@@ -641,12 +598,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         };
         match out {
             Some(tv) => resident.set(tv),
-            // A consumed fresh bottom with nothing else to emit
-            // bottoms the cycle (bottom in, bottom out) — e.g. a
-            // deselected select receiving a fresh-bottom delivery.
-            None if own_bottom => {
-                resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            }
             // quiet / deselected-to-nothing: the select's value
             // channel re-surfaces its last emission
             None => resident.ride(),

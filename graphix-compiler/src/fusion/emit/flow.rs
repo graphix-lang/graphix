@@ -352,42 +352,6 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
     }
 }
 
-/// Can a tail-loop spine select's scrutinee ever RIDE — bottom on some
-/// loop iterations after a prior iteration selected an arm? THE UNIFIED
-/// RIDE (Eric 2026-08-29, "crazy in, crazy out") holds a select's
-/// selection across a tail loop's iterations and, on a bottom scrutinee,
-/// RUNS the held arm — for a spine select that arm is the recursive jump,
-/// so the loop continues past the bottoming iteration. The interp does
-/// this; the kernel tail spine keeps no per-iteration selection, so it
-/// can't. A ride needs a scrutinee that is non-bottom on some iterations
-/// and bottom on others: a bare formal RIDES its previous value (never
-/// bottoms — lambda.rs None-arg rebind), and a loop-invariant capture is
-/// constant (bottom from iteration 0, with no held selection to ride, or
-/// never). So only a scrutinee carrying a bottom-producing op that VARIES
-/// with the loop rides. A scrutinee built solely from Ref / Constant /
-/// comparison / boolean never rides and stays fused; anything else
-/// de-fuses so the node-walk runs the ride (aug28b hz0 divergence_000000,
-/// aieka divergence_000001).
-fn scrut_cannot_ride<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let mut ok = true;
-    crate::fusion::for_each_node(node, &mut |n| match n.view() {
-        NodeView::Ref(_)
-        | NodeView::Constant(_)
-        | NodeView::ExplicitParens(_)
-        | NodeView::Eq(_)
-        | NodeView::Ne(_)
-        | NodeView::Lt(_)
-        | NodeView::Lte(_)
-        | NodeView::Gt(_)
-        | NodeView::Gte(_)
-        | NodeView::And(_)
-        | NodeView::Or(_)
-        | NodeView::Not(_) => {}
-        _ => ok = false,
-    });
-    ok
-}
-
 /// Tail-position select: the shared pattern chain with arms that
 /// TERMINATE (return or self tail-call jump) instead of widening to a
 /// merge block.
@@ -420,51 +384,15 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
              no selection memory in a recursive body"
         ));
     }
-    // A spine select whose scrutinee can bottom mid-loop would need the
-    // per-iteration selection ride the tail spine doesn't keep — de-fuse
-    // (see `scrut_cannot_ride`). Only reachable inside a loop; a
-    // non-loop tail select routed through the value emitter above.
-    if cx.ctx.tail.loop_head.is_some() && !scrut_cannot_ride(&sel.arg.node) {
-        return Err(anyhow!(
-            "emit_clif: tail-loop select scrutinee can bottom mid-loop — \
-             the node-walk runs the selection ride"
-        ));
-    }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
-    // THE SCRUTINEE RIDE (Eric's ruling 2026-08-07) belongs here too.
-    // It had only ever been wired into the value-position emitter, and
-    // a recursive function's body IS a tail-position select — so every
-    // such body poisoned itself on a bottomed scrutinee where the
-    // interp's Select rode its cached one and kept the standing
-    // selection (fuzz/open/01: `8 - f(n % -1)` with the modulo
-    // bottoming rode 0 in the interp and bottomed here).
-    //
-    // Load-bearing that this comes AFTER per-activation blocks exist:
-    // riding against a cache SHARED by every activation re-selects the
-    // caller's own arm and recurses to the depth limit. Each
-    // activation rides its own history or none.
-    // ...except in a TAIL-LOOP body, where the interp has no history
-    // to ride either: its `reset_replay` runs per framed pass, so each
-    // iteration starts with an empty scrutinee cache. Passing through
-    // is the exact match, and it is what keeps the rebind-and-jump
-    // kernels (the 120-185x family) fusing — the storage claim is
-    // refused there for the same reason the interp clears (one block
-    // cannot sever iteration i−1 from iteration i, the jul10h rule).
-    // Capture the delivery's fresh-bottomness BEFORE the (possible)
-    // ride masks it to a quiet stale (THE BOTTOM-OUT RULE,
-    // design/activation_state.md). In the loop-head case a tainted
-    // scrutinee early-returns below and never reaches the arms, so
-    // the bit is dynamically false on every arms path there.
+    // Capture the delivery's fresh-bottomness for the organic-firing
+    // fold below (a tainted scrutinee early-returns bottom before the
+    // arms, so the bit is dynamically false on every arms path).
     let scrut_bfired = {
         let d = scrut.disc();
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
-    };
-    let scrut = if cx.ctx.tail.loop_head.is_some() {
-        scrut
-    } else {
-        super::select::emit_scrut_ride(cx, scrut)?
     };
     // Fold this select's own fires into the kernel's tail-firing
     // accumulator (`LowerCtx::tail_scrut_stale`, applied at every

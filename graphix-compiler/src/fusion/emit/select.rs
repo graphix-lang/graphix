@@ -219,23 +219,6 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     ids
 }
 
-/// THE UNIFIED RIDE (Eric's ruling 2026-08-28, superseding THE
-/// SCRUTINEE RIDE's 2026-08-07 value cache and THE SELECTION RIDE's
-/// 2026-08-27 scalar-only dispatch): the scrutinee value is NEVER
-/// cached. A bottom scrutinee flows through TAINTED; the SELECTION
-/// survives via the `SelWord` (the stored arm index), and the
-/// tainted-scrutinee DISPATCH in `emit_select_arms` jumps straight to
-/// the held arm — no pattern re-match — with its binds bottomed (THE
-/// READ BLOCK threads their clean-edge values as block params, zeroed on
-/// the dispatch edge; the bind disc inherits the tainted scrutinee's, so
-/// the value is never observed). This is a pure pass-through — the ride
-/// is entirely in the dispatch.
-pub(super) fn emit_scrut_ride(
-    _cx: &mut BodyCx,
-    scrut: SelectScrut,
-) -> Result<SelectScrut> {
-    Ok(scrut)
-}
 
 pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
@@ -272,42 +255,16 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
     };
-    // THE UNIFIED RIDE (Eric's ruling 2026-08-28): a bottom scrutinee
-    // holds the arm INDEX and bottoms everything it feeds — no value
-    // cache. `emit_scrut_ride` is a pure pass-through and the held arm is
-    // reached by a stored-index DISPATCH. Every arm's binds are read on
-    // the clean-match edge (THE READ BLOCK in `emit_select_arms`, where
-    // the pattern's interior SSA all dominates) and threaded into the
-    // shared arm block as params; the dispatch edge passes a zero
-    // placeholder per bind value, and the bind's disc — derived from the
-    // scrutinee disc, which the top branch proved tainted on that edge —
-    // bottoms it regardless. So a SCALAR, value-shaped (NULLABLE /
-    // VARIANT), and COMPOSITE scrutinee (including NESTED patterns, whose
-    // leaves read a child interior pointer that can't cross the dispatch
-    // edge otherwise) all lower fully, guarded or not — the guard
-    // re-evaluates over the tainted binds on the dispatch path (a
-    // bind-reading guard bottoms via the prologue's `gbot`; a capture-only
-    // guard's false routes to bottom, not to the next arm). A bare VALUE
-    // has no known layout, so it DE-FUSES — the node-walk runs the
-    // identical unified ride (`Select::update`), so this loses fusion,
-    // never correctness.
-    let dispatch_ok = matches!(
-        scrut_kind,
-        AbiKind::Scalar(_)
-            | AbiKind::Nullable
-            | AbiKind::Variant
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-    );
-    if !dispatch_ok {
-        return Err(anyhow!(
-            "emit_clif: the unified select ride is not lowered for a bare \
-             {scrut_kind:?} scrutinee (no known layout for the held arm's \
-             binds) — de-fuse (the node-walk runs the same ride)"
-        ));
-    }
-    let scrut = emit_scrut_ride(cx, scrut)?;
+    // BOTTOM SCRUTINEE ⇒ BOTTOM SELECT (Eric's ruling 2026-08-29): a
+    // tainted scrutinee makes no selection — the match chain's per-arm
+    // disc re-check routes it to the miss trap, which bottoms to the
+    // merge (`emit_select_miss_value`). No ride, no held-arm dispatch —
+    // so no dispatch word and no scrutinee-shape gate (a bare VALUE
+    // scrutinee now fuses; it just bottoms on taint like every other
+    // shape). The retained selection (`sel_state` below) survives only
+    // for wake-init state (lifted targets / interior call sites), never
+    // for a bottom ride. The user writes `hold` on the scrutinee to
+    // persist the last value across a bottom cycle.
     // Every merge shape phis (disc, payload) — the scrutinee's taint
     // rides the disc into every arm result, so there's no separate
     // validity phi and no possibly-bottom-scrutinee gate (#219).
@@ -356,13 +313,11 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
             _ => {}
         });
     }
-    // THE UNIFIED RIDE dispatches to the held arm by stored index on a
-    // bottom scrutinee. Guarded / non-scalar selects already de-fused
-    // above, so this is always a guard-less scalar select: the arm's bind
-    // IS the scrutinee value carried with its taint, so a bottom scrutinee
-    // makes it a bottom bind with no read. The word holds the index.
-    let ride_dispatch = true;
-    let sel_state = if has_arm_lift || has_arm_sites || ride_dispatch {
+    // Selection memory (wake-init only — the bottom ride is deleted):
+    // claimed only for arms with a lifted connect target or interior
+    // call sites, so their per-instance/site caches catch up under the
+    // forced init view on a re-selection. A plain select claims nothing.
+    let sel_state = if has_arm_lift || has_arm_sites {
         let claimed = match cx.claim_state_word() {
             Some(off) => {
                 let sp = cx.state_ptr();
@@ -389,10 +344,8 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                     "emit_clif: no selection-word memory for a select ({}) — de-fuse",
                     if has_arm_lift {
                         "a lifted connect target (requires the per-instance word)"
-                    } else if has_arm_sites {
-                        "interior call sites"
                     } else {
-                        "the selection-ride index dispatch"
+                        "interior call sites"
                     }
                 ));
             }
@@ -400,9 +353,9 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     } else {
         None
     };
-    // The selection word doubles as the dispatch word ONLY for a scalar
-    // scrutinee's ride; otherwise it carries just interior wake-init state.
-    let dispatch = if ride_dispatch { sel_state } else { None };
+    // No ride: the bottom-scrutinee dispatch is deleted, so no dispatch
+    // word. `sel_state` carries only interior wake-init state.
+    let dispatch: Option<SelWord> = None;
     let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
         cx,
