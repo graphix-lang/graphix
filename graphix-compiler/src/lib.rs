@@ -1792,6 +1792,18 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// was a genuine init (`const_stale_gate`). Only meaningful when
     /// `frame_depth > 0`.
     pub(crate) frame_init: bool,
+    /// Set true ONLY while a `Select::update` sleeps an arm it is
+    /// actively DESELECTING — a recursion shrinking, i.e. the loop
+    /// reached a shallower depth this cycle. A recursive-edge
+    /// `CallSite::sleep` under this flag DELETES its callee instead of
+    /// retaining it, so a depth no longer reached is reclaimed and
+    /// re-reaching it is a FRESH activation: the collection-slot rule
+    /// (MapQ's delete-on-shrink) applied to recursion. Cleared crossing
+    /// into any callee body (`GXLambda::sleep`) so a whole-recursion
+    /// PAUSE (an outer arm deselecting the entire call) and an external
+    /// call sitting in the deselected arm both RETAIN (sleep-is-pause).
+    /// Off everywhere else.
+    pub(crate) shrink_unwind: bool,
     /// Accumulates the tail-spine selects' scrutinee firing across one
     /// tail-loop dispatch — the interp twin of the kernel's
     /// `tail_scrut_stale` loop accumulator, which every
@@ -1881,6 +1893,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             diagnostics: Vec::new(),
             frame_depth: 0,
             frame_init: false,
+            shrink_unwind: false,
             tail_scrut_fired: false,
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),

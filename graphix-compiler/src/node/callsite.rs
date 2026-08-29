@@ -2018,7 +2018,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some(n) = &mut self.lowered {
             return n.sleep(ctx);
         }
-        if let Some(f) = self.callee.apply_mut() {
+        // A recursive edge whose ARM is being actively deselected (the
+        // recursion reached a shallower depth this cycle) is a SHRUNK
+        // slot: delete the deeper activation rather than retain it, so
+        // re-reaching this depth binds a FRESH one (the collection-slot
+        // rule, `ctx.shrink_unwind`). The delete cascades down the
+        // retained chain via `GXLambda::delete`. A whole-recursion PAUSE
+        // clears the flag (see `GXLambda::sleep`), so this only fires on
+        // a genuine shrink.
+        if ctx.shrink_unwind && self.is_recursive_edge() {
+            if let Some(mut f) = self.callee.take_apply() {
+                f.delete(ctx)
+            }
+        } else if let Some(f) = self.callee.apply_mut() {
             f.sleep(ctx)
         }
         self.fnode.sleep(ctx);

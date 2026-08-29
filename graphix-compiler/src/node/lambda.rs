@@ -823,7 +823,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        // Crossing into a callee body ends the shrink scope: a recursion
+        // shrinking one level does not shrink an external call it made,
+        // and a whole-recursion pause is not a shrink at all (both
+        // retain — sleep-is-pause). `Select::update` re-arms the flag for
+        // each arm it actively deselects.
+        let saved = ctx.shrink_unwind;
+        ctx.shrink_unwind = false;
         self.body.sleep(ctx);
+        ctx.shrink_unwind = saved;
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {

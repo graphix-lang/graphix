@@ -205,6 +205,19 @@ fn range_covered(k: usize, exact: bool, exacts: &[usize], rest: Option<usize>) -
     }
 }
 
+/// Sleep an arm the select is ACTIVELY deselecting (a re-match during
+/// `update`, never a whole-select pause via `sleep`). Under
+/// `shrink_unwind` a recursive-edge callee inside the arm is DELETED
+/// rather than retained (`CallSite::sleep`): a recursion that reached a
+/// shallower depth this cycle sheds the deeper activations, and
+/// re-reaching them binds fresh — MapQ's delete-on-shrink for recursion.
+fn deselect_sleep<R: Rt, E: UserEvent>(arm: &mut Node<R, E>, ctx: &mut ExecCtx<R, E>) {
+    let saved = ctx.shrink_unwind;
+    ctx.shrink_unwind = true;
+    arm.sleep(ctx);
+    ctx.shrink_unwind = saved;
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if !self.shallow_sealed {
@@ -530,7 +543,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         );
                     }
                     if let Some(j) = selected.get() {
-                        arms[j].1.sleep(ctx);
+                        deselect_sleep(&mut arms[j].1, ctx);
                     }
                     selected.set(Some(i));
                     // The wake bind is part of the arm's INIT VIEW: on
@@ -589,7 +602,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     emit!(t, v)
                 }
                 (None, Some(j)) => {
-                    arms[j].1.sleep(ctx);
+                    deselect_sleep(&mut arms[j].1, ctx);
                     selected.set(None);
                     None
                 }

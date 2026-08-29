@@ -278,6 +278,32 @@ async fn connect_in_discarded_fn_arg_still_runs() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recursion_shrink_deletes_unreached_activations() -> Result<()> {
+    // A recursion's activations follow MapQ's slot rule: a depth NOT
+    // reached this cycle is deleted immediately, and re-reaching it is a
+    // FRESH activation — not a resume of its pre-dip state (the
+    // collection-slot rule for recursion, `ctx.shrink_unwind`). The depth
+    // self-drives 3,1,3,3,3: at step 1 depths 2,3 are unwound, at step 2
+    // they are re-reached. Each depth's `hits` counter is per-activation,
+    // so the re-reached depths COUNT FROM ZERO again. Under the old
+    // sleep-and-retain behavior they resumed their pre-dip counts and this
+    // stream was larger; the fix makes both engines agree on the fresh
+    // stream. (The recursion carries per-depth `<-` state, so it de-fuses
+    // — both modes run the node-walk and must match.)
+    assert_stream(
+        "{ let step = 0; \
+           step <- select step { s if s < 5 => s + 1, _ => never() }; \
+           let n = select step { 0 => 3, 1 => 1, _ => 3 }; \
+           let rec f = |k: i64| -> i64 { \
+             let hits = 0; hits <- k ~ hits + 1; \
+             select k { 0 => hits, _ => hits + f(k - 1) } }; \
+           f(n) }",
+        &[0, 2, 4, 8, 12, 16],
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn region_over_64_inputs_agrees() -> Result<()> {
     // 70 self-feeding counters summed: every cycle each +1, so the stream
     // steps by 70. Pin the differential (node-walk == jit) over a few cycles.
