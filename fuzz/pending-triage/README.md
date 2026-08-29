@@ -274,7 +274,7 @@ Same day, from the typemorph lane rather than a campaign: the
 block-wrap μ class (8 corpus flips) closed by making the μ-collapse
 look through binding cells — see CLAUDE.md's `let rec` bullet.
 
-## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 1 fixed, 1 non-bug, 3 deferred
+## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 2 fixed, 1 non-bug, 2 deferred
 
 Campaign aug27a (hz0/aieka/katana/ryouko/mazikeen on the pre-unified-ride
 binary) pulled at the aug28a redeploy — the redeploy that put THE UNIFIED
@@ -306,18 +306,24 @@ Raw witnesses parked on disk under `aug27a/` (untracked).
   exclusion. Follow-up: confirm the exclusion covers `array::group` over
   a `sys::` stream.
 
-Three DEFERRED — three DISTINCT deeper bugs, none a fusion wire issue
+- **aieka/000000 — FIXED (82e4fbfa)**: NOT a typechecker static/dynamic
+  ruling after all — a soundness bug in `use`. `let tag = use array::*`
+  put a `use` in VALUE position, which compiled to a `Bottom`-typed `Nop`
+  that unified with any type (I could bind one variable as both `i64` and
+  `string`). The `tag <- e.0` connect routed in the error-payload struct
+  at runtime while the downstream `select tag {[init.., x] => x * 100}`
+  narrowed the unconstrained type to `Array<i64>`; the fused arm-body
+  kernel read a struct where it compiled a scalar (interp garbage-array,
+  jit ABI-bottom). Fix (Eric's call, reject-at-typecheck): `use` and
+  static `mod` are declarations, not expressions — legal only in
+  statement position. A `never()`-typed twin already rejected; only the
+  `use`-as-value form stayed unconstrained. Pins: graphix-tests
+  `use_in_value_position_is_compile_error`,
+  `use_value_soundness_witness_rejected`.
+
+Two DEFERRED — two DISTINCT deeper bugs, neither a fusion wire issue
 (each re-verified 2026-08-28):
 
-- **aieka/000000 — typechecker static/dynamic soundness** (aug06f /
-  union-leaf family): `select a {[init.., x] => x * i64:100, _ => 0}`
-  where `a`'s runtime element is an error-array but the arm-body `x * 100`
-  fuses with `x` typed `Scalar(I64)`. The JIT DETECTS the mismatch
-  (`kernel param x doesn't match the compiled Scalar(I64) slot`) and
-  bottoms to `[]`; the interp computes a defined-but-garbage array. The
-  static element type is narrower than the value the `catch`/`select tag`
-  chain actually produces — a typechecker soundness hole, not a codegen
-  bug. Needs a ruling.
 - **katana/000000 — labeled-callback-param + inference interaction**
   (aug22c class D residue): the full minimized `{let x = f64:0.; {let a =
   array::init(3, |#foo: i64 = 42, x| x); array::fold(a, 0, |acc, x| x)}}`
