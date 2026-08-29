@@ -274,7 +274,7 @@ Same day, from the typemorph lane rather than a campaign: the
 block-wrap μ class (8 corpus flips) closed by making the μ-collapse
 look through binding cells — see CLAUDE.md's `let rec` bullet.
 
-## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 2 fixed, 1 non-bug, 2 deferred
+## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 3 fixed, 1 non-bug, 1 deferred
 
 Campaign aug27a (hz0/aieka/katana/ryouko/mazikeen on the pre-unified-ride
 binary) pulled at the aug28a redeploy — the redeploy that put THE UNIFIED
@@ -321,17 +321,24 @@ Raw witnesses parked on disk under `aug27a/` (untracked).
   `use_in_value_position_is_compile_error`,
   `use_value_soundness_witness_rejected`.
 
-Two DEFERRED — two DISTINCT deeper bugs, neither a fusion wire issue
-(each re-verified 2026-08-28):
-
-- **katana/000000 — labeled-callback-param + inference interaction**
-  (aug22c class D residue): the full minimized `{let x = f64:0.; {let a =
+- **katana/000000 — FIXED (d4f046d8)**: NOT an inference interaction —
+  a lambda-instantiation truncation. `{let x = f64:0.; {let a =
   array::init(3, |#foo: i64 = 42, x| x); array::fold(a, 0, |acc, x| x)}}`
-  gives interp `f64:0.` vs jit `i64:0` — BOTH wrong (should be 2), so
-  NOT a fusion bug. Isolated, `array::init` with a labeled-default
-  callback AGREES on both engines, and the fold-with-outer-`x`-shadow
-  AGREES; only the COMBINATION diverges. A type-inference interaction
-  where the outer `x` leaks into the fold result. Needs investigation.
+  gave interp `f64:0.` / jit `i64:0` (both wrong, should be 2). A
+  collection callback is instantiated against the HOF's DECLARED type
+  (`fn(x: 'a) -> 'b`, 1 positional param); a user lambda with a labeled
+  default before the positional (`|#foo = 42, x|`) has 2 patterns, and
+  `new_with_body` zipped them against the 1-param type and SILENTLY
+  truncated — keeping `foo` (defaulted) and dropping the positional `x`.
+  The element was never delivered; the body's `x` fell through to the
+  outer `let x`. The general user-HOF path was already correct (full
+  arity); only the collection's synthetic dispatch hit the narrow type.
+  Fix: a narrow instance signature bails so the Dynamic dispatch retries
+  with the full `def_typ`. Pins: graphix-tests
+  `labeled_callback_{outer_shadow,default_used}`.
+
+One DEFERRED — a firing-semantics adjudication (re-verified 2026-08-28):
+
 - **ryouko/000000 — non-firing builtin value as List data**: `list::find(
   Cons(0, Cons(3, once)), |x| true)` — a bare `once` (a builtin function
   value) embedded in a Cons TAIL position; interp emits no event, jit
