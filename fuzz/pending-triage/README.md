@@ -379,8 +379,15 @@ hz0 1, ryouko 1 (aieka/000002 ≡ ryouko/000000, one class two boxes).
 katana/mazikeen/washu-chan 0. Triaged 2026-08-29; three classes, all
 well-typed under `--check` (genuine adjudications), all fixed same day.
 
-- **Class 1 — `tail-select-ride-defuse-aug2026`** (hz0/000000,
-  aieka/000001; fixed ecdf127f): THE UNIFIED RIDE in a tail-loop spine.
+- **Class 1 — SUPERSEDED by the bottom-ride deletion** (hz0/000000,
+  aieka/000001; de-fuse ecdf127f then REVERTED). The de-fuse below was the
+  right fix under the unified ride; Eric then reconsidered the ride itself
+  (2026-08-29) and DELETED it (`6991e2ad`/`7a564fa9`): a bottom scrutinee
+  now bottoms the select on both engines, so class-1 bottoms out at the
+  base case (both `[]`) and the tail loop fuses — no de-fuse needed. Pins
+  renamed to `findings/tail-select-bottom-out-aug2026`. The original
+  triage, kept for the record:
+  THE UNIFIED RIDE in a tail-loop spine.
   `select select n {m if m <= 0 => 1 % m, m => f(m)} {0 => acc, _ =>
   ap(f, n-1, acc)}` — the spine holds its `_` selection across n=3,2,1,
   so at n=0 (`1 % 0` bottoms) the bottom scrutinee RUNS the held arm (the
