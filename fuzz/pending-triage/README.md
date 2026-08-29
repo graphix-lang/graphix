@@ -274,37 +274,60 @@ Same day, from the typemorph lane rather than a campaign: the
 block-wrap μ class (8 corpus flips) closed by making the μ-collapse
 look through binding cells — see CLAUDE.md's `let rec` bullet.
 
-## The aug27a round (2026-08-28) — 6 divergences, 5 pre-existing classes, DEFERRED
+## The aug27a round (2026-08-28) — 6 divergences, 4 classes; 1 fixed, 1 non-bug, 3 deferred
 
 Campaign aug27a (hz0/aieka/katana/ryouko/mazikeen on the pre-unified-ride
 binary) pulled at the aug28a redeploy — the redeploy that put THE UNIFIED
 RIDE (select-on-bottom, 7d36a526) on the fleet. 6 divergences: hz0 3,
-aieka 1, katana 1, ryouko 1, mazikeen 0. Re-checked against 7d36a526.
-**None is the select-on-bottom class; none was introduced by the merge** —
-confirmed by re-check + fusion breakdown (the one slice-select case
-de-fuses, its divergence is upstream arm-body fusion, not the ride). One
-self-resolved async artifact + 5 real pre-existing classes, all mapping to
-known families; DEFERRED (this session's scope was select-on-bottom). Raw
-witnesses parked on disk under `aug27a/` (untracked).
+aieka 1, katana 1, ryouko 1, mazikeen 0. **None is the select-on-bottom
+class; none was introduced by the merge.** Triaged 2026-08-28 (all six
+well-typed under `--check`, so every one is a genuine adjudication).
+Raw witnesses parked on disk under `aug27a/` (untracked).
 
-- **hz0/000001 — async artifact, NOT a bug**: `array::group(sys::tcp::
+- **hz0/000000 + hz0/000002 — FIXED (9e3bae1a)**: ONE class, the
+  tail-rebind-by-name bug. A recursive kernel (`ap`/`fold_go`) forwards
+  an fn formal whose callback CAPTURES an outer binding spelled like one
+  of the callee's own formals — `|x| n` capturing an outer `n` beside
+  `ap`'s formal `n`; `|a, x| a + acc + 1` capturing an outer `acc`
+  beside `fold_go`'s formal `acc`. The capture threads in as an extra
+  kernel input with the SAME BASENAME as the formal, and
+  `emit_tail_rebind_jump` resolved its target slot with `lookup_name`
+  (back-to-front, so the later-bound CAPTURE won). The loop wrote each
+  iteration's update into the capture and the real formal never
+  advanced: an infinite loop when the formal is the loop bound
+  (hz0/000000, jit Timeout vs interp 0); a dropped accumulator otherwise
+  (hz0/000002, jit 0 vs interp 10). `fn_formal_two_callbacks` passed
+  because its callbacks don't capture. Fix: resolve the rebind slot
+  BindId-first (`KernelParam.bind_id` names the formal exactly). Pins:
+  graphix-tests `fn_formal_capture_collides_{bound,acc}`.
+- **hz0/000001 — NON-BUG (async artifact)**: `array::group(sys::tcp::
   listen(..))` — interp `[]` vs jit `[TcpListener]`. AGREES on re-check;
-  a `sys::tcp` quiescence race that should have been `sys::`-excluded from
-  divergence recording and slipped through. Worth checking the exclusion
-  covers `array::group` over a `sys::` stream.
-- **aieka/000000 — static/dynamic type mismatch** (aug06f / union-leaf
-  family): `select a {[init.., x] => x * i64:100, _ => 0}` where `a`'s
-  runtime slice element is an error-array but the arm-body `x * 100` fuses
-  with `x` typed `Scalar(I64)` (`kernel param x doesn't match the compiled
-  Scalar(I64) slot`). The select itself de-fuses (slice-suffix @/head); the
-  wrong answer is the arm-body kernel reading a wider-than-declared value.
-- **katana/000000 — labeled-callback-param** (aug22c class): `array::init(3,
-  |#foo: i64 = 42, x| x)` — interp `f64:0.` vs jit `i64:0` (a type
-  divergence); the labeled-default callback reaches a scalar-typed slot.
-- **hz0/000000 — recursive HOF fn-formal**: `ap(|x| n, 3, 0)` inside a
-  `let rec`; interp terminates, **jit spins (Timeout)**. fn-formal
-  forwarding family.
-- **hz0/000002 — recursive HOF closure-capture**: `fold_go(|a, x| a + acc +
-  1, 10, 0)` capturing the outer `acc`; interp 10 vs jit 0.
-- **ryouko/000000 — `list::find` with `once` in the tail**: `list::find(
-  Cons(0, Cons(3, once)), |x| true)`; interp emits no event, jit emits one.
+  a `sys::tcp` quiescence race that slipped past the `sys::` divergence
+  exclusion. Follow-up: confirm the exclusion covers `array::group` over
+  a `sys::` stream.
+
+Three DEFERRED — three DISTINCT deeper bugs, none a fusion wire issue
+(each re-verified 2026-08-28):
+
+- **aieka/000000 — typechecker static/dynamic soundness** (aug06f /
+  union-leaf family): `select a {[init.., x] => x * i64:100, _ => 0}`
+  where `a`'s runtime element is an error-array but the arm-body `x * 100`
+  fuses with `x` typed `Scalar(I64)`. The JIT DETECTS the mismatch
+  (`kernel param x doesn't match the compiled Scalar(I64) slot`) and
+  bottoms to `[]`; the interp computes a defined-but-garbage array. The
+  static element type is narrower than the value the `catch`/`select tag`
+  chain actually produces — a typechecker soundness hole, not a codegen
+  bug. Needs a ruling.
+- **katana/000000 — labeled-callback-param + inference interaction**
+  (aug22c class D residue): the full minimized `{let x = f64:0.; {let a =
+  array::init(3, |#foo: i64 = 42, x| x); array::fold(a, 0, |acc, x| x)}}`
+  gives interp `f64:0.` vs jit `i64:0` — BOTH wrong (should be 2), so
+  NOT a fusion bug. Isolated, `array::init` with a labeled-default
+  callback AGREES on both engines, and the fold-with-outer-`x`-shadow
+  AGREES; only the COMBINATION diverges. A type-inference interaction
+  where the outer `x` leaks into the fold result. Needs investigation.
+- **ryouko/000000 — non-firing builtin value as List data**: `list::find(
+  Cons(0, Cons(3, once)), |x| true)` — a bare `once` (a builtin function
+  value) embedded in a Cons TAIL position; interp emits no event, jit
+  emits one. A firing-semantics adjudication around a value that never
+  fires embedded in a data structure. Narrow.
