@@ -73,6 +73,20 @@ struct RefHist<H: IsoPoolable> {
     /// bumps there, invalidating prior verdicts conservatively.
     probe_pairs: LPooled<AHashMap<(NormKey, NormKey), (u64, bool)>>,
     probe_pins: LPooled<Vec<Type>>,
+    /// Content-identity → id for NON-Ref types with a content key
+    /// (`probe_key`: Variant/Fn/Array/Set/Struct/Map). The cycle memo
+    /// (`contains_int`'s Ref arm) keys `(t0_id, t1_id)`; collapsing every
+    /// non-Ref to `None` conflated DISTINCT finite sub-problems — a
+    /// recursive `List<'a> ⊇ Cons(i64, Cons(i64, Fn))` inserted the outer
+    /// pair, then the inner `List<'a> ⊇ Cons(i64, Fn)` (a smaller,
+    /// unrelated RHS) hit the same `(_, None)` key and was assumed part
+    /// of the cycle, so the deep `Fn`-vs-`List` mismatch was never
+    /// checked (aug27a ryouko). A finite RHS shrinks and terminates on
+    /// its own — it never needed the memo — so distinguishing these ids
+    /// only removes false hits; the genuinely non-shrinking RHS types
+    /// (Any, primitives, tvars) have no content key and keep `None`,
+    /// preserving their cycle break.
+    content_ids: LPooled<AHashMap<NormKey, usize>>,
     epoch: u64,
     next_id: usize,
 }
@@ -99,6 +113,7 @@ impl<H: IsoPoolable> RefHist<H> {
             expansions: LPooled::take(),
             probe_pairs: LPooled::take(),
             probe_pins: LPooled::take(),
+            content_ids: LPooled::take(),
             epoch: 0,
             next_id: 0,
         }
@@ -160,6 +175,14 @@ impl<H: IsoPoolable> RefHist<H> {
         env: &Env,
         raw: bool,
     ) -> Result<Type> {
+        // Only a Ref expands. A non-Ref now carries a content id (for the
+        // cycle memo — see `content_ids`), but its expansion is uncached
+        // `lookup_ref`, exactly as before content ids existed: routing it
+        // through the id-keyed cache below would hand back a
+        // `reset_tvars()` copy and sever the live inference cells.
+        if !matches!(t, Type::Ref(_)) {
+            return t.lookup_ref(env);
+        }
         let Some(id) = id else { return t.lookup_ref(env) };
         let closed = match t {
             Type::Ref(tr) => tr.params.iter().all(|p| p.tvar_free()),
@@ -215,7 +238,22 @@ impl<H: IsoPoolable> RefHist<H> {
                 entries.push((params.clone(), id));
                 Some(id)
             }
-            _ => None,
+            // A non-Ref with a CONTENT identity (Variant/Fn/Array/…) gets
+            // its own id so the cycle memo doesn't conflate distinct finite
+            // sub-problems (see `content_ids`). A content-less type
+            // (Any/primitive/tvar) stays `None` — it never has a stable
+            // shrinking structure, so collapsing it is both harmless and
+            // required for the Any-style cycle break.
+            _ => {
+                let k = Self::probe_key(t)?;
+                if let Some(&id) = self.content_ids.get(&k) {
+                    return Some(id);
+                }
+                let id = self.next_id;
+                self.next_id += 1;
+                self.content_ids.insert(k, id);
+                Some(id)
+            }
         }
     }
 }

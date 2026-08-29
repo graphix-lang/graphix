@@ -1,7 +1,7 @@
 // Tests for type system features: type checking, annotations, type variables
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
 const SIMPLE_TYPECHECK: &str = r#"
@@ -823,3 +823,49 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(4)));
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// A recursive type's inner occurrence must not escape the cycle memo.
+// Unifying an INFERRED `List<'a>` against a malformed value whose deep
+// tail is a Fn (`Cons(0, Cons(3, once))`, `once` a builtin Fn value)
+// used to be ACCEPTED at depth >= 2: `contains`' cycle memo keyed all
+// non-Ref right-hand sides to one `None`, so the outer
+// `List<'a> >= Cons(i64, Cons(i64, Fn))` and the inner
+// `List<'a> >= Cons(i64, Fn)` collided and the deep `Fn`-vs-`List`
+// mismatch was assumed part of the cycle and never checked (aug27a
+// ryouko — then interp/jit diverged over the unsound value). Depth 1
+// (`Cons(0, once)`) and an explicit `: List` annotation always rejected;
+// the inference path now agrees at every depth.
+#[tokio::test]
+async fn recursive_fn_tail_rejected_at_every_depth() {
+    for src in [
+        "{let l = `Cons(i64:0, once); list::find(l, |x| true)}",
+        "{let l = `Cons(i64:0, `Cons(i64:3, once)); list::find(l, |x| true)}",
+        "{let l = `Cons(i64:0, `Cons(i64:3, `Cons(i64:5, once))); list::find(l, |x| true)}",
+    ] {
+        let r = eval(src, crate::TEST_REGISTER).await;
+        assert!(
+            r.is_err(),
+            "a Fn in a recursive List tail must be rejected: {src} => {:?}",
+            r.map(|(v, _)| v)
+        );
+    }
+}
+
+// The same cycle memo must still ACCEPT a well-formed recursive value —
+// the fix only distinguishes finite sub-problems, it does not disable
+// the memo for genuine cycles (Any, and the Ref x Ref case).
+const RECURSIVE_LIST_FIND: &str = r#"
+{
+  type List = [`Cons(i64, List), `Nil];
+  let l: List = `Cons(i64:1, `Cons(i64:2, `Cons(i64:3, `Nil)));
+  select list::find(l, |x| x == i64:2) {
+    i64 as n => n,
+    _ => i64:-1
+  }
+}
+"#;
+
+run!(recursive_list_find, RECURSIVE_LIST_FIND, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(2))
+));
