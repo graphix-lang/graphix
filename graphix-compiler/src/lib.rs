@@ -2238,6 +2238,20 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             let c = c.clone();
             node::error::Catch::compile(ctx, flags, spec, scope, top_id, &c)
         }
+        // `mod`/`use` are declarations, legal as a top-level statement.
+        // The general `compile` rejects them (they are not expressions —
+        // see the `compile_kind` arms); compile them directly here, the
+        // statement-position twin of `compile_block_children`'s dispatch.
+        expr::ExprKind::Use { reexport, names } => {
+            let (reexport, names) = (*reexport, names.clone());
+            node::compile_use(ctx, flags, spec, scope, reexport, &names)
+                .map(|n| (n, scope.clone()))
+        }
+        expr::ExprKind::Module { name, value } => {
+            let (name, value) = (name.clone(), value.clone());
+            compiler::compile_module(ctx, flags, spec, scope, top_id, &name, &value)
+                .map(|n| (n, scope.clone()))
+        }
         _ => {
             compiler::compile(ctx, flags, spec, scope, top_id).map(|n| (n, scope.clone()))
         }

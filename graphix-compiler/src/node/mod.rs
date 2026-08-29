@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
-use compiler::compile;
+use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
@@ -853,7 +853,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R, E>> {
         let (children, catches) =
-            compile_block_children(ctx, flags, scope, top_id, exprs.iter())?;
+            compile_block_children(ctx, flags, scope, top_id, module, exprs.iter())?;
         Ok(Node::new(Self {
             module,
             spec,
@@ -877,6 +877,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
+    module: bool,
     exprs: impl Iterator<Item = &'a Expr>,
 ) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
     let exprs: smallvec::SmallVec<[&'a Expr; 32]> = exprs.collect();
@@ -899,7 +900,14 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     let mut scope = scope.clone();
     let mut children: LPooled<Vec<Node<R, E>>> = LPooled::take();
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
+    let n = exprs.len();
     for (i, e) in exprs.iter().copied().enumerate() {
+        // A `do` block's LAST item is its value; a module body has no
+        // value. `mod`/`use` are declarations, so they are legal in
+        // every position EXCEPT a `do` block's value slot — the general
+        // `compile` rejects them (they are not expressions), and this is
+        // the one place they are compiled directly.
+        let value_position = !module && i + 1 == n;
         match &e.kind {
             ExprKind::Catch(c) => {
                 let (node, advanced) =
@@ -908,6 +916,12 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
                 catches.push(i);
                 children.push(node);
             }
+            ExprKind::Use { reexport, names } if !value_position => {
+                children.push(compile_use(ctx, flags, e.clone(), &scope, *reexport, names)?)
+            }
+            ExprKind::Module { name, value } if !value_position => children.push(
+                compile_module(ctx, flags, e.clone(), &scope, top_id, name, value)?,
+            ),
             _ => children.push(compile(ctx, flags, e.clone(), &scope, top_id)?),
         }
     }

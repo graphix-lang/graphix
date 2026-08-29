@@ -589,6 +589,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 self.flags,
                 &self.scope,
                 self.top_id,
+                true,
                 exprs.iter(),
             )
             .map(|(n, c)| (Vec::from(n), c))?;

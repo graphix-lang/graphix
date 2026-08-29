@@ -4,7 +4,6 @@ use super::{
     array::{Array, ArrayRef, ArraySlice},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
-    compile_use,
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
     error::Qop,
     lambda::Lambda,
@@ -120,6 +119,73 @@ fn compile_inner<R: Rt, E: UserEvent>(
     compile_kind(ctx, flags, &spec, scope, top_id)
 }
 
+/// Compile a `mod` declaration. Only reachable from
+/// [`super::compile_block_children`] in statement position — the general
+/// `compile_kind` arm errors, since a module is not a value.
+pub(crate) fn compile_module<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    scope: &Scope,
+    top_id: ExprId,
+    name: &arcstr::ArcStr,
+    value: &ModuleKind,
+) -> Result<Node<R, E>> {
+    let enclosing = scope;
+    let scope = scope.append(name);
+    if !ctx.predeclared_mods.remove(&scope.lexical)
+        && ctx.env.modules.contains(&scope.lexical)
+    {
+        bail!("duplicate module definition {}", scope.lexical)
+    }
+    if ctx.env.lsp_mode {
+        let def_ori = match value {
+            ModuleKind::Resolved { exprs, .. } => exprs.first().map(|e| e.ori.clone()),
+            _ => None,
+        };
+        ctx.env.push_module_reference(crate::ide::ModuleRefSite {
+            pos: spec.pos,
+            ori: spec.ori.clone(),
+            name: crate::expr::ModPath::from([name.as_str()]),
+            canonical: scope.lexical.clone(),
+            def_ori,
+        });
+    }
+    match value {
+        ModuleKind::Unresolved { .. } => {
+            bail!("external modules are not allowed in this context")
+        }
+        ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
+            ctx.env.modules.insert_cow(scope.lexical.clone());
+            let res = Block::compile(ctx, flags, spec.clone(), &scope, top_id, true, exprs)
+                .with_context(|| spec.ori.clone())?;
+            Ok(res)
+        }
+        ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
+            Module::compile_static(
+                ctx,
+                flags,
+                spec.clone(),
+                &scope,
+                sig.clone(),
+                exprs.clone(),
+                top_id,
+            )
+        }
+        ModuleKind::Dynamic { sandbox, sig, source } => Module::compile_dynamic(
+            ctx,
+            flags,
+            spec.clone(),
+            enclosing,
+            &scope,
+            sandbox.clone(),
+            sig.clone(),
+            source.clone(),
+            top_id,
+        ),
+    }
+}
+
 fn compile_kind<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -173,73 +239,34 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        ExprKind::Module { name, value } => {
-            let enclosing = scope;
-            let scope = scope.append(&name);
-            if !ctx.predeclared_mods.remove(&scope.lexical)
-                && ctx.env.modules.contains(&scope.lexical)
-            {
-                bail!("duplicate module definition {}", scope.lexical)
+        // `use` and STATIC `mod` are DECLARATIONS, not expressions — they
+        // carry no value. They are compiled directly by
+        // `compile_block_children` / `compile_stmt` in statement position
+        // (a non-final `do`-block item, a module-body item, a top-level
+        // statement); reaching them HERE means they appear where a value
+        // is expected (a `let` RHS, a call arg, a block's value slot),
+        // which used to yield a `Bottom`-typed `Nop` that unified with
+        // any downstream type and defeated soundness (aug27a aieka:
+        // `let tag = use array::*` narrowed to `Array<i64>` while holding
+        // an error struct). A DYNAMIC module is different — it produces a
+        // real `[error, null]` load-status value (`let status = mod foo
+        // dynamic {..}`), so it IS a legal expression.
+        ExprKind::Module { name, value } => match value {
+            ModuleKind::Dynamic { .. } => {
+                compile_module(ctx, flags, spec.clone(), scope, top_id, name, value)
             }
-            if ctx.env.lsp_mode {
-                let def_ori = match value {
-                    ModuleKind::Resolved { exprs, .. } => {
-                        exprs.first().map(|e| e.ori.clone())
-                    }
-                    _ => None,
-                };
-                ctx.env.push_module_reference(crate::ide::ModuleRefSite {
-                    pos: spec.pos,
-                    ori: spec.ori.clone(),
-                    name: crate::expr::ModPath::from([name.as_str()]),
-                    canonical: scope.lexical.clone(),
-                    def_ori,
-                });
-            }
-            match value {
-                ModuleKind::Unresolved { .. } => {
-                    bail!("external modules are not allowed in this context")
-                }
-                ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
-                    ctx.env.modules.insert_cow(scope.lexical.clone());
-                    let res = Block::compile(
-                        ctx,
-                        flags,
-                        spec.clone(),
-                        &scope,
-                        top_id,
-                        true,
-                        exprs,
-                    )
-                    .with_context(|| spec.ori.clone())?;
-                    Ok(res)
-                }
-                ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
-                    Module::compile_static(
-                        ctx,
-                        flags,
-                        spec.clone(),
-                        &scope,
-                        sig.clone(),
-                        exprs.clone(),
-                        top_id,
-                    )
-                }
-                ModuleKind::Dynamic { sandbox, sig, source } => Module::compile_dynamic(
-                    ctx,
-                    flags,
-                    spec.clone(),
-                    enclosing,
-                    &scope,
-                    sandbox.clone(),
-                    sig.clone(),
-                    source.clone(),
-                    top_id,
-                ),
-            }
-        }
-        ExprKind::Use { reexport, names } => {
-            compile_use(ctx, flags, spec.clone(), scope, *reexport, names)
+            _ => bail!(
+                "a module definition is not an expression — it may only \
+                 appear as a statement in a block or module body, not \
+                 where a value is expected"
+            ),
+        },
+        ExprKind::Use { .. } => {
+            bail!(
+                "a use declaration is not an expression — it may only \
+                 appear as a statement in a block or module body, not \
+                 where a value is expected"
+            )
         }
         ExprKind::Connect { name, value, deref: true } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)

@@ -1,7 +1,7 @@
 // Tests for dynamic modules
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
 const DYNAMIC_MODULE0: &str = r#"
@@ -361,3 +361,39 @@ let f = |x: i64| -> i64 {
 }
 "#
     ; graphix_package_core::testing::FuseExpect::Jit);
+
+// `use` and STATIC `mod` are declarations, not expressions. In value
+// position (a `let` RHS, a call arg, a block's value slot) they used to
+// compile to a `Bottom`-typed `Nop` that unified with any downstream
+// type, defeating soundness: aug27a aieka bound `let tag = use array::*`,
+// then a downstream slice-select `[init.., x] => x * 100` narrowed the
+// unconstrained type to `Array<i64>` while `tag` held (via a `<-`
+// connect) the error-payload STRUCT `e.0`, and a fused arm-body kernel
+// read a struct where it compiled a scalar. Now rejected at typecheck.
+// (A DYNAMIC module keeps a real `[error, null]` value — covered by the
+// `dynamic_module*` fixtures, which put `let status = mod .. dynamic {..}`
+// in exactly this position.)
+#[tokio::test]
+async fn use_in_value_position_is_compile_error() {
+    for src in [
+        "{let tag = use array::iter; tag}",
+        "{i64:1; use array::iter}",
+        "array::len(use array::iter)",
+    ] {
+        let r = eval(src, crate::TEST_REGISTER).await;
+        assert!(
+            r.is_err(),
+            "`use` in value position must be rejected: {src} => {:?}",
+            r.map(|(v, _)| v)
+        );
+    }
+}
+
+#[tokio::test]
+async fn use_value_soundness_witness_rejected() {
+    // The aug27a aieka minimized witness — accepted (and then diverged
+    // interp vs jit) before the fix.
+    let src = r#"{let a = {let a = [true]; let tag = use array::*; {catch(e) tag <- e.0; any(a[i64:5]?, i64:0)}; select tag {"" => never(""), t => t}}; select a {[init.., x] => x * i64:100, _ => i64:0}}"#;
+    let r = eval(src, crate::TEST_REGISTER).await;
+    assert!(r.is_err(), "the aieka use-in-value witness must be rejected, got {:?}", r.map(|(v, _)| v));
+}
