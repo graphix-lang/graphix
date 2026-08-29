@@ -42,15 +42,22 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # (2026-08-28, Eric's call). aieka proves the ceiling: 288 workers (8x36)
 # on 62G runs with headroom, so every box here — all 54-62G except
 # katana's 16G — clears 8x at its core count. hz0 20c=160, aieka 36c=288,
-# katana 8c=64, ryouko 32c=256, mazikeen 14c=112. Oversubscription hides
-# the per-subject off-CPU gap (compile/spawn) that left a 1:1 box idling
-# at ~50%.
+# katana 8c=64, ryouko 32c=256, mazikeen 14c=112, washu-chan 16c=128.
+# Oversubscription hides the per-subject off-CPU gap (compile/spawn) that
+# left a 1:1 box idling at ~50%.
+#
+# washu-chan is the SESSION box and reaches itself over ssh, so it rides
+# the ordinary rsync path with no local special case (2026-08-28, Eric's
+# call): its src==dest rsync is a quick-check noop (.git/target excluded).
+# It joins a soak only when idle — launch it alone with FLEET_ONLY rather
+# than folding it into a full-fleet launch while a session is live.
 HOSTS=(
     "hz0:rsync:160:1:linux"
     "aieka:rsync:288:4:linux"
     "katana:rsync:64:4:darwin"
     "ryouko:rsync:256:1:linux"
     "mazikeen:rsync:112:4:linux"
+    "washu-chan:rsync:128:1:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}
@@ -62,6 +69,12 @@ f_sync()    { echo "$1" | cut -d: -f2; }
 f_workers() { echo "$1" | cut -d: -f3; }
 f_scale()   { echo "$1" | cut -d: -f4; }
 f_os()      { echo "$1" | cut -d: -f5; }
+
+# FLEET_ONLY=<name> restricts every step to one host, seed math unchanged
+# (each host keeps its position-derived seed). Use it to add or restart a
+# single box without touching the rest — e.g. bring washu-chan into a
+# running campaign: FLEET_ONLY=washu-chan fleet.sh launch <camp> <base>.
+skip_host() { [[ -n ${FLEET_ONLY:-} && $FLEET_ONLY != "$1" ]]; }
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -111,6 +124,7 @@ pull() {
     dest="$repo/fuzz/pending-triage/$camp"
     for h in "${HOSTS[@]}"; do
         name=$(f_name "$h")
+        skip_host "$name" && continue
         mkdir -p "$dest/$name"
         if rsync -a "$name:$(campaign_dir_of "$name" "$camp")/corpus/" \
                  "$dest/$name/" 2>/dev/null; then
@@ -133,6 +147,7 @@ stop() {
     [[ -n $camp ]] || usage
     for h in "${HOSTS[@]}"; do
         name=$(f_name "$h"); os=$(f_os "$h")
+        skip_host "$name" && continue
         if [[ $os == darwin ]]; then
             timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
 camp=$1
@@ -171,6 +186,7 @@ sync_tree() {
     say "local build-input fingerprint: $want"
     for h in "${HOSTS[@]}"; do
         name=$(f_name "$h"); method=$(f_sync "$h")
+        skip_host "$name" && continue
         if [[ $method == rsync ]]; then
             # Both repos: graphix builds against the sibling netidx.
             rsync -a --delete --exclude target --exclude .git \
@@ -211,6 +227,7 @@ launch() {
         name=$(f_name "$h"); os=$(f_os "$h")
         workers=$(f_workers "$h"); scale=$(f_scale "$h")
         seed=$((base + i * 10000000)); i=$((i + 1))
+        skip_host "$name" && continue
         say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s' \
              "$name" "$camp" "$seed" "$workers" "$scale")"
         if [[ $os == darwin ]]; then
@@ -256,6 +273,7 @@ verify() {
     say "expected regression corpus: $want programs"
     for h in "${HOSTS[@]}"; do
         name=$(f_name "$h")
+        skip_host "$name" && continue
         verify_host "$name" "$camp" "$want" || rc=1
     done
     if (( rc == 0 )); then
@@ -343,6 +361,7 @@ status() {
     local camp=${1:-} h name
     for h in "${HOSTS[@]}"; do
         name=$(f_name "$h")
+        skip_host "$name" && continue
         say "=== $name ==="
         timeout 60 ssh "$name" bash -s "$camp" <<'EOF' || warn "  unreachable"
 camp=$1
