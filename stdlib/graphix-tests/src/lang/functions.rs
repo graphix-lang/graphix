@@ -2117,3 +2117,41 @@ run!(fn_formal_forwarded, FN_FORMAL_FORWARDED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(102110))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A recursive kernel that forwards an fn formal whose callback CAPTURES
+// an outer binding SPELLED like one of the callee's own formals. The
+// capture (`n`) is threaded in as an extra kernel input beside the
+// formal `n` — two env locals, same basename. The tail-rebind resolved
+// its target slot by NAME, walked back-to-front, and rebound the
+// LATER-bound capture instead of the formal: the loop bound `n` never
+// advanced and the JIT spun forever where the interp returned 11
+// (aug27a hz0/000000). Fixed by resolving the rebind slot BindId-first.
+const FN_FORMAL_CAPTURE_COLLIDES_BOUND: &str = r#"
+{
+  let n = 10;
+  let rec ap = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => ap(f, n - 1, f(acc)) };
+  ap(|x| n + 1, 3, 0)
+}
+"#;
+
+run!(fn_formal_capture_collides_bound, FN_FORMAL_CAPTURE_COLLIDES_BOUND,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(11)));
+    graphix_package_core::testing::FuseExpect::Jit);
+
+// The same collision on the ACCUMULATOR formal (`acc`): the rebind
+// wrote each iteration's new acc into the captured `acc` and the real
+// accumulator stayed at its seed, so the JIT returned 0 where the
+// interp returned 18 (aug27a hz0/000002).
+const FN_FORMAL_CAPTURE_COLLIDES_ACC: &str = r#"
+{
+  let acc = 5;
+  let rec fold_go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
+    select i { 0 => acc, _ => fold_go(f, i - 1, f(acc, i)) };
+  fold_go(|a, x| a + acc + 1, 3, 0)
+}
+"#;
+
+run!(fn_formal_capture_collides_acc, FN_FORMAL_CAPTURE_COLLIDES_ACC,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(18)));
+    graphix_package_core::testing::FuseExpect::Jit);

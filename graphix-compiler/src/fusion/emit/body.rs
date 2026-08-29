@@ -74,6 +74,25 @@ pub(super) struct TailRebind {
     pub(super) taint: ClifValue,
 }
 
+/// Resolve a tail-rebind target slot's `ValueVar`. BindId-FIRST, then
+/// name. A carried formal and a capture can share a basename (a fn
+/// formal's forwarded callback captures an outer var that happens to
+/// be spelled like one of the callee's formals — B/C of the aug27a
+/// round), and both are distinct env locals bound under that name. A
+/// name-only lookup walks back-to-front and grabs the LATER-bound
+/// capture, so the loop wrote its updates into the capture slot and
+/// the real formal never advanced (an infinite loop when the formal
+/// is the loop bound; a dropped accumulator otherwise). The slot's
+/// `bind_id` names the formal exactly; only a synthetic slot with no
+/// id falls back to the name.
+fn lookup_slot(env: &JitEnv, slot: &kernel_abi::KernelParam) -> Option<ValueVar> {
+    let l = match slot.bind_id {
+        Some(id) => env.lookup(id, &slot.name),
+        None => env.lookup_name(&slot.name),
+    }?;
+    Some(l.vv)
+}
+
 pub(super) fn emit_tail_rebind_jump(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
@@ -125,12 +144,9 @@ pub(super) fn emit_tail_rebind_jump(
         let slot = &slots[r.slot];
         match slot.kind.abi() {
             AbiParamKind::Scalar(_) => {
-                let vv = env
-                    .lookup_name(&slot.name)
-                    .ok_or_else(|| {
-                        anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
-                    })?
-                    .vv;
+                let vv = lookup_slot(env, slot).ok_or_else(|| {
+                    anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
+                })?;
                 let old_p = b.use_var(vv.payload);
                 let old_d = b.use_var(vv.disc);
                 let p = b.ins().select(r.taint, old_p, r.val.payload);
@@ -146,12 +162,9 @@ pub(super) fn emit_tail_rebind_jump(
                 // the old slot pointer; KEEP leaves the slot untouched
                 // and drops an Owned new value instead (the unconsumed
                 // production — a Borrowed one is someone else's).
-                let vv = env
-                    .lookup_name(&slot.name)
-                    .ok_or_else(|| {
-                        anyhow!("TailCall: composite slot `{}` not in env", slot.name)
-                    })?
-                    .vv;
+                let vv = lookup_slot(env, slot).ok_or_else(|| {
+                    anyhow!("TailCall: composite slot `{}` not in env", slot.name)
+                })?;
                 let keep_bl = b.create_block();
                 let replace_bl = b.create_block();
                 let cont_bl = b.create_block();
