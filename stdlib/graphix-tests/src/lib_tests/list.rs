@@ -83,16 +83,10 @@ const LIST_TAIL_NONEMPTY: &str = r#"
 run!(list_tail_nonempty, LIST_TAIL_NONEMPTY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::String(tag), Value::I64(2), Value::Array(rest)] if &**tag == "Cons" => {
-                match &rest[..] {
-                    [Value::String(tag2), Value::I64(3), Value::String(nil)]
-                        if &**tag2 == "Cons" && &**nil == "Nil" =>
-                    {
-                        true
-                    }
-                    _ => false,
-                }
-            }
+            [Value::I64(2), Value::Array(rest)] => match &rest[..] {
+                [Value::I64(3), Value::Array(nil)] => nil.is_empty(),
+                _ => false,
+            },
             _ => false,
         },
         _ => false,
@@ -120,18 +114,10 @@ run!(list_uncons_nonempty, LIST_UNCONS_NONEMPTY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(t)) => match &t[..] {
             [Value::I64(10), Value::Array(tail)] => match &tail[..] {
-                [Value::String(tag), Value::I64(20), Value::Array(rest)]
-                    if &**tag == "Cons" =>
-                {
-                    match &rest[..] {
-                        [Value::String(tag2), Value::I64(30), Value::String(nil)]
-                            if &**tag2 == "Cons" && &**nil == "Nil" =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    }
-                }
+                [Value::I64(20), Value::Array(rest)] => match &rest[..] {
+                    [Value::I64(30), Value::Array(nil)] => nil.is_empty(),
+                    _ => false,
+                },
                 _ => false,
             },
             _ => false,
@@ -543,7 +529,7 @@ run!(list_fold_type_err, LIST_FOLD_TYPE_ERR, |v: Result<&Value>| {
 const LIST_FIND: &str = r#"
 {
   type T = (string, i64);
-  let l: list::List<T> = list::from_array([("foo", 1), ("bar", 2), ("baz", 3)]);
+  let l: List<T> = list::from_array([("foo", 1), ("bar", 2), ("baz", 3)]);
   list::find(l, |(k, _): T| k == "bar")
 }
 "#;
@@ -597,7 +583,7 @@ run!(
 const LIST_FIND_MAP: &str = r#"
 {
   type T = (string, i64);
-  let l: list::List<T> = list::from_array([("foo", 1), ("bar", 2), ("baz", 3)]);
+  let l: List<T> = list::from_array([("foo", 1), ("bar", 2), ("baz", 3)]);
   list::find_map(l, |(k, v): T| select k == "bar" {
     true => v,
     false => v ~ null
@@ -753,7 +739,7 @@ run!(list_zip_unequal, LIST_ZIP_UNEQUAL, |v: Result<&Value>| {
 
 const LIST_UNZIP: &str = r#"
 {
-  let l: list::List<(i64, i64)> = list::from_array([(1, 10), (2, 20), (3, 30)]);
+  let l: List<(i64, i64)> = list::from_array([(1, 10), (2, 20), (3, 30)]);
   let p = list::unzip(l);
   (list::to_array(p.0), list::to_array(p.1))
 }
@@ -868,7 +854,7 @@ async fn list_fold_dynamic_init_converges() {
 // Regression for a composite callback return shape (soak jul05 item 13,
 // crash_000012).
 const LIST_FIND_MAP_TUPLE: &str = r#"
-{type T = (string, i64); let l: list::List<T> = list::from_array([("foo", i64:1), ("bar", i64:2)]); list::find_map(l, |(k, v): T| (i64:1, i64:2))}
+{type T = (string, i64); let l: List<T> = list::from_array([("foo", i64:1), ("bar", i64:2)]); list::find_map(l, |(k, v): T| (i64:1, i64:2))}
 "#;
 run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
@@ -927,12 +913,12 @@ run!(list_flat_map_empty_splice, LIST_FLAT_MAP_EMPTY_SPLICE, |v: Result<&Value>|
 
 // A LIST-valued fold ACCUMULATOR — the idiomatic reverse, carried by
 // the FoldAcc::Value discipline like the nullable and map accs below.
-// (It interpreted while `list::List` was an abstract type whose two
+// (It interpreted while `List` was an abstract type whose two
 // views minted two ids; `List` is transparent now.)
 const LIST_FOLD_LIST_ACC: &str = r#"
 {
   let l = list::from_array([1, 2, 3]);
-  let seed: list::List<i64> = list::from_array([]);
+  let seed: List<i64> = list::from_array([]);
   let rev = {
     let r = #[native] list::fold(l, seed, |acc, x| list::cons(x, acc));
     r

@@ -83,6 +83,7 @@ pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
         }
         (Type::Error(a), Type::Error(b)) => union_identical(a, b),
         (Type::Array(a), Type::Array(b)) => union_identical(a, b),
+        (Type::List(a), Type::List(b)) => union_identical(a, b),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
             union_identical(k0, k1) && union_identical(v0, v1)
         }
@@ -205,6 +206,18 @@ impl Type {
                 } else {
                     Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
                 }
+            }
+            (t @ Type::List(t0), u @ Type::List(_)) => {
+                if union_identical(t, u) {
+                    Ok(Type::List(t0.clone()))
+                } else {
+                    Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
+                }
+            }
+            // A list beside any other shape unions as a set — no
+            // primitive-bit relationship (the type is opaque).
+            (t0 @ Type::List(_), t1) | (t0, t1 @ Type::List(_)) => {
+                Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
             }
             (Type::Primitive(p), Type::Map { .. })
             | (Type::Map { .. }, Type::Primitive(p))
@@ -456,6 +469,18 @@ impl Type {
                 Some(tv) => t.diff_int(env, hist, tv)?,
                 None => self.clone(),
             }),
+            (Type::List(t0), Type::List(t1)) => {
+                if t0 == t1 {
+                    Ok(Type::Primitive(BitFlags::empty()))
+                } else {
+                    match t0.diff_int(env, hist, t1)? {
+                        Type::Primitive(p) if p.is_empty() => {
+                            Ok(Type::Primitive(BitFlags::empty()))
+                        }
+                        d => Ok(Type::List(Arc::new(d))),
+                    }
+                }
+            }
             (Type::Array(t0), Type::Array(t1)) => {
                 if t0 == t1 {
                     Ok(Type::Primitive(BitFlags::empty()))
@@ -544,6 +569,8 @@ impl Type {
             | (_, Type::Fn(_))
             | (Type::Array(_), _)
             | (_, Type::Array(_))
+            | (Type::List(_), _)
+            | (_, Type::List(_))
             | (Type::Tuple(_), _)
             | (_, Type::Tuple(_))
             | (Type::Struct(_), _)

@@ -597,6 +597,11 @@ pub enum Type {
     TVar(TVar),
     Error(Arc<Type>),
     Array(Arc<Type>),
+    /// The native linked list — a compiler-known constructor like
+    /// `Array` (`design/list_native.md`). The runtime rep is private
+    /// to `node::collection::list`: cons = `Value::Array([head,
+    /// tail])`, nil = the static empty `ValArray`.
+    List(Arc<Type>),
     ByRef(Arc<Type>),
     Tuple(Arc<[Type]>),
     Struct(Arc<[(ArcStr, Type)]>),
@@ -650,6 +655,9 @@ impl PartialEq for Type {
             }
             Type::Array(a) => {
                 matches!(other, Type::Array(b) if Arc::ptr_eq(a, b) || a == b)
+            }
+            Type::List(a) => {
+                matches!(other, Type::List(b) if Arc::ptr_eq(a, b) || a == b)
             }
             Type::ByRef(a) => {
                 matches!(other, Type::ByRef(b) if Arc::ptr_eq(a, b) || a == b)
@@ -755,7 +763,7 @@ impl Type {
                 }
                 ControlFlow::Continue(())
             }
-            Type::Error(t) | Type::Array(t) | Type::ByRef(t) => f(t),
+            Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => f(t),
             Type::Map { key, value } => {
                 f(key)?;
                 f(value)
@@ -805,6 +813,7 @@ impl Type {
                 .map(|params| Type::Abstract { id: *id, params }),
             Type::Error(t) => f(t).map(|t| Type::Error(Arc::new(t))),
             Type::Array(t) => f(t).map(|t| Type::Array(Arc::new(t))),
+            Type::List(t) => f(t).map(|t| Type::List(Arc::new(t))),
             Type::ByRef(t) => f(t).map(|t| Type::ByRef(Arc::new(t))),
             Type::Map { key, value } => match (f(key), f(value)) {
                 (None, None) => None,
@@ -997,6 +1006,7 @@ impl Type {
     pub fn decompose(&self) -> Option<(Type, Type)> {
         match self {
             Type::Array(t) => Some((Type::Array(Arc::new(Type::Hole)), (**t).clone())),
+            Type::List(t) => Some((Type::List(Arc::new(Type::Hole)), (**t).clone())),
             Type::Map { key, value } => Some((
                 Type::Map { key: key.clone(), value: Arc::new(Type::Hole) },
                 (**value).clone(),
@@ -1039,6 +1049,7 @@ impl Type {
             | Self::Set(_)
             | Self::Error(_)
             | Self::Array(_)
+            | Self::List(_)
             | Self::ByRef(_)
             | Self::Tuple(_)
             | Self::Struct(_)
@@ -1092,7 +1103,7 @@ impl Type {
                 }
                 Type::Struct(a) => Some((**a).as_ptr().addr()),
                 Type::Fn(f) => Some((&**f as *const FnType).addr()),
-                Type::Error(a) | Type::Array(a) | Type::ByRef(a) => {
+                Type::Error(a) | Type::Array(a) | Type::List(a) | Type::ByRef(a) => {
                     Some((&**a as *const Type).addr())
                 }
                 _ => None,
@@ -1131,7 +1142,9 @@ impl Type {
                         go(&r.typ, env, seen);
                     }
                 }
-                Type::Error(t) | Type::Array(t) | Type::ByRef(t) => go(t, env, seen),
+                Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => {
+                    go(t, env, seen)
+                }
                 Type::Map { key, value } => {
                     go(key, env, seen);
                     go(value, env, seen);
@@ -1347,6 +1360,7 @@ impl Type {
                 }
             }
             Type::Array(_)
+            | Type::List(_)
             | Type::Map { .. }
             | Type::ByRef(_)
             | Type::Tuple(_)
@@ -1380,6 +1394,7 @@ impl Type {
             | Type::Fn(_)
             | Type::Error(_)
             | Type::Array(_)
+            | Type::List(_)
             | Type::ByRef(_)
             | Type::Tuple(_)
             | Type::Struct(_)
@@ -1423,6 +1438,7 @@ impl Type {
             | Self::Set(_)
             | Self::Error(_)
             | Self::Array(_)
+            | Self::List(_)
             | Self::ByRef(_)
             | Self::Tuple(_)
             | Self::Struct(_)

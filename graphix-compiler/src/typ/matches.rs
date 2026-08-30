@@ -74,6 +74,7 @@ impl Type {
             (Type::Primitive(p), Type::Error(_)) => Ok(p.contains(Typ::Error)),
             (Type::Error(t0), Type::Error(t1)) => t0.could_match_int(env, hist, t1),
             (Type::Array(t0), Type::Array(t1)) => t0.could_match_int(env, hist, t1),
+            (Type::List(t0), Type::List(t1)) => t0.could_match_int(env, hist, t1),
             (Type::Primitive(p), Type::Array(_)) => Ok(p.contains(Typ::Array)),
             (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
                 Ok(k0.could_match_int(env, hist, k1)?
@@ -158,6 +159,8 @@ impl Type {
             | (_, Type::ByRef(_))
             | (Type::Array(_), _)
             | (_, Type::Array(_))
+            | (Type::List(_), _)
+            | (_, Type::List(_))
             | (_, Type::Map { .. })
             | (Type::Map { .. }, _) => Ok(false),
         }
@@ -229,6 +232,9 @@ impl Type {
                 e0.sig_matches_int(env, e1, tvar_map, hist)
             }
             (Self::Array(a0), Self::Array(a1)) => {
+                a0.sig_matches_int(env, a1, tvar_map, hist)
+            }
+            (Self::List(a0), Self::List(a1)) => {
                 a0.sig_matches_int(env, a1, tvar_map, hist)
             }
             (Self::ByRef(b0), Self::ByRef(b1)) => {

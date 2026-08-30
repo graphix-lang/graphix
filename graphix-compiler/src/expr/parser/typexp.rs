@@ -411,6 +411,8 @@ parser! {
             fntype().map(|f| Type::Fn(Arc::new(f))),
             attempt(string("Array").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
                 .map(|t| Type::Array(Arc::new(t))),
+            attempt(string("List").skip(not_prefix())).with(between(sptoken('<'), sptoken('>'), typ()))
+                .map(|t| Type::List(Arc::new(t))),
             attempt(string("Any").skip(not_prefix())).map(|_| Type::Any),
             attempt(string("Map").skip(not_prefix())).with(between(
                 sptoken('<'), sptoken('>'),

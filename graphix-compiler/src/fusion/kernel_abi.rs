@@ -267,6 +267,9 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             Type::Map { .. } => return Some(AbiKind::Value),
             Type::Error(_) => return Some(AbiKind::Value),
             Type::Array(_) => return Some(AbiKind::Array),
+            // A list crosses the kernel boundary as a 2-word opaque
+            // Value (the interior rep is compiler-private).
+            Type::List(_) => return Some(AbiKind::Value),
             Type::Tuple(_) => return Some(AbiKind::Tuple),
             Type::Struct(_) => return Some(AbiKind::Struct),
             Type::Variant(_, _) => return Some(AbiKind::Variant),
@@ -612,6 +615,10 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
             Type::Array(inner) => {
                 let inner = freeze_for_abi_d(inner, seen)?;
                 Some(Type::Array(Arc::new(inner)))
+            }
+            Type::List(inner) => {
+                let inner = freeze_for_abi_d(inner, seen)?;
+                Some(Type::List(Arc::new(inner)))
             }
             Type::Tuple(elems) => {
                 let frozen: Option<LPooled<Vec<Type>>> =

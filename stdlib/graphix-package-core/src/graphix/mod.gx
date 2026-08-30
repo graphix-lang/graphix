@@ -55,4 +55,14 @@ impl<'k> Collection for Map<'k, '_> {
     let flat_map = |m, f| fold_pairs(m, {}, |acc, (_, v)| map_union(acc, f(v)));
     let map = |m, f| map_pairs(m, |(k, v)| (k, f(v)));
     let len = |m| 'core_map_len
+};
+
+impl Collection for List<'_> {
+    let fold = |l, init, f| 'list_fold;
+    let filter_map = |l, f| 'list_filter_map;
+    let flat_map = |l, f| 'list_flat_map;
+    let map = |l, f| 'list_map;
+    let filter = |l, f| 'list_filter;
+    let find = |l, f| 'list_find;
+    let find_map = |l, f| 'list_find_map
 }

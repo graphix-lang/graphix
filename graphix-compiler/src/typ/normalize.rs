@@ -68,7 +68,7 @@ pub(crate) fn norm_key(t: &Type) -> Option<NormKey> {
         Type::Set(a) | Type::Tuple(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Struct(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Fn(a) => Some((d, &**a as *const _ as usize, 0)),
-        Type::Array(a) | Type::Error(a) | Type::ByRef(a) => {
+        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(a) => {
             Some((d, &**a as *const Type as usize, 0))
         }
         Type::Map { key, value } => {
@@ -269,6 +269,7 @@ impl Type {
             }
             Type::Error(t) => t.resolve_tvars_seen(cx).map(|t| Type::Error(Arc::new(t))),
             Type::Array(t) => t.resolve_tvars_seen(cx).map(|t| Type::Array(Arc::new(t))),
+            Type::List(t) => t.resolve_tvars_seen(cx).map(|t| Type::List(Arc::new(t))),
             Type::Map { key, value } => {
                 match (key.resolve_tvars_seen(cx), value.resolve_tvars_seen(cx)) {
                     (None, None) => None,
@@ -362,6 +363,7 @@ impl Type {
             }
             Type::Error(t) => t.normalize_int(cx).map(|t| Type::Error(Arc::new(t))),
             Type::Array(t) => t.normalize_int(cx).map(|t| Type::Array(Arc::new(t))),
+            Type::List(t) => t.normalize_int(cx).map(|t| Type::List(Arc::new(t))),
             Type::Map { key, value } => {
                 match (key.normalize_int(cx), value.normalize_int(cx)) {
                     (None, None) => None,
@@ -459,6 +461,13 @@ impl Type {
             (Type::Array(t0), Type::Array(t1)) => {
                 if flat_eq(t0, t1) {
                     Some(Type::Array(t0.clone()))
+                } else {
+                    None
+                }
+            }
+            (Type::List(t0), Type::List(t1)) => {
+                if flat_eq(t0, t1) {
+                    Some(Type::List(t0.clone()))
                 } else {
                     None
                 }
@@ -567,6 +576,8 @@ impl Type {
             | (_, Type::Abstract { .. })
             | (Type::Array(_), _)
             | (_, Type::Array(_))
+            | (Type::List(_), _)
+            | (_, Type::List(_))
             | (_, Type::Map { .. })
             | (Type::Map { .. }, _)
             | (Type::Tuple(_), _)

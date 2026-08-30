@@ -69,6 +69,7 @@ impl Type {
             },
             Type::Error(e) => e.check_cast_int(env, hist),
             Type::Array(et) => et.check_cast_int(env, hist),
+            Type::List(et) => et.check_cast_int(env, hist),
             Type::Map { key, value } => {
                 key.check_cast_int(env, hist)?;
                 value.check_cast_int(env, hist)
@@ -143,6 +144,30 @@ impl Type {
                 }
                 v => Ok(Value::Array([et.cast_value_int(env, hist, v)?].into())),
             },
+            // cast<List<T>>: a list value casts element-wise in place; a
+            // plain array converts (from_array semantics); anything else
+            // becomes a singleton — mirroring Array's rules over the
+            // list rep.
+            Type::List(et) => {
+                use crate::node::collection::list;
+                if list::is_list(&v) {
+                    let mut elems = list::Iter::new(v.clone())
+                        .map(|el| et.cast_value_int(env, hist, el))
+                        .collect::<Result<LPooled<Vec<Value>>>>()?;
+                    Ok(list::from_iter(elems.drain(..)))
+                } else {
+                    match v {
+                        Value::Array(elts) => {
+                            let mut elems = elts
+                                .iter()
+                                .map(|el| et.cast_value_int(env, hist, el.clone()))
+                                .collect::<Result<LPooled<Vec<Value>>>>()?;
+                            Ok(list::from_iter(elems.drain(..)))
+                        }
+                        v => Ok(list::from_iter([et.cast_value_int(env, hist, v)?])),
+                    }
+                }
+            }
             Type::Map { key, value } => match v {
                 Value::Map(m) => {
                     let mut m = m
@@ -390,6 +415,28 @@ impl Type {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
                 _ => false,
             },
+            // A list value: walk the spine iteratively (heads recurse).
+            // The rep shapes as an array, so `Array<Any> as a` also
+            // matches a list — inherent to the shared carrier, same as
+            // the old variant rep.
+            Type::List(et) => {
+                use crate::node::collection::list;
+                let mut cur = v;
+                loop {
+                    if list::is_nil(cur) {
+                        break true;
+                    }
+                    match list::split(cur) {
+                        Some((h, t)) => {
+                            if !et.is_a_int(env, hist, flags, h) {
+                                break false;
+                            }
+                            cur = t;
+                        }
+                        None => break false,
+                    }
+                }
+            }
             Type::Map { key, value }
                 if matches!(&**key, Type::Any)
                     && matches!(&**value, Type::Any)
@@ -581,6 +628,10 @@ fn member_facts(t: &Type) -> MemberFacts {
         Type::Tuple(ts) => f(Some((None, ArrCon::Len(ts.len()))), false, false, false),
         Type::Struct(fs) => f(Some((None, ArrCon::Len(fs.len()))), false, false, false),
         Type::Array(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
+        // A list shapes as an array at runtime (nil = the empty array),
+        // so beside an Array member the shallow test is ambiguous and
+        // arr_overlap forces the deep walk — honest, never wrong.
+        Type::List(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
         Type::Map { .. } => f(None, true, false, false),
         Type::Error(_) => f(None, false, true, false),
         Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(_) | Type::Bottom => {
@@ -628,6 +679,7 @@ fn shallowify(t: &Type) -> Type {
             fs.iter().map(|(n, _)| (n.clone(), Type::Any)).collect::<Vec<_>>(),
         )),
         Type::Array(_) => Type::Array(triomphe::Arc::new(Type::Any)),
+        Type::List(_) => Type::List(triomphe::Arc::new(Type::Any)),
         Type::Map { .. } => Type::Map {
             key: triomphe::Arc::new(Type::Any),
             value: triomphe::Arc::new(Type::Any),

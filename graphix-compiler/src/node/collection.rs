@@ -26,28 +26,31 @@ use triomphe::Arc;
 pub mod list {
     use super::*;
 
+    /// The slim rep (`design/list_native.md`): cons = a 2-slot array
+    /// `[head, tail]`, nil = a refcount clone of the static EMPTY
+    /// array (NOT `Null` — `[List, null]` must not collapse). The
+    /// discriminant is the array length; this module is the ONLY
+    /// place that knows the layout.
+    static EMPTY: std::sync::LazyLock<ValArray> =
+        std::sync::LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
+
     pub fn nil() -> Value {
-        Value::String(literal!("Nil"))
+        Value::Array(EMPTY.clone())
     }
 
     pub fn cons(head: Value, tail: Value) -> Value {
-        Value::Array(ValArray::from_iter_exact(
-            [Value::String(literal!("Cons")), head, tail].into_iter(),
-        ))
+        Value::Array(ValArray::from_iter_exact([head, tail].into_iter()))
     }
 
     pub fn split(v: &Value) -> Option<(&Value, &Value)> {
         match v {
-            Value::Array(a) if a.len() == 3 => match &a[0] {
-                Value::String(s) if &**s == "Cons" => Some((&a[1], &a[2])),
-                _ => None,
-            },
+            Value::Array(a) if a.len() == 2 => Some((&a[0], &a[1])),
             _ => None,
         }
     }
 
     pub fn is_nil(v: &Value) -> bool {
-        matches!(v, Value::String(s) if &**s == "Nil")
+        matches!(v, Value::Array(a) if a.is_empty())
     }
 
     pub fn is_list(v: &Value) -> bool {
@@ -337,6 +340,7 @@ impl MapCollection for ListCollection {
 
     fn element_type(ft: &FnType) -> Result<Type> {
         match &ft.args[0].typ {
+            Type::List(t) => return Ok((**t).clone()),
             Type::Abstract { params, .. } if !params.is_empty() => {
                 return Ok(params[0].clone());
             }
@@ -549,6 +553,7 @@ fn frozen_may_be_null(t: &Type) -> bool {
         Some(Type::Set(ms)) => ms.iter().any(frozen_may_be_null),
         Some(
             Type::Array(_)
+            | Type::List(_)
             | Type::Tuple(_)
             | Type::Struct(_)
             | Type::Variant(_, _)

@@ -3,10 +3,10 @@
 // intrinsic row (lfold_intr).
 let n = 100000;
 let src = list::init(n, |i| i);
-let rec lfold_go = |l: list::List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
-    select l {
-        `Cons(x, rest) => lfold_go(rest, f, f(acc, x)),
-        `Nil => acc
+let rec lfold_go = |l: List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
+    select list::uncons(l) {
+        null as _ => acc,
+        (x, rest) => lfold_go(rest, f, f(acc, x))
     };
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;

@@ -31,13 +31,3 @@ let find = |l: List<'a>, f: fn(x: 'a) -> bool throws 'e| -> Option<'a> throws 'e
 let find_map = |l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> Option<'b> throws 'e 'list_find_map;
 let fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e 'list_fold;
 
-impl Collection for List<'_> {
-    let fold = |l, init, f| 'list_fold;
-    let filter_map = |l, f| 'list_filter_map;
-    let flat_map = |l, f| 'list_flat_map;
-    let map = |l, f| 'list_map;
-    let filter = |l, f| 'list_filter;
-    let find = |l, f| 'list_find;
-    let find_map = |l, f| 'list_find_map;
-    let len = |l| 'list_len
-}

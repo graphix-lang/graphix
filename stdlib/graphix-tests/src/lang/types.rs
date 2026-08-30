@@ -170,11 +170,11 @@ run!(typed_arrays1, TYPED_ARRAYS1, |v: Result<&Value>| match v {
 
 const RECTYPES0: &str = r#"
 {
-  type List = [
-    `Cons(Any, List),
+  type L = [
+    `Cons(Any, L),
     `Nil
   ];
-  let l: List = `Cons(42, `Cons(3, `Nil));
+  let l: L = `Cons(42, `Cons(3, `Nil));
   l
 }
 "#;
@@ -195,11 +195,11 @@ run!(rectypes0, RECTYPES0, |v: Result<&Value>| match v {
 
 const RECTYPES1: &str = r#"
 {
-  type List<'a> = [
-    `Cons('a, List<'a>),
+  type L<'a> = [
+    `Cons('a, L<'a>),
     `Nil
   ];
-  let l: List<Any> = `Cons(42, `Cons(3, `Nil));
+  let l: L<Any> = `Cons(42, `Cons(3, `Nil));
   l
 }
 "#;
@@ -851,13 +851,12 @@ async fn recursive_fn_tail_rejected_at_every_depth() {
     }
 }
 
-// The same cycle memo must still ACCEPT a well-formed recursive value —
-// the fix only distinguishes finite sub-problems, it does not disable
-// the memo for genuine cycles (Any, and the Ref x Ref case).
+// find over a well-formed API-built list still works (the old
+// transparent-typedef cycle-memo pin; the type is opaque now, so the
+// value is built through the API).
 const RECURSIVE_LIST_FIND: &str = r#"
 {
-  type List = [`Cons(i64, List), `Nil];
-  let l: List = `Cons(i64:1, `Cons(i64:2, `Cons(i64:3, `Nil)));
+  let l = list::cons(i64:1, list::cons(i64:2, list::cons(i64:3, list::nil(0))));
   select list::find(l, |x| x == i64:2) {
     i64 as n => n,
     _ => i64:-1

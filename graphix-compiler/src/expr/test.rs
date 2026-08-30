@@ -350,6 +350,7 @@ fn typexp() -> impl Strategy<Value = Type> {
             }),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
+            inner.clone().prop_map(|t| Type::List(Arc::new(t))),
             inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {

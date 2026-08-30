@@ -54,7 +54,7 @@ fn would_cycle_seen_inner(
         Type::Abstract { params: a, .. } => Some((**a).as_ptr().addr()),
         Type::Struct(a) => Some((**a).as_ptr().addr()),
         Type::Fn(f) => Some((&**f as *const FnType).addr()),
-        Type::Array(a) | Type::Error(a) | Type::ByRef(a) => {
+        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(a) => {
             Some((&**a as *const Type).addr())
         }
         // Map carries TWO Arcs; a single-address key could alias a

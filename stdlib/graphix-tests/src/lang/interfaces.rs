@@ -242,15 +242,15 @@ run!(
     "#,
     "/test/inner.gxi" => r#"
         type Elem;
-        type List = [`Cons(Elem, List), `Nil];
-        val cons: fn(x: i64, rest: List) -> List;
-        val nil: fn() -> List;
-        val sum: fn(list: List) -> i64     "#,
+        type L = [`Cons(Elem, L), `Nil];
+        val cons: fn(x: i64, rest: L) -> L;
+        val nil: fn() -> L;
+        val sum: fn(list: L) -> i64     "#,
     "/test/inner.gx" => r#"
         type Elem = Abstract<i64>;
-        let cons = |x: i64, rest: List| -> List `Cons(Elem(x), rest);
-        let nil = || -> List `Nil;
-        let rec sum = |list: List| -> i64 select list {
+        let cons = |x: i64, rest: L| -> L `Cons(Elem(x), rest);
+        let nil = || -> L `Nil;
+        let rec sum = |list: L| -> i64 select list {
             `Cons(x, rest) => x.0 + sum(rest),
             `Nil => 0
         }

@@ -165,6 +165,29 @@ impl<'a> TVal<'a> {
                 write!(f, "]")
             }
             (Type::Array(_), v) => fmt_naked(f, v),
+            // The literal form (`design/list_native.md`): walk the
+            // spine, print `[<a, b, c>]`; a non-list-shaped value
+            // falls back to the naked print.
+            (Type::List(et), v) => {
+                use crate::node::collection::list;
+                if !list::is_list(v) {
+                    return fmt_naked(f, v);
+                }
+                write!(f, "[<")?;
+                let mut cur: Value = (*v).clone();
+                let mut first = true;
+                loop {
+                    let Some((h, t)) = list::split(&cur) else { break };
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    TVal { typ: et, env: self.env, v: h }.fmt_int(f, hist)?;
+                    let t = t.clone();
+                    cur = t;
+                }
+                write!(f, ">]")
+            }
             (Type::Map { key, value }, Value::Map(m)) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in m.into_iter().enumerate() {

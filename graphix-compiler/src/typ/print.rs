@@ -42,6 +42,7 @@ impl Type {
             Self::Fn(t) => write!(f, "{t}"),
             Self::Error(t) => write!(f, "Error<{t}>"),
             Self::Array(t) => write!(f, "Array<{t}>"),
+            Self::List(t) => write!(f, "List<{t}>"),
             Self::Map { key, value } => write!(f, "Map<{key}, {value}>"),
             Self::ByRef(t) => write!(f, "&{t}"),
             Self::Tuple(ts) => {
@@ -171,6 +172,11 @@ impl PrettyDisplay for Type {
             }
             Self::Array(t) => {
                 writeln!(buf, "Array<")?;
+                buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                writeln!(buf, ">")
+            }
+            Self::List(t) => {
+                writeln!(buf, "List<")?;
                 buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
                 writeln!(buf, ">")
             }

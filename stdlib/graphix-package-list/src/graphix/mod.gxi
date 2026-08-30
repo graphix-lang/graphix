@@ -1,7 +1,3 @@
-/// The singly linked list type. Lists support O(1) cons (prepend) and
-/// structural sharing -- two lists with a common tail share memory.
-type List<'a> = [`Cons('a, List<'a>), `Nil];
-
 /// Return an empty list.
 val nil: fn(trig: Any) -> List<'a>;
 
@@ -101,4 +97,3 @@ val iter: fn(l: List<'a>) -> 'a;
 /// Produce an update for each element, gated by clock updates.
 val iterq: fn(#clock: Any, l: List<'a>) -> 'a;
 
-impl Collection for List<'_>;

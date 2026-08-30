@@ -22,9 +22,9 @@ run!(
     "#
 );
 
-// The list package's implementation: a reference head (`List<'_>`)
-// selected by NAME — the typedef's body is a union, which is never
-// expanded on the way to the impl.
+// The list implementation: the builtin `List` constructor head
+// (compiler-known since `design/list_native.md`; the impl lives in
+// core beside Array's).
 run!(
     collection_list_fold_map_len,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(63))),
@@ -311,10 +311,10 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
     "/test.gx" => r#"
         let l = list::init(200, |i| i);
-        let rec lfold_go = |l: list::List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
-            select l {
-                `Cons(x, rest) => lfold_go(rest, f, f(acc, x)),
-                `Nil => acc
+        let rec lfold_go = |l: List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
+            select list::uncons(l) {
+                null as _ => acc,
+                (x, rest) => lfold_go(rest, f, f(acc, x))
             };
         let a = list::fold(l, 7, |a, x| a + x);
         let b = lfold_go(l, |a, x| a + x, 7);

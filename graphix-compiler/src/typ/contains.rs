@@ -193,6 +193,7 @@ fn link_equal_inner(t0: &Type, t1: &Type) {
             }
         }
         (Type::Array(a), Type::Array(b))
+        | (Type::List(a), Type::List(b))
         | (Type::Error(a), Type::Error(b))
         | (Type::ByRef(a), Type::ByRef(b)) => link_equal(a, b),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
@@ -527,6 +528,7 @@ fn same_content(a: &Type, b: &Type) -> bool {
         }
         (Type::Fn(x), Type::Fn(y)) => Arc::ptr_eq(x, y),
         (Type::Array(x), Type::Array(y))
+        | (Type::List(x), Type::List(y))
         | (Type::Error(x), Type::Error(y))
         | (Type::ByRef(x), Type::ByRef(y)) => Arc::ptr_eq(x, y),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
@@ -810,6 +812,30 @@ impl Type {
                 Self::Array(_) | Self::Tuple(_) | Self::Struct(_) | Self::Variant(_, _),
             ) => Ok(p.contains(Typ::Array)),
             (Self::Array(t0), Self::Array(t1)) => t0.contains_int(flags, env, hist, t1),
+            // List is covariant in its element, like Array; it has NO
+            // primitive-bit relationship (the runtime rep shapes as an
+            // array, but the TYPE is opaque — `design/list_native.md`).
+            (Self::List(t0), Self::List(t1)) => t0.contains_int(flags, env, hist, t1),
+            (
+                Self::List(_),
+                Self::Primitive(_)
+                | Self::Array(_)
+                | Self::Tuple(_)
+                | Self::Struct(_)
+                | Self::Variant(_, _)
+                | Self::Error(_)
+                | Self::Map { .. },
+            )
+            | (
+                Self::Primitive(_)
+                | Self::Array(_)
+                | Self::Tuple(_)
+                | Self::Struct(_)
+                | Self::Variant(_, _)
+                | Self::Error(_)
+                | Self::Map { .. },
+                Self::List(_),
+            ) => Ok(false),
             (Self::Array(t0), Self::Primitive(p)) if *p == BitFlags::from(Typ::Array) => {
                 t0.contains_int(flags, env, hist, &Type::Any)
             }
