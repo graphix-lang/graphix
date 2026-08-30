@@ -173,13 +173,21 @@ whole-recursion pause and external calls in the deselected arm retain
 (sleep-is-pause). `sleep is pause` still holds for arms that PERSIST; a
 slot that ceases to exist is deleted. The distinction: an arm is a
 fixed position (pause/resume), a recursion depth is a transient
-invocation (delete/fresh). Deferred (memory-only, transparent): the JIT
-`SelfBlock` free on unwind — a fused recursion carries no observable
-per-depth state (stateful de-fuses), so the differential agrees without
-it; the JIT still retains its block tree until Drop. If oscillation
-thrash from immediate delete+realloc ever bites, add a reset-on-reuse
-pool to BOTH systems (semantically identical, avoids the churn) — the
-refinement noted at the ruling.
+invocation (delete/fresh). JIT built (`406eda7a`) — the memory twin: a
+fused recursion (e.g. a user Collection impl traversing a huge instance)
+allocates one `SelfBlock` per element, so it must shed the unreached
+ones or a long-lived kernel pins the whole tree. The free is in SAFE
+RUST, not emitted CLIF (the reclaim is transparent — the differential
+can't guard it — so the pointer walk lives where ASAN can): every
+self-call reach (`graphix_site_child_block`) stamps its block with the
+invocation's generation and bumps a reach count; `Kernel::update` gates
+on the reach count falling below the live tree size (no shrink → no
+walk) and otherwise walks the `state`/`site` SelfBlock trees, freeing
+any subtree not stamped current and nulling the source word so
+`Kernel::drop` never double-frees. `Kernel::sleep` untouched. If
+oscillation thrash from immediate delete+realloc ever bites, add a
+reset-on-reuse pool to BOTH systems (semantically identical, avoids the
+churn) — the refinement noted at the ruling.
 
 ### As built — P1a (2026-08-24)
 

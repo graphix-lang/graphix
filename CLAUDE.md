@@ -987,11 +987,19 @@ enforces it):**
   whole-recursion PAUSE (an outer arm deselecting the entire call) and
   an external call in the deselected arm both retain. Steady-state deep
   recursion never deletes (the callee stays bound); a dip deletes; a
-  re-deepen re-binds fresh under the wake's init view. JIT `SelfBlock`
-  free on unwind is a DEFERRED memory-only follow-up (fused recursions
-  carry no observable per-depth state — stateful de-fuses — so the
-  differential agrees without it). Pinned by
-  `recursion_shrink_deletes_unreached_activations` (lift.rs).
+  re-deepen re-binds fresh under the wake's init view. JIT memory twin
+  (`406eda7a`): a fused recursion allocates one `SelfBlock` per level
+  (a user Collection impl traversing a huge instance), so it must shed
+  the unreached ones or a long-lived kernel pins the tree. Done in SAFE
+  RUST, not emitted CLIF (transparent → differential-blind → the pointer
+  walk lives where ASAN can see it): `graphix_site_child_block` stamps
+  each reached block with the invocation generation + bumps a reach
+  count; `Kernel::update` gates on the reach count dropping below the
+  live tree size and otherwise `reclaim_self_block_tree` frees any
+  subtree not stamped current, nulling the word so `Kernel::drop` never
+  double-frees. Pinned by
+  `recursion_shrink_deletes_unreached_activations` +
+  `fused_recursion_sheds_unreached_blocks` (lift.rs).
 - **DynCall SITE IDENTITY** (2026-07-25, soak jul23f): the ridden
   state must be the call site's OWN history — a compiled callee
   body's interior builtin is ONE `graphix_dyncall` instruction
