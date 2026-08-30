@@ -1,6 +1,6 @@
 # Recursive activations and the collection traits
 
-**Status: DESIGNED 2026-08-24 (Eric + Claude), not built.** Amends
+**Status: DESIGNED 2026-08-24 (Eric + Claude); P1/P1c/P2 BUILT 2026-08-25, P2b measured and P3 trait-dispatch fusion landed 2026-08-25, the retention question RULED 2026-08-29 (shrink = delete, JIT reclaim 406eda7a) — see the "As built" / "As measured" sections below.** Amends
 `activation_state.md` Ruling 2 (the tail-loop clause), dissolves the
 "not planned: higher-kinded self" deferral in `traits.md` §5, and
 DEFERS v2 trait parameters (§8). Nothing here changes the bottom-out

@@ -1,6 +1,6 @@
 # Fuzzing the typechecker
 
-**Status: DESIGNED 2026-08-25, not built. Build after P2 lands.**
+**Status: DESIGNED 2026-08-25; P1 (the metamorphic typemorph lane: `typemorph`/`typemorph-scan`, TypeFlip findings, HDD "still flips") BUILT 2026-08-26 (7c01cf98). Its first sweeps closed the block-wrap μ class (bf71edff); 5 corpus flips in the extract-annotate bucketing class await a ruling.**
 
 The differential fuzzer cannot see typechecker bugs on the acceptance
 plane: a program wrongly rejected never runs, and both engines agree it
