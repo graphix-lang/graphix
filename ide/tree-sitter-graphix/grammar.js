@@ -50,6 +50,8 @@ module.exports = grammar({
     [$._type, $.type_path],
     [$.union_type, $.array_pattern],
     [$.array_pattern, $.slice_prefix_pattern],
+    [$.list_pattern, $.list_prefix_pattern],
+    [$.binary_expression, $.list],
     [$.primitive_type, $.null],
     [$.primitive_type, $._field_name],
     [$.primitive_type, $._binding_name],
@@ -580,6 +582,8 @@ module.exports = grammar({
       $.array_pattern,
       $.slice_prefix_pattern,
       $.slice_suffix_pattern,
+      $.list_pattern,
+      $.list_prefix_pattern,
       $.variant_pattern,
       $.abstract_pattern,
       $.struct_pattern,
@@ -642,6 +646,24 @@ module.exports = grammar({
       ',',
       commaSep1($.structure_pattern),
       ']',
+    ),
+
+    // Native list patterns — no suffix form (the tail is O(1), the
+    // front is not).
+    list_pattern: $ => seq(
+      optional(seq(field('all', $._binding_name), '@')),
+      '[', token.immediate('<'),
+      commaSep($.structure_pattern),
+      '>', token.immediate(']'),
+    ),
+
+    list_prefix_pattern: $ => seq(
+      optional(seq(field('all', $._binding_name), '@')),
+      '[', token.immediate('<'),
+      repeat(seq($.structure_pattern, ',')),
+      optional($._binding_name),
+      '..',
+      '>', token.immediate(']'),
     ),
 
     variant_pattern: $ => seq(
@@ -895,6 +917,7 @@ module.exports = grammar({
       $.raw_string,
       $.type_ascription,
       $.array,
+      $.list,
       $.tuple,
       $.struct,
       $.map,
@@ -1066,6 +1089,13 @@ module.exports = grammar({
       '[',
       commaSep($._expression),
       ']',
+    ),
+
+    // Native list literal (design/list_native.md).
+    list: $ => seq(
+      '[', token.immediate('<'),
+      commaSep($._expression),
+      '>', token.immediate(']'),
     ),
 
     // Tuple

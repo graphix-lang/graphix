@@ -5,7 +5,7 @@ use crate::expr::{
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, look_ahead, many1,
     optional,
-    parser::char::digit,
+    parser::char::{digit, string},
     position,
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
@@ -32,6 +32,28 @@ where
     )
         .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
             ExprKind::Array { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
+        })
+}
+
+/// A native list literal `[<e1, e2, ...>]` (`design/list_native.md`).
+/// The two-char open is attempt-wrapped so a plain array literal's `[`
+/// backtracks cleanly.
+pub(super) fn list_lit<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        between(
+            attempt(string("[<")),
+            spstring(">]"),
+            sep_by_tok(expr(), csep(), attempt(spstring(">]"))),
+        ),
+    )
+        .map(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
+            ExprKind::List { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
         })
 }
 

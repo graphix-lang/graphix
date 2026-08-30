@@ -71,7 +71,7 @@ pub(crate) use self::nodes::{
     emit_construct_node, emit_map_new_node, emit_map_ref_node, emit_neg_node,
     emit_not_node, emit_owned_value_operand_node, emit_ref_node,
     emit_string_interpolate_node, emit_struct_new_node, emit_struct_ref_node,
-    emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
+    emit_struct_with_node, emit_list_new_node, emit_tuple_new_node, emit_tuple_ref_node,
     emit_variant_new_node, widen_result_to_value,
 };
 pub(crate) use self::select::{emit_select_node, slot_state_sites};

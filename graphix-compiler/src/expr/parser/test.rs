@@ -922,6 +922,7 @@ fn select1() {
                     Typ::I64.into(),
                 )))),
                 structure_predicate: StructurePattern::Slice {
+                    list: false,
                     all: None,
                     binds: Arc::from_iter([
                         StructurePattern::Bind(literal!("a")),
@@ -951,6 +952,7 @@ fn select1() {
                     Typ::I64.into(),
                 )))),
                 structure_predicate: StructurePattern::SlicePrefix {
+                    list: false,
                     all: None,
                     prefix: Arc::from_iter([StructurePattern::Bind(literal!("a"))]),
                     tail: Some(literal!("b")),
@@ -979,6 +981,7 @@ fn select1() {
                     Typ::I64.into(),
                 )))),
                 structure_predicate: StructurePattern::Slice {
+                    list: false,
                     all: None,
                     binds: Arc::from_iter([
                         StructurePattern::Literal(Value::I64(1)),

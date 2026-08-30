@@ -960,6 +960,7 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
+            ExprKind::List { args } => pretty_print_exprs(buf, args, "[<", ">]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
             ExprKind::Bind(b) => b.fmt_pretty(buf),
             ExprKind::Trait(t) => t.fmt_pretty(buf),
@@ -1341,6 +1342,7 @@ impl ExprKind {
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),
+            ExprKind::List { args } => print_exprs(f, args, "[<", ">]", ", "),
             ExprKind::Map { args } => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in args.iter().enumerate() {

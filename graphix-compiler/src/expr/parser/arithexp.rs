@@ -4,8 +4,8 @@ use crate::expr::{
         any, apply_args, array, array_index_suffix, cast, construct, csep, do_block,
         expr,
         grow::{grow, max_nesting, note_refused},
-        interpolated, literal, map, raw_string, reference, select, spaces, spfldname,
-        sptoken, structure, structwith, variant,
+        interpolated, list_lit, literal, map, raw_string, reference, select, spaces,
+        spfldname, sptoken, structure, structwith, variant,
     },
 };
 use arcstr::ArcStr;
@@ -169,6 +169,7 @@ where
         (position(), token('!').with(arith_term()))
             .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
         raw_string().map(|e| (e, None)),
+        list_lit().map(|e| (e, None)),
         array().map(|e| (e, None)),
         byref_arith().map(|e| (e, None)),
         deref_arith().map(|e| (e, None)),
@@ -338,7 +339,11 @@ parser! {
                     attempt(string("<=")),
                     attempt(string("&&")),
                     attempt(string("||")),
-                    string(">"),
+                    // `>` must not swallow a list literal's `>]` closer:
+                    // `[<a, b>]` ends element parsing at `b`. `> ]` is
+                    // never valid arithmetic (no expression starts with
+                    // `]`), so nothing is lost.
+                    attempt(string(">").skip(not_followed_by(token(']')))),
                     // `<` must not swallow the `<-` of a connect: with unary
                     // minus, `a <- b` would otherwise read as `a < (-b)`.
                     // `a < -b` (space before `-`) still parses as less-than.

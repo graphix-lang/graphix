@@ -873,6 +873,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Variant(&'a node::data::Variant<R, E>),
     Construct(&'a node::data::Construct<R, E>),
     Array(&'a node::array::Array<R, E>),
+    ListLit(&'a node::array::ListLit<R, E>),
     Map(&'a node::map::Map<R, E>),
     // Accessors
     StructRef(&'a node::data::StructRef<R, E>),

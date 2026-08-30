@@ -5,7 +5,7 @@ use crate::{
     expr::{Expr, ExprId},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
-        emit_tuple_new_node,
+        emit_list_new_node, emit_tuple_new_node,
     },
     typ::Type,
     wrap,
@@ -447,6 +447,112 @@ impl<R: Rt, E: UserEvent> Array<R, E> {
             .collect::<Result<_>>()?;
         let typ = Type::Array(Arc::new(Type::empty_tvar()));
         Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+}
+
+#[derive(Debug)]
+pub struct ListLit<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Node<R, E>]>,
+    resident: TagValue,
+}
+
+impl<R: Rt, E: UserEvent> ListLit<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        args: &Arc<[Expr]>,
+    ) -> Result<Node<R, E>> {
+        let n = args
+            .iter()
+            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
+            .collect::<Result<_>>()?;
+        let typ = Type::List(Arc::new(Type::empty_tvar()));
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        use crate::node::collection::list;
+        if self.n.is_empty() {
+            // Empty producer = a constant (see Array's empty case).
+            if ctx.frame_depth > 0 {
+                return self.resident.set(if ctx.frame_init {
+                    TagValue::fired(list::nil())
+                } else {
+                    TagValue::stale(list::nil())
+                });
+            } else if event.init {
+                return self.resident.set(TagValue::fired(list::nil()));
+            }
+            return self.resident.ride();
+        }
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
+        dense_gate!(self, ctx, trig, bottom);
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let v = list::from_iter(vals.drain(..));
+        self.resident.set(TagValue::tagged(v, tag))
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.delete(ctx))
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.sleep(ctx))
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.iter().for_each(|n| n.refs(refs))
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n, n.typecheck0(ctx))?
+        }
+        let rtype = Type::Bottom;
+        let rtype = wrap!(
+            self,
+            self.n.iter().fold(Ok(rtype), |rtype, n| n.typ().union(&ctx.env, &rtype?))
+        )?;
+        let rtype = match rtype {
+            Type::Bottom => Type::List(Arc::new(Type::empty_tvar())),
+            t => Type::List(Arc::new(t)),
+        };
+        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n, n.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::ListLit(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_list_new_node(cx, &self.n)
     }
 }
 

@@ -23,6 +23,11 @@ use triomphe::Arc;
 
 use super::{grow::grow, not_prefix};
 
+/// Shared post-processing for slice-shaped patterns: classify the
+/// element/rest mix into Slice / SlicePrefix / SliceSuffix. `list`
+/// selects the native-list flavor; the SUFFIX form is refused there —
+/// a list's tail is O(1), its front is an O(n) walk
+/// (`design/list_native.md`).
 pub(super) fn slice_pattern<I>(
     all: Option<ArcStr>,
 ) -> impl Parser<I, Output = StructurePattern>
@@ -64,13 +69,16 @@ where
     .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
         let all = all.clone();
         if pats.len() == 0 {
-            value(StructurePattern::Slice { all, binds: Arc::from_iter([]) }).right()
+            value(StructurePattern::Slice { list: false, all, binds: Arc::from_iter([]) })
+                .right()
         } else if pats.len() == 1 {
             match pats.pop().unwrap() {
-                Either::Left(s) => {
-                    value(StructurePattern::Slice { all, binds: Arc::from_iter([s]) })
-                        .right()
-                }
+                Either::Left(s) => value(StructurePattern::Slice {
+                    list: false,
+                    all,
+                    binds: Arc::from_iter([s]),
+                })
+                .right(),
                 Either::Right(_) => unexpected_any("invalid singular range match").left(),
             }
         } else {
@@ -86,10 +94,98 @@ where
                 (Either::Left(_), Either::Right(_)) => {
                     let tail = pats.pop().unwrap().right().unwrap();
                     let prefix = all_left!(pats);
-                    value(StructurePattern::SlicePrefix { all, tail, prefix }).right()
+                    value(StructurePattern::SlicePrefix {
+                        list: false,
+                        all,
+                        tail,
+                        prefix,
+                    })
+                    .right()
+                }
+                (Either::Left(_), Either::Left(_)) => value(StructurePattern::Slice {
+                    list: false,
+                    all,
+                    binds: all_left!(pats),
+                })
+                .right(),
+            }
+        }
+    })
+}
+
+/// The native-list pattern `[<..>]` — the list-flavored slice grammar.
+pub(super) fn list_slice_pattern<I>(
+    all: Option<ArcStr>,
+) -> impl Parser<I, Output = StructurePattern>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    macro_rules! all_left {
+        ($pats:expr) => {{
+            let mut err = false;
+            let pats: Arc<[StructurePattern]> =
+                Arc::from_iter($pats.drain(..).map(|s| match s {
+                    Either::Left(s) => s,
+                    Either::Right(_) => {
+                        err = true;
+                        StructurePattern::Ignore
+                    }
+                }));
+            if err {
+                return unexpected_any("invalid pattern").left();
+            }
+            pats
+        }};
+    }
+    between(
+        attempt(combine::parser::char::string("[<")),
+        spstring(">]"),
+        sep_by_tok(
+            spaces().with(choice((
+                string("..").map(|_| Either::Right(None)),
+                attempt(fname().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
+                structure_pattern().map(|p| Either::Left(p)),
+            ))),
+            csep(),
+            attempt(spstring(">]")),
+        ),
+    )
+    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
+        let all = all.clone();
+        if pats.len() == 0 {
+            value(StructurePattern::Slice { list: true, all, binds: Arc::from_iter([]) })
+                .right()
+        } else if pats.len() == 1 {
+            match pats.pop().unwrap() {
+                Either::Left(s) => value(StructurePattern::Slice {
+                    list: true,
+                    all,
+                    binds: Arc::from_iter([s]),
+                })
+                .right(),
+                Either::Right(_) => unexpected_any("invalid singular range match").left(),
+            }
+        } else {
+            match (&pats[0], &pats[pats.len() - 1]) {
+                (Either::Right(_), _) => unexpected_any(
+                    "list patterns have no suffix form (the tail is O(1), the front is not)",
+                )
+                .left(),
+                (Either::Left(_), Either::Right(_)) => {
+                    let tail = pats.pop().unwrap().right().unwrap();
+                    let prefix = all_left!(pats);
+                    value(StructurePattern::SlicePrefix { list: true, all, tail, prefix })
+                        .right()
                 }
                 (Either::Left(_), Either::Left(_)) => {
-                    value(StructurePattern::Slice { all, binds: all_left!(pats) }).right()
+                    value(StructurePattern::Slice {
+                        list: true,
+                        all,
+                        binds: all_left!(pats),
+                    })
+                    .right()
                 }
             }
         }
@@ -280,6 +376,7 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow(spaces().with(optional(attempt(all_pattern()))).then(|all| choice((
+            list_slice_pattern(all.clone()),
             slice_pattern(all.clone()),
             tuple_pattern(all.clone()),
             struct_pattern(all.clone()),

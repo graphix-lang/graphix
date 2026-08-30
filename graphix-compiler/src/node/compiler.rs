@@ -1,7 +1,7 @@
 use super::{
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
     TypeDef,
-    array::{Array, ArrayRef, ArraySlice},
+    array::{Array, ArrayRef, ArraySlice, ListLit},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
@@ -210,6 +210,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Array { args } => {
             Array::compile(ctx, flags, spec.clone(), scope, top_id, args)
+        }
+        ExprKind::List { args } => {
+            ListLit::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
         ExprKind::ArrayRef { source, i } => {
             ArrayRef::compile(ctx, flags, spec.clone(), scope, top_id, source, i)

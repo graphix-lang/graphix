@@ -514,6 +514,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::Variant(_)
         | NodeView::Construct(_)
         | NodeView::Array(_)
+        | NodeView::ListLit(_)
         | NodeView::Map(_)
         | NodeView::StructRef(_)
         | NodeView::TupleRef(_)

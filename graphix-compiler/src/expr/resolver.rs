@@ -934,6 +934,7 @@ impl Expr {
             }),
             ExprKind::Any { args } => only_args!(Any, args),
             ExprKind::Array { args } => only_args!(Array, args),
+            ExprKind::List { args } => only_args!(List, args),
             ExprKind::Map { args } => Box::pin(async move {
                 let args = Arc::from(subtuples!(args));
                 expr!(ExprKind::Map { args })

@@ -15,10 +15,16 @@ pub enum StructurePattern {
     Literal(Value),
     Bind(ArcStr),
     Slice {
+        /// true = a list pattern `[<..>]` over the native List; false
+        /// = an array slice (`design/list_native.md`).
+        list: bool,
         all: Option<ArcStr>,
         binds: Arc<[StructurePattern]>,
     },
     SlicePrefix {
+        /// true = `[<h, rest..>]` — `tail` binds the TAIL as a List,
+        /// O(1), sharing structure.
+        list: bool,
         all: Option<ArcStr>,
         prefix: Arc<[StructurePattern]>,
         tail: Option<ArcStr>,
@@ -75,7 +81,7 @@ impl StructurePattern {
         match self {
             Self::Bind(n) => f(n),
             Self::Ignore | Self::Literal(_) => (),
-            Self::Slice { all, binds } => {
+            Self::Slice { list: _, all, binds } => {
                 if let Some(n) = all {
                     f(n)
                 }
@@ -83,7 +89,7 @@ impl StructurePattern {
                     t.with_names(f)
                 }
             }
-            Self::SlicePrefix { all, prefix, tail } => {
+            Self::SlicePrefix { list: _, all, prefix, tail } => {
                 if let Some(n) = all {
                     f(n)
                 }
@@ -188,9 +194,19 @@ impl StructurePattern {
                 let params = Arc::from_iter(params.iter().map(|_| Type::empty_tvar()));
                 Ok(Type::Abstract { id: *id, params })
             }
-            Self::Slice { all: _, binds }
-            | Self::SlicePrefix { all: _, prefix: binds, tail: _ }
-            | Self::SliceSuffix { all: _, head: _, suffix: binds } => {
+            Self::Slice { list, all: _, binds }
+            | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
+                let t =
+                    binds.iter().fold(Ok::<_, anyhow::Error>(Type::Bottom), |t, p| {
+                        Ok(t?.union(env, &p.infer_type_predicate(env, scope)?)?)
+                    })?;
+                let t = match t {
+                    Type::Bottom => Type::empty_tvar(),
+                    t => t,
+                };
+                Ok(if *list { Type::List(Arc::new(t)) } else { Type::Array(Arc::new(t)) })
+            }
+            Self::SliceSuffix { all: _, head: _, suffix: binds } => {
                 let t =
                     binds.iter().fold(Ok::<_, anyhow::Error>(Type::Bottom), |t, p| {
                         Ok(t?.union(env, &p.infer_type_predicate(env, scope)?)?)
@@ -399,8 +415,31 @@ impl StructurePattern {
                 Ok(changed
                     .then(|| Type::Variant(tag.clone(), Arc::from_iter(out.into_iter()))))
             }
-            Self::Slice { all: _, binds }
-            | Self::SlicePrefix { all: _, prefix: binds, tail: _ }
+            Self::Slice { list: true, all: _, binds }
+            | Self::SlicePrefix { list: true, all: _, prefix: binds, tail: _ } => {
+                let pt = match ptype {
+                    Type::List(t) => t,
+                    _ => return Ok(None),
+                };
+                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
+                members(env, scrutinee, depth, &mut ms);
+                let st = match ms.iter().find(|m| matches!(m, Type::List(_))) {
+                    Some(Type::List(st)) => st.clone(),
+                    _ => return Ok(None),
+                };
+                let mut changed = false;
+                let mut t = Type::Bottom;
+                for p in binds.iter() {
+                    let sub = p
+                        .complete_type_predicate_inner(env, pt, &st, depth + 1)?
+                        .inspect(|_| changed = true)
+                        .unwrap_or_else(|| (**pt).clone());
+                    t = t.union(env, &sub)?;
+                }
+                return Ok(changed.then(|| Type::List(Arc::new(t))));
+            }
+            Self::Slice { list: false, all: _, binds }
+            | Self::SlicePrefix { list: false, all: _, prefix: binds, tail: _ }
             | Self::SliceSuffix { all: _, head: _, suffix: binds } => {
                 let pt = match ptype {
                     Type::Array(t) => t,
@@ -444,25 +483,26 @@ impl fmt::Display for StructurePattern {
             StructurePattern::Ignore => write!(f, "_"),
             StructurePattern::Literal(v) => write!(f, "{v}"),
             StructurePattern::Bind(n) => write!(f, "{n}"),
-            StructurePattern::Slice { all, binds } => {
+            StructurePattern::Slice { list, all, binds } => {
                 if let Some(all) = all {
                     write!(f, "{all}@ ")?
                 }
-                write!(f, "[")?;
+                write!(f, "{}", if *list { "[<" } else { "[" })?;
                 with_sep!(binds);
-                write!(f, "]")
+                write!(f, "{}", if *list { ">]" } else { "]" })
             }
-            StructurePattern::SlicePrefix { all, prefix, tail } => {
+            StructurePattern::SlicePrefix { list, all, prefix, tail } => {
                 if let Some(all) = all {
                     write!(f, "{all}@ ")?
                 }
-                write!(f, "[")?;
+                write!(f, "{}", if *list { "[<" } else { "[" })?;
                 for b in prefix.iter() {
                     write!(f, "{b}, ")?
                 }
+                let close = if *list { ">]" } else { "]" };
                 match tail {
-                    None => write!(f, "..]"),
-                    Some(name) => write!(f, "{name}..]"),
+                    None => write!(f, "..{close}"),
+                    Some(name) => write!(f, "{name}..{close}"),
                 }
             }
             StructurePattern::SliceSuffix { all, head, suffix } => {

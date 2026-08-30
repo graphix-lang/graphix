@@ -56,7 +56,7 @@ mod lambdaexp;
 use lambdaexp::{apply_args, lambda};
 
 mod arrayexp;
-use arrayexp::{array, array_index_suffix};
+use arrayexp::{array, array_index_suffix, list_lit};
 
 pub(crate) mod arithexp;
 use arithexp::arith;

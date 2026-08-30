@@ -162,7 +162,7 @@ fn array_members(
         return Ok(());
     }
     match t {
-        Type::Array(_) => out.push(t.clone()),
+        Type::Array(_) | Type::List(_) => out.push(t.clone()),
         Type::Set(ts) => {
             for t in ts.iter() {
                 array_members(env, t, out, depth + 1)?
@@ -401,8 +401,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // the scoped planes keep the emission quiet). Inside frames
         // selection stays VALUE-DRIVEN (R1; see the once_tainted
         // note below).
-        let arg_trig =
-            arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up);
+        let arg_trig = arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up);
         enum ChainOut {
             Quiet,
             Taken(Option<usize>),
@@ -853,7 +852,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 match rest {
                     None => {
                         slice_note = " (the slice arms cover finitely many \
-                                      lengths — an array scrutinee also needs a \
+                                      lengths — an array or list scrutinee also needs a \
                                       rest pattern or a wildcard)"
                             .into()
                     }

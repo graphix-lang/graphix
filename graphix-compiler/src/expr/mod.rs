@@ -446,6 +446,9 @@ pub enum ExprKind {
     Array {
         args: Arc<[Expr]>,
     },
+    List {
+        args: Arc<[Expr]>,
+    },
     Map {
         args: Arc<[(Expr, Expr)]>,
     },
@@ -883,6 +886,7 @@ impl Expr {
             }
             ExprKind::Any { args }
             | ExprKind::Array { args }
+            | ExprKind::List { args }
             | ExprKind::Tuple { args }
             | ExprKind::Variant { tag: _, args }
             | ExprKind::StringInterpolate { args } => {

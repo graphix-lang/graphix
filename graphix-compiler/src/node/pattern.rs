@@ -15,17 +15,30 @@ use smallvec::SmallVec;
 use std::fmt::Debug;
 use triomphe::Arc;
 
+/// The three shapes the exact-length slice pattern compiles against:
+/// a tuple (fixed arity), an array, or the native List
+/// (`design/list_native.md` — the runtime walk follows the spine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceKind {
+    Tuple,
+    Array,
+    List,
+}
+
 #[derive(Debug)]
 pub enum StructPatternNode {
     Ignore,
     Literal(Value),
     Bind(BindId),
     Slice {
-        tuple: bool,
+        kind: SliceKind,
         all: Option<BindId>,
         binds: Box<[StructPatternNode]>,
     },
     SlicePrefix {
+        /// true = the native-list prefix form `[<h, rest..>]`; `tail`
+        /// binds the TAIL as a List, O(1), sharing structure.
+        list: bool,
         all: Option<BindId>,
         prefix: Box<[StructPatternNode]>,
         tail: Option<BindId>,
@@ -110,7 +123,7 @@ impl StructPatternNode {
                 let rep = rep.clone();
                 bind.realign(env, &rep)
             }
-            Self::Slice { tuple: true, binds, all: _ } => {
+            Self::Slice { kind: SliceKind::Tuple, binds, all: _ } => {
                 let ts = typ.with_deref(|t| match t {
                     Some(Type::Tuple(ts)) => Some(ts.clone()),
                     _ => None,
@@ -124,11 +137,24 @@ impl StructPatternNode {
                 }
                 Ok(())
             }
-            Self::Slice { tuple: false, binds, all: _ }
-            | Self::SlicePrefix { prefix: binds, all: _, .. }
+            Self::Slice { kind: SliceKind::Array, binds, all: _ }
+            | Self::SlicePrefix { list: false, prefix: binds, all: _, .. }
             | Self::SliceSuffix { suffix: binds, all: _, .. } => {
                 let et = typ.with_deref(|t| match t {
                     Some(Type::Array(et)) => Some(et.clone()),
+                    _ => None,
+                });
+                if let Some(et) = et {
+                    for b in binds.iter_mut() {
+                        b.realign(env, &et)?
+                    }
+                }
+                Ok(())
+            }
+            Self::Slice { kind: SliceKind::List, binds, all: _ }
+            | Self::SlicePrefix { list: true, prefix: binds, all: _, .. } => {
+                let et = typ.with_deref(|t| match t {
+                    Some(Type::List(et)) => Some(et.clone()),
                     _ => None,
                 });
                 if let Some(et) = et {
@@ -177,13 +203,19 @@ impl StructPatternNode {
         ori: Arc<Origin>,
     ) -> Result<Self> {
         macro_rules! with_pref_suf {
-            ($all:expr, $single:expr, $multi:expr) => {{
-                type_predicate.check_contains(
-                    &ctx.env,
-                    &Type::Array(Arc::new(Type::empty_tvar())),
-                )?;
-                match &type_predicate.with_deref(|t| t.cloned()) {
-                    Some(Type::Array(et)) => {
+            ($list:expr, $all:expr, $single:expr, $multi:expr) => {{
+                let want = if $list {
+                    Type::List(Arc::new(Type::empty_tvar()))
+                } else {
+                    Type::Array(Arc::new(Type::empty_tvar()))
+                };
+                type_predicate.check_contains(&ctx.env, &want)?;
+                match &type_predicate.with_deref(|t| match t {
+                    Some(Type::Array(et)) if !$list => Some(et.clone()),
+                    Some(Type::List(et)) if $list => Some(et.clone()),
+                    _ => None,
+                }) {
+                    Some(et) => {
                         let all = $all.as_ref().map(|n| {
                             ctx.env
                                 .bind_variable(
@@ -245,21 +277,27 @@ impl StructPatternNode {
                     .id;
                 Self::Bind(id)
             }
-            StructurePattern::SlicePrefix { all, prefix, tail } => {
-                let (all, tail, prefix) = with_pref_suf!(all, tail, prefix);
-                Self::SlicePrefix { all, prefix, tail }
+            StructurePattern::SlicePrefix { list, all, prefix, tail } => {
+                let (all, tail, prefix) = with_pref_suf!(*list, all, tail, prefix);
+                Self::SlicePrefix { list: *list, all, prefix, tail }
             }
             StructurePattern::SliceSuffix { all, head, suffix } => {
-                let (all, head, suffix) = with_pref_suf!(all, head, suffix);
+                let (all, head, suffix) = with_pref_suf!(false, all, head, suffix);
                 Self::SliceSuffix { all, head, suffix }
             }
-            StructurePattern::Slice { all, binds } => {
-                type_predicate.check_contains(
-                    &ctx.env,
-                    &Type::Array(Arc::new(Type::empty_tvar())),
-                )?;
-                match &type_predicate.with_deref(|t| t.cloned()) {
-                    Some(Type::Array(et)) => {
+            StructurePattern::Slice { list, all, binds } => {
+                let want = if *list {
+                    Type::List(Arc::new(Type::empty_tvar()))
+                } else {
+                    Type::Array(Arc::new(Type::empty_tvar()))
+                };
+                type_predicate.check_contains(&ctx.env, &want)?;
+                match &type_predicate.with_deref(|t| match t {
+                    Some(Type::Array(et)) if !*list => Some(et.clone()),
+                    Some(Type::List(et)) if *list => Some(et.clone()),
+                    _ => None,
+                }) {
+                    Some(et) => {
                         let all = all.as_ref().map(|n| {
                             ctx.env
                                 .bind_variable(
@@ -277,7 +315,11 @@ impl StructPatternNode {
                                 Self::compile_int(ctx, et, b, scope, pos, ori.clone())
                             })
                             .collect::<Result<Box<[Self]>>>()?;
-                        Self::Slice { tuple: false, all, binds }
+                        Self::Slice {
+                            kind: if *list { SliceKind::List } else { SliceKind::Array },
+                            all,
+                            binds,
+                        }
                     }
                     _ => format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("slice patterns can't match {type_predicate}")
@@ -314,7 +356,7 @@ impl StructPatternNode {
                                 Self::compile_int(ctx, t, b, scope, pos, ori.clone())
                             })
                             .collect::<Result<Box<[Self]>>>()?;
-                        Self::Slice { tuple: true, all, binds }
+                        Self::Slice { kind: SliceKind::Tuple, all, binds }
                     }
                     _ => format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("tuple patterns can't match {type_predicate}")
@@ -495,7 +537,7 @@ impl StructPatternNode {
     /// rather than matching the enum.
     pub fn tuple_leaves(&self) -> Option<Vec<(BindId, usize)>> {
         match self {
-            Self::Slice { tuple: true, all: None, binds } => {
+            Self::Slice { kind: SliceKind::Tuple, all: None, binds } => {
                 let mut out = Vec::with_capacity(binds.len());
                 for (i, b) in binds.iter().enumerate() {
                     match b {
@@ -537,7 +579,7 @@ impl StructPatternNode {
             }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id),
-            Self::Slice { tuple: _, all, binds } => {
+            Self::Slice { kind: _, all, binds } => {
                 if let Some(id) = all {
                     f(*id);
                 }
@@ -553,7 +595,7 @@ impl StructPatternNode {
                     n.ids(f)
                 }
             }
-            Self::SlicePrefix { all, prefix, tail } => {
+            Self::SlicePrefix { list: _, all, prefix, tail } => {
                 if let Some(id) = all {
                     f(*id)
                 }
@@ -604,17 +646,36 @@ impl StructPatternNode {
             }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id, v.clone()),
-            Self::Slice { tuple: _, all, binds } => match v {
-                Value::Array(a) if a.len() == binds.len() => {
-                    if let Some(id) = all {
-                        f(*id, v.clone());
+            Self::Slice { kind: SliceKind::Tuple | SliceKind::Array, all, binds } => {
+                match v {
+                    Value::Array(a) if a.len() == binds.len() => {
+                        if let Some(id) = all {
+                            f(*id, v.clone());
+                        }
+                        for (j, n) in binds.iter().enumerate() {
+                            n.bind(&a[j], f)
+                        }
                     }
-                    for (j, n) in binds.iter().enumerate() {
-                        n.bind(&a[j], f)
+                    _ => (),
+                }
+            }
+            Self::Slice { kind: SliceKind::List, all, binds } => {
+                use crate::node::collection::list;
+                if let Some(id) = all {
+                    f(*id, v.clone());
+                }
+                let mut cur = v.clone();
+                for n in binds.iter() {
+                    match list::split(&cur) {
+                        Some((h, t)) => {
+                            n.bind(h, f);
+                            let t = t.clone();
+                            cur = t;
+                        }
+                        None => break,
                     }
                 }
-                _ => (),
-            },
+            }
             Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
                     f(*id, v.clone())
@@ -628,7 +689,7 @@ impl StructPatternNode {
                     _ => (),
                 }
             }
-            Self::SlicePrefix { all, prefix, tail } => match v {
+            Self::SlicePrefix { list: false, all, prefix, tail } => match v {
                 Value::Array(a) if a.len() >= prefix.len() => {
                     if let Some(id) = all {
                         f(*id, v.clone())
@@ -643,6 +704,33 @@ impl StructPatternNode {
                 }
                 _ => (),
             },
+            // `[<h, rest..>]` — heads bind by walking the spine; the
+            // tail bind is the k-th tail itself: O(1), shares
+            // structure (`design/list_native.md`).
+            Self::SlicePrefix { list: true, all, prefix, tail } => {
+                use crate::node::collection::list;
+                if let Some(id) = all {
+                    f(*id, v.clone())
+                }
+                let mut cur = v.clone();
+                let mut ok = true;
+                for n in prefix.iter() {
+                    match list::split(&cur) {
+                        Some((h, t)) => {
+                            n.bind(h, f);
+                            let t = t.clone();
+                            cur = t;
+                        }
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok && let Some(id) = tail {
+                    f(*id, cur)
+                }
+            }
             Self::SliceSuffix { all, head, suffix } => match v {
                 Value::Array(a) if a.len() >= suffix.len() => {
                     // The suffix patterns match the LAST `suffix.len()`
@@ -697,7 +785,7 @@ impl StructPatternNode {
             }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id),
-            Self::Slice { tuple: _, all, binds }
+            Self::Slice { kind: _, all, binds }
             | Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
                     f(*id)
@@ -706,7 +794,7 @@ impl StructPatternNode {
                     n.unbind(f)
                 }
             }
-            Self::SlicePrefix { all, prefix, tail } => {
+            Self::SlicePrefix { list: _, all, prefix, tail } => {
                 if let Some(id) = all {
                     f(*id)
                 }
@@ -751,13 +839,39 @@ impl StructPatternNode {
             },
             Self::Ignore | Self::Bind(_) => true,
             Self::Literal(o) => v == o,
-            Self::Slice { tuple: _, all: _, binds } => match v {
-                Value::Array(a) => {
-                    a.len() == binds.len()
-                        && binds.iter().zip(a.iter()).all(|(b, v)| b.is_match(v))
+            Self::Slice { kind: SliceKind::Tuple | SliceKind::Array, all: _, binds } => {
+                match v {
+                    Value::Array(a) => {
+                        a.len() == binds.len()
+                            && binds.iter().zip(a.iter()).all(|(b, v)| b.is_match(v))
+                    }
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
+            // The native-list walk: exactly `binds.len()` cells, each
+            // head matching, ending at nil.
+            Self::Slice { kind: SliceKind::List, all: _, binds } => {
+                use crate::node::collection::list;
+                let mut cur = v.clone();
+                let mut ok = true;
+                for b in binds.iter() {
+                    match list::split(&cur) {
+                        Some((h, t)) => {
+                            if !b.is_match(h) {
+                                ok = false;
+                                break;
+                            }
+                            let t = t.clone();
+                            cur = t;
+                        }
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                ok && list::is_nil(&cur)
+            }
             Self::Variant { tag, all: _, binds } if binds.len() == 0 => match v {
                 Value::String(s) => tag == s,
                 _ => false,
@@ -773,13 +887,35 @@ impl StructPatternNode {
                 }
                 _ => false,
             },
-            Self::SlicePrefix { all: _, prefix, tail: _ } => match v {
+            Self::SlicePrefix { list: false, all: _, prefix, tail: _ } => match v {
                 Value::Array(a) => {
                     a.len() >= prefix.len()
                         && prefix.iter().zip(a.iter()).all(|(b, v)| b.is_match(v))
                 }
                 _ => false,
             },
+            Self::SlicePrefix { list: true, all: _, prefix, tail: _ } => {
+                use crate::node::collection::list;
+                let mut cur = v.clone();
+                let mut ok = true;
+                for b in prefix.iter() {
+                    match list::split(&cur) {
+                        Some((h, t)) => {
+                            if !b.is_match(h) {
+                                ok = false;
+                                break;
+                            }
+                            let t = t.clone();
+                            cur = t;
+                        }
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                ok
+            }
             Self::SliceSuffix { all: _, head: _, suffix } => match v {
                 Value::Array(a) => {
                     a.len() >= suffix.len()
@@ -812,7 +948,7 @@ impl StructPatternNode {
             Self::Abstract { bind, .. } => bind.is_refutable(),
             Self::Bind(_) | Self::Ignore => false,
             Self::Literal(_) => true,
-            Self::Slice { tuple: true, all: _, binds } => {
+            Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
                 binds.iter().any(|p| p.is_refutable())
             }
             Self::Struct { all: _, binds } => {
@@ -821,7 +957,7 @@ impl StructPatternNode {
             Self::Variant { all: _, tag: _, binds } => {
                 binds.len() > 0 && binds.iter().any(|p| p.is_refutable())
             }
-            Self::Slice { tuple: false, .. }
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
             | Self::SlicePrefix { .. }
             | Self::SliceSuffix { .. } => true,
         }
@@ -851,7 +987,7 @@ impl StructPatternNode {
     pub fn is_array_slice(&self) -> bool {
         matches!(
             self,
-            Self::Slice { tuple: false, .. }
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
                 | Self::SlicePrefix { .. }
                 | Self::SliceSuffix { .. }
         )
@@ -865,8 +1001,12 @@ impl StructPatternNode {
     /// can never run.
     pub fn array_len_range(&self) -> Option<(usize, bool)> {
         match self {
-            Self::Slice { tuple: false, all: _, binds } => Some((binds.len(), true)),
-            Self::SlicePrefix { all: _, prefix, tail: _ } => Some((prefix.len(), false)),
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, all: _, binds } => {
+                Some((binds.len(), true))
+            }
+            Self::SlicePrefix { list: _, all: _, prefix, tail: _ } => {
+                Some((prefix.len(), false))
+            }
             Self::SliceSuffix { all: _, head: _, suffix } => Some((suffix.len(), false)),
             _ => None,
         }
@@ -879,10 +1019,10 @@ impl StructPatternNode {
     /// arm's predicate gates dispatch too) is the caller's to verify.
     pub fn array_len_coverage(&self) -> Option<(usize, bool)> {
         let all_cover = match self {
-            Self::Slice { tuple: false, all: _, binds } => {
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
             }
-            Self::SlicePrefix { all: _, prefix, tail: _ } => {
+            Self::SlicePrefix { list: _, all: _, prefix, tail: _ } => {
                 prefix.iter().all(|p| p.matches_anything())
             }
             Self::SliceSuffix { all: _, head: _, suffix } => {
@@ -897,13 +1037,13 @@ impl StructPatternNode {
         match &self {
             Self::Bind(_) | Self::Ignore => true,
             Self::Literal(_) | Self::Variant { .. } | Self::Abstract { .. } => false,
-            Self::Slice { tuple: true, all: _, binds } => {
+            Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
             }
             Self::Struct { all: _, binds } => {
                 binds.iter().all(|(_, _, p)| p.matches_anything())
             }
-            Self::Slice { tuple: false, .. }
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
             | Self::SlicePrefix { .. }
             | Self::SliceSuffix { .. } => false,
         }
@@ -936,7 +1076,7 @@ impl StructPatternNode {
                     n.delete(ctx)
                 }
             }
-            Self::Slice { tuple: _, all, binds }
+            Self::Slice { kind: _, all, binds }
             | Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
                     ctx.rt.store_remove(id);
@@ -946,7 +1086,7 @@ impl StructPatternNode {
                     n.delete(ctx)
                 }
             }
-            Self::SlicePrefix { all, prefix, tail } => {
+            Self::SlicePrefix { list: _, all, prefix, tail } => {
                 if let Some(id) = all {
                     ctx.rt.store_remove(id);
                     ctx.env.unbind_variable(*id);

@@ -458,7 +458,11 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
         prop_oneof![
             (option::of(random_fname()), collection::vec(inner.clone(), (0, 10)))
                 .prop_map(|(all, b)| {
-                    StructurePattern::Slice { all, binds: Arc::from_iter(b) }
+                    StructurePattern::Slice { list: false, all, binds: Arc::from_iter(b) }
+                }),
+            (option::of(random_fname()), collection::vec(inner.clone(), (0, 10)))
+                .prop_map(|(all, b)| {
+                    StructurePattern::Slice { list: true, all, binds: Arc::from_iter(b) }
                 }),
             (option::of(random_fname()), collection::vec(inner.clone(), (2, 10)))
                 .prop_map(|(all, b)| {
@@ -497,6 +501,18 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                 option::of(random_fname())
             )
                 .prop_map(|(all, p, tail)| StructurePattern::SlicePrefix {
+                    list: false,
+                    all,
+                    prefix: Arc::from_iter(p),
+                    tail
+                }),
+            (
+                option::of(random_fname()),
+                collection::vec(inner.clone(), (1, 10)),
+                option::of(random_fname())
+            )
+                .prop_map(|(all, p, tail)| StructurePattern::SlicePrefix {
+                    list: true,
                     all,
                     prefix: Arc::from_iter(p),
                     tail
@@ -974,6 +990,13 @@ macro_rules! array {
     };
 }
 
+macro_rules! list_lit {
+    ($inner:expr) => {
+        collection::vec($inner, (0, 10))
+            .prop_map(|a| { ExprKind::List { args: Arc::from_iter(a) } }.to_expr_nopos())
+    };
+}
+
 macro_rules! map {
     ($inner:expr) => {
         collection::vec(($inner, $inner), (0, 10))
@@ -1385,6 +1408,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             connect!(inner.clone()),
             select!(inner.clone()),
             array!(inner.clone()),
+            list_lit!(inner.clone()),
             map!(inner.clone()),
             tuple!(inner.clone()),
             variant!(inner.clone()),
@@ -1436,10 +1460,10 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
     match (pat0, pat1) {
         (
             StructurePattern::Literal(Value::Array(a)),
-            StructurePattern::Slice { all: None, binds },
+            StructurePattern::Slice { list: false, all: None, binds },
         )
         | (
-            StructurePattern::Slice { all: None, binds },
+            StructurePattern::Slice { list: false, all: None, binds },
             StructurePattern::Literal(Value::Array(a)),
         ) => {
             binds.iter().all(|n| match n {
@@ -1463,10 +1487,11 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
             v0.approx_eq(v1)
         }
         (
-            StructurePattern::Slice { all: a0, binds: p0 },
-            StructurePattern::Slice { all: a1, binds: p1 },
+            StructurePattern::Slice { list: l0, all: a0, binds: p0 },
+            StructurePattern::Slice { list: l1, all: a1, binds: p1 },
         ) => {
-            a0 == a1
+            l0 == l1
+                && a0 == a1
                 && p0.len() == p1.len()
                 && p0
                     .iter()
@@ -1474,10 +1499,11 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
                     .all(|(p0, p1)| check_structure_pattern(p0, p1))
         }
         (
-            StructurePattern::SlicePrefix { all: a0, prefix: p0, tail: t0 },
-            StructurePattern::SlicePrefix { all: a1, prefix: p1, tail: t1 },
+            StructurePattern::SlicePrefix { list: l0, all: a0, prefix: p0, tail: t0 },
+            StructurePattern::SlicePrefix { list: l1, all: a1, prefix: p1, tail: t1 },
         ) => {
-            a0 == a1
+            l0 == l1
+                && a0 == a1
                 && t0 == t1
                 && p0.len() == p1.len()
                 && p0
@@ -1669,6 +1695,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0.approx_eq(v1),
         (ExprKind::Array { args: a0 }, ExprKind::Array { args: a1 })
+        | (ExprKind::List { args: a0 }, ExprKind::List { args: a1 })
         | (ExprKind::Tuple { args: a0 }, ExprKind::Tuple { args: a1 }) => {
             a0.len() == a1.len() && a0.iter().zip(a1.iter()).all(|(e0, e1)| check(e0, e1))
         }

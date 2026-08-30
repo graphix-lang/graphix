@@ -11,7 +11,7 @@ use crate::{
     },
     node::{
         op::CmpOp,
-        pattern::{PatternNode, StructPatternNode},
+        pattern::{PatternNode, SliceKind, StructPatternNode},
         select::Select,
     },
     typ::Type,
@@ -664,7 +664,10 @@ fn emit_composite_pattern_cond(
     }
     let (leaves, len_cc, n): (smallvec::SmallVec<[LeafSpec; 8]>, IntCC, usize) = match pat
     {
-        StructPatternNode::Slice { tuple, all, binds: pbinds } => {
+        StructPatternNode::Slice { kind, all, binds: pbinds } => {
+            if matches!(kind, SliceKind::List) {
+                return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
+            }
             if all.is_some() {
                 return Err(anyhow!(
                     "emit_clif: whole-slice @ binding not lowerable (owned \
@@ -672,7 +675,7 @@ fn emit_composite_pattern_cond(
                 ));
             }
             let elt = |j: usize| -> Result<Type> {
-                if *tuple {
+                if matches!(kind, SliceKind::Tuple) {
                     match &styp {
                         Type::Tuple(elts) if elts.len() == pbinds.len() => {
                             Ok(elts[j].clone())
@@ -701,7 +704,10 @@ fn emit_composite_pattern_cond(
                 .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
             (leaves, IntCC::Equal, pbinds.len())
         }
-        StructPatternNode::SlicePrefix { all, prefix, tail } => {
+        StructPatternNode::SlicePrefix { list, all, prefix, tail } => {
+            if *list {
+                return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
+            }
             if all.is_some() || tail.is_some() {
                 return Err(anyhow!(
                     "emit_clif: slice-prefix @/rest binding not lowerable \

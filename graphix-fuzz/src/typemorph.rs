@@ -488,8 +488,8 @@ fn pattern_binds(p: &StructurePattern, name: &str) -> bool {
     match p {
         StructurePattern::Ignore | StructurePattern::Literal(_) => false,
         StructurePattern::Bind(n) => &**n == name,
-        StructurePattern::Slice { all, binds } => all_binds(all, binds),
-        StructurePattern::SlicePrefix { all, prefix, tail } => {
+        StructurePattern::Slice { list: _, all, binds } => all_binds(all, binds),
+        StructurePattern::SlicePrefix { list: _, all, prefix, tail } => {
             all_binds(all, prefix) || tail.as_ref().is_some_and(|t| &**t == name)
         }
         StructurePattern::SliceSuffix { all, head, suffix } => {

@@ -538,6 +538,12 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
         // arrays, an array of maps, …) lower to one Value constant
         // instead of bailing the whole literal.
         NodeView::Array(a) => const_valarray(&a.n),
+        NodeView::ListLit(l) => const_valarray(&l.n).map(|v| match v {
+            Value::Array(a) => {
+                crate::node::collection::list::from_iter(a.iter().cloned())
+            }
+            v => v,
+        }),
         NodeView::Tuple(t) => const_valarray(&t.n),
         NodeView::Map(m) => const_map(&m.keys, &m.vals),
         _ => None,

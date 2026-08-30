@@ -624,6 +624,11 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 rec!(c)
             }
         }
+        NodeView::ListLit(a) => {
+            for c in a.n.iter() {
+                rec!(c)
+            }
+        }
         NodeView::Map(m) => {
             for c in m.keys.iter() {
                 rec!(c)

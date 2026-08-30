@@ -877,6 +877,22 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
 /// producer helpers, then finalize into an owned `*mut ValArray`.
 /// Tuples and array literals share this emission — the runtime shape
 /// is identical, only the static type differs.
+/// `[<a, b, c>]` — build the elements as a ValArray via the tuple
+/// relay's buf machinery, then convert through the same
+/// `graphix_valarray_into_list` boundary the HOF loops use. The disc
+/// mirrors [`emit_tuple_new_node`]'s (the runtime rep IS an array
+/// value; empty = the constant stale-gate).
+pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    fields: &[Node<R, E>],
+) -> Result<CompiledExpr> {
+    let cv = emit_tuple_new_node(cx, fields)?;
+    let into = cx.helper("graphix_valarray_into_list")?;
+    let call = cx.b.ins().call(into, &[cv.payload]);
+    let payload = cx.b.inst_results(call)[1];
+    Ok(CompiledExpr::new(cv.disc, payload))
+}
+
 pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     fields: &[Node<R, E>],
