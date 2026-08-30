@@ -73,8 +73,8 @@ intrinsic row's jit time.
 | `flatmap_list`   | 10k  | 5.1 ms    | 1.78 s    | 349x    |
 | `lfold_intr`     | 100k | 4.3 ms    | 2.04 s    | 474x    |
 | `lfold_intr_4k`  | 4k   | 0.14 ms   | 57 ms     | 400x    |
-| `lfold_rec`      | 4k   | 5.6 ms    | —         | 1x      |
-| `lfold_rec_100k` | 100k | 110 ms    | —         | 1x      |
+| `lfold_rec`      | 4k   | 0.14 ms   | 3.8 ms    | 27x     |
+| `lfold_rec_100k` | 100k | 3.4 ms    | 74 ms     | 22x     |
 | `mfold_intr`     | 100k | 23.0 ms   | 3.75 s    | 163x    |
 | `mfold_trait`    | 100k | 23.6 ms   | 4.58 s    | 194x    |
 
@@ -201,22 +201,19 @@ a per-type loop impl has it today; what a deletion needs is `find`'s
 default written as a loop per representation, not new machinery;
 `flat_map` — the fold+concat derivation is O(n²) by construction (the
 cons + `to_array_rev` derivation, `flatmap_cons`, is 5.8 ms vs 1.6 ms);
-List — the native-List phase A rep swap (2026-08-31,
-`design/list_native.md`) improved every INTRINSIC row (slim 2-slot
-cells, no tag, no per-consult strcmp: `lfold_intr` 6.5 -> 4.3 ms,
-`flatmap_cons` 5.8 -> 3.8 ms, `flatmap_list` 7.2 -> 5.1 ms) but
-REGRESSED the hand-written recursion rows to interp speed
-(`lfold_rec_100k` 4.5 -> 110 ms): the type is opaque until phase B's
-list patterns, so the interim spelling selects over `list::uncons`,
-and `(x, rest)` destructures a nullable TUPLE — the 2026-08-30
-non-scalar bind machinery covers VARIANT payloads only, so the select
-de-fuses and the loop node-walks (~1.1 µs/elem). Phase B's `[<h,
-rest..>]` patterns re-target that machinery at the list rep (nil =
-len-0 test, head/tail from the spine cell) and are expected to beat
-the 2026-08-30 numbers (which were: hand fold 0.35 ms at 4k, BEATING
-the intrinsic at 100k — 4.5 vs then-6.5 ms — via the variant-payload
-bind + Value-carried tail rebind, both of which survive and carry
-over to the pattern lowering).
+List — the native-List arc (2026-08-31, `design/list_native.md`,
+phases A+B+B3) improved every row. Phase A's slim rep (2-slot cells,
+no tag, no per-consult strcmp): `lfold_intr` 6.5 -> 4.3 ms,
+`flatmap_cons` 5.8 -> 3.8 ms, `flatmap_list` 7.2 -> 5.1 ms. Phase
+B/B3's `[<>]` / `[<h, rest..>]` patterns fuse (one `graphix_list_match`
+spine-walk condition; head binds clone out by ABI kind; the REST bind
+is the k-th tail — O(1), shared — riding the Value tail rebind):
+`lfold_rec` 0.14 ms at 4k (the pre-arc variant-pattern best was
+0.35 ms; the phase-A uncons interim interpreted at 5.6 ms), and at
+100k the hand-written pattern fold BEATS the intrinsic ~1.5x
+(`lfold_rec_100k` 3.4 ms vs `lfold_intr` 5.0 ms same-session — the
+intrinsic pays the flatten boundary, the recursion walks the slim
+spine).
 Fixed since 08-25:
 wrapper premat / fn-formal forwarding and capture (`b386f97d`),
 same-HOF nesting (`3bd9a9a9`), the interp's nested-HOF quadratic

@@ -847,6 +847,22 @@ fn variant_payload_read<T: Default>(
     r
 }
 
+/// Walk `j` cells of a list value, returning the j-th TAIL (`heads`
+/// false) or the j-th HEAD's cell (`heads` true → the head value).
+/// `None` on a short/malformed chain (the tainted placeholder) — the
+/// callers' kind-safe defaults take over.
+fn list_walk(v: &Value, j: usize) -> Option<&Value> {
+    use crate::node::collection::list;
+    let mut cur = v;
+    for _ in 0..j {
+        match list::split(cur) {
+            Some((_, t)) => cur = t,
+            None => return None,
+        }
+    }
+    Some(cur)
+}
+
 jit_helpers! { registry = value_helpers;
 
 /// Unwrap an owned `Value::Array` into owned ValArray bits — the
@@ -1203,6 +1219,74 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
     });
     std::mem::forget(v);
     unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+}
+
+/// List-pattern structure test: walk `k` cells; `exact` also requires
+/// nil after them. Shape-safe on the tainted placeholder (a non-list
+/// simply fails the walk).
+safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
+    use crate::node::collection::list;
+    let r = v.with_value(|v| match list_walk(v, k) {
+        None => 0,
+        Some(cur) => {
+            if exact != 0 {
+                list::is_nil(cur) as u8
+            } else {
+                1
+            }
+        }
+    });
+    std::mem::forget(v);
+    r
+}
+
+/// Owned clone of the j-th HEAD of a list value as a full two-word
+/// `Value`; default `Value::Null` (drop-safe) on a short chain.
+safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
+    use crate::node::collection::list;
+    let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
+        Some((h, _)) => h.clone(),
+        None => Value::Null,
+    });
+    std::mem::forget(v);
+    TagValue::clean(r)
+}
+
+/// Owned `ValArray` bits of the j-th head (a composite element);
+/// default = a clone of the static empty array (drop-safe).
+safe fn graphix_list_get_array(v: TagValue, j: usize) -> u64 {
+    use crate::node::collection::list;
+    let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
+        Some((Value::Array(a), _)) => a.clone(),
+        _ => EMPTY_ARR.clone(),
+    });
+    std::mem::forget(v);
+    va_bits(r)
+}
+
+/// Owned `ArcStr` of the j-th head (a string element); default = the
+/// static empty string (drop-safe).
+safe fn graphix_list_get_string(v: TagValue, j: usize) -> u64 {
+    let r = v.with_value(|v| {
+        match list_walk(v, j).and_then(|c| crate::node::collection::list::split(c)) {
+            Some((Value::String(s), _)) => s.clone(),
+            _ => arcstr::ArcStr::new(),
+        }
+    });
+    std::mem::forget(v);
+    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+}
+
+/// Owned clone of the k-th TAIL — the `[<h, rest..>]` rest bind: the
+/// value IS the k-th spine cell, O(1) shared structure. Default
+/// `Value::Null` (drop-safe; an unmatched arm never reads it).
+safe fn graphix_list_tail(v: TagValue, k: usize) -> TagValue {
+    let r = v.with_value(|v| match list_walk(v, k) {
+        Some(cur) => cur.clone(),
+        None => Value::Null,
+    });
+    std::mem::forget(v);
+    TagValue::clean(r)
 }
 
 /// Owned `ValArray` bits of a composite (array/tuple/struct) variant

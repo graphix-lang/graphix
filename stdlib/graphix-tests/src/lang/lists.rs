@@ -45,6 +45,9 @@ run!(list_lit_nested, LIST_LIT_NESTED, |v: Result<&Value>| matches!(
 
 // The canonical ladder: `[<>]` + `[<h, t..>]` is exhaustive (length
 // coverage 0..∞), and the tail bind is the k-th tail — O(1), shared.
+// FUSES end to end since phase B3: the list-pattern condition is one
+// spine-walk helper, the tail bind rides the Value machinery, and the
+// self-call is the Value tail rebind.
 const LIST_PAT_SUM: &str = r#"
 {
   let rec sum = |l: List<i64>, acc: i64| -> i64
@@ -56,7 +59,7 @@ const LIST_PAT_SUM: &str = r#"
 run!(list_pat_sum, LIST_PAT_SUM, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // Exact-length arms miss on other lengths; anonymous rest `..`.
 // (These count `Jit`: the select de-fuses in phase B, but the literal

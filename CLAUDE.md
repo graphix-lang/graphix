@@ -1067,9 +1067,22 @@ the rules.
   `ValArray([head, tail])`, nil = the static EMPTY array clone,
   discriminant = length. The Collection impl lives in CORE (intrinsic
   markers; len derives from fold). TVal prints `[<1, 2>]`; the wire
-  and naked echo stay structural (nested 2-arrays). Literals and
-  list-slice patterns are phase B — until then structural
-  destructuring is `list::uncons` + a nullable-tuple select.
+  and naked echo stay structural (nested 2-arrays). Phase B: `[<1,
+  2>]` literals (ExprKind::List; the JIT emits the tuple relay +
+  `graphix_valarray_into_list`) and list-slice patterns as a FLAVOR
+  on the slice machinery (`list: bool` on the AST, `SliceKind` on the
+  node): `[<>]`, exact, `[<h, rest..>]` with rest binding the TAIL
+  O(1); the SUFFIX form is refused (front is O(n)); length-ladder
+  coverage carries over (array_members also collects List members).
+  Grammar rules: a bare `>` immediately before `]` is the literal
+  closer (never the comparison); tree-sitter spells the delimiters
+  `'['`+immediate`'<'` / `'>'`+immediate`']'` (a 2-char token
+  shadowed `[` in value-strings). B3: list patterns FUSE over a
+  Value-kind scrutinee (`graphix_list_match` + kind-safe
+  `graphix_list_get_*`/`graphix_list_tail` — the rest bind rides the
+  Value tail rebind), so the `[<>]`/`[<h, t..>]` ladder is a native
+  loop: `lfold_rec` beats the list intrinsic at 100k. Nested element
+  patterns and `@`-binds on list arms de-fuse (coverage).
 
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>` (only as a whole typedef body) has identity

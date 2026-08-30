@@ -1,9 +1,12 @@
 # Native List: slim representation, literals, patterns
 
-**Status: phase A LANDED 2026-08-31 (`Type::List` + slim rep — see
-below); phases B (literals/patterns) and C (generator/book) open.
-Implements the 2026-07-17 ruling "List moves into the compiler like
-Array — core data type."**
+**Status: phases A (rep + `Type::List`), B (literals + patterns +
+tree-sitter) and B3 (fused pattern lowering — the ladder beats the
+intrinsic at 100k) LANDED 2026-08-31. Open: phase C — the fuzz
+GENERATOR emitting list literals/patterns (mutate/typemorph already
+handle them), the book chapter, and the overnight roundtrip proptest
+before the arc is called done. Implements the 2026-07-17 ruling "List
+moves into the compiler like Array — core data type."**
 
 > Phase-A reality check: the old typedef was TRANSPARENT (bench and
 > fixtures matched `` `Cons `` directly), so the planned rep-only P1

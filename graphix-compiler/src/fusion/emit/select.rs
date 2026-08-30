@@ -162,6 +162,12 @@ enum SelectArmBind {
     /// wrong-tag read yields an owned drop-safe default behind a
     /// TAINT'd disc.
     PayloadValue { id: BindId, idx: usize, kind: LocalKind },
+    /// `[<a, b>]` / `[<h, rest..>]` — bind the j-th HEAD of a list
+    /// scrutinee: cloned out as an owned local of `kind` via the
+    /// kind-safe `graphix_list_get_*` helpers (legal under a mask).
+    ListHead { id: BindId, idx: usize, kind: LocalKind },
+    /// The rest bind: the k-th TAIL itself — O(1), shares the spine.
+    ListTail { id: BindId, k: usize },
     /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
     /// composite scrutinee. `ptr` is the (borrowed) composite the leaf
     /// reads from: the scrutinee itself, or — for a NESTED pattern — a
@@ -1628,6 +1634,16 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr, arity]);
             Some(cx.b.inst_results(call)[0])
         }
+        p @ (StructPatternNode::Slice { kind: SliceKind::List, .. }
+        | StructPatternNode::SlicePrefix { list: true, .. }) => {
+            if tcond.is_some() {
+                return Err(anyhow!(
+                    "emit_clif: explicit type predicate on a list pattern \
+                         not lowerable"
+                ));
+            }
+            Some(emit_list_pattern_cond(cx, p, scrut, scrut_typ, binds)?)
+        }
         p @ (StructPatternNode::Slice { .. }
         | StructPatternNode::SlicePrefix { .. }
         | StructPatternNode::SliceSuffix { .. }
@@ -1679,6 +1695,77 @@ fn mask_unmatched(
             cx.b.ins().bor(disc, m)
         }
     }
+}
+
+/// The list-pattern condition + binds over a VALUE-kind scrutinee
+/// (`design/list_native.md` phase B3): structure = one
+/// `graphix_list_match` spine walk (`k` cells, `exact` requires nil
+/// after); element binds clone heads out by ABI kind; the rest bind
+/// is the k-th tail — O(1), shared. Element sub-patterns beyond
+/// Bind/Ignore refuse (coverage, like nested variant payloads).
+fn emit_list_pattern_cond(
+    cx: &mut BodyCx,
+    pat: &StructPatternNode,
+    scrut: SelectScrut,
+    scrut_typ: &Type,
+    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
+) -> Result<ClifValue> {
+    let (disc, payload) = match scrut {
+        SelectScrut::Value { disc, payload } => (disc, payload),
+        _ => {
+            return Err(anyhow!(
+                "emit_clif: list pattern over a non-value scrutinee \
+                     {scrut_typ:?}"
+            ));
+        }
+    };
+    let et = scrut_typ
+        .with_deref(|t| match t {
+            Some(Type::List(et)) => Some((**et).clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            anyhow!("emit_clif: list pattern over non-list scrutinee {scrut_typ:?}")
+        })?;
+    let (elems, k, exact, tail) = match pat {
+        StructPatternNode::Slice { kind: SliceKind::List, all, binds: pb } => {
+            if all.is_some() {
+                return Err(anyhow!("emit_clif: whole-list @ binding not lowerable"));
+            }
+            (pb, pb.len(), true, None)
+        }
+        StructPatternNode::SlicePrefix { list: true, all, prefix, tail } => {
+            if all.is_some() {
+                return Err(anyhow!("emit_clif: whole-list @ binding not lowerable"));
+            }
+            (prefix, prefix.len(), false, tail.as_ref())
+        }
+        _ => unreachable!("emit_list_pattern_cond on a non-list pattern"),
+    };
+    for (j, sub) in elems.iter().enumerate() {
+        match sub {
+            StructPatternNode::Bind(id) => {
+                let kind = payload_local_kind(&et).ok_or_else(|| {
+                    anyhow!("emit_clif: list element shape {et:?} not lowerable")
+                })?;
+                binds.push(SelectArmBind::ListHead { id: *id, idx: j, kind });
+            }
+            StructPatternNode::Ignore => {}
+            _ => {
+                return Err(anyhow!(
+                    "emit_clif: nested list element pattern not lowerable"
+                ));
+            }
+        }
+    }
+    if let Some(id) = tail {
+        binds.push(SelectArmBind::ListTail { id: *id, k });
+    }
+    let helper = cx.helper("graphix_list_match")?;
+    let kc = cx.b.ins().iconst(types::I64, k as i64);
+    let ex = cx.b.ins().iconst(types::I8, exact as i64);
+    let call = cx.b.ins().call(helper, &[disc, payload, kc, ex]);
+    Ok(cx.b.inst_results(call)[0])
 }
 
 /// The [`LocalKind`] a non-scalar variant payload element binds as —
@@ -1807,6 +1894,62 @@ fn install_arm_binds(
                 let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
                 let pdisc = mask_unmatched(cx, pdisc, mask);
                 bind_local(cx, name, pdisc, vpayload, *kind, Some(*id));
+            }
+            SelectArmBind::ListHead { id, idx, kind } => {
+                let SelectScrut::Value { disc, payload } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: list head bind without a value scrutinee"
+                    ));
+                };
+                let j = cx.b.ins().iconst(types::I64, *idx as i64);
+                let (vdisc, vpayload) = match kind {
+                    LocalKind::Composite => {
+                        let h = cx.helper("graphix_list_get_array")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let bits = cx.b.inst_results(call)[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::ARRAY), bits)
+                    }
+                    LocalKind::String => {
+                        let h = cx.helper("graphix_list_get_string")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let bits = cx.b.inst_results(call)[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
+                    }
+                    LocalKind::Scalar(p) => {
+                        let h = cx.helper("graphix_list_get_value")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let raw = cx.b.inst_results(call)[1];
+                        (scalar_disc(cx.b, *p), cast_u64_to_prim(cx.b, raw, *p))
+                    }
+                    LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                        let h = cx.helper("graphix_list_get_value")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let rs = cx.b.inst_results(call);
+                        (rs[0], rs[1])
+                    }
+                };
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
+                let pdisc = mask_unmatched(cx, pdisc, mask);
+                bind_local(cx, name, pdisc, vpayload, *kind, Some(*id));
+            }
+            SelectArmBind::ListTail { id, k } => {
+                let SelectScrut::Value { disc, payload } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: list tail bind without a value scrutinee"
+                    ));
+                };
+                let kc = cx.b.ins().iconst(types::I64, *k as i64);
+                let h = cx.helper("graphix_list_tail")?;
+                let call = cx.b.ins().call(h, &[disc, payload, kc]);
+                let rs = cx.b.inst_results(call);
+                let (vdisc, vpayload) = (rs[0], rs[1]);
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
+                let pdisc = mask_unmatched(cx, pdisc, mask);
+                bind_local(cx, name, pdisc, vpayload, LocalKind::Value, Some(*id));
             }
             SelectArmBind::Elem { id, idx, prim, ptr } => {
                 let SelectScrut::Composite { disc, .. } = scrut else {
