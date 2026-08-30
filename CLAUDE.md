@@ -1059,6 +1059,18 @@ the rules.
 
 ## Language features (current)
 
+- **Native List, phase A** (`design/list_native.md`, 2026-08-31):
+  `List<'a>` is a compiler-known constructor like `Array` —
+  `Type::List`, reserved type name, covariant element, no
+  primitive-bit relation, `AbiKind::Value` at the kernel boundary.
+  The rep is PRIVATE to `node/collection.rs::list`: cons =
+  `ValArray([head, tail])`, nil = the static EMPTY array clone,
+  discriminant = length. The Collection impl lives in CORE (intrinsic
+  markers; len derives from fold). TVal prints `[<1, 2>]`; the wire
+  and naked echo stay structural (nested 2-arrays). Literals and
+  list-slice patterns are phase B — until then structural
+  destructuring is `list::uncons` + a nullable-tuple select.
+
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>` (only as a whole typedef body) has identity
   `AbstractId::of(scope, name)` (a path-derived v5 UUID, minted at

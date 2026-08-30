@@ -1,7 +1,18 @@
 # Native List: slim representation, literals, patterns
 
-**Status: proposed (ruled 2026-08-31, Eric). Implements the 2026-07-17
-ruling "List moves into the compiler like Array — core data type."**
+**Status: phase A LANDED 2026-08-31 (`Type::List` + slim rep — see
+below); phases B (literals/patterns) and C (generator/book) open.
+Implements the 2026-07-17 ruling "List moves into the compiler like
+Array — core data type."**
+
+> Phase-A reality check: the old typedef was TRANSPARENT (bench and
+> fixtures matched `` `Cons `` directly), so the planned rep-only P1
+> was impossible — the rep swap and `Type::List` landed together, and
+> structural consumers migrated to the API (`list::uncons` selects)
+> until phase B's patterns arrive. A user typedef NAMED `List` is now
+> broken like one named `Array` (two fixtures renamed theirs to `L`;
+> tui's `list::List` widget-state type survives because its uses are
+> qualified).
 
 ## Motivation
 
