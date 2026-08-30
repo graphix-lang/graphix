@@ -67,14 +67,14 @@ intrinsic row's jit time.
 | `find_intr`      | 500k | 1.90 ms   | 6.72 s    | 3533x   |
 | `find_fold`      | 500k | 5.19 ms   | 28.6 s    | 5510x   |
 | `find_rec`       | 500k | 8.0 ms    | 0.70 s    | 88x     |
-| `flatmap_intr`   | 10k  | 1.63 ms   | 0.51 s    | 315x    |
+| `flatmap_intr`   | 10k  | 1.4 ms    | 0.51 s    | 364x    |
 | `flatmap_fold`   | 10k  | 1.42 s    | 1.93 s    | 1x      |
-| `flatmap_cons`   | 10k  | 5.8 ms    | 0.56 s    | 96x     |
-| `flatmap_list`   | 10k  | 7.2 ms    | 1.78 s    | 247x    |
-| `lfold_intr`     | 100k | 4.13 ms   | 2.04 s    | 494x    |
+| `flatmap_cons`   | 10k  | 3.8 ms    | 0.56 s    | 147x    |
+| `flatmap_list`   | 10k  | 5.1 ms    | 1.78 s    | 349x    |
+| `lfold_intr`     | 100k | 4.3 ms    | 2.04 s    | 474x    |
 | `lfold_intr_4k`  | 4k   | 0.14 ms   | 57 ms     | 400x    |
-| `lfold_rec`      | 4k   | 0.35 ms   | 3.8 ms    | 11x     |
-| `lfold_rec_100k` | 100k | 4.5 ms    | 74 ms     | 17x     |
+| `lfold_rec`      | 4k   | 5.6 ms    | —         | 1x      |
+| `lfold_rec_100k` | 100k | 110 ms    | —         | 1x      |
 | `mfold_intr`     | 100k | 23.0 ms   | 3.75 s    | 163x    |
 | `mfold_trait`    | 100k | 23.6 ms   | 4.58 s    | 194x    |
 
@@ -201,16 +201,22 @@ a per-type loop impl has it today; what a deletion needs is `find`'s
 default written as a loop per representation, not new machinery;
 `flat_map` — the fold+concat derivation is O(n²) by construction (the
 cons + `to_array_rev` derivation, `flatmap_cons`, is 5.8 ms vs 1.6 ms);
-List — FIXED 2026-08-30 (both halves: a non-scalar variant
-payload bind clones the slot out as an owned local of its ABI kind,
-and the tail rebind lowers every kernel param kind — Value pairs via
-clone/drop, Strings via the owned-ArcStr protocol — with
-`structural_tail_loop` widened to match): `lfold_rec` 0.28 s -> 0.35 ms,
-and at the linear size the hand recursion BEATS the intrinsic
-(`lfold_rec_100k` 4.5 ms vs `lfold_intr` 6.5 ms same-session — the
-intrinsic pays the flatten boundary, the recursion walks the conses).
-The interp fell 0.27 s -> 3.8 ms too: the shared gate now routes the
-Variant-carried loop through the interp's tail loop as well.
+List — the native-List phase A rep swap (2026-08-31,
+`design/list_native.md`) improved every INTRINSIC row (slim 2-slot
+cells, no tag, no per-consult strcmp: `lfold_intr` 6.5 -> 4.3 ms,
+`flatmap_cons` 5.8 -> 3.8 ms, `flatmap_list` 7.2 -> 5.1 ms) but
+REGRESSED the hand-written recursion rows to interp speed
+(`lfold_rec_100k` 4.5 -> 110 ms): the type is opaque until phase B's
+list patterns, so the interim spelling selects over `list::uncons`,
+and `(x, rest)` destructures a nullable TUPLE — the 2026-08-30
+non-scalar bind machinery covers VARIANT payloads only, so the select
+de-fuses and the loop node-walks (~1.1 µs/elem). Phase B's `[<h,
+rest..>]` patterns re-target that machinery at the list rep (nil =
+len-0 test, head/tail from the spine cell) and are expected to beat
+the 2026-08-30 numbers (which were: hand fold 0.35 ms at 4k, BEATING
+the intrinsic at 100k — 4.5 vs then-6.5 ms — via the variant-payload
+bind + Value-carried tail rebind, both of which survive and carry
+over to the pattern lowering).
 Fixed since 08-25:
 wrapper premat / fn-formal forwarding and capture (`b386f97d`),
 same-HOF nesting (`3bd9a9a9`), the interp's nested-HOF quadratic
