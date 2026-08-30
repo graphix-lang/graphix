@@ -1,0 +1,13 @@
+// flat_map without the O(n²) of repeated array concatenation: cons
+// every produced element onto a List (O(1) per element) and finish
+// with one reverse walk into an array. Linear, and the nested fold
+// fuses into one kernel with the outer loop.
+let flat_map_go = |a: Array<'a>, f: fn(x: 'a) -> Array<'b>| -> Array<'b> {
+    let l = array::fold(a, list::nil(0), |acc, x|
+        array::fold(f(x), acc, |acc, y| list::cons(y, acc)));
+    list::to_array_rev(l)
+};
+
+let r = flat_map_go([1, 2, 3], |x| [x, x * 10]);
+println("[r]");
+sys::exit(r ~ 0)

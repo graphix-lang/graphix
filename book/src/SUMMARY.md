@@ -30,6 +30,7 @@
   - [Recursive Types](./udt/recursive.md)
   - [References](./udt/references.md)
   - [Traits](./udt/traits.md)
+  - [Implementing Collection](./udt/collection.md)
 - [Modules](./modules/overview.md)
   - [Implementation Files](./modules/implementation.md)
   - [Interface Files](./modules/interfaces.md)

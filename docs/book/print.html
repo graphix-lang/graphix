@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-03c86f73.js";
+            window.path_to_searchindex_js = "searchindex-4ba67aaa.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-f7a0005a.js"></script>
+        <script src="toc-879b8455.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -3190,6 +3190,145 @@ over a union receiver is for plain traits).</li>
 <code>Array&lt;Key&gt;</code>) runs on the node-walk; one on the whole type is a
 static call and fuses like any call.</li>
 </ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="implementing-collection"><a class="header" href="#implementing-collection">Implementing Collection</a></h1>
+<p>The built-in collections implement <a href="#constructor-traits-collection"><code>Collection</code></a>
+through compiler intrinsics, and those aren’t going anywhere — they
+are the fastest path for <code>Array</code> and <code>Map</code>. But the trait needs only
+three methods, and all three are ordinary Graphix: any structure you
+can fold, you can give the whole collection API. This chapter is the
+reference for what those implementations look like written out, and
+what they cost.</p>
+<h2 id="the-operations-as-loops"><a class="header" href="#the-operations-as-loops">The operations as loops</a></h2>
+<p>Over an array-backed structure, the operations are index tail
+recursions — one activation reused per iteration, compiled to a
+native loop:</p>
+<pre><code class="language-graphix">// The collection operations written as plain Graphix loops over an
+// array — the spellings a Collection implementation for your own
+// array-backed type would use. Each is an index tail recursion: one
+// activation reused per iteration, and the whole loop compiles to a
+// native kernel.
+use Collection::*;
+
+// fold: the primitive. ~6x the intrinsic per element (the loop's own
+// bounds check, `$` and select — array::len is a fast call).
+let rec fold_go = |a: Array&lt;'a&gt;, f: fn(acc: 'b, x: 'a) -&gt; 'b, i: i64, acc: 'b| -&gt; 'b
+    select i &lt; array::len(a) {
+        true =&gt; fold_go(a, f, i + 1, f(acc, a[i]$)),
+        false =&gt; acc
+    };
+
+// find: stops at the match — the early exit a fold cannot express
+// (the intrinsic scans all slots by rule, so on an average hit this
+// BEATS it).
+let rec find_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; bool, i: i64| -&gt; ['a, null]
+    select i &lt; array::len(a) {
+        false =&gt; null,
+        true =&gt; select f(a[i]$) {
+            true =&gt; a[i]$,
+            false =&gt; find_go(a, f, i + 1)
+        }
+    };
+
+// map: by construction over the length — at parity with the intrinsic.
+let map_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; Array&lt;'b&gt;
+    array::init(array::len(a), |i| f(a[i]$));
+
+let xs = [1, 2, 3, 4, 5];
+let s = fold_go(xs, |acc, x| acc + x, 0, 0);
+let m = select find_go(xs, |x| x &gt; 3, 0) { null as _ =&gt; -1, x =&gt; x };
+let d = map_go(xs, |x| x * 10);
+println("sum=[s] found=[m] mapped=[d]");
+sys::exit(s ~ 0)
+</code></pre>
+<p><code>fold</code> is the primitive, and the hand-written loop runs within ~6x of
+the intrinsic per element. <code>find</code> as a loop <em>stops at the match</em> — an
+early exit the fold-derived default cannot express, which is why it
+beats the intrinsic (an all-slots scan by rule) on an average hit.
+<code>map</code> by construction over the length is at parity with the
+intrinsic.</p>
+<h2 id="flat_map-without-the-quadratic"><a class="header" href="#flat_map-without-the-quadratic">flat_map without the quadratic</a></h2>
+<p>The tempting derivation — fold with <code>array::concat</code> — copies the
+accumulator on every step and is O(n²) by construction. Cons onto a
+<code>List</code> instead and finish with one reverse walk:</p>
+<pre><code class="language-graphix">// flat_map without the O(n²) of repeated array concatenation: cons
+// every produced element onto a List (O(1) per element) and finish
+// with one reverse walk into an array. Linear, and the nested fold
+// fuses into one kernel with the outer loop.
+let flat_map_go = |a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Array&lt;'b&gt;| -&gt; Array&lt;'b&gt; {
+    let l = array::fold(a, list::nil(0), |acc, x|
+        array::fold(f(x), acc, |acc, y| list::cons(y, acc)));
+    list::to_array_rev(l)
+};
+
+let r = flat_map_go([1, 2, 3], |x| [x, x * 10]);
+println("[r]");
+sys::exit(r ~ 0)
+</code></pre>
+<p>This is linear, and the nested fold fuses into one kernel with the
+outer loop — about 3.5x the intrinsic, all of it the per-element
+<code>Cons</code> construction.</p>
+<h2 id="a-full-implementation-for-your-own-type"><a class="header" href="#a-full-implementation-for-your-own-type">A full implementation for your own type</a></h2>
+<p>A program-defined linear (or tree) structure implements the three
+required methods as natural recursions over its constructors and
+inherits <code>map</code>, <code>filter</code>, <code>find</code>, <code>find_map</code> and <code>len</code> from the
+defaults:</p>
+<pre><code class="language-graphix">// A program-defined linear structure with a full Collection
+// implementation: write the three required methods as natural
+// recursions over the constructors and every derived method (map,
+// filter, find, len, ...) comes for free. The tail-recursive fold
+// runs as a native loop; the value-building recursions are an
+// activation per element.
+type L&lt;'a&gt; = [`C('a, L&lt;'a&gt;), `N];
+
+let rec fold_l = |l: L&lt;'a&gt;, acc: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b| -&gt; 'b
+    select l {
+        `N =&gt; acc,
+        `C(x, rest) =&gt; fold_l(rest, f(acc, x), f)
+    };
+
+let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt;| -&gt; L&lt;'b&gt;
+    select l {
+        `N =&gt; `N,
+        `C(x, rest) =&gt; select f(x) {
+            null as _ =&gt; filter_map_l(rest, f),
+            y =&gt; `C(y, filter_map_l(rest, f))
+        }
+    };
+
+let rec append_l = |a: L&lt;'a&gt;, b: L&lt;'a&gt;| -&gt; L&lt;'a&gt;
+    select a { `N =&gt; b, `C(x, rest) =&gt; `C(x, append_l(rest, b)) };
+
+let rec flat_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; L&lt;'b&gt;| -&gt; L&lt;'b&gt;
+    select l {
+        `N =&gt; `N,
+        `C(x, rest) =&gt; append_l(f(x), flat_map_l(rest, f))
+    };
+
+impl Collection for L&lt;'_&gt; {
+    let fold = |l, init, f| fold_l(l, init, f);
+    let filter_map = |l, f| filter_map_l(l, f);
+    let flat_map = |l, f| flat_map_l(l, f)
+};
+
+use Collection::*;
+let l: L&lt;i64&gt; = `C(1, `C(2, `C(3, `N)));
+let doubled = map(l, |x| x * 2);
+let s = fold(doubled, 0, |a, x| a + x);
+let n = len(filter(l, |x| x &gt; 1));
+println("sum=[s] kept=[n]");
+sys::exit(s ~ 0)
+</code></pre>
+<p>The tail-recursive <code>fold_l</code> compiles to a native loop over the
+conses; the value-building recursions (<code>filter_map_l</code>, <code>append_l</code>)
+are an activation per element — see
+<a href="#recursion">Recursion</a>. This shape is not a toy: the
+same spelling over the list package’s <code>List</code> runs <em>faster</em> than the
+list fold intrinsic at 100k elements (the intrinsic pays a
+convert-to-array boundary; the recursion just walks the conses).</p>
+<p>The measured comparisons behind the numbers above live in
+<code>bench/collection/README.md</code> in the Graphix repository, one row per
+operation and derivation, re-run as the compiler moves.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="modules"><a class="header" href="#modules">Modules</a></h1>
 <p>Graphix has a module system for organizing code into projects and controlling
