@@ -87,6 +87,9 @@ pub struct BuiltinFacts {
     /// so such a builtin's DynCall refuses to emit inside a fused
     /// select arm (the region de-fuses).
     pub sleep_restarts: bool,
+    /// `BuiltIn::FASTCALL` — the direct-call entry the JIT uses at
+    /// every fused site of the builtin instead of the DynCall path.
+    pub fastcall: Option<crate::FastFn>,
 }
 
 /// How a lambda recurses with respect to its own `LambdaId`. A summary

@@ -55,7 +55,7 @@ intrinsic row's jit time.
 |------------------|------|-----------|-----------|---------|
 | `fold_intr`      | 100k | 0.25 ms   | 2.04 s    | 8047x   |
 | `fold_trait`     | 100k | 0.30 ms   | 2.01 s    | 6712x   |
-| `fold_rec`       | 100k | 12.3 ms   | 0.22 s    | 18x     |
+| `fold_rec`       | 100k | 7.0 ms    | 0.22 s    | 31x     |
 | `map_intr`       | 100k | 2.33 ms   | 3.90 s    | 1671x   |
 | `map_fmshape`    | 100k | 2.35 ms   | 3.97 s    | 1691x   |
 | `map_init`       | 100k | 2.35 ms   | 4.42 s    | 1880x   |
@@ -175,13 +175,24 @@ at parity and deletable today — Array `map` (`filter_map`-with-total-
 callback 2.35 ms and `init` 2.35 ms vs 2.33 ms), Array `filter`
 (`filter_fmshape` 1.37 ms vs 1.06 ms), and Map's whole impl (already
 Graphix wrappers, `mfold_trait` 23.6 ms vs 23.0 ms). Not yet: `fold`
-itself — a hand-written loop pays ~50x in per-element call overhead
-(`fold_rec` 12.3 ms vs 0.25 ms: `array::len` + `a[i]$` DynCalls and
-the cross-kernel `f` call), which is the cost any user-written
-`Collection` impl runs at; `find`/`find_map` — the Option-carrying fold
-FUSES now (5.2 ms vs 1.9 ms) but cannot early-exit; `flat_map` — the
-fold+concat derivation is O(n²) by construction and doesn't fuse;
-List — the loop-CARRIED Value formal keeps an activation per level
-(`lfold_rec` 0.28 s vs 0.14 ms). Fixed since 08-25: wrapper premat /
-fn-formal forwarding and capture (`b386f97d`). Re-run this corpus
-after each remaining cut lands — the verdicts are per-operation.
+itself — the hand-written loop's cost was ONE DynCall per iteration,
+`i < array::len(a)` (14 of its 15 ms; the callback call is ~2.6 ns and
+the rebind/index/qop/select ~6 ns): with `len` hoisted to a
+loop-invariant parameter the loop runs in 1.13 ms, 3.8x the intrinsic.
+`BuiltIn::FASTCALL` (2026-08-30 — `array::len`, `str::len`, `map::len`
+opted in) replaces the dispatch with a direct call: 15.2 -> 7.4 ms. The
+remaining ~60 ns per call is the argument MARSHAL the fastcall still
+shares with DynCall (a boxed pooled `Vec<Value>` per call, an Arc bump,
+the pool round-trip) — the next cut is a stack buffer of (disc,
+payload) pairs viewed as `&[Value]`, zero-copy. `find`/`find_map` — the
+Option-carrying fold FUSES now (5.2 ms vs 1.9 ms) but cannot early-exit;
+`flat_map` — the fold+concat derivation is O(n²) by construction (the
+cons + `to_array_rev` derivation, `flatmap_cons`, is 5.8 ms vs 1.6 ms);
+List — the fused select refuses a NON-SCALAR variant payload
+(`` `Cons(x, rest) `` binds a List) before the tail-loop kind gate is
+even reached, and that gate carries only Prim/Array/Tuple/Struct
+formals (`lfold_rec` 0.28 s vs 0.14 ms, node-walk). Fixed since 08-25:
+wrapper premat / fn-formal forwarding and capture (`b386f97d`),
+same-HOF nesting (`3bd9a9a9`), the interp's nested-HOF quadratic
+(`ef153027`). Re-run this corpus after each remaining cut lands — the
+verdicts are per-operation.

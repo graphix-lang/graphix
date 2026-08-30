@@ -707,6 +707,56 @@ unsafe fn graphix_dyncall(
     }
 }
 
+/// The FASTCALL path (`BuiltIn::FASTCALL`): a stateless sync builtin
+/// called directly — no site identity, no per-site inner Apply, no
+/// `CachedArgs` memo. The kernel's argument discs decide the tag: any
+/// tainted argument bottoms the result WITHOUT calling (bottom
+/// propagates — the fn never sees a bottom), all-stale arguments make
+/// the result STALE, and `None` from the fn is this cycle's bottom.
+/// `fn_ptr` is the registered `FastFn`; `args` is the same pooled buf
+/// the DynCall path marshals, consumed here. Returns the production's
+/// two words exactly as `graphix_dyncall` does (tag in-band on the
+/// disc), so the call site's decode is shared; never touches the
+/// pending flag.
+unsafe fn graphix_fastcall(
+    fn_ptr: u64,
+    args: *mut LPooled<Vec<Value>>,
+    taint_mask: u64,
+    stale_mask: u64,
+) -> DynCallRet {
+    let args_vec = unsafe { *Box::from_raw(args) };
+    let n = args_vec.len();
+    let all_stale = n > 0 && stale_mask == u64::MAX >> (64 - n);
+    let bottom = if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
+    let tv = if taint_mask != 0 {
+        crate::TagValue::tagged(Value::Null, bottom)
+    } else {
+        // SAFETY: `fn_ptr` is the `FastFn` the builtin registered
+        // (`BuiltinFacts::fastcall`), embedded by the emitter as an
+        // immediate; a fn pointer round-trips through usize.
+        let f: crate::FastFn = unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
+        match f(&args_vec) {
+            Some(v) => crate::TagValue::tagged(
+                v,
+                if all_stale { crate::Tag::STALE } else { crate::Tag::FIRED },
+            ),
+            None => crate::TagValue::tagged(Value::Null, bottom),
+        }
+    };
+    if crate::dbgenv::gxdbg_dync() {
+        eprintln!(
+            "FASTCALL fn={fn_ptr:x} n={n} taint={taint_mask:b} stale={stale_mask:b} -> {:?}",
+            tv.tag()
+        );
+    }
+    // SAFETY: as in `dispatch_typed` — TagValue is the (disc, payload)
+    // pair; the bits transfer to the caller and the local's Drop is
+    // suppressed.
+    let tv = std::mem::ManuallyDrop::new(tv);
+    let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*tv) };
+    DynCallRet { word0: words[0], word1: words[1] }
+}
+
 /// Write a reactive variable from inside a JIT'd kernel — the fused
 /// form of `connect` (`x <- expr`) and a handler-ful `?`'s error
 /// delivery. Indirects through the per-call dispatch handle to a
@@ -2196,5 +2246,52 @@ mod tests {
             "second take sees the flag cleared by the first"
         );
         assert!(!DYNCALL_PENDING.with(|c| c.get()), "flag is clear after take_clear");
+    }
+
+    /// `graphix_fastcall`'s tag rules: the arg masks decide the tag,
+    /// a tainted arg bottoms without calling, `None` is a bottom.
+    #[test]
+    fn fastcall_tags_follow_the_arg_discs() {
+        fn len(args: &[Value]) -> Option<Value> {
+            match args {
+                [Value::Array(a)] => Some(Value::I64(a.len() as i64)),
+                _ => None,
+            }
+        }
+        fn never(args: &[Value]) -> Option<Value> {
+            panic!("a tainted arg must not reach the fn ({} args)", args.len())
+        }
+        fn none(_: &[Value]) -> Option<Value> {
+            None
+        }
+        fn buf(vals: Vec<Value>) -> *mut LPooled<Vec<Value>> {
+            let mut b: LPooled<Vec<Value>> = LPooled::take();
+            b.extend(vals);
+            Box::into_raw(Box::new(b))
+        }
+        let arr = Value::Array(ValArray::from_iter_exact(
+            [Value::I64(1), Value::I64(2), Value::I64(3)].into_iter(),
+        ));
+        let fp = len as usize as u64;
+        let decode =
+            |r: DynCallRet| unsafe { crate::TagValue::from_raw(r.word0, r.word1) };
+        let tv = decode(unsafe { graphix_fastcall(fp, buf(vec![arr.clone()]), 0, 0) });
+        assert_eq!(tv.tag(), crate::Tag::FIRED);
+        assert_eq!(tv.value_cloned(), Value::I64(3));
+        let tv = decode(unsafe { graphix_fastcall(fp, buf(vec![arr.clone()]), 0, 0b1) });
+        assert_eq!(tv.tag(), crate::Tag::STALE);
+        assert_eq!(tv.value_cloned(), Value::I64(3));
+        let never_p = never as usize as u64;
+        let tv =
+            decode(unsafe { graphix_fastcall(never_p, buf(vec![arr.clone()]), 0b1, 0) });
+        assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
+        let tv = decode(unsafe {
+            graphix_fastcall(never_p, buf(vec![arr.clone()]), 0b1, 0b1)
+        });
+        assert_eq!(tv.tag(), crate::Tag::STALE_BOTTOM);
+        let tv = decode(unsafe {
+            graphix_fastcall(none as usize as u64, buf(vec![arr]), 0, 0)
+        });
+        assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
     }
 }

@@ -5,7 +5,7 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, Node, Refs, Rt, Scope, Tag, TagValue,
     TagView, UserEvent,
     effects::EffectKind,
     err, errf,
@@ -17,6 +17,7 @@ use graphix_rt::GXRt;
 use netidx::{path::Path, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
+use poolshark::local::LPooled;
 use std::{
     any::Any,
     collections::VecDeque,
@@ -426,6 +427,18 @@ impl CachedVals {
 
 pub type ByRefChain = graphix_compiler::env::Map<BindId, BindId>;
 
+/// Run an `EvalCached::FASTCALL` fn over the cached argument slots —
+/// the node-walk half of a fastcall builtin, so `eval` and the JIT share
+/// one implementation. A slot that has never been delivered means the
+/// call has no value yet (bottoms never reach here — Q1).
+pub fn fast_eval(f: FastFn, from: &CachedVals) -> Option<Value> {
+    let mut args: LPooled<Vec<Value>> = LPooled::take();
+    for v in from.0.iter() {
+        args.push(v.as_ref()?.clone());
+    }
+    f(&args)
+}
+
 pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + 'static
 {
@@ -450,6 +463,10 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     /// the fusion interior-sleep gate. Default: `false` (sleep-inert
     /// — the EvalCached wrapper's own sleep clears nothing semantic).
     const SLEEP_RESTARTS: bool = false;
+    /// See `BuiltIn::FASTCALL`. Declare with `eval` delegating to the
+    /// same fn through [`fast_eval`], so the node-walk and the JIT run
+    /// one implementation.
+    const FASTCALL: Option<FastFn> = None;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -498,6 +515,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
     const STATELESS: bool = T::STATELESS;
     const SLEEP_RESTARTS: bool = T::SLEEP_RESTARTS;
+    const FASTCALL: Option<FastFn> = T::FASTCALL;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -2498,12 +2516,17 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_array_len";
+    const FASTCALL: Option<FastFn> = Some(array_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::Array(a)) => Some(Value::I64(a.len() as i64)),
-            Some(_) | None => None,
-        }
+        fast_eval(array_len, from)
+    }
+}
+
+fn array_len(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Array(a)] => Some(Value::I64(a.len() as i64)),
+        _ => None,
     }
 }
 
@@ -2518,12 +2541,17 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_map_len";
+    const FASTCALL: Option<FastFn> = Some(map_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::Map(m)) => Some(Value::I64(m.len() as i64)),
-            Some(_) | None => None,
-        }
+        fast_eval(map_len, from)
+    }
+}
+
+fn map_len(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Map(m)] => Some(Value::I64(m.len() as i64)),
+        _ => None,
     }
 }
 

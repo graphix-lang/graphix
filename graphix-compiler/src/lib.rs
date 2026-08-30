@@ -1041,6 +1041,11 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
 ) -> Result<Box<dyn Apply<R, E>>>;
 
 /// Trait implemented by graphix built-in functions implemented in rust
+/// A builtin's FAST CALL entry (see [`BuiltIn::FASTCALL`]): a pure
+/// function over its present argument values; `None` is "no value this
+/// cycle". The JIT calls it directly with no dispatch machinery.
+pub type FastFn = fn(&[Value]) -> Option<Value>;
+
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// The name of the builtin, this must be package::unique_name for
     /// builtins in a package
@@ -1082,6 +1087,22 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// state the interp re-arms); a wrong `true` only costs fusion
     /// coverage. Default: `false` (sleep-inert).
     const SLEEP_RESTARTS: bool = false;
+    /// Optional FAST CALL entry: a plain function the JIT calls
+    /// directly at every fused call site of this builtin — no site
+    /// identity, no per-site inner `Apply`, no `CachedArgs` memo, no
+    /// allocation beyond the argument buffer. The kernel decides the
+    /// production's tag from its argument discs: a tainted argument
+    /// bottoms the call WITHOUT invoking the fn (bottom propagates —
+    /// the fn only ever sees present values), all-stale arguments make
+    /// the result stale, and `None` from the fn is this cycle's bottom.
+    /// Legal only with `EFFECT = Sync` and `STATELESS = true`
+    /// (`register_builtin` refuses anything else), and meant for CHEAP
+    /// pure functions: recomputation replaces the memo, so an expensive
+    /// fastcall re-evaluates on every kernel invocation in which any
+    /// other region input fired. The node-walk keeps using
+    /// `init`/`update`; `eval` should delegate to the same fn so there
+    /// is one implementation (`graphix_package_core::fast_eval`).
+    const FASTCALL: Option<FastFn> = None;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -1989,12 +2010,20 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
+        if T::FASTCALL.is_some() && (!T::EFFECT.is_sync() || !T::STATELESS) {
+            bail!(
+                "builtin {} declares FASTCALL but is not Sync + STATELESS — a fast \
+                 call has no per-site state and no async production",
+                T::NAME
+            )
+        }
         self.fusion.builtin_facts.insert(
             T::NAME,
             effects::BuiltinFacts {
                 effect: T::EFFECT,
                 stateless: T::STATELESS,
                 sleep_restarts: T::SLEEP_RESTARTS,
+                fastcall: T::FASTCALL,
             },
         );
         Ok(())
@@ -2039,6 +2068,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// names.
     pub fn builtin_sleep_restarts(&self, name: &str) -> bool {
         self.fusion.builtin_facts.get(name).map(|f| f.sleep_restarts).unwrap_or(true)
+    }
+
+    /// A registered builtin's [`BuiltIn::FASTCALL`] entry, if it
+    /// declared one.
+    pub fn builtin_fastcall(&self, name: &str) -> Option<FastFn> {
+        self.fusion.builtin_facts.get(name).and_then(|f| f.fastcall)
     }
 
     /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin

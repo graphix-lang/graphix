@@ -6,14 +6,14 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, Event, ExecCtx, FastFn, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     err, errf,
     expr::ExprId,
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, extract_cast_type, seam_value,
+    CachedArgs, CachedVals, EvalCached, extract_cast_type, fast_eval, seam_value,
 };
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
@@ -802,12 +802,17 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "str_len";
+    const FASTCALL: Option<FastFn> = Some(str_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::String(s)) => Some(Value::I64(s.len() as i64)),
-            _ => None,
-        }
+        fast_eval(str_len, from)
+    }
+}
+
+fn str_len(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(s)] => Some(Value::I64(s.len() as i64)),
+        _ => None,
     }
 }
 

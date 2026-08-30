@@ -240,7 +240,12 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // (region root, callee block, or a per-slot chain leaf in loops)
     // carries per-site inner-Apply state, which is what makes honest
     // stale masks sound there.
-    let (site_word, site_claimed) = emit_dyncall_site_word(cx);
+    // A FASTCALL site has no per-site state to key: no identity word.
+    let (site_word, site_claimed) = if info.fastcall.is_some() {
+        (cx.b.ins().iconst(types::I64, 0), false)
+    } else {
+        emit_dyncall_site_word(cx)
+    };
     // An UNCLAIMED site is the shared key-0 bucket — ONE inner Apply
     // serves every logical call site (every collection position, every
     // recursion depth). For a builtin whose OUTPUT depends on
@@ -345,8 +350,21 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(dmerge, pay_ty);
     // The buf's in-flight cover ends here: the dispatcher consumes it.
     cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    let call =
-        cx.b.ins().call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word]);
+    let call = match info.fastcall {
+        // FASTCALL (`BuiltIn::FASTCALL`): the builtin's registered fn,
+        // called directly on the marshalled buf with the masks — the
+        // trampoline computes the tag from them and returns the same
+        // (disc, payload) pair, so the decode below is shared.
+        Some(f) => {
+            let fast = cx.helper("graphix_fastcall")?;
+            let fp = cx.b.ins().iconst(types::I64, f as usize as i64);
+            cx.b.ins().call(fast, &[fp, buf, taint_mask, stale_mask])
+        }
+        None => {
+            cx.b.ins()
+                .call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word])
+        }
+    };
     // Unified Value ABI: `graphix_dyncall` returns the result's
     // genuine (disc, payload) Value pair for every return type; the
     // decode below adapts per the static shape.

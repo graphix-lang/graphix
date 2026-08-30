@@ -223,10 +223,26 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   containing one) refuses to emit inside a fused select arm and the
   region de-fuses. Deliberately NOT `!STATELESS` (dbg/log are
   effectful-but-sleep-inert and stay arm-fusable). A wrong `false` is a
-  semantics bug; a wrong `true` only costs fusion coverage. All three
-  consts are pulled through `EvalCached`/`CachedArgs` and recorded per
-  name as `BuiltinFacts` (`ctx.builtin_effect`/`ctx.builtin_stateless`/
-  `ctx.builtin_sleep_restarts`).
+  semantics bug; a wrong `true` only costs fusion coverage.
+- `FASTCALL` (default `None`, 2026-08-30): an optional
+  `fn(&[Value]) -> Option<Value>` the JIT calls DIRECTLY at every fused
+  site of the builtin — no site identity, no per-site inner `Apply`, no
+  `CachedArgs` memo. The kernel's arg discs decide the tag (a tainted
+  arg bottoms the call without invoking the fn; all-stale args make the
+  result stale; `None` is this cycle's bottom), through the
+  `graphix_fastcall` trampoline, which returns the same in-band-tagged
+  (disc, payload) pair as `graphix_dyncall` so the site decode is
+  shared. Legal only with `EFFECT = Sync` + `STATELESS = true`
+  (`register_builtin` refuses otherwise) and meant for CHEAP pure
+  functions — recomputation replaces the memo. `eval` delegates to the
+  same fn through `graphix_package_core::fast_eval` (one
+  implementation). This is the lever the intrinsics' inline helpers
+  give the compiler, offered to every package author: `array::len` in a
+  hand-written loop went from a 140 ns DynCall to a direct call.
+  All four consts are pulled through `EvalCached`/`CachedArgs` and
+  recorded per name as `BuiltinFacts` (`ctx.builtin_effect`/
+  `ctx.builtin_stateless`/`ctx.builtin_sleep_restarts`/
+  `ctx.builtin_fastcall`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.

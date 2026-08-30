@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-7946328f.js";
+            window.path_to_searchindex_js = "../searchindex-c3dc960e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-f7a0005a.js"></script>
@@ -250,16 +250,21 @@ enforces this at compile time.</p>
 <code>EvalCached</code>:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+</span>use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
 struct MyMinEv;
 
-impl EvalCached for MyMinEv {
+impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyMinEv {
     const NAME: &amp;str = "mylib_min";
+    // Every output appears on the cycle its inputs arrive, and the
+    // result depends only on the arguments — the JIT may fuse it.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
 
-    fn eval(&amp;mut self, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -279,6 +284,51 @@ type MyMin = CachedArgs&lt;MyMinEv&gt;;
 <p>Then list <code>MyMin</code> in your <code>defpackage!</code> builtins. <code>CachedArgs</code> handles all the
 details of caching argument values, calling <code>eval</code> when arguments change, and
 implementing the <code>Apply</code> trait.</p>
+<p><code>EFFECT</code> and <code>STATELESS</code> are what let the compiler fuse a call to your
+builtin into native code: <code>Sync</code> means the result is produced on the same
+cycle as the arguments that triggered it, <code>STATELESS</code> means the result
+depends only on the arguments (no tally, no memo of earlier calls). Both
+default to the conservative reading (<code>Async</code>, stateful), which keeps the
+builtin correct but out of fused kernels.</p>
+<h4 id="fast-calls"><a class="header" href="#fast-calls">Fast calls</a></h4>
+<p>A fused kernel normally reaches a builtin through a general dispatch
+(<code>graphix_dyncall</code>) that marshals the arguments, keys a per-call-site
+instance and caches the result — about 140 ns per call, which dominates
+a tight loop that calls <code>array::len</code> once per element. A <code>Sync</code> +
+<code>STATELESS</code> builtin can offer a <strong>fast call</strong>: a plain function the
+kernel calls directly, with no dispatch machinery at all.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graphix_compiler::FastFn;
+use graphix_package_core::fast_eval;
+
+impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyLenEv {
+    const NAME: &amp;str = "mylib_len";
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const FASTCALL: Option&lt;FastFn&gt; = Some(my_len);
+
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+        fast_eval(my_len, from)
+    }
+}
+
+fn my_len(args: &amp;[Value]) -&gt; Option&lt;Value&gt; {
+    match args {
+        [Value::Array(a)] =&gt; Some(Value::I64(a.len() as i64)),
+        _ =&gt; None,
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>The contract: the function only ever sees present values (a missing or
+bottom argument bottoms the call before it is invoked), <code>None</code> means
+“no value this cycle”, and the compiler decides whether the result
+fired from the arguments. Registration refuses <code>FASTCALL</code> on a builtin
+that is not <code>Sync</code> + <code>STATELESS</code>. Use it for cheap pure functions —
+there is no result cache, so the function runs on every kernel
+invocation in which any input to the enclosing region fired. Having
+<code>eval</code> delegate to the same function through <code>fast_eval</code> keeps the
+interpreter and the JIT on one implementation.</p>
 <h3 id="the-full-control-path-builtin--apply"><a class="header" href="#the-full-control-path-builtin--apply">The Full-Control Path: <code>BuiltIn</code> + <code>Apply</code></a></h3>
 <p>For builtins that need to interact with the execution context, manage internal
 state across cycles, or work with higher-order functions, implement the

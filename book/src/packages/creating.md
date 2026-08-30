@@ -103,16 +103,21 @@ For pure functions that just compute a result from their arguments, use
 `EvalCached`:
 
 ```rust
+use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind};
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
 struct MyMinEv;
 
-impl EvalCached for MyMinEv {
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyMinEv {
     const NAME: &str = "mylib_min";
+    // Every output appears on the cycle its inputs arrive, and the
+    // result depends only on the arguments — the JIT may fuse it.
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
 
-    fn eval(&mut self, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -133,6 +138,55 @@ type MyMin = CachedArgs<MyMinEv>;
 Then list `MyMin` in your `defpackage!` builtins. `CachedArgs` handles all the
 details of caching argument values, calling `eval` when arguments change, and
 implementing the `Apply` trait.
+
+`EFFECT` and `STATELESS` are what let the compiler fuse a call to your
+builtin into native code: `Sync` means the result is produced on the same
+cycle as the arguments that triggered it, `STATELESS` means the result
+depends only on the arguments (no tally, no memo of earlier calls). Both
+default to the conservative reading (`Async`, stateful), which keeps the
+builtin correct but out of fused kernels.
+
+#### Fast calls
+
+A fused kernel normally reaches a builtin through a general dispatch
+(`graphix_dyncall`) that marshals the arguments, keys a per-call-site
+instance and caches the result — about 140 ns per call, which dominates
+a tight loop that calls `array::len` once per element. A `Sync` +
+`STATELESS` builtin can offer a **fast call**: a plain function the
+kernel calls directly, with no dispatch machinery at all.
+
+```rust
+use graphix_compiler::FastFn;
+use graphix_package_core::fast_eval;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyLenEv {
+    const NAME: &str = "mylib_len";
+    const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
+    const FASTCALL: Option<FastFn> = Some(my_len);
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(my_len, from)
+    }
+}
+
+fn my_len(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Array(a)] => Some(Value::I64(a.len() as i64)),
+        _ => None,
+    }
+}
+```
+
+The contract: the function only ever sees present values (a missing or
+bottom argument bottoms the call before it is invoked), `None` means
+"no value this cycle", and the compiler decides whether the result
+fired from the arguments. Registration refuses `FASTCALL` on a builtin
+that is not `Sync` + `STATELESS`. Use it for cheap pure functions —
+there is no result cache, so the function runs on every kernel
+invocation in which any input to the enclosing region fired. Having
+`eval` delegate to the same function through `fast_eval` keeps the
+interpreter and the JIT on one implementation.
 
 ### The Full-Control Path: `BuiltIn` + `Apply`
 
