@@ -1,8 +1,6 @@
 # TVar cell constraints
 
-Status: PROPOSED (2026-07-02, Eric + Claude). Not yet built. Slotted after
-the fuzzer-v2 phase-2.0 JIT bottom/firing fixes unless the unannotated-gate
-fusion story moves it up.
+Status: BUILT through phase C (the cells are the only constraint store — `FnType` in `typ/fntyp.rs`; the `constraints` list is gone). Proposed 2026-07-02.
 
 ## The problem
 

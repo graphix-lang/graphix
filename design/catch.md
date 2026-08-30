@@ -1,5 +1,7 @@
 # try catch is broken
 
+> Status: BUILT — `catch(e) expr` installs a handler for the rest of its block and is not control flow; this is the design note that motivated it.
+
 try exp0 catch(err) exp1 is extremely misleading, it reads like control flow,
 when in fact is it is installing an error monitor at a specific scope and
 does not change the control flow at all. What we want is instead to install

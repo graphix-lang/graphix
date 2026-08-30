@@ -1,5 +1,7 @@
 # Representable value-bottom in the fused backends
 
+> Status: CURRENT — the bottom/taint rule both engines implement; dense delivery (`dense_delivery.md`) made bottom a first-class per-cycle value on top of it.
+
 **Bottom = "no value this cycle."** A never-fired input, a pending async result,
 a `?`-error, and a div-by-zero are all the same thing: the absence of a value on
 this cycle. There is one representation and one rule, shared by both evaluators:

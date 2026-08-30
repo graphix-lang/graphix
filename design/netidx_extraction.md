@@ -1,5 +1,7 @@
 # Extracting netidx networking from the graphix core
 
+> Status: BUILT (2026-07) — the core has no netidx networking dependency; see CLAUDE.md "Netidx extraction".
+
 ## Goal and context (Eric's direction, 2026-07-22)
 
 netidx networking becomes an ordinary add-on package. graphix-compiler

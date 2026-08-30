@@ -1,5 +1,7 @@
 # Type-copy discipline and single instantiation
 
+> Status: CURRENT PRINCIPLE — every deep copy of a type must justify itself against a quiescence boundary; `type_operation_scaling.md` and `env_independent_typerefs.md` are its applications.
+
 > Eric's principle (2026-07-12): **be extremely skeptical of every deep
 > copy of a type. A copy made while any type checking is still pending
 > forks live inference state — facts recorded after the fork land on

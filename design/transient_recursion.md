@@ -1,5 +1,7 @@
 # Transient recursion — O(depth) memory for non-tail recursion in the node-walk
 
+> Status: SUPERSEDED (2026-08-13) — the delete-park/snapshot/prime machinery this describes was deleted by the recursion ruling (instances are retained; `recursive_activations.md` for the current model).
+
 ## The problem (soak jul08d follow-up, 2026-07-08)
 
 A recursive back-edge cannot be statically pre-bound at compile time (the

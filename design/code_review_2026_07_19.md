@@ -1,5 +1,7 @@
 # Compiler code review — 2026-07-19
 
+> Status: HISTORICAL — a point-in-time review; its findings were triaged in July 2026. Not a description of the current tree.
+
 Single-context review of `graphix-compiler` (Claude), focused per
 Eric's charter on design, simplification, readability, and overall
 quality — not bug hunting (the differential fuzzer owns that). Scope:

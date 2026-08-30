@@ -1,10 +1,6 @@
 # Traits for Graphix — a critique of the 2026-08-22 sketch
 
-Status: DISCUSSION DRAFT. Eric sketched a Rust-style trait system
-(traits with required + default methods, `impl Trait for Type`, traits
-as constraints, `Trait::method` paths, trait generics and associated
-types). This doc is Claude's assessment of that sketch against the
-type system as built, and a staged proposal.
+Status: BUILT — v1 as designed in §11 (2026-08-22, merged 2026-08-24 `f60bbf2d`), core traits §12 (2026-08-23), io traits §13. The critique below is the design record; v2 (trait parameters, associated types) is not built.
 
 ## 0. What the io::Stream pain actually proves
 

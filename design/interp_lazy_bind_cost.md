@@ -1,5 +1,7 @@
 # Interp lazy-bind cost — compile-per-activation is the fleet bottleneck
 
+> Status: PARTIAL / HISTORICAL — A1 landed and was later REMOVED (`6909e817`); the dynamic-scope cost was fixed by P1c of `recursive_activations.md`. The remaining per-activation constant (~8µs) and the 2026-08-30 `LambdaIds` hub finding (bench/collection/README.md) are the live items.
+
 > Proposed 2026-08-04 (profile session on ryouko, perf + GRAPHIX_DBG_PERF,
 > release+debuginfo+frame-pointer build). Reshaped same day after Eric
 > flagged the collection-clone half as a `clone_rebind` resurrection — the

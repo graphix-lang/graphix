@@ -1,8 +1,6 @@
 # Dense delivery: TagValue everywhere, caching eliminated
 
-Status: APPROVED (Eric, 2026-08-11) — implementation in progress on the
-`dense-delivery` branch. This document is the semantic authority for the
-redesign; the phased migration plan lives with the branch.
+Status: BUILT and MERGED to main 2026-08-13 (`6941423b`, P0–P8; the P9 soak followed). This document is the semantic authority for dense delivery; the as-built records are the "As-built" sections below.
 
 ## Why
 
