@@ -231,14 +231,11 @@ impl LambdaIds {
     }
 
     /// Walk the link graph, collecting every live linked id. Dead links
-    /// (the linked FnType was dropped — e.g. a transient recursion
-    /// instance's signature) are PRUNED as the walk encounters them:
-    /// without the prune each runtime lazy bind left one dead weak link
-    /// behind in the shared def's set forever, and `typecheck1`'s walks
-    /// got linearly slower with every bind for the life of the process
-    /// (the jul22b transient-recursion perf class — per-bind typecheck
-    /// grew 25µs → 1.1ms over 90k binds). Locks one node at a time
-    /// (never nested).
+    /// (the linked FnType was dropped) are pruned as the walk meets
+    /// them, so a long-lived set never accumulates the links of dropped
+    /// instance signatures. Locks one node at a time (never nested).
+    /// The walk is O(live linked nodes): every retained instance whose
+    /// signature unified with this cell is visited.
     pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
         let mut visited: LPooled<IntSet<usize>> = LPooled::take();
         let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();

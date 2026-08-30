@@ -1552,10 +1552,74 @@ pub(crate) struct PendingTailCall {
     pub(crate) args: smallvec::SmallVec<[Option<TagValue>; 4]>,
 }
 
+/// A call site's INSTANTIATION identity: per argument in source order,
+/// the source lambda ([`node::lambda::LambdaDef::source`]) the argument
+/// statically resolves to, or `None` (not a lambda, or not statically
+/// known). Two sites reaching one def with the same identity are the
+/// same instantiation — a self-call, which shares the instance being
+/// elaborated; different identities are distinct instantiations even
+/// while the def is resolving (a use of the same HOF nested under its
+/// own callback). Keyed on SOURCE identity, not the minted `LambdaId`:
+/// a literal inside an instance body is re-minted per instance compile,
+/// and the regress `f(n, |y| g(y+1))` must still knot at depth two.
+pub(crate) type FnArgIdentity = smallvec::SmallVec<[Option<ExprId>; 4]>;
+
 #[derive(Clone)]
 pub(crate) struct ResolvingLambda {
     pub instance: LambdaInstanceId,
     pub ftype: FnType,
+    pub identity: FnArgIdentity,
+}
+
+/// The active instantiations of one def, innermost last. A stack, not
+/// a slot: `h(g)`'s callback may instantiate `h(k)` while `h(g)` is
+/// still resolving, and a site inside `h(k)` reaching `h(g)` again is a
+/// self-call of the OUTER entry — with a single shadowed slot the two
+/// identities would alternate fresh instances forever.
+pub(crate) type ResolvingStack = smallvec::SmallVec<[ResolvingLambda; 2]>;
+
+impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
+    /// The active instantiation of `def` with exactly this identity —
+    /// the instance a nested site with that identity is a self-call of.
+    pub(crate) fn resolving(
+        &self,
+        def: LambdaId,
+        identity: &FnArgIdentity,
+    ) -> Option<ResolvingLambda> {
+        self.resolving_lambdas
+            .lock()
+            .get(&def)?
+            .iter()
+            .rev()
+            .find(|r| r.identity == *identity)
+            .cloned()
+    }
+
+    /// The innermost active instantiation of `def`, whatever its
+    /// identity — what a bare VALUE reference to the def inside a
+    /// resolving body refers to (it has no arguments to key on).
+    pub(crate) fn resolving_innermost(&self, def: LambdaId) -> Option<ResolvingLambda> {
+        self.resolving_lambdas.lock().get(&def)?.last().cloned()
+    }
+
+    pub(crate) fn push_resolving(&self, def: LambdaId, r: ResolvingLambda) {
+        self.resolving_lambdas.lock().entry(def).or_default().push(r)
+    }
+
+    /// Retire the entry `push_resolving` made for `instance` (the
+    /// innermost such — entries nest like the resolutions that made
+    /// them).
+    pub(crate) fn pop_resolving(&self, def: LambdaId, instance: LambdaInstanceId) {
+        let mut map = self.resolving_lambdas.lock();
+        if let Some(stack) = map.get_mut(&def) {
+            if let Some(i) = stack.iter().rposition(|r| r.instance == instance) {
+                stack.remove(i);
+            }
+            if stack.is_empty() {
+                map.remove(&def);
+            }
+        }
+    }
 }
 
 pub struct ExecCtx<R: Rt, E: UserEvent> {
@@ -1688,7 +1752,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// return-type check reject its own body.
     pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas:
-        Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingLambda>>>,
+        Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingStack>>>,
     /// Per-callsite-instance param BindId → the `LambdaId` it was
     /// FORWARDED (`premat_fn_args`, the successful re-drive path only).
     /// A forwarded fn formal's `bind_to_lambda` entry is scoped to its

@@ -949,9 +949,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// node-walk's `FoldQ::reset_replay` keeps each slot's CallSite
     /// (its identity and `first_update`) and clears only its caches,
     /// so a framed pass re-dispatches RESUMED sites with honest stale
-    /// args; a chain freed per frame minted a fresh id, and a fresh
-    /// instance's first dispatch is a forced init view
-    /// (quiet-frame-init-view-aug2026/08). Truncation on shrink frees
+    /// args (quiet-frame-init-view-aug2026/08). Truncation on shrink frees
     /// the dead tail's pairs so a regrown slot mints fresh (MapQ's slot
     /// rule); `Drop` frees the rest. Returns the slot's id-word
     /// address. `None` in callee bodies (per-call-site chains would

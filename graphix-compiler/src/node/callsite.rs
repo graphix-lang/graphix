@@ -874,6 +874,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // slot) stack-recursed into the call-depth guard and bottomed at
         // ~256 where the JIT — and a compile-time-resolved node-walk
         // site — tail-looped to the value (soak-jul06c B8).
+        let identity = self.fn_arg_identity(ctx);
         if let Some(apply) = self.callee.apply_mut()
             && matches!(apply.view(), ApplyView::Lambda(_))
         {
@@ -882,15 +883,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ApplyView::BuiltIn => unreachable!(),
             };
             let instance_ftype = apply.typ();
-            let resolving = ctx.resolving_lambdas.clone();
-            let previous = resolving.lock().insert(
+            // Same identity already resolving = a recursive lazy bind;
+            // its body stays lazy (see `resolve_static`'s knot).
+            let already_active = ctx.resolving(f.id, &identity).is_some();
+            ctx.push_resolving(
                 f.id,
                 crate::ResolvingLambda {
                     instance,
                     ftype: instance_ftype.as_ref().clone(),
+                    identity,
                 },
             );
-            if previous.is_none() {
+            if !already_active {
                 let _tc1_span = crate::perfdbg::span(&crate::perfdbg::TC1_NS);
                 if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
                     if crate::dbgenv::gxdbg_swallow() {
@@ -899,14 +903,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     log::trace!("bind: lazy-bound callee body typecheck1 failed: {e:#}");
                 }
             }
-            match previous {
-                Some(active) => {
-                    resolving.lock().insert(f.id, active);
-                }
-                None => {
-                    resolving.lock().remove(&f.id);
-                }
-            }
+            ctx.pop_resolving(f.id, instance);
             if let ApplyView::Lambda(g) = apply.view() {
                 let _an_span = crate::perfdbg::span(&crate::perfdbg::ANALYZE_NS);
                 let self_bind = match self.fnode.view() {
@@ -966,7 +963,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             // Idempotent.
             return Ok(());
         }
-        let active = ctx.resolving_lambdas.lock().get(&def.id).cloned();
+        // The recursion knot, keyed on INSTANTIATION identity: a site
+        // reached while an instantiation of `def` with the same fn-arg
+        // identity is resolving is a self-call of that instance and
+        // shares it (bounded regress); a different identity is a
+        // distinct instantiation even mid-resolution — a callback premats
+        // while its HOF site resolves, so a use of the same HOF nested
+        // under its own callback arrives here with the def active and
+        // is a nested loop, not a cycle (`crate::FnArgIdentity`).
+        let identity = self.fn_arg_identity(ctx);
+        let active = ctx.resolving(def.id, &identity);
         if let Some(active) = active {
             let scope = self.scope.clone();
             self.prepare_bind(ctx, &scope, self.flags, def, |_, _| {})?;
@@ -1008,13 +1014,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // through the whole body typecheck, removed after.
         let (param_binds, trait_param_binds) =
             self.register_fn_params(ctx, &instance_ftype);
-        let resolving = ctx.resolving_lambdas.clone();
-        let previous = instance.map(|instance| {
-            resolving.lock().insert(
+        if let Some(instance) = instance {
+            ctx.push_resolving(
                 def.id,
-                crate::ResolvingLambda { instance, ftype: instance_ftype.clone() },
-            )
-        });
+                crate::ResolvingLambda {
+                    instance,
+                    ftype: instance_ftype.clone(),
+                    identity: identity.clone(),
+                },
+            );
+        }
         let typecheck0 = {
             let (callee, arg_refs) = (&mut self.callee, &mut self.arg_refs);
             callee
@@ -1038,15 +1047,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         );
         self.refresh_static_ftype().expect("static callee must have an apply");
         Self::unregister_fn_params(ctx, param_binds, trait_param_binds);
-        if let Some(previous) = previous {
-            match previous {
-                Some(active) => {
-                    resolving.lock().insert(def.id, active);
-                }
-                None => {
-                    resolving.lock().remove(&def.id);
-                }
-            }
+        if let Some(instance) = instance {
+            ctx.pop_resolving(def.id, instance);
         }
         res
     }
@@ -1139,6 +1141,29 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// separate back-edge guard is needed. A trait-dispatched HOF needs
     /// this exactly like a direct call, or a collection-bodied impl's
     /// prototype can't resolve its callback and emission refuses (P2b).
+    /// This site's instantiation identity ([`crate::FnArgIdentity`]).
+    /// Resolves each argument the way [`Self::register_fn_params`]
+    /// does: a lambda literal is its own source, a `Ref` goes through
+    /// `bind_to_lambda` (a let-bound lambda, or a fn param an enclosing
+    /// premat registered), a `<-` target is dynamic.
+    fn fn_arg_identity(&self, ctx: &ExecCtx<R, E>) -> crate::FnArgIdentity {
+        self.args
+            .values()
+            .map(|arg| {
+                let node = arg.node.as_ref()?;
+                match node.view() {
+                    NodeView::Lambda(l) => Some(l.source_id()),
+                    NodeView::Ref(r) if !ctx.unstable_bindings.contains(&r.id) => ctx
+                        .bind_to_lambda
+                        .get(&r.id)
+                        .and_then(|fv| fv.downcast_ref::<LambdaDef<R, E>>())
+                        .map(|def| def.source),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
     fn register_fn_params(
         &self,
         ctx: &mut ExecCtx<R, E>,
@@ -2105,14 +2130,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 // for per-site monomorphization.
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-                let active_ftype = {
-                    let resolving = ctx.resolving_lambdas.lock();
-                    ftype
-                        .lambda_ids
-                        .own()
-                        .and_then(|id| resolving.get(&id))
-                        .map(|active| active.ftype.clone())
-                };
+                let identity = self.fn_arg_identity(ctx);
+                let active_ftype = ftype
+                    .lambda_ids
+                    .own()
+                    .and_then(|id| ctx.resolving(id, &identity))
+                    .map(|active| active.ftype);
                 // A call to one of the enclosing def's fn-typed PARAMS
                 // during its def gate — the param knot (see
                 // `ExecCtx::def_gate_params`).

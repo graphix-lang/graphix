@@ -73,6 +73,11 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// to `NotRecursive` until the pass runs. The operational tail-loop
     /// gate lives on `GXLambda::tail_loop`, not here.
     pub recursion: Mutex<RecursionKind>,
+    /// The lambda EXPRESSION this def was compiled from. Stable across
+    /// instance-body re-compiles (an `Expr` clone keeps its id), unlike
+    /// the minted `id` — the identity call-site instantiation keys on
+    /// ([`crate::FnArgIdentity`]).
+    pub source: ExprId,
 }
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
@@ -1095,6 +1100,11 @@ impl Lambda {
     pub fn def_value(&self) -> &Value {
         &self.def
     }
+
+    /// The literal's source identity (`LambdaDef::source`).
+    pub fn source_id(&self) -> ExprId {
+        self.spec.id
+    }
 }
 
 impl Lambda {
@@ -1382,6 +1392,7 @@ impl Lambda {
                 Either::Left(_) => true,
             }),
             recursion: Mutex::new(RecursionKind::NotRecursive),
+            source: spec.id,
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Node::new(Self {

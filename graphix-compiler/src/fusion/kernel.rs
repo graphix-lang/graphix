@@ -1992,11 +1992,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // DynCall site identity — `SiteAnchor`) survive: the
         // node-walk's `FoldQ::reset_replay` keeps each slot's CallSite
         // and only clears its caches, so a framed pass re-dispatches
-        // RESUMED sites with honest stale args. Freeing the identity
-        // chain here minted a fresh site id per pass, and a fresh
-        // instance's first dispatch is a forced init view — a fold
-        // over a loop-invariant source fired on every framed pass
-        // (quiet-frame-init-view-aug2026/08).
+        // RESUMED sites with honest stale args (a fresh site would take
+        // a forced init view — quiet-frame-init-view-aug2026/08).
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }

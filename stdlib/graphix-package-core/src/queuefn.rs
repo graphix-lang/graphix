@@ -273,6 +273,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             // A queuefn wrapper is never self-recursive (it dispatches a
             // foreign predicate), so the analysis pass never marks it.
             recursion: Mutex::new(RecursionKind::NotRecursive),
+            source: self.top_id,
         };
         Ok(ctx.wrap_lambda(def))
     }

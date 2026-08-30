@@ -2155,3 +2155,23 @@ const FN_FORMAL_CAPTURE_COLLIDES_ACC: &str = r#"
 run!(fn_formal_capture_collides_acc, FN_FORMAL_CAPTURE_COLLIDES_ACC,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(18)));
     graphix_package_core::testing::FuseExpect::Jit);
+
+// Instantiation identity keys on the callback's SOURCE lambda, not the
+// minted def: the wrapper literal is re-minted per instance-body
+// compile, so keyed on `LambdaId` this recursion would instantiate a
+// fresh `f` per level forever at compile time. Keyed on source, level
+// two's `(f, [that literal])` repeats level one's and knots.
+const CPS_WRAPPER_RECURSION: &str = r#"
+{
+  let rec f = |n: i64, g: fn(y: i64) -> i64| -> i64 select n {
+    i64:0 => g(i64:0),
+    _ => f(n - i64:1, |y| g(y + i64:1))
+  };
+  f(i64:3, |x| x)
+}
+"#;
+
+run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(3))
+); graphix_package_core::testing::FuseExpect::None);

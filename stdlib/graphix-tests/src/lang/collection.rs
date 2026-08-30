@@ -391,3 +391,72 @@ const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
 run!(labeled_callback_default_used, LABELED_CALLBACK_DEFAULT_USED,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(186)));
     graphix_package_core::testing::FuseExpect::Jit);
+
+// A HOF nested under ITS OWN callback is a nested loop, not recursion:
+// the callback premats while the outer site resolves, so the inner
+// site arrives with the outer def still active, and the recursion knot
+// (keyed on def alone) stamped it with the outer INSTANCE — the
+// analysis graph read `fold -> callback -> fold` as a cycle and the
+// emitter refused the region as mutual recursion, so the shape
+// node-walked, where every outer slot lazily instantiates the inner
+// loop (bench/collection/flatmap_list, quadratic). The knot keys on
+// instantiation identity now (`FnArgIdentity`: def + the source lambda
+// each fn arg resolves to). The harness's demand for `Jit` is the pin.
+const NESTED_SAME_INTRINSIC: &str = r#"
+{
+  let src = array::init(i64:200, |i| i);
+  array::fold(src, i64:0, |acc, x| array::fold([x + i64:1, x * i64:2], acc, |a, y| a + y))
+}
+"#;
+
+run!(nested_same_intrinsic, NESTED_SAME_INTRINSIC, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(59900))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// The same through `map`, with the inner loop reached via a named lambda.
+const NESTED_MAP_IN_MAP: &str = r#"
+{
+  let src = array::init(i64:100, |i| i);
+  let inner = |x| array::map([x, x + i64:1], |y| y * i64:2);
+  array::fold(array::map(src, |x| inner(x)), i64:0, |a, ys| a + array::len(ys))
+}
+"#;
+
+run!(nested_map_in_map, NESTED_MAP_IN_MAP, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(200))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// The same knot for a USER-written HOF: `apply` nested under its own
+// callback. Not a collection intrinsic — the fix is the identity, not a
+// special case.
+const USER_HOF_NESTED: &str = r#"
+{
+  let apply = |f: fn(x: i64) -> i64, x: i64| f(x);
+  let g = |y| y + i64:1;
+  let src = array::init(i64:200, |i| i);
+  array::fold(src, i64:0, |a, x| a + apply(|y| apply(g, y), x))
+}
+"#;
+
+run!(user_hof_nested, USER_HOF_NESTED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(20100))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// Nested same-def use with DIFFERENT element types: each instantiation
+// gets its own cells (a shared knot would unify the inner fold's
+// strings against the outer's i64s).
+const NESTED_MIXED_TYPES: &str = r#"
+{
+  let z = i64:0;
+  z + array::fold([i64:1, i64:2], i64:0, |acc, x|
+    acc + x + array::fold(["a", "bb"], i64:0, |a, s| a + str::len(s)))
+}
+"#;
+
+run!(nested_mixed_types, NESTED_MIXED_TYPES, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(9))
+); graphix_package_core::testing::FuseExpect::Jit);

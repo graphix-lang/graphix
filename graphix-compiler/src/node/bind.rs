@@ -639,10 +639,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         if rec_knot || ctx.def_gate_params.contains(&self.id) {
             return Ok(());
         }
-        let active = {
-            let resolving = ctx.resolving_lambdas.lock();
-            ft.lambda_ids.own().and_then(|id| resolving.get(&id)).map(|a| a.ftype.clone())
-        };
+        // A bare value reference has no arguments to key an
+        // instantiation identity on: it refers to the innermost
+        // instance of its def being elaborated.
+        let active = ft
+            .lambda_ids
+            .own()
+            .and_then(|id| ctx.resolving_innermost(id))
+            .map(|a| a.ftype);
         let fresh = match active {
             Some(ft) => ft,
             None => {

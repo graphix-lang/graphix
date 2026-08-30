@@ -68,7 +68,7 @@ intrinsic row's jit time.
 | `flatmap_intr`   | 10k  | 1.63 ms   | 0.51 s    | 315x    |
 | `flatmap_fold`   | 10k  | 1.42 s    | 1.93 s    | 1x      |
 | `flatmap_cons`   | 10k  | 5.8 ms    | 0.56 s    | 96x     |
-| `flatmap_list`   | 10k  | 18.7 s    | 19.0 s    | 1x      |
+| `flatmap_list`   | 10k  | 7.2 ms    | 19.0 s    | 2600x   |
 | `lfold_intr`     | 100k | 4.13 ms   | 2.04 s    | 494x    |
 | `lfold_intr_4k`  | 4k   | 0.14 ms   | 57 ms     | 400x    |
 | `lfold_rec`      | 4k   | 0.28 s    | 0.27 s    | 1x      |
@@ -135,24 +135,35 @@ intrinsic row's jit time.
   `list::to_array_rev` — linear, fuses, 5.8 ms vs the intrinsic's
   1.6 ms (3.5x, the per-element `` `Cons `` construction). Two hand
   conses per element; the general form folds the chunk.
-- **`flatmap_list` is a FINDING, not a derivation result**: the general
-  form — the chunk consed through a NESTED `array::fold` inside the
-  outer callback — is 18.7 s at 10k and QUADRATIC (1.09 / 4.26 / 18.7 s
-  at 2.5k / 5k / 10k) on BOTH engines, and the List is irrelevant: the
-  same nested shape with an `i64` accumulator is identical. Each outer
-  slot's callback body is lazily compiled, its nested `array::fold`
-  call is a fresh per-callsite instance of the stdlib `fold`, and
-  every such instance SHARES the def signature's `LambdaIds` nodes
-  (`FnType::cow_walk` clones the `SArc`) — so the `f` param cell is one
-  hub that every instance's fresh callback def links into
-  (`contains.rs` links on unification). `typecheck1_resolve` walks
-  `ids()` over that hub per site (57.8% of the run, `perf`), and with
-  transient instances RETAINED nothing is ever pruned: O(n) per bind,
-  O(n²) overall. Growth law from `GRAPHIX_DBG_PERF`: bind 98 -> 207 µs
-  and typecheck1 78 -> 187 µs per bind from 2.5k to 5k. Fix direction:
-  per-callsite instance signatures must mint FRESH `LambdaIds` for
-  their nested fn types (a param cell is per instance, as the tvars
-  already are), so a site's walk is O(its own args).
+- **`flatmap_list` — the general form (the chunk consed through a
+  NESTED `array::fold` inside the outer callback) fuses since
+  2026-08-30**: 7.2 ms vs the intrinsic's 1.6 ms, one kernel with nested
+  loops. It was 18.7 s and QUADRATIC (1.09 / 4.26 / 18.7 s at 2.5k / 5k /
+  10k) because the shape did not fuse at all: `CallSite::resolve_static`'s
+  recursion knot was keyed on the def alone, so the inner `fold` site —
+  reached while the outer `fold` resolved, because the callback premats
+  in that window — was stamped with the OUTER instance, the static graph
+  read `fold -> callback -> fold` as a cycle, and the emitter refused the
+  region ("mutually recursive static call edge"). A user HOF nested
+  under its own callback (`apply(|y| apply(g, y), x)`) hit the same
+  refusal. The knot now keys on INSTANTIATION IDENTITY (def + the source
+  lambda each fn arg resolves to — `FnArgIdentity`); pins in
+  `lang/collection.rs` (`nested_same_intrinsic`, `nested_map_in_map`,
+  `user_hof_nested`, `nested_mixed_types`) and `lang/functions.rs`
+  (`cps_wrapper_recursion`, the termination case).
+- **OPEN — the node-walk is still quadratic on that shape** (19.0 s at
+  10k; the same with an `i64` accumulator, so the List is irrelevant).
+  Each outer slot's callback body is lazily compiled, its nested
+  `array::fold` is a fresh per-callsite instance whose signature
+  SHARES the def's `LambdaIds` nodes (`FnType::cow_walk` clones the
+  `SArc`), so the `f` param cell is one hub every retained instance's
+  callback links into (`contains.rs` links on unification), and
+  `typecheck1_resolve` walks `ids()` over it per site — 57.8% of the
+  run in `LambdaIds::ids`, per-bind cost doubling from 2.5k to 5k
+  (`GRAPHIX_DBG_PERF`). With transient instances retained, nothing is
+  pruned. Fix direction: per-callsite instance signatures mint FRESH
+  `LambdaIds` for their nested fn types, as their tvars already are.
+  Only the interp fallback pays this now that the shape fuses.
 - `lfold_intr` at 4.3 ms/100k is ~9x faster than the 2026-07
   `list_fold_sum` row (38 ms) — the flatten boundary improved since.
 
