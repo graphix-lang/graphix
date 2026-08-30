@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c3dc960e.js";
+            window.path_to_searchindex_js = "searchindex-03c86f73.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-f7a0005a.js"></script>
@@ -14011,7 +14011,8 @@ builtin correct but out of fused kernels.</p>
 instance and caches the result — about 140 ns per call, which dominates
 a tight loop that calls <code>array::len</code> once per element. A <code>Sync</code> +
 <code>STATELESS</code> builtin can offer a <strong>fast call</strong>: a plain function the
-kernel calls directly, with no dispatch machinery at all.</p>
+kernel calls directly on its argument values in place, with no dispatch
+machinery and no marshal at all — a few nanoseconds per call.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use graphix_compiler::FastFn;

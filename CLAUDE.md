@@ -227,7 +227,12 @@ Built-ins implement the `BuiltIn<R, E>` trait:
 - `FASTCALL` (default `None`, 2026-08-30): an optional
   `fn(&[Value]) -> Option<Value>` the JIT calls DIRECTLY at every fused
   site of the builtin — no site identity, no per-site inner `Apply`, no
-  `CachedArgs` memo. The kernel's arg discs decide the tag (a tainted
+  `CachedArgs` memo, no marshal: the site stores the args' (disc,
+  payload) pairs in a STACK slot (a scalar with its variant's
+  discriminant word, composite/string bits borrowed, a value shape
+  with its disc cleaned) and the trampoline views it as `&[Value]`;
+  an OWNED producer arg is dropped by the site after the call. The
+  kernel's arg discs decide the tag (a tainted
   arg bottoms the call without invoking the fn; all-stale args make the
   result stale; `None` is this cycle's bottom), through the
   `graphix_fastcall` trampoline, which returns the same in-band-tagged
@@ -238,7 +243,8 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   same fn through `graphix_package_core::fast_eval` (one
   implementation). This is the lever the intrinsics' inline helpers
   give the compiler, offered to every package author: `array::len` in a
-  hand-written loop went from a 140 ns DynCall to a direct call.
+  hand-written loop went from a 140 ns DynCall to a ~3 ns direct call
+  (bench/collection `fold_rec` 15.2 -> 1.5 ms).
   All four consts are pulled through `EvalCached`/`CachedArgs` and
   recorded per name as `BuiltinFacts` (`ctx.builtin_effect`/
   `ctx.builtin_stateless`/`ctx.builtin_sleep_restarts`/

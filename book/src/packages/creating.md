@@ -153,7 +153,8 @@ A fused kernel normally reaches a builtin through a general dispatch
 instance and caches the result — about 140 ns per call, which dominates
 a tight loop that calls `array::len` once per element. A `Sync` +
 `STATELESS` builtin can offer a **fast call**: a plain function the
-kernel calls directly, with no dispatch machinery at all.
+kernel calls directly on its argument values in place, with no dispatch
+machinery and no marshal at all — a few nanoseconds per call.
 
 ```rust
 use graphix_compiler::FastFn;

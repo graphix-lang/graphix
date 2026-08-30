@@ -713,19 +713,27 @@ unsafe fn graphix_dyncall(
 /// tainted argument bottoms the result WITHOUT calling (bottom
 /// propagates — the fn never sees a bottom), all-stale arguments make
 /// the result STALE, and `None` from the fn is this cycle's bottom.
-/// `fn_ptr` is the registered `FastFn`; `args` is the same pooled buf
-/// the DynCall path marshals, consumed here. Returns the production's
+/// `fn_ptr` is the registered `FastFn`; `args`/`n` is the call site's
+/// stack buffer of (disc, payload) pairs, borrowed. Returns the production's
 /// two words exactly as `graphix_dyncall` does (tag in-band on the
 /// disc), so the call site's decode is shared; never touches the
 /// pending flag.
 unsafe fn graphix_fastcall(
     fn_ptr: u64,
-    args: *mut LPooled<Vec<Value>>,
+    args: u64,
+    n: u64,
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    let args_vec = unsafe { *Box::from_raw(args) };
-    let n = args_vec.len();
+    // SAFETY: `args` is the call site's stack buffer of `n` (disc,
+    // payload) pairs, each a valid clean `Value` the site built for
+    // this call (scalars with their variant's discriminant, composite
+    // and string words borrowed, value shapes with a cleaned disc).
+    // Viewed, never owned: nothing here drops them; the site releases
+    // what it owned after the call.
+    let args_vec: &[Value] =
+        unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
+    let n = n as usize;
     let all_stale = n > 0 && stale_mask == u64::MAX >> (64 - n);
     let bottom = if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
     let tv = if taint_mask != 0 {
@@ -735,7 +743,7 @@ unsafe fn graphix_fastcall(
         // (`BuiltinFacts::fastcall`), embedded by the emitter as an
         // immediate; a fn pointer round-trips through usize.
         let f: crate::FastFn = unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
-        match f(&args_vec) {
+        match f(args_vec) {
             Some(v) => crate::TagValue::tagged(
                 v,
                 if all_stale { crate::Tag::STALE } else { crate::Tag::FIRED },
@@ -2264,34 +2272,28 @@ mod tests {
         fn none(_: &[Value]) -> Option<Value> {
             None
         }
-        fn buf(vals: Vec<Value>) -> *mut LPooled<Vec<Value>> {
-            let mut b: LPooled<Vec<Value>> = LPooled::take();
-            b.extend(vals);
-            Box::into_raw(Box::new(b))
-        }
         let arr = Value::Array(ValArray::from_iter_exact(
             [Value::I64(1), Value::I64(2), Value::I64(3)].into_iter(),
         ));
+        let args = vec![arr];
+        let (ap, n) = (args.as_ptr() as u64, args.len() as u64);
         let fp = len as usize as u64;
         let decode =
             |r: DynCallRet| unsafe { crate::TagValue::from_raw(r.word0, r.word1) };
-        let tv = decode(unsafe { graphix_fastcall(fp, buf(vec![arr.clone()]), 0, 0) });
+        let tv = decode(unsafe { graphix_fastcall(fp, ap, n, 0, 0) });
         assert_eq!(tv.tag(), crate::Tag::FIRED);
         assert_eq!(tv.value_cloned(), Value::I64(3));
-        let tv = decode(unsafe { graphix_fastcall(fp, buf(vec![arr.clone()]), 0, 0b1) });
+        let tv = decode(unsafe { graphix_fastcall(fp, ap, n, 0, 0b1) });
         assert_eq!(tv.tag(), crate::Tag::STALE);
         assert_eq!(tv.value_cloned(), Value::I64(3));
         let never_p = never as usize as u64;
-        let tv =
-            decode(unsafe { graphix_fastcall(never_p, buf(vec![arr.clone()]), 0b1, 0) });
+        let tv = decode(unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0) });
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
-        let tv = decode(unsafe {
-            graphix_fastcall(never_p, buf(vec![arr.clone()]), 0b1, 0b1)
-        });
+        let tv = decode(unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0b1) });
         assert_eq!(tv.tag(), crate::Tag::STALE_BOTTOM);
-        let tv = decode(unsafe {
-            graphix_fastcall(none as usize as u64, buf(vec![arr]), 0, 0)
-        });
+        let tv = decode(unsafe { graphix_fastcall(none as usize as u64, ap, n, 0, 0) });
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
+        // The view never took ownership: the array is still ours.
+        assert_eq!(args.len(), 1);
     }
 }

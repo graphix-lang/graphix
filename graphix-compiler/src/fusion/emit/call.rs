@@ -6,7 +6,7 @@ use crate::{
     Node, Rt, Update, UserEvent,
     fusion::{
         LambdaCallInfo,
-        kernel_abi::{self, AbiKind},
+        kernel_abi::{self, AbiKind, PrimType},
         lowering::{BuiltinCallSiteInfo, CaptureSlot},
     },
     node::callsite::CallSite,
@@ -18,6 +18,7 @@ use cranelift_codegen::ir::{
     Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
+use netidx_value::Value;
 
 use super::{
     abi::{
@@ -50,6 +51,36 @@ use super::{
 /// Returns (word address, claimed): `claimed = false` means the
 /// key-0 bucket (no identity — the site word is const 0 or a
 /// null-guarded callee block miss).
+/// The `Value` discriminant word of each register scalar's variant —
+/// what a FASTCALL site stores beside a scalar arg's bits so the
+/// trampoline's `&[Value]` view reads a genuine `Value::I64(..)` etc.
+fn prim_value_disc(p: PrimType) -> u64 {
+    let sample = match p {
+        PrimType::I8 => Value::I8(0),
+        PrimType::I16 => Value::I16(0),
+        PrimType::I32 => Value::I32(0),
+        PrimType::I64 => Value::I64(0),
+        PrimType::U8 => Value::U8(0),
+        PrimType::U16 => Value::U16(0),
+        PrimType::U32 => Value::U32(0),
+        PrimType::U64 => Value::U64(0),
+        PrimType::F32 => Value::F32(0.0),
+        PrimType::F64 => Value::F64(0.0),
+        PrimType::Bool => Value::Bool(false),
+    };
+    crate::tval::value_words(&sample)[0]
+}
+
+/// `Value::Array`'s / `Value::String`'s discriminant words (the
+/// composite and string wire words are the payloads of those variants).
+static ARRAY_VALUE_DISC: std::sync::LazyLock<(u64,)> = std::sync::LazyLock::new(|| {
+    let v = Value::Array(netidx_value::ValArray::from_iter_exact(std::iter::empty()));
+    (crate::tval::value_words(&v)[0],)
+});
+static STRING_VALUE_DISC: std::sync::LazyLock<(u64,)> = std::sync::LazyLock::new(|| {
+    (crate::tval::value_words(&Value::String(arcstr::ArcStr::new()))[0],)
+});
+
 fn emit_dyncall_site_word(cx: &mut BodyCx) -> (ClifValue, bool) {
     if cx.ctx.loop_depth.get() > 0 {
         // PER-SLOT identity (5c — the documented v1 follow-up): each
@@ -116,13 +147,32 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             ));
         }
     }
-    let buf_new = cx.helper("graphix_value_buf_new")?;
-    let cap = cx.b.ins().iconst(types::I64, args.len() as i64);
-    let call = cx.b.ins().call(buf_new, &[cap]);
-    let buf = cx.b.inst_results(call)[0];
-    let buf_var = cx.b.declare_var(types::I64);
-    cx.b.def_var(buf_var, buf);
-    cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+    // A FASTCALL site marshals to a STACK buffer of (disc, payload)
+    // pairs the trampoline views as `&[Value]` — zero-copy, no
+    // allocation, no refcount traffic (the fn borrows; an OWNED
+    // producer arg is dropped after the call). A DynCall site builds
+    // the pooled Vec the dispatcher consumes.
+    let fast_slot = info.fastcall.map(|_| {
+        cx.b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (16 * args.len().max(1)) as u32,
+            3,
+        ))
+    });
+    let mut fast_drops: smallvec::SmallVec<[(&str, ClifValue, Option<ClifValue>); 8]> =
+        smallvec::SmallVec::new();
+    let buf = if fast_slot.is_none() {
+        let buf_new = cx.helper("graphix_value_buf_new")?;
+        let cap = cx.b.ins().iconst(types::I64, args.len() as i64);
+        let call = cx.b.ins().call(buf_new, &[cap]);
+        let buf = cx.b.inst_results(call)[0];
+        let buf_var = cx.b.declare_var(types::I64);
+        cx.b.def_var(buf_var, buf);
+        cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+        buf
+    } else {
+        cx.b.ins().iconst(types::I64, 0)
+    };
     // #219: each arg's disc — its TAINT bit propagates into a scalar
     // result and force-bottoms a non-scalar result (folds away when no
     // arg is tainted, the fast path).
@@ -192,10 +242,54 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         // would clone/drop, UB).
         let cv = arg_node.emit_clif(cx)?;
         arg_taint_discs.push(cv.disc);
-        if kernel_abi::is_value_shape(t) {
-            cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
-        } else {
-            cx.b.ins().call(push, &[buf, cv.payload]);
+        match fast_slot {
+            Some(slot) => {
+                let i = arg_taint_discs.len() - 1;
+                let (disc, payload) = match kernel_abi::abi_kind(t) {
+                    Some(AbiKind::Scalar(p)) => (
+                        cx.b.ins().iconst(types::I64, prim_value_disc(p) as i64),
+                        cv.payload,
+                    ),
+                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                        if node_composite_source(arg_node) == CompositeSource::Owned {
+                            fast_drops.push(("graphix_valarray_drop", cv.payload, None));
+                        }
+                        (
+                            cx.b.ins().iconst(types::I64, ARRAY_VALUE_DISC.0 as i64),
+                            cv.payload,
+                        )
+                    }
+                    // Strings are owned at production (the DynCall push
+                    // consumes them).
+                    Some(AbiKind::String) => {
+                        fast_drops.push(("graphix_arcstr_drop", cv.payload, None));
+                        (
+                            cx.b.ins().iconst(types::I64, STRING_VALUE_DISC.0 as i64),
+                            cv.payload,
+                        )
+                    }
+                    _ => {
+                        let disc = clean_disc(cx.b, cv.disc);
+                        if node_composite_source(arg_node) == CompositeSource::Owned {
+                            fast_drops.push((
+                                "graphix_value_drop",
+                                disc,
+                                Some(cv.payload),
+                            ));
+                        }
+                        (disc, cv.payload)
+                    }
+                };
+                cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
+                cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
+            }
+            None => {
+                if kernel_abi::is_value_shape(t) {
+                    cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
+                } else {
+                    cx.b.ins().call(push, &[buf, cv.payload]);
+                }
+            }
         }
     }
     let dyncall = cx.helper("graphix_dyncall")?;
@@ -349,7 +443,9 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
     // The buf's in-flight cover ends here: the dispatcher consumes it.
-    cx.ctx.dyncall_buf_stack.borrow_mut().pop();
+    if fast_slot.is_none() {
+        cx.ctx.dyncall_buf_stack.borrow_mut().pop();
+    }
     let call = match info.fastcall {
         // FASTCALL (`BuiltIn::FASTCALL`): the builtin's registered fn,
         // called directly on the marshalled buf with the masks — the
@@ -358,7 +454,23 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
         Some(f) => {
             let fast = cx.helper("graphix_fastcall")?;
             let fp = cx.b.ins().iconst(types::I64, f as usize as i64);
-            cx.b.ins().call(fast, &[fp, buf, taint_mask, stale_mask])
+            let slot = fast_slot.expect("a fastcall site has its stack buffer");
+            let base = cx.b.ins().stack_addr(types::I64, slot, 0);
+            let n = cx.b.ins().iconst(types::I64, args.len() as i64);
+            let call = cx.b.ins().call(fast, &[fp, base, n, taint_mask, stale_mask]);
+            // The fn borrowed the buffer; release what this site owned.
+            for (helper, w0, w1) in fast_drops.drain(..) {
+                let h = cx.helper(helper)?;
+                match w1 {
+                    Some(w1) => {
+                        cx.b.ins().call(h, &[w0, w1]);
+                    }
+                    None => {
+                        cx.b.ins().call(h, &[w0]);
+                    }
+                }
+            }
+            call
         }
         None => {
             cx.b.ins()

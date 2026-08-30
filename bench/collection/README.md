@@ -55,7 +55,7 @@ intrinsic row's jit time.
 |------------------|------|-----------|-----------|---------|
 | `fold_intr`      | 100k | 0.25 ms   | 2.04 s    | 8047x   |
 | `fold_trait`     | 100k | 0.30 ms   | 2.01 s    | 6712x   |
-| `fold_rec`       | 100k | 7.0 ms    | 0.22 s    | 31x     |
+| `fold_rec`       | 100k | 1.5 ms    | 0.22 s    | 143x    |
 | `map_intr`       | 100k | 2.33 ms   | 3.90 s    | 1671x   |
 | `map_fmshape`    | 100k | 2.35 ms   | 3.97 s    | 1691x   |
 | `map_init`       | 100k | 2.35 ms   | 4.42 s    | 1880x   |
@@ -180,11 +180,13 @@ itself — the hand-written loop's cost was ONE DynCall per iteration,
 the rebind/index/qop/select ~6 ns): with `len` hoisted to a
 loop-invariant parameter the loop runs in 1.13 ms, 3.8x the intrinsic.
 `BuiltIn::FASTCALL` (2026-08-30 — `array::len`, `str::len`, `map::len`
-opted in) replaces the dispatch with a direct call: 15.2 -> 7.4 ms. The
-remaining ~60 ns per call is the argument MARSHAL the fastcall still
-shares with DynCall (a boxed pooled `Vec<Value>` per call, an Arc bump,
-the pool round-trip) — the next cut is a stack buffer of (disc,
-payload) pairs viewed as `&[Value]`, zero-copy. `find`/`find_map` — the
+opted in) replaces the dispatch with a direct call over a zero-copy
+stack buffer of (disc, payload) pairs viewed as `&[Value]`: 15.2 ms ->
+1.47 ms, i.e. ~3 ns per call (the DynCall was ~140 ns; a first cut that
+kept DynCall's pooled-Vec marshal was ~60 ns). The hand-written fold is
+now 5.8x the intrinsic and the remainder is the loop's own bounds
+check, qop and select — the honest price of writing the loop yourself.
+`find`/`find_map` — the
 Option-carrying fold FUSES now (5.2 ms vs 1.9 ms) but cannot early-exit;
 `flat_map` — the fold+concat derivation is O(n²) by construction (the
 cons + `to_array_rev` derivation, `flatmap_cons`, is 5.8 ms vs 1.6 ms);
