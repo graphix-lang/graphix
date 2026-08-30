@@ -154,6 +154,14 @@ enum SelectArmBind {
     /// never in the fall-through chain. (The node-walk evaluates binds
     /// only after the pattern matches — we follow the node-walk.)
     Payload { id: BindId, idx: usize, prim: PrimType },
+    /// `` `Tag(xs) `` — bind one NON-scalar variant payload: the slot
+    /// is cloned out of the variant as an owned local of `kind`
+    /// (Composite / String / Variant / Nullable / Value), dropped by
+    /// the arm's scope exit like any owned local. The shape-safe clone
+    /// helpers make it legal under a mask (the guard prologue): a
+    /// wrong-tag read yields an owned drop-safe default behind a
+    /// TAINT'd disc.
+    PayloadValue { id: BindId, idx: usize, kind: LocalKind },
     /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
     /// composite scrutinee. `ptr` is the (borrowed) composite the leaf
     /// reads from: the scrutinee itself, or — for a NESTED pattern — a
@@ -218,7 +226,6 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     });
     ids
 }
-
 
 pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
@@ -1573,15 +1580,24 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             };
             for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
                 match sub {
-                    StructPatternNode::Bind(id) => {
-                        let prim = kernel_abi::scalar_prim(elt).ok_or_else(|| {
-                            anyhow!(
-                                "emit_clif: non-scalar variant \
-                                         payload {elt:?}"
-                            )
-                        })?;
-                        binds.push(SelectArmBind::Payload { id: *id, idx, prim });
-                    }
+                    StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(elt) {
+                        Some(prim) => {
+                            binds.push(SelectArmBind::Payload { id: *id, idx, prim })
+                        }
+                        None => {
+                            let kind = payload_local_kind(elt).ok_or_else(|| {
+                                anyhow!(
+                                    "emit_clif: variant payload shape \
+                                             {elt:?} not lowerable"
+                                )
+                            })?;
+                            binds.push(SelectArmBind::PayloadValue {
+                                id: *id,
+                                idx,
+                                kind,
+                            });
+                        }
+                    },
                     StructPatternNode::Ignore => {}
                     StructPatternNode::Literal(_)
                     | StructPatternNode::Slice { .. }
@@ -1659,7 +1675,22 @@ fn mask_unmatched(
     }
 }
 
-/// Install an arm's `binds` (all register scalars) into the env.
+/// The [`LocalKind`] a non-scalar variant payload element binds as —
+/// by its ABI kind. `Unit`/`Null` payloads (and shapes with no kernel
+/// encoding) refuse.
+fn payload_local_kind(t: &Type) -> Option<LocalKind> {
+    match kernel_abi::abi_kind(t)? {
+        AbiKind::Scalar(p) => Some(LocalKind::Scalar(p)),
+        AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Some(LocalKind::Composite),
+        AbiKind::String => Some(LocalKind::String),
+        AbiKind::Variant => Some(LocalKind::Variant),
+        AbiKind::Nullable => Some(LocalKind::Nullable),
+        AbiKind::Value => Some(LocalKind::Value),
+        AbiKind::Unit | AbiKind::Null => None,
+    }
+}
+
+/// Install an arm's `binds` into the env.
 /// `mask` is the arm's pattern condition when the caller has NOT
 /// branched on it (the guard prologue); the take chain installs
 /// inside the matched block and passes `None`.
@@ -1728,6 +1759,48 @@ fn install_arm_binds(
                 let pdisc = propagate_flags(cx.b, base, &[disc]);
                 let pdisc = mask_unmatched(cx, pdisc, mask);
                 bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
+            }
+            SelectArmBind::PayloadValue { id, idx, kind } => {
+                let SelectScrut::Value { disc, payload } = scrut else {
+                    return Err(anyhow!(
+                        "emit_clif: payload bind without a variant \
+                             scrutinee"
+                    ));
+                };
+                let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
+                let (vdisc, vpayload) = match kind {
+                    LocalKind::Composite => {
+                        let h = cx.helper("graphix_variant_payload_array")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
+                        let bits = cx.b.inst_results(call)[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::ARRAY), bits)
+                    }
+                    LocalKind::String => {
+                        let h = cx.helper("graphix_variant_payload_string")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
+                        let bits = cx.b.inst_results(call)[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
+                    }
+                    LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                        let h = cx.helper("graphix_variant_payload_value")?;
+                        let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
+                        let rs = cx.b.inst_results(call);
+                        (rs[0], rs[1])
+                    }
+                    LocalKind::Scalar(_) => {
+                        return Err(anyhow!(
+                            "emit_clif: scalar payload routed to the \
+                                 value bind path"
+                        ));
+                    }
+                };
+                let name: ArcStr =
+                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
+                // The bound payload fires iff its variant scrutinee
+                // fired — inherit the scrutinee's STALE (and taint).
+                let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
+                let pdisc = mask_unmatched(cx, pdisc, mask);
+                bind_local(cx, name, pdisc, vpayload, *kind, Some(*id));
             }
             SelectArmBind::Elem { id, idx, prim, ptr } => {
                 let SelectScrut::Composite { disc, .. } = scrut else {

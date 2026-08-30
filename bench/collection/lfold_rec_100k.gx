@@ -1,9 +1,7 @@
-// P2b: list fold written in Graphix — natural tail recursion over the
-// transparent Cons/Nil union. Fuses since 2026-08-30 (non-scalar
-// variant payload bind + Value-carried tail rebind); the 4k size
-// predates that — compare against lfold_intr_4k, and lfold_rec_100k
-// against lfold_intr.
-let n = 4000;
+// P2b: lfold_rec at the linear-row size — the List pair fused
+// (2026-08-30), so the hand recursion benches at the same n as the
+// intrinsic row (lfold_intr).
+let n = 100000;
 let src = list::init(n, |i| i);
 let rec lfold_go = |l: list::List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
     select l {
@@ -15,5 +13,5 @@ let seed = cast<i64>(t0)$;
 let result = lfold_go(src, |a, x| a + x, seed);
 let t1 = sys::time::now(result);
 let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
-println("lfold_rec n=[n] result=[result] elapsed_s=[elapsed]");
+println("lfold_rec_100k n=[n] result=[result] elapsed_s=[elapsed]");
 sys::exit(elapsed ~ 0)

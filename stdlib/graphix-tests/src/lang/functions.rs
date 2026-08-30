@@ -2195,3 +2195,52 @@ run!(returned_lambda_resolves, RETURNED_LAMBDA_RESOLVES, |v: Result<&Value>| mat
     v,
     Ok(Value::I64(33))
 ); graphix_package_core::testing::FuseExpect::None);
+
+// ── Loop-CARRIED non-register formals (2026-08-30) ──────────────────
+// The tail-rebind lowers every kernel param kind: a two-word Value
+// (variant / nullable / map) rebinds through the clone/drop pair
+// protocol, a String through the owned-ArcStr drop/store. The gate
+// (`structural_tail_loop`) admits every kernel-encodable carried kind.
+
+const STRING_CARRIED_TAIL_LOOP: &str = r#"
+{
+  let rec go = |n: i64, acc: string| -> string
+    select n { 0 => acc, _ => go(n - 1, "[acc].") };
+  go(5, "x")
+}
+"#;
+
+run!(string_carried_tail_loop, STRING_CARRIED_TAIL_LOOP, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) => &**s == "x.....",
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const VALUE_CARRIED_TAIL_LOOP: &str = r#"
+{
+  let rec go = |n: i64, m: Map<string, i64>| -> Map<string, i64>
+    select n { 0 => m, _ => go(n - 1, map::insert(m, "k[n]", n)) };
+  map::len(go(3, {}))
+}
+"#;
+
+run!(value_carried_tail_loop, VALUE_CARRIED_TAIL_LOOP, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(3))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// The List pair end-to-end: a recursive variant scrutinee destructured
+// with a NON-SCALAR payload bind (`rest` is the List tail) carried
+// through the tail loop as a two-word Value rebind.
+const LIST_CARRIED_FOLD: &str = r#"
+{
+  type L<'a> = [`C('a, L<'a>), `N];
+  let rec fold_l = |l: L<i64>, acc: i64| -> i64
+    select l { `N => acc, `C(x, rest) => fold_l(rest, acc + x) };
+  fold_l(`C(1, `C(2, `C(3, `N))), 0)
+}
+"#;
+
+run!(list_carried_fold, LIST_CARRIED_FOLD, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(6))
+); graphix_package_core::testing::FuseExpect::Jit);

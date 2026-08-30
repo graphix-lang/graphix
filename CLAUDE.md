@@ -1002,8 +1002,14 @@ logical/cast/checked-arith, every producer and accessor, `?`/`$`, all
 eight array HOFs as native loops over scalar/composite/String/value
 elements (HOF-of-HOF and same-HOF nesting fuse as one multi-loop kernel;
 fold accumulators may be composite or string), `select` structural
-destructuring with scalar leaf binds, `connect` of any RHS shape
-including lifted composite/string accumulators, every Sync builtin via
+destructuring with scalar leaf binds and non-scalar variant payload
+binds (the slot clones out as an owned local of its ABI kind,
+2026-08-30 — a recursive type's payload is an opaque value leaf),
+tail loops carrying ANY kernel param kind (Value pairs and Strings
+rebind via the clone/drop protocol; `structural_tail_loop` admits
+every kernel-encodable carried kind, so `lfold_rec` fuses and the
+hand List fold beats the intrinsic at 100k), `connect` of any RHS
+shape including lifted composite/string accumulators, every Sync builtin via
 DynCall, cross-kernel lambda calls (recursive self-calls: tail →
 rebind-and-jump, non-tail → native recursion), trait default bodies and
 fn-formal forwarding/capture.
@@ -1019,10 +1025,10 @@ cross-cycle nodes (`~`, `Any`, `Catch`'s handler read), and non-register-
 encodable types (`decimal`, `Fn`, `Ref`, unbound tvars). The missed-
 fusion residue, each pinned by a `#[native]` de-fuse test or an ASPIRE
 comment: select residue (whole-composite/`@`/named-rest binds, nested
-non-scalar variant payloads, owned scrutinees in tail position);
+patterns INSIDE a variant payload, owned scrutinees in tail position);
 union-self trait dispatch and abstract patterns in select; arm-lifted
-connects in loops/callees; loop-carried Value rebinds (`lfold_rec`);
-String-returning cross-kernel callees; non-scalar string-interp parts;
+connects in loops/callees; union-typed cross-kernel returns
+(`rec_block_multi_member_collapses`); non-scalar string-interp parts;
 dynamic map literals; `array::group`; ByRef/Deref; decimal arith. The
 intrinsics-deletion endgame is measured in `bench/collection/README.md`.
 

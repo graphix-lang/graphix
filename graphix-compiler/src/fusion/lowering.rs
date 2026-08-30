@@ -1546,12 +1546,13 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
         return false;
     }
     // Every formal must be positional, and every LOOP-CARRIED formal a
-    // register-loopable kind (the same classification
-    // `build_lambda_kernel` derives for its slots). An INVARIANT
-    // formal — passed unchanged by every self-call — is never rebound
-    // (the rebind would be the identity), so its kind doesn't gate the
-    // loop: an fn/String/Variant/Value formal threaded unchanged
-    // through a tail recursion loops on both engines.
+    // kernel-encodable kind (the same classification
+    // `build_lambda_kernel` derives for its slots; the rebind lowers
+    // every [`RegionInputKind`] — scalars in registers, composite
+    // pointers and two-word Values via the clone/drop protocol,
+    // 2026-08-30). An INVARIANT formal — passed unchanged by every
+    // self-call — is never rebound (the rebind would be the identity),
+    // so even an fn-typed one loops (it drops out of the signature).
     let inv = invariant_formals(g, Some(self_bind));
     for (i, fa) in g.typ().args.iter().enumerate() {
         if !matches!(fa.kind, FnArgKind::Positional { .. }) {
@@ -1565,14 +1566,8 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
             Some(t) => t,
             None => return false,
         };
-        match type_to_region_input_kind(kt) {
-            Some(
-                RegionInputKind::Prim(_)
-                | RegionInputKind::Array(_)
-                | RegionInputKind::Tuple(_)
-                | RegionInputKind::Struct(_),
-            ) => {}
-            _ => return false,
+        if type_to_region_input_kind(kt).is_none() {
+            return false;
         }
     }
     body_has_self_tail_call(g.body(), self_bind)

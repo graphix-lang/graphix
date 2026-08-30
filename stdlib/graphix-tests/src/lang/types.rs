@@ -869,3 +869,42 @@ run!(recursive_list_find, RECURSIVE_LIST_FIND, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(2))
 ));
+
+// Non-scalar variant payload binds fuse (2026-08-30): the payload
+// slot is cloned out of the variant as an owned local of its ABI
+// kind — composite, string, and value/variant shapes (a recursive
+// type's payload is an opaque value leaf).
+const VARIANT_COMPOSITE_PAYLOAD: &str = r#"
+{
+    type T = [`A(Array<i64>), `B];
+    let v: T = `A([10, 20, 30]);
+    select v { `A(xs) => xs[1]$ + array::len(xs), `B => 0 }
+}"#;
+run!(variant_composite_payload, VARIANT_COMPOSITE_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(23))); graphix_package_core::testing::FuseExpect::Jit);
+
+const VARIANT_STRING_PAYLOAD: &str = r#"
+{
+    type S = [`S(string), `N];
+    let v: S = `S("hello");
+    select v { `S(s) => "got [s]", `N => "none" }
+}"#;
+run!(variant_string_payload, VARIANT_STRING_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s.as_str() == "got hello"); graphix_package_core::testing::FuseExpect::Jit);
+
+const VARIANT_RECURSIVE_PAYLOAD: &str = r#"
+{
+    type L<'a> = [`C('a, L<'a>), `N];
+    let l: L<i64> = `C(1, `C(2, `N));
+    select l {
+        `N => 0,
+        `C(x, rest) => x + select rest { `N => 10, `C(y, _) => y * 100 }
+    }
+}"#;
+run!(variant_recursive_payload, VARIANT_RECURSIVE_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(201))); graphix_package_core::testing::FuseExpect::Jit);
+
+const VARIANT_MAP_PAYLOAD: &str = r#"
+{
+    type M = [`M(Map<string, i64>), `N];
+    let v: M = `M({"a" => 1, "b" => 2});
+    select v { `M(m) => map::len(m), `N => 0 }
+}"#;
+run!(variant_map_payload, VARIANT_MAP_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); graphix_package_core::testing::FuseExpect::Jit);

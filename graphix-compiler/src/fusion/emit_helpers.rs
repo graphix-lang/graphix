@@ -1177,6 +1177,49 @@ safe fn graphix_variant_payload_u8(v: TagValue, payload_idx: usize) -> u8 {
     variant_payload_read(v, payload_idx, read_slot_u8)
 }
 
+/// Owned clone of variant payload slot `idx` as a full two-word
+/// `Value` — the non-scalar payload bind. A shape mismatch (a tainted
+/// scrutinee's helper-safe placeholder) yields `Value::Null`, which is
+/// safe for `graphix_value_drop`; the emitter masks the bind's disc
+/// TAINT in that case, so the placeholder is never read as data.
+safe fn graphix_variant_payload_value(v: TagValue, payload_idx: usize) -> TagValue {
+    let r = v.with_value(|v| match v {
+        Value::Array(a) => a.get(payload_idx + 1).cloned().unwrap_or(Value::Null),
+        _ => Value::Null,
+    });
+    std::mem::forget(v);
+    TagValue::clean(r)
+}
+
+/// Owned `ArcStr` clone of a string variant payload slot; the
+/// mismatch default is the static empty string (free, drop-safe).
+safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
+    let r = v.with_value(|v| match v {
+        Value::Array(a) => match a.get(payload_idx + 1) {
+            Some(Value::String(s)) => s.clone(),
+            _ => arcstr::ArcStr::new(),
+        },
+        _ => arcstr::ArcStr::new(),
+    });
+    std::mem::forget(v);
+    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+}
+
+/// Owned `ValArray` bits of a composite (array/tuple/struct) variant
+/// payload slot; the mismatch default is a refcount clone of the
+/// static empty array (drop-safe).
+safe fn graphix_variant_payload_array(v: TagValue, payload_idx: usize) -> u64 {
+    let r = v.with_value(|v| match v {
+        Value::Array(a) => match a.get(payload_idx + 1) {
+            Some(Value::Array(inner)) => inner.clone(),
+            _ => EMPTY_ARR.clone(),
+        },
+        _ => EMPTY_ARR.clone(),
+    });
+    std::mem::forget(v);
+    va_bits(r)
+}
+
 safe fn graphix_variant_payload_u16(v: TagValue, payload_idx: usize) -> u16 {
     variant_payload_read(v, payload_idx, read_slot_u16)
 }

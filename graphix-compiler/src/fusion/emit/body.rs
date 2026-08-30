@@ -191,30 +191,80 @@ pub(super) fn emit_tail_rebind_jump(
                 b.seal_block(cont_bl);
                 b.switch_to_block(cont_bl);
             }
-            AbiParamKind::Variant => {
-                return Err(anyhow!("JIT: variant tail-call rebind not yet supported"));
+            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
+                // Two-word Value rebind — the composite protocol with
+                // the (disc, payload) pair helpers: REPLACE clones a
+                // Borrowed new value and drops the old slot pair; KEEP
+                // leaves the slot and drops an Owned unconsumed new
+                // value.
+                let vv = lookup_slot(env, slot).ok_or_else(|| {
+                    anyhow!("TailCall: value slot `{}` not in env", slot.name)
+                })?;
+                let vclone = ctx
+                    .helper_refs
+                    .get("graphix_value_clone")
+                    .ok_or_else(|| anyhow!("missing graphix_value_clone"))?;
+                let vdrop = ctx
+                    .helper_refs
+                    .get("graphix_value_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
+                let keep_bl = b.create_block();
+                let replace_bl = b.create_block();
+                let cont_bl = b.create_block();
+                b.ins().brif(r.taint, keep_bl, &[], replace_bl, &[]);
+                b.seal_block(keep_bl);
+                b.seal_block(replace_bl);
+                b.switch_to_block(replace_bl);
+                let (newd, newp) = if r.source == CompositeSource::Borrowed {
+                    let call = b.ins().call(vclone, &[r.val.disc, r.val.payload]);
+                    let rs = b.inst_results(call);
+                    (rs[0], rs[1])
+                } else {
+                    (r.val.disc, r.val.payload)
+                };
+                let old_d = b.use_var(vv.disc);
+                let old_p = b.use_var(vv.payload);
+                b.ins().call(vdrop, &[old_d, old_p]);
+                b.def_var(vv.payload, newp);
+                b.def_var(vv.disc, newd);
+                b.ins().jump(cont_bl, &[]);
+                b.switch_to_block(keep_bl);
+                if r.source == CompositeSource::Owned {
+                    b.ins().call(vdrop, &[r.val.disc, r.val.payload]);
+                }
+                b.ins().jump(cont_bl, &[]);
+                b.seal_block(cont_bl);
+                b.switch_to_block(cont_bl);
             }
-            AbiParamKind::Nullable => {
-                // The tail-loop gate keeps Nullable formals out of
-                // the REBIND set (a loop-CARRIED formal must be
-                // Prim/Array/Tuple/Struct; an invariant Nullable
-                // formal has a slot but is never rebound), so this is
-                // unreachable in practice. Err keeps the codegen safe
-                // if the gating ever drifts.
-                return Err(anyhow!(
-                    "JIT: nullable tail-call rebind not supported — \
-                     the tail-loop gate should have refused this kernel"
-                ));
-            }
-            AbiParamKind::String | AbiParamKind::Value => {
-                // A recursive lambda whose tail-call rebinds a String
-                // / value-shape param. The JIT doesn't lower the
-                // owned-ArcStr / two-word Value rebind yet; bail so
-                // the kernel falls back to the node-walk.
-                return Err(anyhow!(
-                    "JIT: string/value tail-call rebind not yet \
-                     supported — falling back to interp"
-                ));
+            AbiParamKind::String => {
+                // String rebind: a String production is ALWAYS owned
+                // (a local read refcount-bumps at the read — nodes.rs),
+                // so no source branch: REPLACE drops the old slot ptr
+                // and stores the new; KEEP drops the unconsumed new.
+                let vv = lookup_slot(env, slot).ok_or_else(|| {
+                    anyhow!("TailCall: string slot `{}` not in env", slot.name)
+                })?;
+                let sdrop = ctx
+                    .helper_refs
+                    .get("graphix_arcstr_drop")
+                    .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
+                let keep_bl = b.create_block();
+                let replace_bl = b.create_block();
+                let cont_bl = b.create_block();
+                b.ins().brif(r.taint, keep_bl, &[], replace_bl, &[]);
+                b.seal_block(keep_bl);
+                b.seal_block(replace_bl);
+                b.switch_to_block(replace_bl);
+                let old_p = b.use_var(vv.payload);
+                b.ins().call(sdrop, &[old_p]);
+                b.def_var(vv.payload, r.val.payload);
+                b.def_var(vv.disc, r.val.disc);
+                b.ins().jump(cont_bl, &[]);
+                b.switch_to_block(keep_bl);
+                b.ins().call(sdrop, &[r.val.payload]);
+                b.ins().jump(cont_bl, &[]);
+                b.seal_block(cont_bl);
+                b.switch_to_block(cont_bl);
             }
         }
     }

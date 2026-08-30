@@ -30,7 +30,8 @@ provably contains the map stage in both modes.
 Sizes: 100k for the linear Array/List/Map rows, 500k for the find
 rows, 10k for the O(n²)-by-representation rows (`map_push`,
 `flatmap_*` — each step copies the array), 4k for the list-recursion
-pair (sized under the pre-discriminator quadratic; the row is post-fix).
+pair's original size (kept for continuity; the pair fuses since
+2026-08-30 and `lfold_rec_100k` is the linear-row twin).
 
 ## The semantic face
 
@@ -72,7 +73,8 @@ intrinsic row's jit time.
 | `flatmap_list`   | 10k  | 7.2 ms    | 1.78 s    | 247x    |
 | `lfold_intr`     | 100k | 4.13 ms   | 2.04 s    | 494x    |
 | `lfold_intr_4k`  | 4k   | 0.14 ms   | 57 ms     | 400x    |
-| `lfold_rec`      | 4k   | 0.28 s    | 0.27 s    | 1x      |
+| `lfold_rec`      | 4k   | 0.35 ms   | 3.8 ms    | 11x     |
+| `lfold_rec_100k` | 100k | 4.5 ms    | 74 ms     | 17x     |
 | `mfold_intr`     | 100k | 23.0 ms   | 3.75 s    | 163x    |
 | `mfold_trait`    | 100k | 23.6 ms   | 4.58 s    | 194x    |
 
@@ -199,10 +201,17 @@ a per-type loop impl has it today; what a deletion needs is `find`'s
 default written as a loop per representation, not new machinery;
 `flat_map` — the fold+concat derivation is O(n²) by construction (the
 cons + `to_array_rev` derivation, `flatmap_cons`, is 5.8 ms vs 1.6 ms);
-List — the fused select refuses a NON-SCALAR variant payload
-(`` `Cons(x, rest) `` binds a List) before the tail-loop kind gate is
-even reached, and that gate carries only Prim/Array/Tuple/Struct
-formals (`lfold_rec` 0.28 s vs 0.14 ms, node-walk). Fixed since 08-25:
+List — FIXED 2026-08-30 (both halves: a non-scalar variant
+payload bind clones the slot out as an owned local of its ABI kind,
+and the tail rebind lowers every kernel param kind — Value pairs via
+clone/drop, Strings via the owned-ArcStr protocol — with
+`structural_tail_loop` widened to match): `lfold_rec` 0.28 s -> 0.35 ms,
+and at the linear size the hand recursion BEATS the intrinsic
+(`lfold_rec_100k` 4.5 ms vs `lfold_intr` 6.5 ms same-session — the
+intrinsic pays the flatten boundary, the recursion walks the conses).
+The interp fell 0.27 s -> 3.8 ms too: the shared gate now routes the
+Variant-carried loop through the interp's tail loop as well.
+Fixed since 08-25:
 wrapper premat / fn-formal forwarding and capture (`b386f97d`),
 same-HOF nesting (`3bd9a9a9`), the interp's nested-HOF quadratic
 (`ef153027`). Re-run this corpus after each remaining cut lands — the
