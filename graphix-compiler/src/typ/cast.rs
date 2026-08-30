@@ -49,9 +49,11 @@ impl Type {
         hist: &mut RefHist<AHashSet<Option<usize>>>,
     ) -> Result<()> {
         match self {
-            Type::App(..) | Type::Hole => {
-                bail!("can't cast a value to a type constructor")
-            }
+            Type::App(c, a) => match Type::app_filled(c, a) {
+                Some(t) => t.check_cast_int(env, hist),
+                None => bail!("can't cast a value to a type constructor"),
+            },
+            Type::Hole => bail!("can't cast a value to a type constructor"),
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
@@ -108,7 +110,11 @@ impl Type {
             return Ok(v);
         }
         match self {
-            Type::App(..) | Type::Hole => bail!("can't cast {v} to a type constructor"),
+            Type::App(c, a) => match Type::app_filled(c, a) {
+                Some(t) => t.cast_value_int(env, hist, v),
+                None => bail!("can't cast {v} to a type constructor"),
+            },
+            Type::Hole => bail!("can't cast {v} to a type constructor"),
             Type::Bottom => bail!("can't cast {v} to Bottom"),
             Type::Fn(_) => bail!("can't cast {v} to a function"),
             Type::Abstract { id: _, params: _ } => {
@@ -334,7 +340,11 @@ impl Type {
             // Latent until e86d18c1 made an inferred pattern predicate
             // load-bearing at runtime — before that nothing called
             // `is_a` on these patterns at all.
-            Type::App(..) | Type::Hole => false,
+            Type::App(c, a) => match Type::app_filled(c, a) {
+                Some(t) => t.is_a_int(env, hist, flags, v),
+                None => !flags.contains(IsAFlags::Strict),
+            },
+            Type::Hole => false,
             Type::Ref(TypeRef { scope, name, .. }) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
@@ -663,7 +673,11 @@ fn flatten_union_members(
                 None => None,
             }
         }
-        Type::Any | Type::App(..) | Type::Hole => None,
+        Type::App(c, a) => match Type::app_filled(c, a) {
+            Some(t) => flatten_union_members(&t, env, out, seen),
+            None => None,
+        },
+        Type::Any | Type::Hole => None,
         t => {
             out.push(t.clone());
             Some(())

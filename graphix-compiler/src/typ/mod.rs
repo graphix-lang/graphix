@@ -852,13 +852,14 @@ impl Type {
         })
     }
 
-    /// The filled application behind a type variable: a cell bound to
-    /// `App(c, a)` whose constructor has since bound, which every walk
-    /// should see as the filled type.
-    pub(crate) fn app_behind(&self) -> Option<Type> {
+    /// The reference behind a type variable: a cell bound (through
+    /// other cells) to a reference, or to a constructor application
+    /// whose constructor has since bound — `with_deref` reports that
+    /// as its filled reference.
+    pub(crate) fn ref_behind(&self) -> Option<Type> {
         match self {
             Type::TVar(_) => self.with_deref(|t| match t {
-                Some(Type::App(c, a)) => Self::app_filled(c, a),
+                Some(t @ Type::Ref(_)) => Some(t.clone()),
                 _ => None,
             }),
             _ => None,
@@ -1405,7 +1406,15 @@ impl Type {
 
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {
         match self {
-            Self::App(..) | Self::Hole => f(Some(self)),
+            // A constructor application whose constructor has bound IS
+            // its filled type (`app_filled`) — every walk sees `self<'b>`
+            // with `self := Array` as `Array<'b>`; only an open
+            // constructor stays an application.
+            Self::App(c, a) => match Self::app_filled(c, a) {
+                Some(filled) => filled.with_deref(f),
+                None => f(Some(self)),
+            },
+            Self::Hole => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any

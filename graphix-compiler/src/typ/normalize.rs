@@ -414,6 +414,13 @@ impl Type {
                 }
             }
             (Type::Ref(TypeRef { .. }), _) | (_, Type::Ref(TypeRef { .. })) => None,
+            // A bound constructor application is its filled type.
+            (Type::App(c, a), _) if Type::app_filled(c, a).is_some() => {
+                Type::app_filled(c, a).unwrap().merge(t)
+            }
+            (_, Type::App(c, a)) if Type::app_filled(c, a).is_some() => {
+                self.merge(&Type::app_filled(c, a).unwrap())
+            }
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)

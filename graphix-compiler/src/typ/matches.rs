@@ -50,6 +50,15 @@ impl Type {
                     }
                 }
             }
+            // A bound constructor application is its filled type.
+            (Type::App(c, a), _) if Type::app_filled(c, a).is_some() => {
+                let filled = Type::app_filled(c, a).unwrap();
+                filled.could_match_int(env, hist, t)
+            }
+            (_, Type::App(c, a)) if Type::app_filled(c, a).is_some() => {
+                let filled = Type::app_filled(c, a).unwrap();
+                self.could_match_int(env, hist, &filled)
+            }
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)

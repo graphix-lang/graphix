@@ -649,16 +649,16 @@ impl Type {
             (Self::App(..), Self::Ref(_)) | (Self::Ref(_), Self::App(..)) => {
                 self.app_contains(flags, env, hist, t)
             }
-            // ... and a cell bound to an application whose constructor
-            // has bound since is the filled type, seen before the
-            // reference on the other side expands
-            (Self::Ref(_), Self::TVar(_)) if t.app_behind().is_some() => {
-                let filled = t.app_behind().expect("checked");
-                self.contains_int(flags, env, hist, &filled)
+            // ... and a cell bound to a reference (a filled application
+            // included) meets the reference on the other side BY NAME,
+            // before either expands.
+            (Self::Ref(_), Self::TVar(_)) if t.ref_behind().is_some() => {
+                let behind = t.ref_behind().expect("checked");
+                self.contains_int(flags, env, hist, &behind)
             }
-            (Self::TVar(_), Self::Ref(_)) if self.app_behind().is_some() => {
-                let filled = self.app_behind().expect("checked");
-                filled.contains_int(flags, env, hist, t)
+            (Self::TVar(_), Self::Ref(_)) if self.ref_behind().is_some() => {
+                let behind = self.ref_behind().expect("checked");
+                behind.contains_int(flags, env, hist, t)
             }
             // The hole is equal to itself and to nothing else; a cell
             // never binds to it.

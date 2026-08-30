@@ -1145,3 +1145,25 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// A constructor-trait call's result type is `App(self, 'b)` with `self`
+// bound to the receiver's constructor. Every consumer that derefs a
+// type must see the FILLED type (`Type::app_filled`, through
+// `with_deref`): the select's coverage check refused this program
+// ("no unguarded arm irrefutably covers '_: Array<'b: i64>"), `cast`
+// refused the value, and the typed printer logged a mismatch and fell
+// back to naked printing. Fusion already filled it (kernel_abi).
+const TRAIT_RESULT_IS_FILLED: &str = r#"
+{
+  use core::Collection::{self, *};
+  let c = map([i64:1, i64:2, i64:5], |x| x * x);
+  let n = select c { [] => i64:0, [h, rest..] => h + array::len(rest) };
+  let t = cast<Array<i64>>(c)$;
+  n + t[1]$
+}
+"#;
+
+run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(7))
+); graphix_package_core::testing::FuseExpect::Jit);

@@ -1067,7 +1067,17 @@ the rules.
   package, anything else only in the trait's package, never a union, one
   impl per head. Constructor traits (`trait Collection`, the `'_` hole,
   `|c: Collection|` sugar) dispatch by decomposition on the receiver's
-  outermost form. Core `Eq`/`Ord`/`Display` ride the VALUE through
+  outermost form. A constructor APPLICATION (`self<'b>`, `Type::App`)
+  whose constructor has bound IS its filled type: `with_deref` fills it
+  (`Type::app_filled`), so `is_a`, `cast`, the select coverage check,
+  the typed printer and `kernel_abi` all see `Array<'b>`, never an
+  `App` (2026-08-30 — before this, `select` over a trait-returned
+  collection was refused as uncovered and the printer logged
+  "type Array<'b: i64> does not match value"). In `contains` a cell
+  bound to a reference — a filled application included — meets a
+  reference on the other side BY NAME (`Type::ref_behind`) ahead of
+  the expansion arm. Only an OPEN constructor stays an application,
+  and consumers treat it like an open cell. Core `Eq`/`Ord`/`Display` ride the VALUE through
   netidx's abstract vtable (map keys, sort, min/max, uniq, operators,
   printers — both engines); only abstract types may implement them
   outside core; a bottoming impl resolves per key like NaN. A core-trait

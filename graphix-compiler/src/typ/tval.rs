@@ -133,7 +133,6 @@ impl<'a> TVal<'a> {
             (
                 Type::Primitive(_)
                 | Type::Abstract { .. }
-                | Type::App(..)
                 | Type::Hole
                 | Type::Bottom
                 | Type::Any
@@ -211,6 +210,10 @@ impl<'a> TVal<'a> {
             (Type::TVar(tv), v) => match &tv.read().typ.read().typ {
                 None => fmt_naked(f, v),
                 Some(typ) => TVal { env: self.env, typ, v }.fmt_int(f, hist),
+            },
+            (Type::App(c, a), v) => match Type::app_filled(c, a) {
+                Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
+                None => fmt_naked(f, v),
             },
             (Type::Variant(n, flds), Value::Array(a)) if a.len() >= 2 => {
                 write!(f, "`{n}(")?;
