@@ -39,6 +39,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 
 | doc | what |
 |---|---|
+| `list_native.md` | native List: slim 2-slot cons, static-empty nil, `Type::List`, `[<1, 2>]` literals + list-slice patterns (ruled 2026-08-31) |
 | `fusion_lowering_split.md` | split `try_fuse` into analysis + lowering (legibility) |
 | `interp_lazy_bind_cost.md` | partial: what remains of the interp's per-activation cost (see header) |
 
