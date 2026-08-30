@@ -1,0 +1,15 @@
+// P2b: array flat_map derived in Graphix — fold consing every produced
+// element onto a List (O(1) each), then ONE list::to_array_rev pass.
+// O(n) total, against flatmap_fold's O(n^2) concat copies.
+let n = 10000;
+let src = array::init(n, |i| i);
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let empty: list::List<i64> = `Nil;
+let rev = array::fold(src, empty, |acc, x| array::fold([x + seed, x * 2], acc, |acc, y| `Cons(y, acc)));
+let flat = list::to_array_rev(rev);
+let result = array::fold(flat, 0, |a, x| a + x);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("flatmap_list n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

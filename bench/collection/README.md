@@ -67,6 +67,8 @@ intrinsic row's jit time.
 | `find_fold`      | 500k | 5.19 ms   | 28.6 s    | 5510x   |
 | `flatmap_intr`   | 10k  | 1.63 ms   | 0.51 s    | 315x    |
 | `flatmap_fold`   | 10k  | 1.42 s    | 1.93 s    | 1x      |
+| `flatmap_cons`   | 10k  | 5.8 ms    | 0.56 s    | 96x     |
+| `flatmap_list`   | 10k  | 18.7 s    | 19.0 s    | 1x      |
 | `lfold_intr`     | 100k | 4.13 ms   | 2.04 s    | 494x    |
 | `lfold_intr_4k`  | 4k   | 0.14 ms   | 57 ms     | 400x    |
 | `lfold_rec`      | 4k   | 0.28 s    | 0.27 s    | 1x      |
@@ -128,6 +130,29 @@ intrinsic row's jit time.
   Option-carrying fold visiting every element; a fold cannot
   early-exit, so the derivation is inherently a full scan.
 - **`flatmap_fold`** pays O(n^2) concat copies AND doesn't fuse.
+- **`flatmap_cons` is the right derivation (Eric, 2026-08-30)**: cons
+  every produced element onto a List (O(1)) and finish with one
+  `list::to_array_rev` — linear, fuses, 5.8 ms vs the intrinsic's
+  1.6 ms (3.5x, the per-element `` `Cons `` construction). Two hand
+  conses per element; the general form folds the chunk.
+- **`flatmap_list` is a FINDING, not a derivation result**: the general
+  form — the chunk consed through a NESTED `array::fold` inside the
+  outer callback — is 18.7 s at 10k and QUADRATIC (1.09 / 4.26 / 18.7 s
+  at 2.5k / 5k / 10k) on BOTH engines, and the List is irrelevant: the
+  same nested shape with an `i64` accumulator is identical. Each outer
+  slot's callback body is lazily compiled, its nested `array::fold`
+  call is a fresh per-callsite instance of the stdlib `fold`, and
+  every such instance SHARES the def signature's `LambdaIds` nodes
+  (`FnType::cow_walk` clones the `SArc`) — so the `f` param cell is one
+  hub that every instance's fresh callback def links into
+  (`contains.rs` links on unification). `typecheck1_resolve` walks
+  `ids()` over that hub per site (57.8% of the run, `perf`), and with
+  transient instances RETAINED nothing is ever pruned: O(n) per bind,
+  O(n²) overall. Growth law from `GRAPHIX_DBG_PERF`: bind 98 -> 207 µs
+  and typecheck1 78 -> 187 µs per bind from 2.5k to 5k. Fix direction:
+  per-callsite instance signatures must mint FRESH `LambdaIds` for
+  their nested fn types (a param cell is per instance, as the tvars
+  already are), so a site's walk is O(its own args).
 - `lfold_intr` at 4.3 ms/100k is ~9x faster than the 2026-07
   `list_fold_sum` row (38 ms) — the flatten boundary improved since.
 
