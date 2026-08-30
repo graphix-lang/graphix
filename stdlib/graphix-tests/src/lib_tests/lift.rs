@@ -71,6 +71,92 @@ fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
         .collect()
 }
 
+/// Like [`collect_n`] but samples the global live per-activation
+/// `SelfBlock` count after each collected cycle — the JIT reclaim's only
+/// observable (the values are identical whether or not shed blocks are
+/// freed, so the differential cannot see it).
+async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    let gx = format!("let result = {code}");
+    let tbl = ahash::AHashMap::from_iter([(
+        netidx_core::path::Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(ArcStr::from(gx)),
+    )]);
+    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
+        tx,
+        &crate::TEST_REGISTER,
+        vec![VfsResolver::new(tbl)],
+        BitFlags::empty(),
+        |_| {},
+    )
+    .await?;
+    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let eid = compiled.exprs[0].id;
+    let mut blocks = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while blocks.len() < n {
+        let mut batch = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .map_err(|_| anyhow!("timeout: collected {}/{n}", blocks.len()))?
+            .ok_or_else(|| anyhow!("runtime died"))?;
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(id, _) = e
+                && id == eid
+            {
+                blocks.push(
+                    graphix_compiler::fusion::emit_helpers::LIVE_SELF_BLOCKS.load(Relaxed),
+                );
+            }
+        }
+    }
+    ctx.shutdown().await;
+    Ok(blocks)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fused_recursion_sheds_unreached_blocks() -> Result<()> {
+    // The JIT twin of the interp's shrink-delete: a fused recursion that
+    // goes DEEP then SHALLOW must FREE the activation blocks it no longer
+    // reaches, not hold the high-water. A non-tail scalar recursion fed
+    // by a STREAMING source (`array::iter` — the recursive-activation-
+    // blocks-aug2026 shape) JIT-executes and allocates one `SelfBlock`
+    // per level. The values are identical with or without the reclaim
+    // (transparent), so the live-block count is the only witness — but it
+    // must be read at QUIESCENCE, not mid-flight (the stream races the
+    // sampler). So two programs, each sampled at its final settled cycle:
+    //   deep    = stream [50]      → ends at depth 50, no shrink → ~50 live
+    //   shallow = stream [50, 2]   → reaches 50 then ends at depth 2, so
+    //             WITHOUT the reclaim it would hold the high-water ~50;
+    //             WITH it, the shed ~48 are freed → ~2 live.
+    // 50 is under the JIT stack-spill depth so the tall count is stable.
+    let deep = *collect_n_blocks(
+        "{ let x = array::iter([i64:50]); \
+           let rec f = |k: i64| -> i64 select k { i64:0 => i64:0, _ => k + f(k - i64:1) }; \
+           f(x) }",
+        1,
+    )
+    .await?
+    .last()
+    .unwrap();
+    let shallow = *collect_n_blocks(
+        "{ let x = array::iter([i64:50, i64:2]); \
+           let rec f = |k: i64| -> i64 select k { i64:0 => i64:0, _ => k + f(k - i64:1) }; \
+           f(x) }",
+        2,
+    )
+    .await?
+    .last()
+    .unwrap();
+    if deep < 30 || deep - shallow < 20 {
+        bail!(
+            "recursion shrink reclaim off: live SelfBlocks deep-quiesced={deep} \
+             shallow-quiesced={shallow} (expected deep~50, shallow~2)"
+        );
+    }
+    Ok(())
+}
+
 /// The node-walk and jit produce the SAME first `n` values (the
 /// differential — independent of what the exact values "should" be).
 async fn assert_agree(code: &str, n: usize) -> Result<()> {

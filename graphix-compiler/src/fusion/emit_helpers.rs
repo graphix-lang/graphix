@@ -1449,9 +1449,11 @@ pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
 /// at `vecptr` — one `Box<Vec<u64>>` per activation, each holding its
 /// own children at `slots`. Iterative over an explicit worklist: the
 /// tree is as deep as the recursion was, and depth is bounded by
-/// memory. Called only from `Kernel::drop`: these blocks are instance
-/// memory, and instance death is the only thing that reclaims them.
-pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) {
+/// memory. Called from `Kernel::drop` (whole-tree teardown) and from
+/// [`reclaim_self_block_tree`] (a shed subtree). Returns the number of
+/// blocks freed.
+pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
+    let mut freed = 0u64;
     let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
     work.push(vecptr);
     while let Some(p) = work.pop() {
@@ -1459,8 +1461,79 @@ pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) {
             continue;
         }
         let v = unsafe { Box::from_raw(p as *mut Vec<u64>) };
+        freed += 1;
+        LIVE_SELF_BLOCKS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         work.extend(slots.iter().filter_map(|s| v.get(*s as usize).copied()));
     }
+    freed
+}
+
+/// Global count of live per-activation `SelfBlock`s (test instrument):
+/// `graphix_site_child_block` bumps it on allocation,
+/// `free_self_block_tree` drops it per block freed. A fused
+/// deep-then-shallow recursion must return this toward its shallow
+/// depth — proof the reclaim actually runs — not hold the high-water.
+pub static LIVE_SELF_BLOCKS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+
+thread_local! {
+    /// The reach GENERATION of the currently-executing fused
+    /// recursion's invocation. [`graphix_site_child_block`] stamps every
+    /// activation block it reaches with this; `Kernel::update`'s reclaim
+    /// frees any block NOT stamped with the current generation — the JIT
+    /// twin of the interp's shrink-delete (a depth not reached this
+    /// cycle is shed). Saved/restored around every kernel invocation so
+    /// a nested kernel does not clobber its caller's.
+    pub(crate) static SELF_BLOCK_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Count of activation reaches this invocation (one per
+    /// [`graphix_site_child_block`] call). `Kernel::update` compares it
+    /// to the tree size to GATE the reclaim: no walk unless the tree
+    /// shrank. Same save/restore discipline as [`SELF_BLOCK_GEN`].
+    pub(crate) static SELF_BLOCK_REACHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Reclaim the parts of a per-activation block tree NOT reached this
+/// invocation — the JIT twin of the interp's shrink-delete. `root` is
+/// the address of the word holding the tree's root pointer (an entry in
+/// the kernel's `state`/`site` buffer). A block stamped with `gen` was
+/// reached this invocation → recurse into its children; a block stamped
+/// otherwise is a shed depth → free its whole subtree
+/// ([`free_self_block_tree`]) and NULL the word that pointed at it, so
+/// `Kernel::drop`/`reset_replay` see 0 and never double-free. `words` is
+/// the block's emitted size; the gen stamp lives one past it (at index
+/// `words`, allocated by [`graphix_site_child_block`] and invisible to
+/// emitted code). Returns the number of blocks freed. Iterative — depth
+/// is bounded by memory.
+pub fn reclaim_self_block_tree(
+    root: *mut u64,
+    words: usize,
+    slots: &[u32],
+    generation: u64,
+) -> u64 {
+    let mut freed = 0u64;
+    let mut work: poolshark::local::LPooled<Vec<*mut u64>> =
+        poolshark::local::LPooled::take();
+    work.push(root);
+    while let Some(wp) = work.pop() {
+        let p = unsafe { *wp };
+        if p == 0 {
+            continue;
+        }
+        let v: &mut Vec<u64> = unsafe { &mut *(p as *mut Vec<u64>) };
+        // A block with no stamp word (should not happen post-alloc) is
+        // treated as reached — never free what we cannot prove is shed.
+        let stamp = v.get(words).copied().unwrap_or(generation);
+        if stamp != generation {
+            unsafe { *wp = 0 };
+            freed += free_self_block_tree(p, slots);
+        } else {
+            let base = v.as_mut_ptr();
+            for s in slots.iter() {
+                work.push(unsafe { base.add(*s as usize) });
+            }
+        }
+    }
+    freed
 }
 
 /// Zero the REPLAY words through a per-activation block tree — the
@@ -1673,13 +1746,23 @@ unsafe fn graphix_site_child_block(
     }
     let word = unsafe { &mut *word };
     if *word == 0 {
-        *word = Box::into_raw(Box::new(vec![0u64; words])) as u64;
+        // One word PAST the emitted layout (index `words`) holds the
+        // reach GENERATION stamp — invisible to emitted code (which uses
+        // `0..words`) and to the free/reset walks (which use `slots`,
+        // all `< words`). `Kernel::update`'s reclaim reads it to shed the
+        // subtrees this invocation did not reach (recursion shrink).
+        *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
+        LIVE_SELF_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     let hdr = (d >> 32) as usize;
     if hdr != 0 && !parent.is_null() {
         v[hdr - 1] = unsafe { *parent.add(hdr - 1) };
     }
+    // Reached this invocation: stamp the current generation and count
+    // the reach (the reclaim gate in `Kernel::update`).
+    v[words] = SELF_BLOCK_GEN.get();
+    SELF_BLOCK_REACHED.set(SELF_BLOCK_REACHED.get() + 1);
     v.as_mut_ptr()
 }
 

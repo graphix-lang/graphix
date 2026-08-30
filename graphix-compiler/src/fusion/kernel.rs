@@ -1086,6 +1086,16 @@ pub struct Kernel<R: Rt, E: UserEvent> {
     /// compute; re-surface it retagged STALE instead of running the
     /// JIT. The `CachedArgs::resident` twin.
     resident: TagValue,
+    /// Recursion-shrink reclaim (the JIT twin of the interp's activation
+    /// delete). `self_gen` is bumped each invocation and stamped into
+    /// every activation block reached (via `SELF_BLOCK_GEN`); after the
+    /// run, any per-activation `SelfBlock` NOT stamped with it is freed
+    /// (`reclaim_self_block_tree`). `tree_size` is the count of live
+    /// activation blocks — the reclaim walk is GATED on the reach count
+    /// falling below it (no shrink → no walk), so a stable or growing
+    /// recursion pays only the counter, never the O(depth) walk.
+    self_gen: u64,
+    tree_size: u64,
 }
 
 impl<R: Rt, E: UserEvent> Drop for Kernel<R, E> {
@@ -1314,6 +1324,8 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             state,
             site,
             resident: TagValue::phantom(),
+            self_gen: 0,
+            tree_size: 0,
         };
         node.pre_init_binding_slots(ctx);
         node.pre_init_builtin_slots(ctx)?;
@@ -1809,6 +1821,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // we can distinguish "this kernel pended" from
         // "some earlier kernel left the flag set."
         DYNCALL_PENDING.with(|c| c.set(false));
+        // Recursion-shrink reclaim setup (the JIT twin of the interp's
+        // activation delete): only for kernels that carry a self-block
+        // tree. Bump this instance's generation and stamp it into every
+        // activation reached during the call (via `SELF_BLOCK_GEN` in
+        // `graphix_site_child_block`), resetting the reach counter; save
+        // the enclosing thread-local values so a NESTED kernel restores
+        // ours (its reaches must not count toward this tree).
+        let has_self_blocks = !self.jit.state_self_blocks.is_empty()
+            || self.jit.own_site.as_ref().is_some_and(|l| !l.self_blocks.is_empty());
+        let (shrink_gen, saved_gen, saved_reached) = if has_self_blocks {
+            self.self_gen = self.self_gen.wrapping_add(1);
+            let sg = super::emit_helpers::SELF_BLOCK_GEN.with(|c| c.replace(self.self_gen));
+            let sr = super::emit_helpers::SELF_BLOCK_REACHED.with(|c| c.replace(0));
+            (Some(self.self_gen), sg, sr)
+        } else {
+            (None, 0, 0)
+        };
         // Value-hook loan (the core-trait seam): `graphix_value_eq`
         // and every other helper comparing or printing Values inside
         // this invocation honors core Eq/Ord/Display implementations,
@@ -1818,6 +1847,47 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         });
         DYN_DISPATCH_HANDLE.with(|c| c.set(prev_handle));
         let pending = DYNCALL_PENDING.with(|c| c.replace(false));
+        // Recursion-shrink reclaim + restore the reach thread-locals.
+        // MUST run on every exit path (the pending branch below returns
+        // early), so it sits before that branch. On a clean run: if the
+        // reach count fell below the live tree size, some depth was not
+        // re-reached — free the unreached activation subtrees and null
+        // their words (`Kernel::drop`/`reset_replay` then see 0 and
+        // never double-free); update the tree size. A PENDING (aborted)
+        // run reached only a prefix, so its reach count is not a
+        // shrink signal — skip the reclaim, just restore.
+        if let Some(generation) = shrink_gen {
+            use super::emit_helpers::{
+                SELF_BLOCK_GEN, SELF_BLOCK_REACHED, reclaim_self_block_tree,
+            };
+            let reached = SELF_BLOCK_REACHED.with(|c| c.get());
+            if !pending {
+                if reached < self.tree_size {
+                    let jit = self.jit.clone();
+                    for b in jit.state_self_blocks.iter() {
+                        reclaim_self_block_tree(
+                            (&mut self.state[b.rel as usize]) as *mut u64,
+                            b.words as usize,
+                            &b.slots,
+                            generation,
+                        );
+                    }
+                    if let Some(l) = jit.own_site.as_ref() {
+                        for b in l.self_blocks.iter() {
+                            reclaim_self_block_tree(
+                                (&mut self.site[b.rel as usize]) as *mut u64,
+                                b.words as usize,
+                                &b.slots,
+                                generation,
+                            );
+                        }
+                    }
+                }
+                self.tree_size = reached;
+            }
+            SELF_BLOCK_GEN.with(|c| c.set(saved_gen));
+            SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
+        }
         if pending {
             // A GENUINE whole-kernel abort (interrupt poll, depth
             // trip, a propagated callee abort) — value-level DynCall
