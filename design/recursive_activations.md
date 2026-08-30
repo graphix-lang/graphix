@@ -1024,9 +1024,10 @@ fixture face crashed the test process on its first run.
    activations); `map_push` collapses on both engines (copy-bound).
    Residue: loop-CARRIED String/Variant/Nullable/Value formals keep
    native per-level recursion (`lfold_rec` — widening the rebind
-   kinds is the remaining cut), and fn-formal FORWARDING still
-   interprets (fn_formal_forwarded, ASPIRE — the wrapper-premat
-   residue). Pins: fn_invariant_tail_loop,
+   kinds is the remaining cut); fn-formal FORWARDING and capture
+   FIXED 2026-08-27 (`b386f97d`, fn-params registered before the
+   instance body typecheck — fn_formal_forwarded is Jit). Pins:
+   fn_invariant_tail_loop,
    string_invariant_tail_loop, fn_formal_two_callbacks,
    fn_formal_rebound, fn_formal_forwarded (lang/functions.rs).
 
@@ -1058,12 +1059,15 @@ best-of-3; full table + notes in its README). The headline numbers:
   couldn't inline-emit. Now the block is `CallSite::premat_fn_args`,
   called from both paths: `fold_trait` is at parity (0.31 ms) and the
   `|c: Collection|` generic path fuses too (both ASPIRE fixtures
-  upgraded to Jit by the harness's own demand). Residue: a Graphix
-  WRAPPER impl body (Map's values-fold over `fold_pairs`) still
-  interprets — the nested derived callback's call to `f` doesn't
-  resolve through the inner collection site. That wrapper shape is
-  every trait DEFAULT body, so it is the named next target on the
-  road to deleting intrinsics.
+  upgraded to Jit by the harness's own demand). Residue at the time: a
+  Graphix WRAPPER impl body (Map's values-fold over `fold_pairs`)
+  interpreted — the nested derived callback's call to the captured
+  `f` didn't resolve, because per-callsite elaboration registered
+  fn-params only AFTER the instance body typecheck (a re-drive reached
+  call sites, never an already-instantiated nested lambda's body).
+  FIXED 2026-08-27 (`b386f97d`): the params are registered before the
+  body check and held for the subtree — `mfold_trait` 4.63 s -> 24 ms
+  (parity with `mfold_intr`), every trait default fuses.
 - Intrinsic vs Graphix recursion: the callback FORMAL (fn-typed) fails
   `structural_tail_loop`'s kind gate (finding 3), so every
   stdlib-shaped body (`|a, f, i, acc|`) native-recurses per level —
@@ -1095,9 +1099,24 @@ best-of-3; full table + notes in its README). The headline numbers:
   filter_map_total_callback, lang/collection.rs).
 
 VERDICT (per the phase question "what stays"): every intrinsic stays.
-The deletion question is not answerable until the WRAPPER-premat
+The deletion question was not answerable until the WRAPPER-premat
 residue (trait-default bodies) and the carried-Value rebind widening
 land — re-run the corpus after each (P3, finding 3's invariant face,
 and the map-default widening all landed same day; Array `map` is the
 first deletable candidate, two parity derivations). The measurement's real product
 this round was the four findings above plus the widening bug.
+
+RE-SWEEP 2026-08-30 (after `b386f97d` closed wrapper premat; table in
+bench/collection/README.md): Map's wrapper impl is at parity
+(`mfold_trait` 24 ms vs 24 ms), Array `filter`'s default is at parity
+(1.46 vs 1.29 ms), Array `find`'s default FUSES at 2.4x (4.7 vs 1.95 ms
+— the Option-carrying fold can't early-exit), `map` keeps its two
+parity derivations. What still separates a Graphix body from its
+intrinsic: (1) per-element call overhead in a hand-written loop
+(`fold_rec` ~50x: `len`/`a[i]$` DynCalls + the cross-kernel `f` call —
+the cost any user impl pays), (2) loop-CARRIED Value rebinds
+(`lfold_rec` per-level, ~1700x), (3) `flat_map`'s fold+concat
+derivation is O(n²) by construction and doesn't fuse. Deletable at
+parity today: Array `map`, `filter`, Map's whole impl (already
+Graphix). Not yet: `fold` (the loop itself), `find`/`find_map`
+(need early exit), `flat_map`, and List (needs the carried-Value cut).

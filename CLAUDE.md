@@ -1358,9 +1358,11 @@ ASPIRE comment where noted):
    the premat wiring's synthetic genn-Refs (NOP spec, no name) resolve by
    BindId in the emitter (`JitEnv::lookup_id`), so the rec callee inside a
    fold callback fuses (`fold_callback_name_collision` upgraded to
-   FuseExpect::Jit by the harness's own demand). Residue: fn-formal
-   FORWARDING still interprets (`fn_formal_forwarded`, ASPIRE — the
-   wrapper-premat item).
+   FuseExpect::Jit by the harness's own demand). fn-formal FORWARDING
+   and CAPTURE by a nested derived callback fuse since `b386f97d`
+   (2026-08-27: `resolve_static` registers fn-params BEFORE the instance
+   body typecheck, so a lambda instantiated mid-check sees them) —
+   `fn_formal_forwarded` and `inlang_map` are `FuseExpect::Jit`.
 2. **select residue**: whole-composite/`@`/NAMED-rest binds (owned arm locals —
    `JitEnv::truncate` emits no drops), nested/non-scalar variant payloads,
    owned scrutinees in TAIL position (no merge point to drop at).
@@ -1457,9 +1459,10 @@ in `run!` fixtures and bench programs). The decision is recorded in
   body-annotation tvars are fresh (not the signature's);
   trait dispatch to MARKER-bodied impls fuses (the premat
 fall-through, 2026-08-25 — `fold_trait` at parity); WRAPPER impl
-bodies (Map's values-fold — the trait-default shape) still
-interpret (P3 residue: the nested derived callback's call to the
-captured `f` doesn't resolve through the inner collection site);
+bodies (Map's values-fold — the trait-default shape) FUSE since
+`b386f97d` (2026-08-27, fn-params registered before the body
+typecheck): `mfold_trait` 24 ms vs `mfold_intr` 24 ms, `filter_fmshape`
+and `find_fold` fuse too (2026-08-30 re-sweep, bench/collection);
 finding-3 formal-kind gate FIXED for LOOP-INVARIANT formals
 (2026-08-25 — a formal every self-call passes unchanged is never
 rebound, so its kind doesn't gate the tail loop and an invariant fn
