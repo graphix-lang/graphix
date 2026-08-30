@@ -212,27 +212,32 @@ type TomlRead = CachedArgsAsync<TomlReadEv>;
 #[derive(Debug, Default)]
 struct TomlWriteStrEv;
 
+fn fc_write_str(args: &[Value]) -> Option<Value> {
+    let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
+    let v = args.get(1)?;
+    let toml_val = match value_to_toml(v) {
+        Ok(t) => t,
+        Err(e) => return Some(errf!("TomlErr", "{e}")),
+    };
+    let res = if pretty {
+        toml::to_string_pretty(&toml_val)
+    } else {
+        toml::to_string(&toml_val)
+    };
+    Some(match res {
+        Ok(s) => Value::String(ArcStr::from(s.as_str())),
+        Err(e) => errf!("TomlErr", "{e}"),
+    })
+}
+
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "toml_write_str";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_str);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        let pretty = cached.get::<bool>(0)?;
-        let v = cached.0.get(1)?.as_ref()?;
-        let toml_val = match value_to_toml(v) {
-            Ok(t) => t,
-            Err(e) => return Some(errf!("TomlErr", "{e}")),
-        };
-        let res = if pretty {
-            toml::to_string_pretty(&toml_val)
-        } else {
-            toml::to_string(&toml_val)
-        };
-        Some(match res {
-            Ok(s) => Value::String(ArcStr::from(s.as_str())),
-            Err(e) => errf!("TomlErr", "{e}"),
-        })
+        graphix_package_core::fast_eval(fc_write_str, cached)
     }
 }
 
@@ -243,27 +248,32 @@ type TomlWriteStr = CachedArgs<TomlWriteStrEv>;
 #[derive(Debug, Default)]
 struct TomlWriteBytesEv;
 
+fn fc_write_bytes(args: &[Value]) -> Option<Value> {
+    let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
+    let v = args.get(1)?;
+    let toml_val = match value_to_toml(v) {
+        Ok(t) => t,
+        Err(e) => return Some(errf!("TomlErr", "{e}")),
+    };
+    let res = if pretty {
+        toml::to_string_pretty(&toml_val)
+    } else {
+        toml::to_string(&toml_val)
+    };
+    Some(match res {
+        Ok(s) => Value::Bytes(PBytes::new(Bytes::from(s.into_bytes()))),
+        Err(e) => errf!("TomlErr", "{e}"),
+    })
+}
+
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "toml_write_bytes";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_bytes);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        let pretty = cached.get::<bool>(0)?;
-        let v = cached.0.get(1)?.as_ref()?;
-        let toml_val = match value_to_toml(v) {
-            Ok(t) => t,
-            Err(e) => return Some(errf!("TomlErr", "{e}")),
-        };
-        let res = if pretty {
-            toml::to_string_pretty(&toml_val)
-        } else {
-            toml::to_string(&toml_val)
-        };
-        Some(match res {
-            Ok(s) => Value::Bytes(PBytes::new(Bytes::from(s.into_bytes()))),
-            Err(e) => errf!("TomlErr", "{e}"),
-        })
+        graphix_package_core::fast_eval(fc_write_bytes, cached)
     }
 }
 

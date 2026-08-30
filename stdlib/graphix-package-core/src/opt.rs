@@ -13,6 +13,13 @@ use crate::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
 
 // ── Predicates ─────────────────────────────────────────────────────
 
+fn fc_is_some(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Null => Some(Value::Bool(false)),
+        _ => Some(Value::Bool(true)),
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct IsSomeEv;
 
@@ -20,17 +27,21 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_opt_is_some";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_is_some);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            None => None,
-            Some(Value::Null) => Some(Value::Bool(false)),
-            Some(_) => Some(Value::Bool(true)),
-        }
+        crate::fast_eval(fc_is_some, from)
     }
 }
 
 pub(crate) type IsSome = CachedArgs<IsSomeEv>;
+
+fn fc_is_none(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Null => Some(Value::Bool(true)),
+        _ => Some(Value::Bool(false)),
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct IsNoneEv;
@@ -39,13 +50,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_opt_is_none";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_is_none);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            None => None,
-            Some(Value::Null) => Some(Value::Bool(true)),
-            Some(_) => Some(Value::Bool(false)),
-        }
+        crate::fast_eval(fc_is_none, from)
     }
 }
 
@@ -72,6 +80,13 @@ pub(crate) type Contains = CachedArgs<ContainsEv>;
 
 // ── Unwrapping / defaults ──────────────────────────────────────────
 
+fn fc_or_never(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Null => None,
+        v => Some(v.clone()),
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct OrNeverEv;
 
@@ -79,12 +94,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrNeverEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_opt_or_never";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_or_never);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            None | Some(Value::Null) => None,
-            Some(v) => Some(v.clone()),
-        }
+        crate::fast_eval(fc_or_never, from)
     }
 }
 
@@ -149,6 +162,19 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
 
 pub(crate) type And = CachedArgs<AndEv>;
 
+fn fc_xor(args: &[Value]) -> Option<Value> {
+    let (a, b) = (&args[0], &args[1]);
+    let a_some = !matches!(a, Value::Null);
+    let b_some = !matches!(b, Value::Null);
+    Some(if a_some && !b_some {
+        a.clone()
+    } else if !a_some && b_some {
+        b.clone()
+    } else {
+        Value::Null
+    })
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct XorEv;
 
@@ -156,21 +182,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_opt_xor";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_xor);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let (a, b) = match (&from.0[0], &from.0[1]) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return None,
-        };
-        let a_some = !matches!(a, Value::Null);
-        let b_some = !matches!(b, Value::Null);
-        Some(if a_some && !b_some {
-            a.clone()
-        } else if !a_some && b_some {
-            b.clone()
-        } else {
-            Value::Null
-        })
+        crate::fast_eval(fc_xor, from)
     }
 }
 
@@ -199,6 +214,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
 
 pub(crate) type Zip = CachedArgs<ZipEv>;
 
+fn fc_unzip(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Null => Some(Value::Array(ValArray::from_iter_exact(
+            [Value::Null, Value::Null].into_iter(),
+        ))),
+        Value::Array(pair) if pair.len() == 2 => Some(Value::Array(
+            ValArray::from_iter_exact([pair[0].clone(), pair[1].clone()].into_iter()),
+        )),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct UnzipEv;
 
@@ -206,18 +233,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_opt_unzip";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_unzip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            None => None,
-            Some(Value::Null) => Some(Value::Array(ValArray::from_iter_exact(
-                [Value::Null, Value::Null].into_iter(),
-            ))),
-            Some(Value::Array(pair)) if pair.len() == 2 => Some(Value::Array(
-                ValArray::from_iter_exact([pair[0].clone(), pair[1].clone()].into_iter()),
-            )),
-            Some(_) => None,
-        }
+        crate::fast_eval(fc_unzip, from)
     }
 }
 

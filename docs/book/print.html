@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4ba67aaa.js";
+            window.path_to_searchindex_js = "searchindex-f318c6f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-879b8455.js"></script>
@@ -14184,6 +14184,15 @@ there is no result cache, so the function runs on every kernel
 invocation in which any input to the enclosing region fired. Having
 <code>eval</code> delegate to the same function through <code>fast_eval</code> keeps the
 interpreter and the JIT on one implementation.</p>
+<p>One correctness caveat: because the fast function only ever sees
+present values, an <code>eval</code> that deliberately <em>produces on partial
+delivery</em> — short-circuiting on its first argument while another is
+still undelivered, the way an option-<code>or</code> yields its left side without
+waiting for the right — must <strong>not</strong> convert. That short-circuit is
+observable interpreter semantics; routing it through <code>fast_eval</code> would
+make the builtin wait for every argument. Most of the standard
+library’s pure <code>Sync</code> builtins are fast calls; the handful that
+short-circuit stay on plain <code>eval</code> for exactly this reason.</p>
 <h3 id="the-full-control-path-builtin--apply"><a class="header" href="#the-full-control-path-builtin--apply">The Full-Control Path: <code>BuiltIn</code> + <code>Apply</code></a></h3>
 <p>For builtins that need to interact with the execution context, manage internal
 state across cycles, or work with higher-order functions, implement the

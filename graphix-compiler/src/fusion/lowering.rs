@@ -466,6 +466,15 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !is_dyncall_return_supported(&return_type) {
         return;
     }
+    // FASTCALL sees the marshalled buf AS the argument list — a
+    // `LabeledDefault` slot is a HOLE the DynCall dispatcher fills
+    // from the layout but the trampoline cannot (json::write_str's
+    // defaulted #pretty made the fn read the payload as the bool and
+    // bottom forever — the toml/json jit timeouts, 2026-08-30). Such
+    // a site dispatches through the DynCall instead.
+    let all_marshalled = layout
+        .iter()
+        .all(|s| matches!(s, BuiltinSlot::Positional(_) | BuiltinSlot::Variadic { .. }));
     let fn_index = out.fn_params.len() as u32;
     out.fn_params.push(FnParam {
         name: info.name.clone(),
@@ -489,7 +498,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             arg_types,
             return_type,
             sleep_restarts: ctx.builtin_sleep_restarts(info.name.as_str()),
-            fastcall: ctx.builtin_fastcall(info.name.as_str()),
+            fastcall: if all_marshalled {
+                ctx.builtin_fastcall(info.name.as_str())
+            } else {
+                None
+            },
         },
     );
 }

@@ -25,6 +25,10 @@ fn list_to_array(list: &Value) -> Option<Value> {
 
 // ── EvalCached implementations ───────────────────────────────────
 
+fn fc_nil(_args: &[Value]) -> Option<Value> {
+    Some(make_nil())
+}
+
 #[derive(Debug, Default)]
 struct NilEv;
 
@@ -32,14 +36,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for NilEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_nil";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_nil);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        from.0[0].as_ref()?;
-        Some(make_nil())
+        graphix_package_core::fast_eval(fc_nil, from)
     }
 }
 
 type Nil = CachedArgs<NilEv>;
+
+fn fc_cons(args: &[Value]) -> Option<Value> {
+    Some(make_cons(args[0].clone(), args[1].clone()))
+}
 
 #[derive(Debug, Default)]
 struct ConsEv;
@@ -48,15 +56,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConsEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_cons";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_cons);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let head = from.0[0].as_ref()?;
-        let tail = from.0[1].as_ref()?;
-        Some(make_cons(head.clone(), tail.clone()))
+        graphix_package_core::fast_eval(fc_cons, from)
     }
 }
 
 type Cons = CachedArgs<ConsEv>;
+
+fn fc_singleton(args: &[Value]) -> Option<Value> {
+    Some(make_cons(args[0].clone(), make_nil()))
+}
 
 #[derive(Debug, Default)]
 struct SingletonEv;
@@ -65,14 +76,21 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SingletonEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_singleton";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_singleton);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let v = from.0[0].as_ref()?;
-        Some(make_cons(v.clone(), make_nil()))
+        graphix_package_core::fast_eval(fc_singleton, from)
     }
 }
 
 type Singleton = CachedArgs<SingletonEv>;
+
+fn fc_head(args: &[Value]) -> Option<Value> {
+    match get_cons(&args[0]) {
+        Some((head, _)) => Some(head.clone()),
+        None => Some(Value::Null),
+    }
+}
 
 #[derive(Debug, Default)]
 struct HeadEv;
@@ -81,17 +99,21 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HeadEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_head";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_head);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        match get_cons(list) {
-            Some((head, _)) => Some(head.clone()),
-            None => Some(Value::Null),
-        }
+        graphix_package_core::fast_eval(fc_head, from)
     }
 }
 
 type Head = CachedArgs<HeadEv>;
+
+fn fc_tail(args: &[Value]) -> Option<Value> {
+    match get_cons(&args[0]) {
+        Some((_, tail)) => Some(tail.clone()),
+        None => Some(Value::Null),
+    }
+}
 
 #[derive(Debug, Default)]
 struct TailEv;
@@ -100,17 +122,23 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TailEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_tail";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_tail);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        match get_cons(list) {
-            Some((_, tail)) => Some(tail.clone()),
-            None => Some(Value::Null),
-        }
+        graphix_package_core::fast_eval(fc_tail, from)
     }
 }
 
 type Tail = CachedArgs<TailEv>;
+
+fn fc_uncons(args: &[Value]) -> Option<Value> {
+    match get_cons(&args[0]) {
+        Some((head, tail)) => Some(Value::Array(ValArray::from_iter_exact(
+            [head.clone(), tail.clone()].into_iter(),
+        ))),
+        None => Some(Value::Null),
+    }
+}
 
 #[derive(Debug, Default)]
 struct UnconsEv;
@@ -119,19 +147,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnconsEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_uncons";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_uncons);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        match get_cons(list) {
-            Some((head, tail)) => Some(Value::Array(ValArray::from_iter_exact(
-                [head.clone(), tail.clone()].into_iter(),
-            ))),
-            None => Some(Value::Null),
-        }
+        graphix_package_core::fast_eval(fc_uncons, from)
     }
 }
 
 type Uncons = CachedArgs<UnconsEv>;
+
+fn fc_is_empty(args: &[Value]) -> Option<Value> {
+    Some(Value::Bool(is_nil(&args[0])))
+}
 
 #[derive(Debug, Default)]
 struct IsEmptyEv;
@@ -140,14 +167,36 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsEmptyEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_is_empty";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_is_empty);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        Some(Value::Bool(is_nil(list)))
+        graphix_package_core::fast_eval(fc_is_empty, from)
     }
 }
 
 type IsEmpty = CachedArgs<IsEmptyEv>;
+
+fn fc_nth(args: &[Value]) -> Option<Value> {
+    let list = &args[0];
+    let n = match &args[1] {
+        Value::I64(n) => *n,
+        _ => return None,
+    };
+    if n < 0 {
+        return Some(Value::Null);
+    }
+    let mut cur = list.clone();
+    for _ in 0..n {
+        match get_cons(&cur) {
+            Some((_, tail)) => cur = tail.clone(),
+            None => return Some(Value::Null),
+        }
+    }
+    match get_cons(&cur) {
+        Some((head, _)) => Some(head.clone()),
+        None => Some(Value::Null),
+    }
+}
 
 #[derive(Debug, Default)]
 struct NthEv;
@@ -156,31 +205,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for NthEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_nth";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_nth);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        let n = match from.0[1].as_ref()? {
-            Value::I64(n) => *n,
-            _ => return None,
-        };
-        if n < 0 {
-            return Some(Value::Null);
-        }
-        let mut cur = list.clone();
-        for _ in 0..n {
-            match get_cons(&cur) {
-                Some((_, tail)) => cur = tail.clone(),
-                None => return Some(Value::Null),
-            }
-        }
-        match get_cons(&cur) {
-            Some((head, _)) => Some(head.clone()),
-            None => Some(Value::Null),
-        }
+        graphix_package_core::fast_eval(fc_nth, from)
     }
 }
 
 type Nth = CachedArgs<NthEv>;
+
+fn fc_len(args: &[Value]) -> Option<Value> {
+    Some(Value::I64(count_list(&args[0])? as i64))
+}
 
 #[derive(Debug, Default)]
 struct LenEv;
@@ -189,14 +225,26 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_len";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        Some(Value::I64(count_list(list)? as i64))
+        graphix_package_core::fast_eval(fc_len, from)
     }
 }
 
 type Len = CachedArgs<LenEv>;
+
+fn fc_reverse(args: &[Value]) -> Option<Value> {
+    let list = &args[0];
+    if !is_list(list) {
+        return None;
+    }
+    let mut result = make_nil();
+    for v in ListIter::new(list.clone()) {
+        result = make_cons(v, result);
+    }
+    Some(result)
+}
 
 #[derive(Debug, Default)]
 struct ReverseEv;
@@ -205,21 +253,26 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReverseEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_reverse";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_reverse);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        let mut result = make_nil();
-        for v in ListIter::new(list.clone()) {
-            result = make_cons(v, result);
-        }
-        Some(result)
+        graphix_package_core::fast_eval(fc_reverse, from)
     }
 }
 
 type Reverse = CachedArgs<ReverseEv>;
+
+fn fc_take(args: &[Value]) -> Option<Value> {
+    let n = match &args[0] {
+        Value::I64(n) => (*n).max(0) as usize,
+        _ => return None,
+    };
+    let list = &args[1];
+    if !is_list(list) {
+        return None;
+    }
+    Some(from_iter_back(ListIter::new(list.clone()).take(n)))
+}
 
 #[derive(Debug, Default)]
 struct TakeEv;
@@ -228,21 +281,33 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TakeEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_take";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_take);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let n = match from.0[0].as_ref()? {
-            Value::I64(n) => (*n).max(0) as usize,
-            _ => return None,
-        };
-        let list = from.0[1].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        Some(from_iter_back(ListIter::new(list.clone()).take(n)))
+        graphix_package_core::fast_eval(fc_take, from)
     }
 }
 
 type Take = CachedArgs<TakeEv>;
+
+fn fc_drop(args: &[Value]) -> Option<Value> {
+    let n = match &args[0] {
+        Value::I64(n) => (*n).max(0) as usize,
+        _ => return None,
+    };
+    let list = &args[1];
+    if !is_list(list) {
+        return None;
+    }
+    let mut cur = list.clone();
+    for _ in 0..n {
+        match get_cons(&cur) {
+            Some((_, tail)) => cur = tail.clone(),
+            None => return Some(make_nil()),
+        }
+    }
+    Some(cur)
+}
 
 #[derive(Debug, Default)]
 struct DropEv;
@@ -251,28 +316,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DropEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_drop";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_drop);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let n = match from.0[0].as_ref()? {
-            Value::I64(n) => (*n).max(0) as usize,
-            _ => return None,
-        };
-        let list = from.0[1].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        let mut cur = list.clone();
-        for _ in 0..n {
-            match get_cons(&cur) {
-                Some((_, tail)) => cur = tail.clone(),
-                None => return Some(make_nil()),
-            }
-        }
-        Some(cur)
+        graphix_package_core::fast_eval(fc_drop, from)
     }
 }
 
 type Drop_ = CachedArgs<DropEv>;
+
+fn fc_to_array(args: &[Value]) -> Option<Value> {
+    list_to_array(&args[0])
+}
 
 #[derive(Debug, Default)]
 struct ToArrayEv;
@@ -281,10 +336,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_to_array";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_to_array);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        list_to_array(list)
+        graphix_package_core::fast_eval(fc_to_array, from)
     }
 }
 
@@ -292,6 +347,11 @@ type ToArray = CachedArgs<ToArrayEv>;
 
 /// The list's elements as an array in REVERSE order, in one walk: the
 /// finish for a front-to-back accumulator that consed as it went.
+fn fc_to_array_rev(args: &[Value]) -> Option<Value> {
+    let a = to_array(&args[0])?;
+    Some(Value::Array(ValArray::from_iter_exact(a.iter().rev().cloned())))
+}
+
 #[derive(Debug, Default)]
 struct ToArrayRevEv;
 
@@ -299,15 +359,21 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToArrayRevEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_to_array_rev";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_to_array_rev);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        let a = to_array(list)?;
-        Some(Value::Array(ValArray::from_iter_exact(a.iter().rev().cloned())))
+        graphix_package_core::fast_eval(fc_to_array_rev, from)
     }
 }
 
 type ToArrayRev = CachedArgs<ToArrayRevEv>;
+
+fn fc_from_array(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Array(a) => Some(from_iter_back(a.iter().cloned())),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct FromArrayEv;
@@ -316,12 +382,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_from_array";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_from_array);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match from.0[0].as_ref()? {
-            Value::Array(a) => Some(from_iter_back(a.iter().cloned())),
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_from_array, from)
     }
 }
 
@@ -427,6 +491,16 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
 
 type Sort = CachedArgs<SortEv>;
 
+fn fc_enumerate(args: &[Value]) -> Option<Value> {
+    let list = &args[0];
+    if !is_list(list) {
+        return None;
+    }
+    Some(from_iter_back(
+        ListIter::new(list.clone()).enumerate().map(|(i, v)| (i as i64, v).into()),
+    ))
+}
+
 #[derive(Debug, Default)]
 struct EnumerateEv;
 
@@ -434,19 +508,24 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_enumerate";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_enumerate);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        Some(from_iter_back(
-            ListIter::new(list.clone()).enumerate().map(|(i, v)| (i as i64, v).into()),
-        ))
+        graphix_package_core::fast_eval(fc_enumerate, from)
     }
 }
 
 type Enumerate_ = CachedArgs<EnumerateEv>;
+
+fn fc_zip(args: &[Value]) -> Option<Value> {
+    let (l0, l1) = (&args[0], &args[1]);
+    if !is_list(l0) || !is_list(l1) {
+        return None;
+    }
+    Some(from_iter_back(
+        ListIter::new(l0.clone()).zip(ListIter::new(l1.clone())).map(|p| p.into()),
+    ))
+}
 
 #[derive(Debug, Default)]
 struct ZipEv;
@@ -455,16 +534,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_zip";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_zip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let l0 = from.0[0].as_ref()?;
-        let l1 = from.0[1].as_ref()?;
-        if !is_list(l0) || !is_list(l1) {
-            return None;
-        }
-        Some(from_iter_back(
-            ListIter::new(l0.clone()).zip(ListIter::new(l1.clone())).map(|p| p.into()),
-        ))
+        graphix_package_core::fast_eval(fc_zip, from)
     }
 }
 

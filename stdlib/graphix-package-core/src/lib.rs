@@ -427,6 +427,12 @@ impl CachedVals {
 
 pub type ByRefChain = graphix_compiler::env::Map<BindId, BindId>;
 
+/// Typed argument read for a FASTCALL fn — the `&[Value]` twin of
+/// [`CachedVals::get`] (clone + cast).
+pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {
+    args.get(i).and_then(|v| v.clone().cast_to::<T>().ok())
+}
+
 /// Run an `EvalCached::FASTCALL` fn over the cached argument slots —
 /// the node-walk half of a fastcall builtin, so `eval` and the JIT share
 /// one implementation. A slot that has never been delivered means the
@@ -1158,6 +1164,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
     }
 }
 
+fn fc_all(args: &[Value]) -> Option<Value> {
+    match args {
+        [] => None,
+        [hd, tl @ ..] => {
+            if tl.iter().all(|v1| v1 == hd) {
+                Some(hd.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct AllEv;
 
@@ -1165,21 +1184,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_all";
+    const FASTCALL: Option<FastFn> = Some(fc_all);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &*from.0 {
-            [] => None,
-            [hd, tl @ ..] => match hd {
-                None => None,
-                v @ Some(_) => {
-                    if tl.into_iter().all(|v1| v1 == v) {
-                        v.clone()
-                    } else {
-                        None
-                    }
-                }
-            },
-        }
+        fast_eval(fc_all, from)
     }
 }
 
@@ -1372,67 +1380,63 @@ type Or = CachedArgs<OrEv>;
 // ── Bitwise operations ──────────────────────────────────────────
 
 macro_rules! int_binop {
-    ($from:expr, $op:tt) => {
-        match (&$from.0[0], &$from.0[1]) {
-            (Some(Value::U8(l)), Some(Value::U8(r))) => Some(Value::U8(l $op r)),
-            (Some(Value::I8(l)), Some(Value::I8(r))) => Some(Value::I8(l $op r)),
-            (Some(Value::U16(l)), Some(Value::U16(r))) => Some(Value::U16(l $op r)),
-            (Some(Value::I16(l)), Some(Value::I16(r))) => Some(Value::I16(l $op r)),
-            (Some(Value::U32(l)), Some(Value::U32(r))) => Some(Value::U32(l $op r)),
-            (Some(Value::V32(l)), Some(Value::V32(r))) => Some(Value::V32(l $op r)),
-            (Some(Value::I32(l)), Some(Value::I32(r))) => Some(Value::I32(l $op r)),
-            (Some(Value::Z32(l)), Some(Value::Z32(r))) => Some(Value::Z32(l $op r)),
-            (Some(Value::U64(l)), Some(Value::U64(r))) => Some(Value::U64(l $op r)),
-            (Some(Value::V64(l)), Some(Value::V64(r))) => Some(Value::V64(l $op r)),
-            (Some(Value::I64(l)), Some(Value::I64(r))) => Some(Value::I64(l $op r)),
-            (Some(Value::Z64(l)), Some(Value::Z64(r))) => Some(Value::Z64(l $op r)),
+    ($l:expr, $r:expr, $op:tt) => {
+        match ($l, $r) {
+            (Value::U8(l), Value::U8(r)) => Some(Value::U8(l $op r)),
+            (Value::I8(l), Value::I8(r)) => Some(Value::I8(l $op r)),
+            (Value::U16(l), Value::U16(r)) => Some(Value::U16(l $op r)),
+            (Value::I16(l), Value::I16(r)) => Some(Value::I16(l $op r)),
+            (Value::U32(l), Value::U32(r)) => Some(Value::U32(l $op r)),
+            (Value::V32(l), Value::V32(r)) => Some(Value::V32(l $op r)),
+            (Value::I32(l), Value::I32(r)) => Some(Value::I32(l $op r)),
+            (Value::Z32(l), Value::Z32(r)) => Some(Value::Z32(l $op r)),
+            (Value::U64(l), Value::U64(r)) => Some(Value::U64(l $op r)),
+            (Value::V64(l), Value::V64(r)) => Some(Value::V64(l $op r)),
+            (Value::I64(l), Value::I64(r)) => Some(Value::I64(l $op r)),
+            (Value::Z64(l), Value::Z64(r)) => Some(Value::Z64(l $op r)),
             _ => None,
         }
     };
 }
 
 macro_rules! int_shift {
-    ($from:expr, $method:ident) => {
-        match (&$from.0[0], &$from.0[1]) {
-            (Some(Value::U8(l)), Some(Value::U8(r))) => {
-                Some(Value::U8(l.$method(*r as u32)))
-            }
-            (Some(Value::I8(l)), Some(Value::I8(r))) => {
-                Some(Value::I8(l.$method(*r as u32)))
-            }
-            (Some(Value::U16(l)), Some(Value::U16(r))) => {
-                Some(Value::U16(l.$method(*r as u32)))
-            }
-            (Some(Value::I16(l)), Some(Value::I16(r))) => {
-                Some(Value::I16(l.$method(*r as u32)))
-            }
-            (Some(Value::U32(l)), Some(Value::U32(r))) => {
-                Some(Value::U32(l.$method(*r as u32)))
-            }
-            (Some(Value::V32(l)), Some(Value::V32(r))) => {
-                Some(Value::V32(l.$method(*r as u32)))
-            }
-            (Some(Value::I32(l)), Some(Value::I32(r))) => {
-                Some(Value::I32(l.$method(*r as u32)))
-            }
-            (Some(Value::Z32(l)), Some(Value::Z32(r))) => {
-                Some(Value::Z32(l.$method(*r as u32)))
-            }
-            (Some(Value::U64(l)), Some(Value::U64(r))) => {
-                Some(Value::U64(l.$method(*r as u32)))
-            }
-            (Some(Value::V64(l)), Some(Value::V64(r))) => {
-                Some(Value::V64(l.$method(*r as u32)))
-            }
-            (Some(Value::I64(l)), Some(Value::I64(r))) => {
-                Some(Value::I64(l.$method(*r as u32)))
-            }
-            (Some(Value::Z64(l)), Some(Value::Z64(r))) => {
-                Some(Value::Z64(l.$method(*r as u32)))
-            }
+    ($l:expr, $r:expr, $method:ident) => {
+        match ($l, $r) {
+            (Value::U8(l), Value::U8(r)) => Some(Value::U8(l.$method(*r as u32))),
+            (Value::I8(l), Value::I8(r)) => Some(Value::I8(l.$method(*r as u32))),
+            (Value::U16(l), Value::U16(r)) => Some(Value::U16(l.$method(*r as u32))),
+            (Value::I16(l), Value::I16(r)) => Some(Value::I16(l.$method(*r as u32))),
+            (Value::U32(l), Value::U32(r)) => Some(Value::U32(l.$method(*r as u32))),
+            (Value::V32(l), Value::V32(r)) => Some(Value::V32(l.$method(*r as u32))),
+            (Value::I32(l), Value::I32(r)) => Some(Value::I32(l.$method(*r as u32))),
+            (Value::Z32(l), Value::Z32(r)) => Some(Value::Z32(l.$method(*r as u32))),
+            (Value::U64(l), Value::U64(r)) => Some(Value::U64(l.$method(*r as u32))),
+            (Value::V64(l), Value::V64(r)) => Some(Value::V64(l.$method(*r as u32))),
+            (Value::I64(l), Value::I64(r)) => Some(Value::I64(l.$method(*r as u32))),
+            (Value::Z64(l), Value::Z64(r)) => Some(Value::Z64(l.$method(*r as u32))),
             _ => None,
         }
     };
+}
+
+fn fc_bit_and(args: &[Value]) -> Option<Value> {
+    int_binop!(&args[0], &args[1], &)
+}
+
+fn fc_bit_or(args: &[Value]) -> Option<Value> {
+    int_binop!(&args[0], &args[1], |)
+}
+
+fn fc_bit_xor(args: &[Value]) -> Option<Value> {
+    int_binop!(&args[0], &args[1], ^)
+}
+
+fn fc_shl(args: &[Value]) -> Option<Value> {
+    int_shift!(&args[0], &args[1], wrapping_shl)
+}
+
+fn fc_shr(args: &[Value]) -> Option<Value> {
+    int_shift!(&args[0], &args[1], wrapping_shr)
 }
 
 #[derive(Debug, Default)]
@@ -1442,9 +1446,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bit_and";
+    const FASTCALL: Option<FastFn> = Some(fc_bit_and);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        int_binop!(from, &)
+        fast_eval(fc_bit_and, from)
     }
 }
 
@@ -1457,9 +1462,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bit_or";
+    const FASTCALL: Option<FastFn> = Some(fc_bit_or);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        int_binop!(from, |)
+        fast_eval(fc_bit_or, from)
     }
 }
 
@@ -1472,13 +1478,32 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bit_xor";
+    const FASTCALL: Option<FastFn> = Some(fc_bit_xor);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        int_binop!(from, ^)
+        fast_eval(fc_bit_xor, from)
     }
 }
 
 type BitXor = CachedArgs<BitXorEv>;
+
+fn fc_bit_not(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::U8(v) => Some(Value::U8(!v)),
+        Value::I8(v) => Some(Value::I8(!v)),
+        Value::U16(v) => Some(Value::U16(!v)),
+        Value::I16(v) => Some(Value::I16(!v)),
+        Value::U32(v) => Some(Value::U32(!v)),
+        Value::V32(v) => Some(Value::V32(!v)),
+        Value::I32(v) => Some(Value::I32(!v)),
+        Value::Z32(v) => Some(Value::Z32(!v)),
+        Value::U64(v) => Some(Value::U64(!v)),
+        Value::V64(v) => Some(Value::V64(!v)),
+        Value::I64(v) => Some(Value::I64(!v)),
+        Value::Z64(v) => Some(Value::Z64(!v)),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct BitNotEv;
@@ -1487,23 +1512,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bit_not";
+    const FASTCALL: Option<FastFn> = Some(fc_bit_not);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::U8(v)) => Some(Value::U8(!v)),
-            Some(Value::I8(v)) => Some(Value::I8(!v)),
-            Some(Value::U16(v)) => Some(Value::U16(!v)),
-            Some(Value::I16(v)) => Some(Value::I16(!v)),
-            Some(Value::U32(v)) => Some(Value::U32(!v)),
-            Some(Value::V32(v)) => Some(Value::V32(!v)),
-            Some(Value::I32(v)) => Some(Value::I32(!v)),
-            Some(Value::Z32(v)) => Some(Value::Z32(!v)),
-            Some(Value::U64(v)) => Some(Value::U64(!v)),
-            Some(Value::V64(v)) => Some(Value::V64(!v)),
-            Some(Value::I64(v)) => Some(Value::I64(!v)),
-            Some(Value::Z64(v)) => Some(Value::Z64(!v)),
-            _ => None,
-        }
+        fast_eval(fc_bit_not, from)
     }
 }
 
@@ -1516,9 +1528,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_shl";
+    const FASTCALL: Option<FastFn> = Some(fc_shl);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        int_shift!(from, wrapping_shl)
+        fast_eval(fc_shl, from)
     }
 }
 
@@ -1531,9 +1544,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_shr";
+    const FASTCALL: Option<FastFn> = Some(fc_shr);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        int_shift!(from, wrapping_shr)
+        fast_eval(fc_shr, from)
     }
 }
 
@@ -2559,6 +2573,15 @@ type MapLen = CachedArgs<MapLenEv>;
 
 /// `map::union` — the union of two maps, the second's value on a key in
 /// both. In core for `Collection::flat_map` over `Map`.
+fn fc_map_union(args: &[Value]) -> Option<Value> {
+    match (&args[0], &args[1]) {
+        (Value::Map(a), Value::Map(b)) => {
+            Some(Value::Map(a.union(b, |_, _, v| Some(v.clone()))))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
 struct MapUnionEv;
 
@@ -2566,14 +2589,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_map_union";
+    const FASTCALL: Option<FastFn> = Some(fc_map_union);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match (&from.0[0], &from.0[1]) {
-            (Some(Value::Map(a)), Some(Value::Map(b))) => {
-                Some(Value::Map(a.union(b, |_, _, v| Some(v.clone()))))
-            }
-            _ => None,
-        }
+        fast_eval(fc_map_union, from)
     }
 }
 

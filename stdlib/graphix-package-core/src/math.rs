@@ -1,8 +1,8 @@
 use arcstr::ArcStr;
-use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
+use graphix_compiler::{ExecCtx, FastFn, Rt, UserEvent, effects::EffectKind, errf};
 use netidx_value::Value;
 
-use crate::{CachedArgs, CachedVals, EvalCached};
+use crate::{CachedArgs, CachedVals, EvalCached, fast_eval, fast_get};
 
 /// Variant tag for the catchable error `math::clamp` returns on an
 /// invalid range (`Error<`ClampError(string)>`).
@@ -12,18 +12,24 @@ macro_rules! unary_f64 {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+        impl $ev {
+            fn fast(args: &[Value]) -> Option<Value> {
+                let x = fast_get::<f64>(args, 0)?;
+                Some(Value::F64(x.$op()))
+            }
+        }
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
             const STATELESS: bool = true;
             const NAME: &str = $name;
+            const FASTCALL: Option<FastFn> = Some($ev::fast);
 
             fn eval(
                 &mut self,
                 _ctx: &mut ExecCtx<R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
-                let x = from.get::<f64>(0)?;
-                Some(Value::F64(x.$op()))
+                fast_eval($ev::fast, from)
             }
         }
         pub(crate) type $ty = CachedArgs<$ev>;
@@ -34,19 +40,25 @@ macro_rules! binary_f64 {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+        impl $ev {
+            fn fast(args: &[Value]) -> Option<Value> {
+                let x = fast_get::<f64>(args, 0)?;
+                let y = fast_get::<f64>(args, 1)?;
+                Some(Value::F64(x.$op(y)))
+            }
+        }
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
             const STATELESS: bool = true;
             const NAME: &str = $name;
+            const FASTCALL: Option<FastFn> = Some($ev::fast);
 
             fn eval(
                 &mut self,
                 _ctx: &mut ExecCtx<R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
-                let x = from.get::<f64>(0)?;
-                let y = from.get::<f64>(1)?;
-                Some(Value::F64(x.$op(y)))
+                fast_eval($ev::fast, from)
             }
         }
         pub(crate) type $ty = CachedArgs<$ev>;
@@ -57,18 +69,24 @@ macro_rules! unary_f64_pred {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+        impl $ev {
+            fn fast(args: &[Value]) -> Option<Value> {
+                let x = fast_get::<f64>(args, 0)?;
+                Some(Value::Bool(x.$op()))
+            }
+        }
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
             const STATELESS: bool = true;
             const NAME: &str = $name;
+            const FASTCALL: Option<FastFn> = Some($ev::fast);
 
             fn eval(
                 &mut self,
                 _ctx: &mut ExecCtx<R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
-                let x = from.get::<f64>(0)?;
-                Some(Value::Bool(x.$op()))
+                fast_eval($ev::fast, from)
             }
         }
         pub(crate) type $ty = CachedArgs<$ev>;
@@ -124,32 +142,37 @@ binary_f64!(MathCopysignEv, MathCopysign, "core_math_copysign", copysign);
 binary_f64!(MathMinEv, MathMin, "core_math_min", min);
 binary_f64!(MathMaxEv, MathMax, "core_math_max", max);
 
+fn fc_clamp(args: &[Value]) -> Option<Value> {
+    let x = fast_get::<f64>(args, 0)?;
+    let lo = fast_get::<f64>(args, 1)?;
+    let hi = fast_get::<f64>(args, 2)?;
+    // `f64::clamp` PANICS (aborting the whole runtime) when the range
+    // is invalid — `lo > hi`, or either bound is NaN (`!(lo <= hi)`
+    // catches both). A wrong-argument bug shouldn't crash: clamp's
+    // return type is the union `[f64, Error<`ClampError(string)>]`, so
+    // an invalid range returns a CATCHABLE error value (unlike the
+    // arith operators' log+bottom — those bottom so well-typed numeric
+    // code isn't peppered with `$`/`?`; clamp is rare enough that an
+    // explicit error type is the better trade).
+    if !(lo <= hi) {
+        return Some(errf!(
+            CLAMP_ERR_TAG,
+            "math::clamp: invalid range lo={lo}, hi={hi} (lo > hi or NaN)"
+        ));
+    }
+    Some(Value::F64(x.clamp(lo, hi)))
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct MathClampEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_math_clamp";
+    const FASTCALL: Option<FastFn> = Some(fc_clamp);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let x = from.get::<f64>(0)?;
-        let lo = from.get::<f64>(1)?;
-        let hi = from.get::<f64>(2)?;
-        // `f64::clamp` PANICS (aborting the whole runtime) when the range
-        // is invalid — `lo > hi`, or either bound is NaN (`!(lo <= hi)`
-        // catches both). A wrong-argument bug shouldn't crash: clamp's
-        // return type is the union `[f64, Error<`ClampError(string)>]`, so
-        // an invalid range returns a CATCHABLE error value (unlike the
-        // arith operators' log+bottom — those bottom so well-typed numeric
-        // code isn't peppered with `$`/`?`; clamp is rare enough that an
-        // explicit error type is the better trade).
-        if !(lo <= hi) {
-            return Some(errf!(
-                CLAMP_ERR_TAG,
-                "math::clamp: invalid range lo={lo}, hi={hi} (lo > hi or NaN)"
-            ));
-        }
-        Some(Value::F64(x.clamp(lo, hi)))
+        fast_eval(fc_clamp, from)
     }
 }
 pub(crate) type MathClamp = CachedArgs<MathClampEv>;

@@ -20,102 +20,84 @@ use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::{collections::VecDeque, fmt::Debug};
 
+fn fc_concat(args: &[Value]) -> Option<Value> {
+    let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
+    for v in args {
+        match v {
+            Value::Array(a) => buf.extend(a.iter().cloned()),
+            v => buf.push(v.clone()),
+        }
+    }
+    Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+}
+
 #[derive(Debug, Default)]
-struct ConcatEv(SmallVec<[Value; 32]>);
+struct ConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_concat";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_concat);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut present = true;
-        for v in from.0.iter() {
-            match v {
-                Some(Value::Array(a)) => {
-                    for v in a.iter() {
-                        self.0.push(v.clone())
-                    }
-                }
-                Some(v) => self.0.push(v.clone()),
-                None => present = false,
-            }
-        }
-        if present {
-            let a = ValArray::from_iter_exact(self.0.drain(..));
-            Some(Value::Array(a))
-        } else {
-            self.0.clear();
-            None
-        }
+        graphix_package_core::fast_eval(fc_concat, from)
     }
 }
 
 type Concat = CachedArgs<ConcatEv>;
 
+fn fc_push_back(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Array(a), tl @ ..] => {
+            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
+            buf.extend(a.iter().cloned());
+            buf.extend(tl.iter().cloned());
+            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
-struct PushBackEv(SmallVec<[Value; 32]>);
+struct PushBackEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_push_back";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_push_back);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut present = true;
-        match &from.0[..] {
-            [Some(Value::Array(a)), tl @ ..] => {
-                self.0.extend(a.iter().map(|v| v.clone()));
-                for v in tl {
-                    match v {
-                        Some(v) => self.0.push(v.clone()),
-                        None => present = false,
-                    }
-                }
-            }
-            [] | [None, ..] | [Some(_), ..] => present = false,
-        }
-        if present {
-            let a = ValArray::from_iter_exact(self.0.drain(..));
-            Some(Value::Array(a))
-        } else {
-            self.0.clear();
-            None
-        }
+        graphix_package_core::fast_eval(fc_push_back, from)
     }
 }
 
 type PushBack = CachedArgs<PushBackEv>;
 
+fn fc_push_front(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Array(a), tl @ ..] => {
+            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
+            buf.extend(tl.iter().cloned());
+            buf.extend(a.iter().cloned());
+            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
-struct PushFrontEv(SmallVec<[Value; 32]>);
+struct PushFrontEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_push_front";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_push_front);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut present = true;
-        match &from.0[..] {
-            [Some(Value::Array(a)), tl @ ..] => {
-                for v in tl {
-                    match v {
-                        Some(v) => self.0.push(v.clone()),
-                        None => present = false,
-                    }
-                }
-                self.0.extend(a.iter().map(|v| v.clone()));
-            }
-            [] | [None, ..] | [Some(_), ..] => present = false,
-        }
-        if present {
-            let a = ValArray::from_iter_exact(self.0.drain(..));
-            Some(Value::Array(a))
-        } else {
-            self.0.clear();
-            None
-        }
+        graphix_package_core::fast_eval(fc_push_front, from)
     }
 }
 
@@ -163,28 +145,33 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
 
 type Window = CachedArgs<WindowEv>;
 
+fn fc_flatten(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Array(a) => {
+            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
+            for v in a.iter() {
+                match v {
+                    Value::Array(a) => buf.extend(a.iter().cloned()),
+                    v => buf.push(v.clone()),
+                }
+            }
+            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
-struct FlattenEv(SmallVec<[Value; 32]>);
+struct FlattenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_flatten";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_flatten);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::Array(a)) => {
-                for v in a.iter() {
-                    match v {
-                        Value::Array(a) => self.0.extend(a.iter().map(|v| v.clone())),
-                        v => self.0.push(v.clone()),
-                    }
-                }
-                let a = ValArray::from_iter_exact(self.0.drain(..));
-                Some(Value::Array(a))
-            }
-            Some(_) | None => None,
-        }
+        graphix_package_core::fast_eval(fc_flatten, from)
     }
 }
 
@@ -235,32 +222,47 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
 
 type Sort = CachedArgs<SortEv>;
 
+fn fc_dedup(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Array(a) => {
+            let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
+            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
+            for v in a.iter() {
+                if !seen.contains(v) {
+                    seen.insert(v.clone());
+                    buf.push(v.clone());
+                }
+            }
+            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
-struct DedupEv(SmallVec<[Value; 32]>);
+struct DedupEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_dedup";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_dedup);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[0] {
-            Some(Value::Array(a)) => {
-                let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
-                for v in a.iter() {
-                    if !seen.contains(v) {
-                        seen.insert(v.clone());
-                        self.0.push(v.clone());
-                    }
-                }
-                Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
-            }
-            Some(_) | None => None,
-        }
+        graphix_package_core::fast_eval(fc_dedup, from)
     }
 }
 
 type Dedup = CachedArgs<DedupEv>;
+
+fn fc_enumerate(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Array(a) => Some(Value::Array(ValArray::from_iter_exact(
+            a.iter().enumerate().map(|(i, v)| (i as i64, v.clone()).into()),
+        ))),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct EnumerateEv;
@@ -269,19 +271,25 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_enumerate";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_enumerate);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        if let Some(Value::Array(a)) = &from.0[0] {
-            let a = ValArray::from_iter_exact(
-                a.iter().enumerate().map(|(i, v)| (i as i64, v.clone()).into()),
-            );
-            return Some(Value::Array(a));
-        }
-        None
+        graphix_package_core::fast_eval(fc_enumerate, from)
     }
 }
 
 type Enumerate = CachedArgs<EnumerateEv>;
+
+fn fc_zip(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Array(a0), Value::Array(a1)] => {
+            Some(Value::Array(ValArray::from_iter_exact(
+                a0.iter().cloned().zip(a1.iter().cloned()).map(|p| p.into()),
+            )))
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct ZipEv;
@@ -290,52 +298,50 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_zip";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_zip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[..] {
-            [Some(Value::Array(a0)), Some(Value::Array(a1))] => {
-                Some(Value::Array(ValArray::from_iter_exact(
-                    a0.iter().cloned().zip(a1.iter().cloned()).map(|p| p.into()),
-                )))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_zip, from)
     }
 }
 
 type Zip = CachedArgs<ZipEv>;
 
-#[derive(Debug, Default)]
-struct UnzipEv {
-    t0: Vec<Value>,
-    t1: Vec<Value>,
+fn fc_unzip(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Array(a)] => {
+            let mut t0: LPooled<Vec<Value>> = LPooled::take();
+            let mut t1: LPooled<Vec<Value>> = LPooled::take();
+            for v in a {
+                if let Value::Array(a) = v {
+                    match &a[..] {
+                        [v0, v1] => {
+                            t0.push(v0.clone());
+                            t1.push(v1.clone());
+                        }
+                        _ => (),
+                    }
+                }
+            }
+            let v0 = Value::Array(ValArray::from_iter_exact(t0.drain(..)));
+            let v1 = Value::Array(ValArray::from_iter_exact(t1.drain(..)));
+            Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
+        }
+        _ => None,
+    }
 }
+
+#[derive(Debug, Default)]
+struct UnzipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_unzip";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_unzip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[..] {
-            [Some(Value::Array(a))] => {
-                for v in a {
-                    if let Value::Array(a) = v {
-                        match &a[..] {
-                            [v0, v1] => {
-                                self.t0.push(v0.clone());
-                                self.t1.push(v1.clone());
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-                let v0 = Value::Array(ValArray::from_iter_exact(self.t0.drain(..)));
-                let v1 = Value::Array(ValArray::from_iter_exact(self.t1.drain(..)));
-                Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_unzip, from)
     }
 }
 
@@ -642,6 +648,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 }
 
+fn fc_iota(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::I64(n)] => {
+            if *n > graphix_compiler::node::MAX_ARRAY_INIT_LEN {
+                log::error!(
+                    "array::init: size {n} exceeds the {} element \
+                     limit — producing no value",
+                    graphix_compiler::node::MAX_ARRAY_INIT_LEN
+                );
+                return None;
+            }
+            let n = (*n).max(0) as usize;
+            Some(Value::Array(ValArray::from_iter_exact(
+                (0..n).map(|i| Value::I64(i as i64)),
+            )))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
 struct IotaEv;
 
@@ -649,25 +675,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_iota";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_iota);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match &from.0[..] {
-            [Some(Value::I64(n))] => {
-                if *n > graphix_compiler::node::MAX_ARRAY_INIT_LEN {
-                    log::error!(
-                        "array::init: size {n} exceeds the {} element \
-                         limit — producing no value",
-                        graphix_compiler::node::MAX_ARRAY_INIT_LEN
-                    );
-                    return None;
-                }
-                let n = (*n).max(0) as usize;
-                Some(Value::Array(ValArray::from_iter_exact(
-                    (0..n).map(|i| Value::I64(i as i64)),
-                )))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_iota, from)
     }
 }
 

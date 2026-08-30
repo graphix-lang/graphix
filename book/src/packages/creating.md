@@ -189,6 +189,16 @@ invocation in which any input to the enclosing region fired. Having
 `eval` delegate to the same function through `fast_eval` keeps the
 interpreter and the JIT on one implementation.
 
+One correctness caveat: because the fast function only ever sees
+present values, an `eval` that deliberately *produces on partial
+delivery* — short-circuiting on its first argument while another is
+still undelivered, the way an option-`or` yields its left side without
+waiting for the right — must **not** convert. That short-circuit is
+observable interpreter semantics; routing it through `fast_eval` would
+make the builtin wait for every argument. Most of the standard
+library's pure `Sync` builtins are fast calls; the handful that
+short-circuit stay on plain `eval` for exactly this reason.
+
 ### The Full-Control Path: `BuiltIn` + `Apply`
 
 For builtins that need to interact with the execution context, manage internal

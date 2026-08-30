@@ -94,20 +94,25 @@ type PackRead = CachedArgsAsync<PackReadEv>;
 #[derive(Debug, Default)]
 struct PackWriteBytesEv;
 
+fn fc_write_bytes(args: &[Value]) -> Option<Value> {
+    let v = args.first()?;
+    let len = v.encoded_len();
+    let mut buf = Vec::with_capacity(len);
+    Some(match v.encode(&mut buf) {
+        Ok(()) => Value::Bytes(PBytes::new(Bytes::from(buf))),
+        Err(e) => errf!("PackErr", "{e}"),
+    })
+}
+
 // pack::write_bytes is a pure Value→bytes conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "pack_write_bytes";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_bytes);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        let v = cached.0.first()?.as_ref()?;
-        let len = v.encoded_len();
-        let mut buf = Vec::with_capacity(len);
-        Some(match v.encode(&mut buf) {
-            Ok(()) => Value::Bytes(PBytes::new(Bytes::from(buf))),
-            Err(e) => errf!("PackErr", "{e}"),
-        })
+        graphix_package_core::fast_eval(fc_write_bytes, cached)
     }
 }
 

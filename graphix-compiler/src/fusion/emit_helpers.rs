@@ -2320,7 +2320,7 @@ mod tests {
         ));
         let args = vec![arr];
         let (ap, n) = (args.as_ptr() as u64, args.len() as u64);
-        let fp = len as usize as u64;
+        let fp = len as *const () as u64;
         let decode =
             |r: DynCallRet| unsafe { crate::TagValue::from_raw(r.word0, r.word1) };
         let tv = decode(unsafe { graphix_fastcall(fp, ap, n, 0, 0) });
@@ -2329,12 +2329,13 @@ mod tests {
         let tv = decode(unsafe { graphix_fastcall(fp, ap, n, 0, 0b1) });
         assert_eq!(tv.tag(), crate::Tag::STALE);
         assert_eq!(tv.value_cloned(), Value::I64(3));
-        let never_p = never as usize as u64;
+        let never_p = never as *const () as u64;
         let tv = decode(unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0) });
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
         let tv = decode(unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0b1) });
         assert_eq!(tv.tag(), crate::Tag::STALE_BOTTOM);
-        let tv = decode(unsafe { graphix_fastcall(none as usize as u64, ap, n, 0, 0) });
+        let tv =
+            decode(unsafe { graphix_fastcall(none as *const () as u64, ap, n, 0, 0) });
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
         // The view never took ownership: the array is still ours.
         assert_eq!(args.len(), 1);

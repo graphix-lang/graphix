@@ -13,6 +13,13 @@ use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug};
 
+fn fc_get(args: &[Value]) -> Option<Value> {
+    match (&args[0], &args[1]) {
+        (Value::Map(m), key) => Some(m.get(key).cloned().unwrap_or(Value::Null)),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
 struct GetEv;
 
@@ -20,18 +27,23 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "map_get";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_get);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match (&from.0[0], &from.0[1]) {
-            (Some(Value::Map(m)), Some(key)) => {
-                Some(m.get(key).cloned().unwrap_or(Value::Null))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_get, from)
     }
 }
 
 type Get = CachedArgs<GetEv>;
+
+fn fc_get_or(args: &[Value]) -> Option<Value> {
+    match (&args[0], &args[1], &args[2]) {
+        (Value::Map(m), key, default) => {
+            Some(m.get(key).cloned().unwrap_or_else(|| default.clone()))
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct GetOrEv;
@@ -40,18 +52,23 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "map_get_or";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_get_or);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match (&from.0[0], &from.0[1], &from.0[2]) {
-            (Some(Value::Map(m)), Some(key), Some(default)) => {
-                Some(m.get(key).cloned().unwrap_or_else(|| default.clone()))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_get_or, from)
     }
 }
 
 type GetOr = CachedArgs<GetOrEv>;
+
+fn fc_insert(args: &[Value]) -> Option<Value> {
+    match (&args[0], &args[1], &args[2]) {
+        (Value::Map(m), key, value) => {
+            Some(Value::Map(m.insert(key.clone(), value.clone()).0))
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct InsertEv;
@@ -60,18 +77,21 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "map_insert";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_insert);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match (&from.0[0], &from.0[1], &from.0[2]) {
-            (Some(Value::Map(m)), Some(key), Some(value)) => {
-                Some(Value::Map(m.insert(key.clone(), value.clone()).0))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_insert, from)
     }
 }
 
 type Insert = CachedArgs<InsertEv>;
+
+fn fc_remove(args: &[Value]) -> Option<Value> {
+    match (&args[0], &args[1]) {
+        (Value::Map(m), key) => Some(Value::Map(m.remove(key).0)),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Default)]
 struct RemoveEv;
@@ -80,12 +100,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "map_remove";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_remove);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match (&from.0[0], &from.0[1]) {
-            (Some(Value::Map(m)), Some(key)) => Some(Value::Map(m.remove(key).0)),
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_remove, from)
     }
 }
 

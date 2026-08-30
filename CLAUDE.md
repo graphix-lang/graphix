@@ -238,13 +238,27 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   `graphix_fastcall` trampoline, which returns the same in-band-tagged
   (disc, payload) pair as `graphix_dyncall` so the site decode is
   shared. Legal only with `EFFECT = Sync` + `STATELESS = true`
-  (`register_builtin` refuses otherwise) and meant for CHEAP pure
-  functions — recomputation replaces the memo. `eval` delegates to the
-  same fn through `graphix_package_core::fast_eval` (one
-  implementation). This is the lever the intrinsics' inline helpers
-  give the compiler, offered to every package author: `array::len` in a
-  hand-written loop went from a 140 ns DynCall to a ~3 ns direct call
-  (bench/collection `fold_rec` 15.2 -> 1.5 ms).
+  (`register_builtin` refuses otherwise); a fast fn sees ALL args
+  PRESENT (fast_eval returns None on an undelivered slot; the kernel
+  bottoms a tainted arg before the call), so an eval that PRODUCES on
+  partial delivery (opt::or/and/contains/or_default/ok_or/zip
+  short-circuit on arg0 with arg1 undelivered; core::divide's
+  mid-stream reset) must NOT convert — that interp behavior is the
+  semantics. `eval` delegates to the same fn through
+  `graphix_package_core::fast_eval` (one implementation). This is the
+  lever the intrinsics' inline helpers give the compiler, offered to
+  every package author: `array::len` in a hand-written loop went from a
+  140 ns DynCall to a ~3 ns direct call (bench/collection `fold_rec`
+  15.2 -> 1.5 ms). Since 2026-08-30 the stdlib is opted in BROADLY —
+  ~90 pure Sync builtins across core (math, bytes, bit ops, opt's
+  all-present subset), array, map, list, str, sys::{join,tempdir}_path
+  and the json/toml/pack writers; the holdouts are the
+  partial-delivery producers above, `str::parse` (init-time cast
+  type), sort (unread body), and re (per-instance regex cache). A
+  SITE whose layout carries a `LabeledDefault` hole (a defaulted
+  label not written at the call) dispatches via DynCall — the
+  trampoline reads the buf AS the args and cannot fill holes
+  (`all_marshalled`, lowering.rs).
   All four consts are pulled through `EvalCached`/`CachedArgs` and
   recorded per name as `BuiltinFacts` (`ctx.builtin_effect`/
   `ctx.builtin_stateless`/`ctx.builtin_sleep_restarts`/

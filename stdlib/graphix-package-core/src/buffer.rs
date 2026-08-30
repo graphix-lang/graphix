@@ -1,10 +1,20 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{BindId, ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
+use graphix_compiler::{
+    BindId, ExecCtx, FastFn, Rt, UserEvent, effects::EffectKind, errf,
+};
 use netidx_value::{PBytes, ValArray, Value};
 use nohash::IntMap;
 
-use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached};
+use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached, fast_eval, fast_get};
+
+fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
+    let b = fast_get::<Bytes>(args, 0)?;
+    match std::str::from_utf8(&b) {
+        Ok(s) => Some(Value::String(ArcStr::from(s))),
+        Err(e) => Some(errf!("EncodingError", "invalid UTF-8: {e}")),
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesToStringEv;
@@ -13,17 +23,19 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_to_string";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_to_string);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let b = from.get::<Bytes>(0)?;
-        match std::str::from_utf8(&b) {
-            Ok(s) => Some(Value::String(ArcStr::from(s))),
-            Err(e) => Some(errf!("EncodingError", "invalid UTF-8: {e}")),
-        }
+        fast_eval(fc_bytes_to_string, from)
     }
 }
 
 pub(crate) type BytesToString = CachedArgs<BytesToStringEv>;
+
+fn fc_bytes_to_string_lossy(args: &[Value]) -> Option<Value> {
+    let b = fast_get::<Bytes>(args, 0)?;
+    Some(Value::String(ArcStr::from(&*String::from_utf8_lossy(&b))))
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesToStringLossyEv;
@@ -32,14 +44,19 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_to_string_lossy";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_to_string_lossy);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let b = from.get::<Bytes>(0)?;
-        Some(Value::String(ArcStr::from(&*String::from_utf8_lossy(&b))))
+        fast_eval(fc_bytes_to_string_lossy, from)
     }
 }
 
 pub(crate) type BytesToStringLossy = CachedArgs<BytesToStringLossyEv>;
+
+fn fc_bytes_from_string(args: &[Value]) -> Option<Value> {
+    let s = fast_get::<ArcStr>(args, 0)?;
+    Some(Value::Bytes(PBytes::new(Bytes::copy_from_slice(s.as_bytes()))))
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesFromStringEv;
@@ -48,53 +65,54 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_from_string";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_from_string);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let s = from.get::<ArcStr>(0)?;
-        Some(Value::Bytes(PBytes::new(Bytes::copy_from_slice(s.as_bytes()))))
+        fast_eval(fc_bytes_from_string, from)
     }
 }
 
 pub(crate) type BytesFromString = CachedArgs<BytesFromStringEv>;
 
-#[derive(Debug)]
-pub(crate) struct BytesConcatEv {
-    buf: BytesMut,
+fn fc_bytes_concat(args: &[Value]) -> Option<Value> {
+    let mut buf = BytesMut::new();
+    for v in args {
+        match v {
+            Value::Bytes(b) => buf.extend_from_slice(b),
+            Value::Array(a) => {
+                for elem in a.iter() {
+                    match elem {
+                        Value::Bytes(b) => buf.extend_from_slice(b),
+                        _ => return None,
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(Value::Bytes(PBytes::new(buf.freeze())))
 }
 
-impl Default for BytesConcatEv {
-    fn default() -> Self {
-        Self { buf: BytesMut::new() }
-    }
-}
+#[derive(Debug, Default)]
+pub(crate) struct BytesConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_concat";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_concat);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        self.buf.clear();
-        for v in from.0.iter() {
-            match v {
-                None => return None,
-                Some(Value::Bytes(b)) => self.buf.extend_from_slice(b),
-                Some(Value::Array(a)) => {
-                    for elem in a.iter() {
-                        match elem {
-                            Value::Bytes(b) => self.buf.extend_from_slice(b),
-                            _ => return None,
-                        }
-                    }
-                }
-                _ => return None,
-            }
-        }
-        Some(Value::Bytes(PBytes::new(self.buf.split().freeze())))
+        fast_eval(fc_bytes_concat, from)
     }
 }
 
 pub(crate) type BytesConcat = CachedArgs<BytesConcatEv>;
+
+fn fc_bytes_to_array(args: &[Value]) -> Option<Value> {
+    let b = fast_get::<Bytes>(args, 0)?;
+    Some(Value::Array(ValArray::from_iter_exact(b.iter().map(|byte| Value::U8(*byte)))))
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesToArrayEv;
@@ -103,51 +121,50 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_to_array";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_to_array);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let b = from.get::<Bytes>(0)?;
-        Some(Value::Array(ValArray::from_iter_exact(
-            b.iter().map(|byte| Value::U8(*byte)),
-        )))
+        fast_eval(fc_bytes_to_array, from)
     }
 }
 
 pub(crate) type BytesToArray = CachedArgs<BytesToArrayEv>;
 
-#[derive(Debug)]
-pub(crate) struct BytesFromArrayEv {
-    buf: BytesMut,
+fn fc_bytes_from_array(args: &[Value]) -> Option<Value> {
+    let arr = match &args[0] {
+        Value::Array(a) => a,
+        _ => return None,
+    };
+    let mut buf = BytesMut::with_capacity(arr.len());
+    for v in arr.iter() {
+        match v {
+            Value::U8(b) => buf.put_u8(*b),
+            _ => return None,
+        }
+    }
+    Some(Value::Bytes(PBytes::new(buf.freeze())))
 }
 
-impl Default for BytesFromArrayEv {
-    fn default() -> Self {
-        Self { buf: BytesMut::new() }
-    }
-}
+#[derive(Debug, Default)]
+pub(crate) struct BytesFromArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_from_array";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_from_array);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let arr = match from.0.first()?.as_ref()? {
-            Value::Array(a) => a,
-            _ => return None,
-        };
-        self.buf.clear();
-        self.buf.reserve(arr.len());
-        for v in arr.iter() {
-            match v {
-                Value::U8(b) => self.buf.extend_from_slice(&[*b]),
-                _ => return None,
-            }
-        }
-        Some(Value::Bytes(PBytes::new(self.buf.split().freeze())))
+        fast_eval(fc_bytes_from_array, from)
     }
 }
 
 pub(crate) type BytesFromArray = CachedArgs<BytesFromArrayEv>;
+
+fn fc_bytes_len(args: &[Value]) -> Option<Value> {
+    let b = fast_get::<Bytes>(args, 0)?;
+    Some(Value::U64(b.len() as u64))
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesLenEv;
@@ -156,10 +173,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_bytes_len";
+    const FASTCALL: Option<FastFn> = Some(fc_bytes_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let b = from.get::<Bytes>(0)?;
-        Some(Value::U64(b.len() as u64))
+        fast_eval(fc_bytes_len, from)
     }
 }
 

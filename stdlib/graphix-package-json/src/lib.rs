@@ -223,33 +223,38 @@ type JsonRead = CachedArgsAsync<JsonReadEv>;
 #[derive(Debug, Default)]
 struct JsonWriteStrEv;
 
+fn fc_write_str(args: &[Value]) -> Option<Value> {
+    let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
+    let v = args.get(1)?;
+    let json = match value_to_json(v) {
+        Ok(j) => j,
+        Err(e) => return Some(errf!("JsonErr", "{e}")),
+    };
+    let mut buf: LPooled<Vec<u8>> = LPooled::take();
+    let res = if pretty {
+        serde_json::to_writer_pretty(&mut *buf, &json)
+    } else {
+        serde_json::to_writer(&mut *buf, &json)
+    };
+    Some(match res {
+        Ok(()) => {
+            // serde_json always produces valid UTF-8
+            let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+            Value::String(ArcStr::from(s))
+        }
+        Err(e) => errf!("JsonErr", "{e}"),
+    })
+}
+
 // json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "json_write_str";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_str);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        let pretty = cached.get::<bool>(0)?;
-        let v = cached.0.get(1)?.as_ref()?;
-        let json = match value_to_json(v) {
-            Ok(j) => j,
-            Err(e) => return Some(errf!("JsonErr", "{e}")),
-        };
-        let mut buf: LPooled<Vec<u8>> = LPooled::take();
-        let res = if pretty {
-            serde_json::to_writer_pretty(&mut *buf, &json)
-        } else {
-            serde_json::to_writer(&mut *buf, &json)
-        };
-        Some(match res {
-            Ok(()) => {
-                // serde_json always produces valid UTF-8
-                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
-                Value::String(ArcStr::from(s))
-            }
-            Err(e) => errf!("JsonErr", "{e}"),
-        })
+        graphix_package_core::fast_eval(fc_write_str, cached)
     }
 }
 
@@ -260,28 +265,33 @@ type JsonWriteStr = CachedArgs<JsonWriteStrEv>;
 #[derive(Debug, Default)]
 struct JsonWriteBytesEv;
 
+fn fc_write_bytes(args: &[Value]) -> Option<Value> {
+    let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
+    let v = args.get(1)?;
+    let json = match value_to_json(v) {
+        Ok(j) => j,
+        Err(e) => return Some(errf!("JsonErr", "{e}")),
+    };
+    let mut buf: LPooled<Vec<u8>> = LPooled::take();
+    let res = if pretty {
+        serde_json::to_writer_pretty(&mut *buf, &json)
+    } else {
+        serde_json::to_writer(&mut *buf, &json)
+    };
+    Some(match res {
+        Ok(()) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf))),
+        Err(e) => errf!("JsonErr", "{e}"),
+    })
+}
+
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "json_write_bytes";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_bytes);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        let pretty = cached.get::<bool>(0)?;
-        let v = cached.0.get(1)?.as_ref()?;
-        let json = match value_to_json(v) {
-            Ok(j) => j,
-            Err(e) => return Some(errf!("JsonErr", "{e}")),
-        };
-        let mut buf: LPooled<Vec<u8>> = LPooled::take();
-        let res = if pretty {
-            serde_json::to_writer_pretty(&mut *buf, &json)
-        } else {
-            serde_json::to_writer(&mut *buf, &json)
-        };
-        Some(match res {
-            Ok(()) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf))),
-            Err(e) => errf!("JsonErr", "{e}"),
-        })
+        graphix_package_core::fast_eval(fc_write_bytes, cached)
     }
 }
 

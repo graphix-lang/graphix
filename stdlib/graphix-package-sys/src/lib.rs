@@ -422,22 +422,26 @@ pub(crate) type GxTempDir = CachedArgsAsync<GxTempDirEv>;
 #[derive(Debug, Default)]
 pub(crate) struct TempDirPathEv;
 
+fn fc_tempdir_path(args: &[Value]) -> Option<Value> {
+    match &args[0] {
+        Value::Abstract(a) => {
+            let td = a.downcast_ref::<TempDirValue>()?;
+            Some(Value::String(td.path.clone()))
+        }
+        _ => None,
+    }
+}
+
 // sys::tempdir_path returns a path string from a TempDir handle. Pure
 // transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "sys_tempdir_path";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_tempdir_path);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let v = from.0.first()?.as_ref()?;
-        match v {
-            Value::Abstract(a) => {
-                let td = a.downcast_ref::<TempDirValue>()?;
-                Some(Value::String(td.path.clone()))
-            }
-            _ => None,
-        }
+        graphix_package_core::fast_eval(fc_tempdir_path, from)
     }
 }
 
@@ -458,38 +462,42 @@ pub(crate) fn convert_path(path: &Path) -> ArcStr {
 #[derive(Debug, Default)]
 pub(crate) struct JoinPathEv;
 
+fn fc_join_path(args: &[Value]) -> Option<Value> {
+    let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
+    for part in args {
+        match part {
+            Value::String(s) => parts.push(s.clone()),
+            Value::Array(a) => {
+                for part in a.iter() {
+                    match part {
+                        Value::String(s) => parts.push(s.clone()),
+                        _ => return None,
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    thread_local! {
+        static BUF: RefCell<PathBuf> = RefCell::new(PathBuf::new());
+    }
+    BUF.with_borrow_mut(|path| {
+        path.clear();
+        for part in parts.drain(..) {
+            path.push(&*part)
+        }
+        Some(Value::String(convert_path(&path)))
+    })
+}
+
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "sys_join_path";
+    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_join_path);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
-        for part in from.0.iter() {
-            match part {
-                None => return None,
-                Some(Value::String(s)) => parts.push(s.clone()),
-                Some(Value::Array(a)) => {
-                    for part in a.iter() {
-                        match part {
-                            Value::String(s) => parts.push(s.clone()),
-                            _ => return None,
-                        }
-                    }
-                }
-                _ => return None,
-            }
-        }
-        thread_local! {
-            static BUF: RefCell<PathBuf> = RefCell::new(PathBuf::new());
-        }
-        BUF.with_borrow_mut(|path| {
-            path.clear();
-            for part in parts.drain(..) {
-                path.push(&*part)
-            }
-            Some(Value::String(convert_path(&path)))
-        })
+        graphix_package_core::fast_eval(fc_join_path, from)
     }
 }
 
