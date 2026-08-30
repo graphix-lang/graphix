@@ -191,12 +191,12 @@ run!(
 }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }; graphix_package_core::testing::FuseExpect::Jit);
 
-// nested array::map — json::read passed directly to inner map.
-// The inner callsite typechecks before the outer deferred check runs,
-// so the concrete return type never propagates to json::read.
-// This is a known limitation of the current single-pass deferred check
-// scheduling: by the time the outer CallSite phase fires, the inner
-// array::map's callsite has already been checked and won't re-schedule.
+// nested array::map — json::read passed as a bare fn value to the inner
+// map. The annotated result type reaches json::read through the inner
+// callback's fn-typed cell, which is the INSTANCE's own: while instance
+// signatures shared the def's `LambdaIds` node, the inner site's cell
+// aliased every other instance's and the type never propagated (this
+// fixture pinned that as a "known limitation" until 2026-08-30).
 run!(
     hof_nested_map_json_read,
     r#"{
@@ -206,8 +206,8 @@ run!(
     let row = results[0]$;
     row[0]$
 }"#,
-    |v: Result<&Value>| { v.is_err() }
-; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // core::filter — Filter: json::read piped through filter,
 // type must propagate through Filter's resolved predicate type

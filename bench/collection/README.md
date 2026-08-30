@@ -68,7 +68,7 @@ intrinsic row's jit time.
 | `flatmap_intr`   | 10k  | 1.63 ms   | 0.51 s    | 315x    |
 | `flatmap_fold`   | 10k  | 1.42 s    | 1.93 s    | 1x      |
 | `flatmap_cons`   | 10k  | 5.8 ms    | 0.56 s    | 96x     |
-| `flatmap_list`   | 10k  | 7.2 ms    | 19.0 s    | 2600x   |
+| `flatmap_list`   | 10k  | 7.2 ms    | 1.78 s    | 247x    |
 | `lfold_intr`     | 100k | 4.13 ms   | 2.04 s    | 494x    |
 | `lfold_intr_4k`  | 4k   | 0.14 ms   | 57 ms     | 400x    |
 | `lfold_rec`      | 4k   | 0.28 s    | 0.27 s    | 1x      |
@@ -151,19 +151,22 @@ intrinsic row's jit time.
   `lang/collection.rs` (`nested_same_intrinsic`, `nested_map_in_map`,
   `user_hof_nested`, `nested_mixed_types`) and `lang/functions.rs`
   (`cps_wrapper_recursion`, the termination case).
-- **OPEN — the node-walk is still quadratic on that shape** (19.0 s at
-  10k; the same with an `i64` accumulator, so the List is irrelevant).
-  Each outer slot's callback body is lazily compiled, its nested
-  `array::fold` is a fresh per-callsite instance whose signature
-  SHARES the def's `LambdaIds` nodes (`FnType::cow_walk` clones the
-  `SArc`), so the `f` param cell is one hub every retained instance's
-  callback links into (`contains.rs` links on unification), and
-  `typecheck1_resolve` walks `ids()` over it per site — 57.8% of the
-  run in `LambdaIds::ids`, per-bind cost doubling from 2.5k to 5k
-  (`GRAPHIX_DBG_PERF`). With transient instances retained, nothing is
-  pruned. Fix direction: per-callsite instance signatures mint FRESH
-  `LambdaIds` for their nested fn types, as their tvars already are.
-  Only the interp fallback pays this now that the shape fuses.
+- **The node-walk was quadratic on that shape too — FIXED 2026-08-30**
+  (19.0 s → 1.78 s at 10k; the `i64`-accumulator twin 1.09 / 4.26 / 18.6 s
+  → 0.31 / 0.66 / 1.42 s at 2.5k / 5k / 10k, linear). Each outer slot's
+  callback body is lazily compiled and its nested `array::fold` is a
+  fresh per-callsite instance; instance signatures SHARED the def's
+  `LambdaIds` nodes (`FnType::cow_walk` cloned the `SArc`), so the `f`
+  param cell was one hub every retained instance's callback linked into
+  and `typecheck1_resolve` walked `ids()` over it per site — 57.8% of
+  the run, per-bind cost doubling with n. An instantiation now SNAPSHOTS
+  its def's node (`LambdaIds::instantiate`: same `own`, a one-way copy
+  of the links) so def-body facts carry but a site's inflows land on its
+  own copy. The same hub was why `hof_nested_map_json_read` could not
+  type (its arg cell held every instance's callback, so the site never
+  resolved statically). What remains is the per-activation constant:
+  ~140 µs per outer slot for the four lazy binds a nested loop costs.
+Only the interp fallback pays this now that the shape fuses.
 - `lfold_intr` at 4.3 ms/100k is ~9x faster than the 2026-07
   `list_fold_sum` row (38 ms) — the flatten boundary improved since.
 

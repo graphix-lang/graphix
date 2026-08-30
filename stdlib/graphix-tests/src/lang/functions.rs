@@ -2175,3 +2175,23 @@ run!(cps_wrapper_recursion, CPS_WRAPPER_RECURSION, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(3))
 ); graphix_package_core::testing::FuseExpect::None);
+
+// An instantiation SNAPSHOTS its def's LambdaIds (`LambdaIds::instantiate`):
+// the return cell of `mk`'s instance still reaches the lambda the body
+// returns, so the returned calls resolve statically (the call sites
+// fuse; the function-valued `let add1` itself node-walks by the
+// fn-valued-let rule, hence `None`). A fresh empty node would have lost
+// that; a shared node was the per-instance hub (nested_same_intrinsic's
+// interp quadratic).
+const RETURNED_LAMBDA_RESOLVES: &str = r#"
+{
+  let mk = |x: i64| |y: i64| x + y;
+  let add1 = mk(i64:1);
+  add1(i64:2) + mk(i64:10)(i64:20)
+}
+"#;
+
+run!(returned_lambda_resolves, RETURNED_LAMBDA_RESOLVES, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(33))
+); graphix_package_core::testing::FuseExpect::None);

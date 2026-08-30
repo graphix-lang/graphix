@@ -181,7 +181,7 @@ impl std::hash::Hash for FnArgType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Link(Weak<RwLock<LambdaIdsInner>>);
 
 impl Hash for Link {
@@ -228,6 +228,24 @@ impl Default for LambdaIds {
 impl LambdaIds {
     pub fn set_id(&self, id: LambdaId) {
         self.0.write().own = Some(id)
+    }
+
+    /// The fn-typed cell of a fresh instantiation: a NEW node carrying
+    /// this node's `own` id and a one-way snapshot of its links. The
+    /// def's own facts carry — a return cell still reaches the lambdas
+    /// the body returns — but what later unifies with the instance
+    /// (a call site's callback) lands on the copy, never on the def's
+    /// node, and the copy is not reachable from the def's node. Sharing
+    /// the node instead made the def's parameter cell a hub every
+    /// retained instance's callback linked into: `ids()` from any
+    /// instance walked all of them, and a site could not statically
+    /// resolve its own callback because the cell held everyone's.
+    pub(crate) fn instantiate(&self) -> LambdaIds {
+        let inner = self.0.read();
+        Self(SArc::new(RwLock::new(LambdaIdsInner {
+            own: inner.own,
+            links: inner.links.clone(),
+        })))
     }
 
     /// Walk the link graph, collecting every live linked id. Dead links
@@ -709,19 +727,21 @@ impl FnType {
     }
 
     pub fn reset_tvars(&self) -> Self {
-        self.reset_tvars_int(&mut LPooled::take()).unwrap_or_else(|| self.clone())
+        self.reset_tvars_int(&mut LPooled::take())
     }
 
     /// One cell-identity freshening map across the whole signature —
     /// see [`Type::reset_tvars_int`]. Cell constraint conjunctions
     /// travel with the cells (the TVar-level reset copies them), so
-    /// nothing beyond the signature components needs freshening.
-    /// `None` = no TVar anywhere beneath — keep the original (shared).
-    pub(super) fn reset_tvars_int(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-    ) -> Option<Self> {
-        self.cow_walk(|t| t.reset_tvars_int(known))
+    /// nothing beyond the signature components needs freshening. Always
+    /// a fresh signature, even with no TVar beneath: an instantiation's
+    /// `lambda_ids` is its own ([`LambdaIds::instantiate`]), so the
+    /// fn-typed cells of two instances never alias.
+    pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Self {
+        let mut fresh =
+            self.cow_walk(|t| t.reset_tvars_int(known)).unwrap_or_else(|| self.clone());
+        fresh.lambda_ids = self.lambda_ids.instantiate();
+        fresh
     }
 
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Type>) -> Self {

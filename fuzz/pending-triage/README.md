@@ -31,9 +31,6 @@ Nothing. `fuzz/pending-ruling/` does not exist (no rulings outstanding).
 - Harness: an asymmetric-timeout finding should carry the retry's own
   evidence — CPU burned / window, `/proc/loadavg`, `MemAvailable` — so a
   campaign-start stall (aug29a) is decidable from the artifact.
-- Interp: a nested collection HOF inside a callback is quadratic on the
-  NODE-WALK (the `LambdaIds` hub; `bench/collection/README.md`, OPEN).
-  The shape fuses since `3bd9a9a9`, so only the fallback pays.
 - Kernel: a resize that truncates slots frees their chain leaves but
   never deletes the orphaned `DynCallSlot` instances (slow growth under
   an oscillating-length source).

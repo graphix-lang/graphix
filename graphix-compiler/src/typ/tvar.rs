@@ -944,6 +944,9 @@ impl Type {
             // (SHARES the resolution cell) — load-bearing: expand_ref's
             // commit copies come through here and must keep their
             // seeded resolutions.
+            // A nested fn type is always fresh: its `lambda_ids` cell
+            // must be the instance's own (`FnType::reset_tvars_int`).
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.reset_tvars_int(known)))),
             t => t.cow_children(&mut |c| c.reset_tvars_int(known)),
         }
     }

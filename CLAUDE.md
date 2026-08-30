@@ -662,7 +662,16 @@ key on and takes the innermost active instance, as before. Pins:
 `user_hof_nested`/`nested_mixed_types` (all `Jit`),
 `lang/functions.rs` `cps_wrapper_recursion`. Any special-casing of
 collection intrinsics here is the wrong fix — it stops working the day
-`fold` is written in Graphix.
+`fold` is written in Graphix. **An instantiation SNAPSHOTS its def's
+`LambdaIds`** (`LambdaIds::instantiate`, from `FnType::reset_tvars_int`,
+which is unconditional for fn types): a new node with the def's `own`
+and a one-way copy of its links, so def-body facts carry (a returned
+lambda still resolves — `returned_lambda_resolves`) while a site's
+inflows land on the site's copy. Sharing the node made the def's param
+cell a hub every retained instance's callback linked into: `ids()` was
+O(instances) per lazy bind (a nested HOF in a callback was quadratic on
+the node-walk) and a site could not resolve its own callback
+(`hof_nested_map_json_read` was pinned as a "limitation").
 
 ### Collection intrinsics (MapQ/FoldQ as compiler nodes)
 
