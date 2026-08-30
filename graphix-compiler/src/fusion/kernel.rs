@@ -1213,24 +1213,6 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
         &self.kernel
     }
 
-    /// Free the RESET-kind slot chains (per-slot interior-bottom
-    /// caches — `SiteAnchor::reset`) and null their anchors: the
-    /// emitted code rebuilds a fresh zeroed chain on the next
-    /// invocation (`graphix_slot_state_table` on a 0 word), so fresh
-    /// = no history, exactly the flat `replay_state_words` zeroing.
-    /// Selection-memory chains (`reset: false`) are untouched —
-    /// semantic state, freed only by `Drop`.
-    fn free_reset_chains(&mut self) {
-        for a in self.jit.slot_table_words.iter().filter(|a| a.reset) {
-            let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
-            super::emit_helpers::free_slot_chain(
-                p,
-                a.own_levels as u64,
-                a.leaf.as_deref(),
-            );
-        }
-    }
-
     /// Drop-and-zero the OWNED-value replay pairs
     /// ([`WrappedKernel::replay_value_pairs`] — the non-scalar
     /// interior-bottom caches, `emit_value_taint_cache`): each holds a
@@ -1832,7 +1814,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             || self.jit.own_site.as_ref().is_some_and(|l| !l.self_blocks.is_empty());
         let (shrink_gen, saved_gen, saved_reached) = if has_self_blocks {
             self.self_gen = self.self_gen.wrapping_add(1);
-            let sg = super::emit_helpers::SELF_BLOCK_GEN.with(|c| c.replace(self.self_gen));
+            let sg =
+                super::emit_helpers::SELF_BLOCK_GEN.with(|c| c.replace(self.self_gen));
             let sr = super::emit_helpers::SELF_BLOCK_REACHED.with(|c| c.replace(0));
             (Some(self.self_gen), sg, sr)
         } else {
@@ -2004,7 +1987,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // taint caches — `emit_scalar_taint_cache`): a value cached on
         // iteration i−1 must not bridge iteration i's bottom, exactly
         // the node-walk's per-frame cache reset. Semantic/config words
-        // (lifted ids, first-call flags, select memory) survive.
+        // (lifted ids, first-call flags, select memory) and every
+        // slot chain (selection memory, nested prev-length words,
+        // DynCall site identity — `SiteAnchor`) survive: the
+        // node-walk's `FoldQ::reset_replay` keeps each slot's CallSite
+        // and only clears its caches, so a framed pass re-dispatches
+        // RESUMED sites with honest stale args. Freeing the identity
+        // chain here minted a fresh site id per pass, and a fresh
+        // instance's first dispatch is a forced init view — a fold
+        // over a loop-invariant source fired on every framed pass
+        // (quiet-frame-init-view-aug2026/08).
         for w in self.jit.replay_state_words.iter() {
             self.state[*w as usize] = 0;
         }
@@ -2035,7 +2027,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             }
         }
         self.drop_replay_values();
-        self.free_reset_chains();
         if crate::dbgenv::gxdbg_reset() {
             eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);
         }

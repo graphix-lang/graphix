@@ -1,0 +1,13 @@
+// aug28a aieka/000000 (fold-in-guard / array::group): the same face
+// with the DynCall INSIDE A COLLECTION LOOP — the fold's per-element
+// `str::len(s)` sites claim their identity through the per-slot chain,
+// and `Kernel::reset_replay` (once per framed pass of the interp's
+// tail loop f(3)->f(0)) FREED that chain as a replay cache. Every pass
+// minted three fresh site ids, every fresh instance's first dispatch
+// forced the init view, the fold fired, the select's scrutinee
+// delivery fired the arm region, and `array::group` pushed a value per
+// pass: interp [0:[2]], JIT [0:[2] 1:[2] 2:[2] 3:[2] 4:[2]]. The
+// node-walk's FoldQ::reset_replay keeps each slot's CallSite (identity
+// and first_update) and clears only its caches, so the chain is
+// semantic per-position state and survives frames.
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:9223372036854775807; let rec f = |n| select n {i64:0 => select array::fold(["a", "bb", "ccc"], i64:0, |acc, s| str::len(s)) {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; array::group(f(i64:3), |n, x| x == i64:2)}

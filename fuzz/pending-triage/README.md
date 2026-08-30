@@ -371,6 +371,38 @@ binary and it STILL reproduces — a NEW class, none of A–E.
   needs its own triage (fold-in-guard reactivity, or an array::iter
   fire-count/streaming-timing question). Parked under `aug28a/`.
 
+  **FIXED 2026-08-30 — the third mechanism of the QUIET-FLAG class
+  (`findings/quiet-frame-init-view-aug2026/08`).** Not fold-in-guard
+  reactivity at all: `f(3)` fires once on both engines (`count(f(3))`
+  = 1, bare `f(3)` traces `[0:2]`), and the guard is never consulted.
+  What differed was how many values `array::group` RECEIVED — one per
+  framed pass on the JIT. The call `f(3)` stays on the node-walk (a
+  builtin's argument), so `f`'s tail loop runs in interp FRAMES with
+  the base-case arm `select array::fold(..) {..}` as a fused ARM
+  region; the fold's per-element `str::len(s)` sites claim their
+  identity through the per-slot chain (`emit_dyncall_site_word`), and
+  that chain was registered `reset: true` — `Kernel::reset_replay`
+  (once per pass, f(3)→f(0)) FREED it. Every pass minted three fresh
+  site ids (`GXDBG_DYNC`: 1,2,3 / 4,5,6 / 7,8,9 …), every fresh
+  `SiteInstance`'s first dispatch forced the init view, the fold fired,
+  the scrutinee delivery fired the arm region, `group` pushed:
+  interp `[0:[2]]` vs JIT `[0:[2] 1:[2] 2:[2] 3:[2] 4:[2]]` with a
+  `|n, x| x == 2` predicate. The design comment said "chain leaves
+  reset on frames → fresh ids, matching the interp's transient
+  re-derivation"; the interp's `FoldQ::reset_replay` keeps each slot's
+  CallSite (identity + `first_update`) and clears only caches, so a
+  framed pass re-dispatches RESUMED sites with honest stale args. Fix:
+  slot chains are semantic per-position state — `SiteAnchor.reset`
+  and `Kernel::free_reset_chains` deleted (it was the only reset-kind
+  producer), `claim_slot_cache_words` → `claim_slot_site_words`. The
+  same mechanism leaked a `SiteInstance` per slot per pass (ids never
+  retired) — gone with it. Residual (pre-existing, not built): a
+  resize that truncates slots frees their chain leaves but never
+  deletes the orphaned `SiteInstance`s, so an oscillating-length
+  source grows `DynCallSlot.instances` slowly. Gates: regress 450/0
+  (the pin included), selfcheck OK, graphix-compiler 161/0,
+  graphix-tests 2278/0; witness + campaign original AGREE.
+
 ## The aug28b round (2026-08-29) — 5 divergences, 3 classes, all fixed
 
 Campaign aug28b (hz0/aieka/katana/ryouko/mazikeen/washu-chan on the
@@ -452,3 +484,34 @@ divergences (aieka 3, hz0 1, ryouko 1), and ALL FIVE re-check AGREE on the
 fixed tree — every one a re-discovery of a class this arc fixed, nothing
 novel. The raw pull is discarded (nothing to triage); the pins live in
 `findings/`. aug28a remains the only open item.
+
+## The aug29a round (2026-08-30) — 1 divergence, environmental, CLOSED
+
+Campaign aug29a (hz0/aieka/katana/ryouko/mazikeen on the ride-deletion
+tree `d4ebb79e`; washu-chan ran it overnight too, 0 findings, and was
+rebooted for updates before the pull) pulled after ~17 hours / ~310M
+subjects at the aug30a redeploy: ONE divergence, ryouko/000000.
+
+- **ryouko/000000 — asymmetric timeout, NOT a bug** (written 16:49:57,
+  ~15 minutes into the campaign). `count(500000, 0)` — a stateless
+  tail loop — in statement position beside an array literal: interp
+  Timeout at the 10s lane budget AND at the 80s retry with <5s of CPU
+  burned, JIT a value. The discriminator (Eric's 2026-08-17 ruling:
+  seconds of burn = honest slowness, ~0 burn = wedge) recorded it
+  CORRECTLY as wedge-shaped. It is not a wedge: `check` AGREEs 30/30 on
+  HEAD locally (0.5s total, both engines + stdlib compile) and **5/5 on
+  ryouko itself, on the aug29a binary, under the live aug30a load
+  (load average 246 on 32 cores): 1.1s wall / 0.85s CPU each**. A
+  sub-second program that did not finish in 90s and burned nothing is
+  a box-wide stall — the timing fits campaign start, when 256 workers
+  cold-compile the stdlib at once (ryouko carries a 62G zram swap and
+  had 5.6G of it in use at inspection). No journal OOM/hung-task line
+  was readable. Disposition: one-off, parked on disk under `aug29a/`
+  (untracked), no pin — the class is "the harness can't tell a stall
+  from a wedge after the fact". FOLLOW-UP (harness, not built): the
+  finding header should carry the retry's own evidence — CPU burned /
+  window, `/proc/loadavg`, `MemAvailable` at the retry — so a future
+  triage reads stall-vs-wedge off the artifact instead of
+  reconstructing it on the box a day later. `Divergence` has six
+  constructors and a cross-process report path, so it is a small
+  arc of its own, not a tweak.

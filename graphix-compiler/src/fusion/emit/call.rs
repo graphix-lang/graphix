@@ -61,12 +61,11 @@ fn emit_dyncall_site_word(cx: &mut BodyCx) -> (ClifValue, bool) {
         // state — which is what lets the loop deliver HONEST stale
         // masks (the aug08a shared-cache bleed is structurally gone)
         // and effects stop re-firing per kernel invocation
-        // (dense delta 1+2, print_hof_once). Chain leaves reset on
-        // frames/sleep → fresh ids → fresh instances, matching the
-        // interp's transient re-derivation; the dispatcher's `first`
-        // flag converts a fresh instance's stale delivery into the
-        // arrival view.
-        if let Some(pair) = cx.claim_slot_cache_words() {
+        // (dense delta 1+2, print_hof_once). The identity persists
+        // across frames and sleep like the interp's per-slot
+        // CallSite (`claim_slot_site_words`); only a resize truncate
+        // or `Drop` retires a slot's id.
+        if let Some(pair) = cx.claim_slot_site_words() {
             return (pair, true);
         }
         return (cx.b.ins().iconst(types::I64, 0), false);
@@ -717,7 +716,6 @@ fn emit_site_block(
                     rel: base_idx + a.rel,
                     own_levels: a.own_levels,
                     leaf: a.leaf.clone(),
-                    reset: a.reset,
                 });
             }
             let sp = cx.state_ptr();
@@ -762,7 +760,6 @@ fn emit_site_block(
                     rel: base_idx + a.rel,
                     own_levels: a.own_levels,
                     leaf: a.leaf.clone(),
-                    reset: a.reset,
                 });
             }
             // Activate the callee's interior taint caches, exactly as
@@ -865,7 +862,6 @@ fn emit_site_block(
                 rel: (off / 8) as u32,
                 own_levels: n_dirs as u32,
                 leaf: leaf_rt.clone(),
-                reset: false,
             });
             if let Some(f) = cx.ctx.slot_tables.borrow_mut().last_mut() {
                 f.pending

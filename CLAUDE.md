@@ -944,10 +944,15 @@ enforces it):**
   were persistent only because nothing fused under a sleep initiator;
   **arm-region fusion (2026-08-14) made `Kernel::sleep` live and it
   was still CLEARING them** — the interior-bottom taint caches
-  (replay words, owned value pairs, per-slot reset chains) now survive
+  (replay words, owned value pairs) now survive
   sleep too, and only `reset_replay` (frames) and `Drop` clear them
   (`findings/sleep-preserves-caches-jul2026/03`, the kernel face of
-  the July pair). **A select arm's own `let` bindings obey the same
+  the July pair). Slot CHAINS (`SiteAnchor`: selection memory, nested
+  prev-length words, in-loop DynCall site identity) are SEMANTIC
+  per-position state and survive frames as well as sleep (2026-08-30):
+  the interp's `FoldQ::reset_replay` keeps each slot's CallSite and
+  clears only its caches. The former `reset`-kind chain (freed per
+  frame) is gone — see the QUIET FLAG's mechanism (3). **A select arm's own `let` bindings obey the same
   rule** (`findings/arm-local-bind-aug2026/`, 2026-08-14): an arm's
   WAKE resumes the arm, it does not create one, so a binding that is a
   `<-` target and already holds a value is NOT reseeded by its own
@@ -1064,10 +1069,16 @@ enforces it):**
   itself when `!init` (`LowerCtx::quiet_flag`), callees inherit it
   through `callee_init`. Under it becoming-selected grants no init
   view (the word is still recorded for sleep/wake routing); a site's
-  first-ever call still does. The symptom to recognize: a `let rec`
-  chain re-derived by an input that is NOT consumed (read only by a
-  structure-failed arm's guard) fires on the JIT every delivery and
-  once on the interp.
+  first-ever call still does. (3) (2026-08-30, aug28a's fold-in-guard
+  class — pin 08) an IN-LOOP DynCall site's identity word lived in a
+  chain `Kernel::reset_replay` FREED per framed pass, so every pass
+  minted fresh site ids and every fresh instance's first dispatch was
+  a forced init view: a fold over a loop-invariant source inside a
+  tail loop's arm fired on every pass. Chains are semantic now
+  (`SiteAnchor` has no reset kind). The symptom to recognize: a `let
+  rec` chain re-derived by an input that is NOT consumed (read only
+  by a structure-failed arm's guard) fires on the JIT every delivery
+  and once on the interp.
 - **A program may spin forever inside one cycle, on BOTH engines** — an
   infinite tail recursion is the constant-stack, bounded-memory case.
   This is semantics, not a JIT artifact (Eric's ruling 2026-08-15,

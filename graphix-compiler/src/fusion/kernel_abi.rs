@@ -1430,18 +1430,17 @@ pub struct SelfBlock {
 /// per-slot call-site BLOCKS rather than plain selection words. The
 /// runtime free (`emit_helpers::free_slot_chain`) and the resize
 /// helpers walk exactly this structure, recursively.
+/// Every chain is SEMANTIC per-position state (selection memory,
+/// nested prev-length words, DynCall site identity): it survives
+/// evaluation frames and sleep exactly as the node-walk's per-slot
+/// instances do, is prefix-retained across resizes (the truncate
+/// helpers free the dead tail's leaves, so a regrown slot reads 0 and
+/// starts fresh — MapQ's slot rule), and is freed by `Drop`.
 #[derive(Debug, Clone)]
 pub struct SiteAnchor {
     pub rel: u32,
     pub own_levels: u32,
     pub leaf: Option<std::sync::Arc<SiteLeaf>>,
-    /// REPLAY-kind chain: `Kernel::reset_replay`/`sleep` free the
-    /// chain and null the anchor (the emitted code rebuilds fresh —
-    /// zero = no history), so a per-slot interior-bottom cache can't
-    /// bridge evaluation frames — the chain twin of
-    /// `replay_state_words`. Selection-memory chains stay `false`
-    /// (semantic state, survives per ruling; only `Drop` frees them).
-    pub reset: bool,
 }
 
 /// A chain leaf whose entries are per-slot CALL-SITE BLOCKS: `stride`

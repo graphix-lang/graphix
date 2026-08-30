@@ -686,7 +686,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         rel: (off / 8) as u32,
                         own_levels: n_dirs as u32,
                         leaf: None,
-                        reset: false,
                     });
                     let sp = self.state_ptr();
                     let word_addr = self.b.ins().iadd_imm(sp, off as i64);
@@ -940,23 +939,25 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         })
     }
 
-    /// PER-SLOT interior-bottom cache storage for an in-loop
-    /// [`emit_scalar_taint_cache`] site: a two-word (value, ok) pair
-    /// per slot ordinal, in a chain claimed ON DEMAND at the site's
-    /// emission (the leaf sized `len * 2`, pair-addressed, prefix
-    /// retention at pair granularity — exactly the interp's retained
-    /// per-slot node caches across resizes). The anchor is registered
-    /// `reset: true`: `Kernel::reset_replay`/`sleep` FREE the chain
-    /// (fresh = zero), so a slot's cached success can't bridge an
-    /// evaluation frame — the chain twin of `claim_state_word_replay`,
-    /// per-slot so it can't alias slots (the jul10h rule that forced
-    /// the old in-loop stateless degrade — jul17c katana divergence
-    /// 000002, the filter `10/x` witness). Returns the slot's VALUE
-    /// word address (the ok word is at +8). `None` in callee bodies
-    /// (per-call-site chains would need caller-side reset authority —
-    /// the honor problem; documented degrade) and when the innermost
-    /// frame isn't this emission's loop.
-    pub(crate) fn claim_slot_cache_words(&mut self) -> Option<ClifValue> {
+    /// PER-SLOT site-identity storage for an in-loop DynCall site: a
+    /// two-word pair per slot ordinal (the first word holds the id
+    /// `graphix_dyncall` mints on a 0 read, the second is spare), in a
+    /// chain claimed ON DEMAND at the site's emission (the leaf sized
+    /// `len * 2`, pair-addressed, prefix retention at pair
+    /// granularity). The chain is SEMANTIC state, like every
+    /// [`SiteAnchor`]: it survives evaluation frames and sleep — the
+    /// node-walk's `FoldQ::reset_replay` keeps each slot's CallSite
+    /// (its identity and `first_update`) and clears only its caches,
+    /// so a framed pass re-dispatches RESUMED sites with honest stale
+    /// args; a chain freed per frame minted a fresh id, and a fresh
+    /// instance's first dispatch is a forced init view
+    /// (quiet-frame-init-view-aug2026/08). Truncation on shrink frees
+    /// the dead tail's pairs so a regrown slot mints fresh (MapQ's slot
+    /// rule); `Drop` frees the rest. Returns the slot's id-word
+    /// address. `None` in callee bodies (per-call-site chains would
+    /// need caller-side ownership — documented degrade, the key-0
+    /// bucket) and when the innermost frame isn't this emission's loop.
+    pub(crate) fn claim_slot_site_words(&mut self) -> Option<ClifValue> {
         let (idx_var, len, src_disc, enclosing) = {
             let frames = self.ctx.slot_tables.borrow();
             let f = frames.last()?;
@@ -975,7 +976,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             rel: (off / 8) as u32,
             own_levels: enclosing.len() as u32,
             leaf: None,
-            reset: true,
         });
         // Exit-block re-ensure record (THE SHRINK-TO-ZERO RULE): this
         // per-iteration ensure never runs on a len-0 epoch.
@@ -1072,7 +1072,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             rel: (off / 8) as u32,
             own_levels,
             leaf,
-            reset: false,
         });
         Some(off)
     }
