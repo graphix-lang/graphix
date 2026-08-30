@@ -1,0 +1,24 @@
+// P2b: array find written in Graphix — tail recursion over indexes
+// that STOPS at the match: the early exit the fold derivation cannot
+// express (the intrinsic scans all slots by rule). The target is
+// pinned worst-case via the seed's parity — last slot (even) or
+// absent (odd) — so every run is a full scan and the search is
+// provably inside the timed region.
+let n = 500000;
+let src = array::init(n, |i| i);
+let rec find_go = |a: Array<i64>, f: fn(x: i64) -> bool, i: i64| -> [i64, null]
+    select i < array::len(a) {
+        false => null,
+        true => select f(a[i]$) {
+            true => a[i]$,
+            false => find_go(a, f, i + 1)
+        }
+    };
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let target = n - 1 + seed % 2;
+let result = find_go(src, |x| x == target, 0);
+let t1 = sys::time::now(result);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("find_rec n=[n] result=[result] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

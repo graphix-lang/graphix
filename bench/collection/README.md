@@ -28,7 +28,7 @@ variants thread `seed` through the callback so the timed region
 provably contains the map stage in both modes.
 
 Sizes: 100k for the linear Array/List/Map rows, 500k for the find
-pair, 10k for the O(n²)-by-representation rows (`map_push`,
+rows, 10k for the O(n²)-by-representation rows (`map_push`,
 `flatmap_*` — each step copies the array), 4k for the list-recursion
 pair (sized under the pre-discriminator quadratic; the row is post-fix).
 
@@ -65,6 +65,7 @@ intrinsic row's jit time.
 | `filter_fmshape` | 100k | 1.37 ms   | 3.27 s    | 2387x   |
 | `find_intr`      | 500k | 1.90 ms   | 6.72 s    | 3533x   |
 | `find_fold`      | 500k | 5.19 ms   | 28.6 s    | 5510x   |
+| `find_rec`       | 500k | 8.0 ms    | 0.70 s    | 88x     |
 | `flatmap_intr`   | 10k  | 1.63 ms   | 0.51 s    | 315x    |
 | `flatmap_fold`   | 10k  | 1.42 s    | 1.93 s    | 1x      |
 | `flatmap_cons`   | 10k  | 5.8 ms    | 0.56 s    | 96x     |
@@ -187,7 +188,15 @@ kept DynCall's pooled-Vec marshal was ~60 ns). The hand-written fold is
 now 5.8x the intrinsic and the remainder is the loop's own bounds
 check, qop and select — the honest price of writing the loop yourself.
 `find`/`find_map` — the
-Option-carrying fold FUSES now (5.2 ms vs 1.9 ms) but cannot early-exit;
+Option-carrying fold FUSES now (5.2 ms vs 1.9 ms) but cannot
+early-exit; a hand-written tail loop CAN (`find_rec`, 2026-08-30): it
+stops at the match, fuses, and runs the worst-case full scan at 8.0 ms
+(16 ns/element — `fold_rec`'s rate, ~2x the intrinsic's slot walk),
+which means on a uniform target it BEATS the intrinsic on average
+(measured 1.6 ms at a 24%-position hit; the intrinsic scans all slots
+by rule). So early exit blocks only the fold-derived trait DEFAULT —
+a per-type loop impl has it today; what a deletion needs is `find`'s
+default written as a loop per representation, not new machinery;
 `flat_map` — the fold+concat derivation is O(n²) by construction (the
 cons + `to_array_rev` derivation, `flatmap_cons`, is 5.8 ms vs 1.6 ms);
 List — the fused select refuses a NON-SCALAR variant payload
