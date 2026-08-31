@@ -17,10 +17,18 @@ select x {
     `A | `B => 0,                    // arm-level alternation
     `C(1 | 2, y) => y,               // nested — any bracketed position
     (0, y) | (y, 0) if y > 10 => y,  // binds in both; ONE guard per arm
-    t@ `D(_) | t@ `E(_) => f(t),     // capture repeated per alternative
+    t@ `D(1, _) | t@ `D(_, 2) => f(t),  // capture repeated per alternative
     _ => 3
 }
 ```
+
+(The capture must bind at exactly equal types in every alternative,
+so `t@ `D(_) | t@ `E(_)` is REFUSED — the narrowed types differ.
+Note this is stricter than Rust, where or-pattern bindings don't
+narrow and `x @ A(_) | x @ B(_)` is legal at the enum type; whether
+Graphix should union-type @-captures instead is an open question from
+the admin-TUI campaign, 2026-08-31 — the interim keymap idiom samples
+an outer binding rather than capturing.)
 
 - `|` is the loosest pattern operator. An arm parses as
   `[typ as] sp1 | sp2 | … [if guard]` — the optional TYPE predicate
