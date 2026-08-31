@@ -225,14 +225,37 @@ start() {
     # The macOS launcher has raised this from the start.
     ulimit -n 10240 2>/dev/null || true
 
-    CARGO_TARGET_DIR="$target" cargo build --release -p graphix-fuzz \
-        --manifest-path "$repo/Cargo.toml"
+    # SOAK_ASAN=1 (fleet.sh FLEET_ASAN): build the campaign binary under
+    # AddressSanitizer — nightly plus an explicit --target so host
+    # proc-macros/build scripts stay uninstrumented (E0463 otherwise).
+    # Children must run WITHOUT the address-space rlimit (ASan RESERVES
+    # ~20TB of shadow VA, so RLIMIT_AS kills them at spawn); the RSS cap
+    # is the containment instead. Reports ride child stderr into the
+    # harness's crash findings; LSan runs at each child exit.
+    if [[ ${SOAK_ASAN:-0} == 1 ]]; then
+        rustup toolchain list 2>/dev/null | grep -q '^nightly' || {
+            echo "SOAK_ASAN=1 needs a rustup nightly toolchain" >&2
+            exit 2
+        }
+        local triple
+        triple=$(rustc -vV | awk '/^host:/{print $2}')
+        RUSTFLAGS="-Zsanitizer=address" CARGO_TARGET_DIR="$target" \
+            cargo +nightly build --release --target "$triple" -p graphix-fuzz \
+            --manifest-path "$repo/Cargo.toml"
+        binary="$target/$triple/release/graphix-fuzz"
+        export GRAPHIX_FUZZ_MEM_LIMIT=0
+        export ASAN_OPTIONS="hard_rss_limit_mb=${SOAK_ASAN_RSS_MB:-2048}"
+    else
+        CARGO_TARGET_DIR="$target" cargo build --release -p graphix-fuzz \
+            --manifest-path "$repo/Cargo.toml"
+    fi
     "$binary" regress
 
     mkdir -p "$dir/state" "$dir/corpus"
     cp "$binary" "$dir/graphix-fuzz"
-    printf 'workers=%s\nmix=%s\nnice=%s\nbase_seed=%s\n' \
-        "$workers" "$mix" "$nice_level" "$seed" > "$dir/state/config"
+    printf 'workers=%s\nmix=%s\nnice=%s\nbase_seed=%s\nasan=%s\n' \
+        "$workers" "$mix" "$nice_level" "$seed" "${SOAK_ASAN:-0}" \
+        > "$dir/state/config"
 
     trap 'stop_campaign "$dir"' ERR INT TERM
     launch "$dir" "$seed" "$workers" "$mix"

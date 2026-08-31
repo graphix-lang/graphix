@@ -78,6 +78,19 @@ f_os()      { echo "$1" | cut -d: -f5; }
 # FULL deploy that must skip one box — hold the session box out of a launch
 # while a session is live, then add it later with FLEET_ONLY:
 # FLEET_EXCLUDE=washu-chan fleet.sh deploy <new> <base> <old>.
+#
+# FLEET_ASAN=<name>[,<name>...] switches those hosts' campaigns to
+# AddressSanitizer binaries (soak.sh SOAK_ASAN=1: nightly build with an
+# explicit --target; children run WITHOUT the address-space rlimit —
+# ASan's ~20TB shadow reservation — under an RSS cap instead). The
+# other knobs adjust automatically: workers/4 (ASan is ~3x RSS per
+# child; floor 8) and timeout scale x2 (~2x slowdown). Darwin hosts
+# refuse loudly (LSan is off on macOS and soak-start has no knob).
+# Composes with FLEET_ONLY/FLEET_EXCLUDE; the seed math is unchanged.
+asan_host() {
+    [[ -n ${FLEET_ASAN:-} && ",${FLEET_ASAN}," == *",$1,"* ]]
+}
+
 skip_host() {
     [[ -n ${FLEET_ONLY:-} && $FLEET_ONLY != "$1" ]] && return 0
     [[ -n ${FLEET_EXCLUDE:-} && $FLEET_EXCLUDE == "$1" ]] && return 0
@@ -228,7 +241,7 @@ sync_tree() {
 # itself prints lane lines, not a marker (a verifier keyed on a marker
 # the launch never emits false-negatives a healthy box).
 launch() {
-    local camp=$1 base=$2 h name os workers scale seed i=0
+    local camp=$1 base=$2 h name os workers scale seed i=0 asan
     [[ -n $camp && -n $base ]] || usage
     [[ $base =~ ^[0-9]+$ ]] || die "base-seed must be an unsigned integer"
     for h in "${HOSTS[@]}"; do
@@ -236,8 +249,17 @@ launch() {
         workers=$(f_workers "$h"); scale=$(f_scale "$h")
         seed=$((base + i * 10000000)); i=$((i + 1))
         skip_host "$name" && continue
-        say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s' \
-             "$name" "$camp" "$seed" "$workers" "$scale")"
+        asan=0
+        if asan_host "$name"; then
+            [[ $os == darwin ]] && die \
+                "FLEET_ASAN: $name is darwin — LSan is off on macOS and soak-start has no asan knob"
+            asan=1
+            workers=$((workers / 4)); ((workers >= 8)) || workers=8
+            scale=$((scale * 2))
+        fi
+        say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s' \
+             "$name" "$camp" "$seed" "$workers" "$scale" \
+             "$([[ $asan == 1 ]] && echo ' ASAN' || true)")"
         if [[ $os == darwin ]]; then
             timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" <<'EOF'
 camp=$1; seed=$2; workers=$3; scale=$4; mix=$5
@@ -254,13 +276,14 @@ nohup bash -lc "
 disown || true
 EOF
         else
-            timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" <<'EOF'
-camp=$1; seed=$2; workers=$3; scale=$4; mix=$5
+            timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF'
+camp=$1; seed=$2; workers=$3; scale=$4; mix=$5; asan=$6
 log=~/tmp/fleet-$camp-launch.log
 setsid nohup bash -lc "
     set -e
     export PATH=\$HOME/.cargo/bin:\$PATH
     export GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale
+    export SOAK_ASAN=$asan
     cd ~/proj/graphix
     ./graphix-fuzz/soak.sh start $camp $workers $seed $mix
     echo FLEET_LAUNCH_OK
