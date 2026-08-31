@@ -1,0 +1,16 @@
+// aug31c (fleet, minimized further by hand): the fused fold derived its
+// firing bit from the ACC CARRY alone (`result_is_firing`, ba524ee8 #9)
+// — the last body evaluation's STALE. Here slot 0 (v=1) consumes the
+// fired init through its `_ => acc` arm, but slot 1 (v=2) takes the
+// constant arm, so the final carry is stale and the kernel stayed
+// quiet while FoldQ's per-slot rule (`any_trig`: any slot PRODUCTION
+// triggers) fires. ba524ee8 matched the pre-dense consumption-chain
+// node-walk; the organic-tags rework re-ruled the interp to per-slot
+// productions (dense_delivery.md, the twochannel class) and the kernel
+// was never revisited. Fix: the body evaluation's STALE folds into the
+// slots word each iteration (`SlotFlags::fold_stale`); the carry stays
+// an ADDITIONAL firing source (it alone covers the empty-source fold
+// under a fired init); TAINT still rides only the carry (consumption
+// decides — an acc-ignoring callback recovers).
+// Interp [0:[0] 1:[0] 2:[0] 3:[0] 4:[0]]; JIT fired only [0:[0]].
+{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let evens: Array<i64> = array::fold([i64:1, i64:2], [x], |acc, v| select v % i64:2 {i64:0 => [i64:0], _ => acc}); evens}

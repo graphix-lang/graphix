@@ -589,7 +589,11 @@ pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
     len: Option<ClifValue>,
-    result_is_firing: bool,
+    /// The result's own carried STALE is an ADDITIONAL firing source
+    /// beside the slots word — fold: the acc carry is the chain, and
+    /// it alone covers the zero-iteration case (an empty source under
+    /// a fired init has no body evaluations to fold).
+    result_also_fires: bool,
     src_invariant: bool,
     /// PASS-THROUGH kinds (filter, find — the kernel twin of
     /// `MapFn::PASS_THROUGH`): the result reads the source ELEMENTS
@@ -619,7 +623,7 @@ impl SlotFlags {
             taint,
             stale,
             len: None,
-            result_is_firing: false,
+            result_also_fires: false,
             src_invariant: false,
             pass_through: false,
             site_id: cx.collection_site(),
@@ -630,8 +634,8 @@ impl SlotFlags {
         self.src_invariant = true;
     }
 
-    pub fn result_is_firing(&mut self) {
-        self.result_is_firing = true;
+    pub fn result_also_fires(&mut self) {
+        self.result_also_fires = true;
     }
 
     pub fn set_pass_through(&mut self) {
@@ -651,6 +655,14 @@ impl SlotFlags {
         let t = cx.b.ins().band_imm(disc, TAINT);
         let n = cx.b.ins().bor(cur, t);
         cx.b.def_var(self.taint, n);
+        self.fold_stale(cx, disc);
+    }
+
+    /// Fold one slot's STALE bit alone (the fold loop): firing is
+    /// per-slot (FoldQ's `any_trig`), but TAINT rides only the acc
+    /// carry — consumption decides whether a poisoned slot bottoms
+    /// the fold, so an acc-ignoring callback recovers.
+    pub fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.stale);
         let sb = cx.b.ins().band_imm(disc, STALE);
         let n = cx.b.ins().band(cur, sb);
@@ -685,8 +697,9 @@ impl SlotFlags {
             src_taint = cx.b.ins().bor(src_taint, st);
         }
         r.disc = cx.b.ins().bor(r.disc, src_taint);
-        let fired_word = if self.result_is_firing {
-            cx.b.ins().band_imm(r.disc, STALE)
+        let fired_word = if self.result_also_fires {
+            let rs = cx.b.ins().band_imm(r.disc, STALE);
+            cx.b.ins().band(rs, slots_word)
         } else {
             slots_word
         };
@@ -843,7 +856,7 @@ impl SlotFlags {
         fired_word: ClifValue,
         src_word: ClifValue,
     ) -> ClifValue {
-        if self.result_is_firing {
+        if self.result_also_fires {
             fired_word
         } else {
             cx.b.ins().band(fired_word, src_word)
@@ -1443,7 +1456,7 @@ where
     let acc_disc_var = cx.b.declare_var(types::I64);
     let mut taint = SlotFlags::new(cx);
     taint.set_len(len);
-    taint.result_is_firing();
+    taint.result_also_fires();
     let init_cv = init(cx)?;
     // A pointer-shaped acc is loop-OWNED from the start: a borrowed
     // init (a Ref to a kernel input / outer local) clones here. String
@@ -1527,13 +1540,15 @@ where
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    // The BODY EVALUATION's disc folds into the flags: its STALE is
-    // one more coarse firing source, and its TAINT is STICKY — a
-    // bottomed body evaluation bottoms the whole collection result,
-    // matching the node-walk's incomplete slot chain. The INIT's taint
-    // still rides only the carry (`d0` above, never the sticky word): a
-    // bottom init with a callback that never consumes the acc can recover
-    // on the first iteration in both modes.
+    // The BODY EVALUATION's STALE folds into the firing flags — the
+    // per-slot rule (FoldQ's `any_trig`): a mid-chain body that
+    // consumed a fired acc fires the fold even when a later
+    // acc-ignoring arm leaves the final carry stale
+    // (findings/fold-midchain-fired-aug2026). TAINT stays off the
+    // flags: poison travels only the acc carry — consumption decides,
+    // an acc-ignoring callback recovers in both modes, and the INIT's
+    // taint rides only `d0`.
+    taint.fold_stale(cx, new_disc);
     cx.b.def_var(acc_var, new_pay);
     let d = acc.carry_disc(cx, new_disc);
     cx.b.def_var(acc_disc_var, d);

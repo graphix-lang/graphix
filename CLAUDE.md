@@ -920,7 +920,13 @@ INTENDED semantics, never by trusting either engine.
   `scaffold::SlotFlags`: per-slot discs fold into a slots word and a
   prev-length word gives exact resize detection — fires iff resized ∨ a
   slot fired ∨ the source fired empty; a same-length refresh with a
-  quiet body does not fire. Callee bodies keep per-call-site state
+  quiet body does not fire. Fold included (2026-08-31): each body
+  evaluation's STALE folds into the slots word (`fold_stale` — a
+  mid-chain slot consuming a fired acc fires the fold even when a later
+  acc-ignoring arm leaves the final carry stale) and the acc carry is
+  one more firing source (it alone covers the empty-source chain);
+  TAINT rides the carry only — consumption decides, an acc-ignoring
+  callback recovers (`fold-midchain-fired-aug2026`). Callee bodies keep per-call-site state
   blocks (wire slot 2, `SiteLayout`) for site identity, first-dispatch
   init words and prev-len words — never select firing memory. Residue:
   arm-lifted connects in loops/callees de-fuse (coverage).

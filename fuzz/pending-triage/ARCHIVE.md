@@ -521,3 +521,37 @@ subjects at the aug30a redeploy: ONE divergence, ryouko/000000.
   reconstructing it on the box a day later. `Divergence` has six
   constructors and a cross-process report path, so it is a small
   arc of its own, not a tweak.
+
+## The aug31c round (2026-08-31) — 1 finding, 1 class, CLOSED
+
+Campaign aug31c (all six boxes — washu-chan's first night on the
+fleet — on the native-List tree): one divergence, pulled 2026-08-31,
+reproduced verbatim on HEAD.
+
+**fold-midchain-fired** — the fused fold derived its firing bit from
+the ACC CARRY alone (`result_is_firing`, ba524ee8 #9, 2026-07-05): the
+last body evaluation's STALE. A mid-chain slot consuming a fired init
+through an `_ => acc` arm while a LATER slot takes a constant arm
+leaves the final carry stale — FoldQ fires (`any_trig`: any slot
+PRODUCTION triggers, position-independent), the kernel stayed quiet.
+Root cause is ruling skew: ba524ee8 matched the pre-dense
+consumption-chain node-walk; the organic-tags rework re-ruled the
+interp to per-slot productions (dense_delivery.md, the twochannel
+class) and the kernel's fold was never revisited — `emit_fold_loop`
+was the ONLY loop not folding body discs into `SlotFlags`. Fix: each
+body evaluation's STALE folds into the slots word
+(`SlotFlags::fold_stale`); the carry stays an ADDITIONAL firing source
+(`result_also_fires` — it alone covers the empty-source fold under a
+fired init, where there are no body evaluations); TAINT stays off the
+flags (consumption decides, the 2026-08-13 option-A ruling — an
+acc-ignoring callback recovers). Pins:
+`findings/fold-midchain-fired-aug2026/` (00 minimal, 01 the campaign
+witness) + the `run!` cadence fixture `array_fold_midchain_fire`
+(lib_tests/array.rs — a `<-` counter turns swallowed re-fires into a
+value difference `run!` can see).
+
+Reduction note: the campaign witness's guard-select/group front end
+was pure observer — bare select+guard, group alone, and a
+passthrough-callback fold all AGREE; the divergence needs an
+acc-consuming slot BEFORE a const-arm slot (source `[1, 2]` diverges,
+`[2, 1]` agrees).

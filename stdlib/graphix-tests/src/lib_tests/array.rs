@@ -475,6 +475,30 @@ run!(array_fold_may_bottom, ARRAY_FOLD_MAY_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
 
+// The fold's firing is PER-SLOT, not the acc carry: slot 0 (v=1)
+// consumes each fired init through its `_ => acc` arm while slot 1
+// (v=2) takes the constant arm, so the final carry is stale on every
+// init re-fire. FoldQ fires (`any_trig`); the kernel derived its
+// firing bit from the carry alone (ba524ee8 #9) and swallowed all
+// four re-fires. The counter pins the CADENCE, not just the value
+// (findings/fold-midchain-fired-aug2026, aug31c).
+const ARRAY_FOLD_MIDCHAIN_FIRE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let evens: Array<i64> = array::fold([1, 2], [x], |acc, v| select v % 2 {
+    0 => [0],
+    _ => acc
+  });
+  let c = 0;
+  c <- evens ~ c + 1;
+  filter(c, |n| n == 5)
+}
+"#;
+
+run!(array_fold_midchain_fire, ARRAY_FOLD_MIDCHAIN_FIRE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(5)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // A VALUE-shaped fold acc (the slice init types it `[Array, Error]`)
 // whose body's OWN shape is a narrower union member. The body's raw
 // emission is a composite box pointer — pairing it as a Value payload

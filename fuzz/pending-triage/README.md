@@ -51,3 +51,4 @@ Nothing. `fuzz/pending-ruling/` does not exist (no rulings outstanding).
 | aug29a | 2026-08-30 | 1 | 0 | a campaign-start box stall on ryouko (AGREE 5/5 on the same box and binary under load) — not a bug |
 | aug30a | 2026-08-30 | 0 | — | 2.5 h on the recursion-shrink tree |
 | aug30b | 2026-08-30 | 0 | — | ~3 h on the site-identity fix |
+| aug31c | 2026-08-31 | 1 | 1 | fold firing is per-slot ∨ the acc carry (`fold-midchain-fired-aug2026`) |
