@@ -1103,6 +1103,10 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
+        // The prologue's masked installs CLONE owned payload binds per
+        // invocation (the mask taints the disc, never skips the clone)
+        // — drop them before the compile-time truncate.
+        super::flow::emit_scope_drops(cx, gmark)?;
         cx.env.truncate(gmark);
         guard_vals[i] = Some((eff, gbot, gs_sound, gs));
     }
@@ -1193,7 +1197,14 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                     cx.b.def_var(acc_fires, n);
                     let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
                     let cont = cx.b.create_block();
-                    cx.b.ins().brif(gbot, ub, &[], cont, &[]);
+                    // The chain stops here (undecidable) — drop this
+                    // arm's owned binds before the shared undet block.
+                    let ubdrop = cx.b.create_block();
+                    cx.b.ins().brif(gbot, ubdrop, &[], cont, &[]);
+                    cx.b.switch_to_block(ubdrop);
+                    cx.b.seal_block(ubdrop);
+                    super::flow::emit_scope_drops(cx, mark)?;
+                    cx.b.ins().jump(ub, &[]);
                     cx.b.switch_to_block(cont);
                     cx.b.seal_block(cont);
                     eff
@@ -1210,8 +1221,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
             };
             let body_blk = cx.b.create_block();
-            // A guard-FALSE falls through to the next arm (`fail`).
-            cx.b.ins().brif(eff, body_blk, &[], fail.unwrap(), &[]);
+            // A guard-FALSE falls through to the next arm (`fail`),
+            // dropping the matched region's owned binds on the way out
+            // (installed above; the taken path drops them at the arm
+            // exit, so this edge must too).
+            let gfail = cx.b.create_block();
+            cx.b.ins().brif(eff, body_blk, &[], gfail, &[]);
+            cx.b.switch_to_block(gfail);
+            cx.b.seal_block(gfail);
+            super::flow::emit_scope_drops(cx, mark)?;
+            cx.b.ins().jump(fail.unwrap(), &[]);
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
@@ -1222,7 +1241,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // which bottoms the select.
         let body_ok = cx.b.create_block();
         let clean = is_untainted(cx.b, sdisc);
-        cx.b.ins().brif(clean, body_ok, &[], miss_bl, &[]);
+        // A tainted take routes to the shared miss trap — drop this
+        // arm's owned binds first (under taint they hold the clone
+        // helpers' drop-safe defaults).
+        let tdrop = cx.b.create_block();
+        cx.b.ins().brif(clean, body_ok, &[], tdrop, &[]);
+        cx.b.switch_to_block(tdrop);
+        cx.b.seal_block(tdrop);
+        super::flow::emit_scope_drops(cx, mark)?;
+        cx.b.ins().jump(miss_bl, &[]);
         cx.b.switch_to_block(body_ok);
         cx.b.seal_block(body_ok);
         // The interior-sleep gate's extent (P7): DynCall emission
@@ -2205,6 +2232,13 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         }
         None => d,
     };
+    // Drop the arm's owned pattern binds (PayloadValue / ListHead /
+    // ListTail clones) before leaving the arm — the result was made
+    // independently owned by the widening above, so the drops can't
+    // free it (findings/select-arm-bind-leak-aug2026: these clones
+    // were never dropped on any value-position exit and a hot fused
+    // select leaked ~55MB/s).
+    super::flow::emit_scope_drops(cx, mark)?;
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
     Ok(())

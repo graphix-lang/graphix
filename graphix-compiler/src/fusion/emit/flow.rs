@@ -477,7 +477,11 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             cx.ctx.sel_fires.borrow_mut().pop();
             arm_res?;
             // The arm terminated; pop its binds for the next arm's
-            // compile-time scope. (Arm binds are scalars — no drops.)
+            // compile-time scope. Owned binds were runtime-dropped by
+            // the terminator (`emit_kernel_return`'s whole-env
+            // `drop_owned_composites`, or the tail-rebind epilogue's
+            // above-param-mark sweep) — this truncate is compile-time
+            // hygiene only.
             cx.env.truncate(mark);
             Ok(())
         },
@@ -795,7 +799,7 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
 /// string local this scope introduced above `mark` — the direct-path
 /// mirror of `compile_block_scalar`'s scope-exit drop block. Scalars
 /// need no drop.
-fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
+pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     // Snapshot the (kind, vv) of every local above the mark so the
     // `cx.env` borrow ends before we drive `cx.b`.
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =

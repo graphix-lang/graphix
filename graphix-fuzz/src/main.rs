@@ -1202,4 +1202,27 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          x <- clk ~ (x + i64:1);\n\
          str::to_upper(\"[x]abc\")\n",
     ),
+    (
+        // select-arm-bind-leak-aug2026: a fused select arm's owned
+        // variant-payload bind (`PayloadValue` clone) was never
+        // dropped on any value-position arm exit — ~55MB/s on a hot
+        // select.
+        "select-payload-bind",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         select `A([x, i64:2, i64:3]) { `A(xs) => array::len(xs) }\n",
+    ),
+    (
+        // The list face of the same class: `ListHead`/`ListTail`
+        // clones in a value-position list-pattern arm (~80MB/s).
+        "select-list-binds",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         select [<[x, i64:2], [i64:3, i64:4]>] {\n\
+             [<h, t..>] => array::len(h),\n\
+             [<>] => i64:0\n\
+         }\n",
+    ),
 ];

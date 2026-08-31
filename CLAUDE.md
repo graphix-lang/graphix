@@ -1011,7 +1011,19 @@ INTENDED semantics, never by trusting either engine.
   emission. `freeze_for_abi_normalized` never normalizes shared tvar
   cells (`check_mode_parity` pins mode-identical `--check`), and a pass
   the fusion gate owns must never change what the typechecker sees
-  (`Env::seed_typedef_refs` runs in both modes).
+  (`Env::seed_typedef_refs` runs in both modes). OWNED SELECT-ARM
+  BINDS DROP AT EVERY ARM EXIT (2026-08-31): the non-scalar pattern
+  binds (`PayloadValue`/`ListHead`/`ListTail` clones) drop on the
+  value-position taken path, the guard-false, tainted-take and undet
+  edges, and the guard prologue (`emit_scope_drops` before each
+  truncate) — they leaked ~55-80MB/s on hot fused selects for the two
+  days they existed (found by RSS probing during or-pattern P3 recon;
+  `valgrind --max-threads=4096` names the class — tokio's blocking
+  pool exceeds valgrind's default thread cap). Tail position was
+  already safe (`emit_kernel_return`'s whole-env drop; the tail-rebind
+  epilogue's above-param-mark sweep). Pinned by the `leakcheck`
+  witnesses `select-payload-bind`/`select-list-binds` — run leakcheck
+  whenever a change adds a new owned-local class.
 
 ### Coverage (current)
 
