@@ -564,7 +564,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 self.resident.set(tv.clone())
             }
             Some(super::VarRead::Standing(tv)) => {
-                let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+                // Fresh under a GENUINE init view only. A WAKE-forced
+                // view (becoming-selected — `event.wake_init`) reads
+                // standing entries present-but-STALE (Eric's ruling
+                // 2026-08-31): the standing value of an external bind
+                // is a PAST event the rest of the graph already
+                // consumed, and delivering it fired re-raised it into
+                // the woken arm — the pump's name-modal Enter, still
+                // standing when the Secret question woke the next arm,
+                // phantom-submitted the fresh modal with "". The woken
+                // arm still evaluates: values materialize through the
+                // quiet-first-production rules, and firing comes only
+                // from inputs that fired THIS cycle.
+                let init = if ctx.frame_depth > 0 {
+                    ctx.frame_init
+                } else {
+                    event.init && !event.wake_init
+                };
                 let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
                 let mut tv = tv.clone();
                 tv.retag(tag);
@@ -863,7 +879,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
             Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(super::VarRead::Standing(tv)) => {
-                let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
+                // Fresh under a genuine init view only — a wake-forced
+                // view reads stale (see Ref::update above).
+                let init = if ctx.frame_depth > 0 {
+                    ctx.frame_init
+                } else {
+                    event.init && !event.wake_init
+                };
                 let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
                 let mut c = tv.clone();
                 c.retag(tag);
