@@ -1354,7 +1354,7 @@ impl Type {
                     );
                 }
                 match (whole_ok, prims_ok) {
-                    (false, false) => Ok(false),
+                    (false, false) => Self::set_covers_by_distribution(env, hist, s, t),
                     // prefer prims when valid — narrowest TVar bindings
                     (_, true) => Ok(t.iter_prims().fold(
                         Ok::<_, anyhow::Error>(true),
@@ -1450,6 +1450,119 @@ impl Type {
     /// on that constructor. A type with no last parameter is not a
     /// constructor and does not fit (`design/recursive_activations.md`
     /// §7).
+    /// The distribution law for product heads, tried only after the
+    /// single-member and prim walks both refuse (previously a
+    /// guaranteed-false path): a set whose members split ONE argument
+    /// position of a constructor across same-shaped alternatives
+    /// covers the constructor of the pooled position —
+    /// `` [`T(A), `T(B)] ⊇ `T([A, B]) `` — provided every candidate
+    /// covers every OTHER position in full. Sound because the value's
+    /// distributing component lands in some candidate, and that
+    /// candidate admits the rest of the value wholesale; with more
+    /// than one uncovered position the members are non-rectangular
+    /// and no claim is made. Runs as a PURE PROBE over cell-free
+    /// operands (unbound cells on either side disqualify), so it
+    /// commits no bindings and acceptance is strictly monotone over
+    /// the old verdicts. This is what lets a select over
+    /// `` [`A, `B(Union)] `` be exhausted by per-member `` `B(..) ``
+    /// arms (the admin-TUI panel screens, 2026-08-31).
+    fn set_covers_by_distribution(
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        s: &Arc<[Type]>,
+        t: &Self,
+    ) -> Result<bool> {
+        fn head(env: &Env, t: &Type) -> Type {
+            let mut cur = t.clone();
+            for _ in 0..64 {
+                cur = match &cur {
+                    Type::TVar(_) => match cur.with_deref(|t| t.cloned()) {
+                        Some(next) => next,
+                        None => break,
+                    },
+                    // An unresolvable ref just doesn't distribute; it
+                    // must not turn a false verdict into an error.
+                    Type::Ref(_) => match cur.lookup_ref(env) {
+                        Ok(next) => next,
+                        Err(_) => break,
+                    },
+                    _ => break,
+                }
+            }
+            cur
+        }
+        let t = head(env, t);
+        if t.has_unbound() {
+            return Ok(false);
+        }
+        let mut targs: LPooled<Vec<Type>> = LPooled::take();
+        match &t {
+            Type::Variant(_, args) => targs.extend(args.iter().cloned()),
+            Type::Tuple(args) => targs.extend(args.iter().cloned()),
+            Type::Struct(flds) => targs.extend(flds.iter().map(|(_, t)| t.clone())),
+            _ => return Ok(false),
+        }
+        let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
+        for m in s.iter() {
+            let m = head(env, m);
+            let args: Option<LPooled<Vec<Type>>> = match (&t, &m) {
+                (Type::Variant(tt, ta), Type::Variant(mt, ma))
+                    if tt == mt && ta.len() == ma.len() =>
+                {
+                    Some(ma.iter().cloned().collect())
+                }
+                (Type::Tuple(ta), Type::Tuple(ma)) if ta.len() == ma.len() => {
+                    Some(ma.iter().cloned().collect())
+                }
+                (Type::Struct(tf), Type::Struct(mf))
+                    if tf.len() == mf.len()
+                        && tf.iter().zip(mf.iter()).all(|((a, _), (b, _))| a == b) =>
+                {
+                    Some(mf.iter().map(|(_, t)| t.clone()).collect())
+                }
+                _ => None,
+            };
+            // Open cells in a CANDIDATE are fine: the probe's TVar arm
+            // accepts through them without binding, and the arm-side
+            // aliasing pass (select's per-arm ntype walk) is the
+            // binder of record for pattern binds. Only the SCRUTINEE
+            // side must be cell-free (the gate above): probe-accepting
+            // an open member would claim coverage of a type that has
+            // not settled yet.
+            if let Some(args) = args {
+                cands.push(args);
+            }
+        }
+        if cands.is_empty() {
+            return Ok(false);
+        }
+        let probe = BitFlags::empty();
+        let mut distributing: Option<usize> = None;
+        for j in 0..targs.len() {
+            let mut full = true;
+            for c in cands.iter() {
+                full &= c[j].contains_int(probe, env, hist, &targs[j])?;
+                if !full {
+                    break;
+                }
+            }
+            if !full {
+                if distributing.is_some() {
+                    return Ok(false);
+                }
+                distributing = Some(j);
+            }
+        }
+        match distributing {
+            None => Ok(true),
+            Some(j) => {
+                let pool = Type::Set(Arc::from_iter(cands.iter().map(|c| c[j].clone())))
+                    .normalize();
+                pool.contains_int(probe, env, hist, &targs[j])
+            }
+        }
+    }
+
     fn app_contains(
         &self,
         flags: BitFlags<ContainsFlags>,

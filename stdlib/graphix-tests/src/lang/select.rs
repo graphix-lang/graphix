@@ -1932,3 +1932,92 @@ const OR_GUARD_PROLOGUE: &str = r#"
 run!(or_guard_prologue, OR_GUARD_PROLOGUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// The distribution law (2026-08-31, the admin-TUI panel screens): a
+// scrutinee member whose variant payload is a UNION is exhausted by
+// per-member arms — `[`P(A), `P(B)]` covers `P([A, B])` — and the
+// shape fuses.
+const SELECT_VARIANT_UNION_PAYLOAD: &str = r#"
+{
+  type Panel = [`Q, `D, `R];
+  type Screen = [`Connect, `Panel(Panel)];
+  let s: Screen = `Panel(`D);
+  select s {
+    `Connect => 0,
+    `Panel(`Q) => 1,
+    `Panel(`D) => 2,
+    `Panel(`R) => 3
+  }
+}
+"#;
+
+run!(
+    select_variant_union_payload_exhausts,
+    SELECT_VARIANT_UNION_PAYLOAD,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// Multi-argument distribution is sound only through ONE position:
+// rectangular arms (every candidate covers the other position in
+// full) pool their claims.
+const SELECT_VARIANT_UNION_RECT: &str = r#"
+{
+  type T = [`P([`A, `B], [`X, `Y]), `N];
+  let v: T = `P(`B, `Y);
+  select v {
+    `P(`A, x) => 1,
+    `P(`B, x) => 2,
+    `N => 0
+  }
+}
+"#;
+
+run!(
+    select_variant_union_rect_exhausts,
+    SELECT_VARIANT_UNION_RECT,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The non-rectangular (diagonal) arm set claims nothing: `P(`A, `Y)
+// matches neither arm, so coverage must still refuse without a
+// wildcard.
+const SELECT_VARIANT_UNION_DIAGONAL: &str = r#"
+{
+  type T = [`P([`A, `B], [`X, `Y]), `N];
+  let v: T = `P(`A, `X);
+  select v {
+    `P(`A, `X) => 1,
+    `P(`B, `Y) => 2,
+    `N => 0
+  }
+}
+"#;
+
+run!(
+    select_variant_union_diagonal_rejected,
+    SELECT_VARIANT_UNION_DIAGONAL,
+    |v: Result<&Value>| { matches!(v, Err(_)) };
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The same law through a tuple head: two arms splitting one tuple
+// position pool their claims.
+const SELECT_TUPLE_UNION_MEMBER: &str = r#"
+{
+  let v: [([`A, `B], i64), null] = (`B, 7);
+  select v {
+    null as _ => 0,
+    (`A, n) => n + 1,
+    (`B, n) => n + 2
+  }
+}
+"#;
+
+run!(
+    select_tuple_union_member_exhausts,
+    SELECT_TUPLE_UNION_MEMBER,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(9))) };
+    graphix_package_core::testing::FuseExpect::Jit
+);

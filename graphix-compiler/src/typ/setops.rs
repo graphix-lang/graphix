@@ -288,7 +288,22 @@ impl Type {
                 Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
             }
             (u @ Type::Variant(tg0, t0), t @ Type::Variant(tg1, t1)) => {
-                if tg0 == tg1 && t0.len() == t1.len() {
+                // Component-wise union of a product type is EXACT only
+                // when at most ONE position differs: `P(A) ∪ `P(B) is
+                // `P([A, B]), but `P(A, X) ∪ `P(B, Y) is NOT
+                // `P([A, B], [X, Y]) — the rectangle invents the
+                // off-diagonal `P(A, Y), and built into a select's
+                // coverage union it accepted arm sets with a runtime
+                // hole (found by the admin-TUI diagonal witness,
+                // 2026-08-31). A pair differing in two or more
+                // positions stays a two-member set.
+                let differing = || {
+                    t0.iter()
+                        .zip(t1.iter())
+                        .filter(|(a, b)| !union_identical(a, b))
+                        .count()
+                };
+                if tg0 == tg1 && t0.len() == t1.len() && differing() <= 1 {
                     let mut typs = t0
                         .iter()
                         .zip(t1.iter())

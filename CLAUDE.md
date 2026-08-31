@@ -1151,7 +1151,10 @@ the rules.
   path-derived UUIDs (`abstract_wrapper!`, `impl_abstract_arc!`'s
   `= "pkg::mod::Type"` form), which is what makes a type test exact and
   trait dispatch over a union of them work. Abstract patterns de-fuse
-  the select (coverage).
+  the select (coverage). Diagnostics: `Type::Abstract` carries only the
+  id, so Display consults a process-global `AbstractId → name` registry
+  filled at `AbstractId::of` (2026-08-31 — errors print `Box`, not the
+  word "abstract").
 - **Traits v1** (`design/traits.md` §11–13): `trait T { val m: fn(self,
   ..) -> R [= default]; .. }`, `impl[<'a: C>] T for Target { let m = .. }`,
   `impl T for X;` in a gxi (the entry of record — the module's own impl
@@ -1216,6 +1219,21 @@ the rules.
   an unbound rhs member is residue, never covered by a concrete lhs
   member. A select's type is the union of its arm types; a free `'b` arm
   beside an `i64` arm is not inferred to `i64` — annotate.
+- **Set coverage distributes over product heads** (2026-08-31, the
+  admin-TUI panel screens): when the `(Set, t)` single-member and prim
+  walks both refuse, same-shaped members (variant tag+arity / tuple
+  arity / struct fields) pool ONE argument position — every candidate
+  must cover every other position in full, and the pooled position's
+  union must cover the member's (`contains::set_covers_by_distribution`)
+  — so `` [`P(A), `P(B)] ⊇ `P([A, B]) `` and the nested-variant select
+  ladder is exhaustive. Pure probe, cell-free scrutinee side only,
+  commits nothing. The dual fix: `union`'s Variant×Variant arm merges
+  component-wise only when ≤1 position differs (`union_identical` per
+  slot) — the arity≥2 rectangle collapse (`` `P(A,X) ∪ `P(B,Y) `` →
+  `` `P([A,B],[X,Y]) ``) invented the off-diagonal and select coverage
+  accepted arm sets with a runtime hole. Pins:
+  `lang/select.rs` `select_variant_union_*`,
+  `select_tuple_union_member_exhausts`.
 
 ## Stdlib package notes
 
