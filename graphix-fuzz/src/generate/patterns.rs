@@ -117,6 +117,23 @@ fn gen_pattern(
             // ≥2 tags.
             Pat { text, refutable: true }
         }
+        GenType::List(e) if !force_irrefutable && depth > 0 => {
+            // Same one-slice-arm-per-select structure as Array; no
+            // suffix form exists for lists.
+            match rng.below(3) {
+                0 => Pat { text: "[<>]".into(), refutable: true },
+                1 => {
+                    let p = gen_pattern(inner, rng, e, depth - 1, true, mark);
+                    Pat { text: format!("[<{}>]", p.text), refutable: true }
+                }
+                _ => {
+                    let p = gen_pattern(inner, rng, e, depth - 1, true, mark);
+                    let tl = bind_name(inner, rng, mark);
+                    inner.push(tl.clone(), ty.clone());
+                    Pat { text: format!("[<{}, {tl}..>]", p.text), refutable: true }
+                }
+            }
+        }
         GenType::Array(e) if !force_irrefutable && depth > 0 => {
             // Exactly one slice arm is ever emitted per select (the
             // caller's structure), so subsumption between slice arms
@@ -185,6 +202,7 @@ pub(super) fn maybe_select(
             | GenType::Struct(_)
             | GenType::Variant(_)
             | GenType::Array(_)
+            | GenType::List(_)
             | GenType::Nullable(_)
             | GenType::Bool
             | GenType::Str => true,
@@ -213,6 +231,27 @@ pub(super) fn maybe_select(
                 "select {scrut} {{ null as _ => {null_body}, {} as {n} => {val_body} }}",
                 t.render()
             ));
+        }
+    }
+    // List ladder mode: `[<>]` + `[<h, t..>]` cover every length —
+    // exhaustive with no wildcard (which would be a dead arm).
+    if let GenType::List(e) = &scrut_ty {
+        if rng.below(2) == 0 {
+            for _ in 0..rng.below(2) {
+                let (a, _) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, true);
+                arms.push(a);
+            }
+            let nil_body = exprs::gen_typed(ctx, rng, ty, d);
+            let mut inner = ctx.clone();
+            let mark = inner.mark();
+            let h = bind_name(&mut inner, rng, mark);
+            inner.push(h.clone(), (**e).clone());
+            let t = bind_name(&mut inner, rng, mark);
+            inner.push(t.clone(), scrut_ty.clone());
+            let cons_body = exprs::gen_typed(&inner, rng, ty, d);
+            arms.push(format!("[<>] => {nil_body}"));
+            arms.push(format!("[<{h}, {t}..>] => {cons_body}"));
+            return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
         }
     }
     // Variant full-coverage mode: every tag once, no wildcard.

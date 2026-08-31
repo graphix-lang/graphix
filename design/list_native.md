@@ -2,10 +2,13 @@
 
 **Status: phases A (rep + `Type::List`), B (literals + patterns +
 tree-sitter) and B3 (fused pattern lowering — the ladder beats the
-intrinsic at 100k) LANDED 2026-08-31. Open: phase C — the fuzz
-GENERATOR emitting list literals/patterns (mutate/typemorph already
-handle them), the book chapter, and the overnight roundtrip proptest
-before the arc is called done. Implements the 2026-07-17 ruling "List
+intrinsic at 100k) LANDED 2026-08-31. Open: the book
+chapter, and the overnight roundtrip proptest before the arc is
+called done. The fuzz generator EMITS list syntax since 2026-08-31
+(`GenType::List`: literals, from_array/cons/map/filter producers, the
+pattern-ladder select mode, list accessors; gen-check ~99.7% across
+seeds — the residuals are the pre-existing nullable-literal and
+free-union classes; detcheck 0 flaps). Implements the 2026-07-17 ruling "List
 moves into the compiler like Array — core data type."**
 
 > Phase-A reality check: the old typedef was TRANSPARENT (bench and

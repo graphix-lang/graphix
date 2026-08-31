@@ -45,9 +45,11 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
     match t {
         GenType::Abstract { module } => f(module),
         GenType::Tuple(ts) => ts.iter_mut().for_each(|t| map_abstract(t, f)),
-        GenType::Array(t) | GenType::Map(t) | GenType::Nullable(t) | GenType::Ref(t) => {
-            map_abstract(t, f)
-        }
+        GenType::Array(t)
+        | GenType::List(t)
+        | GenType::Map(t)
+        | GenType::Nullable(t)
+        | GenType::Ref(t) => map_abstract(t, f),
         GenType::Struct(fs) => fs.iter_mut().for_each(|(_, t)| map_abstract(t, f)),
         GenType::Variant(vs) => vs
             .iter_mut()

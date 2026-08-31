@@ -172,6 +172,7 @@ fn feature_report(progs: &[String], ok: &[bool]) {
         ("array-hof", "array::"),
         ("map-hof", "map::"),
         ("list-hof", "list::"),
+        ("list-lit", "[<"),
         ("collection-trait", "Collection::"),
         ("trait-union-call", "::both("),
         ("bounded-hof-call", "::tsum("),

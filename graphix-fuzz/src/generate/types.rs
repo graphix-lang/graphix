@@ -170,6 +170,10 @@ pub enum GenType {
     Str,
     Tuple(Vec<GenType>),
     Array(Box<GenType>),
+    /// The native List (`design/list_native.md`): produced as `[<..>]`
+    /// literals / `list::from_array` / `cons`, consumed by list HOFs
+    /// and list-slice pattern selects.
+    List(Box<GenType>),
     /// Fields kept SORTED by name at construction, so structural
     /// equality (the vocabulary-matching relation) matches graphix's
     /// field-order-insensitive structs.
@@ -250,6 +254,7 @@ impl GenType {
                 format!("({})", parts.join(", "))
             }
             GenType::Array(elem) => format!("Array<{}>", elem.render()),
+            GenType::List(elem) => format!("List<{}>", elem.render()),
             GenType::Struct(fields) => {
                 let parts: Vec<_> =
                     fields.iter().map(|(f, t)| format!("{f}: {}", t.render())).collect();
@@ -304,7 +309,9 @@ impl GenType {
             GenType::Variant(ts) => {
                 ts.iter().any(|(_, args)| args.iter().any(|t| t.contains_nullable()))
             }
-            GenType::Array(e) | GenType::Map(e) => e.contains_nullable(),
+            GenType::Array(e) | GenType::List(e) | GenType::Map(e) => {
+                e.contains_nullable()
+            }
             GenType::Ref(t) => t.contains_nullable(),
             GenType::Num(_)
             | GenType::Bool
@@ -338,7 +345,7 @@ impl GenType {
             | GenType::Opaque => false,
             GenType::Tuple(es) => es.iter().all(|e| e.infers_exact()),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| t.infers_exact()),
-            GenType::Array(e) | GenType::Map(e) => e.infers_exact(),
+            GenType::Array(e) | GenType::List(e) | GenType::Map(e) => e.infers_exact(),
         }
     }
 }
@@ -432,7 +439,7 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);
     }
-    match rng.below(11) {
+    match rng.below(12) {
         0 | 1 => I64,
         2 => F64,
         3 => U8,
@@ -445,6 +452,7 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
         7 => random_struct(rng, depth - 1),
         8 => GenType::Map(Box::new(random_type(rng, depth - 1))),
         9 => GenType::Nullable(Box::new(scalar_type(rng))),
+        10 => GenType::List(Box::new(random_type(rng, depth - 1))),
         _ => GenType::Array(Box::new(random_type(rng, depth - 1))),
     }
 }
@@ -471,6 +479,21 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| literal(rng, elem)).collect();
             format!("[{}]", parts.join(", "))
+        }
+        GenType::List(elem) => {
+            let n = 1 + rng.below(3);
+            let parts: Vec<_> = (0..n).map(|_| literal(rng, elem)).collect();
+            // Nullable-bearing elements must be annotated (a `null`
+            // part infers bare null, not the union).
+            if elem.contains_nullable() {
+                format!(
+                    "{{ let mtl: List<{}> = [<{}>]; mtl }}",
+                    elem.render(),
+                    parts.join(", ")
+                )
+            } else {
+                format!("[<{}>]", parts.join(", "))
+            }
         }
         GenType::Struct(fields) => {
             let parts: Vec<_> =

@@ -121,6 +121,25 @@ fn try_accessor(
                     cands.push(format!("{name}{{\"{k}\"}}$"));
                 }
             }
+            // A visible list read through the pattern ladder — the
+            // accessor doubles as list-pattern coverage. Fixed bind
+            // names shadow-safely (arm binds shadow by design).
+            GenType::List(e) => {
+                if **e == *ty && ty.is_scalar() {
+                    let dflt = gen_typed(ctx, rng, ty, depth);
+                    cands.push(format!(
+                        "select {name} {{ [<h0, ..>] => h0, [<>] => {dflt} }}"
+                    ));
+                }
+                if ty == t {
+                    // A BOUND head (never `_` — a wildcard's inferred
+                    // predicate is Any, which poisons the completed
+                    // tail type; a bind completes from the scrutinee).
+                    cands.push(format!(
+                        "select {name} {{ [<>] => {name}, [<h1, tl0..>] => tl0 }}"
+                    ));
+                }
+            }
             // A visible option unwrapped to its value type via a
             // two-arm type-match select. (`?` is error-only — it
             // rejects [T, null], so there is no try/catch consumer.)
@@ -314,6 +333,41 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let body = gen_typed(&inner, rng, e, d.min(2));
                 Some(format!("array::init({n}, |{binder}| {body})"))
             }
+        },
+        // A LIST target: literal / from_array / cons / the list HOFs
+        // producing a List directly (no roundtrip wrap) — the
+        // phase-B/B3 surface (`design/list_native.md`).
+        GenType::List(e) => match rng.below(5) {
+            0 => {
+                let src =
+                    gen_typed(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
+                Some(format!("list::from_array({src})"))
+            }
+            1 => {
+                let h = gen_typed(ctx, rng, e, d.min(2));
+                let t = gen_typed(ctx, rng, ty, d.min(2));
+                Some(format!("list::cons({h}, {t})"))
+            }
+            2 => {
+                let d_ty = if rng.below(2) == 0 {
+                    (**e).clone()
+                } else {
+                    types::scalar_type(rng)
+                };
+                let src = gen_typed(ctx, rng, &GenType::List(Box::new(d_ty.clone())), d);
+                let mut inner = ctx.clone();
+                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
+                let body = gen_typed(&inner, rng, e, d.min(2));
+                Some(format!("list::map({src}, |{binder}| {body})"))
+            }
+            3 => {
+                let src = gen_typed(ctx, rng, ty, d);
+                let mut inner = ctx.clone();
+                let binder = callback_binder(&mut inner, rng, e, &[]);
+                let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+                Some(format!("list::filter({src}, |{binder}| {body})"))
+            }
+            _ => None,
         },
         // find: the union return `[e, null]` IS the Nullable type. The
         // empty/no-match answer (Null) is the soak-jul06c B7 seam
@@ -536,6 +590,24 @@ pub(super) fn gen_typed(
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
             format!("[{}]", parts.join(", "))
+        }
+        GenType::List(elem) => {
+            // Occasionally EMPTY (annotated — a bare `[<>]` leaves the
+            // element cell free): the nil path through the ladder
+            // selects and the list HOFs.
+            if rng.below(10) == 0 {
+                return format!("{{ let mt: {} = [<>]; mt }}", ty.render());
+            }
+            let n = 1 + rng.below(3);
+            let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
+            // Nullable-bearing elements must be ANNOTATED (the
+            // contains_nullable rule): a `null` part infers the bare
+            // null, not the union.
+            if ty.contains_nullable() {
+                format!("{{ let mt: {} = [<{}>]; mt }}", ty.render(), parts.join(", "))
+            } else {
+                format!("[<{}>]", parts.join(", "))
+            }
         }
         GenType::Struct(fields) => {
             // Functional update over a visible same-shaped struct, or a
