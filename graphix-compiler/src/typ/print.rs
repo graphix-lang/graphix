@@ -15,8 +15,24 @@ impl fmt::Display for Type {
 impl Type {
     fn fmt_inner(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Abstract { id, params } if params.is_empty() => write!(f, "abstract"),
-            Self::Abstract { id, params: _ } => write!(f, "<abstract#{}>", id.0),
+            Self::Abstract { id, params } => {
+                match id.name() {
+                    Some(name) => write!(f, "{name}")?,
+                    None if params.is_empty() => return write!(f, "abstract"),
+                    None => write!(f, "<abstract#{}>", id.0)?,
+                }
+                if !params.is_empty() {
+                    write!(f, "<")?;
+                    for (i, t) in params.iter().enumerate() {
+                        write!(f, "{t}")?;
+                        if i < params.len() - 1 {
+                            write!(f, ", ")?;
+                        }
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
             Self::App(c, a) => match Type::app_filled(c, a) {
                 Some(filled) => write!(f, "{filled}"),
                 None => write!(f, "{c}<{a}>"),

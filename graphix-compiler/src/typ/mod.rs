@@ -21,6 +21,7 @@ use std::{
     fmt::Debug,
     iter,
     ops::{ControlFlow, Deref, DerefMut},
+    sync::LazyLock,
 };
 use triomphe::Arc;
 
@@ -288,13 +289,28 @@ pub fn abstract_uuid(path: &str) -> uuid::Uuid {
     uuid::Uuid::new_v5(&ABSTRACT_NAMESPACE, path.as_bytes())
 }
 
+/// The names of every abstract type minted in this process, for
+/// diagnostics: `Type::Abstract` carries only the id, and the id is a
+/// path hash, so without this a type error prints the word "abstract"
+/// instead of the type's name. Ids are path-deterministic, so two
+/// mints of one id always record the same name.
+static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, ArcStr>>> =
+    LazyLock::new(|| Mutex::new(IntMap::default()));
+
 impl AbstractId {
     /// The identity of the abstract type `name` defined in `scope`:
     /// the low 64 bits of [`abstract_uuid`] of its canonical path.
     pub fn of(scope: &ModPath, name: &str) -> Self {
         let path = format_compact!("{scope}::{name}");
         let (_, lo) = abstract_uuid(&path).as_u64_pair();
-        AbstractId(lo)
+        let id = AbstractId(lo);
+        ABSTRACT_NAMES.lock().entry(id).or_insert_with(|| ArcStr::from(name));
+        id
+    }
+
+    /// The type's declared name, if this process has minted the id.
+    pub fn name(&self) -> Option<ArcStr> {
+        ABSTRACT_NAMES.lock().get(self).cloned()
     }
 
     pub fn inner(&self) -> u64 {
