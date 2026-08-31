@@ -1,13 +1,14 @@
 # list
 
-The `list` module provides immutable singly-linked lists with structural
-sharing. Two lists with a common tail share memory. Cons (prepend) is
-O(1); indexed access is O(n).
+`List<'a>` is the built-in singly linked list type — see
+[Fundamental Types](../core/fundamental_types.md#list) for the type
+itself, `[<1, 2, 3>]` literals, and
+[list patterns](../core/select.md#list-patterns). Two lists with a
+common tail share memory, cons (prepend) is O(1), and indexed access
+is O(n). The `list` module provides the functions for working with
+lists.
 
 ```graphix
-/// The singly linked list type.
-type List<'a>;
-
 /// Return an empty list.
 val nil: fn(trig: Any) -> List<'a>;
 
@@ -17,7 +18,7 @@ val cons: fn(x: 'a, l: List<'a>) -> List<'a>;
 /// Return a list containing a single element.
 val singleton: fn(x: 'a) -> List<'a>;
 
-/// Return the first element, or null if empty.
+/// Return the first element of the list, or null if empty.
 val head: fn(l: List<'a>) -> Option<'a>;
 
 /// Return the list without its first element, or null if empty.
@@ -29,49 +30,56 @@ val uncons: fn(l: List<'a>) -> Option<('a, List<'a>)>;
 /// Return true if the list is empty.
 val is_empty: fn(l: List<'a>) -> bool;
 
-/// Return the element at position n (0-indexed), or null. O(n).
+/// Return the element at position n (0-indexed), or null if out of bounds. O(n).
 val nth: fn(l: List<'a>, n: i64) -> Option<'a>;
 
-/// Return the number of elements. O(n).
+/// Return the number of elements in the list. O(n).
 val len: fn(l: List<'a>) -> i64;
 
 /// Return the list in reverse order. O(n).
 val reverse: fn(l: List<'a>) -> List<'a>;
 
-/// Return the first n elements.
+/// Return the first n elements of the list. O(n).
 val take: fn(n: i64, l: List<'a>) -> List<'a>;
 
-/// Return the list without its first n elements.
+/// Return the list without its first n elements. O(n).
 val drop: fn(n: i64, l: List<'a>) -> List<'a>;
 
-/// Convert a list to an array.
+/// Convert a list to an array. O(n).
 val to_array: fn(l: List<'a>) -> Array<'a>;
 
-/// Convert an array to a list.
+/// The elements as an array in reverse order, in one walk — the finish
+/// for a front-to-back accumulator that consed as it went.
+val to_array_rev: fn(l: List<'a>) -> Array<'a>;
+
+/// Convert an array to a list. O(n).
 val from_array: fn(a: Array<'a>) -> List<'a>;
 
-/// Concatenate two or more lists.
+/// Concatenate two or more lists. O(n) in the total size of all lists
+/// except the last.
 val concat: fn(l: List<'a>, @args: List<'a>) -> List<'a>;
 
 /// Flatten a list of lists into a single list.
 val flatten: fn(l: List<List<'a>>) -> List<'a>;
 
-/// Apply f to each element.
+/// Return a new list where each element is the output of f applied to the
+/// corresponding element of the input list.
 val map: fn(l: List<'a>, f: fn(x: 'a) -> 'b throws 'e) -> List<'b> throws 'e;
 
-/// Keep elements where f returns true.
+/// Return a new list containing only elements where f returned true.
 val filter: fn(l: List<'a>, f: fn(x: 'a) -> bool throws 'e) -> List<'a> throws 'e;
 
-/// Keep non-null outputs of f.
+/// Return a new list containing the non-null outputs of f.
 val filter_map: fn(l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> List<'b> throws 'e;
 
-/// Map and flatten: if f returns a list, inline its elements.
+/// Return a new list where f is applied to each element. If f returns a
+/// list, its elements are inlined; otherwise the single value is kept.
 val flat_map: fn(l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e) -> List<'b> throws 'e;
 
-/// Left fold: f(f(f(init, a0), a1), ...).
+/// Fold the list from left to right: f(f(f(init, a0), a1), ...).
 val fold: fn(l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;
 
-/// Return the first element where f returns true, or null.
+/// Return the first element for which f returns true, or null.
 val find: fn(l: List<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e;
 
 /// Return the first non-null output of f.
@@ -85,7 +93,7 @@ val sort: fn(?#dir: Direction, ?#numeric: bool, l: List<'a>) -> List<'a>;
 /// Return a list of (index, element) pairs.
 val enumerate: fn(l: List<'a>) -> List<(i64, 'a)>;
 
-/// Zip two lists into a list of pairs.
+/// Zip two lists into a list of pairs. Length is min of the two inputs.
 val zip: fn(l0: List<'a>, l1: List<'b>) -> List<('a, 'b)>;
 
 /// Unzip a list of pairs into a pair of lists.

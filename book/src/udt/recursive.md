@@ -4,11 +4,13 @@ Type aliases can be used to define recursive types, and this is a very powerful
 modeling tool for repeating structure. If you want to see an advanced example
 look no further than the `Tui` type in `graphix-shell`. Tui's are a set of
 mutually recursive types that define the tree structure of a UI. For a less
-overwhelming example consider a classic,
+overwhelming example consider a classic, the cons list. Graphix ships this
+exact structure as the built-in [`List`](../core/fundamental_types.md#list)
+type — that name is reserved — so our hand-rolled twin is called `Lst`,
 
 ```graphix
-type List<'a> = [
-  `Cons('a, List<'a>),
+type Lst<'a> = [
+  `Cons('a, Lst<'a>),
   `Nil
 ]
 ```
@@ -20,17 +22,17 @@ they come from lisp, the original functional programming language from the late
 1950s. Anyway, lets define some functions to work on our new list type,
 
 ```graphix
-type List<'a> = [
-  `Cons('a, List<'a>),
+type Lst<'a> = [
+  `Cons('a, Lst<'a>),
   `Nil
 ];
 
 // cons a new item on the head of the list
-let cons = |l: List<'a>, v: 'a| -> List<'a> `Cons(v, l);
+let cons = |l: Lst<'a>, v: 'a| -> Lst<'a> `Cons(v, l);
 
 // compute the length of the list
-let len = |l: List<'a>| {
-  let rec len_int = |l: List<'a>, n: i64| select l {
+let len = |l: Lst<'a>| {
+  let rec len_int = |l: Lst<'a>, n: i64| select l {
     `Cons(_, tl) => len_int(tl, n + 1),
     `Nil => n
   };
@@ -38,13 +40,13 @@ let len = |l: List<'a>| {
 };
 
 // map f over the list
-let rec map = |l: List<'a>, f: fn(x: 'a) -> 'b| -> List<'b> select l {
+let rec map = |l: Lst<'a>, f: fn(x: 'a) -> 'b| -> Lst<'b> select l {
   `Cons(v, tl) => `Cons(f(v), map(tl, f)),
   `Nil => `Nil
 };
 
 // fold f over the list
-let rec fold = |l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b| -> 'b select l {
+let rec fold = |l: Lst<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b| -> 'b select l {
   `Cons(v, tl) => fold(tl, f(init, v), f),
   `Nil => init
 }

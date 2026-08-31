@@ -54,8 +54,9 @@ The tail-recursive `fold_l` compiles to a native loop over the
 conses; the value-building recursions (`filter_map_l`, `append_l`)
 are an activation per element — see
 [Recursion](../functions/recursion.md). This shape is not a toy: the
-same spelling over the list package's `List` runs *faster* than the
-list fold intrinsic at 100k elements (the intrinsic pays a
+same spelling over the built-in `List` — written with list patterns,
+`[<>]` and `[<x, rest..>]` — runs *faster* than the list fold
+intrinsic at 100k elements (the intrinsic pays a
 convert-to-array boundary; the recursion just walks the conses).
 
 The measured comparisons behind the numbers above live in

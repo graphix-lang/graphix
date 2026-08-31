@@ -219,6 +219,42 @@ complete ladder like the one above is dead exactly as it would be
 behind a full variant set. Order exact-length arms above the rest
 arm that subsumes them.
 
+### List Patterns
+
+Lists (see [Fundamental Types](./fundamental_types.md#list)) have
+their own slice-like patterns, written with the list literal's
+delimiters. `[<>]` matches the empty list, `[<a, b>]` matches a list
+of exactly two elements, and `[<h, rest..>]` matches any non-empty
+list, binding `h` to the first element and `rest` to everything after
+it. Binding the rest is O(1) and copies nothing — the bound tail *is*
+the matched list's tail, memory shared — which is what makes a
+recursive walk over a list linear:
+
+```graphix
+let rec sum = |l: List<i64>, acc: i64| -> i64 select l {
+  [<>] => acc,
+  [<x, rest..>] => sum(rest, acc + x)
+};
+sum([<1, 2, 3, 4>], 0)
+```
+
+```
+$ graphix test.gx
+10
+```
+
+There is no suffix form: `[<init.., x>]` is refused. Reaching the
+last element of a singly linked list means walking the whole spine,
+so the pattern that would hide an O(n) walk does not exist — convert
+to an array if you need to work from the back. (Arrays keep both
+forms because their slices are zero-copy views, so `[x, rest..]` and
+`[init.., x]` are both O(1) there.)
+
+Exhaustiveness and dead-arm checking work by length exactly as for
+slice patterns: `[<>]` plus `[<h, rest..>]` covers every list, an
+exact-length arm above a rest arm claims its length, and a guard or a
+refutable element pattern claims no coverage.
+
 ### Tuple Patterns
 
 Tuple patterns allow you to match tuples. Compared to slice patterns they are

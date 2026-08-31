@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f318c6f7.js";
+            window.path_to_searchindex_js = "../searchindex-040d9929.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-879b8455.js"></script>
@@ -447,6 +447,39 @@ progressively deconstruct an array by slicing are O(N) not O(N^2)
 and the constants are very fast.</p>
 </li>
 </ul>
+<h2 id="list"><a class="header" href="#list">List</a></h2>
+<p><code>List&lt;'a&gt;</code> is an immutable singly linked list. Lists complement
+arrays: an array is contiguous — compact and O(1) to index, but O(n²)
+to build by appending one element at a time — while a list is built
+front to back one O(1) cons at a time, and two lists with a common
+tail share memory. When you are accumulating an unknown number of
+elements, cons onto a list as you go and convert once at the end
+(<code>list::to_array</code>, or <code>list::to_array_rev</code> to undo the reversal that
+front-consing produces, in one walk).</p>
+<p>List literals are written like array literals with angle brackets
+added,</p>
+<pre><code class="language-graphix">let l = [&lt;1, 2, 3&gt;];
+l
+</code></pre>
+<pre><code>$ graphix test.gx
+[&lt;1, 2, 3&gt;]
+</code></pre>
+<p>The empty list is <code>[&lt;&gt;]</code>. On its own it usually needs a type
+annotation, since there is no element to infer the element type from,</p>
+<pre><code class="language-graphix">let empty: List&lt;i64&gt; = [&lt;&gt;]
+</code></pre>
+<p>Elements can be any type, including other lists. The
+<a href="../stdlib/list.html"><code>list</code></a> module in the standard library has the
+functions for working with lists — <code>list::cons</code>, <code>list::len</code>,
+<code>list::map</code>, <code>list::fold</code> and many more — and lists are destructured
+with <a href="./select.html#list-patterns">list patterns</a> in <code>select</code>.</p>
+<h3 id="mutability-and-implementation-1"><a class="header" href="#mutability-and-implementation-1">Mutability and Implementation</a></h3>
+<p>Like all Graphix values lists are immutable: consing onto a list
+creates a new list whose tail <em>is</em> the old list, unchanged and fully
+shared — this is what makes lists cheap to build incrementally. The
+cells are pooled like arrays, so building a list does not usually
+allocate. Indexed access (<code>list::nth</code>) walks the spine and is O(n);
+if you need random access, convert to an array.</p>
 <h2 id="tuples"><a class="header" href="#tuples">Tuples</a></h2>
 <p>Tuples are written <code>(x, y)</code>, they can be of arbitrary length, and each element
 may have a different type. Tuples may be indexed using numeric field indexes.
@@ -485,7 +518,7 @@ is a <code>Map&lt;string, i64&gt;</code>.</p>
 -: ['_1907: i64, Error&lt;`MapKeyError(string)&gt;]
 error:["MapKeyError", "map key \"missing\" not found"]
 </code></pre>
-<h3 id="mutability-and-implementation-1"><a class="header" href="#mutability-and-implementation-1">Mutability and Implementation</a></h3>
+<h3 id="mutability-and-implementation-2"><a class="header" href="#mutability-and-implementation-2">Mutability and Implementation</a></h3>
 <p>Like all Graphix values, maps are immutable. All operations that “change” a map
 actually create a new map, leaving the original unchanged. Maps are memory
 pooled and very efficient - creating new maps typically reuses existing memory

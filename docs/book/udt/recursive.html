@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f318c6f7.js";
+            window.path_to_searchindex_js = "../searchindex-040d9929.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-879b8455.js"></script>
@@ -179,9 +179,11 @@
 modeling tool for repeating structure. If you want to see an advanced example
 look no further than the <code>Tui</code> type in <code>graphix-shell</code>. Tui’s are a set of
 mutually recursive types that define the tree structure of a UI. For a less
-overwhelming example consider a classic,</p>
-<pre><code class="language-graphix">type List&lt;'a&gt; = [
-  `Cons('a, List&lt;'a&gt;),
+overwhelming example consider a classic, the cons list. Graphix ships this
+exact structure as the built-in <a href="../core/fundamental_types.html#list"><code>List</code></a>
+type — that name is reserved — so our hand-rolled twin is called <code>Lst</code>,</p>
+<pre><code class="language-graphix">type Lst&lt;'a&gt; = [
+  `Cons('a, Lst&lt;'a&gt;),
   `Nil
 ]
 </code></pre>
@@ -190,17 +192,17 @@ is empty (nil), or it is a cons cell with a <code>'a</code> and a list, which it
 be either a cons cell or nil. If you’ve never heard the term “cons” and “nil”
 they come from lisp, the original functional programming language from the late
 1950s. Anyway, lets define some functions to work on our new list type,</p>
-<pre><code class="language-graphix">type List&lt;'a&gt; = [
-  `Cons('a, List&lt;'a&gt;),
+<pre><code class="language-graphix">type Lst&lt;'a&gt; = [
+  `Cons('a, Lst&lt;'a&gt;),
   `Nil
 ];
 
 // cons a new item on the head of the list
-let cons = |l: List&lt;'a&gt;, v: 'a| -&gt; List&lt;'a&gt; `Cons(v, l);
+let cons = |l: Lst&lt;'a&gt;, v: 'a| -&gt; Lst&lt;'a&gt; `Cons(v, l);
 
 // compute the length of the list
-let len = |l: List&lt;'a&gt;| {
-  let rec len_int = |l: List&lt;'a&gt;, n: i64| select l {
+let len = |l: Lst&lt;'a&gt;| {
+  let rec len_int = |l: Lst&lt;'a&gt;, n: i64| select l {
     `Cons(_, tl) =&gt; len_int(tl, n + 1),
     `Nil =&gt; n
   };
@@ -208,13 +210,13 @@ let len = |l: List&lt;'a&gt;| {
 };
 
 // map f over the list
-let rec map = |l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; List&lt;'b&gt; select l {
+let rec map = |l: Lst&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b| -&gt; Lst&lt;'b&gt; select l {
   `Cons(v, tl) =&gt; `Cons(f(v), map(tl, f)),
   `Nil =&gt; `Nil
 };
 
 // fold f over the list
-let rec fold = |l: List&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b| -&gt; 'b select l {
+let rec fold = |l: Lst&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b| -&gt; 'b select l {
   `Cons(v, tl) =&gt; fold(tl, f(init, v), f),
   `Nil =&gt; init
 }

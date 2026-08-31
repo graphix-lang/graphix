@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f318c6f7.js";
+            window.path_to_searchindex_js = "../searchindex-040d9929.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-879b8455.js"></script>
@@ -353,6 +353,34 @@ is dead (both match every non-empty array), and a <code>_</code> behind a
 complete ladder like the one above is dead exactly as it would be
 behind a full variant set. Order exact-length arms above the rest
 arm that subsumes them.</p>
+<h3 id="list-patterns"><a class="header" href="#list-patterns">List Patterns</a></h3>
+<p>Lists (see <a href="./fundamental_types.html#list">Fundamental Types</a>) have
+their own slice-like patterns, written with the list literal’s
+delimiters. <code>[&lt;&gt;]</code> matches the empty list, <code>[&lt;a, b&gt;]</code> matches a list
+of exactly two elements, and <code>[&lt;h, rest..&gt;]</code> matches any non-empty
+list, binding <code>h</code> to the first element and <code>rest</code> to everything after
+it. Binding the rest is O(1) and copies nothing — the bound tail <em>is</em>
+the matched list’s tail, memory shared — which is what makes a
+recursive walk over a list linear:</p>
+<pre><code class="language-graphix">let rec sum = |l: List&lt;i64&gt;, acc: i64| -&gt; i64 select l {
+  [&lt;&gt;] =&gt; acc,
+  [&lt;x, rest..&gt;] =&gt; sum(rest, acc + x)
+};
+sum([&lt;1, 2, 3, 4&gt;], 0)
+</code></pre>
+<pre><code>$ graphix test.gx
+10
+</code></pre>
+<p>There is no suffix form: <code>[&lt;init.., x&gt;]</code> is refused. Reaching the
+last element of a singly linked list means walking the whole spine,
+so the pattern that would hide an O(n) walk does not exist — convert
+to an array if you need to work from the back. (Arrays keep both
+forms because their slices are zero-copy views, so <code>[x, rest..]</code> and
+<code>[init.., x]</code> are both O(1) there.)</p>
+<p>Exhaustiveness and dead-arm checking work by length exactly as for
+slice patterns: <code>[&lt;&gt;]</code> plus <code>[&lt;h, rest..&gt;]</code> covers every list, an
+exact-length arm above a rest arm claims its length, and a guard or a
+refutable element pattern claims no coverage.</p>
 <h3 id="tuple-patterns"><a class="header" href="#tuple-patterns">Tuple Patterns</a></h3>
 <p>Tuple patterns allow you to match tuples. Compared to slice patterns they are
 fairly simple. You must specify every field of the tuple, you can choose to bind

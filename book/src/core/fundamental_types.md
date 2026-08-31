@@ -330,6 +330,52 @@ Arrays.
   progressively deconstruct an array by slicing are O(N) not O(N^2)
   and the constants are very fast.
 
+## List
+
+`List<'a>` is an immutable singly linked list. Lists complement
+arrays: an array is contiguous — compact and O(1) to index, but O(n²)
+to build by appending one element at a time — while a list is built
+front to back one O(1) cons at a time, and two lists with a common
+tail share memory. When you are accumulating an unknown number of
+elements, cons onto a list as you go and convert once at the end
+(`list::to_array`, or `list::to_array_rev` to undo the reversal that
+front-consing produces, in one walk).
+
+List literals are written like array literals with angle brackets
+added,
+
+```graphix
+let l = [<1, 2, 3>];
+l
+```
+
+```
+$ graphix test.gx
+[<1, 2, 3>]
+```
+
+The empty list is `[<>]`. On its own it usually needs a type
+annotation, since there is no element to infer the element type from,
+
+```graphix
+let empty: List<i64> = [<>]
+```
+
+Elements can be any type, including other lists. The
+[`list`](../stdlib/list.md) module in the standard library has the
+functions for working with lists — `list::cons`, `list::len`,
+`list::map`, `list::fold` and many more — and lists are destructured
+with [list patterns](./select.md#list-patterns) in `select`.
+
+### Mutability and Implementation
+
+Like all Graphix values lists are immutable: consing onto a list
+creates a new list whose tail *is* the old list, unchanged and fully
+shared — this is what makes lists cheap to build incrementally. The
+cells are pooled like arrays, so building a list does not usually
+allocate. Indexed access (`list::nth`) walks the spine and is O(n);
+if you need random access, convert to an array.
+
 ## Tuples
 
 Tuples are written `(x, y)`, they can be of arbitrary length, and each element

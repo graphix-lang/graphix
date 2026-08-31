@@ -3,7 +3,8 @@
 // with one reverse walk into an array. Linear, and the nested fold
 // fuses into one kernel with the outer loop.
 let flat_map_go = |a: Array<'a>, f: fn(x: 'a) -> Array<'b>| -> Array<'b> {
-    let l = array::fold(a, list::nil(0), |acc, x|
+    let nil: List<'b> = [<>];
+    let l = array::fold(a, nil, |acc, x|
         array::fold(f(x), acc, |acc, y| list::cons(y, acc)));
     list::to_array_rev(l)
 };
