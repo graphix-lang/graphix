@@ -1125,9 +1125,18 @@ the rules.
   the length ladder — the bound ladder spelling is ill-typed first by
   same-binds). Dead ALTERNATIVES are errors like dead arms (duplicate,
   post-wildcard, range-covered, type-dead vs the residual scrutinee).
-  JIT: or-arms DE-FUSE loudly (P3 emits chained tests into one body
-  block). Pins: `lang/select.rs` `or_*`, parser
-  `or_patterns_parse`.
+  JIT (P3, same day): or-arms emit natively — `emit_or_chain` runs
+  the alternatives' structure conditions left to right (each via the
+  extracted `emit_structure_cond` against its member of the raw Set),
+  the first match's binds forward through ONE done block's params to
+  the shared BindIds (layout mismatches Err = de-fuse, never
+  miscompile); the guard prologue reuses the chain with a tainted
+  drop-safe placeholder feed on no-match; the arm's env mark precedes
+  the chain so the arm-exit scope drops cover the chain's owned binds.
+  Explicit type predicates on or-arms refuse; per-alternative residue
+  = the single-arm vocabulary. Pins: `lang/select.rs` `or_*`
+  (`or_native`/`or_owned_binds`/`or_guard_prologue` are the
+  `#[native]` P3 pins), parser `or_patterns_parse`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>` (only as a whole typedef body) has identity
   `AbstractId::of(scope, name)` (a path-derived v5 UUID, minted at

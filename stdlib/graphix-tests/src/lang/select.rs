@@ -1777,9 +1777,8 @@ const OR_LITERALS: &str = r#"
 select 2 { 1 | 2 | 3 => "small", _ => "big" }
 "#;
 
-// The OR ARM itself de-fuses (P3 emits chained tests into one body
-// block); the scrutinee/sibling-arm sub-regions fuse, like
-// match_exhaust1.
+// Or-arms emit natively since P3 (`emit_or_chain` — alternatives
+// chain left to right into one done block with the shared BindIds).
 run!(or_literals, OR_LITERALS, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "small")
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -1888,3 +1887,48 @@ select 1 { _ | 1 => 0 }
 
 run!(or_dead_alt_err, OR_DEAD_ALT_ERR, |v: Result<&Value>| v.is_err();
  graphix_package_core::testing::FuseExpect::None);
+
+// P3 zero-residue pins (design/or_patterns.md): the whole or-select
+// compiles native — alternatives chain into one done block, the first
+// match's binds ride the block params to the shared BindIds.
+const OR_NATIVE: &str = r#"
+{
+  let p = (1, 2);
+  #[native] select p { (1, y) | (y, 2) if y > 0 => y, _ => 0 }
+}
+"#;
+
+run!(or_native, OR_NATIVE, |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
+graphix_package_core::testing::FuseExpect::Jit);
+
+// Owned binds through the chain: the variant payload clones out on the
+// matched alternative's path, forwards to the done block, and the
+// arm-exit scope drops free it (the select-arm-bind-leak discipline).
+const OR_OWNED_BINDS: &str = r#"
+{
+  let v: [`A(Array<i64>), `B(Array<i64>), `C] = `B([1, 2, 3]);
+  #[native] select v { `A(xs) | `B(xs) => array::len(xs), `C => 0 }
+}
+"#;
+
+run!(or_owned_binds, OR_OWNED_BINDS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The guard-prologue path: a non-schedule-free guard (calls) on an
+// or-arm makes the prologue run the chain with `nomatch: None` — on a
+// `C scrutinee NO alternative matches, so the placeholder feed (owned
+// drop-safe defaults behind TAINT|STALE) runs every invocation and the
+// guard evaluates over bottom binds without being consulted (the arm's
+// structure failed — the consulted-guard rule).
+const OR_GUARD_PROLOGUE: &str = r#"
+{
+  let lim = 2;
+  let v: [`A(Array<i64>), `B(Array<i64>), `C] = `C;
+  select v { `A(xs) | `B(xs) if array::len(xs) > lim => 1, _ => 0 }
+}
+"#;
+
+run!(or_guard_prologue, OR_GUARD_PROLOGUE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(0)))
+}; graphix_package_core::testing::FuseExpect::Jit);

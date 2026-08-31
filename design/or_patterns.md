@@ -1,9 +1,9 @@
 # Or-patterns
 
-**Status: P1 (syntax) + P2 (both-engine semantics, JIT de-fuse) +
-docs/generator/tree-sitter LANDED 2026-08-31 (`7f68d184`). Open: P3
-(native emission — chained tests into one body block) and the overnight
-20k round-trip proptest (Eric runs it). Ruled by Eric 2026-08-31:
+**Status: P1 (syntax) + P2 (both-engine semantics) + docs/generator/
+tree-sitter LANDED 2026-08-31 (`7f68d184`); P3 (native emission —
+`emit_or_chain`, see the JIT bullet) built the same day, gates in
+flight. Open: the overnight 20k round-trip proptest (Eric runs it). Ruled by Eric 2026-08-31:
 functional-programming orthodoxy, no deviations — exactly equal types,
 same binds, single guard. Two Graphix-specific syntax rulings (same
 day): top-level or-patterns are SELECT-ARM-ONLY (let and lambda params
@@ -114,16 +114,27 @@ arm's later alternatives are dead — the dead-alt check fires first).
   `StructPatternNode` walks. The shallow-discriminant seal
   (`seal_shallow`) treats an Or arm as deep (v1; a per-alternative
   shallow set is a later optimization).
-- **JIT v1**: a select arm whose pattern contains an Or DE-FUSES the
-  select — loud refusal at the three lowering sites in
-  `fusion/emit/select.rs`; `or_literals` carries the ASPIRE comment
-  (sibling sub-regions still fuse, like `match_exhaust1`, so the
-  fixture annotates the observed `FuseExpect::Jit`).
-- **JIT v2 (same arc if it stays small, else next)**: alternatives
-  emit as chained structure tests that all jump to ONE body block; the
-  shared BindIds become block params/locals filled by whichever test
-  matched. The scalar-leaf-bind arm vocabulary carries over per
-  alternative.
+- **JIT (P3, as built 2026-08-31)**: or-arms emit natively via
+  `emit_or_chain` (fusion/emit/select.rs) — the alternatives' structure
+  conditions run left to right in their own block runs (each via the
+  extracted `emit_structure_cond`, against its member of the arm's raw
+  inferred Set), the FIRST match materializes ITS binds through the
+  ordinary `install_arm_binds` into a temporary env scope and forwards
+  the values (ownership transferred) to ONE `done` block, whose params
+  bind the arm's canonical locals once under the shared BindIds — the
+  layout (sorted ids + kinds, from alternative 0) is total by
+  same-binds; a mismatch Errs (de-fuse), never miscompiles. The guard
+  prologue uses the same chain with `nomatch: None`: the no-match path
+  feeds `done` matched=0 with tainted drop-safe placeholders (the
+  masked-install semantics, so the guard still evaluates every
+  invocation); the take chain passes the arm's fail block and `done`
+  is match-only. The arm's env mark is taken BEFORE the chain, so the
+  select-arm-exit scope drops (the same-day leak-fix machinery) cover
+  the chain's owned binds on every edge. Explicit type predicates on
+  or-arms refuse (rare; `[T, U] as v` covers type alternation).
+  Refusal residue = whatever an alternative's own shape refuses
+  (nested variant payloads, @-binds, ... — the single-arm vocabulary,
+  per alternative).
 
 ## Blast radius
 

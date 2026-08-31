@@ -257,7 +257,7 @@ pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue 
 /// at scope exit. The `disc` word always carries the netidx
 /// discriminant (and #219 taint); `kind` says how to read and free the
 /// `payload`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalKind {
     /// `payload` is the scalar value at its natural CLIF type; nothing
     /// to drop.
