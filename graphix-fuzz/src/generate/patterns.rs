@@ -69,6 +69,24 @@ fn gen_pattern(
         t @ (GenType::Num(_) | GenType::Bool | GenType::Str) => {
             let lit_ok = !matches!(t, GenType::Num(n) if n.is_float());
             if lit_ok && !force_irrefutable && rng.below(2) == 0 {
+                // Sometimes an or-alternation of DISTINCT literals (no
+                // binds, so same-binds holds; distinct, so no
+                // duplicate-alternative refusal). Bool excluded:
+                // `true | false` completes coverage and deadens the
+                // final arm.
+                if !matches!(t, GenType::Bool) && rng.below(4) == 0 {
+                    let a = types::literal(rng, ty);
+                    let mut b = types::literal(rng, ty);
+                    for _ in 0..8 {
+                        if b != a {
+                            break;
+                        }
+                        b = types::literal(rng, ty);
+                    }
+                    if b != a {
+                        return Pat { text: format!("{a} | {b}"), refutable: true };
+                    }
+                }
                 Pat { text: types::literal(rng, ty), refutable: true }
             } else {
                 leaf(inner, rng)
@@ -261,20 +279,47 @@ pub(super) fn maybe_select(
                 let (a, _) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, true);
                 arms.push(a);
             }
-            for (tag, args) in tags {
-                let mut inner = ctx.clone();
-                let mark = inner.mark();
-                let text = if args.is_empty() {
+            let wild_text = |tag: &str, nargs: usize| {
+                if nargs == 0 {
                     format!("`{tag}")
                 } else {
-                    let parts: Vec<_> = args
-                        .iter()
-                        .map(|t| gen_pattern(&mut inner, rng, t, 1, true, mark).text)
-                        .collect();
-                    format!("`{tag}({})", parts.join(", "))
-                };
-                let body = exprs::gen_typed(&inner, rng, ty, d);
-                arms.push(format!("{text} => {body}"));
+                    format!("`{tag}({})", vec!["_"; nargs].join(", "))
+                }
+            };
+            let mut i = 0;
+            while i < tags.len() {
+                let mut inner = ctx.clone();
+                let mark = inner.mark();
+                // Sometimes GROUP two consecutive tags into one or-arm
+                // — the payloads bind nothing (`_` per arg), so
+                // same-binds holds by construction and coverage still
+                // counts both tags (per coverage atom).
+                if i + 1 < tags.len() && rng.below(3) == 0 {
+                    let (t0, a0) = &tags[i];
+                    let (t1, a1) = &tags[i + 1];
+                    let text = format!(
+                        "{} | {}",
+                        wild_text(t0, a0.len()),
+                        wild_text(t1, a1.len())
+                    );
+                    let body = exprs::gen_typed(&inner, rng, ty, d);
+                    arms.push(format!("{text} => {body}"));
+                    i += 2;
+                } else {
+                    let (tag, args) = &tags[i];
+                    let text = if args.is_empty() {
+                        format!("`{tag}")
+                    } else {
+                        let parts: Vec<_> = args
+                            .iter()
+                            .map(|t| gen_pattern(&mut inner, rng, t, 1, true, mark).text)
+                            .collect();
+                        format!("`{tag}({})", parts.join(", "))
+                    };
+                    let body = exprs::gen_typed(&inner, rng, ty, d);
+                    arms.push(format!("{text} => {body}"));
+                    i += 1;
+                }
             }
             return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
         }
@@ -284,6 +329,26 @@ pub(super) fn maybe_select(
     for _ in 0..rng.below(3) {
         let (a, _) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, true);
         arms.push(a);
+    }
+    // A bound or-alternation over an equal-typed integer pair: both
+    // alternatives bind the same name at the same type (the shared-
+    // BindId Reuse path). Structurally distinct alternatives, so no
+    // duplicate refusal; refutable, so nothing downstream is dead.
+    if let GenType::Tuple(es) = &scrut_ty {
+        if es.len() == 2
+            && es[0].render() == es[1].render()
+            && matches!(&es[0], GenType::Num(n) if !n.is_float())
+            && rng.below(3) == 0
+        {
+            let mut inner = ctx.clone();
+            let mark = inner.mark();
+            let x = bind_name(&mut inner, rng, mark);
+            inner.push(x.clone(), es[0].clone());
+            let l0 = types::literal(rng, &es[0]);
+            let l1 = types::literal(rng, &es[1]);
+            let body = exprs::gen_typed(&inner, rng, ty, d);
+            arms.push(format!("({l0}, {x}) | ({x}, {l1}) => {body}"));
+        }
     }
     if rng.below(2) == 0 {
         let (a, refutable) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, false);

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-040d9929.js";
+            window.path_to_searchindex_js = "searchindex-0247e4b9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-879b8455.js"></script>
@@ -1711,6 +1711,7 @@ is structural. Graphix supports several kinds of structural matching,</p>
 <li>structs</li>
 <li>variants</li>
 <li>literals, ignore</li>
+<li>or alternatives</li>
 </ul>
 <p>NB: In most contexts you can match the entire value as well as parts of it’s
 structure by adding a <code>v@</code> pattern before the pattern. You will see this in many
@@ -1902,9 +1903,42 @@ Caused by:
 <h3 id="literals-ignore"><a class="header" href="#literals-ignore">Literals, Ignore</a></h3>
 <p>You can match literals as well as bind variables, as you may have noticed, and
 the special pattern <code>_</code> means match anything and don’t bind it to a variable.</p>
-<h3 id="missing-features"><a class="header" href="#missing-features">Missing Features</a></h3>
-<p>A significant missing feature from patterns vs other languages is support for
-multiple alternative patterns in one arm. I plan to add this at some point.</p>
+<h3 id="or-patterns"><a class="header" href="#or-patterns">Or Patterns</a></h3>
+<p>An arm can match several alternative patterns, separated by <code>|</code>. Alternatives
+are tried left to right, and the first one that matches structurally selects
+the arm and delivers its bindings.</p>
+<pre><code class="language-graphix">select (0, 5) {
+    (0, y) | (y, 0) =&gt; y,
+    _ =&gt; -1
+}
+</code></pre>
+<pre><code>$ graphix or.gx
+5
+</code></pre>
+<p>The rules are the orthodox ones:</p>
+<ul>
+<li><strong>Same binds, same types.</strong> Every alternative must bind exactly the same
+names, and each name must have exactly the same type in every alternative.
+<code>(0, y) | (y, 0)</code> is fine over <code>(i64, i64)</code>; <code>1 | x</code> is refused (the second
+alternative binds <code>x</code>, the first binds nothing).</li>
+<li><strong>One guard per arm.</strong> A guard written after the alternation covers the
+whole arm: <code>(0, y) | (y, 0) if y &gt; 3 =&gt; y</code>.</li>
+<li><strong>No dead alternatives.</strong> An alternative that can never match — a duplicate
+of an earlier one, anything after an alternative that matches everything, or
+one whose type can’t match what’s left of the scrutinee — is an error, just
+like a dead arm.</li>
+</ul>
+<p>Alternatives nest anywhere a sub-pattern can appear: <code>`A(1 | 2)</code> matches
+<code>`A</code> carrying 1 or 2. Coverage counts each alternative separately, so an
+arm’s alternatives can complete a set of variants or a slice length ladder —
+<code>[] | [_, ..]</code> covers every array length with no wildcard.</p>
+<p>Top-level or-patterns belong to select arms only: <code>let</code> bindings and lambda
+parameters refuse them (a lambda’s argument list is itself delimited by <code>|</code>,
+and those positions are irrefutable anyway — an or-pattern there could never
+be useful).</p>
+<p>There is no <code>x@ (p1 | p2)</code> — patterns have no grouping parentheses. A capture
+is per-alternative, and the same-binds rule keeps it symmetric:
+<code>t@ </code>D(_) | t@ <code>E(_) =&gt; f(t)</code>.</p>
 <h2 id="select-and-connect"><a class="header" href="#select-and-connect">Select and Connect</a></h2>
 <p>Using select and connect together is one way to iterate in Graphix. Consider,</p>
 <pre><code class="language-graphix">let a = [1, 2, 3, 4, 5];

@@ -28,6 +28,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | `nominal_abstract_types.md` | `type T = Abstract<rep>`; nominal identity; constructor/payload/pattern |
 | `traits.md` | traits v1 (§11), core `Eq`/`Ord`/`Display` (§12), io traits (§13) |
 | `module_system.md` | Rust-2018-style `use`; `self`/`super`/`package` roots |
+| `list_native.md` | native List: slim 2-slot cons, `Type::List`, `[<1, 2>]` literals + list patterns, B3 fused ladder |
 | `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, callable routes, twins, HDD |
 | `typecheck_fuzzing.md` | the acceptance-plane (typemorph) lane |
@@ -39,7 +40,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 
 | doc | what |
 |---|---|
-| `list_native.md` | native List: slim 2-slot cons, static-empty nil, `Type::List`, `[<1, 2>]` literals + list-slice patterns (ruled 2026-08-31) |
+| `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
 | `fusion_lowering_split.md` | split `try_fuse` into analysis + lowering (legibility) |
 | `interp_lazy_bind_cost.md` | partial: what remains of the interp's per-activation cost (see header) |
 

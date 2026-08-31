@@ -717,7 +717,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
+    /// An arm's coverage ATOMS: for an or-pattern arm, each alternative
+    /// paired with its member of the arm's predicate (the inferred Set
+    /// is built one member per alternative, in order, and completion/
+    /// realign preserve the alignment; under an explicit predicate
+    /// every alternative pairs with the whole claim). Any other arm is
+    /// its own single atom.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        fn arm_atoms<'a>(
+            sp: &'a StructPatternNode,
+            typ: &'a Type,
+            out: &mut smallvec::SmallVec<[(&'a StructPatternNode, Type); 4]>,
+        ) {
+            match sp {
+                StructPatternNode::Or { alts } => {
+                    let ts = typ.with_deref(|t| match t {
+                        Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
+                        _ => None,
+                    });
+                    for (i, a) in alts.iter().enumerate() {
+                        let t = match &ts {
+                            Some(ts) => ts[i].clone(),
+                            None => typ.clone(),
+                        };
+                        out.push((a, t));
+                    }
+                }
+                _ => out.push((sp, typ.clone())),
+            }
+        }
         self.arg.node.typecheck0(ctx)?;
         // A PARTIAL struct pattern (`{x, ..}`) infers a type carrying
         // only its named fields — an exact struct that could never
@@ -780,23 +808,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 None => {
                     if inferred_irrefutable {
                         wildcard = true;
-                    } else if !pat.structure_predicate.is_refutable() {
-                        mtype = mtype.union(&ctx.env, &pat.type_predicate)?
-                    } else if let StructPatternNode::Literal(Value::Bool(b)) =
-                        &pat.structure_predicate
-                    {
-                        saw_true |= b;
-                        saw_false |= !b;
-                        if saw_true && saw_false {
-                            mtype = mtype
-                                .union(&ctx.env, &Type::Primitive(Typ::Bool.into()))?;
+                    } else {
+                        // Per coverage ATOM: an or-pattern arm claims
+                        // once per alternative, each against its own
+                        // member of the arm's predicate.
+                        let mut atoms: smallvec::SmallVec<
+                            [(&StructPatternNode, Type); 4],
+                        > = smallvec::SmallVec::new();
+                        arm_atoms(
+                            &pat.structure_predicate,
+                            &pat.type_predicate,
+                            &mut atoms,
+                        );
+                        for (sp, at) in atoms.iter() {
+                            if !sp.is_refutable() {
+                                mtype = mtype.union(&ctx.env, at)?
+                            } else if let StructPatternNode::Literal(Value::Bool(b)) = sp
+                            {
+                                saw_true |= *b;
+                                saw_false |= !*b;
+                                if saw_true && saw_false {
+                                    mtype = mtype.union(
+                                        &ctx.env,
+                                        &Type::Primitive(Typ::Bool.into()),
+                                    )?;
+                                }
+                            } else if let Some((k, exact)) = sp.array_len_coverage() {
+                                slice_pool.push((k, exact, at.clone()));
+                            } else if sp.is_array_slice() {
+                                refutable_slice = true;
+                            }
                         }
-                    } else if let Some((k, exact)) =
-                        pat.structure_predicate.array_len_coverage()
-                    {
-                        slice_pool.push((k, exact, pat.type_predicate.clone()));
-                    } else if pat.structure_predicate.is_array_slice() {
-                        refutable_slice = true;
                     }
                 }
             }
@@ -1016,53 +1058,77 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     )
                 })?
             }
-            if let Some((k, exact)) = pat.structure_predicate.array_len_range() {
-                let mut any = false;
-                let mut all = true;
-                for c in covered.iter() {
-                    if pat.type_predicate.could_match(&ctx.env, &c.m)? {
-                        any = true;
-                        all &= range_covered(k, exact, &c.exacts, c.rest);
+            let mut atoms: smallvec::SmallVec<[(&StructPatternNode, Type); 4]> =
+                smallvec::SmallVec::new();
+            arm_atoms(&pat.structure_predicate, &pat.type_predicate, &mut atoms);
+            let or_arm = atoms.len() > 1;
+            for (sp, at) in atoms.iter() {
+                // A type-dead ALTERNATIVE is an error like a type-dead
+                // arm (the house dead-arm rule applied within the arm).
+                if or_arm && !at.could_match(&ctx.env, &atype)? {
+                    format_with_flags(PrintFlag::DerefTVars, || {
+                        bail!(
+                            "unreachable or-pattern alternative: {at} will never \
+                             match {atype}, unused match cases"
+                        )
+                    })?
+                }
+                if let Some((k, exact)) = sp.array_len_range() {
+                    let mut any = false;
+                    let mut all = true;
+                    for c in covered.iter() {
+                        if at.could_match(&ctx.env, &c.m)? {
+                            any = true;
+                            all &= range_covered(k, exact, &c.exacts, c.rest);
+                        }
                     }
-                }
-                if any && all {
-                    bail!(
-                        "unreachable arm: every array length this slice pattern \
-                         can match is covered by earlier arms, unused match cases"
-                    )
-                }
-                if pat.guard.is_none()
-                    && pat.structure_predicate.array_len_coverage().is_some()
-                {
-                    for c in covered.iter_mut() {
-                        if !c.done && pat.type_predicate.contains(&ctx.env, &c.m)? {
-                            if exact {
-                                if !c.exacts.contains(&k) {
-                                    c.exacts.push(k)
+                    if any && all {
+                        // For an or-pattern arm this is one DEAD
+                        // ALTERNATIVE (the house dead-arm rule applied
+                        // within the arm), not necessarily a dead arm.
+                        if or_arm {
+                            bail!(
+                                "unreachable or-pattern alternative: every array \
+                                 length it can match is covered by earlier arms, \
+                                 unused match cases"
+                            )
+                        }
+                        bail!(
+                            "unreachable arm: every array length this slice pattern \
+                             can match is covered by earlier arms, unused match cases"
+                        )
+                    }
+                    if pat.guard.is_none() && sp.array_len_coverage().is_some() {
+                        for c in covered.iter_mut() {
+                            if !c.done && at.contains(&ctx.env, &c.m)? {
+                                if exact {
+                                    if !c.exacts.contains(&k) {
+                                        c.exacts.push(k)
+                                    }
+                                } else {
+                                    c.rest = Some(c.rest.map_or(k, |r| r.min(k)))
                                 }
-                            } else {
-                                c.rest = Some(c.rest.map_or(k, |r| r.min(k)))
-                            }
-                            if lens_complete(&c.exacts, c.rest) {
-                                c.done = true;
-                                atype = atype.diff(&ctx.env, &c.m)?;
+                                if lens_complete(&c.exacts, c.rest) {
+                                    c.done = true;
+                                    atype = atype.diff(&ctx.env, &c.m)?;
+                                }
                             }
                         }
                     }
                 }
-            }
-            if pat.guard.is_none()
-                && let StructPatternNode::Literal(Value::Bool(b)) =
-                    &pat.structure_predicate
-            {
-                saw_t |= *b;
-                saw_f |= !*b;
-                if saw_t && saw_f {
-                    atype = atype.diff(&ctx.env, &Type::Primitive(Typ::Bool.into()))?;
+                if pat.guard.is_none()
+                    && let StructPatternNode::Literal(Value::Bool(b)) = sp
+                {
+                    saw_t |= *b;
+                    saw_f |= !*b;
+                    if saw_t && saw_f {
+                        atype =
+                            atype.diff(&ctx.env, &Type::Primitive(Typ::Bool.into()))?;
+                    }
                 }
-            }
-            if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
-                atype = atype.diff(&ctx.env, &pat.type_predicate)?;
+                if !sp.is_refutable() && pat.guard.is_none() {
+                    atype = atype.diff(&ctx.env, at)?;
+                }
             }
         }
         self.typ = rtype;

@@ -1770,3 +1770,121 @@ run!(
     "#;
     graphix_package_core::testing::FuseExpect::None
 );
+
+// ─── Or-patterns (design/or_patterns.md, ruled 2026-08-31) ───
+
+const OR_LITERALS: &str = r#"
+select 2 { 1 | 2 | 3 => "small", _ => "big" }
+"#;
+
+// The OR ARM itself de-fuses (P3 emits chained tests into one body
+// block); the scrutinee/sibling-arm sub-regions fuse, like
+// match_exhaust1.
+run!(or_literals, OR_LITERALS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "small")
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const OR_TUPLE_BINDS: &str = r#"
+select (0, 5) { (0, y) | (y, 0) => y, _ => 0 - 1 }
+"#;
+
+run!(or_tuple_binds, OR_TUPLE_BINDS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(5)))
+});
+
+const OR_GUARD: &str = r#"
+select (5, 0) { (0, y) | (y, 0) if y > 3 => y, _ => 0 - 1 }
+"#;
+
+run!(or_guard, OR_GUARD, |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) });
+
+// An or-arm covers its alternatives' variants: exhaustive with no
+// wildcard.
+const OR_VARIANT_EXHAUST: &str = r#"
+{
+  let v: [`A(i64), `B(i64), `C] = `B(7);
+  select v { `A(x) | `B(x) => x, `C => 0 }
+}
+"#;
+
+run!(or_variant_exhaust, OR_VARIANT_EXHAUST, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+});
+
+// Alternatives try LEFT TO RIGHT: (1, 2) matches both, the first
+// alternative's binds deliver (y = 2, not 1).
+const OR_FIRST_MATCH: &str = r#"
+select (1, 2) { (1, y) | (y, 2) => y, _ => 0 }
+"#;
+
+run!(or_first_match, OR_FIRST_MATCH, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+});
+
+const OR_NESTED: &str = r#"
+select `A(2) { `A(1 | 2) => "y", _ => "n" }
+"#;
+
+run!(or_nested, OR_NESTED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "y")
+});
+
+// The length-ladder pool takes one claim per alternative: [] plus
+// [_, ..] covers every length, no wildcard needed. (The BOUND
+// spelling `[] | [x, r..]` is ill-typed first, by same-binds.)
+const OR_SLICE_LADDER: &str = r#"
+{
+  let a = [1, 2, 3];
+  select a { [] | [_, ..] => "ok" }
+}
+"#;
+
+run!(or_slice_ladder, OR_SLICE_LADDER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "ok")
+});
+
+// A different alternative matches on different cycles; the shared
+// BindIds deliver each cycle's leaf (1 + 2 + 3 = 6).
+const OR_REACTIVE: &str = r#"
+{
+  let x = array::iter([(0, 1), (2, 0), (0, 3)]);
+  let y = select x { (0, y) | (y, 0) => y, _ => 0 - 1 };
+  let s = 0;
+  s <- y ~ (s + y);
+  filter(s, |v| v == 6)
+}
+"#;
+
+run!(or_reactive, OR_REACTIVE, |v: Result<&Value>| { matches!(v, Ok(Value::I64(6))) });
+
+// Same-binds: every alternative must bind the same names.
+const OR_SAME_BINDS_ERR: &str = r#"
+select 1 { 1 | x => 0, _ => 1 }
+"#;
+
+run!(or_same_binds_err, OR_SAME_BINDS_ERR, |v: Result<&Value>| v.is_err();
+ graphix_package_core::testing::FuseExpect::None);
+
+// Exactly-equal types: y cannot be i64 in one alternative and string
+// in another (the unified cell makes the second alternative type-dead).
+const OR_EQUAL_TYPES_ERR: &str = r#"
+select (1, "a") { (1, y) | (y, "b") => 1, _ => 0 }
+"#;
+
+run!(or_equal_types_err, OR_EQUAL_TYPES_ERR, |v: Result<&Value>| v.is_err();
+ graphix_package_core::testing::FuseExpect::None);
+
+// Dead alternatives are errors, like dead arms.
+const OR_DUP_ALT_ERR: &str = r#"
+select 1 { 1 | 1 => 0, _ => 2 }
+"#;
+
+run!(or_dup_alt_err, OR_DUP_ALT_ERR, |v: Result<&Value>| v.is_err();
+ graphix_package_core::testing::FuseExpect::None);
+
+const OR_DEAD_ALT_ERR: &str = r#"
+select 1 { _ | 1 => 0 }
+"#;
+
+run!(or_dead_alt_err, OR_DEAD_ALT_ERR, |v: Result<&Value>| v.is_err();
+ graphix_package_core::testing::FuseExpect::None);

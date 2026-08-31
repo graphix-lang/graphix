@@ -865,6 +865,12 @@ fn emit_composite_pattern_cond(
                     "emit_clif: nested variant pattern leaf not lowerable"
                 ));
             }
+            StructPatternNode::Or { .. } => {
+                return Err(anyhow!(
+                    "emit_clif: or-pattern leaf not lowerable \
+                     (design/or_patterns.md P3)"
+                ));
+            }
         }
     }
     // The length test for THIS level.
@@ -1489,6 +1495,12 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
         StructPatternNode::Abstract { .. } => {
             return Err(anyhow!("emit_clif: abstract patterns are not lowered"));
         }
+        StructPatternNode::Or { .. } => {
+            return Err(anyhow!(
+                "emit_clif: or-pattern arms are not lowered yet \
+                 (design/or_patterns.md P3)"
+            ));
+        }
         StructPatternNode::Ignore => None,
         StructPatternNode::Bind(id) => match scrut {
             SelectScrut::Scalar { .. } => {
@@ -1617,7 +1629,8 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     | StructPatternNode::SliceSuffix { .. }
                     | StructPatternNode::Struct { .. }
                     | StructPatternNode::Variant { .. }
-                    | StructPatternNode::Abstract { .. } => {
+                    | StructPatternNode::Abstract { .. }
+                    | StructPatternNode::Or { .. } => {
                         return Err(anyhow!(
                             "emit_clif: nested variant payload \
                                  pattern not lowerable"

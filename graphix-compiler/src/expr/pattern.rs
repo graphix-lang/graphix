@@ -55,6 +55,12 @@ pub enum StructurePattern {
         all: Option<ArcStr>,
         binds: Arc<[(ArcStr, StructurePattern)]>,
     },
+    /// Or-alternatives `p1 | p2 | …` (select arms and nested element
+    /// positions; `design/or_patterns.md`). Flat by construction: ≥ 2
+    /// alternatives, none itself an `Or`. Every alternative binds the
+    /// same names at the same types (enforced at node compile), so
+    /// name-set walks read alternative 0.
+    Or(Arc<[StructurePattern]>),
 }
 
 impl StructurePattern {
@@ -69,7 +75,8 @@ impl StructurePattern {
             | Self::Tuple { .. }
             | Self::Struct { .. }
             | Self::Variant { .. }
-            | Self::Abstract { .. } => None,
+            | Self::Abstract { .. }
+            | Self::Or(_) => None,
         }
     }
 
@@ -141,6 +148,7 @@ impl StructurePattern {
                     t.with_names(f)
                 }
             }
+            Self::Or(alts) => alts[0].with_names(f),
         }
     }
 
@@ -224,6 +232,16 @@ impl StructurePattern {
                     .collect::<Result<SmallVec<[(ArcStr, Type); 8]>>>()?;
                 typs.sort_by_key(|(n, _)| n.clone());
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
+            }
+            Self::Or(alts) => {
+                // The RAW (uncollapsed) Set keeps one member per
+                // alternative so `complete_type_predicate` can zip
+                // them; semantically it is the union.
+                let a = alts
+                    .iter()
+                    .map(|p| p.infer_type_predicate(env, scope))
+                    .collect::<Result<SmallVec<[_; 8]>>>()?;
+                Ok(Type::Set(Arc::from_iter(a)))
             }
         }
     }
@@ -462,6 +480,29 @@ impl StructurePattern {
                 }
                 Ok(changed.then(|| Type::Array(Arc::new(t))))
             }
+            Self::Or(alts) => {
+                let pts = match ptype {
+                    Type::Set(pts) if pts.len() == alts.len() => pts,
+                    _ => return Ok(None),
+                };
+                let mut changed = false;
+                let mut out: SmallVec<[Type; 8]> = SmallVec::new();
+                for (p, pt) in alts.iter().zip(pts.iter()) {
+                    match p.complete_type_predicate_inner(
+                        env,
+                        pt,
+                        scrutinee,
+                        depth + 1,
+                    )? {
+                        Some(t) => {
+                            changed = true;
+                            out.push(t)
+                        }
+                        None => out.push(pt.clone()),
+                    }
+                }
+                Ok(changed.then(|| Type::Set(Arc::from_iter(out.into_iter()))))
+            }
             Self::Ignore | Self::Bind(_) | Self::Literal(_) => Ok(None),
         }
     }
@@ -544,6 +585,15 @@ impl fmt::Display for StructurePattern {
                     write!(f, "{all}@")?
                 }
                 write!(f, "{name}({bind})")
+            }
+            StructurePattern::Or(alts) => {
+                for (i, p) in alts.iter().enumerate() {
+                    write!(f, "{p}")?;
+                    if i < alts.len() - 1 {
+                        write!(f, " | ")?
+                    }
+                }
+                Ok(())
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
                 if let Some(all) = all {

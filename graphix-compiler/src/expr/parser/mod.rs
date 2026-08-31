@@ -556,7 +556,15 @@ where
         attempt(string("let").skip(spaces1()))
             .with((
                 optional(attempt(string("rec").with(spaces1()))),
-                structure_pattern(),
+                structure_pattern().skip(
+                    optional(attempt(spaces().with(token('|')))).then(|t| match t {
+                        Some(_) => {
+                            unexpected_any("or-patterns are only legal in select arms")
+                                .left()
+                        }
+                        None => value(()).right(),
+                    }),
+                ),
                 spaces().with(optional(token(':').with(typ()))),
             ))
             .skip(sptoken('=')),

@@ -11,7 +11,7 @@ use crate::{
 use ahash::AHashSet;
 use arcstr::{ArcStr, literal};
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, many, optional,
     parser::char::string,
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
@@ -60,7 +60,7 @@ where
             spaces().with(choice((
                 string("..").map(|_| Either::Right(None)),
                 attempt(fname().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
-                structure_pattern().map(|p| Either::Left(p)),
+                structure_pattern_or().map(|p| Either::Left(p)),
             ))),
             csep(),
             attempt(sptoken(']')),
@@ -146,7 +146,7 @@ where
             spaces().with(choice((
                 string("..").map(|_| Either::Right(None)),
                 attempt(fname().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
-                structure_pattern().map(|p| Either::Left(p)),
+                structure_pattern_or().map(|p| Either::Left(p)),
             ))),
             csep(),
             attempt(spstring(">]")),
@@ -201,7 +201,7 @@ where
     between(
         token('('),
         sptoken(')'),
-        sep_by1_tok(structure_pattern(), csep(), token(')')),
+        sep_by1_tok(structure_pattern_or(), csep(), token(')')),
     )
     .then(move |mut binds: LPooled<Vec<StructurePattern>>| {
         if binds.len() < 2 {
@@ -225,7 +225,7 @@ where
         optional(between(
             token('('),
             sptoken(')'),
-            sep_by1_tok(structure_pattern(), csep(), token(')')),
+            sep_by1_tok(structure_pattern_or(), csep(), token(')')),
         )),
     )
         .map(
@@ -252,7 +252,7 @@ where
 {
     (
         attempt(super::typexp::typath().skip(spaces()).skip(token('('))),
-        structure_pattern(),
+        structure_pattern_or(),
         sptoken(')'),
     )
         .map(move |(name, bind, _)| StructurePattern::Abstract {
@@ -279,7 +279,7 @@ where
                 fldname()
                     .skip(spaces())
                     .then(|name| {
-                        optional(token(':').with(structure_pattern()))
+                        optional(token(':').with(structure_pattern_or()))
                             .map(move |pat| (name.clone(), pat))
                     })
                     .then(|(name, pat)| match pat {
@@ -389,6 +389,31 @@ parser! {
     }
 }
 
+/// One or more `|`-separated alternatives (`design/or_patterns.md`,
+/// Eric's 2026-08-31 ruling). Legal in select arms and every bracketed
+/// element position; NOT at the top level of `let` or lambda params
+/// (the lambda arg list is itself `|`-delimited). `|` binds loosest
+/// and an `@`-capture is per-alternative. Flat by construction: the
+/// chain folds into one `Or`, and an alternative is never an `Or`.
+pub(super) fn structure_pattern_or<I>() -> impl Parser<I, Output = StructurePattern>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (structure_pattern(), many(attempt(sptoken('|').with(structure_pattern())))).map(
+        |(first, rest): (StructurePattern, Vec<StructurePattern>)| {
+            if rest.is_empty() {
+                first
+            } else {
+                StructurePattern::Or(Arc::from_iter(
+                    std::iter::once(first).chain(rest.into_iter()),
+                ))
+            }
+        },
+    )
+}
+
 pub(crate) fn pattern<I>() -> impl Parser<I, Output = Pattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -397,7 +422,7 @@ where
 {
     (
         optional(attempt(typ().skip(spaces1()).skip(string("as")).skip(spaces1()))),
-        structure_pattern(),
+        structure_pattern_or(),
         optional(attempt(spaces1().with(string("if")).with(spaces1()).with(expr()))),
     )
         .map(

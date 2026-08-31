@@ -281,6 +281,10 @@
           "named": true
         },
         {
+          "type": "or_pattern",
+          "named": true
+        },
+        {
           "type": "structure_pattern",
           "named": true
         }
@@ -980,6 +984,10 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "or_pattern",
+          "named": true
+        },
         {
           "type": "structure_pattern",
           "named": true
@@ -4970,6 +4978,10 @@
       "required": false,
       "types": [
         {
+          "type": "or_pattern",
+          "named": true
+        },
+        {
           "type": "structure_pattern",
           "named": true
         }
@@ -4997,6 +5009,10 @@
       "types": [
         {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "or_pattern",
           "named": true
         },
         {
@@ -6407,6 +6423,21 @@
     }
   },
   {
+    "type": "or_pattern",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "structure_pattern",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "parenthesized_expression",
     "named": true,
     "fields": {},
@@ -6782,6 +6813,10 @@
         },
         {
           "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "or_pattern",
           "named": true
         },
         {
@@ -7818,6 +7853,10 @@
           "named": true
         },
         {
+          "type": "or_pattern",
+          "named": true
+        },
+        {
           "type": "structure_pattern",
           "named": true
         }
@@ -7845,6 +7884,10 @@
       "types": [
         {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "or_pattern",
           "named": true
         },
         {
@@ -8306,6 +8349,10 @@
         "multiple": false,
         "required": false,
         "types": [
+          {
+            "type": "or_pattern",
+            "named": true
+          },
           {
             "type": "structure_pattern",
             "named": true
@@ -9627,6 +9674,10 @@
       "required": true,
       "types": [
         {
+          "type": "or_pattern",
+          "named": true
+        },
+        {
           "type": "structure_pattern",
           "named": true
         }
@@ -10825,6 +10876,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "or_pattern",
+          "named": true
+        },
         {
           "type": "structure_pattern",
           "named": true

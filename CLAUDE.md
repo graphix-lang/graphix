@@ -1097,6 +1097,25 @@ the rules.
   loop: `lfold_rec` beats the list intrinsic at 100k. Nested element
   patterns and `@`-binds on list arms de-fuse (coverage).
 
+- **Or-patterns** (`design/or_patterns.md`, ruled+built 2026-08-31,
+  orthodox): `p1 | p2 | …` in select arms and every bracketed element
+  position; top-level or-patterns are SELECT-ARM-ONLY (`let`/lambda
+  params refuse — the lambda arg list is `|`-delimited); `@`-captures
+  are per-alternative (no pattern parens; same-binds forces symmetry).
+  Alternatives try left to right, first structural match binds; every
+  alternative binds the SAME names at EXACTLY EQUAL types (BindIds are
+  shared — alternative 0 allocates via `BindMode::Record`, the rest
+  `Reuse` and bind nothing in the env; open cells unify at the reused
+  leaf, concrete mismatches err); ONE guard per arm covers the whole
+  alternation. Coverage is per coverage ATOM (`arm_atoms`): an or-arm
+  claims once per alternative against its own member of the raw
+  inferred Set (`true | false` completes bool, `[] | [_, ..]` feeds
+  the length ladder — the bound ladder spelling is ill-typed first by
+  same-binds). Dead ALTERNATIVES are errors like dead arms (duplicate,
+  post-wildcard, range-covered, type-dead vs the residual scrutinee).
+  JIT: or-arms DE-FUSE loudly (P3 emits chained tests into one body
+  block). Pins: `lang/select.rs` `or_*`, parser
+  `or_patterns_parse`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>` (only as a whole typedef body) has identity
   `AbstractId::of(scope, name)` (a path-derived v5 UUID, minted at

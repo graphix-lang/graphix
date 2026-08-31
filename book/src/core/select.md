@@ -142,6 +142,7 @@ is structural. Graphix supports several kinds of structural matching,
 - structs
 - variants
 - literals, ignore
+- or alternatives
 
 NB: In most contexts you can match the entire value as well as parts of it's
 structure by adding a `v@` pattern before the pattern. You will see this in many
@@ -385,10 +386,50 @@ Caused by:
 You can match literals as well as bind variables, as you may have noticed, and
 the special pattern `_` means match anything and don't bind it to a variable.
 
-### Missing Features
+### Or Patterns
 
-A significant missing feature from patterns vs other languages is support for
-multiple alternative patterns in one arm. I plan to add this at some point.
+An arm can match several alternative patterns, separated by `|`. Alternatives
+are tried left to right, and the first one that matches structurally selects
+the arm and delivers its bindings.
+
+```graphix
+select (0, 5) {
+    (0, y) | (y, 0) => y,
+    _ => -1
+}
+```
+
+```
+$ graphix or.gx
+5
+```
+
+The rules are the orthodox ones:
+
+- **Same binds, same types.** Every alternative must bind exactly the same
+  names, and each name must have exactly the same type in every alternative.
+  `(0, y) | (y, 0)` is fine over `(i64, i64)`; `1 | x` is refused (the second
+  alternative binds `x`, the first binds nothing).
+- **One guard per arm.** A guard written after the alternation covers the
+  whole arm: `(0, y) | (y, 0) if y > 3 => y`.
+- **No dead alternatives.** An alternative that can never match — a duplicate
+  of an earlier one, anything after an alternative that matches everything, or
+  one whose type can't match what's left of the scrutinee — is an error, just
+  like a dead arm.
+
+Alternatives nest anywhere a sub-pattern can appear: `` `A(1 | 2) `` matches
+`` `A `` carrying 1 or 2. Coverage counts each alternative separately, so an
+arm's alternatives can complete a set of variants or a slice length ladder —
+`[] | [_, ..]` covers every array length with no wildcard.
+
+Top-level or-patterns belong to select arms only: `let` bindings and lambda
+parameters refuse them (a lambda's argument list is itself delimited by `|`,
+and those positions are irrefutable anyway — an or-pattern there could never
+be useful).
+
+There is no `x@ (p1 | p2)` — patterns have no grouping parentheses. A capture
+is per-alternative, and the same-binds rule keeps it symmetric:
+`t@ `D(_) | t@ `E(_) => f(t)`.
 
 ## Select and Connect
 

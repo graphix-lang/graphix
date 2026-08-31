@@ -589,6 +589,16 @@ module.exports = grammar({
       $.struct_pattern,
     ),
 
+    // Or-alternatives (design/or_patterns.md): legal in select arms
+    // and bracketed element positions; NOT let / lambda params (the
+    // lambda arg list is |-delimited).
+    _pattern_alt: $ => choice($.structure_pattern, $.or_pattern),
+
+    or_pattern: $ => prec.left(seq(
+      $.structure_pattern,
+      repeat1(seq('|', $.structure_pattern)),
+    )),
+
     // A path whose LAST segment is a type name: the constructor of a
     // Graphix-minted abstract type (`T(v)` / the pattern `T(p)`).
     construct_path: $ => seq(
@@ -606,7 +616,7 @@ module.exports = grammar({
       optional(seq(field('all', $._binding_name), '@')),
       $.construct_path,
       '(',
-      $.structure_pattern,
+      $._pattern_alt,
       ')',
     ),
 
@@ -618,21 +628,21 @@ module.exports = grammar({
     tuple_pattern: $ => seq(
       optional(seq(field('all', $._binding_name), '@')),
       '(',
-      commaSep1($.structure_pattern),
+      commaSep1($._pattern_alt),
       ')',
     ),
 
     array_pattern: $ => seq(
       optional(seq(field('all', $._binding_name), '@')),
       '[',
-      commaSep($.structure_pattern),
+      commaSep($._pattern_alt),
       ']',
     ),
 
     slice_prefix_pattern: $ => seq(
       optional(seq(field('all', $._binding_name), '@')),
       '[',
-      repeat(seq($.structure_pattern, ',')),
+      repeat(seq($._pattern_alt, ',')),
       optional($._binding_name),
       '..',
       ']',
@@ -644,7 +654,7 @@ module.exports = grammar({
       optional($._binding_name),
       '..',
       ',',
-      commaSep1($.structure_pattern),
+      commaSep1($._pattern_alt),
       ']',
     ),
 
@@ -653,14 +663,14 @@ module.exports = grammar({
     list_pattern: $ => seq(
       optional(seq(field('all', $._binding_name), '@')),
       '[', token.immediate('<'),
-      commaSep($.structure_pattern),
+      commaSep($._pattern_alt),
       '>', token.immediate(']'),
     ),
 
     list_prefix_pattern: $ => seq(
       optional(seq(field('all', $._binding_name), '@')),
       '[', token.immediate('<'),
-      repeat(seq($.structure_pattern, ',')),
+      repeat(seq($._pattern_alt, ',')),
       optional($._binding_name),
       '..',
       '>', token.immediate(']'),
@@ -670,7 +680,7 @@ module.exports = grammar({
       optional(seq(field('all', $._binding_name), '@')),
       '`',
       $.type_identifier,
-      optional(seq('(', commaSep($.structure_pattern), ')')),
+      optional(seq('(', commaSep($._pattern_alt), ')')),
     ),
 
     struct_pattern: $ => seq(
@@ -683,14 +693,14 @@ module.exports = grammar({
 
     struct_pattern_field: $ => seq(
       field('name', $._field_name),
-      optional(seq(':', field('pattern', $.structure_pattern))),
+      optional(seq(':', field('pattern', $._pattern_alt))),
     ),
 
     // Match pattern (for select)
     // Format: [Type as] structure_pattern [if guard]
     pattern: $ => seq(
       optional(seq($._type, 'as')),
-      $.structure_pattern,
+      $._pattern_alt,
       optional(seq('if', $._expression)),
     ),
 

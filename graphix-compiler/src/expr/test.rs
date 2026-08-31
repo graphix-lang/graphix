@@ -527,8 +527,26 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                     head,
                     suffix: Arc::from_iter(s)
                 }),
+            // Or is FLAT: an alternative is never itself an Or (the
+            // printer emits no parens, so a nested Or would reparse
+            // flat and break the round trip).
+            collection::vec(
+                inner.clone().prop_filter("no nested or in or", |p| {
+                    !matches!(p, StructurePattern::Or(_))
+                }),
+                (2, 5)
+            )
+            .prop_map(|alts| StructurePattern::Or(Arc::from_iter(alts))),
         ]
     })
+}
+
+/// The strategy for irrefutable top-level positions (`let`, lambda
+/// params): everything but a top-level `Or`, which those positions
+/// refuse at parse (select-arm-only).
+fn structure_pattern_no_or() -> impl Strategy<Value = StructurePattern> {
+    structure_pattern()
+        .prop_filter("or is select-arm-only", |p| !matches!(p, StructurePattern::Or(_)))
 }
 
 fn pattern() -> impl Strategy<Value = Pattern> {
@@ -736,7 +754,7 @@ macro_rules! tupleref {
 
 macro_rules! bind {
     ($inner:expr) => {
-        ($inner, any::<bool>(), structure_pattern(), option::of(typexp())).prop_map(
+        ($inner, any::<bool>(), structure_pattern_no_or(), option::of(typexp())).prop_map(
             |(value, rec, p, typ)| {
                 ExprKind::Bind(Arc::new(BindExpr { rec, pattern: p, value, typ }))
                     .to_expr_nopos()
@@ -859,7 +877,7 @@ macro_rules! lambda {
                 (
                     any::<bool>(),
                     random_fname(),
-                    structure_pattern(),
+                    structure_pattern_no_or(),
                     option::of(typexp()),
                     option::of($inner),
                 ),
@@ -1529,6 +1547,13 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
         ) => {
             a0 == a1
                 && p0.len() == p1.len()
+                && p0
+                    .iter()
+                    .zip(p1.iter())
+                    .all(|(p0, p1)| check_structure_pattern(p0, p1))
+        }
+        (StructurePattern::Or(p0), StructurePattern::Or(p1)) => {
+            p0.len() == p1.len()
                 && p0
                     .iter()
                     .zip(p1.iter())

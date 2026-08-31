@@ -2200,3 +2200,24 @@ fn list_is_a_reserved_type_name() {
     assert!(parse_one("select x { `List(n) => n, `Array => 2, _ => 0 }").is_ok());
     assert!(parse_one("type T = [`List(i64), `N]").is_ok());
 }
+
+#[test]
+fn or_patterns_parse() {
+    // Arm-level alternation, nested alternation, per-alternative
+    // capture (design/or_patterns.md, ruled 2026-08-31).
+    parse_one("select x { `A | `B => 0, _ => 1 }").unwrap();
+    parse_one("select x { `C(1 | 2, y) => y, _ => 0 }").unwrap();
+    parse_one("select x { (0, y) | (y, 0) if y > 10 => y, _ => 0 }").unwrap();
+    parse_one("select x { t@ `D(_) | t@ `E(_) => t, _ => 0 }").unwrap();
+    parse_one("select x { [a | b, c] => a, _ => 0 }").unwrap();
+    parse_one("select x { [<h | i, r..>] => h, _ => 0 }").unwrap();
+    parse_one("select x { {f: 1 | 2, ..} => 0, _ => 1 }").unwrap();
+    // Top-level or-patterns are select-arm-only: let refuses, and a
+    // lambda param cannot express one (the arg list is |-delimited).
+    assert!(parse_one("let a | b = x").is_err());
+    assert!(parse_one("let rec a | b = x").is_err());
+    assert!(parse_one("|a | b| e").is_err());
+    // NESTED or in an irrefutable position parses (refutability is
+    // the compile-time check, not the parser's).
+    parse_one("let (a | b, c) = x").unwrap();
+}
