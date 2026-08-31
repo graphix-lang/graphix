@@ -6,6 +6,7 @@ enum TokenType {
   BARE_VALUE,
   RAW_STRING,
   TRIPLE_CONTENT,
+  LIST_CLOSE,
   ERROR_SENTINEL,
 };
 
@@ -107,6 +108,42 @@ bool tree_sitter_graphix_external_scanner_scan(
   // The error sentinel is never used in the grammar, so if it's valid
   // we know we're in error recovery — bail out.
   if (valid_symbols[ERROR_SENTINEL]) return false;
+
+  // The `>]` list closer as one terminal, distinct from the comparison
+  // `>`, so `[<1 != 2>]` never faces a shift/reduce choice on `>`
+  // (static precedence resolved it toward the comparison and any
+  // looser-than-comparison LAST element errored). Whitespace before
+  // the `>` is ordinary token separation and the internal ws skip
+  // never re-runs this scanner, so it is skipped here; adjacency is
+  // required only between `>` and `]` (the language rule). On `>` not
+  // followed by `]` the false return restores the lexer and the
+  // internal lexer reads the comparison.
+  if (valid_symbols[LIST_CLOSE]) {
+    bool skipped_ws = false;
+    while (lexer->lookahead == ' ' || lexer->lookahead == '\t' ||
+           lexer->lookahead == '\n' || lexer->lookahead == '\r') {
+      lexer->advance(lexer, true);
+      skipped_ws = true;
+    }
+    if (lexer->lookahead == '>') {
+      lexer->advance(lexer, false);
+      if (lexer->lookahead == ']') {
+        lexer->advance(lexer, false);
+        lexer->mark_end(lexer);
+        lexer->result_symbol = LIST_CLOSE;
+        return true;
+      }
+      return false;
+    }
+    // Not the closer. The adjacency tokens must not see the chars
+    // after skipped whitespace as adjacent (the RAW block's rule);
+    // everything else — the raw-string probe included, which skips
+    // its own whitespace — falls through unharmed.
+    if (skipped_ws &&
+        (valid_symbols[VALUE_EXTENSION] || valid_symbols[BARE_VALUE])) {
+      return false;
+    }
+  }
 
   // The raw-string probe must not run while a string-content token is
   // valid: content and RAW_STRING are co-valid only in the merged

@@ -2316,6 +2316,13 @@ mod tree_sitter_compat {
         panic!("unbalanced form: {}", &s[..s.len().min(80)])
     }
 
+    pub(super) fn find_probe_error(source: &str) -> Option<String> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        find_tree_error(tree.root_node(), source)
+    }
+
     fn assert_ts_parses(source: &str) {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
@@ -2408,6 +2415,33 @@ mod tree_sitter_compat {
         fn ts_pp3(s in expr()) {
             let st = format_with_flags(BitFlags::empty(), || s.to_string_pretty(80));
             assert_ts_parses(&st);
+        }
+    }
+}
+
+/// The `>]` list closer is one external terminal, distinct from the
+/// comparison `>` (admin-TUI campaign find, 2026-08-31): with the
+/// closer spelled `'>' + immediate ']'`, the shift/reduce choice at
+/// `2 • >` in `[<1 != 2>]` was resolved by static precedence toward
+/// the comparison, so any LAST element whose top operator binds
+/// looser than comparison (equality, &&, ||, ~) failed to parse.
+#[test]
+fn ts_list_closer_parses() {
+    use tree_sitter_compat::find_probe_error;
+    const SRCS: &[&str] = &[
+        "[<1 != 2>]",
+        "[<1 == 2>]",
+        "[<true && false>]",
+        "[<1 ~ 2>]",
+        "[<1 < 2>]",
+        "[<1 > 2>]",
+        "[<1, 2 >]",
+        "[<>]",
+        "select x { [<a, b>] => a, [<h, t..>] => h, [<>] => 0 }",
+    ];
+    for s in SRCS {
+        if let Some(e) = find_probe_error(s) {
+            panic!("{s:?} failed: {e}");
         }
     }
 }

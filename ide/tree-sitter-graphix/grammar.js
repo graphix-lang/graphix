@@ -22,6 +22,10 @@ module.exports = grammar({
     $._bare_value,       // bare values like base64 (external to beat line_comment on //)
     $._raw_string,       // r"..." / r#"..."# / r##"..."## — counted hashes, verbatim
     $._triple_content,   // triple-string content: bare quotes legal, stops at \ [ ] or """
+    $._list_close,       // the `>]` list closer as ONE terminal — distinct from the
+                         // comparison `>`, so `[<1 != 2>]` needs no shift/reduce
+                         // choice on `>` (static precedence resolved it toward the
+                         // comparison and equality-tailed last elements errored)
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
@@ -51,7 +55,6 @@ module.exports = grammar({
     [$.union_type, $.array_pattern],
     [$.array_pattern, $.slice_prefix_pattern],
     [$.list_pattern, $.list_prefix_pattern],
-    [$.binary_expression, $.list],
     [$.primitive_type, $.null],
     [$.primitive_type, $._field_name],
     [$.primitive_type, $._binding_name],
@@ -664,7 +667,7 @@ module.exports = grammar({
       optional(seq(field('all', $._binding_name), '@')),
       '[', token.immediate('<'),
       commaSep($._pattern_alt),
-      '>', token.immediate(']'),
+      $._list_close,
     ),
 
     list_prefix_pattern: $ => seq(
@@ -673,7 +676,7 @@ module.exports = grammar({
       repeat(seq($._pattern_alt, ',')),
       optional($._binding_name),
       '..',
-      '>', token.immediate(']'),
+      $._list_close,
     ),
 
     variant_pattern: $ => seq(
@@ -1105,7 +1108,7 @@ module.exports = grammar({
     list: $ => seq(
       '[', token.immediate('<'),
       commaSep($._expression),
-      '>', token.immediate(']'),
+      $._list_close,
     ),
 
     // Tuple
