@@ -2181,3 +2181,22 @@ fn use_new_grammar() {
     let e = parse_one("package::a(1)").unwrap();
     assert!(matches!(&e.kind, ExprKind::Apply { .. }));
 }
+
+#[test]
+fn list_is_a_reserved_type_name() {
+    // `List` is compiler-known like `Array`/`Map`: a user typedef of any
+    // of the three refuses at parse rather than dying later in typecheck
+    // with a mismatch against the native type.
+    assert!(parse_one("type List<'a> = [`Cons('a, List<'a>), `Nil]").is_err());
+    assert!(parse_one("type List = { cursor: i64 }").is_err());
+    assert!(parse_one("type Array<'a> = i64").is_err());
+    assert!(parse_one("type Map<'k> = i64").is_err());
+    parse_typexpr("List<i64>").unwrap();
+    // Variant TAGS are backtick-namespaced, not type names: a reserved
+    // word is a legal tag in expression, type and pattern position alike
+    // (the pattern parser used to refuse what the other two accept —
+    // tui's browser matches on a `List mode tag).
+    assert!(parse_one("`List").is_ok());
+    assert!(parse_one("select x { `List(n) => n, `Array => 2, _ => 0 }").is_ok());
+    assert!(parse_one("type T = [`List(i64), `N]").is_ok());
+}

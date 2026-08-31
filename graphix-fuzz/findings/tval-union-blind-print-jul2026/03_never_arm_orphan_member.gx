@@ -7,4 +7,4 @@
 // the orphan -> NAKED render, while the fused pipeline's settled
 // union (no orphan) rendered typed. Fixed: the plain fallback runs
 // structured members before bare-blind ones (tval.rs Set arm).
-{let a = [i64:0, ("foo", f64:42.)]; let out = select a {[x, tl..] => {type List<'a> = [`Cons('a, List<'a>), `Nil]; let l: List<Any> = `Cons(i64:42, `Cons(i64:3, `Nil)); l}, _ => never()}; "[array::group(out, |i, x| true)]"}
+{let a = [i64:0, ("foo", f64:42.)]; let out = select a {[x, tl..] => {type L<'a> = [`Cons('a, L<'a>), `Nil]; let l: L<Any> = `Cons(i64:42, `Cons(i64:3, `Nil)); l}, _ => never()}; "[array::group(out, |i, x| true)]"}

@@ -1061,8 +1061,15 @@ the rules.
 
 - **Native List, phase A** (`design/list_native.md`, 2026-08-31):
   `List<'a>` is a compiler-known constructor like `Array` —
-  `Type::List`, reserved type name, covariant element, no
+  `Type::List`, reserved type name (in RESERVED beside `Array`/`Map`
+  since 2026-08-31 — a user typedef of the name refuses at parse; the
+  tui widget state type renamed `List` -> `ListBox` for it, tag
+  `` `List `` and the Rust side unchanged), covariant element, no
   primitive-bit relation, `AbiKind::Value` at the kernel boundary.
+  Variant TAGS are backtick-namespaced, NOT type names: a reserved
+  word is a legal tag in expression, type and pattern position alike
+  (the pattern parser used to refuse what the other two accepted —
+  fixed 2026-08-31, pinned in `list_is_a_reserved_type_name`).
   The rep is PRIVATE to `node/collection.rs::list`: cons =
   `ValArray([head, tail])`, nil = the static EMPTY array clone,
   discriminant = length. The Collection impl lives in CORE (intrinsic

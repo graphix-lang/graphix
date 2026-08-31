@@ -2,8 +2,8 @@ use crate::{
     expr::{
         Expr, Pattern, StructurePattern,
         parser::{
-            RESERVED_BINDING, csep, expr, fldname, fname, sep_by_tok, sep_by1_tok,
-            spaces, spaces1, spstring, sptoken, typ, typname,
+            RESERVED_BINDING, csep, expr, fldname, fname, ident, sep_by_tok, sep_by1_tok,
+            spaces, spaces1, spstring, sptoken, typ,
         },
     },
     typ::Type,
@@ -221,7 +221,7 @@ where
     I::Range: Range,
 {
     (
-        token('`').with(typname()),
+        token('`').with(ident(true)),
         optional(between(
             token('('),
             sptoken(')'),

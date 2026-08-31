@@ -12,7 +12,7 @@ type Tui = [
   `LineGauge(line_gauge::LineGauge),
   `Gauge(gauge::Gauge),
   `InputHandler(input_handler::InputHandler),
-  `List(list::List),
+  `List(list::ListBox),
   `Table(table::Table),
   `Calendar(calendar::Calendar),
   `Canvas(canvas::Canvas),

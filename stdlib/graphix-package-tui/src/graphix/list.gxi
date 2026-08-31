@@ -1,5 +1,5 @@
 use super::{HighlightSpacing, Line, Style, style, Tui};
-type List = {
+type ListBox = {
   highlight_spacing: &[HighlightSpacing, null],
   highlight_style: &[Style, null],
   highlight_symbol: &[string, null],

@@ -105,8 +105,8 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter(
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
-            "bytes", "if", "_", "?", "Array", "Map", "any", "Any", "use", "rec", "catch",
-            "try", "self", "super", "package", "pub", "trait", "impl",
+            "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any", "use", "rec",
+            "catch", "try", "self", "super", "package", "pub", "trait", "impl",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),

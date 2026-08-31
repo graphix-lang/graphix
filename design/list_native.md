@@ -2,9 +2,21 @@
 
 **Status: phases A (rep + `Type::List`), B (literals + patterns +
 tree-sitter) and B3 (fused pattern lowering — the ladder beats the
-intrinsic at 100k) LANDED 2026-08-31. Open: the book
-chapter, and the overnight roundtrip proptest before the arc is
-called done. The fuzz generator EMITS list syntax since 2026-08-31
+intrinsic at 100k) LANDED 2026-08-31. Open: the overnight roundtrip proptest before the
+arc is called done. The book chapter LANDED 2026-08-31 (Fundamental
+Types gets a List section, Select gets List Patterns, stdlib/list
+re-synced from the gxi, the recursive-types cons-list example renamed
+to `Lst`). Name reservation ENFORCED 2026-08-31 (Eric's call): `List`
+joined RESERVED beside `Array`/`Map` — a user typedef of the name
+refuses at parse instead of dying later in typecheck with a mismatch
+against the native type; tui's widget state type renamed `List` ->
+`ListBox` for it (its `` `List `` TAG and the Rust compile keyed on
+the tag are unchanged). Fallout fix: variant TAGS are
+backtick-namespaced, not type names — the pattern-position tag parser
+consulted `typname()` and refused reserved words the expression and
+type positions accept (`` `Array `` was constructible but not
+matchable); it now uses `ident(true)` like the other two, pinned in
+`list_is_a_reserved_type_name`. The fuzz generator EMITS list syntax since 2026-08-31
 (`GenType::List`: literals, from_array/cons/map/filter producers, the
 pattern-ladder select mode, list accessors; gen-check ~99.7% across
 seeds — the residuals are the pre-existing nullable-literal and
