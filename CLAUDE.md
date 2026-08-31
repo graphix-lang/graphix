@@ -571,6 +571,13 @@ The trace facility solves a critical problem: the compiler typechecks the entire
   this value print in this form" — found the union-member selection
   picking the never() arm's ⊥-settled cell over the concrete member
   (jul19f divergence_000000, the interp-vs-jit tuple-render split).
+- `GXDBG_TYPEREF=1` — on every "undefined type" refusal, print the
+  ref's name+scope and every `env.typedefs` scope holding that name
+  (`TYPEREF-MISS`). The tool for "is this a scope-path mismatch or is
+  the typedef GONE from the env" — one run split exactly that for the
+  private-type-union-member recurrence of module-system finding 1
+  (the typedef was gone: the instance body typechecked under the
+  caller's env; 2026-08-31).
 - `GXDBG_LETBIND=1` — print every `let` binding's publication decision
   (`LETBIND`: spec pos, production tag, whether the binding has ever
   published, frame depth, wake-hold, publishing y/n). The tool for

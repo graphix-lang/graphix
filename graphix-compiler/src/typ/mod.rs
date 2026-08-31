@@ -441,8 +441,19 @@ impl TypeRef {
         Self { params, ..self.clone() }
     }
 
-    /// This ref re-scoped, with a FRESH resolution cell: the name can
-    /// resolve differently from the new scope.
+    /// This ref re-scoped, with a fresh resolution cell — PRE-FILLED
+    /// from this ref's cell when that is already resolved: a filled
+    /// cell is the name's FINAL target (env-independent by design),
+    /// so a scope change cannot alter what it means, and dropping it
+    /// re-derived the resolution in the NEW scope — where a private
+    /// type of the defining module is not reachable at all when the
+    /// re-scope is an instance graft (the admin-TUI Toast recurrence
+    /// of module-system finding 1, 2026-08-31: a connect target's
+    /// declared type, re-scoped into a per-callsite instance whose
+    /// root-block id differs from the def compile's, failed
+    /// "undefined type" though the def had resolved it). An UNFILLED
+    /// cell stays fresh — the name can genuinely resolve differently
+    /// from a new scope.
     pub(crate) fn with_scope(&self, scope: ModPath, params: Arc<[Type]>) -> Self {
         Self {
             scope,
@@ -450,7 +461,7 @@ impl TypeRef {
             params,
             pos: self.pos,
             ori: self.ori.clone(),
-            resolved: Arc::default(),
+            resolved: Arc::new(Mutex::new(self.resolved.lock().clone())),
         }
     }
 
@@ -1209,6 +1220,18 @@ impl Type {
             Self::Ref(tr) => {
                 let TypeRef { scope, name, params, pos, ori, resolved: _ } = tr;
                 let resolved = tr.resolve_in(env).ok_or_else(|| {
+                    if std::env::var_os("GXDBG_TYPEREF").is_some() {
+                        eprintln!(
+                            "TYPEREF-MISS {name} in {scope}; typedef scopes with the name:"
+                        );
+                        for (s, m) in env.typedefs.into_iter() {
+                            if m.into_iter().any(|(n, _)| {
+                                name.ends_with(n.as_str())
+                            }) {
+                                eprintln!("  {s}");
+                            }
+                        }
+                    }
                     anyhow::Error::new(UnresolvableRef {
                         name: name.clone(),
                         scope: scope.clone(),

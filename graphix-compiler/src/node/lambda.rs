@@ -179,6 +179,18 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// woken by a capture) reads phantom formals and its body
     /// early-bottoms (transient-prime-park/01 under the flip).
     first_dispatch: bool,
+    /// The DEF-side lexical env this instance's body was compiled
+    /// under (snapshotted at build, inside the init's `with_restored`
+    /// of the `LambdaDef` env). The body's typecheck must run under
+    /// it too: the CallSite drives `typecheck0`/`typecheck1` from the
+    /// CALLER's env, where the defining module's private typedefs are
+    /// gone — a body annotation ref no def-time walk had cell-filled
+    /// (a private type as a UNION MEMBER; the def gate's probe walks
+    /// answer without expanding it) resolved against the caller's
+    /// world and failed "undefined type" (the admin-TUI Toast
+    /// recurrence of module-system finding 1, 2026-08-31). Args stay
+    /// caller-side — only the body drive restores.
+    env: Env,
 }
 
 /// True iff any of the body's external refs — formals or CAPTURES —
@@ -733,11 +745,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             wrap!(arg, arg.typecheck0(ctx))?;
             wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
         }
-        wrap!(self.body, self.body.typecheck0(ctx))?;
-        wrap!(
-            self.body,
-            self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
-        )?;
+        // The body typechecks under the DEF-side env it was compiled
+        // under (see the `env` field) — the caller's env may lack the
+        // defining module's private typedefs.
+        let env = self.env.clone();
+        ctx.with_restored(env, |ctx| {
+            wrap!(self.body, self.body.typecheck0(ctx))?;
+            wrap!(
+                self.body,
+                self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
+            )
+        })?;
         Ok(())
     }
 
@@ -751,7 +769,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
-        wrap!(self.body, self.body.typecheck1(ctx))
+        let env = self.env.clone();
+        ctx.with_restored(env, |ctx| wrap!(self.body, self.body.typecheck1(ctx)))
     }
 
     fn emit_clif(
@@ -957,6 +976,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             resident: TagValue::phantom(),
             prev_looped: false,
             first_dispatch: true,
+            env: ctx.env.clone(),
         })
     }
 }

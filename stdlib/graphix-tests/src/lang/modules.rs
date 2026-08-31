@@ -395,5 +395,44 @@ async fn use_value_soundness_witness_rejected() {
     // interp vs jit) before the fix.
     let src = r#"{let a = {let a = [true]; let tag = use array::*; {catch(e) tag <- e.0; any(a[i64:5]?, i64:0)}; select tag {"" => never(""), t => t}}; select a {[init.., x] => x * i64:100, _ => i64:0}}"#;
     let r = eval(src, crate::TEST_REGISTER).await;
-    assert!(r.is_err(), "the aieka use-in-value witness must be rejected, got {:?}", r.map(|(v, _)| v));
+    assert!(
+        r.is_err(),
+        "the aieka use-in-value witness must be rejected, got {:?}",
+        r.map(|(v, _)| v)
+    );
 }
+
+// Face 2 residual (the admin-TUI Toast recurrence, 2026-08-31): a
+// module-PRIVATE type as a UNION MEMBER in a body annotation, reached
+// through a nested lambda's connect. The def gate's probe walks
+// answer `[P, null] ⊇ null` without expanding P, so no def-time walk
+// cell-fills the ref, and the instance body's typecheck used to run
+// under the CALLER's env — where the defining module's private
+// typedefs are gone ("undefined type"). GXLambda now restores its
+// def-side env around the body drives.
+run!(
+    finding1_private_type_union_member,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    "/test.gx" => r#"
+mod m;
+let result = m::f(20)
+"#,
+    "/test/m.gxi" => r#"
+val f: fn(x: i64) -> i64;
+"#,
+    "/test/m.gx" => r#"
+type P = { title: string, ok: bool };
+let f = |x: i64| -> i64 {
+    let toast: [P, null] = null;
+    let fail = |t: string| -> null {
+        toast <- { title: t, ok: false };
+        null
+    };
+    fail("t");
+    select toast {
+        null as _ => x + 1,
+        _ => x
+    }
+}
+"#
+    ; graphix_package_core::testing::FuseExpect::Jit);
