@@ -15,6 +15,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | `representable_bottom.md` | bottom as a value; the taint channel |
 | `dense_delivery.md` | `TagValue` every cycle; fired×bottom algebra; consumer caches gone |
 | `organic_firing.md` | a node fires iff a consumed input fires |
+| `wake_catchup.md` | select wake: tracked per-input fire bits (once-per-select consumption) + forced recompute from present values; edges deliver exactly once |
 | `activation_state.md` | bottom-out rule; state multiplicity = activation multiplicity |
 | `atomic_recursion.md` | evaluation is atomic within a cycle; containment outside the language |
 | `recursive_activations.md` | activations are collection slots; no depth limit; `trait Collection` with the `'_` hole; P2b measurements |

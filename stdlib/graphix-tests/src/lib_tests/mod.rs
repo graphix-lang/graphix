@@ -32,4 +32,5 @@ mod tcp;
 mod tls;
 mod toml;
 mod typecheck;
+mod wake;
 mod xls;

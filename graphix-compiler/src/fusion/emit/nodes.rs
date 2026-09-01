@@ -21,8 +21,8 @@ use netidx_value::Value;
 
 use super::{
     abi::{
-        CompiledExpr, LocalKind, STALE, TAINT, const_stale_gate, is_tainted,
-        is_untainted, prim_to_value_disc, propagate_flags, scalar_disc, value_disc,
+        CompiledExpr, LocalKind, TAINT, const_stale_gate, is_tainted, prim_to_value_disc,
+        propagate_flags, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
@@ -170,23 +170,16 @@ pub(crate) fn emit_ref_node(
         })?;
         (l.vv, l.kind)
     };
+    // WAKE DELIVERS PRESENT-BUT-STALE: a select arm's forced init view
+    // (becoming-selected or re-selected) reads a standing binding with
+    // its honest STALE disc — the node-walk's wake view no longer
+    // upgrades standing store reads to Fired, so a re-taken arm's
+    // lifted `s <- s` loop must NOT re-arm off the replayed value
+    // (arm-rewake-ref-fired-aug2026 regressed the other way when the
+    // interp changed and this kept the old R2 stale-clear). Genuine
+    // init needs nothing here: params arrive with boundary-upgraded
+    // discs and interior slots are computed fresh.
     let disc = cx.b.use_var(vv.disc);
-    // Under a select arm's forced init view (becoming-selected or
-    // re-selected — `init_override`), a ref of a standing binding
-    // reads FIRED: the node-walk's refs read standing store entries
-    // as Fired under `wake_init` (R2), which is what re-arms interior
-    // cadence (a lifted `s <- s` loop) on arm wake. TAINT is
-    // untouched — a bottom has no standing value to fire.
-    let disc = match cx.ctx.init_override.get() {
-        Some(init) => {
-            let untainted = is_untainted(cx.b, disc);
-            let init_on = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-            let wake = cx.b.ins().band(init_on, untainted);
-            let cleared = cx.b.ins().band_imm(disc, !STALE);
-            cx.b.ins().select(wake, cleared, disc)
-        }
-        None => disc,
-    };
     match kind {
         // String: read the slot and refcount-bump — each consumer gets
         // an independently-owned ArcStr; the slot keeps its own ref

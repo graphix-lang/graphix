@@ -912,13 +912,24 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         }
         let tag = match production {
             Some(tag) => tag,
-            None => {
-                return if poisoned {
-                    self.resident.set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM))
-                } else {
-                    self.resident.ride()
-                };
+            None if poisoned => {
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM));
             }
+            // WAKE CATCH-UP (design/wake_catchup.md): the first update
+            // after this node's sleep recomputed every slot (their
+            // productions came back STALE and refreshed `value`
+            // above), but with nothing triggering, the ride below
+            // would re-surface the PRE-SLEEP collection — a resident
+            // drifted behind its slots. Rebuild on the value channel.
+            None if ctx.wake_recompute()
+                && !self.slots.is_empty()
+                && self.slots.iter().all(|slot| slot.value.is_some()) =>
+            {
+                Tag::STALE
+            }
+            None => return self.resident.ride(),
         };
         if tag.is_tainted() || poisoned {
             let t = if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };

@@ -1,0 +1,10 @@
+// Once-per-select consumption with a SHARED input
+// (design/wake_catchup.md): both arms read in1, so its fires are
+// always consumed by whichever arm is awake — the woken arm gets ZERO
+// catch-up fires and its value correctness comes entirely from the
+// forced recompute (the publish-shaped probe that proved tracking
+// alone insufficient). Flip to false after in1 -> 9: recompute reads
+// the present 9, emits 27 stale-value/fired-select.
+// Expected trace (both engines): 0; 10; 18; 27.
+// schedule-v1: cap=208 events=1664; in0=bool:true in1=i64:5; in1=i64:9; in0=bool:false
+{let v0 = select in0 {true => in1 * i64:2, false => in1 * i64:3}; v0}

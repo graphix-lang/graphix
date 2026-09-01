@@ -880,23 +880,52 @@ INTENDED semantics, never by trusting either engine.
   initializer (`Event::wake_init`). A producer materializes its value
   channel on its first production whatever the tag (`Bind` publishes a
   quiet first production; `CachedArgs` runs `eval` once from the
-  phantom). **WAKE DELIVERS PRESENT-BUT-STALE** (Eric 2026-08-31): the
-  wake-forced init view (`event.init && event.wake_init`) reads
-  standing entries STALE — a standing value is a PAST event the graph
-  already consumed, and delivering it Fired re-raised it into the
-  woken subtree (the admin pump's name-modal Enter phantom-submitted
-  the freshly opened password modal with ""). Things BORN at init
-  (constants, own first productions) still fire; only genuine init
-  (`init && !wake_init`) upgrades standing reads. Companions: a
-  present scrutinee with NO retained selection still routes (a depth-0
-  first consult runs the chain with STALE wake binds — selection is a
-  value question; the guard-flip wake keeps its aug03 FIRED), and
-  `ByRef` seeds its cell from a present-but-stale child as a standing
-  STALE entry. Pin: `lib_tests/callable.rs`
-  `arm_wake_delivers_standing_args_stale`. The RESTART builtins
-  (`once`/`take`/`skip`/`uniq`/`hold`/
+  phantom). **WAKE CATCH-UP** (`design/wake_catchup.md`, Eric
+  2026-09-01, subsuming the 08-31 present-but-stale ruling): *a
+  reselected arm always recomputes from the world as it stands; the
+  only events it re-raises are the fires no selected reader saw,
+  once, at their current value.* Three mechanisms: (1) each select
+  keeps one fire bit per ARM-BODY input (free refs, refreshed at
+  deselect; guards/scrutinee/pattern binds excluded), set on sound
+  fires — even with no arm selected — and CONSUMED by whichever arm
+  evaluation reads the input; an unconsumed bit delivers at wake as
+  ONE catch-up FIRED at the current standing value (conflation;
+  `queue` is lossless), injected into the event scoped to the arm's
+  evaluation; (2) the first update after a node's sleep FORCES
+  recompute (the `Node` funnel's slept bit → `ExecCtx::woke` → the
+  fourth disjunct in every dense skip beside `frame_depth`), and the
+  value channel re-reaches the store (Bind quiet re-publish, CallSite
+  arg refresh, GXLambda formal re-seed, MapQ rebuild); (3) tags stay
+  honest — the wake view reads standing entries STALE (a standing
+  value is a PAST event; delivering it Fired phantom-submitted the
+  admin pump's password modal), and a STATELESS builtin's eval
+  re-runs from the present stale slots at wake (`CachedArgs`, one
+  implementation on both engines via the DynCall dispatcher's
+  `ctx.woke`/`graphix_wake_hint`) while a stateful one retags — its
+  resident IS its state and its edge catch-up arrives as a tracked
+  fire. Kernel: wire slot 0 bit 2 = WAKE; genuine init =
+  `bit0 & !bit2` gates the stale-mask suppression AND the DynCall
+  site's first-dispatch arrival upgrade; kernels carry NO fire bits —
+  a stateful (non-restart) builtin in a VALUE-POSITION arm extent
+  de-fuses (`has_stateful_reach`, transitively; tail-position arms
+  exempt — frames/activations exclude the mechanism and
+  per-activation site blocks are the twin), so the interp select's
+  tracker, which injects THROUGH the kernel boundary, is always the
+  mechanism where it matters. Things BORN at init (constants, own
+  first productions) still fire; only genuine init upgrades standing
+  reads; frames are excluded entirely (`wake_recompute()` is depth-0
+  only — the frame-formal FIRED overlay seed survives). Companions: a
+  present scrutinee with NO retained selection still routes (depth-0
+  first consult; the guard-flip wake keeps its aug03 FIRED), `ByRef`
+  seeds its cell stale. Pins: `findings/wake-catchup-sep2026/00–06`
+  (Eric's 43/2/21/62 table, shared-input spent, sequential wakers,
+  conflation, `~` catch-up, the no-arm window, nested composition),
+  `dyncall-arm-init-stale-aug2026` (re-adjudicated in place),
+  `lib_tests/callable.rs` `arm_wake_delivers_standing_args_stale`.
+  The RESTART builtins (`once`/`take`/`skip`/`uniq`/`hold`/
   `count`, `SLEEP_RESTARTS`) clear on sleep; a select whose arm reaches
-  one de-fuses (kernels have no per-arm sleep initiator). Pins:
+  one de-fuses in ANY arm extent (kernels have no per-arm sleep
+  initiator). Pins:
   `findings/{sleep-preserves-caches-jul2026,arm-local-bind-aug2026,
   sleep-restart-gate-aug2026}/`.
 - **THE QUIET FLAG**: a re-derivation inside a quiet frame

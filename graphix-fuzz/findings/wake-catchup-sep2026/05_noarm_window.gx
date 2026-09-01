@@ -1,0 +1,8 @@
+// Tracking runs even with NO arm selected (design/wake_catchup.md):
+// skip(#n:1) swallows the init fire so the scrutinee stands bottom —
+// the select bottoms (no ride) — and in1's fire during that window
+// lands in the tracked bits with no selected reader. The first
+// selection consumes it as a genuine catch-up fire: count = 1.
+// Expected trace (both engines): <bottom>; <quiet>; 1.
+// schedule-v1: cap=208 events=1664; in1=i64:5; in0=i64:1
+{let v0 = select skip(#n: 1, in0) {i64:1 => count(in1), _ => i64:-1}; v0}

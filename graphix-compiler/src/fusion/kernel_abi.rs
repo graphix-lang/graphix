@@ -1357,16 +1357,19 @@ pub struct KernelSig {
     /// loop).
     pub tail_invariant: Vec<u32>,
     /// Post-define facts for the interior-sleep gate (P7): `defined`
-    /// flips true when the kernel body's CLIF define completes, and
-    /// `has_sleep_restart` records whether the body TRANSITIVELY reaches a
-    /// SLEEP-RESTARTING builtin DynCall (harvested from
-    /// `LowerCtx::saw_restart_reach`). Callers consult these at
+    /// flips true when the kernel body's CLIF define completes;
+    /// `has_restart_reach` records whether the body TRANSITIVELY
+    /// reaches a SLEEP-RESTARTING builtin DynCall (refused inside ANY
+    /// select-arm extent), and `has_stateful_reach` a merely STATEFUL
+    /// one (refused inside VALUE-POSITION arm extents — wake
+    /// catch-up, design/wake_catchup.md). Callers consult these at
     /// their call sites — callees define before callers, so a
     /// `defined` read of `false` means a self/back-edge call, which
     /// takes the deferred conservative check instead. Write-once
     /// monotone; Relaxed suffices (single-threaded compilation).
     pub defined: std::sync::atomic::AtomicBool,
-    pub has_sleep_restart: std::sync::atomic::AtomicBool,
+    pub has_restart_reach: std::sync::atomic::AtomicBool,
+    pub has_stateful_reach: std::sync::atomic::AtomicBool,
     /// This body's own call-site block shape, packed so a SELF-CALL can
     /// read it: `words | ((replay_hdr + 1) << 32)`, high half 0 for no
     /// header. A self-call has to allocate a block for the activation
@@ -1391,7 +1394,8 @@ impl Clone for KernelSig {
             skipped_args: self.skipped_args.clone(),
             tail_invariant: self.tail_invariant.clone(),
             defined: AtomicBool::new(self.defined.load(Relaxed)),
-            has_sleep_restart: AtomicBool::new(self.has_sleep_restart.load(Relaxed)),
+            has_restart_reach: AtomicBool::new(self.has_restart_reach.load(Relaxed)),
+            has_stateful_reach: AtomicBool::new(self.has_stateful_reach.load(Relaxed)),
             site_desc: std::sync::atomic::AtomicU64::new(self.site_desc.load(Relaxed)),
         }
     }
@@ -1476,7 +1480,14 @@ pub struct SiteLeaf {
 /// a re-selection or a first call is loop plumbing and grants no init
 /// view (`LowerCtx::quiet_flag`). The wrapper sets it from an interp
 /// frame (`frame_depth > 0 && !frame_init`); a tail-loop body sets it
-/// for itself when bit 0 is clear; callees inherit it.
+/// for itself when bit 0 is clear; callees inherit it. Bit 2 is the
+/// WAKE flag (design/wake_catchup.md): the invocation runs under a
+/// wake view, not genuine init — the enclosing arm's forced init view
+/// (`event.wake_init`) or this kernel node's own first update after
+/// sleep (the Node funnel's `ctx.woke`). Bit 0 stays the FORCED view
+/// (wakes included — constants fire at wake on both engines); the
+/// stale-mask suppression reads `bit0 & !bit2` so standing deliveries
+/// stay honest at wakes (`LowerCtx::wake_flag`).
 ///
 /// Slot 1 is the per-kernel-INSTANCE state pointer (`*mut u64`, 0 when
 /// the kernel claimed no state — `WrappedKernel::state_words == 0`): a

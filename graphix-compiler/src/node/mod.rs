@@ -419,14 +419,16 @@ pub(crate) fn gather<R: Rt, E: UserEvent>(
 /// The dense recompute gate + bottom join, shared by every node that
 /// computes from its children's productions. Skip (ride) unless a
 /// consumed production triggered, the resident is a bottom needing a
-/// value-channel refill, or we're inside an evaluation frame (R1:
-/// framed passes recompute unconditionally — exactly the kernel). Any
-/// consumed bottom bottoms the result: FreshBottom iff a delivery
-/// triggered this cycle, else the quiet ride (the join rule —
-/// standing bottoms never re-mint events).
+/// value-channel refill, or recomputation is forced — an evaluation
+/// frame (R1: framed passes recompute unconditionally — exactly the
+/// kernel) or the first update after this node's sleep (wake
+/// catch-up: a slept node's stale inputs may have drifted,
+/// design/wake_catchup.md). Any consumed bottom bottoms the result:
+/// FreshBottom iff a delivery triggered this cycle, else the quiet
+/// ride (the join rule — standing bottoms never re-mint events).
 macro_rules! dense_gate {
     ($self:ident, $ctx:ident, $trig:expr, $bottom:expr) => {{
-        if !($trig || $self.resident.tag().is_bottom() || $ctx.frame_depth > 0) {
+        if !($trig || $self.resident.tag().is_bottom() || $ctx.recompute_forced()) {
             return $self.resident.ride();
         }
         if $bottom {
@@ -1156,7 +1158,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
                     vals.push(tv.value_cloned())
                 }
             }
-            if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0) {
+            if !(trig || resident.tag().is_bottom() || ctx.recompute_forced()) {
                 return resident.ride();
             }
             if bottom {

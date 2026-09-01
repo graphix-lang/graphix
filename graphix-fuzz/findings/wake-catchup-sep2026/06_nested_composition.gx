@@ -1,0 +1,11 @@
+// Nesting composes with no extra machinery (design/wake_catchup.md):
+// in1 fires while the OUTER arm 0 is selected — the inner select
+// (asleep inside outer arm 1) observes nothing, but the OUTER
+// tracker's per-arm set covers it (an arm's refs include everything
+// under it). The outer wake injects the catch-up fire scoped to arm
+// 1's evaluation; the inner select observes it as a live delivery,
+// routes, and its count consumes it once (1). A later live fire
+// counts normally (2).
+// Expected trace (both engines): 0; <quiet>; 1; 2.
+// schedule-v1: cap=208 events=1664; in1=i64:5 in2=i64:0; in0=i64:1; in1=i64:9
+{let v0 = select in0 {i64:0 => i64:0, _ => select in2 {i64:0 => count(in1), _ => i64:-1}}; v0}

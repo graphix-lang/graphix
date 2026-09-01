@@ -33,7 +33,7 @@ let handle = |tag: string| -> null poke(&ed, tag);
 let result = ed.value
 "#;
 
-fn find_bind_id(env: &Env, name: &str) -> Result<graphix_compiler::BindId> {
+pub(super) fn find_bind_id(env: &Env, name: &str) -> Result<graphix_compiler::BindId> {
     let parts: Vec<&str> = name.split("::").collect();
     let (module, var) = match parts.as_slice() {
         [module, var] => (*module, *var),

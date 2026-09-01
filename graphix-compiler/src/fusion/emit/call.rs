@@ -139,11 +139,28 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // (the documented arm-rewake RESTART semantics). A kernel
             // has no interior arm-sleep initiator, so a
             // sleep-restarting builtin inside an arm extent de-fuses
-            // the region — the pre-P7 fusion shape for exactly these
-            // programs.
+            // the region.
             return Err(anyhow!(
                 "emit_clif: sleep-restarting builtin DynCall inside a \
                  select arm (no interior arm-sleep in kernels)"
+            ));
+        }
+    } else if !info.stateless {
+        cx.ctx.saw_stateful_reach.set(true);
+        if cx.ctx.value_arm_depth.get() > 0 {
+            // The STATEFUL half of the gate (wake catch-up,
+            // design/wake_catchup.md): the interp select TRACKS its
+            // arm-body inputs' fires so a woken arm's stateful sites
+            // consume exactly the events no selected reader saw —
+            // once. A kernel has no tracked fire bits, so a stateful
+            // builtin inside a VALUE-POSITION arm extent de-fuses the
+            // region to the interp select, the canonical mechanism.
+            // Tail-position arms are exempt: they wake only through
+            // frames/activations, where the mechanism is excluded and
+            // per-activation site blocks are the correct twin.
+            return Err(anyhow!(
+                "emit_clif: stateful builtin DynCall inside a \
+                 value-position select arm (no fire-tracking in kernels)"
             ));
         }
     }
@@ -389,21 +406,26 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             let bit = cx.b.ins().ishl_imm(s64, i as i64);
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
-        // Suppress the mask under the EFFECTIVE INIT view (kernel
-        // init OR a becoming-selected arm — `init_flag` reflects the
-        // arm override, same authority as the loop taint force): the
-        // interp's newly-woken arm updates with event.init=true, so
-        // EVERYTHING re-delivers as an ARRIVAL and eval runs — but
-        // the raw input discs still read STALE. Masking them stale
-        // made the arm's first re-selected dispatch ride the site's
-        // last result from a previous selection (aug08b ryouko
-        // reactive/000000: a re-selected arm's list::to_array
-        // surfaced its pre-deselection array while the interp's
-        // arm-init re-eval'd fresh).
-        let init = cx.init_flag();
-        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+        // Suppress the mask under GENUINE init only: the raw kernel
+        // init (wire bit 0) minus the wake bit (wire bit 2) — never a
+        // becoming-selected arm's override. WAKE DELIVERS
+        // PRESENT-BUT-STALE (design/wake_catchup.md): a wake
+        // invocation (the enclosing arm's forced init view, or this
+        // kernel node's first update after sleep) must deliver its
+        // standing inputs with honest stale bits — the wrapper's wake
+        // catch-up re-runs a STATELESS eval from the present slots,
+        // and a stateful builtin must not consume a standing value as
+        // an event (pin 02_sequential_wakers: the fired view made a
+        // woken arm's count re-count the spent input).
+        let init = cx.ctx.init_flag;
+        let wake = cx.ctx.wake_flag;
+        let genuine = {
+            let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+            let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
+            cx.b.ins().band(init_b, no_wake)
+        };
         let zero = cx.b.ins().iconst(types::I64, 0);
-        cx.b.ins().select(init_b, zero, stale_mask)
+        cx.b.ins().select(genuine, zero, stale_mask)
     };
     // IN-LOOP init-run exactness (katana jul21a, fold-acc-taint-jul2026):
     // one scaffold-loop DynCall site serves EVERY collection position,
@@ -473,6 +495,19 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             call
         }
         None => {
+            // WAKE HINT (design/wake_catchup.md): a becoming-selected
+            // arm's woke bit rides to the dispatcher through a
+            // thread-local set immediately before the dispatch — the
+            // shared CachedArgs wrapper then runs its wake catch-up
+            // (STATELESS eval re-runs from the present stale slots)
+            // exactly as under the interp's node-funnel woke bit.
+            // Only the ARM override is hinted: the kernel-node-slept
+            // case already reaches the wrapper through `ctx.woke`,
+            // and a guard/scrutinee kernel must not wake-recompute.
+            if let Some(w) = cx.ctx.wake_override.get() {
+                let hint = cx.helper("graphix_wake_hint")?;
+                cx.b.ins().call(hint, &[w]);
+            }
             cx.b.ins()
                 .call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word])
         }
@@ -1111,7 +1146,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     {
         use std::sync::atomic::Ordering::Relaxed;
         if info.kernel.defined.load(Relaxed) {
-            if info.kernel.has_sleep_restart.load(Relaxed) {
+            if info.kernel.has_restart_reach.load(Relaxed) {
                 cx.ctx.saw_restart_reach.set(true);
                 if cx.ctx.arm_depth.get() > 0 {
                     return Err(anyhow!(
@@ -1121,11 +1156,31 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                     ));
                 }
             }
-        } else if cx.ctx.arm_depth.get() > 0 {
-            cx.ctx.self_backedge_in_arm.set(true);
+            if info.kernel.has_stateful_reach.load(Relaxed) {
+                cx.ctx.saw_stateful_reach.set(true);
+                if cx.ctx.value_arm_depth.get() > 0 {
+                    return Err(anyhow!(
+                        "lambda call `{fn_name}`: callee reaches a \
+                         stateful builtin inside a value-position \
+                         select arm (no fire-tracking in kernels)"
+                    ));
+                }
+            }
+        } else {
+            if cx.ctx.arm_depth.get() > 0 {
+                cx.ctx.self_backedge_in_arm.set(true);
+            }
+            if cx.ctx.value_arm_depth.get() > 0 {
+                cx.ctx.self_backedge_in_value_arm.set(true);
+            }
         }
-        if is_self && cx.ctx.arm_depth.get() > 0 {
-            cx.ctx.self_backedge_in_arm.set(true);
+        if is_self {
+            if cx.ctx.arm_depth.get() > 0 {
+                cx.ctx.self_backedge_in_arm.set(true);
+            }
+            if cx.ctx.value_arm_depth.get() > 0 {
+                cx.ctx.self_backedge_in_value_arm.set(true);
+            }
         }
     }
     // Hoist the registry borrow (a `'c` ref independent of `cx`) so the

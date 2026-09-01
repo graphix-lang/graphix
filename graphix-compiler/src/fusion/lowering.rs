@@ -114,6 +114,14 @@ pub struct BuiltinCallSiteInfo {
     /// reproduced there; the region de-fuses instead (P7, the
     /// Sync-flip gate). Cast/qop pseudo-sites are sleep-inert.
     pub sleep_restarts: bool,
+    /// The builtin's `STATELESS` fact (`ctx.builtin_stateless`), read
+    /// at discovery. Load-bearing for the WIDENED interior-sleep gate
+    /// (design/wake_catchup.md): a STATEFUL builtin inside a select-
+    /// arm extent de-fuses — kernels have no tracked fire bits, so a
+    /// fused accumulator would miss the catch-up fires the interp
+    /// select injects and mis-consume standing values at wakes.
+    /// Cast/qop pseudo-sites are stateless.
+    pub stateless: bool,
     /// The builtin's `FASTCALL` entry, if any: the site emits a direct
     /// call through `graphix_fastcall` instead of a DynCall.
     pub fastcall: Option<crate::FastFn>,
@@ -206,6 +214,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
             arg_types: vec![inner_typ.clone()],
             return_type: inner_typ,
             sleep_restarts: false,
+            stateless: true,
             fastcall: None,
         },
     );
@@ -258,6 +267,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
             sleep_restarts: false,
+            stateless: true,
             fastcall: None,
         },
     );
@@ -498,6 +508,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             arg_types,
             return_type,
             sleep_restarts: ctx.builtin_sleep_restarts(info.name.as_str()),
+            stateless: ctx.builtin_stateless(info.name.as_str()),
             fastcall: if all_marshalled {
                 ctx.builtin_fastcall(info.name.as_str())
             } else {

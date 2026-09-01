@@ -1193,7 +1193,7 @@ fn define_kernel_body(
         define_spill_thunk(jit, tid, func_id, &kernel_sig)?;
     }
     // Post-define fact publication (the interior-sleep gate): callers
-    // gate their reads on `defined`, so `has_sleep_restart` (stored at the
+    // gate their reads on `defined`, so `has_stateful_reach` (stored at the
     // end of `compile_into_function`) is only consulted once final.
     if crate::dbgenv::graphix_dbg_kernels() {
         eprintln!(

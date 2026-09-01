@@ -1,0 +1,13 @@
+// AT MOST ONCE PER SELECT (design/wake_catchup.md): in1 fires while
+// arm 0 (which does not read it) is selected — the bit is HELD. Arm 1
+// wakes first and consumes it (count = 1, the catch-up fire). Arm 2
+// wakes second: the bit is spent, its count receives present-but-
+// stale, never a fire — its count has no value and the arm bottoms.
+// The kernel had two fired-at-wake channels here (the aug08b arm-init
+// stale-mask suppression and DynCallSlot's first-dispatch arrival
+// upgrade), both of which made the jit emit 101; wake views now
+// deliver honest stale (wire bit 2 + the R2 genuine-init-only rule at
+// the site's first dispatch).
+// Expected trace (both engines): 0; <quiet>; 1; <bottom>.
+// schedule-v1: cap=208 events=1664; in1=i64:5; in0=i64:1; in0=i64:2
+{let v0 = select in0 {i64:0 => i64:0, i64:1 => count(in1), i64:2 => count(in1) + i64:100, _ => i64:-1}; v0}

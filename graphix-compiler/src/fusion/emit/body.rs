@@ -556,6 +556,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.quiet_flag
     }
 
+    /// THE WAKE FLAG (`I64`, 0/1, design/wake_catchup.md): the
+    /// effective wake view at this emission point — a becoming-
+    /// selected arm's own woke bit when inside one
+    /// ([`LowerCtx::wake_override`]), else the kernel-invocation wake
+    /// from wire slot 0 bit 2.
+    pub fn wake_flag(&self) -> ClifValue {
+        self.ctx.wake_override.get().unwrap_or(self.ctx.wake_flag)
+    }
+
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
     /// slot 1. Only meaningful at offsets returned by
     /// [`claim_state_word`](Self::claim_state_word); 0 when the kernel

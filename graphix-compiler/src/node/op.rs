@@ -115,7 +115,7 @@ macro_rules! compare_op {
                     let r = rhs.update(ctx, event);
                     let (lt, rt) = (l.tag(), r.tag());
                     let trig = lt.triggers() || rt.triggers();
-                    if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                    if !(trig || resident.tag().is_bottom() || ctx.recompute_forced()) {
                         return resident.ride();
                     }
                     if lt.is_bottom() || rt.is_bottom() {
@@ -292,7 +292,7 @@ macro_rules! bool_op {
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
                 let trig = lt.triggers() || rt.triggers();
-                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                if !(trig || self.resident.tag().is_bottom() || ctx.recompute_forced()) {
                     return self.resident.ride();
                 }
                 if lt.is_bottom() || rt.is_bottom() {
@@ -892,7 +892,7 @@ macro_rules! arith_op {
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
                 let trig = lt.triggers() || rt.triggers();
-                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0) {
+                if !(trig || self.resident.tag().is_bottom() || ctx.recompute_forced()) {
                     return self.resident.ride();
                 }
                 if lt.is_bottom() || rt.is_bottom() {

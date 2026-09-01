@@ -1,0 +1,8 @@
+// A genuinely-missed edge ticks at wake (design/wake_catchup.md): in1
+// fired while the sampling arm slept, unread by the selected arm —
+// held — so the wake delivers it FIRED and `~` ticks (9). This is the
+// case that killed uniform-stale-at-wake: an edge consumer must catch
+// up on exactly the fires no selected reader saw.
+// Expected trace (both engines): 0; <quiet>; 9.
+// schedule-v1: cap=208 events=1664; in1=i64:5; in0=i64:1
+{let v0 = select in0 {i64:0 => i64:0, i64:1 => in1 ~ i64:9, _ => i64:-1}; v0}

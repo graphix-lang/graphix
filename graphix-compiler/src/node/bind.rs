@@ -314,7 +314,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom()))
             );
         }
-        if !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom())) {
+        // WAKE CATCH-UP (design/wake_catchup.md): the first update
+        // after this node's sleep recomputes the RHS from present
+        // values — a STALE production here may carry a value the
+        // store's standing entry has drifted behind. Re-publish it on
+        // the value channel (quiet — the tag stays honest, wakes
+        // nobody); `<-` targets stay held back exactly as above.
+        let wake_refresh =
+            ctx.wake_recompute() && !tag.triggers() && !tag.is_bottom() && !wake_hold;
+        if !wake_hold
+            && (tag.triggers() || (!self.published && !tag.is_bottom()) || wake_refresh)
+        {
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
                     event

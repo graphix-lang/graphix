@@ -1710,6 +1710,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
                     set.push(arg.id);
+                } else if ctx.frame_depth == 0 && ctx.wake_recompute() && !tag.is_bottom()
+                {
+                    // WAKE CATCH-UP (design/wake_catchup.md): this
+                    // site's first update after sleep recomputed the
+                    // arg — its STALE production may carry a value the
+                    // arg id's standing store entry drifted behind
+                    // while the arm slept. Refresh the standing entry
+                    // so the callee's formal read (arg_refs → store)
+                    // serves the present value; honest STALE, a
+                    // value-channel refresh, never a fire.
+                    ctx.rt.store_insert_standing(
+                        arg.id,
+                        TagValue::stale(tv.value_cloned()),
+                    );
                 } else if ctx.frame_depth > 0 && !tag.is_bottom() {
                     // Inside a frame the store holds the STALE pre-frame
                     // value (R3: frames never write the store), so a

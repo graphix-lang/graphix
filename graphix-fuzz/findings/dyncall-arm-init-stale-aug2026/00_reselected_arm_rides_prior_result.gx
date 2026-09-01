@@ -14,10 +14,17 @@
 //     v0[i64:-1]$ }
 //   epochs in0=t; in0=f in1=1; in0=t  ->  interp 1,0,1,1  jit 1,0,1,0
 //
-// Fix: the emitted stale mask is SUPPRESSED under the EFFECTIVE INIT
-// view (kernel init | becoming-selected — `init_flag` carries the arm
-// override, the same authority the in-loop taint force uses), so
-// arm-init dispatches deliver everything fired and eval runs, exactly
-// the interp's fresh-arm arrival semantics.
+// Fix history: aug08b suppressed the emitted stale mask under the
+// EFFECTIVE init view (arm override included) — everything fired at
+// arm wake, eval re-ran, matching the interp's then arrival
+// semantics. The present-but-stale commits (9b2e7231, 2026-08-31)
+// moved the interp and this pin diverged with the engines SWAPPED
+// (interp rode, jit recomputed). RE-ADJUDICATED under WAKE CATCH-UP
+// (design/wake_catchup.md, Eric 2026-09-01): the trace is
+// 1, 0, 1, 1 on BOTH engines, by the ruled mechanism — in1's fire is
+// HELD (the selected `[0,1]` arm doesn't read it), and the map arm's
+// wake consumes it as a genuine catch-up fire; the forced recompute
+// covers the value plane. The stale mask now suppresses only under
+// GENUINE init (wire bit 0 & !bit 2 — the wake bit).
 // schedule-v1: cap=208 events=1664; in0=bool:true; in0=bool:false in1=i64:1; in0=bool:true
 {let v1: i64 = {let v0 = select i64:0 {_ if in0 => list::to_array(list::map(list::from_array(["a", "a"]), |v0| in1)), in0 => [i64:0, (i64:-100 - i64:7)]}; select in0 {v1 if (f64:3.14 >= f64:2.5) => v0[i64:-1]$, in1 => cast<i64>((-(z64:-1)))$}}; let v2 = i64:0; v2 <- in0 ~ (select in0 {true => v2 + i64:1, false => v2}); ((v2 + v2) * v1)}

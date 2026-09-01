@@ -1,0 +1,7 @@
+// CONFLATION (design/wake_catchup.md): in1 fires 5 then 7 while the
+// non-reading arm is selected — the tracked bit ORs, there is no
+// event queue, and the waking sum receives ONE catch-up fire at the
+// current standing value: 7, never 12. `queue` is the lossless tool.
+// Expected trace (both engines): 0; <quiet>; <quiet>; 7.
+// schedule-v1: cap=208 events=1664; in1=i64:5; in1=i64:7; in0=i64:1
+{let v0 = select in0 {i64:0 => i64:0, i64:1 => sum(in1), _ => i64:-1}; v0}

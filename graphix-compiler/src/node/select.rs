@@ -1,7 +1,7 @@
 use super::{Held, compiler::compile, pattern::StructPatternNode};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent,
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent,
     expr::{Expr, ExprId, ExprKind, Pattern},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
@@ -79,6 +79,9 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// discriminator is sealed against the settled scrutinee type
     /// ([`PatternNode::seal_shallow`]).
     shallow_sealed: bool,
+    /// Wake-catch-up fire tracking (design/wake_catchup.md). `None`
+    /// until the first update (arm ref sets need the compiled tree).
+    tracked: Option<TrackedFires>,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -101,6 +104,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             consulted: 0,
             resident: TagValue::phantom(),
             shallow_sealed: false,
+            tracked: None,
         })
     }
 
@@ -144,6 +148,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             consulted: 0,
             resident: TagValue::phantom(),
             shallow_sealed: false,
+            tracked: None,
         }))
     }
 }
@@ -218,6 +223,149 @@ fn deselect_sleep<R: Rt, E: UserEvent>(arm: &mut Node<R, E>, ctx: &mut ExecCtx<R
     ctx.shrink_unwind = saved;
 }
 
+/// Wake-catch-up fire tracking (design/wake_catchup.md, Eric's rule
+/// 2026-09-01): the select keeps one fire bit per ARM-BODY input —
+/// set when the input fires, consumed by whichever arm evaluation
+/// reads that input (the live selected arm consuming same-cycle as
+/// the degenerate case) — so a woken arm receives, as genuine FIRED
+/// deliveries conflated to the current standing value, exactly the
+/// fires no selected reader saw, once, and everything else
+/// present-but-stale. Guards, the scrutinee, and the select's own
+/// pattern binds are OUTSIDE the mechanism (they have their own
+/// consult/wake rules). Semantic state: survives sleep and
+/// `reset_replay`, cleared only by consumption. Frames are excluded
+/// entirely (framed passes run against private variable maps — loop
+/// plumbing, not the reactive world).
+#[derive(Debug, Default)]
+struct TrackedFires {
+    /// Per arm: the arm BODY's free refs (referenced minus bound
+    /// within the arm, minus the arm's own pattern binds). Computed
+    /// from compile-time refs at first update and REFRESHED at each
+    /// deselect — the moment the arm's subtree (dynamically bound
+    /// callees included) is fully materialized and its sleep begins.
+    per_arm: Vec<nohash::IntSet<BindId>>,
+    /// The union of `per_arm` — the observed set.
+    all: nohash::IntSet<BindId>,
+    /// Sound fires no arm evaluation has consumed yet.
+    pending: nohash::IntSet<BindId>,
+}
+
+impl TrackedFires {
+    fn arm_refs<R: Rt, E: UserEvent>(
+        pat: &PatternNode<R, E>,
+        arm: &Node<R, E>,
+    ) -> nohash::IntSet<BindId> {
+        let mut r = Refs::default();
+        arm.refs(&mut r);
+        pat.structure_predicate.ids(&mut |id| {
+            r.bound.insert(id);
+        });
+        r.refed.difference(&r.bound).copied().collect()
+    }
+
+    fn init<R: Rt, E: UserEvent>(arms: &[(PatternNode<R, E>, Node<R, E>)]) -> Self {
+        let per_arm: Vec<_> =
+            arms.iter().map(|(pat, n)| Self::arm_refs(pat, n)).collect();
+        let all = per_arm.iter().flatten().copied().collect();
+        TrackedFires { per_arm, all, pending: nohash::IntSet::default() }
+    }
+
+    fn refresh_arm<R: Rt, E: UserEvent>(
+        &mut self,
+        i: usize,
+        pat: &PatternNode<R, E>,
+        arm: &Node<R, E>,
+    ) {
+        self.per_arm[i] = Self::arm_refs(pat, arm);
+        self.all = self.per_arm.iter().flatten().copied().collect();
+        self.pending.retain(|id| self.all.contains(id));
+    }
+
+    /// Record this cycle's sound fires of tracked inputs. Runs before
+    /// routing, so the taken arm's evaluation consumes same-cycle
+    /// fires immediately (set-then-consume); with no arm selected —
+    /// bottom scrutinee, undecidable guards — the bits simply
+    /// accumulate for a future waker.
+    fn observe<R: Rt, E: UserEvent>(&mut self, ctx: &ExecCtx<R, E>, event: &Event<E>) {
+        if ctx.frame_depth > 0 {
+            return;
+        }
+        let mut newly: smallvec::SmallVec<[BindId; 8]> = smallvec::SmallVec::new();
+        for id in self.all.iter() {
+            if self.pending.contains(id) {
+                continue;
+            }
+            if let Some(super::VarRead::Delivered(tv)) = super::read_var(ctx, event, id) {
+                let t = tv.tag();
+                if t.is_fired() && !t.is_bottom() {
+                    newly.push(*id);
+                }
+            }
+        }
+        for id in newly {
+            self.pending.insert(id);
+        }
+    }
+
+    /// Consume the bits arm `i`'s evaluation reads, injecting a
+    /// catch-up FIRED delivery (the current standing value — N fires
+    /// during a sleep conflate to one) for each consumed input that
+    /// was not already delivered live this cycle. Returns the
+    /// injected entries for [`Self::restore`] — the deliveries are
+    /// scoped to this arm's evaluation, never visible to siblings. A
+    /// consumed input whose standing state has since bottomed (or
+    /// vanished) injects nothing — the bit is still spent; the arm
+    /// reads the bottom through its ordinary paths.
+    fn deliver<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<R, E>,
+        event: &mut Event<E>,
+        i: usize,
+    ) -> smallvec::SmallVec<[(BindId, Option<TagValue>); 4]> {
+        let mut injected: smallvec::SmallVec<[(BindId, Option<TagValue>); 4]> =
+            smallvec::SmallVec::new();
+        if ctx.frame_depth > 0 || self.pending.is_empty() {
+            return injected;
+        }
+        let Some(set) = self.per_arm.get(i) else { return injected };
+        let ids: smallvec::SmallVec<[BindId; 8]> =
+            self.pending.iter().filter(|id| set.contains(id)).copied().collect();
+        for id in ids {
+            self.pending.remove(&id);
+            let standing = match super::read_var(ctx, event, &id) {
+                // delivered live this cycle: the live delivery IS the
+                // catch-up
+                Some(super::VarRead::Delivered(_)) => None,
+                Some(super::VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
+                    Some(tv.value_cloned())
+                }
+                _ => None,
+            };
+            if let Some(v) = standing {
+                let prev = event.variables.insert(id, TagValue::fired(v));
+                injected.push((id, prev));
+            }
+        }
+        injected
+    }
+
+    fn restore<E: UserEvent>(
+        event: &mut Event<E>,
+        injected: smallvec::SmallVec<[(BindId, Option<TagValue>); 4]>,
+    ) {
+        for (id, prev) in injected {
+            match prev {
+                Some(tv) => {
+                    event.variables.insert(id, tv);
+                }
+                None => {
+                    event.variables.remove(&id);
+                }
+            }
+        }
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if !self.shallow_sealed {
@@ -226,6 +374,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             for (pat, _) in self.arms.iter_mut() {
                 pat.seal_shallow(&ctx.env, &scrut);
             }
+        }
+        if self.tracked.is_none() {
+            self.tracked = Some(TrackedFires::init(&self.arms));
         }
         let Self {
             selected,
@@ -237,7 +388,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted,
             resident,
             shallow_sealed: _,
+            tracked,
         } = self;
+        let tracked = tracked.as_mut().expect("tracked initialized above");
         // Per-arm guard production tags for THE CONSULTED-GUARD RULE
         // (design/activation_state.md, Eric 2026-08-20): only guards
         // the chain CONSULTS — structure-matching arms at or above the
@@ -247,6 +400,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let mut guard_tags: smallvec::SmallVec<[Option<Tag>; 8]> =
             smallvec::SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx, event);
+        // WAKE CATCH-UP OBSERVATION (design/wake_catchup.md): record
+        // this cycle's sound fires of the arm-body inputs BEFORE any
+        // routing or early return, so no-arm windows (bottom
+        // scrutinee, undecidable guards) still accumulate, and the
+        // taken arm's evaluation below consumes same-cycle fires
+        // immediately.
+        tracked.observe(ctx, event);
         let bottomed = arg.tag.is_tainted();
         // BOTTOM SCRUTINEE ⇒ BOTTOM SELECT (Eric's ruling 2026-08-29):
         // full stop, no ride. A select whose scrutinee bottoms produces
@@ -383,12 +543,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // tail_jump_fired_plumbing) — used by `wake_tag` below.
         let tail = tail_position.load(Ordering::Relaxed) && ctx.frame_depth > 0;
         // Read the taken arm's production: its tag plus the value
-        // (None for a bottom — the placeholder is never usable).
+        // (None for a bottom — the placeholder is never usable). The
+        // evaluation CONSUMES the arm's tracked fire bits
+        // (design/wake_catchup.md): unconsumed fires of inputs this
+        // arm reads are injected as catch-up FIRED deliveries scoped
+        // to exactly this evaluation, and the bits clear — once per
+        // select, whether the delivery was live or caught up.
         macro_rules! arm_prod {
             ($i:expr) => {{
+                let injected = tracked.deliver(ctx, event, $i);
                 let tv = arms[$i].1.update(ctx, event);
                 let t = tv.tag();
                 let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
+                TrackedFires::restore(event, injected);
                 (t, v)
             }};
         }
@@ -556,6 +723,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     }
                     if let Some(j) = selected.get() {
                         deselect_sleep(&mut arms[j].1, ctx);
+                        // refresh the sleeper's tracked read set now,
+                        // while its subtree (dynamically bound callees
+                        // included) is fully materialized — the
+                        // compile-time refs walk cannot see through a
+                        // lambda literal into an instantiated body
+                        tracked.refresh_arm(j, &arms[j].0, &arms[j].1);
                     }
                     selected.set(Some(i));
                     // The wake bind is part of the arm's INIT VIEW: on
@@ -623,6 +796,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
                 (None, Some(j)) => {
                     deselect_sleep(&mut arms[j].1, ctx);
+                    tracked.refresh_arm(j, &arms[j].0, &arms[j].1);
                     selected.set(None);
                     None
                 }
@@ -648,6 +822,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            tracked: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -667,6 +842,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            tracked: _,
         } = self;
         arg.sleep(ctx);
         for (pat, arg) in arms {
@@ -704,6 +880,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            tracked: _,
         } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
@@ -725,6 +902,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            tracked: _,
         } = self;
         arg.node.refs(refs);
         for (pat, arm) in arms {

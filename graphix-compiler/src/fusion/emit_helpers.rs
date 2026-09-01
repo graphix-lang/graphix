@@ -585,6 +585,16 @@ safe fn graphix_dyncall_set_pending() {
     DYNCALL_PENDING.with(|c| c.set(true))
 }
 
+/// Arm the per-dispatch WAKE hint (design/wake_catchup.md). Emitted
+/// immediately before a `graphix_dyncall` inside a becoming-selected
+/// select arm, with the arm's woke bit (0/1); `dispatch_typed` takes
+/// it and scopes `ctx.woke` for the inner Apply's update, so the
+/// shared `CachedArgs` wrapper runs its wake catch-up exactly as it
+/// does under the interp's node-funnel woke bit.
+safe fn graphix_wake_hint(woke: u64) {
+    WAKE_HINT.with(|c| c.set(woke != 0))
+}
+
 /// Read the active runtime's interrupt/abort control (set in
 /// `INTERRUPT_PTR` by `do_cycle`). Returns 1 if a wedged loop should
 /// abort (an `interrupt()` or `abort()` is pending), else 0. Emitted at
@@ -2196,6 +2206,17 @@ thread_local! {
     /// call site): the kernel's result is discarded and `update`
     /// itself returns `None`.
     pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
+
+    /// The per-dispatch WAKE hint (design/wake_catchup.md): set by
+    /// `graphix_wake_hint`, emitted immediately before a DynCall
+    /// dispatch inside a becoming-selected arm, consumed (taken) by
+    /// `dispatch_typed`, which scopes it into `ctx.woke` for the
+    /// inner Apply's update — the shared `CachedArgs` wrapper then
+    /// runs its wake catch-up (a STATELESS eval re-runs from the
+    /// present stale slots). The kernel-node-slept wake needs no
+    /// hint: the Node funnel's `ctx.woke` is already set for the
+    /// whole invocation.
+    pub static WAKE_HINT: Cell<bool> = const { Cell::new(false) };
 
     /// Raw pointer to the active runtime's [`crate::Control`], set per
     /// cycle by `do_cycle` on the thread running the node loop. Read by

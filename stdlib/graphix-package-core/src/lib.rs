@@ -687,9 +687,28 @@ impl<T> CachedArgs<T> {
                 None => resident.ride(),
             },
             Some(_) if !resident.tag().is_bottom() => {
-                // stale refresh: surface the result slot on the value
-                // channel — eval does NOT re-run
-                resident.retag(Tag::STALE)
+                // WAKE CATCH-UP (design/wake_catchup.md): the first
+                // update after this site's sleep may deliver all-stale
+                // args whose VALUES drifted while it slept (the slots
+                // above are already refreshed to the present values).
+                // A STATELESS eval is a pure function of the slots:
+                // re-run it, result STALE — the phantom arm's "value
+                // rule, not a firing one" extended from
+                // first-production to wake. A stateful eval must NOT
+                // re-run (its resident IS its state — an accumulator
+                // re-run on stale slots would double-count; its edge
+                // catch-up arrives separately as a genuine fired
+                // delivery from the select's tracked fire bits).
+                if T::STATELESS && ctx.wake_recompute() {
+                    match ev.eval(ctx, cached) {
+                        Some(v) => resident.set(TagValue::stale(v)),
+                        None => resident.retag(Tag::STALE),
+                    }
+                } else {
+                    // stale refresh: surface the result slot on the
+                    // value channel — eval does not re-run
+                    resident.retag(Tag::STALE)
+                }
             }
             Some(_) => {
                 // ...unless there is NOTHING to surface. A result slot

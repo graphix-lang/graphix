@@ -237,11 +237,17 @@ run!(tail_stateful_per_iteration, TAIL_STATEFUL_PER_ITERATION, |v: Result<&Value
     Ok(Value::I64(3))
 ); graphix_package_core::testing::FuseExpect::None);
 
-// The scalar shape FUSES (`max` is stateful — a running maximum over
-// its deliveries — but not a RESTART builtin, so the arm gate lets it
-// in): the kernel compiles the stateful body as native recursion and
-// each activation's DynCall site block owns its `max` — n per level,
-// 55 in all, not the 100 a shared running maximum gives.
+// The scalar shape DE-FUSES under wake catch-up
+// (design/wake_catchup.md): `max` is stateful (a running maximum) and
+// its DynCall sits in a VALUE-POSITION select arm — this body is
+// NATIVE recursion (the stateless collapse gate keeps it off the
+// tail loop), so the dispatch select is not tail-position and a
+// kernel would have no tracked fire bits for the arm's missed
+// deliveries. The interp's per-activation instances (n per level, 55
+// in all, not the 100 a shared running maximum gives) are the
+// canonical mechanism. Before the widened gate this fused via
+// per-activation site blocks, whose select-flip dimension had the
+// missed-fire hole the gate now closes.
 const TAIL_STATEFUL_SCALAR: &str = r#"
 {
   let rec f = |n: i64, acc: i64| -> i64 select n {
@@ -255,7 +261,7 @@ const TAIL_STATEFUL_SCALAR: &str = r#"
 run!(tail_stateful_scalar, TAIL_STATEFUL_SCALAR, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(55))
-); graphix_package_core::testing::FuseExpect::Jit);
+); graphix_package_core::testing::FuseExpect::None);
 
 const FOLD_STATEFUL_PER_SLOT: &str = r#"
 array::fold([i64:10, i64:20, i64:30], i64:0, |acc, x| acc + count(x))

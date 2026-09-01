@@ -629,15 +629,30 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // (dyncall-stale-arg-fired-aug2026). On the FIRST dispatch
         // the init view makes everything an arrival (R2's fresh
         // reader: a standing value or bottom reads fresh), so the
-        // STALE bit is honored only after. An entry present for
-        // EVERY slot every dispatch also keeps the shared arg Refs'
-        // residents out of play (the site-identity rule — a read_var
-        // miss would ride ANOTHER site's last delivery).
+        // STALE bit is honored only after — UNLESS the dispatch runs
+        // under a WAKE view (design/wake_catchup.md): a wake is not
+        // genuine init, and a first dispatch at an arm wake must read
+        // its standing args present-but-stale exactly as the interp's
+        // fresh CallSite does under `event.wake_init` (R2's
+        // genuine-init-only upgrade; pin 02_sequential_wakers — the
+        // fired first-dispatch delivery made a woken arm's count
+        // re-count an input another arm had already consumed). An
+        // entry present for EVERY slot every dispatch also keeps the
+        // shared arg Refs' residents out of play (the site-identity
+        // rule — a read_var miss would ride ANOTHER site's last
+        // delivery).
+        // Frames are excluded (the QUIET rule): an in-frame becoming-
+        // selected sets `event.wake_init` too, but a framed fresh
+        // activation's first dispatch keeps its arrival semantics —
+        // the interp's frame-overlay FIRED seed
+        // (frame-formal-init-view-aug2026) is the canonical channel
+        // there, and this gate must not override it.
+        let wake = ctx.frame_depth == 0 && (event.wake_init || ctx.wake_recompute());
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
             let id = self.bind_ids[i];
-            let standing = !first && stale_mask & (1u64 << i) != 0;
+            let standing = (!first || wake) && stale_mask & (1u64 << i) != 0;
             let tv = if taint_mask & (1u64 << i) != 0 {
                 let tag = if standing {
                     crate::Tag::STALE_BOTTOM
@@ -965,8 +980,20 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             fn_index, site_id, taint_mask, stale_mask, site_word as u64, words
         );
     }
-    match slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id)
-    {
+    // WAKE CATCH-UP (design/wake_catchup.md): scope the emitted wake
+    // hint (a becoming-selected arm's woke bit, armed by
+    // `graphix_wake_hint` immediately before this dispatch) into
+    // `ctx.woke` for the inner Apply's update — the shared
+    // `CachedArgs` wrapper re-runs a STATELESS eval from the present
+    // stale slots at wakes. The kernel-node-slept wake arrives here
+    // with `ctx.woke` already set by the Node funnel.
+    let hint = crate::fusion::emit_helpers::WAKE_HINT.with(|c| c.replace(false));
+    let saved_woke = ctx.woke;
+    ctx.woke = saved_woke || hint;
+    let res =
+        slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id);
+    ctx.woke = saved_woke;
+    match res {
         Some(tv) => {
             // Unified Value ABI, honest tags in-band (Seam B): hand
             // back the production's two words — the disc carries the
@@ -1747,13 +1774,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // view is `ctx.frame_init` (frames force `event.init`, so the
         // raw flag fired every in-frame const per pass — the Constant
         // node's own gate, node/mod.rs), the bind.rs/lambda.rs idiom
-        // at the wire slot — and the QUIET bit (bit 1): the invocation
+        // at the wire slot — the QUIET bit (bit 1): the invocation
         // re-derives inside a frame that is not its own init, where a
         // re-selection or a first call is loop plumbing and grants no
-        // init view (`LowerCtx::quiet_flag`).
+        // init view (`LowerCtx::quiet_flag`) — and the WAKE bit
+        // (bit 2, design/wake_catchup.md): this invocation runs under
+        // a wake view, not genuine init — either the enclosing select
+        // arm's forced init view (`event.wake_init`) or this kernel
+        // node's own first update after sleep (`ctx.woke`, the Node
+        // funnel's slept bit). Bit 0 stays the FORCED view (wakes
+        // included — constants fire at wake on both engines); bit 2
+        // is what lets the emitted stale-mask suppression subtract
+        // wakes and keep standing deliveries honest
+        // (`bit0 & !bit2` = genuine init).
         let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
         let quiet = ctx.frame_depth > 0 && !ctx.frame_init;
-        slots.push(init as u64 | (quiet as u64) << 1);
+        let wake = ctx.frame_depth == 0 && (event.wake_init || ctx.wake_recompute());
+        slots.push(init as u64 | (quiet as u64) << 1 | (wake as u64) << 2);
         slots.push(if self.state.is_empty() {
             0
         } else {

@@ -1301,9 +1301,18 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(body_ok);
         cx.b.seal_block(body_ok);
         // The interior-sleep gate's extent (P7): DynCall emission
-        // refuses stateful builtins while any select ARM body is on
-        // the emission stack — see `LowerCtx::arm_depth`.
+        // refuses sleep-restarting builtins while any select ARM body
+        // is on the emission stack, and STATEFUL builtins while a
+        // VALUE-POSITION arm is (wake catch-up,
+        // design/wake_catchup.md — a tail-position select's arms wake
+        // only through frames/activations, where the mechanism is
+        // excluded and per-activation site blocks are the correct
+        // twin). See `LowerCtx::{arm_depth, value_arm_depth}`.
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() + 1);
+        let value_arm = !sel.tail_position.load(std::sync::atomic::Ordering::Relaxed);
+        if value_arm {
+            cx.ctx.value_arm_depth.set(cx.ctx.value_arm_depth.get() + 1);
+        }
         // The arm's own-fire summary, read AT ITS POINT: the sound
         // accumulator holds exactly the consulted guards above and
         // including this arm; a taken arm's consulted guards are all
@@ -1316,6 +1325,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             fold_scrut_disc,
         };
         let arm_res = emit_arm(cx, body, mark, fires);
+        if value_arm {
+            cx.ctx.value_arm_depth.set(cx.ctx.value_arm_depth.get() - 1);
+        }
         cx.ctx.arm_depth.set(cx.ctx.arm_depth.get() - 1);
         arm_res?;
         match fail {
@@ -1919,6 +1931,12 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         let q = cx.quiet_flag();
         cx.b.ins().icmp_imm(IntCC::Equal, q, 0)
     };
+    // Returns `(eff_init, woke64)`: the arm's effective init view and
+    // the bare becoming-selected woke bit (0/1). The woke bit also
+    // scopes into `LowerCtx::wake_override` so the arm's DynCall
+    // sites hint the dispatcher (wake catch-up — the shared wrapper
+    // re-runs a STATELESS eval from the present stale slots,
+    // design/wake_catchup.md).
     let record = |cx: &mut BodyCx, addr: ClifValue, idx: usize| {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let tag = cx.b.ins().iconst(types::I64, idx as i64 + 1);
@@ -1929,12 +1947,15 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         let woke = cx.b.ins().band(changed, valid);
         let woke = cx.b.ins().band(woke, woke_allowed);
         let woke64 = cx.b.ins().uextend(types::I64, woke);
-        cx.b.ins().bor(base_init, woke64)
+        (cx.b.ins().bor(base_init, woke64), woke64)
     };
-    let prev_override = match sel_state {
+    let (prev_override, prev_wake) = match sel_state {
         Some((SelWord::Sure(addr), idx)) => {
-            let eff_init = record(cx, addr, idx);
-            cx.ctx.init_override.replace(Some(eff_init))
+            let (eff_init, woke64) = record(cx, addr, idx);
+            (
+                cx.ctx.init_override.replace(Some(eff_init)),
+                cx.ctx.wake_override.replace(Some(woke64)),
+            )
         }
         // A site-block word: 0 base = a recursive back-edge's interior
         // activation — a FRESH TRANSIENT activation whose every
@@ -1947,11 +1968,12 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             let nomem_bl = cx.b.create_block();
             let merge = cx.b.create_block();
             cx.b.append_block_param(merge, types::I64); // eff_init
+            cx.b.append_block_param(merge, types::I64); // woke64
             cx.b.ins().brif(has, mem_bl, &[], nomem_bl, &[]);
             cx.b.switch_to_block(mem_bl);
             cx.b.seal_block(mem_bl);
-            let eff_init = record(cx, addr, idx);
-            cx.b.ins().jump(merge, &[BlockArg::Value(eff_init)]);
+            let (eff_init, woke64) = record(cx, addr, idx);
+            cx.b.ins().jump(merge, &[BlockArg::Value(eff_init), BlockArg::Value(woke64)]);
             cx.b.switch_to_block(nomem_bl);
             cx.b.seal_block(nomem_bl);
             let ss = cx.b.ins().band_imm(scrut_disc, STALE);
@@ -1961,13 +1983,22 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             let woke = cx.b.ins().band(woke, woke_allowed);
             let woke64 = cx.b.ins().uextend(types::I64, woke);
             let eff_init = cx.b.ins().bor(base_init, woke64);
-            cx.b.ins().jump(merge, &[BlockArg::Value(eff_init)]);
+            cx.b.ins().jump(merge, &[BlockArg::Value(eff_init), BlockArg::Value(woke64)]);
             cx.b.switch_to_block(merge);
             cx.b.seal_block(merge);
-            let eff = cx.b.block_params(merge)[0];
-            cx.ctx.init_override.replace(Some(eff))
+            let (eff, woke) = {
+                let params = cx.b.block_params(merge);
+                (params[0], params[1])
+            };
+            (
+                cx.ctx.init_override.replace(Some(eff)),
+                cx.ctx.wake_override.replace(Some(woke)),
+            )
         }
-        None => cx.ctx.init_override.replace(Some(base_init)),
+        None => (
+            cx.ctx.init_override.replace(Some(base_init)),
+            cx.ctx.wake_override.replace(None),
+        ),
     };
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(rp) => {
@@ -2064,6 +2095,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     // scrutinee arrives disc|STALE from `emit_scrut_ride`, so a bottom
     // delivery with history stays quiet here (the ride axis).
     cx.ctx.init_override.set(prev_override);
+    cx.ctx.wake_override.set(prev_wake);
     // The FOLD disc is path-dependent under THE SELECTION RIDE: the real
     // scrutinee disc on a clean match, a neutral STALE when the held arm
     // was reached by the bottom-scrutinee dispatch (so its taint doesn't

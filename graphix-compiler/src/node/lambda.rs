@@ -348,7 +348,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // then reads phantom forever — the fold in a rec arm
             // reached through a tail step dispatched its slots with
             // kind=none for the life of the program (aug18a class 1).
-            if (first || ctx.frame_depth > 0) && !tag.triggers() && !tag.is_bottom() {
+            // ... and on the first dispatch after this site's SLEEP
+            // (wake catch-up, design/wake_catchup.md): the arg
+            // recomputed from present values, so its stale production
+            // may carry a value the formals' store entries drifted
+            // behind while the arm slept — re-seed the value channel.
+            if (first || ctx.frame_depth > 0 || ctx.wake_recompute())
+                && !tag.triggers()
+                && !tag.is_bottom()
+            {
                 let v = tv.value_cloned();
                 let store = ctx.frame_depth == 0;
                 pat.bind(&v, &mut |id, v| {

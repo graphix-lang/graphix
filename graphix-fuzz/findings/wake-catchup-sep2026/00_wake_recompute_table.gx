@@ -1,0 +1,12 @@
+// WAKE CATCH-UP (design/wake_catchup.md, ruled by Eric 2026-09-01):
+// a reselected arm always recomputes from the world as it stands; it
+// never re-raises events. Eric's probe table, verbatim: the false arm
+// is deselected while in1 moves 1 -> 20 (consumed by the true arm, so
+// the bit is spent); at the flip back it reads in1 present-but-stale
+// and the FORCED RECOMPUTE (the node-funnel slept bit disabling the
+// ride-skip) computes 20 + 42 = 62 — never the pre-sleep 43-shaped
+// ride. The interp rode here for the one day between the
+// present-but-stale commits (9b2e7231) and this rule.
+// Expected trace (both engines): 42; 2; 21; 62.
+// schedule-v1: cap=208 events=1664; in0=bool:true in1=i64:1; in1=i64:20; in0=bool:false
+{let v0 = select in0 {true => in1 + i64:1, false => in1 + i64:42}; v0}

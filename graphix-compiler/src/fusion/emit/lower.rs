@@ -79,6 +79,15 @@ pub(super) fn compile_into_function(
     // [`BodyCx::claim_state_word`]).
     let ctx_word = initial_vals[0];
     let init_flag = b.ins().band_imm(ctx_word, 1);
+    // Bit 2: the WAKE bit (design/wake_catchup.md) — this invocation
+    // runs under a wake view (an arm's forced init view, or the
+    // kernel node's own first update after sleep), so bit 0's init is
+    // not GENUINE init: the stale-mask suppression consults
+    // `init & !wake` to keep standing deliveries honest at wakes.
+    let wake_flag = {
+        let w = b.ins().band_imm(ctx_word, 4);
+        b.ins().ushr_imm(w, 2)
+    };
     let quiet_flag = {
         let q = b.ins().band_imm(ctx_word, 2);
         let q = b.ins().ushr_imm(q, 1);
@@ -218,14 +227,19 @@ pub(super) fn compile_into_function(
         },
         init_flag,
         quiet_flag,
+        wake_flag,
+        wake_override: std::cell::Cell::new(None),
         callee_refs,
         self_thunk,
         helper_refs,
         init_override: std::cell::Cell::new(None),
         sel_fires: std::cell::RefCell::new(Vec::new()),
         arm_depth: std::cell::Cell::new(0),
+        value_arm_depth: std::cell::Cell::new(0),
         saw_restart_reach: std::cell::Cell::new(false),
+        saw_stateful_reach: std::cell::Cell::new(false),
         self_backedge_in_arm: std::cell::Cell::new(false),
+        self_backedge_in_value_arm: std::cell::Cell::new(false),
         dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
@@ -319,13 +333,23 @@ pub(super) fn compile_into_function(
     if lower.self_backedge_in_arm.get() && lower.saw_restart_reach.get() {
         return Err(anyhow::anyhow!(
             "emit_clif: self/back-edge call inside a select arm in a \
-             kernel that reaches a stateful builtin (no interior \
-             arm-sleep in kernels)"
+             kernel that reaches a sleep-restarting builtin (no \
+             interior arm-sleep in kernels)"
+        ));
+    }
+    if lower.self_backedge_in_value_arm.get() && lower.saw_stateful_reach.get() {
+        return Err(anyhow::anyhow!(
+            "emit_clif: self/back-edge call inside a value-position \
+             select arm in a kernel that reaches a stateful builtin \
+             (no fire-tracking in kernels — wake catch-up)"
         ));
     }
     kernel
-        .has_sleep_restart
+        .has_restart_reach
         .store(lower.saw_restart_reach.get(), std::sync::atomic::Ordering::Relaxed);
+    kernel
+        .has_stateful_reach
+        .store(lower.saw_stateful_reach.get(), std::sync::atomic::Ordering::Relaxed);
     let replay_words = lower.state.replay.borrow().clone();
     let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
@@ -649,6 +673,22 @@ pub(crate) struct LowerCtx<'a> {
     /// becoming-selected and a callee's first call stay on the value
     /// channel under it.
     pub(super) quiet_flag: ClifValue,
+    /// THE WAKE FLAG (`I64`, 0/1, design/wake_catchup.md): wire slot
+    /// 0's bit 2 — this invocation runs under a wake view (the
+    /// enclosing arm's forced init view or this kernel node's first
+    /// update after sleep), so bit 0's init is not GENUINE init. The
+    /// stale-mask suppression reads `init & !wake`; a becoming-
+    /// selected arm INSIDE this kernel additionally scopes its own
+    /// woke bit through [`Self::wake_override`].
+    pub(super) wake_flag: ClifValue,
+    /// Like `init_override`, but carrying ONLY the becoming-selected
+    /// woke bit (0/1) for the arm body currently being emitted: a
+    /// DynCall site inside the arm passes it to the dispatcher (the
+    /// `graphix_wake_hint` thread-local) so the shared `CachedArgs`
+    /// wrapper runs its wake catch-up (a STATELESS eval re-runs from
+    /// the present stale slots) exactly as it does under the interp's
+    /// node-funnel `ctx.woke`.
+    pub(super) wake_override: std::cell::Cell<Option<ClifValue>>,
     /// The per-INSTANCE state channel (wire slot 1) — see
     /// [`StateChannel`].
     pub(super) state: StateChannel,
@@ -752,20 +792,36 @@ pub(crate) struct LowerCtx<'a> {
     /// interior arm-sleep initiator, so the interp's arm-rewake
     /// RESTART semantics can only be had by interpreting the select.
     pub(super) arm_depth: std::cell::Cell<u32>,
+    /// Depth of VALUE-POSITION select-arm body emission in progress —
+    /// the extent of the STATEFUL half of the widened gate (wake
+    /// catch-up, design/wake_catchup.md): a stateful (non-restart)
+    /// builtin refuses only here. Tail-position arms wake only
+    /// through frames/activations, where the wake mechanism is
+    /// excluded and per-activation site blocks are the correct twin,
+    /// so `max`/`sum` in a recursive dispatch arm keep fusing.
+    pub(super) value_arm_depth: std::cell::Cell<u32>,
     /// Accumulates "this kernel's body transitively reaches a
     /// SLEEP-RESTARTING builtin" during emission: set by every such
     /// DynCall emission and by every lambda call whose callee sig
     /// carries the fact. Harvested at the end of
-    /// `compile_into_function` into `KernelSig::has_sleep_restart` so
+    /// `compile_into_function` into `KernelSig::has_restart_reach` so
     /// CALLERS can consult it at their own call sites (callees
     /// define before callers).
     pub(super) saw_restart_reach: std::cell::Cell<bool>,
+    /// The STATEFUL companion (wake catch-up): the body transitively
+    /// reaches a stateful (`!STATELESS`), non-restart builtin
+    /// DynCall. Harvested into `KernelSig::has_stateful_reach`;
+    /// refused at `value_arm_depth > 0`.
+    pub(super) saw_stateful_reach: std::cell::Cell<bool>,
     /// A self- or back-edge lambda call was emitted at `arm_depth >
     /// 0` — its callee's fact wasn't final mid-emission, so the
     /// interior-sleep check is deferred to the end of
     /// `compile_into_function` against the finalized
     /// `saw_restart_reach`.
     pub(super) self_backedge_in_arm: std::cell::Cell<bool>,
+    /// The VALUE-POSITION twin of `self_backedge_in_arm`, checked
+    /// against `saw_stateful_reach` at the end of define.
+    pub(super) self_backedge_in_value_arm: std::cell::Cell<bool>,
     /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
     /// Variables). Each DynCall pushes its args buf at `buf_new` and
     /// pops it once `graphix_dyncall` has consumed it. A forced-bottom
