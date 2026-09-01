@@ -766,6 +766,27 @@ differential fuzzer enforces bit-for-bit agreement, and a divergence is
 at least as likely a JIT bug as a node-walk one: adjudicate against the
 INTENDED semantics, never by trusting either engine.
 
+**STRICT FUSION IS THE DEFAULT** (Eric's ruling 2026-09-01,
+`design/strict_fusion.md` — "complexity needs to pay rent";
+`fa08136a`): fusion admits PURE COMPUTATION ONLY — direct FASTCALL
+dispatches and the Cast pseudo-site; any inner-Apply-backed builtin
+(stateful, effectful, seam-gated, or a defaulted-label site), a fused
+`connect`, or a handler-ful `?` refuses emission and node-walks,
+transitively through callees. Measured at the flip: 94% of kernels
+kept, benches flat, every bench program still fuses fully.
+`GRAPHIX_PERMISSIVE_FUSE=1` restores the stateful-fusion machinery
+for A/B bisection and DIES with the deletion phase (staged in the
+design doc: site identity → mask protocol → selection words/wake
+hints/birth view/wire bit 2 → interior gates → replay-word audit →
+arm-lift → the hatch itself). The follow-on calls: pure selects fuse;
+grow the FASTCALL set maximally (`is_err` converted at the flip; re::,
+str::parse, sort, escape are next; partial-delivery producers stay
+out on semantics); `#[native]` is THE advertised performance model.
+Kernel-interior rules below (site identity, wake/birth mirrors,
+stateful gates) describe the permissive machinery — deletion
+inventory, kept correct until deleted. The coverage census predates
+the flip; strict-era numbers land with the deletion phase.
+
 ### Semantics both engines implement
 
 - **`let rec` is monomorphic-recursive**: a def-time self-call unifies
