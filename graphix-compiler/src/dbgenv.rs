@@ -40,7 +40,6 @@ dbg_flag!(gxdbg_slot, "GXDBG_SLOT");
 dbg_flag!(gxdbg_kpoll, "GXDBG_KPOLL");
 dbg_flag!(gxdbg_native_all, "GXDBG_NATIVE_ALL");
 dbg_flag!(gxdbg_refmiss, "GXDBG_REFMISS");
-dbg_flag!(gxdbg_reset, "GXDBG_RESET");
 dbg_flag!(gxdbg_resolve, "GXDBG_RESOLVE");
 dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");

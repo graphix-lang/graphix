@@ -156,9 +156,16 @@ the site's interned destination `Type`, resolving type names through
 core-trait value hooks), wire slot 0 bit 2 (the kernel's own `slept`
 bit now actually sets it — it was write-never before), prev-length
 words, first-call words, the per-call-site blocks / anchor chains /
-per-activation trees that carry them, the shrink reclaim, and the
-replay-word plumbing (audited next: with the DynCall result caches
-and the rides gone, no claimant remains).
+per-activation trees that carry them, and the shrink reclaim.
+
+The replay-word plumbing went in the commit after: with the DynCall
+result caches and the rides already gone, `claim_state_word_replay*`
+had no caller, so `replay_state_words`/`replay_value_pairs`, the
+`SiteLayout`/`SelfBlock` replay lists, the honor headers (and the
+`site_desc` high half that published them), `reset_self_block_tree`,
+`Kernel::drop_replay_values` and the `allow_replay_state` plumbing
+all followed. `Kernel::reset_replay` is a no-op: every word a kernel
+keeps is semantic.
 
 `Kernel` is no longer generic: it holds no `Apply`s and no `Node`s.
 
@@ -185,6 +192,6 @@ and the rides gone, no claimant remains).
    corpus (FuseExpect + `#[native]` pins on shapes that now
    node-walk), full gates. 2. The sep01b strict-default soak round
    started on the five remote boxes. 3. The deletion (above) — done in
-   one cut instead of the staged plan, on Eric's call; the replay-word
-   audit follows as its own commit. 4. The fastcall growth sweep and
-   the book chapter ride behind.
+   one cut instead of the staged plan, on Eric's call, with the
+   replay-word cut as the commit after. 4. The fastcall growth sweep
+   and the book chapter ride behind.

@@ -230,20 +230,6 @@ pub struct WrappedKernel {
     /// this size and passes its pointer in wire slot 1 (see
     /// [`kernel_abi::CTX_WIRE_SLOTS`]).
     pub state_words: usize,
-    /// Word indices (into the per-instance state buffer) of the ROOT
-    /// body's REPLAY-memory claims (the interior-bottom taint caches —
-    /// see `emit_scalar_taint_cache`). `Kernel::reset_replay` zeroes
-    /// exactly these so a value cached on one evaluation-frame
-    /// iteration cannot bridge a bottom on the next; semantic/config
-    /// words (first-call flags, prev-length words) survive.
-    pub replay_state_words: Vec<u32>,
-    /// First-word indices of the ROOT body's OWNED-value replay pairs
-    /// — (clean disc, payload) in consecutive state words, disc 0 =
-    /// empty ([`emit_value_taint_cache`], the non-scalar
-    /// interior-bottom cache). `Kernel::sleep`/`reset_replay` DROP the
-    /// held value then zero (blind zeroing would leak the clone);
-    /// `Kernel::drop` drops without zeroing.
-    pub replay_value_pairs: Vec<u32>,
     /// `(word index, own_levels)` of the ROOT body's per-slot
     /// state-table ANCHORS: each word holds (0 or) a `Box<Vec<u64>>`
     /// raw pointer managed by the `graphix_slot_state_table` helper,
@@ -379,10 +365,6 @@ impl Jit {
 struct CachedKernel {
     func_id: FuncId,
     signature: Signature,
-    /// See [`WrappedKernel::replay_state_words`]; filled in phase 2.
-    replay_state_words: Vec<u32>,
-    /// See [`WrappedKernel::replay_value_pairs`]; filled in phase 2.
-    replay_value_pairs: Vec<u32>,
     /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
     /// See [`WrappedKernel::state_self_blocks`]; filled in phase 2.
@@ -443,11 +425,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     callee_bodies: &BTreeMap<usize, CalleeBody<'_, R, E>>,
     parent_self_call: Option<&(BindId, LambdaCallInfo)>,
     type_env: &Env,
-    // REPLAY-word eligibility for the parent body: `true` for region
-    // parents (frames reach their reset through the `FusedKernel`
-    // node), `false` for lambda kernels (native cross-kernel entry
-    // bypasses the reset — see `BodyEmitter::allow_replay_state`).
-    parent_allow_replay: bool,
 ) -> Result<WrappedKernel> {
     let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
     let parent_spec = BodySpec {
@@ -459,7 +436,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         self_call: parent_self_call,
         type_env: Some(type_env),
         allow_state: true,
-        allow_replay_state: parent_allow_replay,
     };
     // A callee that IS the parent (a self-recursive per-slot callback)
     // shares the parent's FuncId/body — skip it, matching the phase-1
@@ -482,7 +458,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     self_call: cb.self_call.as_ref(),
                     type_env: Some(type_env),
                     allow_state: false,
-                    allow_replay_state: false,
                 },
             ))
         })
@@ -774,8 +749,6 @@ fn compile_kernel_with_callees_inner(
             cached._strings = db.strings;
             cached._values = db.values;
             cached.state_words = db.state_words;
-            cached.replay_state_words = db.replay_words;
-            cached.replay_value_pairs = db.replay_value_pairs;
             cached.slot_table_words = db.slot_table_words;
             cached.state_self_blocks = db.state_self_blocks;
             callee_layouts.insert(ptr, db.site_layout.clone());
@@ -802,21 +775,12 @@ fn compile_kernel_with_callees_inner(
     // prior compile) still sizes the runtime buffer correctly. Only
     // the parent's ROOT body may claim (callee claims would alias
     // across call sites), so callees' entries stay 0 by construction.
-    let (
-        state_words,
-        replay_state_words,
-        replay_value_pairs,
-        slot_table_words,
-        state_self_blocks,
-        own_site,
-    ) = jit
+    let (state_words, slot_table_words, state_self_blocks, own_site) = jit
         .by_kernel
         .get(&(parent_ptr, 0, parent_layout))
         .map(|e| {
             (
                 e.state_words,
-                e.replay_state_words.clone(),
-                e.replay_value_pairs.clone(),
                 e.slot_table_words.clone(),
                 e.state_self_blocks.clone(),
                 e.site_layout.clone(),
@@ -829,8 +793,6 @@ fn compile_kernel_with_callees_inner(
         _strings: KernelStrings::empty(),
         _values: KernelValues::empty(),
         state_words,
-        replay_state_words,
-        replay_value_pairs,
         slot_table_words,
         state_self_blocks,
         own_site,
@@ -872,8 +834,6 @@ fn ensure_declared(
             _values: KernelValues::empty(),
             state_self_blocks: Vec::new(),
             state_words: 0,
-            replay_state_words: Vec::new(),
-            replay_value_pairs: Vec::new(),
             slot_table_words: Vec::new(),
             site_layout: None,
             _site_leaves: Vec::new(),
@@ -889,8 +849,6 @@ struct DefinedBody {
     strings: KernelStrings,
     values: KernelValues,
     state_words: usize,
-    replay_words: Vec<u32>,
-    replay_value_pairs: Vec<u32>,
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
     state_self_blocks: Vec<kernel_abi::SelfBlock>,
     site_layout: SiteLayout,
@@ -1004,8 +962,6 @@ fn define_kernel_body(
         strings,
         values,
         state_words,
-        replay_words,
-        replay_value_pairs,
         slot_table_words,
         state_self_blocks,
         site_layout,
@@ -1078,26 +1034,20 @@ fn define_kernel_body(
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        let (
-            state_words,
-            replay_words,
-            replay_value_pairs,
-            slot_table_words,
-            state_self_blocks,
-            site_layout,
-        ) = compile_into_function(
-            &mut builder,
-            kernel,
-            &callee_refs,
-            self_thunk,
-            &helper_refs,
-            &lazy_strings,
-            &lazy_values,
-            &lazy_types,
-            body_emitter,
-            callee_layouts,
-            &lazy_site_leaves,
-        )?;
+        let (state_words, slot_table_words, state_self_blocks, site_layout) =
+            compile_into_function(
+                &mut builder,
+                kernel,
+                &callee_refs,
+                self_thunk,
+                &helper_refs,
+                &lazy_strings,
+                &lazy_values,
+                &lazy_types,
+                body_emitter,
+                callee_layouts,
+                &lazy_site_leaves,
+            )?;
         builder.finalize();
         maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
         // Hand `strings`/`values` back to the caller, which stores
@@ -1110,8 +1060,6 @@ fn define_kernel_body(
             KernelValues::empty()
                 .with_lazy(lazy_values.into_inner(), lazy_types.into_inner()),
             state_words,
-            replay_words,
-            replay_value_pairs,
             slot_table_words,
             state_self_blocks,
             site_layout,
@@ -1126,11 +1074,10 @@ fn define_kernel_body(
     }
     if crate::dbgenv::graphix_dbg_kernels() {
         eprintln!(
-            "KERNEL DEFINED {}: state_words={} site_words={} site_replay={} self_blocks={}",
+            "KERNEL DEFINED {}: state_words={} site_words={} self_blocks={}",
             kernel.fn_name,
             state_words,
             site_layout.words,
-            site_layout.replay.len(),
             site_layout.self_blocks.len()
         );
     }
@@ -1141,8 +1088,6 @@ fn define_kernel_body(
         strings,
         values,
         state_words,
-        replay_words,
-        replay_value_pairs,
         slot_table_words,
         state_self_blocks,
         site_layout,

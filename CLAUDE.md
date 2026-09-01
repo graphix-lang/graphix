@@ -774,8 +774,8 @@ memory, no arm-lift, no wake hint; a kernel's only cross-invocation
 memory is the firing boundary (prev-length words for exact HOF
 resize detection, first-call words for a callee's init view, the
 per-call-site blocks and per-activation trees that give those words
-per-slot/per-activation multiplicity) and the replay caches (audit
-pending). The runtime loans a kernel invocation exactly three
+per-slot/per-activation multiplicity) — no replay caches, so
+`Kernel::reset_replay` is a no-op. The runtime loans a kernel invocation exactly three
 things through scoped thread-locals: `KERNEL_ABORT`, `KERNEL_ENV`
 and the core-trait value hooks. Measured at the flip: 94% of
 kernels kept, benches flat, every bench program still fuses fully.
@@ -887,12 +887,11 @@ escape are next; partial-delivery producers stay out on semantics);
 - **Sleep is PAUSE, not reset** (Eric 2026-07-31): value-channel state
   survives an arm's sleep — `Held` residents at the three ride sites
   (select scrutinee, pattern guard, `~`'s arg), `CachedVals` staging,
-  collection slot values, the kernel's interior-bottom taint caches
-  (replay words, owned value pairs) — so a re-selected arm whose fresh
-  computation bottoms rides its history. Slot CHAINS (`SiteAnchor`:
-  nested prev-length words, in-loop call-site blocks) are semantic
-  per-position state and survive frames as well as sleep; only `reset_replay` (frames) clears replay caches and only
-  `Drop`/truncation frees chains. An arm's WAKE resumes it: a `let` that
+  collection slot values — so a re-selected arm whose fresh
+  computation bottoms rides its history. A kernel's slot CHAINS
+  (`SiteAnchor`: nested prev-length words, in-loop call-site blocks)
+  are semantic per-position state and survive frames as well as
+  sleep; only `Drop`/truncation frees them. An arm's WAKE resumes it: a `let` that
   is a `<-` target and holds a value is not reseeded by its re-fired
   initializer (`Event::wake_init`). A producer materializes its value
   channel on its first production whatever the tag (`Bind` publishes a

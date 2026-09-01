@@ -436,9 +436,6 @@ pub(super) struct BodySpec<'a> {
     /// only for the region parent's root body. See
     /// [`StateChannel::enabled`].
     pub(super) allow_state: bool,
-    /// Whether this body may claim REPLAY state words — `true` only
-    /// for REGION parents. See `LowerCtx::replay_enabled`.
-    pub(super) allow_replay_state: bool,
 }
 
 /// One body to build: the data spec + the type-erased emission hook.
@@ -567,46 +564,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let idx = self.ctx.state.next.get();
         self.ctx.state.next.set(idx + 1);
         Some((idx * 8) as i32)
-    }
-
-    /// [`claim_state_word`](Self::claim_state_word) for REPLAY memory —
-    /// a cross-invocation cache whose interp twin `reset_replay`
-    /// clears. The claimed word is registered on
-    /// [`WrappedKernel::replay_state_words`] and zeroed by
-    /// `Kernel::reset_replay`, so an evaluation frame's per-iteration
-    /// reset severs the cache exactly like the node-walk's.
-    pub fn claim_state_word_replay(&self) -> Option<i32> {
-        // Replay words are refused wherever their reset contract can't
-        // be honored — lambda kernels and callee bodies (see
-        // `LowerCtx::replay_enabled`). Claimants fall back stateless.
-        if !self.ctx.replay_enabled {
-            return None;
-        }
-        let off = self.claim_state_word()?;
-        self.ctx.state.replay.borrow_mut().push((off / 8) as u32);
-        Some(off)
-    }
-
-    /// [`claim_state_word_replay`](Self::claim_state_word_replay) for
-    /// an OWNED cached `Value`: claims TWO consecutive words — (clean
-    /// disc, payload), disc 0 = empty — registered on the value-pair
-    /// list so the runtime `Kernel` DROPS the held value on
-    /// `sleep`/`reset_replay`/`Drop` instead of blindly zeroing
-    /// ([`emit_value_taint_cache`]). Returns the disc word's byte
-    /// offset (payload at +8). Refused everywhere the scalar replay
-    /// claim is, PLUS inside scaffold loops and callee bodies with no
-    /// state fallback — the per-slot chain and per-call-site block
-    /// free machinery is value-unaware, so those sites keep the
-    /// stateless pass-through (documented residual).
-    pub fn claim_state_word_replay_value(&self) -> Option<i32> {
-        if !self.ctx.replay_enabled {
-            return None;
-        }
-        let off = self.claim_state_word()?;
-        let off2 = self.claim_state_word()?;
-        debug_assert_eq!(off2, off + 8, "value-pair words must be consecutive");
-        self.ctx.state.replay_value_pairs.borrow_mut().push((off / 8) as u32);
-        Some(off)
     }
 
     /// [`claim_state_word`](Self::claim_state_word) for a claimant
@@ -983,33 +940,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let idx = self.ctx.site.next.get();
         self.ctx.site.next.set(idx + 1);
         Some((idx * 8) as i32)
-    }
-
-    /// This callee body's block-shared HONOR header, claiming it on
-    /// first use. Its VALUE is written by whoever allocates this
-    /// body's block, and it gates every replay word in the block: a
-    /// caller that cannot register those words for reset leaves it 0
-    /// and the caches stay inert. Also the gate a nested call site
-    /// forwards from (see `emit_site_block`) — honor propagates down
-    /// a call chain exactly as far as the reset registration does.
-    pub(crate) fn ensure_site_replay_hdr(&self) -> Option<i32> {
-        // Refused in scaffold loops (one per-call-site word would
-        // alias slots — the jul10h rule) and in TAIL-LOOP bodies: the
-        // caller's cross-cycle reset can't sever iteration i−1's
-        // success from iteration i's bottom the way the interp's
-        // per-frame `reset_replay` does — the same rule applied across
-        // the loop this body IS.
-        if self.ctx.loop_depth.get() > 0 || self.ctx.tail.loop_head.is_some() {
-            return None;
-        }
-        match self.ctx.site_replay_hdr.get() {
-            Some(h) => Some(h),
-            None => {
-                let h = self.claim_site_word()?;
-                self.ctx.site_replay_hdr.set(Some(h));
-                Some(h)
-            }
-        }
     }
 
     /// Claim the word that roots a SELF-CALL's per-activation block

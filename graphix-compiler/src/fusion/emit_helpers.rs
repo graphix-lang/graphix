@@ -1670,29 +1670,6 @@ pub fn reclaim_self_block_tree(
     freed
 }
 
-/// Zero the REPLAY words through a per-activation block tree — the
-/// `replay_state_words` rule applied to every activation, so a value
-/// cached on one evaluation-frame iteration can't bridge the next at
-/// any depth. Semantic words (prev-length words, first-call flags)
-/// and the honor header survive, exactly as they do in the flat case.
-/// Iterative like [`free_self_block_tree`], for the same reason.
-pub fn reset_self_block_tree(vecptr: u64, slots: &[u32], replay: &[u32]) {
-    let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
-    work.push(vecptr);
-    while let Some(p) = work.pop() {
-        if p == 0 {
-            continue;
-        }
-        let v = unsafe { &mut *(p as *mut Vec<u64>) };
-        for r in replay.iter() {
-            if let Some(w) = v.get_mut(*r as usize) {
-                *w = 0;
-            }
-        }
-        work.extend(slots.iter().filter_map(|s| v.get(*s as usize).copied()));
-    }
-}
-
 /// Free the anchor-owned chains inside a run of call-site blocks.
 fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     for block in words.chunks_exact(leaf.stride as usize) {
@@ -1859,22 +1836,12 @@ unsafe fn graphix_slot_state_table(
 /// callee's `KernelSig::site_desc`, which is where the block's size
 /// lives because a self-call's size is its own body's, unknown while
 /// that body is still emitting.
-///
-/// The honor header is copied down from the parent every call: the
-/// child's caches are live exactly when its parent's are, which is
-/// what makes the reset contract hold for the whole tree (whoever
-/// resets the root walks it — `reset_self_block_tree`).
-unsafe fn graphix_site_child_block(
-    word: *mut u64,
-    desc: *const u64,
-    parent: *const u64,
-) -> *mut u64 {
+unsafe fn graphix_site_child_block(word: *mut u64, desc: *const u64) -> *mut u64 {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     if word.is_null() {
         return std::ptr::null_mut();
     }
-    let d = unsafe { (*(desc as *const AtomicU64)).load(Relaxed) };
-    let words = (d & 0xffff_ffff) as usize;
+    let words = unsafe { (*(desc as *const AtomicU64)).load(Relaxed) } as usize;
     if words == 0 {
         return std::ptr::null_mut();
     }
@@ -1882,17 +1849,13 @@ unsafe fn graphix_site_child_block(
     if *word == 0 {
         // One word PAST the emitted layout (index `words`) holds the
         // reach GENERATION stamp — invisible to emitted code (which uses
-        // `0..words`) and to the free/reset walks (which use `slots`,
-        // all `< words`). `Kernel::update`'s reclaim reads it to shed the
+        // `0..words`) and to the free walk (which uses `slots`, all
+        // `< words`). `Kernel::update`'s reclaim reads it to shed the
         // subtrees this invocation did not reach (recursion shrink).
         *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
         LIVE_SELF_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
-    let hdr = (d >> 32) as usize;
-    if hdr != 0 && !parent.is_null() {
-        v[hdr - 1] = unsafe { *parent.add(hdr - 1) };
-    }
     // Reached this invocation: stamp the current generation and count
     // the reach (the reclaim gate in `Kernel::update`).
     v[words] = SELF_BLOCK_GEN.get();

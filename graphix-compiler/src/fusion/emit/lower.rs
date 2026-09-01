@@ -46,14 +46,8 @@ pub(super) fn compile_into_function(
     body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
-) -> Result<(
-    usize,
-    Vec<u32>,
-    Vec<u32>,
-    Vec<kernel_abi::SiteAnchor>,
-    Vec<kernel_abi::SelfBlock>,
-    SiteLayout,
-)> {
+) -> Result<(usize, Vec<kernel_abi::SiteAnchor>, Vec<kernel_abi::SelfBlock>, SiteLayout)>
+{
     let spec = &body.spec;
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
@@ -236,7 +230,6 @@ pub(super) fn compile_into_function(
         value_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
-        site_replay_hdr: std::cell::Cell::new(None),
         self_call_roots: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
@@ -250,18 +243,13 @@ pub(super) fn compile_into_function(
             ptr: state_ptr,
             enabled: spec.allow_state,
             next: std::cell::Cell::new(0),
-            replay: std::cell::RefCell::new(Vec::new()),
-            replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
             self_blocks: std::cell::RefCell::new(Vec::new()),
         },
-        replay_enabled: spec.allow_replay_state,
         site: StateChannel {
             ptr: site_ptr,
             enabled: !spec.allow_state,
             next: std::cell::Cell::new(0),
-            replay: std::cell::RefCell::new(Vec::new()),
-            replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
             self_blocks: std::cell::RefCell::new(Vec::new()),
         },
@@ -315,49 +303,33 @@ pub(super) fn compile_into_function(
     // pending_exit). FunctionBuilder requires all blocks be sealed
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
-    let replay_words = lower.state.replay.borrow().clone();
-    let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
     let words = lower.site.next.get() as u32;
-    let replay: std::sync::Arc<[u32]> = lower.site.replay.borrow().clone().into();
-    let replay_hdr = lower.site_replay_hdr.get().map(|h| (h / 8) as u32);
     // A self-call's child block has THIS body's layout, which only
     // exists now — so the self-similar description is assembled here,
     // from the roots the call sites claimed, and the same list becomes
-    // every child's own `slots`. `site_desc` publishes (words, header)
-    // for the emitted code, which had to read them at run time for the
-    // same reason.
+    // every child's own `slots`. `site_desc` publishes the size for
+    // the emitted code, which had to read it at run time for the same
+    // reason.
     let self_roots: std::sync::Arc<[u32]> = {
         let mut v: Vec<u32> =
             lower.self_call_roots.borrow().iter().map(|off| (*off / 8) as u32).collect();
         v.sort_unstable();
         v.into()
     };
-    kernel.site_desc.store(
-        (words as u64) | (replay_hdr.map(|h| h as u64 + 1).unwrap_or(0) << 32),
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    kernel.site_desc.store(words as u64, std::sync::atomic::Ordering::Relaxed);
     let mut self_blocks: Vec<kernel_abi::SelfBlock> = self_roots
         .iter()
-        .map(|rel| kernel_abi::SelfBlock {
-            rel: *rel,
-            words,
-            slots: self_roots.clone(),
-            replay: replay.clone(),
-        })
+        .map(|rel| kernel_abi::SelfBlock { rel: *rel, words, slots: self_roots.clone() })
         .collect();
     self_blocks.extend(lower.site.self_blocks.borrow().iter().cloned());
     let site_layout = SiteLayout {
         words,
         anchors: lower.site.anchors.borrow().clone().into(),
-        replay,
-        replay_hdr,
         self_blocks: self_blocks.into(),
     };
     Ok((
         lower.state.next.get(),
-        replay_words,
-        replay_value_pairs,
         slot_table_words,
         lower.state.self_blocks.borrow().clone(),
         site_layout,
@@ -437,17 +409,6 @@ impl KernelValues {
 pub(crate) struct SiteLayout {
     pub(crate) words: u32,
     pub(crate) anchors: std::sync::Arc<[kernel_abi::SiteAnchor]>,
-    /// REPLAY-KIND block words (rel word indices) — the callee's
-    /// interior-bottom taint caches. A caller that can honor the reset
-    /// contract (a region parent's root call site, whose
-    /// `Kernel::reset_replay` zeroes its registered words) translates
-    /// these into its own replay set AND stores 1 to `replay_hdr`,
-    /// activating the caches; every other caller leaves the header 0
-    /// and the caches stay inert. See [`LowerCtx::site_replay_hdr`].
-    pub(crate) replay: std::sync::Arc<[u32]>,
-    /// The block's honor header (rel word index) — `Some` iff `replay`
-    /// is non-empty.
-    pub(crate) replay_hdr: Option<u32>,
     /// Words in this block that root PER-ACTIVATION block trees — this
     /// body's own self-calls, plus any owned by callees whose blocks
     /// this body carves. The block's owner frees and resets them.
@@ -556,26 +517,6 @@ pub(super) struct StateChannel {
     /// `site`: count + anchors become the kernel's [`SiteLayout`],
     /// read by every caller.
     pub(super) next: std::cell::Cell<usize>,
-    /// Word indices of claims that are REPLAY memory (cross-invocation
-    /// caches whose interp twins `reset_replay` clears — the
-    /// interior-bottom taint cache), as opposed to semantic state
-    /// (first-call-ever flags, prev-length words).
-    /// `state`: `Kernel::reset_replay` zeroes exactly these, so a value
-    /// cached on one evaluation-frame iteration cannot bridge a bottom
-    /// on the next ([`emit_scalar_taint_cache`]). `site`: relative
-    /// indices recorded on the [`SiteLayout`] so a caller that can
-    /// honor the reset contract registers them for zeroing
-    /// ([`BodyCx::claim_site_word_replay`]).
-    pub(super) replay: std::cell::RefCell<Vec<u32>>,
-    /// First-word indices of REPLAY claims that hold an OWNED cached
-    /// `Value` pair — (clean disc, payload) in consecutive words, disc
-    /// 0 = empty ([`emit_value_taint_cache`], the non-scalar
-    /// interior-bottom cache). Unlike `replay` words these can't be
-    /// blindly zeroed: the runtime `Kernel` DROPS the held value on
-    /// `sleep`/`reset_replay`/`Drop` before zeroing. `state` channel
-    /// only — the value claim refuses callee bodies and loops (the
-    /// site/chain free machinery is value-unaware).
-    pub(super) replay_value_pairs: std::cell::RefCell<Vec<u32>>,
     /// Words that ANCHOR per-slot state-table chains — a
     /// `Box<Vec<u64>>` raw pointer managed by the
     /// `graphix_slot_state_table` helper, with `own_levels` directory
@@ -647,14 +588,6 @@ pub(crate) struct LowerCtx<'a> {
     /// The per-INSTANCE state channel (wire slot 1) — see
     /// [`StateChannel`].
     pub(super) state: StateChannel,
-    /// Whether THIS function's body may claim REPLAY state words —
-    /// true only for REGION parents (`BodySpec::allow_replay_state`).
-    /// A lambda kernel is also entered by native cross-kernel calls
-    /// that bypass the node-level `reset_replay`, so a replay word
-    /// claimed there could never honor its per-iteration reset
-    /// contract (jul10h 000009: a caller's native map loop bridged
-    /// element 1's success into element 2's div0).
-    pub(super) replay_enabled: bool,
     /// The per-CALL-SITE state channel (wire slot 2) — a CALLEE body's
     /// instance memory, supplied by each caller. See [`StateChannel`].
     pub(super) site: StateChannel,
@@ -747,14 +680,6 @@ pub(crate) struct LowerCtx<'a> {
     /// up its per-enclosing-slot prev-length word in the enclosing
     /// frame's chain ([`slot_state_sites`] keyed it by this id).
     pub(super) collection_site: std::cell::Cell<Option<ExprId>>,
-    /// The block's replay HONOR header word (rel word index), claimed
-    /// lazily with the first replay-kind site claim. The cache sites
-    /// set their `ok` flag FROM this word, so history only accumulates
-    /// when the caller stored 1 here — a caller that can't honor the
-    /// reset contract (a lambda-kernel parent, an in-loop per-slot
-    /// block, a tail-loop body) leaves it 0 and the cache is INERT
-    /// (today's taint-through behavior), never wrong.
-    pub(super) site_replay_hdr: std::cell::Cell<Option<i32>>,
     /// Byte offsets of the site words this body's SELF-CALL sites
     /// claimed to root their per-activation block trees
     /// ([`kernel_abi::SelfBlock`]). Collected during emission because

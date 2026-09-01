@@ -127,9 +127,9 @@ impl Drop for Kernel {
                 );
             }
         }
-        self.drop_replay_values();
     }
 }
+
 impl std::fmt::Debug for Kernel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Kernel")
@@ -147,27 +147,6 @@ impl Kernel {
         &self.kernel
     }
 
-    /// Drop-and-zero the OWNED-value replay pairs
-    /// ([`WrappedKernel::replay_value_pairs`] — the non-scalar
-    /// interior-bottom caches, `emit_value_taint_cache`): each holds a
-    /// (clean disc, payload) `Value` the emitted code cloned in, disc
-    /// 0 = empty. Blind zeroing (the flat replay-word treatment) would
-    /// leak the clone. Called from `sleep`/`reset_replay` (cache
-    /// clearing) and `Drop` (instance death).
-    fn drop_replay_values(&mut self) {
-        for w in self.jit.replay_value_pairs.iter() {
-            let d = std::mem::replace(&mut self.state[*w as usize], 0);
-            let p = std::mem::replace(&mut self.state[*w as usize + 1], 0);
-            if d != 0 {
-                // SAFETY: the words were written by this kernel's own
-                // emitted code as the (clean disc, payload) of an owned
-                // `graphix_value_clone` result — a valid `Value` bit
-                // pattern; the nonzero-disc guard excludes empty.
-                drop(unsafe { TagValue::from_raw(d, p) });
-            }
-        }
-    }
-
     /// Single construction chokepoint: a Kernel dispatches into
     /// `wrapped`, the JIT artifact — there is no other way to make
     /// one (JIT failure means the region is never spliced and the
@@ -180,17 +159,10 @@ impl Kernel {
         debug_assert_eq!(n_args, kernel.params.len(), "Kernel arity = param count");
         let state = vec![0u64; wrapped.state_words].into_boxed_slice();
         // The parent's OWN call-site block, when its body was compiled
-        // to the callee ABI. Honoring it (the header word) is what
-        // activates the body's interior taint caches; the reset
-        // contract they need is this node's `reset_replay`, below.
-        let mut site =
+        // to the callee ABI.
+        let site =
             vec![0u64; wrapped.own_site.as_ref().map(|l| l.words as usize).unwrap_or(0)]
                 .into_boxed_slice();
-        if let Some(l) = wrapped.own_site.as_ref()
-            && let Some(h) = l.replay_hdr
-        {
-            site[h as usize] = 1;
-        }
         Ok(Self {
             slept: false,
             kernel,
@@ -675,47 +647,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Zero the emitted REPLAY state words (the interior-bottom
-        // taint caches — `emit_scalar_taint_cache`): a value cached on
-        // iteration i−1 must not bridge iteration i's bottom, exactly
-        // the node-walk's per-frame cache reset. Semantic words
-        // (first-call flags, prev-length words) and every slot chain
-        // (`SiteAnchor`) survive: the node-walk's `FoldQ::reset_replay`
-        // keeps each slot's CallSite and only clears its caches
-        // (quiet-frame-init-view-aug2026/08).
-        for w in self.jit.replay_state_words.iter() {
-            self.state[*w as usize] = 0;
-        }
-        // The same contract for the block we own as our own caller
-        // (`site`): honoring those caches obliges us to reset them.
-        if let Some(l) = self.jit.own_site.as_ref() {
-            for w in l.replay.iter() {
-                self.site[*w as usize] = 0;
-            }
-        }
-        // And through every per-activation block tree: a recursive
-        // activation's caches are honored (the header rides down from
-        // its parent), so they are reset with everything else.
-        for b in self.jit.state_self_blocks.iter() {
-            super::emit_helpers::reset_self_block_tree(
-                self.state[b.rel as usize],
-                &b.slots,
-                &b.replay,
-            );
-        }
-        if let Some(l) = self.jit.own_site.as_ref() {
-            for b in l.self_blocks.iter() {
-                super::emit_helpers::reset_self_block_tree(
-                    self.site[b.rel as usize],
-                    &b.slots,
-                    &b.replay,
-                );
-            }
-        }
-        self.drop_replay_values();
-        if crate::dbgenv::gxdbg_reset() {
-            eprintln!("KERNEL-RESET words={:?}", self.jit.replay_state_words);
-        }
+        // A kernel holds no replay caches: its interior memory is all
+        // semantic (prev-length words, first-call words, the slot
+        // chains and activation trees), which the node-walk's
+        // `FoldQ::reset_replay` keeps too (quiet-frame-init-view-
+        // aug2026/08).
     }
 
     fn refs(&self, _refs: &mut Refs) {}

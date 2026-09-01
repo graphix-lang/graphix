@@ -492,7 +492,7 @@ fn emit_site_block(
                 (&info.kernel.site_desc as *const std::sync::atomic::AtomicU64) as i64,
             );
             let f = cx.helper("graphix_site_child_block")?;
-            let call = cx.b.ins().call(f, &[word, desc, base]);
+            let call = cx.b.ins().call(f, &[word, desc]);
             return Ok(cx.b.inst_results(call)[0]);
         }
         Some(l) => l.clone(),
@@ -512,7 +512,6 @@ fn emit_site_block(
                     rel: base_idx + b.rel,
                     words: b.words,
                     slots: b.slots.clone(),
-                    replay: b.replay.clone(),
                 });
             }
             for a in layout.anchors.iter() {
@@ -523,27 +522,6 @@ fn emit_site_block(
                 });
             }
             let sp = cx.state_ptr();
-            // Activate the callee's interior-bottom taint caches iff
-            // THIS body's replay reset contract holds (a region —
-            // `Kernel::reset_replay` zeroes `replay_words`): register
-            // the block's replay-kind words and store 1 to the honor
-            // header. A parent whose resets don't run (a per-slot
-            // collection-callback kernel: `allow_replay` false) leaves
-            // the header 0 — the caches stay inert.
-            if cx.ctx.replay_enabled
-                && let Some(h) = layout.replay_hdr
-            {
-                for o in layout.replay.iter() {
-                    cx.ctx.state.replay.borrow_mut().push(base_idx + o);
-                }
-                let one = cx.b.ins().iconst(types::I64, 1);
-                cx.b.ins().store(
-                    MemFlags::trusted(),
-                    one,
-                    sp,
-                    (first as i64 + (h as i64) * 8) as i32,
-                );
-            }
             return Ok(cx.b.ins().iadd_imm(sp, first as i64));
         }
         if let Some(first) = cx.claim_site_word() {
@@ -556,7 +534,6 @@ fn emit_site_block(
                     rel: base_idx + b.rel,
                     words: b.words,
                     slots: b.slots.clone(),
-                    replay: b.replay.clone(),
                 });
             }
             for a in layout.anchors.iter() {
@@ -566,47 +543,7 @@ fn emit_site_block(
                     leaf: a.leaf.clone(),
                 });
             }
-            // Activate the callee's interior taint caches, exactly as
-            // the state branch above does — register its replay words
-            // on OUR OWN layout so our caller's reset registration
-            // reaches them transitively, and forward our honor header
-            // into the block we just carved for it. Honor then travels
-            // as far down the call chain as the reset contract does.
-            //
-            // Skipping this left every nested callee's caches inert
-            // forever (the header stayed 0, so `ok` never latched):
-            // that body's scrutinee ride silently degraded to
-            // no-history and a bottomed scrutinee missed every arm,
-            // which is precisely the pass-through `emit_scrut_ride`'s
-            // de-fuse bar exists to forbid — the claim SUCCEEDS here,
-            // so the bar never fired (aug15b hz0 fuzz 000000: a
-            // two-level call chain rode in the interp and bottomed in
-            // the JIT).
             let base = cx.site_ptr();
-            if let Some(h) = layout.replay_hdr
-                && let Some(our_hdr) = cx.ensure_site_replay_hdr()
-            {
-                for o in layout.replay.iter() {
-                    cx.ctx.site.replay.borrow_mut().push(base_idx + o);
-                }
-                let live = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-                let set_bl = cx.b.create_block();
-                let cont_bl = cx.b.create_block();
-                cx.b.ins().brif(live, set_bl, &[], cont_bl, &[]);
-                cx.b.seal_block(set_bl);
-                cx.b.switch_to_block(set_bl);
-                let honor =
-                    cx.b.ins().load(types::I64, MemFlags::trusted(), base, our_hdr);
-                cx.b.ins().store(
-                    MemFlags::trusted(),
-                    honor,
-                    base,
-                    first + (h as i32) * 8,
-                );
-                cx.b.ins().jump(cont_bl, &[]);
-                cx.b.seal_block(cont_bl);
-                cx.b.switch_to_block(cont_bl);
-            }
             // Our own block may be 0 (a back-edge activation of THIS
             // callee) — forward 0, not a garbage offset.
             let addr = cx.b.ins().iadd_imm(base, first as i64);

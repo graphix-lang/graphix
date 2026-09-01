@@ -1209,9 +1209,8 @@ pub struct KernelSig {
     /// at a call site means a self/back-edge call. Write-once
     /// monotone; Relaxed suffices (single-threaded compilation).
     pub defined: std::sync::atomic::AtomicBool,
-    /// This body's own call-site block shape, packed so a SELF-CALL can
-    /// read it: `words | ((replay_hdr + 1) << 32)`, high half 0 for no
-    /// header. A self-call has to allocate a block for the activation
+    /// This body's own call-site block size in words, published so a
+    /// SELF-CALL can read it. A self-call has to allocate a block for the activation
     /// it is entering, and the size of that block is THIS body's — not
     /// known while this body is still being emitted. So the emitted
     /// code bakes the address of this cell and reads it at run time;
@@ -1255,16 +1254,15 @@ impl Clone for KernelSig {
 /// depth are distinct activations with distinct histories, so a
 /// depth-indexed chain would alias them.
 ///
-/// `words`/`slots`/`replay` describe the CHILD blocks (identical at
+/// `words`/`slots` describe the CHILD blocks (identical at
 /// every level, since only self-calls take this path — mutual recursion
-/// de-fuses at the static call edge), so the free and reset walks are
-/// self-similar and need nothing else.
+/// de-fuses at the static call edge), so the free walk is
+/// self-similar and needs nothing else.
 #[derive(Debug, Clone)]
 pub struct SelfBlock {
     pub rel: u32,
     pub words: u32,
     pub slots: std::sync::Arc<[u32]>,
-    pub replay: std::sync::Arc<[u32]>,
 }
 
 /// One registered owner of a per-slot state CHAIN (see

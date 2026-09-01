@@ -1047,9 +1047,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             &callee_bodies,
             None,
             &ctx.env,
-            // Region parent: frames reach its replay reset through the
-            // FusedKernel node, so replay words are honored here.
-            true,
         )
     };
     let mut result = build(ctx);
