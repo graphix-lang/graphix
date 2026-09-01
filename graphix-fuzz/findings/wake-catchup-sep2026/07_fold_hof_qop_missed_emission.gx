@@ -1,0 +1,7 @@
+// Adopted from the LATE aug31e pull (hz0, fetched at the aug31f
+// deploy): on the aug31e-era binary the INTERP emitted nothing for
+// this fold-HOF + qop + const-scrutinee-select shape while the jit
+// produced the tuple — the missed-emission side of the ride family
+// wake catch-up closes. AGREEs at HEAD; pinned to hold whichever
+// seam fixed it.
+{let m = |a, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); m(["a", "b"], |s| {let y = i64:0; let v: i64 = select i64:1 {i64:1 => str::parse("42")?, _ => y}; v})}
