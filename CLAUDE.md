@@ -880,7 +880,21 @@ INTENDED semantics, never by trusting either engine.
   initializer (`Event::wake_init`). A producer materializes its value
   channel on its first production whatever the tag (`Bind` publishes a
   quiet first production; `CachedArgs` runs `eval` once from the
-  phantom). The RESTART builtins (`once`/`take`/`skip`/`uniq`/`hold`/
+  phantom). **WAKE DELIVERS PRESENT-BUT-STALE** (Eric 2026-08-31): the
+  wake-forced init view (`event.init && event.wake_init`) reads
+  standing entries STALE — a standing value is a PAST event the graph
+  already consumed, and delivering it Fired re-raised it into the
+  woken subtree (the admin pump's name-modal Enter phantom-submitted
+  the freshly opened password modal with ""). Things BORN at init
+  (constants, own first productions) still fire; only genuine init
+  (`init && !wake_init`) upgrades standing reads. Companions: a
+  present scrutinee with NO retained selection still routes (a depth-0
+  first consult runs the chain with STALE wake binds — selection is a
+  value question; the guard-flip wake keeps its aug03 FIRED), and
+  `ByRef` seeds its cell from a present-but-stale child as a standing
+  STALE entry. Pin: `lib_tests/callable.rs`
+  `arm_wake_delivers_standing_args_stale`. The RESTART builtins
+  (`once`/`take`/`skip`/`uniq`/`hold`/
   `count`, `SLEEP_RESTARTS`) clear on sleep; a select whose arm reaches
   one de-fuses (kernels have no per-arm sleep initiator). Pins:
   `findings/{sleep-preserves-caches-jul2026,arm-local-bind-aug2026,
