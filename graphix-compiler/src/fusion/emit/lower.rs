@@ -687,7 +687,7 @@ pub(crate) struct LowerCtx<'a> {
     /// `graphix_wake_hint` thread-local) so the shared `CachedArgs`
     /// wrapper runs its wake catch-up (a STATELESS eval re-runs from
     /// the present stale slots) exactly as it does under the interp's
-    /// node-funnel `ctx.woke`.
+    /// per-node slept bits.
     pub(super) wake_override: std::cell::Cell<Option<ClifValue>>,
     /// The per-INSTANCE state channel (wire slot 1) — see
     /// [`StateChannel`].

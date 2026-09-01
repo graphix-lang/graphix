@@ -507,6 +507,11 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
 #[derive(Debug)]
 pub struct CachedArgs<T> {
+    /// wake catch-up: set by `sleep()`, taken by the next update. The
+    /// in-kernel arm-flip wake — the one no `sleep()` call delivers —
+    /// arrives instead as the dispatch-scoped
+    /// [`graphix_compiler::dyncall_wake`].
+    slept: bool,
     cached: CachedVals,
     /// The last value `eval` produced — the builtin's RESULT slot on
     /// the value channel (absent until the first result): a
@@ -532,6 +537,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
+            slept: false,
             cached: CachedVals::new(from),
             resident: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
@@ -552,9 +558,11 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         // compares or sorts Values — min/max, all, array::sort, the
         // map:: operations — honors core Eq/Ord implementations at
         // the value seam.
+        let woke = (std::mem::take(&mut self.slept) && !ctx.in_frame())
+            || graphix_compiler::dyncall_wake();
         let (ev, cached, resident) = (&mut self.t, &mut self.cached, &mut self.resident);
         coretraits::with_value_hooks(ctx, event, move |ctx, event| {
-            Self::update_inner(ev, cached, resident, ctx, from, event)
+            Self::update_inner(ev, cached, resident, woke, ctx, from, event)
         })
     }
 
@@ -581,7 +589,9 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         // DynCall site instance's cached slots — persists across arm
         // deselection, riding on the next dispatch (Eric's ruling
         // 2026-07-31, select_reselect_interior_bottom; witnessed via
-        // `max(in0 * 10, 1 / v0)` in a re-woken arm).
+        // `max(in0 * 10, 1 / v0)` in a re-woken arm). The slept bit is
+        // wake catch-up (design/wake_catchup.md), not a reset.
+        self.slept = true;
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -647,6 +657,7 @@ impl<T> CachedArgs<T> {
         ev: &mut T,
         cached: &mut CachedVals,
         resident: &'a mut TagValue,
+        woke: bool,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
@@ -699,7 +710,7 @@ impl<T> CachedArgs<T> {
                 // re-run on stale slots would double-count; its edge
                 // catch-up arrives separately as a genuine fired
                 // delivery from the select's tracked fire bits).
-                if T::STATELESS && ctx.wake_recompute() {
+                if T::STATELESS && woke {
                     match ev.eval(ctx, cached) {
                         Some(v) => resident.set(TagValue::stale(v)),
                         None => resident.retag(Tag::STALE),

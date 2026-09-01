@@ -22,6 +22,8 @@ use triomphe::Arc;
 
 #[derive(Debug)]
 pub struct Struct<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub names: Box<[ArcStr]>,
@@ -45,7 +47,14 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
             .collect::<Result<Box<[_]>>>()?;
         let typs = names.iter().zip(n.iter()).map(|(n, a)| (n.clone(), a.typ().clone()));
         let typ = Type::Struct(Arc::from_iter(typs));
-        Ok(Node::new(Self { spec, typ, names, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            names,
+            n,
+            resident: TagValue::phantom(),
+            slept: false,
+        }))
     }
 }
 
@@ -96,6 +105,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -154,6 +164,8 @@ pub struct Replace<R: Rt, E: UserEvent> {
 
 #[derive(Debug)]
 pub struct StructWith<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub source: Node<R, E>,
@@ -183,7 +195,14 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = source.typ().clone();
-        Ok(Node::new(Self { spec, typ, source, replace, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            source,
+            replace,
+            resident: TagValue::phantom(),
+            slept: false,
+        }))
     }
 }
 
@@ -272,6 +291,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
@@ -498,6 +518,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 
 #[derive(Debug)]
 pub struct Tuple<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
@@ -518,7 +540,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
         let typ = Type::Tuple(Arc::from_iter(n.iter().map(|n| n.typ().clone())));
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom(), slept: false }))
     }
 }
 
@@ -565,6 +587,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -612,6 +635,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 
 #[derive(Debug)]
 pub struct Variant<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub tag: ArcStr,
@@ -636,7 +661,14 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
         let typs = Arc::from_iter(n.iter().map(|n| n.typ().clone()));
         let typ = Type::Variant(tag.clone(), typs);
         let tag = ctx.tag(tag);
-        Ok(Node::new(Self { spec, typ, tag, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            tag,
+            n,
+            resident: TagValue::phantom(),
+            slept: false,
+        }))
     }
 }
 
@@ -672,6 +704,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 

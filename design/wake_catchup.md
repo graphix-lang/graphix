@@ -270,10 +270,19 @@ nested composition), all AGREE with the ruled traces, and
 `dyncall-arm-init-stale-aug2026/00` is re-adjudicated in place
 (header updated). Mechanism deltas discovered during the build:
 
-- **Interp, as designed**: the `Node` funnel carries the slept bit
-  (`sleep()` sets, the next `update` scopes it into `ExecCtx::woke`);
-  `ExecCtx::recompute_forced()` (= framed ∨ woke) is the one skip
-  condition — `dense_gate!`, the three op.rs macros, StringInterp.
+- **Sleep state is LOCAL — no ExecCtx globals** (Eric's directive,
+  same day, superseding the first build's `Node`-funnel bit +
+  `ExecCtx::woke` handoff): parallel module-level compilation is
+  coming and a parallel evaluator must stay possible, so state lives
+  in nodes, never in a ctx field that ends up behind a lock. Every
+  skip-owning node/Apply owns a `slept: bool` its own `sleep()` sets
+  and its next update takes: the ten `dense_gate!` structs (the macro
+  takes `$self.slept`, so the field is macro-enforced), the three
+  op.rs binary-op macros, StringInterpolate, MapQ, Bind, CallSite,
+  GXLambda, `CachedArgs`, and `Kernel` itself (a kernel is a node; its
+  `sleep()` is a real call that forwards to its DynCall slots' inner
+  Applies). `Node` stays a bare 16-byte newtype; the per-impl bools
+  mostly hide in struct padding.
   `Not`/`Neg`/`TypeCast`/`Block`/`StructRef`/`Construct` already
   recompute unconditionally; `Any` and `~` ride correctly (they ARE
   edge state); `Constant` keeps its fires-at-wake behavior (both
@@ -298,10 +307,17 @@ nested composition), all AGREE with the ruled traces, and
   first-dispatch arrival upgrade is likewise genuine-only (a first
   dispatch AT A WAKE reads standing args stale — R2's rule at the
   site seam; pin 02's kernel `count` re-counted through both of
-  these); an in-kernel becoming-selected arm hints the dispatcher
-  (`graphix_wake_hint` → scoped `ctx.woke`) so the shared
-  `CachedArgs` wrapper is the ONE implementation of the STATELESS
-  wake re-eval on both engines. What replaces the mask words: pure
+  these). The wake view is PER-DISPATCH DATA end to end: the kernel's
+  own slept bit rides `DispatcherState::woke`, the in-kernel arm-flip
+  hint (`graphix_wake_hint` — the one wake no `sleep()` call can
+  deliver, because a fused arm's deselection is a branch not taken)
+  is folded in by `dispatch_typed`, the result passes to
+  `DynCallSlot::dispatch` as a parameter, and crosses into the inner
+  `Apply` — which has no parameter slot — through the dispatch-scoped
+  thread-local `dyncall_wake()` (per-thread by construction, so
+  parallel-evaluator-safe). The shared `CachedArgs` wrapper consumes
+  `self.slept || dyncall_wake()` — the ONE implementation of the
+  STATELESS wake re-eval on both engines. What replaces the mask words: pure
   arms recompute anyway (kernels compute-always), and every
   edge-consuming arm interior either de-fuses or sits under an
   interp select whose tracker injects THROUGH the kernel boundary

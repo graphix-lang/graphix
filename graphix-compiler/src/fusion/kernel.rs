@@ -539,6 +539,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         taint_mask: u64,
         stale_mask: u64,
         site_id: u64,
+        woke: bool,
     ) -> Option<TagValue> {
         debug_assert_eq!(args.len(), self.bind_ids.len(), "DynCall arity");
         // Resolve WHICH inner Apply runs: `None` = the key-0 bucket
@@ -647,7 +648,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // the interp's frame-overlay FIRED seed
         // (frame-formal-init-view-aug2026) is the canonical channel
         // there, and this gate must not override it.
-        let wake = ctx.frame_depth == 0 && (event.wake_init || ctx.wake_recompute());
+        let wake = ctx.frame_depth == 0 && (event.wake_init || woke);
         let mut set: poolshark::local::LPooled<Vec<BindId>> =
             poolshark::local::LPooled::take();
         for (i, v) in args.iter().enumerate() {
@@ -681,8 +682,17 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
         // and a stale resurface reads as a quiet production instead
         // of a phantom fire.
         let result = {
+            // Deliver the wake view to the inner Apply through the
+            // dispatch-scoped thread-local (`dyncall_wake`) — an
+            // `Apply::update` has no parameter slot for it, and an
+            // in-kernel arm-flip wake reaches per-site instances by
+            // no `sleep()` call.
+            let prev =
+                crate::fusion::emit_helpers::DISPATCH_WAKE.with(|c| c.replace(wake));
             let tv = apply.update(ctx, &mut self.arg_refs, event);
-            Some(tv.clone())
+            let tv = Some(tv.clone());
+            crate::fusion::emit_helpers::DISPATCH_WAKE.with(|c| c.set(prev));
+            tv
         };
         if crate::dbgenv::gxdbg_dync() {
             let words = result.as_ref().map(|tv| {
@@ -913,6 +923,10 @@ struct DispatcherState<R: Rt, E: UserEvent> {
     fn_arg_values: *const [Value],
     ctx: *mut ExecCtx<R, E>,
     event: *mut Event<E>,
+    /// The invoking kernel's own wake (its slept bit, frame-gated):
+    /// per-dispatch data, not ExecCtx state — the parallel-evaluator
+    /// discipline (state lives in nodes and call frames).
+    woke: bool,
 }
 
 /// Site-identity id mint (see `dispatch_typed`). Starts at 1 — 0 is
@@ -980,19 +994,17 @@ pub unsafe extern "C" fn dispatch_typed<R: Rt, E: UserEvent>(
             fn_index, site_id, taint_mask, stale_mask, site_word as u64, words
         );
     }
-    // WAKE CATCH-UP (design/wake_catchup.md): scope the emitted wake
-    // hint (a becoming-selected arm's woke bit, armed by
-    // `graphix_wake_hint` immediately before this dispatch) into
-    // `ctx.woke` for the inner Apply's update — the shared
-    // `CachedArgs` wrapper re-runs a STATELESS eval from the present
-    // stale slots at wakes. The kernel-node-slept wake arrives here
-    // with `ctx.woke` already set by the Node funnel.
-    let hint = crate::fusion::emit_helpers::WAKE_HINT.with(|c| c.replace(false));
-    let saved_woke = ctx.woke;
-    ctx.woke = saved_woke || hint;
-    let res =
-        slot.dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id);
-    ctx.woke = saved_woke;
+    // WAKE CATCH-UP (design/wake_catchup.md): the dispatch's wake view
+    // is per-dispatch DATA — the invoking kernel's own slept bit
+    // (`DispatcherState::woke`) or the emitted arm-flip hint
+    // (`graphix_wake_hint`, armed immediately before this dispatch for
+    // a becoming-selected arm inside a fused select — the one wake no
+    // `sleep()` call can deliver). Nothing global: the
+    // parallel-evaluator discipline.
+    let wake =
+        state.woke || crate::fusion::emit_helpers::WAKE_HINT.with(|c| c.replace(false));
+    let res = slot
+        .dispatch(lambda_v, ctx, event, &args_vec, taint_mask, stale_mask, site_id, wake);
     match res {
         Some(tv) => {
             // Unified Value ABI, honest tags in-band (Seam B): hand
@@ -1071,6 +1083,10 @@ pub unsafe extern "C" fn set_var_typed<R: Rt, E: UserEvent>(
 /// Generic over `R, E` because the per-DynCall-slot state holds
 /// `Box<dyn Apply<R, E>>` and `Node<R, E>`.
 pub struct Kernel<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by the next update — the
+    /// kernel is a node like any other and tracks its own sleep. Feeds
+    /// wire slot 0 bit 2 and `DispatcherState::woke`.
+    slept: bool,
     /// The kernel's ABI contract; the `Arc` is also its identity (the
     /// JIT's `by_kernel` cache keys on the pointer).
     kernel: Arc<KernelSig>,
@@ -1326,6 +1342,7 @@ impl<R: Rt, E: UserEvent> Kernel<R, E> {
             site[h as usize] = 1;
         }
         let mut node = Self {
+            slept: false,
             kernel,
             jit: wrapped,
             dyn_slots,
@@ -1434,6 +1451,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         // Poll every feeder once and take its production HONESTLY
         // (Seam A of the 5c flip): the production's tag IS the staging
         // truth — no retained arg slots, no reconstructed fired flags.
@@ -1781,15 +1799,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
         // (bit 2, design/wake_catchup.md): this invocation runs under
         // a wake view, not genuine init — either the enclosing select
         // arm's forced init view (`event.wake_init`) or this kernel
-        // node's own first update after sleep (`ctx.woke`, the Node
-        // funnel's slept bit). Bit 0 stays the FORCED view (wakes
+        // node's own first update after sleep (its own slept bit —
+        // the kernel tracks its sleep locally). Bit 0 stays the FORCED view (wakes
         // included — constants fire at wake on both engines); bit 2
         // is what lets the emitted stale-mask suppression subtract
         // wakes and keep standing deliveries honest
         // (`bit0 & !bit2` = genuine init).
         let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
         let quiet = ctx.frame_depth > 0 && !ctx.frame_init;
-        let wake = ctx.frame_depth == 0 && (event.wake_init || ctx.wake_recompute());
+        let wake = (ctx.frame_depth == 0 && event.wake_init) || woke;
         slots.push(init as u64 | (quiet as u64) << 1 | (wake as u64) << 2);
         slots.push(if self.state.is_empty() {
             0
@@ -1829,6 +1847,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel<R, E> {
             fn_arg_values: &fn_arg_values[..] as *const [Value],
             ctx: ctx as *mut ExecCtx<R, E>,
             event: event as *mut Event<E>,
+            woke,
         };
         let handle = DynDispatchHandle {
             dispatch: dispatch_typed::<R, E>,

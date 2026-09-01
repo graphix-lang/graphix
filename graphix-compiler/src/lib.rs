@@ -456,6 +456,7 @@ pub struct Refs {
 }
 
 pub use combine::stream::position::SourcePosition;
+pub use fusion::emit_helpers::dyncall_wake;
 
 /// Metadata captured for every `let foo = |...| 'builtin_name`
 /// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
@@ -555,20 +556,7 @@ impl Refs {
 /// whatever thread the compile lands on. Non-recursive methods
 /// (`typ`, `spec`, `view`) and anything not shadowed reach the trait
 /// through `Deref`.
-pub struct Node<R: Rt, E: UserEvent> {
-    n: std::mem::ManuallyDrop<Box<dyn Update<R, E>>>,
-    /// Set by [`Self::sleep`], taken by the first [`Self::update`]
-    /// after it: the wake-catch-up recompute flag
-    /// (design/wake_catchup.md). While a node sleeps its inputs'
-    /// standing values drift behind its back — the ride-skip's "a
-    /// stale value cannot differ from my resident" invariant is a
-    /// property of wakefulness — so the first post-sleep update must
-    /// recompute from present values. The funnel scopes the bit into
-    /// [`ExecCtx::woke`] for exactly this node's own update (children
-    /// carry their own bits), and the skip sites consult it via
-    /// [`ExecCtx::recompute_forced`].
-    slept: bool,
-}
+pub struct Node<R: Rt, E: UserEvent>(std::mem::ManuallyDrop<Box<dyn Update<R, E>>>);
 
 /// Destroying a deep graph re-enters this through each node's
 /// children, and drop glue is not a function `ensure_sufficient` can
@@ -577,60 +565,55 @@ pub struct Node<R: Rt, E: UserEvent> {
 /// the original stack.
 impl<R: Rt, E: UserEvent> Drop for Node<R, E> {
     fn drop(&mut self) {
-        stack::ensure_sufficient(|| unsafe { std::mem::ManuallyDrop::drop(&mut self.n) })
+        stack::ensure_sufficient(|| unsafe { std::mem::ManuallyDrop::drop(&mut self.0) })
     }
 }
 
 impl<R: Rt, E: UserEvent> Node<R, E> {
     pub fn new<T: Update<R, E> + 'static>(node: T) -> Self {
-        Self { n: std::mem::ManuallyDrop::new(Box::new(node)), slept: false }
+        Self(std::mem::ManuallyDrop::new(Box::new(node)))
     }
 
     pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept);
-        let prev = std::mem::replace(&mut ctx.woke, woke);
-        let tv = stack::ensure_sufficient(|| self.n.update(ctx, event));
-        ctx.woke = prev;
-        tv
+        stack::ensure_sufficient(|| self.0.update(ctx, event))
     }
 
     pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        stack::ensure_sufficient(|| self.n.delete(ctx))
+        stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
     pub fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        stack::ensure_sufficient(|| self.n.typecheck0(ctx))
+        stack::ensure_sufficient(|| self.0.typecheck0(ctx))
     }
 
     pub fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        stack::ensure_sufficient(|| self.n.typecheck1(ctx))
+        stack::ensure_sufficient(|| self.0.typecheck1(ctx))
     }
 
     pub fn refs(&self, refs: &mut Refs) {
-        stack::ensure_sufficient(|| self.n.refs(refs))
+        stack::ensure_sufficient(|| self.0.refs(refs))
     }
 
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        stack::ensure_sufficient(|| self.n.sleep(ctx));
-        self.slept = true;
+        stack::ensure_sufficient(|| self.0.sleep(ctx))
     }
 
     pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        stack::ensure_sufficient(|| self.n.reset_replay(ctx))
+        stack::ensure_sufficient(|| self.0.reset_replay(ctx))
     }
 
     pub fn emit_clif(&self, cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
-        stack::ensure_sufficient(|| self.n.emit_clif(cx))
+        stack::ensure_sufficient(|| self.0.emit_clif(cx))
     }
 
     pub fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        stack::ensure_sufficient(|| self.n.fuse(ctx))
+        stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
 }
 
 impl<R: Rt, E: UserEvent> Debug for Node<R, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.n.fmt(f)
+        self.0.fmt(f)
     }
 }
 
@@ -638,13 +621,13 @@ impl<R: Rt, E: UserEvent> std::ops::Deref for Node<R, E> {
     type Target = dyn Update<R, E>;
 
     fn deref(&self) -> &Self::Target {
-        &**self.n
+        &**self.0
     }
 }
 
 impl<R: Rt, E: UserEvent> std::ops::DerefMut for Node<R, E> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut **self.n
+        &mut **self.0
     }
 }
 
@@ -1896,15 +1879,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// was a genuine init (`const_stale_gate`). Only meaningful when
     /// `frame_depth > 0`.
     pub(crate) frame_init: bool,
-    /// True for exactly one node's update: the currently-updating
-    /// [`Node`] slept since its last update, so its resident may have
-    /// drifted behind its inputs' standing values and the ride-skip is
-    /// unsound this pass (design/wake_catchup.md). Set/restored by the
-    /// `Node` funnel from the per-node slept bit; consulted through
-    /// [`Self::recompute_forced`] by every dense-gate skip, and read
-    /// directly by the builtin wrapper's stale-refresh arm
-    /// (package-core `CachedArgs`) via [`Self::wake_recompute`].
-    pub(crate) woke: bool,
     /// Set true ONLY while a `Select::update` sleeps an arm it is
     /// actively DESELECTING — a recursion shrinking, i.e. the loop
     /// reached a shallower depth this cycle. A recursive-edge
@@ -1964,33 +1938,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.rt.clear();
     }
 
-    /// The dense recompute-force condition (one definition, every
-    /// skip site): a framed pass recomputes unconditionally (R1), and
-    /// so does the first update after a node's sleep — the
-    /// wake-catch-up rule (design/wake_catchup.md): while a node
-    /// slept, its inputs' standing values may have drifted, so a
-    /// stale delivery is no longer proof the resident is current.
-    pub fn recompute_forced(&self) -> bool {
-        self.frame_depth > 0 || self.woke
-    }
-
-    /// True for exactly one node's update: this node slept since its
-    /// last update (the wake-catch-up recompute pass,
-    /// design/wake_catchup.md). For builtin `Apply` authors: an
-    /// all-stale production under this flag is a wake — a wrapper
-    /// whose eval is a pure function of its argument slots re-runs it
-    /// from the present values (result STALE); a stateful eval must
-    /// NOT re-run (its resident is its state, and its edge catch-up
-    /// arrives separately as a genuine fired delivery).
-    ///
-    /// FRAMES ARE EXCLUDED (the QUIET rule): a framed pass re-derives
-    /// against private variable maps — loop plumbing, not the
-    /// reactive world — and already recomputes unconditionally
-    /// through [`Self::recompute_forced`]'s frame disjunct; an
-    /// in-frame fresh activation's first-dispatch arrival semantics
-    /// (the frame-formal-init-view rule) must survive untouched.
-    pub fn wake_recompute(&self) -> bool {
-        self.frame_depth == 0 && self.woke
+    /// True while an evaluation frame (a tail-loop pass's private
+    /// re-derivation) is running. Read-only; for `Apply` authors whose
+    /// wake catch-up must exclude frames (the QUIET rule — a framed
+    /// pass is loop plumbing, not the reactive world).
+    pub fn in_frame(&self) -> bool {
+        self.frame_depth > 0
     }
 
     /// Build a new execution context.
@@ -2035,7 +1988,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             diagnostics: Vec::new(),
             frame_depth: 0,
             frame_init: false,
-            woke: false,
             shrink_unwind: false,
             tail_scrut_fired: false,
             def_assertions: Mutex::new(Vec::new()),

@@ -60,6 +60,8 @@ macro_rules! compare_op {
             pub lhs: Node<R, E>,
             pub rhs: Node<R, E>,
             resident: TagValue,
+            /// wake catch-up: set by `sleep()`, taken by the next update
+            slept: bool,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -68,7 +70,7 @@ macro_rules! compare_op {
             #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
                 let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false })
             }
 
             pub(crate) fn compile(
@@ -83,7 +85,7 @@ macro_rules! compare_op {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false }))
             }
         }
 
@@ -108,6 +110,7 @@ macro_rules! compare_op {
                 // implementation calls it — the same seam map keys and
                 // sort go through, so `a == b`, `(a, x) == (b, y)` and
                 // a map keyed by `a` all mean the same thing.
+                let woke = std::mem::take(&mut self.slept);
                 let (lhs, rhs, resident) =
                     (&mut self.lhs, &mut self.rhs, &mut self.resident);
                 coretraits::with_value_hooks(ctx, event, |ctx, event| {
@@ -115,7 +118,7 @@ macro_rules! compare_op {
                     let r = rhs.update(ctx, event);
                     let (lt, rt) = (l.tag(), r.tag());
                     let trig = lt.triggers() || rt.triggers();
-                    if !(trig || resident.tag().is_bottom() || ctx.recompute_forced()) {
+                    if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0 || woke) {
                         return resident.ride();
                     }
                     if lt.is_bottom() || rt.is_bottom() {
@@ -151,6 +154,7 @@ macro_rules! compare_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.slept = true;
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx)
             }
@@ -249,13 +253,15 @@ macro_rules! bool_op {
             pub lhs: Node<R, E>,
             pub rhs: Node<R, E>,
             resident: TagValue,
+            /// wake catch-up: set by `sleep()`, taken by the next update
+            slept: bool,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
             #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
                 let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false })
             }
 
             pub(crate) fn compile(
@@ -270,7 +276,7 @@ macro_rules! bool_op {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false }))
             }
         }
 
@@ -288,11 +294,12 @@ macro_rules! bool_op {
                 // never commits to a decision before every input is
                 // known. Recompute gate and bottom join as in the
                 // comparison ops.
+                let woke = std::mem::take(&mut self.slept);
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
                 let trig = lt.triggers() || rt.triggers();
-                if !(trig || self.resident.tag().is_bottom() || ctx.recompute_forced()) {
+                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0 || woke) {
                     return self.resident.ride();
                 }
                 if lt.is_bottom() || rt.is_bottom() {
@@ -337,6 +344,7 @@ macro_rules! bool_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.slept = true;
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx)
             }
@@ -748,6 +756,8 @@ macro_rules! arith_op {
             pub lhs: Node<R, E>,
             pub rhs: Node<R, E>,
             resident: TagValue,
+            /// wake catch-up: set by `sleep()`, taken by the next update
+            slept: bool,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -763,7 +773,14 @@ macro_rules! arith_op {
                 typ: Type,
                 spec: Expr,
             ) -> Node<R, E> {
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() })
+                Node::new(Self {
+                    spec,
+                    typ,
+                    lhs,
+                    rhs,
+                    resident: TagValue::phantom(),
+                    slept: false,
+                })
             }
 
             pub(crate) fn compile(
@@ -778,7 +795,14 @@ macro_rules! arith_op {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::empty_tvar();
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom() }))
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    lhs,
+                    rhs,
+                    resident: TagValue::phantom(),
+                    slept: false,
+                }))
             }
 
             /// Homogeneous arithmetic — `fn('a: Number, 'a) -> 'a`
@@ -888,11 +912,16 @@ macro_rules! arith_op {
                 // result, fresh iff a delivery triggered. Logging
                 // stays trig-gated (Q2: a standing bottom re-derived
                 // in a frame never re-logs).
+                let woke = std::mem::take(&mut self.slept);
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
                 let trig = lt.triggers() || rt.triggers();
-                if !(trig || self.resident.tag().is_bottom() || ctx.recompute_forced()) {
+                if !(trig
+                    || self.resident.tag().is_bottom()
+                    || ctx.frame_depth > 0
+                    || woke)
+                {
                     return self.resident.ride();
                 }
                 if lt.is_bottom() || rt.is_bottom() {
@@ -969,6 +998,7 @@ macro_rules! arith_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+                self.slept = true;
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx);
             }

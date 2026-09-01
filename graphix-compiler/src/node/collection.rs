@@ -648,6 +648,8 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
 
 #[derive(Debug)]
 struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    slept: bool,
     base: MapQBase<R, E>,
     scope: Scope,
     callback: BindId,
@@ -694,6 +696,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             None,
         );
         Ok(Node::new(Self {
+            slept: false,
             base: MapQBase {
                 source,
                 prototype: prototype.call,
@@ -762,6 +765,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         let old_len = self.slots.len();
         let mut production = None;
         let mut resized = false;
@@ -923,7 +927,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             // above), but with nothing triggering, the ride below
             // would re-surface the PRE-SLEEP collection — a resident
             // drifted behind its slots. Rebuild on the value channel.
-            None if ctx.wake_recompute()
+            None if woke
                 && !self.slots.is_empty()
                 && self.slots.iter().all(|slot| slot.value.is_some()) =>
             {
@@ -984,6 +988,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         // Slot values and `current` survive sleep — sleep is PAUSE
         // (Eric's ruling 2026-07-31): while awake a bottoming callback
         // already rides its slot's previous value (`update` only

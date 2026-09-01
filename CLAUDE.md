@@ -892,16 +892,24 @@ INTENDED semantics, never by trusting either engine.
   ONE catch-up FIRED at the current standing value (conflation;
   `queue` is lossless), injected into the event scoped to the arm's
   evaluation; (2) the first update after a node's sleep FORCES
-  recompute (the `Node` funnel's slept bit → `ExecCtx::woke` → the
-  fourth disjunct in every dense skip beside `frame_depth`), and the
-  value channel re-reaches the store (Bind quiet re-publish, CallSite
-  arg refresh, GXLambda formal re-seed, MapQ rebuild); (3) tags stay
+  recompute — SLEEP STATE IS LOCAL (no ExecCtx globals — the
+  parallel-compile/parallel-evaluator discipline, Eric 2026-09-01):
+  every skip-owning node/Apply owns a `slept` bit its `sleep()` sets
+  and its next update takes (the `dense_gate!` structs
+  macro-enforced, the op macros, StringInterpolate, MapQ, Bind,
+  CallSite, GXLambda, CachedArgs, and Kernel itself — a kernel is a
+  node) — and the value channel re-reaches the store (Bind quiet
+  re-publish, CallSite arg refresh, GXLambda formal re-seed, MapQ
+  rebuild); (3) tags stay
   honest — the wake view reads standing entries STALE (a standing
   value is a PAST event; delivering it Fired phantom-submitted the
   admin pump's password modal), and a STATELESS builtin's eval
-  re-runs from the present stale slots at wake (`CachedArgs`, one
-  implementation on both engines via the DynCall dispatcher's
-  `ctx.woke`/`graphix_wake_hint`) while a stateful one retags — its
+  re-runs from the present stale slots at wake (`CachedArgs`
+  consumes `self.slept || dyncall_wake()` — one implementation on
+  both engines; the wake view is per-dispatch DATA:
+  `DispatcherState::woke` + the emitted `graphix_wake_hint`, crossing
+  into the inner Apply via the dispatch-scoped thread-local) while a
+  stateful one retags — its
   resident IS its state and its edge catch-up arrives as a tracked
   fire. Kernel: wire slot 0 bit 2 = WAKE; genuine init =
   `bit0 & !bit2` gates the stale-mask suppression AND the DynCall

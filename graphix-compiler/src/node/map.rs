@@ -19,6 +19,8 @@ defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 
 #[derive(Debug)]
 pub struct Map<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub keys: Box<[Node<R, E>]>,
@@ -47,7 +49,14 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Node::new(Self { spec, typ, keys, vals, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            keys,
+            vals,
+            resident: TagValue::phantom(),
+            slept: false,
+        }))
     }
 }
 
@@ -104,6 +113,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.keys.iter_mut().for_each(|n| n.sleep(ctx));
         self.vals.iter_mut().for_each(|n| n.sleep(ctx))
     }
@@ -154,6 +164,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
 #[derive(Debug)]
 pub struct MapRef<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: bool,
     pub source: Node<R, E>,
     pub key: Node<R, E>,
     pub(crate) spec: Expr,
@@ -194,6 +206,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
         Ok(Node::new(Self {
+            slept: false,
             source,
             key,
             spec,
@@ -257,6 +270,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.source.sleep(ctx);
         self.key.sleep(ctx);
     }

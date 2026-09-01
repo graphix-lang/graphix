@@ -502,7 +502,8 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             // (STATELESS eval re-runs from the present stale slots)
             // exactly as under the interp's node-funnel woke bit.
             // Only the ARM override is hinted: the kernel-node-slept
-            // case already reaches the wrapper through `ctx.woke`,
+            // case already reaches the wrapper through the
+            // kernel's own slept bit (`DispatcherState::woke`),
             // and a guard/scrutinee kernel must not wake-recompute.
             if let Some(w) = cx.ctx.wake_override.get() {
                 let hint = cx.helper("graphix_wake_hint")?;

@@ -143,6 +143,8 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 /// being built.
 #[derive(Debug)]
 pub struct GXLambda<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    slept: bool,
     id: LambdaId,
     instance_id: LambdaInstanceId,
     args: Box<[StructPatternNode]>,
@@ -322,6 +324,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // Did anything TRIGGER this dispatch (a fired/tainted formal
         // delivery, or a real init view)? The tail loop below needs
         // this to derive its result tag — see the override at its end.
+        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         let mut entry_fired = event.init;
         let first = mem::replace(&mut self.first_dispatch, false);
         for (arg, pat) in from.iter_mut().zip(&self.args) {
@@ -353,7 +356,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             // recomputed from present values, so its stale production
             // may carry a value the formals' store entries drifted
             // behind while the arm slept — re-seed the value channel.
-            if (first || ctx.frame_depth > 0 || ctx.wake_recompute())
+            if (first || ctx.frame_depth > 0 || woke)
                 && !tag.triggers()
                 && !tag.is_bottom()
             {
@@ -855,6 +858,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         // Crossing into a callee body ends the shrink scope: a recursion
         // shrinking one level does not shrink an external call it made,
         // and a whole-recursion pause is not a shrink at all (both
@@ -973,6 +977,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         }
         let body = build_body(ctx, &argpats)?;
         Ok(Self {
+            slept: false,
             id,
             instance_id: LambdaInstanceId::new(),
             args: Box::from_iter(argpats.drain(..)),

@@ -244,6 +244,8 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
 #[derive(Debug)]
 pub struct CallSite<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    pub(super) slept: bool,
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<FnType>,
     pub(super) rtype: Type,
@@ -418,6 +420,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let spec = TArc::new(spec);
         let args = compile_apply_args(ctx, flags, scope, top_id, args)?;
         let site = Self {
+            slept: false,
             spec,
             ftype: None,
             rtype: Type::empty_tvar(),
@@ -1630,6 +1633,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         // A FIRED (or tainted) arg production this cycle — the genuine
         // -call signal (a stale production is a value-channel refresh,
@@ -1710,8 +1714,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
                     set.push(arg.id);
-                } else if ctx.frame_depth == 0 && ctx.wake_recompute() && !tag.is_bottom()
-                {
+                } else if woke && !tag.is_bottom() {
                     // WAKE CATCH-UP (design/wake_catchup.md): this
                     // site's first update after sleep recomputed the
                     // arg — its STALE production may carry a value the
@@ -2054,6 +2057,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         if let Some(n) = &mut self.lowered {
             return n.sleep(ctx);
         }

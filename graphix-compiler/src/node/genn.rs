@@ -141,6 +141,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         })
         .collect();
     Node::new(CallSite {
+        slept: false,
         spec: Arc::new(spec),
         rtype,
         ftype,

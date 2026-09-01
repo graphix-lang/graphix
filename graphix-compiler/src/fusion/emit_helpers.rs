@@ -588,9 +588,9 @@ safe fn graphix_dyncall_set_pending() {
 /// Arm the per-dispatch WAKE hint (design/wake_catchup.md). Emitted
 /// immediately before a `graphix_dyncall` inside a becoming-selected
 /// select arm, with the arm's woke bit (0/1); `dispatch_typed` takes
-/// it and scopes `ctx.woke` for the inner Apply's update, so the
-/// shared `CachedArgs` wrapper runs its wake catch-up exactly as it
-/// does under the interp's node-funnel woke bit.
+/// it, and `DynCallSlot::dispatch` delivers it to the inner Apply
+/// through the dispatch-scoped [`DISPATCH_WAKE`] — the wake no
+/// `sleep()` call can deliver.
 safe fn graphix_wake_hint(woke: u64) {
     WAKE_HINT.with(|c| c.set(woke != 0))
 }
@@ -2210,13 +2210,19 @@ thread_local! {
     /// The per-dispatch WAKE hint (design/wake_catchup.md): set by
     /// `graphix_wake_hint`, emitted immediately before a DynCall
     /// dispatch inside a becoming-selected arm, consumed (taken) by
-    /// `dispatch_typed`, which scopes it into `ctx.woke` for the
-    /// inner Apply's update — the shared `CachedArgs` wrapper then
-    /// runs its wake catch-up (a STATELESS eval re-runs from the
-    /// present stale slots). The kernel-node-slept wake needs no
-    /// hint: the Node funnel's `ctx.woke` is already set for the
-    /// whole invocation.
+    /// `dispatch_typed` and folded with `DispatcherState::woke` (the
+    /// invoking kernel's own slept bit) into the dispatch's wake
+    /// view. The kernel-node-slept wake needs no hint: the kernel
+    /// tracks its own sleep like every node.
     pub static WAKE_HINT: Cell<bool> = const { Cell::new(false) };
+
+    /// The DISPATCH-SCOPED wake view (design/wake_catchup.md): set by
+    /// `DynCallSlot::dispatch` around exactly one inner `Apply::update`
+    /// — the invoking kernel's slept bit or the emitted arm-flip hint.
+    /// Read through [`dyncall_wake`] by the shared `CachedArgs`
+    /// wrapper (an `Apply::update` has no parameter slot for it).
+    /// Thread-local, so per-evaluator by construction.
+    pub static DISPATCH_WAKE: Cell<bool> = const { Cell::new(false) };
 
     /// Raw pointer to the active runtime's [`crate::Control`], set per
     /// cycle by `do_cycle` on the thread running the node loop. Read by
@@ -2445,4 +2451,14 @@ mod tests {
         // The view never took ownership: the array is still ours.
         assert_eq!(args.len(), 1);
     }
+}
+
+/// The dispatch-scoped wake view for `Apply` authors (see
+/// [`DISPATCH_WAKE`]): true only while a fused DynCall dispatch runs
+/// this update on behalf of a wake — the invoking kernel's own sleep,
+/// or a becoming-selected arm inside a fused select. Method-call
+/// sleeps are the Apply's own business (track a slept bit in your
+/// `sleep()`); this covers the wakes no `sleep()` call can deliver.
+pub fn dyncall_wake() -> bool {
+    DISPATCH_WAKE.with(|c| c.get())
 }

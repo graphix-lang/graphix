@@ -22,6 +22,8 @@ use triomphe::Arc;
 
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    slept: bool,
     pub(crate) spec: Expr,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
@@ -77,6 +79,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             pattern,
             node,
             published: false,
+            slept: false,
         }));
     }
     let mut body = compile(ctx, flags, body, scope, top_id)?;
@@ -238,7 +241,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 }
             }
         }
-        Ok(Node::new(Self { spec, typ, pattern, node, published: false }))
+        Ok(Node::new(Self { spec, typ, pattern, node, published: false, slept: false }))
     }
 
     /// The LambdaDef `Value` this binding holds, when its value node is
@@ -268,6 +271,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
         // Publish TRIGGERING productions — a stale RHS is the value
@@ -320,8 +324,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // store's standing entry has drifted behind. Re-publish it on
         // the value channel (quiet — the tag stays honest, wakes
         // nobody); `<-` targets stay held back exactly as above.
-        let wake_refresh =
-            ctx.wake_recompute() && !tag.triggers() && !tag.is_bottom() && !wake_hold;
+        let wake_refresh = woke && !tag.triggers() && !tag.is_bottom() && !wake_hold;
         if !wake_hold
             && (tag.triggers() || (!self.published && !tag.is_bottom()) || wake_refresh)
         {
@@ -372,6 +375,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         self.node.sleep(ctx);
     }
 

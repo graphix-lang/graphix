@@ -1484,7 +1484,7 @@ pub struct SiteLeaf {
 /// WAKE flag (design/wake_catchup.md): the invocation runs under a
 /// wake view, not genuine init — the enclosing arm's forced init view
 /// (`event.wake_init`) or this kernel node's own first update after
-/// sleep (the Node funnel's `ctx.woke`). Bit 0 stays the FORCED view
+/// sleep (its own slept bit). Bit 0 stays the FORCED view
 /// (wakes included — constants fire at wake on both engines); the
 /// stale-mask suppression reads `bit0 & !bit2` so standing deliveries
 /// stay honest at wakes (`LowerCtx::wake_flag`).

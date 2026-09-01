@@ -428,7 +428,12 @@ pub(crate) fn gather<R: Rt, E: UserEvent>(
 /// ride (the join rule — standing bottoms never re-mint events).
 macro_rules! dense_gate {
     ($self:ident, $ctx:ident, $trig:expr, $bottom:expr) => {{
-        if !($trig || $self.resident.tag().is_bottom() || $ctx.recompute_forced()) {
+        // Wake catch-up (design/wake_catchup.md): every user struct
+        // owns a `slept` bit its `sleep()` sets — the first update
+        // after refuses the ride (a slept node's stale inputs may
+        // have drifted). Taken here so the macro enforces the field.
+        let woke = std::mem::take(&mut $self.slept);
+        if !($trig || $self.resident.tag().is_bottom() || $ctx.frame_depth > 0 || woke) {
             return $self.resident.ride();
         }
         if $bottom {
@@ -1107,6 +1112,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 
 #[derive(Debug)]
 pub struct StringInterpolate<R: Rt, E: UserEvent> {
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
@@ -1129,7 +1136,14 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             .collect::<Result<_>>()?;
         let typs = args.iter().map(|n| n.typ().clone()).collect();
         let typ = Type::Primitive(Typ::String.into());
-        Ok(Node::new(Self { spec, typ, typs, args, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            typs,
+            args,
+            resident: TagValue::phantom(),
+            slept: false,
+        }))
     }
 }
 
@@ -1139,6 +1153,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         // rendered under the value-hook loan: a part holding an
         // abstract with a core `Display` implementation prints through
         // it at the seam (`coretraits::with_value_hooks`)
+        let woke = std::mem::take(&mut self.slept);
         let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
         coretraits::with_value_hooks(ctx, event, |ctx, event| {
             let mut trig = false;
@@ -1158,7 +1173,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
                     vals.push(tv.value_cloned())
                 }
             }
-            if !(trig || resident.tag().is_bottom() || ctx.recompute_forced()) {
+            if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0 || woke) {
                 return resident.ride();
             }
             if bottom {
@@ -1202,6 +1217,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         for n in &mut self.args {
             n.sleep(ctx);
         }
