@@ -1,5 +1,13 @@
 # Wake catch-up — tracked fires + forced recompute at arm wake
 
+> Status note (2026-09-01, evening): the kernel-side passages below
+> (DynCall sites, `DispatcherState::woke`, the wake hint, the birth
+> view at a DynCall slot) describe machinery deleted under strict
+> fusion (`design/strict_fusion.md`); the interp mechanisms and the
+> ruling are current. A kernel in a reselected arm recomputes through
+> the select's forced init view, and its own `slept` bit sets wire
+> bit 2 for the fastcall stale-mask suppression.
+
 Status: RULED by Eric 2026-09-01, BUILT the same day (both engines;
 as-built record at the end — one design deviation: the kernel carries
 NO mask words, see §as-built). Gates at build time: the 8-pin
@@ -279,10 +287,15 @@ nested composition), all AGREE with the ruled traces, and
   and its next update takes: the ten `dense_gate!` structs (the macro
   takes `$self.slept`, so the field is macro-enforced), the three
   op.rs binary-op macros, StringInterpolate, MapQ, Bind, CallSite,
-  GXLambda, `CachedArgs`, and `Kernel` itself (a kernel is a node; its
-  `sleep()` is a real call that forwards to its DynCall slots' inner
-  Applies). `Node` stays a bare 16-byte newtype; the per-impl bools
-  mostly hide in struct padding.
+  GXLambda, `CachedArgs`, `Kernel` itself (a kernel is a node), and
+  Select — whose wake RE-MATCHES against the present scrutinee: a
+  selection retained across the sleep was made against a value that
+  may have moved while no reader was awake (an arm-local `<-` counter
+  has no tracked fire, since arm-local binds are not arm-body inputs;
+  `select-wake-rematch-sep2026`, sep01c ryouko, found the day the
+  kernel side was deleted and the kernel was right). `Node` stays a
+  bare 16-byte newtype; the per-impl bools mostly hide in struct
+  padding.
   `Not`/`Neg`/`TypeCast`/`Block`/`StructRef`/`Construct` already
   recompute unconditionally; `Any` and `~` ride correctly (they ARE
   edge state); `Constant` keeps its fires-at-wake behavior (both

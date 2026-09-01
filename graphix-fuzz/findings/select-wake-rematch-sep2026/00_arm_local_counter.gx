@@ -1,0 +1,26 @@
+// SELECT WAKE RE-MATCH (design/wake_catchup.md; sep01c ryouko 00): a
+// select's first update after its sleep re-matches against the
+// PRESENT scrutinee. Here the inner `select ep` sits in an arm that is
+// deselected every other cycle while `ep`, an arm-local `<-` target,
+// keeps counting: the connect's write lands while no reader is awake,
+// so no tracked fire exists, and the scrutinee arrives at the wake
+// present-but-stale at a value the retained selection never saw. The
+// interp rode the selection it made when ep was 0 (`_ => false`) while
+// the kernel re-matched against 1 (`1 => true`). A reselected arm
+// recomputes from the world as it stands — the select is a node, it
+// owns a `slept` bit like every other, and its wake re-matches.
+// Expected trace (both engines): false; 0; true; 0.
+{
+  let x = array::iter([i64:1, i64:2, i64:3, i64:4]);
+  let m = x % i64:2;
+  let sel = select m {
+    i64:0 => i64:0,
+    _ => {
+      let ep = i64:0;
+      ep <- select ep {n if n < i64:2 => n + i64:1, _ => never()};
+      let in1 = select ep {i64:1 => true, _ => false};
+      in1
+    }
+  };
+  sel
+}

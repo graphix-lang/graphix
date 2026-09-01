@@ -79,6 +79,12 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// discriminator is sealed against the settled scrutinee type
     /// ([`PatternNode::seal_shallow`]).
     shallow_sealed: bool,
+    /// wake catch-up: set by `sleep()`, taken by the next update — the
+    /// first update after sleep RE-MATCHES against the present
+    /// scrutinee (a selection retained across the sleep was made
+    /// against a value that may have moved while no reader was
+    /// awake: an arm-local `<-` target keeps counting).
+    slept: bool,
     /// Wake-catch-up fire tracking (design/wake_catchup.md). `None`
     /// until the first update (arm ref sets need the compiled tree).
     tracked: Option<TrackedFires>,
@@ -104,6 +110,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             consulted: 0,
             resident: TagValue::phantom(),
             shallow_sealed: false,
+            slept: false,
             tracked: None,
         })
     }
@@ -148,6 +155,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             consulted: 0,
             resident: TagValue::phantom(),
             shallow_sealed: false,
+            slept: false,
             tracked: None,
         }))
     }
@@ -388,9 +396,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted,
             resident,
             shallow_sealed: _,
+            slept,
             tracked,
         } = self;
         let tracked = tracked.as_mut().expect("tracked initialized above");
+        // WAKE CATCH-UP (design/wake_catchup.md): the first update
+        // after this select's sleep re-matches from the present
+        // scrutinee — a reselected arm recomputes from the world as it
+        // stands, and a selection retained across the sleep was made
+        // against a value that may have moved meanwhile. Depth 0 only
+        // (frames re-derive value-driven).
+        let woke = std::mem::take(slept) && ctx.frame_depth == 0;
         // Per-arm guard production tags for THE CONSULTED-GUARD RULE
         // (design/activation_state.md, Eric 2026-08-20): only guards
         // the chain CONSULTS — structure-matching arms at or above the
@@ -590,7 +606,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // A non-bottom scrutinee (bottom returned above): a quiet cycle
         // (no scrutinee trigger, no guard fire) rides the retained
         // selection through `ChainOut::Quiet`; otherwise re-match.
-        let chain = if !arg_trig && !pat_up && !first_consult {
+        let chain = if !arg_trig && !pat_up && !first_consult && !woke {
             ChainOut::Quiet
         } else {
             match arg.value.as_ref() {
@@ -822,6 +838,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            slept: _,
             tracked: _,
         } = self;
         arg.node.delete(ctx);
@@ -842,8 +859,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            slept,
             tracked: _,
         } = self;
+        *slept = true;
         arg.sleep(ctx);
         for (pat, arg) in arms {
             arg.sleep(ctx);
@@ -878,6 +897,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            slept: _,
             tracked: _,
         } = self;
         arg.reset_replay(ctx);
@@ -900,6 +920,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             consulted: _,
             resident: _,
             shallow_sealed: _,
+            slept: _,
             tracked: _,
         } = self;
         arg.node.refs(refs);

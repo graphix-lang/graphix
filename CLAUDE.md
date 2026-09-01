@@ -923,8 +923,12 @@ escape are next; partial-delivery producers stay out on semantics);
   every skip-owning node/Apply owns a `slept` bit its `sleep()` sets
   and its next update takes (the `dense_gate!` structs
   macro-enforced, the op macros, StringInterpolate, MapQ, Bind,
-  CallSite, GXLambda, CachedArgs, and Kernel itself — a kernel is a
-  node) — and the value channel re-reaches the store (Bind quiet
+  CallSite, GXLambda, CachedArgs, Kernel itself — a kernel is a
+  node — and Select, whose wake RE-MATCHES against the present
+  scrutinee: a selection retained across the sleep was made against
+  a value that may have moved while no reader was awake, e.g. an
+  arm-local `<-` counter — `select-wake-rematch-sep2026`, sep01c
+  ryouko) — and the value channel re-reaches the store (Bind quiet
   re-publish, CallSite arg refresh, GXLambda formal re-seed, MapQ
   rebuild); (3) tags stay
   honest — the wake view reads standing entries STALE (a standing
