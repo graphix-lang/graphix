@@ -80,13 +80,18 @@ pub enum StructPatternNode {
 /// `Fresh` allocates; `Record` allocates AND records `name → (id, type)`
 /// (an or-pattern's first alternative); `Reuse` looks the id up instead
 /// of allocating — later alternatives share the first's BindIds and add
-/// NOTHING to the env (no shadowing, nothing to clean up). The
-/// exactly-equal-types rule is enforced at each reused leaf: open cells
-/// unify (one cell serves every alternative), concrete mismatches err.
+/// NOTHING to the env (no shadowing, nothing to clean up). At each
+/// reused PAYLOAD leaf the exactly-equal-types rule is enforced: open
+/// cells unify (one cell serves every alternative), concrete mismatches
+/// err. A reused `@`-CAPTURE instead WIDENS to the union of the
+/// alternatives' narrowed types (Eric's ruling 2026-08-31: Graphix
+/// narrows captures where Rust binds at the enum type, so exact
+/// equality refused the keymap idiom ``kk@ `Up | kk@ `Char("k")`` —
+/// the capture is the whole matched value and the union is exact).
 enum BindMode<'a> {
     Fresh,
     Record(&'a mut AHashMap<ArcStr, (BindId, Type)>),
-    Reuse(&'a AHashMap<ArcStr, (BindId, Type)>),
+    Reuse(&'a mut AHashMap<ArcStr, (BindId, Type)>),
 }
 
 impl BindMode<'_> {
@@ -94,7 +99,7 @@ impl BindMode<'_> {
         match self {
             Self::Fresh => BindMode::Fresh,
             Self::Record(m) => BindMode::Record(&mut **m),
-            Self::Reuse(m) => BindMode::Reuse(&**m),
+            Self::Reuse(m) => BindMode::Reuse(&mut **m),
         }
     }
 }
@@ -107,6 +112,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
     pos: SourcePosition,
     ori: &Arc<Origin>,
     mode: &mut BindMode,
+    capture: bool,
 ) -> Result<BindId> {
     match mode {
         BindMode::Fresh => Ok(ctx
@@ -123,15 +129,29 @@ fn leaf_bind<R: Rt, E: UserEvent>(
         }
         BindMode::Reuse(map) => match map.get(name) {
             Some((id, t0)) => {
+                let id = *id;
                 if !(t0.contains(&ctx.env, typ)? && typ.contains(&ctx.env, t0)?) {
-                    format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!(
-                            "or-pattern alternatives must bind {name} at exactly \
-                             equal types (first alternative: {t0}, here: {typ})"
-                        )
-                    })?
+                    if !capture {
+                        format_with_flags(PrintFlag::DerefTVars, || {
+                            bail!(
+                                "or-pattern alternatives must bind {name} at exactly \
+                                 equal types (first alternative: {t0}, here: {typ})"
+                            )
+                        })?
+                    }
+                    // an @-capture widens: the binding's type becomes
+                    // the union of the alternatives seen so far, in
+                    // the recorded entry AND the env binding the body
+                    // typechecks against
+                    let u = t0.union(&ctx.env, typ)?;
+                    map.insert(name.clone(), (id, u.clone()));
+                    if let Some(b) = ctx.env.by_id.get(&id) {
+                        let mut b = b.clone();
+                        b.typ = u;
+                        ctx.env.by_id.insert_cow(id, b);
+                    }
                 }
-                Ok(*id)
+                Ok(id)
             }
             None => bail!(
                 "or-pattern alternatives must bind the same names ({name} is \
@@ -320,6 +340,7 @@ impl StructPatternNode {
                                 pos,
                                 &ori,
                                 &mut mode,
+                                true,
                             )?),
                         };
                         let single = match $single.as_ref() {
@@ -332,6 +353,7 @@ impl StructPatternNode {
                                 pos,
                                 &ori,
                                 &mut mode,
+                                false,
                             )?),
                         };
                         let multi = $multi
@@ -438,7 +460,7 @@ impl StructPatternNode {
                                 scope,
                                 pos,
                                 ori.clone(),
-                                BindMode::Reuse(&map),
+                                BindMode::Reuse(&mut map),
                             )?)
                         }
                         out.into_boxed_slice()
@@ -462,7 +484,7 @@ impl StructPatternNode {
                                 scope,
                                 pos,
                                 ori.clone(),
-                                BindMode::Reuse(&*map),
+                                BindMode::Reuse(&mut *map),
                             )?)
                         }
                         out.into_boxed_slice()
@@ -485,8 +507,16 @@ impl StructPatternNode {
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {
-                let id =
-                    leaf_bind(ctx, scope, name, type_predicate, pos, &ori, &mut mode)?;
+                let id = leaf_bind(
+                    ctx,
+                    scope,
+                    name,
+                    type_predicate,
+                    pos,
+                    &ori,
+                    &mut mode,
+                    false,
+                )?;
                 Self::Bind(id)
             }
             StructurePattern::SlicePrefix { list, all, prefix, tail } => {
@@ -520,6 +550,7 @@ impl StructPatternNode {
                                 pos,
                                 &ori,
                                 &mut mode,
+                                true,
                             )?),
                         };
                         let binds = binds
@@ -569,6 +600,7 @@ impl StructPatternNode {
                                 pos,
                                 &ori,
                                 &mut mode,
+                                true,
                             )?),
                         };
                         let binds = elts
@@ -621,6 +653,7 @@ impl StructPatternNode {
                                 pos,
                                 &ori,
                                 &mut mode,
+                                true,
                             )?),
                         };
                         let binds = elts
@@ -672,6 +705,7 @@ impl StructPatternNode {
                         pos,
                         &ori,
                         &mut mode,
+                        true,
                     )?),
                 };
                 let bind = Box::new(Self::compile_int(
@@ -739,6 +773,7 @@ impl StructPatternNode {
                                 pos,
                                 &ori,
                                 &mut mode,
+                                true,
                             )?),
                         };
                         let binds = binds

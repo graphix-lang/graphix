@@ -1134,12 +1134,19 @@ the rules.
   orthodox): `p1 | p2 | …` in select arms and every bracketed element
   position; top-level or-patterns are SELECT-ARM-ONLY (`let`/lambda
   params refuse — the lambda arg list is `|`-delimited); `@`-captures
-  are per-alternative (no pattern parens; same-binds forces symmetry).
+  are per-alternative (no pattern parens) and type as the UNION of
+  their alternatives' narrowed types (Eric 2026-08-31 — Graphix
+  narrows captures where Rust binds at the enum type, so exact
+  equality refused the keymap idiom ``kk@ `Up | kk@ `Char("k")``; the
+  capture is the whole matched value, the union is exact; pins
+  `or_capture_union`/`or_payload_unequal_rejected`).
   Alternatives try left to right, first structural match binds; every
-  alternative binds the SAME names at EXACTLY EQUAL types (BindIds are
+  alternative binds the SAME names, PAYLOAD binds at EXACTLY EQUAL
+  types (BindIds are
   shared — alternative 0 allocates via `BindMode::Record`, the rest
   `Reuse` and bind nothing in the env; open cells unify at the reused
-  leaf, concrete mismatches err); ONE guard per arm covers the whole
+  leaf, concrete payload mismatches err, captures widen); ONE guard
+  per arm covers the whole
   alternation. Coverage is per coverage ATOM (`arm_atoms`): an or-arm
   claims once per alternative against its own member of the raw
   inferred Set (`true | false` completes bool, `[] | [_, ..]` feeds

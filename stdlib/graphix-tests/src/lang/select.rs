@@ -2021,3 +2021,46 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(9))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// An @-capture in an or-arm types as the UNION of its per-alternative
+// narrowed types (Eric's ruling 2026-08-31, the admin-TUI keymaps):
+// Graphix narrows captures where Rust binds at the enum type, so the
+// old exactly-equal rule refused the form orthodox Rust code writes.
+// The capture is the whole matched value — the union is exact.
+const OR_CAPTURE_UNION: &str = r#"
+{
+  let sel = 0;
+  let go = |c: [`Up, `Down, `Char(string), `Enter]| -> string select c {
+    kk@ `Up | kk@ `Char("k") => {
+      sel <- (kk ~ sel) - 1;
+      "up"
+    },
+    kk@ `Down | kk@ `Char("j") => {
+      sel <- (kk ~ sel) + 1;
+      "down"
+    },
+    _ => "other"
+  };
+  go(`Char("k"))
+}
+"#;
+
+run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "up")
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Payload binds keep the exactly-equal rule: the body reads through
+// the slot at one type.
+const OR_PAYLOAD_UNEQUAL: &str = r#"
+{
+  let v: (i64, string) = (0, "x");
+  select v {
+    (0, y) | (y, "z") => "[y]",
+    _ => "other"
+  }
+}
+"#;
+
+run!(or_payload_unequal_rejected, OR_PAYLOAD_UNEQUAL, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
