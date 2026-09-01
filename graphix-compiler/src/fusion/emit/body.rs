@@ -1079,9 +1079,19 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// [`Self::interned_str`]; the kernel's [`KernelValues`] keeps it
     /// alive as long as the compiled code that baked the pointer.
     pub fn interned_type(&mut self, t: &Type) -> ClifValue {
-        let mut lazy = self.ctx.lazy_types.borrow_mut();
-        lazy.push(Box::new(t.clone()));
-        let ptr = lazy.last().unwrap().as_ref() as *const Type;
+        let b = Box::new(t.clone());
+        let ptr = b.as_ref() as *const Type;
+        self.ctx.lazy_keep.borrow_mut().push(b);
+        self.b.ins().iconst(types::I64, ptr as i64)
+    }
+
+    /// Stable `*const QopSite` for a handler-ful `?` site — the
+    /// delivery drain's key (`graphix_qop_raise`); kept alive like
+    /// [`Self::interned_type`].
+    pub fn interned_qop_site(&mut self, site: crate::node::error::QopSite) -> ClifValue {
+        let b = Box::new(site);
+        let ptr = b.as_ref() as *const crate::node::error::QopSite;
+        self.ctx.lazy_keep.borrow_mut().push(b);
         self.b.ins().iconst(types::I64, ptr as i64)
     }
 }

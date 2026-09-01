@@ -566,6 +566,23 @@ safe fn graphix_abort_set() {
     KERNEL_ABORT.with(|c| c.set(true))
 }
 
+/// Raise a handler-ful `?`'s error onto the invocation's delivery
+/// queue (`QOP_RAISES`): `site` is the interned `*const QopSite`,
+/// `(disc, payload)` the error Value's words, BORROWED — the queue
+/// takes a clone, so the site's own ownership (drop an owned inner,
+/// leave a borrowed one) is untouched. `Kernel::update` drains the
+/// queue after the run in push (= execution = node-update) order and
+/// delivers each through `deliver_error`, the interp's exact path.
+unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
+    // SAFETY: the words are a valid clean `Value` the site checked is
+    // a structural Error; viewed, never owned (forgotten after the
+    // clone), exactly like `graphix_value_clone`.
+    let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
+    let v = tv.value_cloned();
+    std::mem::forget(tv);
+    QOP_RAISES.with(|q| q.borrow_mut().push((site as *const crate::node::error::QopSite, v)));
+}
+
 /// Read the active runtime's interrupt/abort control (set in
 /// `INTERRUPT_PTR` by `do_cycle`). Returns 1 if a wedged loop should
 /// abort (an `interrupt()` or `abort()` is pending), else 0. Emitted at
@@ -2050,6 +2067,15 @@ thread_local! {
     pub static KERNEL_ENV: Cell<*const crate::env::Env> =
         const { Cell::new(std::ptr::null()) };
 
+    /// The invocation's `?` delivery queue: errors the emitted code
+    /// raised at handler-ful `?` sites (`graphix_qop_raise`), in
+    /// execution order, drained by `Kernel::update` after the wrapper
+    /// returns ([`with_qop_raises`]). Per-invocation data — a kernel
+    /// never delivers mid-run, so a kernel is a pure function of its
+    /// inputs to (result, deliveries).
+    pub static QOP_RAISES: std::cell::RefCell<Vec<(*const crate::node::error::QopSite, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
     /// Raw pointer to the active runtime's [`crate::Control`], set per
     /// cycle by `do_cycle` on the thread running the node loop. Read by
     /// `graphix_interrupted` (emitted at every JIT loop head) so a wedged
@@ -2248,4 +2274,17 @@ pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -
     let r = f();
     KERNEL_ENV.with(|c| c.set(prev));
     r
+}
+
+/// Run one kernel invocation `f` against a fresh `?` delivery queue
+/// and hand back what it raised, in order. An enclosing invocation's
+/// queue (a kernel reached through a core-trait value hook) is set
+/// aside and restored, so deliveries never cross invocations.
+pub(crate) fn with_qop_raises<T>(
+    f: impl FnOnce() -> T,
+) -> (T, Vec<(*const crate::node::error::QopSite, Value)>) {
+    let outer = QOP_RAISES.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    let r = f();
+    let mine = QOP_RAISES.with(|q| std::mem::replace(&mut *q.borrow_mut(), outer));
+    (r, mine)
 }

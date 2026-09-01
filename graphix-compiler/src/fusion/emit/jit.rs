@@ -1025,7 +1025,7 @@ fn define_kernel_body(
             std::cell::RefCell::new(Vec::new());
         let lazy_values: std::cell::RefCell<Vec<Box<Value>>> =
             std::cell::RefCell::new(Vec::new());
-        let lazy_types: std::cell::RefCell<Vec<Box<crate::typ::Type>>> =
+        let lazy_keep: std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>> =
             std::cell::RefCell::new(Vec::new());
         let lazy_site_leaves: std::cell::RefCell<
             Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
@@ -1043,7 +1043,7 @@ fn define_kernel_body(
                 &helper_refs,
                 &lazy_strings,
                 &lazy_values,
-                &lazy_types,
+                &lazy_keep,
                 body_emitter,
                 callee_layouts,
                 &lazy_site_leaves,
@@ -1058,7 +1058,7 @@ fn define_kernel_body(
         (
             KernelStrings::empty().with_lazy(lazy_strings.into_inner()),
             KernelValues::empty()
-                .with_lazy(lazy_values.into_inner(), lazy_types.into_inner()),
+                .with_lazy(lazy_values.into_inner(), lazy_keep.into_inner()),
             state_words,
             slot_table_words,
             state_self_blocks,

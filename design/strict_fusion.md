@@ -143,8 +143,9 @@ Deleted, in one cut, with the workspace gate green after it:
   `set_var_typed`. `Connect::emit_clif` refuses ("connect is an
   effect").
 - Handler-ful `?`: `emit_qop_deliver`, `try_register_qop_deliver`,
-  `FnSource::QopDeliver`; `Qop::emit_clif` refuses when a handler is
-  installed.
+  `FnSource::QopDeliver` (the mid-kernel write through the
+  dispatcher). Replaced the same evening by the DELIVERY QUEUE —
+  see below.
 
 Kept, renamed where the old name lied: the abort flag
 (`KERNEL_ABORT`, `graphix_abort_set`/`graphix_abort_peek` — the
@@ -168,6 +169,31 @@ all followed. `Kernel::reset_replay` is a no-op: every word a kernel
 keeps is semantic.
 
 `Kernel` is no longer generic: it holds no `Apply`s and no `Node`s.
+
+## The `?` delivery queue (same evening)
+
+Eric: "`?` is central to array access … the fact that it fuses with
+no catch and doesn't with catch is actually even worse for
+predictable performance." The handler-ful `?` was the one refusal
+in the deletion that was not about state: the delivery is an
+effect, but a pure function of the kernel's inputs. So it came back
+stateless. A failing handler-ful `?` calls `graphix_qop_raise(site,
+disc, payload)` — `site` an interned `QopSite` (handler, own top,
+spec), the error CLONED onto the invocation's `QOP_RAISES` queue
+(a scoped thread-local like `KERNEL_ABORT`/`KERNEL_ENV`, saved and
+restored around nested invocations reached through the value
+hooks). `Kernel::update` drains the queue after the wrapper returns,
+in push (= execution = node-update) order, and runs
+`node::error::deliver_error` for each — the handler path factored
+OUT of `Qop::update` so both engines call one function: same-top
+Vacant-insert / `set_var` on an occupied entry, cross-top `set_var`,
+in-frame `frame_outbox` parking. Delivery keys on a FRESH error
+(`is_fresh`: not tainted, not stale), exactly `Qop::update`'s
+fired-only rule. The value side is untouched (the failing `?` was
+already the tainted placeholder that continues). Pinned by
+`lang/errors.rs` `catch_array_index_fused` (a `#[native]`-free Jit
+fixture: the handler counts the fused region's raise) and the
+`checked_div0` flip back to Jit.
 
 ## The three follow-on calls (Eric, same day)
 

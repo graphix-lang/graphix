@@ -42,7 +42,7 @@ pub(super) fn compile_into_function(
     helper_refs: &HelperRefs,
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
-    lazy_types: &std::cell::RefCell<Vec<Box<Type>>>,
+    lazy_keep: &std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
     body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
@@ -234,7 +234,7 @@ pub(super) fn compile_into_function(
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
-        lazy_types,
+        lazy_keep,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
         self_call: spec.self_call,
@@ -378,18 +378,25 @@ impl KernelStrings {
 /// inline.)
 pub struct KernelValues {
     lazy: Vec<Box<Value>>,
-    types: Vec<Box<Type>>,
+    /// Everything else the emitted code baked a pointer to — Cast
+    /// destination `Type`s, `QopSite`s — kept alive as long as the
+    /// kernel (`BodyCx::interned_type`, `interned_qop_site`).
+    keep: Vec<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl KernelValues {
     pub fn empty() -> Self {
-        Self { lazy: Vec::new(), types: Vec::new() }
+        Self { lazy: Vec::new(), keep: Vec::new() }
     }
 
     /// See [`KernelStrings::with_lazy`].
-    pub fn with_lazy(mut self, lazy: Vec<Box<Value>>, types: Vec<Box<Type>>) -> Self {
+    pub fn with_lazy(
+        mut self,
+        lazy: Vec<Box<Value>>,
+        keep: Vec<Box<dyn std::any::Any + Send + Sync>>,
+    ) -> Self {
         self.lazy = lazy;
-        self.types = types;
+        self.keep = keep;
         self
     }
 }
@@ -693,9 +700,11 @@ pub(crate) struct LowerCtx<'a> {
     /// is individually boxed so its address survives Vec growth.
     pub(super) lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
     pub(super) lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
-    /// Cast sites' destination types, kept alive like `lazy_values`
-    /// (`BodyCx::interned_type`).
-    pub(super) lazy_types: &'a std::cell::RefCell<Vec<Box<Type>>>,
+    /// Cast sites' destination types and `?` sites' `QopSite`s, kept
+    /// alive like `lazy_values` (`BodyCx::interned_type`,
+    /// `interned_qop_site`).
+    pub(super) lazy_keep:
+        &'a std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
     /// Lazily-created single `pending_exit` block — the target of
     /// every whole-kernel abort (interrupt poll, bottom abort, callee
     /// abort check). Its body (sentinel + `return`) is emitted at the

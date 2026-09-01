@@ -517,10 +517,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // exactly as the interp's armed operators do. The env loan is
         // what a Cast site's `graphix_castcall` resolves type names
         // through — the same `cast_value` call the node-walk makes.
-        crate::node::coretraits::with_value_hooks(ctx, event, |ctx, _| unsafe {
-            super::emit_helpers::with_kernel_env(&ctx.env, || {
-                f(slots.as_ptr(), out.as_mut_ptr());
+        crate::node::coretraits::with_value_hooks(ctx, event, |ctx, event| {
+            let ((), raises) = super::emit_helpers::with_qop_raises(|| unsafe {
+                super::emit_helpers::with_kernel_env(&ctx.env, || {
+                    f(slots.as_ptr(), out.as_mut_ptr());
+                })
             });
+            // The run's `?` deliveries, in execution order — the
+            // kernel is a pure function of its inputs to (result,
+            // deliveries), and the deliveries happen HERE, at the node
+            // boundary, through the interp's own handler path.
+            for (site, v) in raises {
+                // SAFETY: `site` is the interned `QopSite` the emitted
+                // code baked; the kernel's `KernelValues` keeps it alive.
+                let site = unsafe { &*site };
+                if let Value::Error(e) = v {
+                    crate::node::error::deliver_error(
+                        ctx,
+                        event,
+                        site.handler,
+                        site.own_top,
+                        &site.spec,
+                        (*e).clone(),
+                    );
+                }
+            }
         });
         let pending = KERNEL_ABORT.with(|c| c.replace(false));
         // Recursion-shrink reclaim + restore the reach thread-locals.

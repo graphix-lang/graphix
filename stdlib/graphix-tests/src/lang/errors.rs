@@ -39,19 +39,28 @@ const CHECKED_DIV0: &str = r#"
 }
 "#;
 
-// Fuses again. It stopped on 2026-08-07 and the loss was misattributed
-// here to the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026) — plausible, since that
-// landed the same day, but wrong. The real cause was an arity defect in
-// `emit_qop_deliver`: this is a handler-ful `?`, so it emits the
-// error-delivery DynCall, and 9d042cbc had grown `graphix_dyncall` to
-// five parameters without updating that call site. Cranelift's verifier
-// rejected the function and the region node-walked. See
-// findings/qop-deliver-dyncall-arity-aug2026.
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+});
+
+// A handler-ful `?` in a fused region (design/strict_fusion.md, the
+// delivery queue): the kernel raises the index error onto the
+// invocation's queue and the kernel node delivers it to the catch
+// handler through the interp's own path, so the handler counts it.
+const CATCH_ARRAY_INDEX_FUSED: &str = r#"
+{
+    let caught = never();
+    catch(e) caught <- e ~ 1;
+    let a = [10, 20, 30];
+    let v = a[5]? * 2;
+    caught
+}
+"#;
+
+run!(catch_array_index_fused, CATCH_ARRAY_INDEX_FUSED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+});
 
 // catch with array index errors still works
 const CATCH1: &str = r#"

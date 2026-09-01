@@ -19,7 +19,8 @@ use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        is_tainted, is_untainted, propagate_flags, scalar_disc, taint_if, value_disc,
+        is_fresh, is_tainted, is_untainted, propagate_flags, scalar_disc, taint_if,
+        value_disc,
     },
     body::{
         BodyCx, TailRebind, emit_kernel_bottom, emit_kernel_return,
@@ -691,18 +692,36 @@ fn type_may_error(t: &Type) -> bool {
     }
 }
 
-/// The `?`/`$` bad path's drop (shared by the composite/string,
-/// value-shape, AND scalar arms — the scalar arm reaches it under its
-/// own `is_err` branch, since its success path is branchless): drop
-/// the OWNED error; a Borrowed inner is owned by its env slot, which
+/// The `?`/`$` bad path's raise-and-drop (shared by the
+/// composite/string, value-shape, AND scalar arms — the scalar arm
+/// reaches it under its own `is_err` branch, since its success path
+/// is branchless). With a catch handler (`site`, the interned
+/// [`QopSite`]), branch on `deliverable` (a REAL, FRESH error) and
+/// RAISE it onto the invocation's delivery queue — the helper clones
+/// the error, so ownership is untouched. Then drop the OWNED error; a
+/// Borrowed inner is owned by its env slot, which
 /// `emit_pending_cleanup` drops — dropping here too would
 /// double-free. `clean`/`payload` are the error Value's words.
-fn emit_qop_error_drop(
+fn emit_qop_error_disposal(
     cx: &mut BodyCx,
+    site: Option<cranelift_codegen::ir::Value>,
+    deliverable: cranelift_codegen::ir::Value,
     clean: cranelift_codegen::ir::Value,
     payload: cranelift_codegen::ir::Value,
     inner_owned: bool,
 ) -> Result<()> {
+    if let Some(site) = site {
+        let raise_bl = cx.b.create_block();
+        let cont_bl = cx.b.create_block();
+        cx.b.ins().brif(deliverable, raise_bl, &[], cont_bl, &[]);
+        cx.b.switch_to_block(raise_bl);
+        cx.b.seal_block(raise_bl);
+        let raise = cx.helper("graphix_qop_raise")?;
+        cx.b.ins().call(raise, &[site, clean, payload]);
+        cx.b.ins().jump(cont_bl, &[]);
+        cx.b.switch_to_block(cont_bl);
+        cx.b.seal_block(cont_bl);
+    }
     if inner_owned {
         let value_drop = cx.helper("graphix_value_drop")?;
         cx.b.ins().call(value_drop, &[clean, payload]);
@@ -715,6 +734,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     _spec_id: ExprId,
     inner: &Node<R, E>,
     result_typ: &Type,
+    handler: Option<cranelift_codegen::ir::Value>,
 ) -> Result<CompiledExpr> {
     // Lockstep with the discovery-side freeze (lowering.rs
     // try_register_qop_deliver): both normalized, so a site the
@@ -755,6 +775,12 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // taint first — a tainted disc is not a structural Error).
     let clean = clean_disc(cx.b, disc);
     let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
+    // Delivery requires a FRESH error — is_err && !TAINT && !STALE: a
+    // tainted error is a phantom computed from placeholders, and a
+    // stale one is the value channel re-surfacing (the interp's
+    // `Qop::update` delivers only a FIRED error).
+    let fresh = is_fresh(cx.b, disc);
+    let deliverable = cx.b.ins().band(is_err, fresh);
     // A TAINTED error is a PHANTOM — computed from #219 placeholders
     // after an upstream bottom (e.g. `(a[BAD]? /? y)?`: the index raise
     // taints, the checked div then computes `0 /? 0` on placeholders
@@ -785,7 +811,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // #219: the inner's own taint also flows through.
         Some(AbiKind::Scalar(p)) => {
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
-            if inner_owned {
+            if inner_owned || handler.is_some() {
                 // On the structural-error path (phantoms included —
                 // an owned tainted error is still an allocation),
                 // deliver to the catch handler's variable (mirrors
@@ -797,7 +823,14 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                 cx.b.ins().brif(is_err, err_block, &[], after, &[]);
                 cx.b.switch_to_block(err_block);
                 cx.b.seal_block(err_block);
-                emit_qop_error_drop(cx, clean, payload, inner_owned)?;
+                emit_qop_error_disposal(
+                    cx,
+                    handler,
+                    deliverable,
+                    clean,
+                    payload,
+                    inner_owned,
+                )?;
                 cx.b.ins().jump(after, &[]);
                 cx.b.switch_to_block(after);
                 cx.b.seal_block(after);
@@ -848,7 +881,14 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Handler-less: drop the owned value (a Borrowed Local is
             // owned by its env slot, which `emit_pending_cleanup` drops —
             // dropping here too would double-free).
-            emit_qop_error_drop(cx, clean, payload, inner_owned)?;
+            emit_qop_error_disposal(
+                cx,
+                handler,
+                deliverable,
+                clean,
+                payload,
+                inner_owned,
+            )?;
             // Tainted shape-safe placeholder; the inner's STALE carries
             // (the qop fires iff its inner fired) and TAINT marks
             // no-value — downstream consumers run harmlessly on the
@@ -933,7 +973,14 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // inner is owned by its env slot, which
             // `emit_pending_cleanup` -> `drop_owned_composites` already
             // drops; dropping it here too would double-free.
-            emit_qop_error_drop(cx, clean, payload, inner_owned)?;
+            emit_qop_error_disposal(
+                cx,
+                handler,
+                deliverable,
+                clean,
+                payload,
+                inner_owned,
+            )?;
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
             let tainted_base = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);

@@ -765,19 +765,29 @@ A builtin fuses iff it registers a `FASTCALL` (a direct trampoline
 call on a stack buffer of borrowed `Value`s); the non-inline
 `cast<T>(x)` is the one pseudo-site (`SiteDispatch::Cast`,
 `graphix_castcall` runs the interp's exact `cast_value` under the
-kernel's env loan). Everything else — a builtin without a fast fn
-(stateful, effectful, seam-gated, or a defaulted-label site),
-`connect`, a handler-ful `?` — refuses emission and node-walks,
-transitively through callees. There is NO DynCall dispatcher, no
-inner Apply inside a kernel, no per-site identity, no selection
-memory, no arm-lift, no wake hint; a kernel's only cross-invocation
-memory is the firing boundary (prev-length words for exact HOF
-resize detection, first-call words for a callee's init view, the
-per-call-site blocks and per-activation trees that give those words
-per-slot/per-activation multiplicity) — no replay caches, so
-`Kernel::reset_replay` is a no-op. The runtime loans a kernel invocation exactly three
-things through scoped thread-locals: `KERNEL_ABORT`, `KERNEL_ENV`
-and the core-trait value hooks. Measured at the flip: 94% of
+kernel's env loan). A `?` fuses WITH OR WITHOUT a covering `catch`
+(Eric 2026-09-01: a cliff that depends on whether a catch is in
+scope is the worst kind for predictable performance): the kernel
+never writes the handler's variable — a failing handler-ful `?`
+RAISES its error onto the invocation's delivery queue
+(`graphix_qop_raise`, `QOP_RAISES`) and `Kernel::update` drains it
+after the run, in execution order, through `deliver_error`, the
+one handler path `Qop::update` also uses (same-top Vacant-insert,
+cross-top `set_var`, in-frame `frame_outbox` parking). A kernel is
+thus a pure function of its inputs to (result, deliveries).
+Everything else — a builtin without a fast fn (stateful, effectful,
+seam-gated, or a defaulted-label site), `connect` — refuses emission
+and node-walks, transitively through callees. There is NO DynCall
+dispatcher, no inner Apply inside a kernel, no per-site identity, no
+selection memory, no arm-lift, no wake hint; a kernel's only
+cross-invocation memory is the firing boundary (prev-length words
+for exact HOF resize detection, first-call words for a callee's init
+view, the per-call-site blocks and per-activation trees that give
+those words per-slot/per-activation multiplicity) — no replay
+caches, so `Kernel::reset_replay` is a no-op. The runtime loans a
+kernel invocation exactly four things through scoped thread-locals:
+`KERNEL_ABORT`, `KERNEL_ENV`, `QOP_RAISES` and the core-trait value
+hooks. Measured at the flip: 94% of
 kernels kept, benches flat, every bench program still fuses fully.
 The follow-on calls: pure selects fuse; grow the FASTCALL set
 maximally (`is_err` converted at the flip; re::, str::parse, sort,

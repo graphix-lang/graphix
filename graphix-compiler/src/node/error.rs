@@ -195,6 +195,53 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 }
 
+/// Deliver a `?`'s error `e` (the raw error payload) to the catch
+/// handler `(handler_id, handler_top)` on behalf of the `?` at
+/// `spec` under `own_top` — the ONE handler path, shared by
+/// `Qop::update` and the fused kernel's delivery drain
+/// (`Kernel::update`): `wrap_error` against the env, then a same-top
+/// delivery uses the same-cycle Vacant-insert (or `set_var` when the
+/// handler's variable already holds this cycle's value), a CROSS-top
+/// delivery (REPL: a catch installed by an earlier input) goes through
+/// `rt.set_var`, and inside an evaluation frame the delivery is parked
+/// (`ExecCtx::frame_outbox`) — the frame's private `event.variables`
+/// is discarded when the pass ends, and a handler delivery is
+/// outward-bound.
+pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    (id, handler_top): (BindId, ExprId),
+    own_top: ExprId,
+    spec: &Expr,
+    e: Value,
+) {
+    let e = wrap_error(&ctx.env, spec, e);
+    let v = Value::Error(e.into());
+    if handler_top != own_top {
+        ctx.rt.set_var(id, v)
+    } else if ctx.frame_depth > 0 {
+        ctx.frame_outbox.push((id, v));
+    } else {
+        match event.variables.entry(id) {
+            Entry::Vacant(slot) => {
+                slot.insert(TagValue::fired(v));
+            }
+            Entry::Occupied(_) => ctx.rt.set_var(id, v),
+        }
+    }
+}
+
+/// A fused handler-ful `?` site: what the kernel's delivery drain
+/// needs to run [`deliver_error`] for an error the emitted code
+/// raised there. Interned per site (`BodyCx::interned_qop_site`) and
+/// kept alive by the kernel's `KernelValues`.
+#[derive(Debug)]
+pub struct QopSite {
+    pub handler: (BindId, ExprId),
+    pub own_top: ExprId,
+    pub spec: Expr,
+}
+
 #[derive(Debug)]
 pub struct Qop<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -266,28 +313,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             None => tv,
             Some(_) if !fired => self.resident.ride(),
             Some(e) => match self.id {
-                Some((id, handler_top)) => {
-                    let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
-                    let v = Value::Error(e.into());
-                    if handler_top != self.top_id {
-                        ctx.rt.set_var(id, v)
-                    } else if ctx.frame_depth > 0 {
-                        // Inside an evaluation frame `event.variables`
-                        // is the frame's PRIVATE map, which is
-                        // discarded when the pass ends — a handler
-                        // delivery written there never reaches the
-                        // handler. It is outward-bound, so park it for
-                        // the frame driver to deliver once the frames
-                        // unwind (`ExecCtx::frame_outbox`).
-                        ctx.frame_outbox.push((id, v));
-                    } else {
-                        match event.variables.entry(id) {
-                            Entry::Vacant(slot) => {
-                                slot.insert(TagValue::fired(v));
-                            }
-                            Entry::Occupied(_) => ctx.rt.set_var(id, v),
-                        }
-                    }
+                Some(handler) => {
+                    deliver_error(
+                        ctx,
+                        event,
+                        handler,
+                        self.top_id,
+                        &self.spec,
+                        (*e).clone(),
+                    );
                     // the consumed error event produces an event with
                     // no value
                     self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
@@ -415,14 +449,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // A handler-ful `?` (`id: Some` — caught by an enclosing catch)
-        // delivers its error by WRITING the handler's variable: an
-        // effect, so it node-walks (design/strict_fusion.md). A
-        // handler-LESS `?` fuses — its error path is the bottom the
-        // kernel produces with no delivery.
-        if self.id.is_some() {
-            return Err(anyhow!("emit_clif: handler-ful ? is an effect — node-walks"));
-        }
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ)
+        // raises its error onto the invocation's delivery queue; the
+        // kernel node delivers it after the run through
+        // [`deliver_error`], the interp's exact path. A handler-LESS
+        // `?` just bottoms.
+        let handler = self.id.map(|handler| {
+            cx.interned_qop_site(QopSite {
+                handler,
+                own_top: self.top_id,
+                spec: self.spec.clone(),
+            })
+        });
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, handler)
     }
 }
 
@@ -527,6 +565,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `$` never has a catch handler (log + drop on error) — no delivery.
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ)
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, None)
     }
 }
