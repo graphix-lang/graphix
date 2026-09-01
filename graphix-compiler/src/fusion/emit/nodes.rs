@@ -551,6 +551,9 @@ pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
     rhs: &Node<R, E>,
     bind_id: BindId,
 ) -> Result<CompiledExpr> {
+    if crate::dbgenv::graphix_strict_fuse() {
+        return Err(anyhow!("emit_clif: strict fusion — connect is an effect"));
+    }
     // Read-after-write-same-var guard: if the connect TARGET is a
     // kernel-local (let-bound inside this region) that was NOT lifted, a
     // read of it in the same kernel resolves to the stale local value,

@@ -42,6 +42,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | doc | what |
 |---|---|
 | `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
+| `strict_fusion.md` | retreat fusion to pure+fastcall code? Measured (94% kernels kept, benches flat, one +6.5%); awaiting ruling |
 | `fusion_lowering_split.md` | split `try_fuse` into analysis + lowering (legibility) |
 | `interp_lazy_bind_cost.md` | partial: what remains of the interp's per-activation cost (see header) |
 

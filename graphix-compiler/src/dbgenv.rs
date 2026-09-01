@@ -18,6 +18,15 @@ macro_rules! dbg_flag {
     };
 }
 
+// MEASUREMENT PROTOTYPE (Eric's strict-fusion question, 2026-09-01):
+// restrict fusion to pure computation — a DynCall-path builtin
+// dispatch (anything that is not a direct FASTCALL), a fused
+// `connect`, or a handler-ful `?` refuses emission and the subtree
+// node-walks. Semantics are unchanged by construction (refusal = the
+// canonical interp); this exists to measure what a
+// pure+fastcall-only fusion regime would cost in coverage and buy in
+// bench time before deciding to delete the stateful-kernel machinery.
+dbg_flag!(graphix_strict_fuse, "GRAPHIX_STRICT_FUSE");
 dbg_flag!(graphix_dbg_bind, "GRAPHIX_DBG_BIND");
 dbg_flag!(graphix_dbg_bind_bt, "GRAPHIX_DBG_BIND_BT");
 dbg_flag!(graphix_dbg_cycle_bt, "GRAPHIX_DBG_CYCLE_BT");
