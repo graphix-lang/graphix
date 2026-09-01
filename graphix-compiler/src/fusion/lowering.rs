@@ -114,6 +114,11 @@ pub struct BuiltinCallSiteInfo {
     /// reproduced there; the region de-fuses instead (P7, the
     /// Sync-flip gate). Cast/qop pseudo-sites are sleep-inert.
     pub sleep_restarts: bool,
+    /// A compiler-internal PURE pseudo-site (the Cast recipe): value
+    /// conversion with no state and no effect, `fastcall: None` only
+    /// as an artifact of its dispatch plumbing. Admitted under strict
+    /// fusion (design/strict_fusion.md).
+    pub pseudo: bool,
     /// The builtin's `STATELESS` fact (`ctx.builtin_stateless`), read
     /// at discovery. Load-bearing for the WIDENED interior-sleep gate
     /// (design/wake_catchup.md): a STATEFUL builtin inside a select-
@@ -215,6 +220,7 @@ fn try_register_qop_deliver<R: Rt, E: UserEvent>(
             return_type: inner_typ,
             sleep_restarts: false,
             stateless: true,
+            pseudo: false,
             fastcall: None,
         },
     );
@@ -268,6 +274,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             return_type: ret_frozen,
             sleep_restarts: false,
             stateless: true,
+            pseudo: true,
             fastcall: None,
         },
     );
@@ -509,6 +516,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             return_type,
             sleep_restarts: ctx.builtin_sleep_restarts(info.name.as_str()),
             stateless: ctx.builtin_stateless(info.name.as_str()),
+            pseudo: false,
             fastcall: if all_marshalled {
                 ctx.builtin_fastcall(info.name.as_str())
             } else {

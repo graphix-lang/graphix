@@ -612,7 +612,7 @@ run!(list_sort_asc, LIST_SORT_ASC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_SORT_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, list::from_array([5, 3, 1, 4, 2])))
@@ -629,7 +629,7 @@ run!(list_sort_desc, LIST_SORT_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_SORT_NUMERIC: &str = r#"
   list::to_array(list::sort(#numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
@@ -648,7 +648,7 @@ run!(list_sort_numeric, LIST_SORT_NUMERIC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const LIST_SORT_NUMERIC_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, #numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
@@ -667,7 +667,7 @@ run!(list_sort_numeric_desc, LIST_SORT_NUMERIC_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // ── Enumerate ───────────────────────────────────────────────────
 

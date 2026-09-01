@@ -218,7 +218,7 @@ const OR_NEVER: &str = r#"
 run!(or_never, OR_NEVER, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const WRAP_OVERFLOW: &str = r#"
 {

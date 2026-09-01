@@ -749,7 +749,7 @@ run!(array_window0, ARRAY_WINDOW0, |v: Result<&Value>| {
         Ok([(5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_WINDOW1: &str = r#"
   array::window(#n:2, [(1, 2), (3, 4)], (5, 6))
@@ -760,7 +760,7 @@ run!(array_window1, ARRAY_WINDOW1, |v: Result<&Value>| {
         Ok([(3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_WINDOW2: &str = r#"
   array::window(#n:3, [(1, 2), (3, 4)], (5, 6))
@@ -771,7 +771,7 @@ run!(array_window2, ARRAY_WINDOW2, |v: Result<&Value>| {
         Ok([(1, 2), (3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_LEN: &str = r#"
 {

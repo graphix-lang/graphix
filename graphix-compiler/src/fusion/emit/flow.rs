@@ -829,9 +829,7 @@ fn emit_qop_deliver(
     inner_owned: bool,
 ) -> Result<()> {
     if crate::dbgenv::graphix_strict_fuse() {
-        return Err(anyhow!(
-            "emit_clif: strict fusion — handler-ful ? is an effect"
-        ));
+        return Err(anyhow!("emit_clif: strict fusion — handler-ful ? is an effect"));
     }
     let info = cx
         .builtin_site(site_id)

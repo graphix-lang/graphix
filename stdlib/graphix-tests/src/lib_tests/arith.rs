@@ -191,7 +191,7 @@ run!(div_in_untaken_arm, DIV_IN_ARM, |v: Result<&Value>| {
 const ERR_DYNCALL_ARG: &str = "is_err(error(1))";
 run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // Cluster D: interpolating a non-scalar part (Nullable<string> from an
 // array index) must bail the StringInterpolate to the node-walk, not crash

@@ -857,50 +857,28 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
 // ── Core builtins ──────────────────────────────────────────────────
 
-#[derive(Debug, Default)]
-struct IsErr {
-    out: TagValue,
+fn fc_is_err(args: &[Value]) -> Option<Value> {
+    match args {
+        [v] => Some(Value::Bool(matches!(v, Value::Error(_)))),
+        _ => None,
+    }
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IsErr {
+#[derive(Debug, Default)]
+struct IsErrEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsErrEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_is_err";
+    const FASTCALL: Option<FastFn> = Some(fc_is_err);
 
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(IsErr::default()))
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(fc_is_err, from)
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for IsErr {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
-        match seam_tick(from[0].update(ctx, event)).map(|tv| {
-            tv.with_value(|v| match v {
-                Value::Error(_) => Value::Bool(true),
-                _ => Value::Bool(false),
-            })
-        }) {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-}
+type IsErr = CachedArgs<IsErrEv>;
 
 #[derive(Debug, Default)]
 struct FilterErr {

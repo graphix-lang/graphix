@@ -607,4 +607,5 @@ run!(
     test_watch_create_with_params,
     r#"{ use sys::fs::watch::{self, *}; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }
+    ; graphix_package_core::testing::FuseExpect::Jit
 );

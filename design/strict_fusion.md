@@ -1,6 +1,11 @@
 # Strict fusion — retreat to pure computation?
 
-Status: PROPOSED, measured, awaiting Eric's ruling (2026-09-01). The
+Status: RULED by Eric 2026-09-01 — "Complexity needs to pay rent, and
+your report makes it pretty clear that this whack of complexity can't
+afford to live in our compiler. Strict fusion is the way forward."
+Strict is now the DEFAULT (`GRAPHIX_PERMISSIVE_FUSE=1` restores the
+old machinery for A/B bisection during the deletion phase and dies
+with it); the Cast pseudo-site is admitted (pure). The
 question, in Eric's words: "Are we trying to fuse too much? How much
 simpler would both our lives be if we defused everything but stateless
 non-async code that contains only fastcall builtins? … the user can
@@ -100,13 +105,31 @@ arc (wake catch-up, the birth rule, sys::net reconcile) — that is
 language semantics, engine-independent, and all 464 pins hold under
 both regimes.
 
-## Open questions for the ruling
+## The three follow-on calls (Eric, same day)
 
-- Fuse pure SELECTS (guards/arms pure, scalar merges) or retreat to
-  straight-line + loops + recursion only? The measurement kept them
-  and symbolic (guard-heavy, 12s) stayed flat — but its win over
-  node-walk is already ~1x, so the coverage is cheap either way.
-- Grow the FASTCALL set deliberately (re:: via a global pattern
-  cache; the opt:: partial-delivery family stays out on semantics).
-- Whether `#[native]`'s contract should be advertised as THE
-  performance model in the book once the cliff is this legible.
+- **Pure selects FUSE** — kept as measured.
+- **Grow the FASTCALL set as big as we can**: sweep every remaining
+  non-fastcall Sync builtin. Known conversion targets: `re::` (global
+  pattern cache keyed by the pattern string), `str::parse` (the
+  init-time cast type moves to a per-call argument or a keyed cache),
+  `sort` (audit the unread-body note), `escape`/`unescape` (global
+  cache keyed by the config value). Stays out on semantics: the
+  partial-delivery producers (opt::or/and/contains/or_default/
+  ok_or/zip, core::divide) — a fastcall sees all args present, and
+  their short-circuit-on-partial IS the semantics.
+- **`#[native]` is THE advertised performance model** — the book
+  documents: pure code over fastcall builtins fuses; `#[native]`
+  asserts it and errors on the cliff; stateful/effectful/async code
+  runs on the reactive interpreter, structured at the seams.
+
+## Transition plan
+
+1. Flip the default (done with this ruling), admit Cast, re-annotate
+   the fixture corpus (FuseExpect + `#[native]` pins on shapes that
+   now node-walk), full gates. 2. A soak round on strict-default.
+3. The deletion phase, staged with gates per deletion: site identity,
+   the mask protocol, selection-memory words + wake hints + the birth
+   view + wire bit 2, the interior gates (P7/stateful/key-0 —
+   replaced by the admission predicate), kernel replay-word audit,
+   arm-lift kernel machinery, then `GRAPHIX_PERMISSIVE_FUSE` itself.
+4. The fastcall growth sweep and the book chapter ride behind.

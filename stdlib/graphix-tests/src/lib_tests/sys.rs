@@ -87,7 +87,7 @@ const STDIN_CREATE: &str = r#"
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // writing to stdin returns an error
 const STDIN_WRITE_ERR: &str = r#"

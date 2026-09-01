@@ -1,24 +1,20 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
+
+// Strict fusion: the rand builtins carry per-instance RNG state, so
+// every fixture here node-walks (design/strict_fusion.md).
 
 const RAND_FLOAT_DEFAULT: &str = r#"
   rand::rand(#clock:1)
 "#;
 
-// Fuses since #20 tvar cell constraints (2026-07-04): with BOTH
-// `?#start`/`?#end` omitted, the terminal settle leaves the
-// defaulted-arg cell open and the post-static-resolve labeled-default
-// check binds `'a := f64` from the compiled `0.0`/`1.0` defaults, so
-// `freeze_region_return` gets a register class. (`let r: f64 =
-// rand::rand(#clock:1)` also compiles now — the annotation narrows the
-// constrained cell directly.)
 run!(rand_float_default, RAND_FLOAT_DEFAULT, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(f)) => *f >= 0.0 && *f < 1.0,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::None);
 
 const RAND_FLOAT_RANGE: &str = r#"
   rand::rand(#start:10.0, #end:20.0, #clock:1)
@@ -29,7 +25,7 @@ run!(rand_float_range, RAND_FLOAT_RANGE, |v: Result<&Value>| {
         Ok(Value::F64(f)) => *f >= 10.0 && *f < 20.0,
         _ => false,
     }
-});
+}; FuseExpect::None);
 
 const RAND_INT_RANGE: &str = r#"
   rand::rand(#start:0, #end:100, #clock:1)
@@ -40,7 +36,7 @@ run!(rand_int_range, RAND_INT_RANGE, |v: Result<&Value>| {
         Ok(Value::I64(i)) => *i >= 0 && *i < 100,
         _ => false,
     }
-});
+}; FuseExpect::None);
 
 const PICK_FROM_ARRAY: &str = r#"
   rand::pick([10, 20, 30])
@@ -51,7 +47,7 @@ run!(pick_from_array, PICK_FROM_ARRAY, |v: Result<&Value>| {
         Ok(Value::I64(i)) => *i == 10 || *i == 20 || *i == 30,
         _ => false,
     }
-});
+}; FuseExpect::None);
 
 const PICK_SINGLE: &str = r#"
   rand::pick([42])
@@ -62,14 +58,12 @@ run!(pick_single, PICK_SINGLE, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-});
+}; FuseExpect::None);
 
 const SHUFFLE_ARRAY: &str = r#"
   rand::shuffle([1, 2, 3])
 "#;
 
-// Array-literal arg isn't lowered by emit_expr yet — kernel build
-// bails, no JIT. Migrate back to `run!` once `[a, b, c]` is wired.
 run!(shuffle_array, SHUFFLE_ARRAY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
@@ -80,12 +74,8 @@ run!(shuffle_array, SHUFFLE_ARRAY, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::None);
 
-// Fuses since never-as-Bottom (2026-07-05): the empty array
-// literal's element cell used to stay an unbound tvar nothing could
-// freeze; the terminal settle now ⊥-defaults it and Array<⊥> freezes
-// (an empty array vacuously has any element type).
 const SHUFFLE_EMPTY: &str = r#"
   rand::shuffle([])
 "#;
@@ -95,4 +85,4 @@ run!(shuffle_empty, SHUFFLE_EMPTY, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::None);

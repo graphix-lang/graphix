@@ -75,7 +75,7 @@ run!(math_atan2, ATAN2, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true)))
 const CLAMP_INVALID: &str = "is_err(math::clamp(f64:42.0, f64:0.0, f64:-1.0))";
 run!(math_clamp_invalid_errors, CLAMP_INVALID, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-});
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // Constants sanity: tau > pi, pi > 3.14, pi < 3.15
 const CONSTANT_SANITY: &str = "math::tau > math::pi \

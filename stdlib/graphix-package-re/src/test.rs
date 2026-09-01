@@ -2,6 +2,10 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
+// Strict fusion: the re builtins carry a per-instance compiled-regex
+// cache, so every fixture here node-walks (design/strict_fusion.md);
+// the fastcall growth sweep's re:: conversion would re-fuse them.
+
 const RE_IS_MATCH: &str = r#"
   re::is_match(#pat:r"[\[\]0-9]+", r"foo[0]")
 "#;
@@ -11,7 +15,7 @@ run!(re_is_match, RE_IS_MATCH, |v: Result<&Value>| {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RE_FIND: &str = r#"
   re::find(#pat:r"foo", r"foobarfoobazfoo")
@@ -27,7 +31,7 @@ run!(re_find, RE_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RE_CAPTURES: &str = r#"
   re::captures(#pat:r"(fo)ob", r"foobarfoobazfoo")
@@ -47,11 +51,7 @@ run!(re_captures, RE_CAPTURES, |v: Result<&Value>| {
         },
         _ => false,
     }
-    // Upgraded from None (2026-07-14): `re::captures`' return type
-    // names `Array<Captures>`-style refs that used to reach the
-    // freeze un-expanded; the carried resolution cell now expands
-    // them env-free and the program fuses.
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RE_SPLIT: &str = r#"
   re::split(#pat:r",\s*", r"foo, bar, baz")
@@ -67,7 +67,7 @@ run!(re_split, RE_SPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RE_SPLITN: &str = r#"
   re::splitn(#pat:r",\s*", #limit:2, r"foo, bar, baz")
@@ -81,4 +81,4 @@ run!(re_splitn, RE_SPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);

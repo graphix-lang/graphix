@@ -81,7 +81,7 @@ run!(json_read_bytes, r#"{
     v
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 run!(json_pretty, r#"{
     let compact = json::write_str({a: 1, b: 2})$;

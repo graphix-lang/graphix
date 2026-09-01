@@ -115,7 +115,7 @@ run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const NET_RPC0: &str = r#"
 {

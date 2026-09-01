@@ -169,13 +169,14 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
     // allocation, no refcount traffic (the fn borrows; an OWNED
     // producer arg is dropped after the call). A DynCall site builds
     // the pooled Vec the dispatcher consumes.
-    if crate::dbgenv::graphix_strict_fuse() && info.fastcall.is_none() {
-        // Strict-fusion measurement: only direct FASTCALL dispatches
-        // fuse — every inner-Apply-backed builtin (stateful, effect,
-        // seam-gated, or a defaulted-label site) node-walks.
-        return Err(anyhow!(
-            "emit_clif: strict fusion — non-fastcall builtin DynCall"
-        ));
+    if crate::dbgenv::graphix_strict_fuse() && info.fastcall.is_none() && !info.pseudo {
+        // STRICT FUSION (Eric's ruling 2026-09-01,
+        // design/strict_fusion.md — complexity needs to pay rent):
+        // only direct FASTCALL dispatches and the pure Cast
+        // pseudo-site fuse; every inner-Apply-backed builtin
+        // (stateful, effect, seam-gated, or a defaulted-label site)
+        // node-walks on the canonical interp.
+        return Err(anyhow!("emit_clif: strict fusion — non-fastcall builtin DynCall"));
     }
     let fast_slot = info.fastcall.map(|_| {
         cx.b.create_sized_stack_slot(StackSlotData::new(

@@ -270,7 +270,7 @@ array::fold([i64:10, i64:20, i64:30], i64:0, |acc, x| acc + count(x))
 run!(fold_stateful_per_slot, FOLD_STATEFUL_PER_SLOT, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(3))
-); graphix_package_core::testing::FuseExpect::Jit);
+); graphix_package_core::testing::FuseExpect::None);
 
 // A stateless body still collapses: the same loop over `+` alone.
 const TAIL_STATELESS_COLLAPSES: &str = r#"
@@ -1666,7 +1666,7 @@ run!(
     tail_arg_bottom_rides_cache,
     TAIL_ARG_BOTTOM_RIDES_CACHE,
     |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
-    graphix_package_core::testing::FuseExpect::Jit
+    graphix_package_core::testing::FuseExpect::None
 );
 
 // A bare-Array arg node under a VALUE-shaped signature slot
@@ -1799,7 +1799,7 @@ run!(dyncall_site_identity_state, DYNCALL_SITE_IDENTITY_STATE, |v: Result<&Value
         Ok(Value::F64(x)) => *x == 20.0,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const DYNCALL_SEED_BACKEDGE: &str = r#"
 {

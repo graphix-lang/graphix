@@ -206,7 +206,7 @@ run!(str_escape, STR_ESCAPE, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "\\/foo\\/bar",
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_UNESCAPE: &str = r#"
   str::unescape("\\/foo\\/bar")
@@ -217,7 +217,7 @@ run!(str_unescape, STR_UNESCAPE, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "/foo/bar",
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const STR_SPLIT: &str = r#"
 {
@@ -431,4 +431,4 @@ run!(str_parse, STR_PARSE, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);

@@ -51,7 +51,7 @@ const CHECKED_DIV0: &str = r#"
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
     Ok(Value::String(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // catch with array index errors still works
 const CATCH1: &str = r#"
@@ -319,7 +319,7 @@ const ERROR_ARM_LAMBDA_RETURN: &str = r#"
 
 run!(error_arm_lambda_return, ERROR_ARM_LAMBDA_RETURN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::F64(f) if *f == 0.0))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // THE CATCH STATEMENT (2026-08-06, design/catch.md): positional
 // coverage — a catch covers only the statements BELOW it in its

@@ -220,7 +220,7 @@ const DECODE_I64_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_i64_round_trip, DECODE_I64_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // encode + decode round-trip for u32
 const DECODE_U32_ROUND_TRIP: &str = r#"{
@@ -235,7 +235,7 @@ const DECODE_U32_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_u32_round_trip, DECODE_U32_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U32(12345)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // length-prefixed protocol: U64 length then UTF8
 const DECODE_LENGTH_PREFIXED: &str = r#"{
@@ -292,7 +292,7 @@ const DECODE_INSUFFICIENT: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_insufficient, DECODE_INSUFFICIENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // decode error: invalid UTF-8
 const DECODE_INVALID_UTF8: &str = r#"{
@@ -356,7 +356,7 @@ const VARINT_ROUND_TRIP: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(varint_round_trip, VARINT_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(300)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // varint small value is 1 byte
 const VARINT_SMALL: &str = r#"{
@@ -397,7 +397,7 @@ const ZIGZAG_NEGATIVE: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_negative, ZIGZAG_NEGATIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // zigzag round-trip with positive value
 const ZIGZAG_POSITIVE: &str = r#"{
@@ -412,7 +412,7 @@ const ZIGZAG_POSITIVE: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(zigzag_positive, ZIGZAG_POSITIVE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // zigzag of -1 encodes to 1 byte (zigzag maps -1 → 1)
 const ZIGZAG_SMALL: &str = r#"{
@@ -456,7 +456,7 @@ const DECODE_REF_TO_LITERAL: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 // discard a decoded field by writing to an unused let binding
 const DECODE_SKIP_UNRESOLVED: &str = r#"{
@@ -472,4 +472,4 @@ const DECODE_SKIP_UNRESOLVED: &str = r#"{
 // `result`-wrapper identity kernel (#139 identity suppression).
 run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);

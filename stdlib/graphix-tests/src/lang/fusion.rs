@@ -45,16 +45,19 @@ async fn load_and_await(code: &str) -> Result<Value> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn load_qop_unwraps_result() -> Result<()> {
-    // `str::parse("42")?` — Qop on a `Result<i64, ParseError>` return.
-    // The Result lowers to `Nullable<i64>` and Qop is lowered to
-    // the qop-unwrap CLIF emission which extracts the success i64. JIT must
-    // fire because there's no Block-with-let wrapper here.
+    // Qop on a `Result` return — the qop-unwrap CLIF emission
+    // extracting the success value. Re-pointed under STRICT FUSION
+    // (design/strict_fusion.md): the old `re::is_match(...)?` carrier
+    // is a non-fastcall DynCall and node-walks now, so the unwrap is
+    // pinned over checked arith (`(1 +? 1)?` — a pure emitted op
+    // returning the same Nullable shape). JIT must fire because
+    // there's no Block-with-let wrapper here.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
-        .load(Source::Internal(ArcStr::from("re::is_match(#pat:r\"a\", \"abc\")?\n")))
+        .load(Source::Internal(ArcStr::from("(i64:1 +? i64:1)? == i64:2\n")))
         .await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -89,8 +92,10 @@ async fn load_qop_unwraps_result() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn load_variadic_and_jits() -> Result<()> {
     // `and(true, true, false)` — variadic builtin (`@args: bool`)
-    // with uniform bool arg type. Exercises the
-    // `BuiltinSlot::Variadic` slot path through DynCall.
+    // through the `BuiltinSlot::Variadic` DynCall slot path. Under
+    // STRICT FUSION (design/strict_fusion.md) that path refuses and
+    // the call node-walks — this test now pins the refusal (the
+    // machinery is deletion inventory); the value must be identical.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
@@ -120,7 +125,7 @@ async fn load_variadic_and_jits() -> Result<()> {
     };
     assert_eq!(value, Value::Bool(false));
     let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
-    assert!(inv > 0, "JIT_INVOCATIONS=0 — variadic and didn't run via JIT");
+    assert!(inv == 0, "strict fusion: the variadic DynCall path must node-walk");
     ctx.shutdown().await;
     Ok(())
 }
@@ -390,9 +395,14 @@ async fn external_datetime_region_param() -> Result<()> {
                                 matches!(&v, Value::DateTime(dt) if **dt == expected),
                                 "expected 2024-01-01T00:00:01Z, got {v:?}"
                             );
+                            // STRICT FUSION: sys::time::add is a
+                            // non-fastcall DynCall and node-walks;
+                            // flips back to `> 0` when the fastcall
+                            // growth sweep converts it
+                            // (design/strict_fusion.md).
                             assert!(
-                                graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
-                                "datetime region-param kernel should JIT-dispatch"
+                                graphix_compiler::fusion::emit_helpers::jit_invocations() == 0,
+                                "strict fusion: datetime DynCall must node-walk"
                             );
                             ctx.shutdown().await;
                             return Ok(());

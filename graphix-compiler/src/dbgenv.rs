@@ -18,15 +18,21 @@ macro_rules! dbg_flag {
     };
 }
 
-// MEASUREMENT PROTOTYPE (Eric's strict-fusion question, 2026-09-01):
-// restrict fusion to pure computation — a DynCall-path builtin
-// dispatch (anything that is not a direct FASTCALL), a fused
+// STRICT FUSION IS THE DEFAULT (Eric's ruling 2026-09-01,
+// design/strict_fusion.md — "complexity needs to pay rent"): fusion
+// admits only pure computation — direct FASTCALL dispatches and the
+// Cast pseudo-site; a DynCall-path builtin dispatch, a fused
 // `connect`, or a handler-ful `?` refuses emission and the subtree
-// node-walks. Semantics are unchanged by construction (refusal = the
-// canonical interp); this exists to measure what a
-// pure+fastcall-only fusion regime would cost in coverage and buy in
-// bench time before deciding to delete the stateful-kernel machinery.
-dbg_flag!(graphix_strict_fuse, "GRAPHIX_STRICT_FUSE");
+// node-walks on the canonical interp. Measured before ruling: 94% of
+// corpus kernels kept, benches flat (one +6.5%), all 464 pins agree.
+// GRAPHIX_PERMISSIVE_FUSE=1 restores the stateful-fusion machinery
+// for A/B bisection during the deletion phase and dies with it.
+pub(crate) fn graphix_strict_fuse() -> bool {
+    static F: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var_os("GRAPHIX_PERMISSIVE_FUSE").is_none()
+    });
+    *F
+}
 dbg_flag!(graphix_dbg_bind, "GRAPHIX_DBG_BIND");
 dbg_flag!(graphix_dbg_bind_bt, "GRAPHIX_DBG_BIND_BT");
 dbg_flag!(graphix_dbg_cycle_bt, "GRAPHIX_DBG_CYCLE_BT");

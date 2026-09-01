@@ -31,7 +31,7 @@ const FILTER_ERR: &str = r#"
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ERROR: &str = r#"
   error("foo")
@@ -43,7 +43,7 @@ const ERROR: &str = r#"
 run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const ONCE: &str = r#"
 {
@@ -250,7 +250,7 @@ run!(min_value_level, MIN_VALUE_LEVEL, |v: Result<&Value>| {
         Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(9)]),
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAX_VALUE_LEVEL: &str = r#"
    max([1, 9], [3, 4])
@@ -261,7 +261,7 @@ run!(max_value_level, MAX_VALUE_LEVEL, |v: Result<&Value>| {
         Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(4)]),
         _ => false,
     }
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
@@ -270,7 +270,7 @@ const MIN: &str = r#"
 run!(min, MIN, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
@@ -279,7 +279,7 @@ const MAX: &str = r#"
 run!(max, MAX, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const AND: &str = r#"
 {
@@ -302,7 +302,7 @@ const OR: &str = r#"
 run!(or, OR, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const INDEX: &str = r#"
 {
@@ -858,7 +858,7 @@ run!(rand_pick, RAND_PICK, |v: Result<&Value>| {
         Ok(Value::String(v)) => v == "Chicken is coming" || v == "Grape" || v == "Pilot!",
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const RAND_SHUFFLE: &str = r#"
   rand::shuffle(["Chicken is coming", "Grape", "Pilot!"])
@@ -873,7 +873,7 @@ run!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::None);
 
 const HOLD_BASIC: &str = r#"
 {

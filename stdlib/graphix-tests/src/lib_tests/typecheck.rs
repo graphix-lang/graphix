@@ -156,7 +156,7 @@ run!(
         ];
         array::fold(data, 0, |acc, s| acc + json::read(s)$)
     }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // array::init — Init: json::read in unannotated init closure,
 // type must propagate through Init's resolved mftyp
@@ -221,7 +221,7 @@ run!(
     let v: i64 = filter(json::read(s)$, |x| x > 0);
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // ============================================================================
 // Subscribe type-aware casting

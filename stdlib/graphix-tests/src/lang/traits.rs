@@ -598,6 +598,7 @@ run!(
         let xs = array::sort(#dir: `Ascending, [T(2), T(3), T(1)]);
         let result = "[xs]|[min(T(2), T(3), T(1))]|[max(T(2), T(3), T(1))]"
     "##
+    ; graphix_package_core::testing::FuseExpect::None
 );
 
 // THE BOTTOM-KEY RULE (Eric's ruling 2026-08-23): a bottoming
@@ -622,6 +623,7 @@ run!(
         let xs = array::sort(#dir: `Ascending, [T(2), T(0), T(1)]);
         let result = "[xs]|[T(0) == T(1)]|[T(0) == T(0)]|[T(0) < T(1)]"
     "##
+    ; graphix_package_core::testing::FuseExpect::None
 );
 
 // An implementation method may be a BUILTIN reference. This is how a

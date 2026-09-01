@@ -209,10 +209,15 @@ async fn native_connect_composite_rhs_ok() {
                 array::map([1, 2, 3], |x| #[native] { last <- { v: x }; x }); \
                 last.v }";
     let r = eval(prog, crate::TEST_REGISTER).await;
+    // STRICT FUSION (design/strict_fusion.md): a connect is an effect
+    // and refuses emission, so `#[native]` on this callback is now a
+    // compile error — the advertised performance-model cliff. (The
+    // any-shape connect marshal this test used to pin is deletion
+    // inventory.)
+    let e = format!("{:?}", r.as_ref().err());
     assert!(
-        r.is_ok(),
-        "a non-scalar connect in a fused callback must compile now that \
-         emit_connect_node marshals any shape, got {:?}",
+        r.is_err() && e.contains("did not fully fuse"),
+        "expected the strict-fusion cliff error, got {:?}",
         r.map(|(v, _)| v)
     );
 }
