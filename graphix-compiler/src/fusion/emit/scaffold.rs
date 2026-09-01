@@ -47,10 +47,10 @@ use super::{
 
 /// The input array for a HOF loop. `owned` ⇒ the scaffold emits a
 /// `graphix_valarray_drop(ptr)` after the loop completes — at the
-/// single post-loop merge point ONLY. A pending abort inside the loop
-/// body (composite-return DynCall pend, QopUnwrap, `push_field`'s
-/// bottom-abort) jumps to `pending_exit` WITHOUT dropping it:
-/// `emit_pending_cleanup` only sees `dyncall_buf_stack` entries and
+/// single post-loop merge point ONLY. An abort inside the loop body
+/// (QopUnwrap, `push_field`'s bottom-abort) jumps to `pending_exit`
+/// WITHOUT dropping it:
+/// `emit_pending_cleanup` only sees `value_buf_stack` entries and
 /// env-bound locals, and a raw `ArraySrc.ptr` is neither. So the
 /// contract for an owned fresh-producer input (Stage D2) is
 /// one-or-the-other: either register the ptr for pending cleanup (a
@@ -403,7 +403,7 @@ fn drop_owned_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
 /// array (`owned: false`) emits nothing.
 /// Register an OWNED input array (a fresh producer the caller just
 /// emitted — literal, slice, inlined-HOF result) for pending cleanup:
-/// a DynCall / `?` / bottom-abort that pends inside the loop body
+/// a `?` / bottom-abort inside the loop body
 /// frees it from `emit_pending_cleanup` via the ValArray-typed
 /// `owned_input_stack` (the buf stack uses the buf destructor — wrong
 /// type). Pair with [`drop_owned_src`] after the loop: drop on the
@@ -430,11 +430,11 @@ fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
 fn register_hof_buf(b: &mut FunctionBuilder, ctx: &LowerCtx, buf: ClifValue) {
     let buf_var = b.declare_var(types::I64);
     b.def_var(buf_var, buf);
-    ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
+    ctx.value_buf_stack.borrow_mut().push(buf_var);
 }
 
 fn unregister_hof_buf(ctx: &LowerCtx) {
-    ctx.dyncall_buf_stack.borrow_mut().pop();
+    ctx.value_buf_stack.borrow_mut().pop();
 }
 
 /// `len = valarray_len(arr_ptr)` — the input-length read every
@@ -1502,7 +1502,7 @@ where
     );
     // Cooperative interrupt poll at the scaffold loop head: a wedged
     // map/fold/filter/… over a huge array aborts to bottom; the in-flight
-    // result buffer (on `dyncall_buf_stack`) is freed by the abort path.
+    // result buffer (on `value_buf_stack`) is freed by the abort path.
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;

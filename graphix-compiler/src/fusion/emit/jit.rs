@@ -224,18 +224,6 @@ pub struct WrappedKernel {
     /// module (owned by the `ExecCtx`) keeps them mapped for the
     /// program's lifetime, so no per-kernel ownership is needed.
     _ctx: Option<JitCtx>,
-    /// The REGION-WIDE DynCall slot table this kernel's runtime
-    /// [`crate::fusion::kernel::Kernel`] builds its `dyn_slots` from: the
-    /// parent kernel's `fn_params` followed by each transitively-called
-    /// callee's `fn_params`, in callee-declaration order. A callee body's
-    /// builtin/cast/qop DynCalls bake `fn_index = base + local` where
-    /// `base` is the callee's offset into THIS list — so the one combined
-    /// `dyn_slots` array services the parent and every callee. Equal to
-    /// the parent's `fn_params` when there are no callee DynCalls (the
-    /// common case). Carried here (not on `KernelSig`) because it's
-    /// region-specific — the same callee `KernelSig` lands at different
-    /// `base`s in different regions — and rides into every `Kernel`.
-    pub dyn_fn_params: std::sync::Arc<[kernel_abi::FnParam]>,
     /// Number of `u64` cross-invocation state words the parent's ROOT
     /// body claimed during emission (0 = stateless — the common case).
     /// The runtime `Kernel` allocates a zeroed per-INSTANCE buffer of
@@ -247,7 +235,7 @@ pub struct WrappedKernel {
     /// see `emit_scalar_taint_cache`). `Kernel::reset_replay` zeroes
     /// exactly these so a value cached on one evaluation-frame
     /// iteration cannot bridge a bottom on the next; semantic/config
-    /// words (lifted ids, first-call flags, select memory) survive.
+    /// words (first-call flags, prev-length words) survive.
     pub replay_state_words: Vec<u32>,
     /// First-word indices of the ROOT body's OWNED-value replay pairs
     /// — (clean disc, payload) in consecutive state words, disc 0 =
@@ -323,41 +311,22 @@ impl WrappedKernel {
 // instruction. The module lives as long as the ExecCtx; when the
 // ExecCtx drops, the module drops and the mapped code goes with it.
 //
-// `by_kernel` keys by `(Arc<KernelSig> raw-pointer identity, DynCall
-// base offset)` so the same `Arc<KernelSig>` referenced from multiple
-// parent kernels reuses one compilation within a single ExecCtx. Names
-// alone aren't unique enough — two distinct programs can both have a
-// binding `foo` with a different fused kernel.
+// `by_kernel` keys by `(Arc<KernelSig> raw-pointer identity, interned
+// region layout)` so the same `Arc<KernelSig>` referenced from
+// multiple parent kernels reuses one compilation within a single
+// ExecCtx. Names alone aren't unique enough — two distinct programs
+// can both have a binding `foo` with a different fused kernel.
 //
-// The `base` is a SOUNDNESS half of the key (Stage 2 — transitive
-// callee builtins). A callee body bakes `iconst(base + local_fn_index)`
-// for each of its DynCalls, where `base` is the callee's offset into the
-// COMBINED region-wide `dyn_slots` table (parent `fn_params` ++ each
-// callee's). That offset depends on the calling REGION (parent
-// `fn_params` length + callee order), so the same callee `KernelSig`
-// fused into region A (base 0) and region B (base 1) needs TWO compiled
-// bodies with different baked constants — keying on the pointer alone
-// would hand region B region A's body and silently mis-dispatch.
-// Callees that bake nothing (empty `fn_params`) are pinned at base 0 so
-// they still share one compilation across regions; the parent is always
-// base 0 and unique per region.
-//
-// The `layout` id is the OTHER soundness half (soak jul07c
-// generate/crash_000000). Since the #203 cascade resolves a callee's
-// inner call sites, a callee body may bake CLIF calls to SIBLING
-// kernels' FuncIds — and which FuncId a sibling resolves to depends on
-// the whole region's slot layout (`f0` with no DynCalls of its own,
-// pinned at base 0 and shared, called `h0@baseA` from region A's
-// compilation; region B's table put `h0` at a different base, and the
-// shared `f0` body dispatched region A's index into region B's table —
-// OOB panic across the JIT FFI boundary, or a silent wrong-slot
-// dispatch when the stale index happens to be in range). The region's
-// interned layout — the ordered `(kernel ptr, base)` list, parent
-// first — is therefore part of the key: identical layouts resolve every
-// sibling to the same FuncId and may share; different layouts compile
-// fresh. Kernels that bake NEITHER fn_indices nor sibling FuncIds
-// (empty `fn_params`, no non-self lambda sites) are layout-INDEPENDENT
-// and use layout 0 — a true leaf shares one compilation everywhere.
+// The `layout` id is the soundness half of the key (soak jul07c
+// generate/crash_000000). A callee body may bake CLIF calls to
+// SIBLING kernels' FuncIds, and which FuncId a sibling resolves to
+// depends on the whole region's callee layout. The region's interned
+// layout — the ordered kernel list, parent first — is therefore part
+// of the key: identical layouts resolve every sibling to the same
+// FuncId and may share; different layouts compile fresh. Kernels
+// that bake no sibling FuncIds (no non-self lambda sites) are
+// layout-INDEPENDENT and use layout 0 — a true leaf shares one
+// compilation everywhere.
 //
 // (Was a process-global `SHARED_JIT` static before May 2026; moved
 // to per-context to align with the runtime's documented "multiple
@@ -372,8 +341,8 @@ pub struct Jit {
     /// builds. One allocation per context; the JIT is compile-time
     /// only, so the indirection is free.
     ctx: Box<JitCtx>,
-    /// Per-kernel cache: `(Arc<KernelSig> raw pointer, DynCall base
-    /// offset, interned region layout)` → cached entry. We keep the Arc
+    /// Per-kernel cache: `(Arc<KernelSig> raw pointer, base, interned
+    /// region layout)` → cached entry (`base` is always 0 now). We keep the Arc
     /// alive in the entry so the raw pointer key stays valid for the
     /// lifetime of the ExecCtx. Without it, Arc-allocator reuse could
     /// land a different KernelSig at the same address and we'd return a
@@ -461,9 +430,7 @@ unsafe impl Send for Jit {}
 /// `Arc::as_ptr`, recorded by `discover_lambda_calls`) emits from its
 /// body Node with its OWN discovered lambda sites (`CalleeBody.sites` —
 /// #203 Phase C, so a callee's body emits ITS nested cross-kernel calls)
-/// AND its own discovered builtin/cast/qop sites (`CalleeBody.apply_sites`),
-/// each DynCall offset by the callee's base into the region-wide combined
-/// `dyn_slots` table (assembled here onto `WrappedKernel.dyn_fn_params`).
+/// AND its own discovered fastcall/cast sites (`CalleeBody.apply_sites`).
 /// A callee WITHOUT a recorded body bails (the whole region de-fuses);
 /// discovery records a body for every callee it returns.
 pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
@@ -476,16 +443,12 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     callee_bodies: &BTreeMap<usize, CalleeBody<'_, R, E>>,
     parent_self_call: Option<&(BindId, LambdaCallInfo)>,
     type_env: &Env,
-    lifted: &nohash::IntSet<BindId>,
     // REPLAY-word eligibility for the parent body: `true` for region
     // parents (frames reach their reset through the `FusedKernel`
     // node), `false` for lambda kernels (native cross-kernel entry
     // bypasses the reset — see `BodyEmitter::allow_replay_state`).
     parent_allow_replay: bool,
 ) -> Result<WrappedKernel> {
-    // Callee bodies never lift (lifts are region-level let-bound
-    // counters); only the parent emitter carries the lifted set.
-    let no_lift: nohash::IntSet<BindId> = nohash::IntSet::default();
     let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
     let parent_spec = BodySpec {
         builtin_apply_sites: Some(apply_sites),
@@ -495,25 +458,13 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         // its own self info here.
         self_call: parent_self_call,
         type_env: Some(type_env),
-        // Parent slots lead the combined `dyn_slots` table.
-        fn_index_offset: 0,
-        lifted,
         allow_state: true,
         allow_replay_state: parent_allow_replay,
     };
-    // Assemble the region-wide DynCall slot table: parent `fn_params`
-    // first (base 0), then each callee's `fn_params`, in callee
-    // DISCOVERY order (`callees` is discovery-ordered — pointer order
-    // was ASLR-dependent, #19). Each callee's `base` (its offset here)
-    // is stamped on its emitter as `fn_index_offset` — what its body
-    // bakes into DynCalls AND the cache key's `base` half. A callee
-    // with no DynCalls (empty `fn_params`) bakes nothing, so it's
-    // pinned at base 0 to share one compilation across regions. A
-    // callee that IS the parent (a self-recursive per-slot callback)
-    // shares the parent's FuncId/body (its slots ARE the parent's,
-    // already at base 0) — skip it, matching the phase-1 declare loop.
+    // A callee that IS the parent (a self-recursive per-slot callback)
+    // shares the parent's FuncId/body — skip it, matching the phase-1
+    // declare loop.
     let parent_ptr = kernel_abi::kernel_key(kernel);
-    let mut combined: Vec<kernel_abi::FnParam> = kernel.fn_params.to_vec();
     let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>, BodySpec)> = callees
         .iter()
         .filter_map(|(key, k)| {
@@ -522,9 +473,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                 return None;
             }
             let cb = callee_bodies.get(&key)?;
-            let raw_base = combined.len() as u32;
-            let base = if k.fn_params.is_empty() { 0 } else { raw_base };
-            combined.extend(k.fn_params.iter().cloned());
             Some((
                 key,
                 NodeBodyEmitter { root: cb.body, return_type: &k.return_type },
@@ -533,8 +481,6 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                     lambda_call_sites: Some(&cb.sites),
                     self_call: cb.self_call.as_ref(),
                     type_env: Some(type_env),
-                    fn_index_offset: base,
-                    lifted: &no_lift,
                     allow_state: false,
                     allow_replay_state: false,
                 },
@@ -546,11 +492,7 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         .map(|(key, em, spec)| (*key, BodySource { spec: *spec, hook: em }))
         .collect();
     emitters.insert(parent_ptr, BodySource { spec: parent_spec, hook: &parent });
-    let mut wrapped = compile_kernel_with_callees_impl(jit, kernel, callees, &emitters)?;
-    // Override the parent-only default with the combined table; the
-    // runtime `Kernel` builds its `dyn_slots` from this.
-    wrapped.dyn_fn_params = combined.into();
-    Ok(wrapped)
+    compile_kernel_with_callees_impl(jit, kernel, callees, &emitters)
 }
 
 fn compile_kernel_with_callees_impl(
@@ -661,12 +603,6 @@ fn compile_kernel_with_callees_inner(
     // that IS the parent (a self-recursive per-slot callback) lands on
     // the parent's entry by pointer equality, which is how
     // self-recursion resolves to a CLIF call back to the parent.
-    //
-    // Each kernel's DynCall `base` offset (0 for the parent, its
-    // combined-list offset for a callee) is the body emitter's
-    // `fn_index_offset()` — the SAME value baked into its DynCalls — so
-    // the `(ptr, base)` cache key and the compiled body agree by
-    // construction.
     let parent_ptr = kernel_abi::kernel_key(kernel);
     // The region's layout — the ordered `(ptr, base)` list, parent
     // first — interned once; each kernel keys on it UNLESS its body is
@@ -680,7 +616,7 @@ fn compile_kernel_with_callees_inner(
             if *ptr == parent_ptr {
                 continue;
             }
-            layout.push((*ptr, emitters.get(ptr).map_or(0, |e| e.spec.fn_index_offset)));
+            layout.push((*ptr, 0));
         }
         jit.intern_layout(layout)
     };
@@ -691,7 +627,7 @@ fn compile_kernel_with_callees_inner(
                 m.values().any(|info| kernel_abi::kernel_key(&info.kernel) != self_ptr)
             })
         });
-        if k.fn_params.is_empty() && !ext_sites { 0 } else { layout_id }
+        if !ext_sites { 0 } else { layout_id }
     };
     let parent_layout = layout_of(kernel);
     // Insertion-ordered (parent first, then callee discovery order):
@@ -730,7 +666,7 @@ fn compile_kernel_with_callees_inner(
         if *ptr == parent_ptr {
             continue;
         }
-        let base = emitters.get(ptr).map_or(0, |e| e.spec.fn_index_offset);
+        let base = 0;
         let layout = layout_of(k);
         let entry = ensure_declared(jit, k, base, layout, to_define)?;
         funcids.push((*ptr, entry));
@@ -764,8 +700,7 @@ fn compile_kernel_with_callees_inner(
     // AFTER it, the caller's site-block emission found no layout, and
     // the callee's activations inside the caller ran with no interior
     // memory — a silent Ruling-2 multiplicity hole
-    // (design/activation_state.md, 2026-08-20; the
-    // dyncall_seed_backedge fixture pinned the crash face). The only
+    // (design/activation_state.md, 2026-08-20). The only
     // layout legitimately missing at a caller's definition is now its
     // OWN (self-calls — resolved at runtime through the `site_desc`
     // cell); mutual cycles refuse upstream, and `emit_site_block`
@@ -825,9 +760,7 @@ fn compile_kernel_with_callees_inner(
     for ti in def_order {
         let (k, base, layout) = &to_define[ti];
         let ptr = std::sync::Arc::as_ptr(k) as usize;
-        // The emitter is keyed by pointer identity (it's the same body
-        // regardless of base); the `fn_index_offset` it carries (== base)
-        // is what `compile_into_function` bakes into the DynCalls.
+        // The emitter is keyed by pointer identity.
         let body: &BodySource = emitters.get(&ptr).ok_or_else(|| {
             anyhow!(
                 "no body emitter recorded for kernel `{}` — \
@@ -895,10 +828,6 @@ fn compile_kernel_with_callees_inner(
         _ctx: None,
         _strings: KernelStrings::empty(),
         _values: KernelValues::empty(),
-        // Parent-only default (correct when there are no callee DynCalls).
-        // `compile_kernel_with_callees_direct` overwrites this with the
-        // combined parent++callees list when callees contribute slots.
-        dyn_fn_params: kernel.fn_params.iter().cloned().collect(),
         state_words,
         replay_state_words,
         replay_value_pairs,
@@ -909,10 +838,9 @@ fn compile_kernel_with_callees_inner(
 }
 
 /// Phase-1 helper: ensure `k` has a `FuncId` declared in the shared
-/// module FOR THIS DynCall `base` offset. Cached kernels (by
-/// `(Arc::as_ptr, base)` identity) reuse their existing entry. Freshly-
-/// declared kernels are pushed onto `to_define` (with their base) so
-/// phase 2 compiles their body with the matching `fn_index` offset.
+/// module for this region layout. Cached kernels reuse their existing
+/// entry; freshly-declared kernels are pushed onto `to_define` so
+/// phase 2 compiles their body.
 fn ensure_declared(
     jit: &mut Jit,
     k: &std::sync::Arc<KernelSig>,
@@ -1141,6 +1069,8 @@ fn define_kernel_body(
             std::cell::RefCell::new(Vec::new());
         let lazy_values: std::cell::RefCell<Vec<Box<Value>>> =
             std::cell::RefCell::new(Vec::new());
+        let lazy_types: std::cell::RefCell<Vec<Box<crate::typ::Type>>> =
+            std::cell::RefCell::new(Vec::new());
         let lazy_site_leaves: std::cell::RefCell<
             Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
         > = std::cell::RefCell::new(Vec::new());
@@ -1163,6 +1093,7 @@ fn define_kernel_body(
             &helper_refs,
             &lazy_strings,
             &lazy_values,
+            &lazy_types,
             body_emitter,
             callee_layouts,
             &lazy_site_leaves,
@@ -1176,7 +1107,8 @@ fn define_kernel_body(
         // outlives this function.
         (
             KernelStrings::empty().with_lazy(lazy_strings.into_inner()),
-            KernelValues::empty().with_lazy(lazy_values.into_inner()),
+            KernelValues::empty()
+                .with_lazy(lazy_values.into_inner(), lazy_types.into_inner()),
             state_words,
             replay_words,
             replay_value_pairs,
@@ -1192,9 +1124,6 @@ fn define_kernel_body(
     if let Some(tid) = self_thunk_id {
         define_spill_thunk(jit, tid, func_id, &kernel_sig)?;
     }
-    // Post-define fact publication (the interior-sleep gate): callers
-    // gate their reads on `defined`, so `has_stateful_reach` (stored at the
-    // end of `compile_into_function`) is only consulted once final.
     if crate::dbgenv::graphix_dbg_kernels() {
         eprintln!(
             "KERNEL DEFINED {}: state_words={} site_words={} site_replay={} self_blocks={}",

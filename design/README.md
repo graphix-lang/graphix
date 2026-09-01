@@ -20,7 +20,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | `atomic_recursion.md` | evaluation is atomic within a cycle; containment outside the language |
 | `recursive_activations.md` | activations are collection slots; no depth limit; `trait Collection` with the `'_` hole; P2b measurements |
 | `collection_intrinsics.md` | MapQ/FoldQ as compiler nodes; inline CLIF loops |
-| `kernel_instance_state.md` | per-instance/per-call-site kernel state, DynCall site identity |
+| `kernel_instance_state.md` | per-instance/per-call-site kernel state (the DynCall site-identity half is deleted — strict fusion) |
 | `unified_value_abi.md` | the (disc, payload) Value ABI across the JIT boundary |
 | `env_independent_typerefs.md` | `TypeRef` resolution cells; name-compressed instance signatures |
 | `type_operation_scaling.md` | COW/DAG walks + memos for every core type operation |
@@ -42,7 +42,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | doc | what |
 |---|---|
 | `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
-| `strict_fusion.md` | retreat fusion to pure+fastcall code? Measured (94% kernels kept, benches flat, one +6.5%); awaiting ruling |
+| `strict_fusion.md` | RULED + BUILT 2026-09-01: fusion is pure+fastcall only; the stateful-kernel machinery is deleted (the record of what went) |
 | `fusion_lowering_split.md` | split `try_fuse` into analysis + lowering (legibility) |
 | `interp_lazy_bind_cost.md` | partial: what remains of the interp's per-activation cost (see header) |
 

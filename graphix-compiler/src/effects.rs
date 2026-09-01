@@ -82,13 +82,11 @@ pub struct BuiltinFacts {
     pub stateless: bool,
     /// `BuiltIn::SLEEP_RESTARTS` — `sleep()` clears semantic state
     /// (the documented arm-rewake RESTART builtins:
-    /// once/take/skip/hold/uniq/count). Consulted by the fusion
-    /// interior-sleep gate: kernels have no per-arm sleep initiator,
-    /// so such a builtin's DynCall refuses to emit inside a fused
-    /// select arm (the region de-fuses).
+    /// once/take/skip/hold/uniq/count).
     pub sleep_restarts: bool,
     /// `BuiltIn::FASTCALL` — the direct-call entry the JIT uses at
-    /// every fused site of the builtin instead of the DynCall path.
+    /// every fused site of the builtin; without one the builtin
+    /// node-walks (design/strict_fusion.md).
     pub fastcall: Option<crate::FastFn>,
 }
 

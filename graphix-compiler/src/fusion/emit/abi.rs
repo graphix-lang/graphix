@@ -116,9 +116,8 @@ pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 /// when at least one of its inputs fired this cycle. Leaves set it
 /// (a non-firing feeder, a constant after init); ops AND-reduce it
 /// ([`propagate_stale`] — a result fires iff ANY operand fired); and the
-/// kernel FORCES freshness at exactly two consumers — the output
-/// ([`emit_kernel_return`], via [`is_not_fresh`]) and a `connect`/`?`
-/// variable write (`set_var_typed`, the runtime twin). Mid-expression a stale
+/// kernel FORCES freshness at exactly one consumer — the output
+/// ([`emit_kernel_return`], via [`is_not_fresh`]). Mid-expression a stale
 /// value is USED (its cached payload), never aborted — that is what
 /// makes combineLatest agree with the node-walk. Invariant `TAINT ⟹
 /// STALE` (a value that bottoms this cycle reads as not-fired
@@ -216,16 +215,6 @@ pub(super) fn is_untainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValu
 pub(super) fn emit_untainted_i64(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let v = is_untainted(b, disc);
     b.ins().uextend(types::I64, v)
-}
-
-/// True (I8 bool) iff neither [`TAINT`] nor [`STALE`] is set — this
-/// value FIRED this cycle. (The kernel-return firing gate that once
-/// consumed the complement is gone — 5c returns honest in-band tags;
-/// `set_var_typed`'s write gate in `kernel.rs` remains the one
-/// fired-only consumer.)
-pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    let m = b.ins().band_imm(disc, TAINT | STALE);
-    b.ins().icmp_imm(IntCC::Equal, m, 0)
 }
 
 /// OR [`STALE`] into a constant's `disc` on every NON-init cycle: a

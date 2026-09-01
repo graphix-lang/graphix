@@ -1,5 +1,12 @@
 # Per-kernel-instance state (the firing-exactness wire slot)
 
+Status (2026-09-01): the firing-exactness half is BUILT and current
+(prev-length words, first-call words, per-call-site blocks, per-slot
+chains, per-activation trees); the DynCall site-identity half this doc
+grew into (per-site inner Applies, identity words, the key-0 bucket)
+is DELETED under strict fusion — `design/strict_fusion.md` holds the
+record. Read the site-identity passages below as history.
+
 Status: BUILT (2026-07-03, same day as proposed). Motivated by the two
 firing residuals the trace oracle confirmed at fuzzer-v2 phase-2.3
 calibration; both are fixed and promoted to `findings/firing-jul2026/`

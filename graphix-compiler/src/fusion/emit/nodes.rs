@@ -15,7 +15,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
+    BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
 use netidx_value::Value;
 
@@ -28,7 +28,7 @@ use super::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source, ref_local_name,
     },
-    call::{CompositeSource, emit_dyncall_node},
+    call::{CompositeSource, emit_builtin_call_node},
     lower::{freeze_node_typ, resolve_node_typ},
     scaffold,
     scalar::{
@@ -173,8 +173,7 @@ pub(crate) fn emit_ref_node(
     // WAKE DELIVERS PRESENT-BUT-STALE: a select arm's forced init view
     // (becoming-selected or re-selected) reads a standing binding with
     // its honest STALE disc — the node-walk's wake view no longer
-    // upgrades standing store reads to Fired, so a re-taken arm's
-    // lifted `s <- s` loop must NOT re-arm off the replayed value
+    // upgrades standing store reads to Fired
     // (arm-rewake-ref-fired-aug2026 regressed the other way when the
     // interp changed and this kept the old R2 stale-clear). Genuine
     // init needs nothing here: params arrive with boundary-upgraded
@@ -493,7 +492,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     // stay inline, not pay a runtime call per iteration. Restricted to
     // NUMERIC prims: `compile_cast` can't lower a `bool` cast (it
     // `unreachable!`s), so a bool source/target falls through to the
-    // machinery DynCall below, which casts via `Value::cast`.
+    // machinery call below, which casts via `Value::cast`.
     if let (Some(src), Some(tgt)) =
         (kernel_abi::scalar_prim(inner.typ()), PrimType::from_type(target))
     {
@@ -516,11 +515,11 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
         }
     }
     // Any other cast (non-scalar source like `datetime`, or non-scalar
-    // target): the discovery pass registered a `FnSource::Cast` slot —
-    // lower it as a one-argument DynCall to the cast machinery
-    // (`CastApply` → `target.cast_value`, the SAME fn the node-walk
-    // uses). The fallible `[T, Error]` result rides the 2-word Value
-    // wire shape; a surrounding `$`/`?` unwraps it via `emit_qop_node`.
+    // target): the discovery pass registered a `SiteDispatch::Cast`
+    // site — a one-argument call to `target.cast_value`, the SAME fn
+    // the node-walk uses. The fallible `[T, Error]` result rides the
+    // 2-word Value wire shape; a surrounding `$`/`?` unwraps it via
+    // `emit_qop_node`.
     let info = match cx.builtin_site(expr_id) {
         Some(i) => i.clone(),
         None => {
@@ -529,98 +528,7 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    emit_dyncall_node(cx, expr_id, &info, &[inner])
-}
-
-/// `connect` (`x <- expr`) fused: compute the RHS and write the reactive
-/// variable mid-kernel via `graphix_set_var`. The write is a side
-/// effect (the node returns bottom — `Connect::update` returns `None`),
-/// and the read side is unchanged: a downstream region reading the
-/// written variable already sees it next cycle through its feeder Ref
-/// (keyed to `fusion.top_id`). A `#219`-tainted RHS is skipped by the
-/// helper (no value this cycle = no write), mirroring the node-walk's
-/// `if let Some(v) = ..` guard.
-///
-/// The RHS is marshaled to an OWNED `(disc, payload)` Value of any shape
-/// (`emit_owned_value_operand_node`) and handed to `graphix_set_var`, which
-/// CONSUMES it — or drops it on a tainted/stale skip. So a composite/string
-/// RHS (`data <- array::push(data, x)`) fuses without a leak, uniform with the
-/// scalar case.
-pub(crate) fn emit_connect_node<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    rhs: &Node<R, E>,
-    bind_id: BindId,
-) -> Result<CompiledExpr> {
-    if crate::dbgenv::graphix_strict_fuse() {
-        return Err(anyhow!("emit_clif: strict fusion — connect is an effect"));
-    }
-    // Read-after-write-same-var guard: if the connect TARGET is a
-    // kernel-local (let-bound inside this region) that was NOT lifted, a
-    // read of it in the same kernel resolves to the stale local value,
-    // not the written one — de-fuse (the block node-walks, correct). A
-    // LIFTED target is the local-counter case: it was routed in as a
-    // feeder and `emit_let_node` bound it to a seed-select reading that
-    // feeder, so a read DOES see the variable's value. The fired-bit
-    // makes the write correct (`set_var_typed` skips a non-fired RHS), so
-    // the lifted connect fuses. A connect to an EXTERNAL variable (not in
-    // the env at all) also fuses.
-    if cx.env.lookup(bind_id, "").is_some() && !cx.is_lifted(bind_id) {
-        return Err(anyhow!(
-            "emit_clif: connect target is a non-lifted kernel-local — \
-             read-after-write unsafe, node-walks"
-        ));
-    }
-    // A lifted target's identity word is per-INSTANCE — one word, one
-    // BindId. The interp binds per SLOT inside a collection callback
-    // and per ACTIVATION inside a recursive body, so in either context
-    // the single word aliases every incarnation onto one variable:
-    // same-var writes queue one per cycle, each delivery re-invokes
-    // the kernel, and the loop/recursion re-writes — n slots burned n
-    // worked cycles (aug18a list::init face) and an in-recursion
-    // connect spun forever (katana divergence_000003). No per-slot /
-    // per-activation identity storage → de-fuse, never share (the
-    // storage law).
-    if cx.is_lifted(bind_id) {
-        if cx.ctx.loop_depth.get() > 0 {
-            return Err(anyhow!(
-                "emit_clif: lifted connect target inside a collection \
-                 loop — the interp binds per slot, one instance word \
-                 cannot; node-walks"
-            ));
-        }
-        if cx.ctx.self_call.is_some() || cx.ctx.tail.loop_head.is_some() {
-            return Err(anyhow!(
-                "emit_clif: lifted connect target in a recursive body — \
-                 the interp binds per activation, one instance word \
-                 cannot; node-walks"
-            ));
-        }
-    }
-    // Marshal the RHS to an OWNED `(disc, payload)` Value of any shape; a
-    // scalar's `(disc, payload)` is already its Value wire form (payload
-    // widened to i64). `set_var` consumes the payload (or drops it on the
-    // tainted/stale skip), so a composite/string RHS transfers ownership
-    // without leaking; #219 taint / STALE ride `cv.disc` and the helper honors
-    // them (skip the write).
-    let cv = emit_owned_value_operand_node(cx, rhs)?;
-    // A LIFTED target's identity is per-INSTANCE: load the BindId from
-    // the reserved state word written at construction. External targets
-    // are shared by design and stay immediates.
-    let id_val = match cx.lifted_state_off(bind_id) {
-        Some(off) => {
-            let sp = cx.state_ptr();
-            cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off)
-        }
-        None => cx.b.ins().iconst(types::I64, bind_id.inner() as i64),
-    };
-    let set_var = cx.helper("graphix_set_var")?;
-    cx.b.ins().call(set_var, &[id_val, cv.disc, cv.payload]);
-    // `connect` produces no value — a tainted-null bottom. Discarded as a
-    // block statement (a connect is never a kernel's published result;
-    // its `typ()` is `Bottom`).
-    let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
-    let zero = cx.b.ins().iconst(types::I64, 0);
-    Ok(CompiledExpr::new(disc, zero))
+    emit_builtin_call_node(cx, &info, &[inner])
 }
 
 /// String interpolation `"x is [x]"` — build a heap-owned
@@ -1018,7 +926,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     let outer = cx.b.inst_results(call)[0];
     let outer_var = cx.b.declare_var(types::I64);
     cx.b.def_var(outer_var, outer);
-    cx.ctx.dyncall_buf_stack.borrow_mut().push(outer_var);
+    cx.ctx.value_buf_stack.borrow_mut().push(outer_var);
     // The struct fires iff the source fired OR any replacement fired: fold
     // the source disc once (all unchanged fields share its freshness) and
     // each replacement's disc.
@@ -1030,7 +938,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         let inner = cx.b.inst_results(call)[0];
         let inner_var = cx.b.declare_var(types::I64);
         cx.b.def_var(inner_var, inner);
-        cx.ctx.dyncall_buf_stack.borrow_mut().push(inner_var);
+        cx.ctx.value_buf_stack.borrow_mut().push(inner_var);
         let name_ptr = cx.interned_str(name);
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         match replace.iter().find(|r| r.index == Some(i)) {
@@ -1052,12 +960,12 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         }
         let call = cx.b.ins().call(finalize, &[inner]);
         let inner_arr = cx.b.inst_results(call)[0];
-        cx.ctx.dyncall_buf_stack.borrow_mut().pop(); // inner consumed by finalize
+        cx.ctx.value_buf_stack.borrow_mut().pop(); // inner consumed by finalize
         cx.b.ins().call(push_array, &[outer, inner_arr]);
     }
     let call = cx.b.ins().call(finalize, &[outer]);
     let payload = cx.b.inst_results(call)[0];
-    cx.ctx.dyncall_buf_stack.borrow_mut().pop(); // outer consumed by finalize
+    cx.ctx.value_buf_stack.borrow_mut().pop(); // outer consumed by finalize
     // Drop the Owned source on the normal path (exactly once — the pending
     // path drops it via `owned_input_stack`).
     if src_var.is_some() {

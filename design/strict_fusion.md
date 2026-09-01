@@ -2,11 +2,12 @@
 
 Status: RULED by Eric 2026-09-01 — "Complexity needs to pay rent, and
 your report makes it pretty clear that this whack of complexity can't
-afford to live in our compiler. Strict fusion is the way forward."
-Strict is now the DEFAULT (`GRAPHIX_PERMISSIVE_FUSE=1` restores the
-old machinery for A/B bisection during the deletion phase and dies
-with it); the Cast pseudo-site is admitted (pure). The
-question, in Eric's words: "Are we trying to fuse too much? How much
+afford to live in our compiler. Strict fusion is the way forward." —
+and BUILT the same day: the default flipped (`fa08136a`), then the
+stateful-kernel machinery was deleted outright rather than kept
+behind a hatch (Eric: "I don't think we should wait for the soak to
+delete, we can always pull things out of the git history"). See
+"The deletion" below for what went. The question, in Eric's words: "Are we trying to fuse too much? How much
 simpler would both our lives be if we defused everything but stateless
 non-async code that contains only fastcall builtins? … the user can
 still get performance by structuring their code to arrange pure
@@ -105,6 +106,62 @@ arc (wake catch-up, the birth rule, sys::net reconcile) — that is
 language semantics, engine-independent, and all 464 pins hold under
 both regimes.
 
+## The deletion (2026-09-01, the commit after the flip)
+
+Deleted, in one cut, with the workspace gate green after it:
+
+- The `GRAPHIX_PERMISSIVE_FUSE` hatch (`graphix_strict_fuse`): the
+  three strict gates became the only path.
+- The DynCall dispatcher end to end: `graphix_dyncall`,
+  `dispatch_typed`, `DispatcherState`, `DynDispatchHandle`,
+  `DYN_DISPATCH_HANDLE`, `DynCallSlot` (+ `SiteInstance`,
+  `SlotRecipe`, the site-id mint), `Kernel::dyn_slots`, `FnParam` /
+  `FnSource` / `BuiltinSlot` / `KernelSig::fn_params`, the region-wide
+  combined slot table and the DynCall `base` half of the JIT cache
+  key, `CastApply`, `QopDeliverApply`, `pre_bind_*`/`pre_init_*`, the
+  pooled-buffer arg marshal (`value_buf_stack` keeps its constructor /
+  HOF-result role).
+- Site identity: `emit_dyncall_site_word`, `claim_slot_site_words`
+  (the per-slot identity pairs), the key-0 bucket and its mask
+  special cases, the `WAKE_HINT`/`DISPATCH_WAKE`/`dyncall_wake` wake
+  hint, `DispatcherState::woke`.
+- The interior gates: `sleep_restarts`/`stateless` on the site info,
+  `arm_depth`/`value_arm_depth`, `saw_*_reach`,
+  `self_backedge_in_*`, `KernelSig::has_{restart,stateful}_reach` and
+  the callee-side / deferred checks (P7 and its wake-catch-up
+  widening). Their replacement is the one admission predicate at
+  discovery: a builtin registers a `FastFn` or it node-walks.
+- Selection memory: `sel_state`/`SelWord` claims in
+  `emit_select_node`, the select ids in `slot_state_sites`, the
+  `record`/`woke`/`eff_init` machinery of `emit_select_value_arm`,
+  `LowerCtx::{init_override, wake_override}`, and the fused select's
+  `woke` word. A fused select claims nothing; its firing is organic.
+- Arm-lift: `collect_lifted_connect_targets`, `FusionCtx::arm_region`,
+  `KernelSig::lifted`, the reserved head state words, the minted
+  per-instance BindIds, `emit_let_node`'s seed-select, `is_lifted` /
+  `lifted_state_off`, `emit_connect_node`, `graphix_set_var` /
+  `set_var_typed`. `Connect::emit_clif` refuses ("connect is an
+  effect").
+- Handler-ful `?`: `emit_qop_deliver`, `try_register_qop_deliver`,
+  `FnSource::QopDeliver`; `Qop::emit_clif` refuses when a handler is
+  installed.
+
+Kept, renamed where the old name lied: the abort flag
+(`KERNEL_ABORT`, `graphix_abort_set`/`graphix_abort_peek` — the
+interrupt/depth-trip/bottom-abort channel), the fastcall trampoline
+(`graphix_fastcall` over the shared `fast_dispatch` core) plus the
+new `graphix_castcall` (the Cast pseudo-site: `cast_value` against
+the site's interned destination `Type`, resolving type names through
+`KERNEL_ENV` — the kernel's env, loaned for the wrapper call like the
+core-trait value hooks), wire slot 0 bit 2 (the kernel's own `slept`
+bit now actually sets it — it was write-never before), prev-length
+words, first-call words, the per-call-site blocks / anchor chains /
+per-activation trees that carry them, the shrink reclaim, and the
+replay-word plumbing (audited next: with the DynCall result caches
+and the rides gone, no claimant remains).
+
+`Kernel` is no longer generic: it holds no `Apply`s and no `Node`s.
+
 ## The three follow-on calls (Eric, same day)
 
 - **Pure selects FUSE** — kept as measured.
@@ -122,14 +179,12 @@ both regimes.
   asserts it and errors on the cliff; stateful/effectful/async code
   runs on the reactive interpreter, structured at the seams.
 
-## Transition plan
+## Transition plan (as executed)
 
-1. Flip the default (done with this ruling), admit Cast, re-annotate
-   the fixture corpus (FuseExpect + `#[native]` pins on shapes that
-   now node-walk), full gates. 2. A soak round on strict-default.
-3. The deletion phase, staged with gates per deletion: site identity,
-   the mask protocol, selection-memory words + wake hints + the birth
-   view + wire bit 2, the interior gates (P7/stateful/key-0 —
-   replaced by the admission predicate), kernel replay-word audit,
-   arm-lift kernel machinery, then `GRAPHIX_PERMISSIVE_FUSE` itself.
-4. The fastcall growth sweep and the book chapter ride behind.
+1. Flip the default (`fa08136a`), admit Cast, re-annotate the fixture
+   corpus (FuseExpect + `#[native]` pins on shapes that now
+   node-walk), full gates. 2. The sep01b strict-default soak round
+   started on the five remote boxes. 3. The deletion (above) — done in
+   one cut instead of the staged plan, on Eric's call; the replay-word
+   audit follows as its own commit. 4. The fastcall growth sweep and
+   the book chapter ride behind.

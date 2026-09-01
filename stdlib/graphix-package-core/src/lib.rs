@@ -558,8 +558,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         // compares or sorts Values — min/max, all, array::sort, the
         // map:: operations — honors core Eq/Ord implementations at
         // the value seam.
-        let woke = (std::mem::take(&mut self.slept) && !ctx.in_frame())
-            || graphix_compiler::dyncall_wake();
+        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
         let (ev, cached, resident) = (&mut self.t, &mut self.cached, &mut self.resident);
         coretraits::with_value_hooks(ctx, event, move |ctx, event| {
             Self::update_inner(ev, cached, resident, woke, ctx, from, event)

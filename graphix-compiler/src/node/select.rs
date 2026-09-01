@@ -736,9 +736,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     // nothing, but a STALE pattern bind leaves interior
                     // builtin CallSites undispatched (any-arg-fired
                     // gate) and the woken body can't evaluate — the
-                    // select then emits nothing where the kernel's
-                    // selection-memory fire produces the arm value
-                    // (aug03 reactive/000000). The observable firing
+                    // select then emits nothing where the kernel
+                    // produces the arm value (aug03 reactive/000000).
+                    // The observable firing
                     // still comes from the emission rules alone. The
                     // in-frame tail spine keeps the scrutinee's honest
                     // tag (per-jump re-selections are loop plumbing).
@@ -866,10 +866,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // same-selection path re-binds the pattern binds. The former
         // `*selected = None` forced the full arm-wake per pass — a
         // value-channel redelivery the frame's forced init view
-        // already provides — re-seeding arm-local lifted targets on
-        // UNCHANGED selections, and contradicting fused region
-        // kernels, whose selection words are semantic and survive
-        // `Kernel::reset_replay`.
+        // already provides — re-seeding arm-local binds on UNCHANGED
+        // selections.
         let Self {
             selected: _,
             arg,
@@ -1377,27 +1375,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // Constant bodies are skipped: a 0-input kernel wrapping a
         // literal is pure dispatch overhead (the CallSite::fuse rule).
         crate::fusion::fuse(&mut self.arg.node, ctx)?;
-        // Arm/guard passes run in ARM POSITION: the flag keeps
-        // `collect_lifted_connect_targets` from lifting there (the
-        // wake-forced init view re-fires a lifted seed the interp's
-        // Bind keeps quiet — see `FusionCtx::arm_region`). Restored
-        // even on Err so sibling passes aren't poisoned.
-        let prev_arm =
-            ctx.fusion.arm_region.swap(true, std::sync::atomic::Ordering::Relaxed);
-        let res = (|| {
-            for (pat, body) in self.arms.iter_mut() {
-                if let Some(g) = &mut pat.guard {
-                    if !matches!(g.node.view(), NodeView::Constant(_)) {
-                        crate::fusion::fuse(&mut g.node, ctx)?;
-                    }
-                }
-                if !matches!(body.view(), NodeView::Constant(_)) {
-                    crate::fusion::fuse(body, ctx)?;
+        for (pat, body) in self.arms.iter_mut() {
+            if let Some(g) = &mut pat.guard {
+                if !matches!(g.node.view(), NodeView::Constant(_)) {
+                    crate::fusion::fuse(&mut g.node, ctx)?;
                 }
             }
-            Ok(None)
-        })();
-        ctx.fusion.arm_region.store(prev_arm, std::sync::atomic::Ordering::Relaxed);
-        res
+            if !matches!(body.view(), NodeView::Constant(_)) {
+                crate::fusion::fuse(body, ctx)?;
+            }
+        }
+        Ok(None)
     }
 }

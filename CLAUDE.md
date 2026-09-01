@@ -217,13 +217,9 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   per-iteration state), a wrong `false` only costs the loop.
 - `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
   semantic state — the arm-rewake RESTART builtins
-  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). Consulted by the fusion
-  interior-sleep gate (P7): kernels have no per-arm sleep initiator, so
-  such a builtin's DynCall (or a call to a callee kernel transitively
-  containing one) refuses to emit inside a fused select arm and the
-  region de-fuses. Deliberately NOT `!STATELESS` (dbg/log are
-  effectful-but-sleep-inert and stay arm-fusable). A wrong `false` is a
-  semantics bug; a wrong `true` only costs fusion coverage.
+  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). A declared interp
+  fact (such a builtin is stateful, so it never fuses); deliberately
+  NOT `!STATELESS` (dbg/log are effectful-but-sleep-inert).
 - `FASTCALL` (default `None`, 2026-08-30): an optional
   `fn(&[Value]) -> Option<Value>` the JIT calls DIRECTLY at every fused
   site of the builtin — no site identity, no per-site inner `Apply`, no
@@ -236,8 +232,8 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   arg bottoms the call without invoking the fn; all-stale args make the
   result stale; `None` is this cycle's bottom), through the
   `graphix_fastcall` trampoline, which returns the same in-band-tagged
-  (disc, payload) pair as `graphix_dyncall` so the site decode is
-  shared. Legal only with `EFFECT = Sync` + `STATELESS = true`
+  (disc, payload) pair as the cast pseudo-site's `graphix_castcall`
+  so the site decode is shared. Legal only with `EFFECT = Sync` + `STATELESS = true`
   (`register_builtin` refuses otherwise); a fast fn sees ALL args
   PRESENT (fast_eval returns None on an undelivered slot; the kernel
   bottoms a tainted arg before the call), so an eval that PRODUCES on
@@ -247,18 +243,18 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   semantics. `eval` delegates to the same fn through
   `graphix_package_core::fast_eval` (one implementation). This is the
   lever the intrinsics' inline helpers give the compiler, offered to
-  every package author: `array::len` in a hand-written loop went from a
-  140 ns DynCall to a ~3 ns direct call (bench/collection `fold_rec`
+  every package author, and under strict fusion the ONLY way a
+  builtin fuses: `array::len` in a hand-written loop went from a
+  140 ns dispatch to a ~3 ns direct call (bench/collection `fold_rec`
   15.2 -> 1.5 ms). Since 2026-08-30 the stdlib is opted in BROADLY —
   ~90 pure Sync builtins across core (math, bytes, bit ops, opt's
   all-present subset), array, map, list, str, sys::{join,tempdir}_path
   and the json/toml/pack writers; the holdouts are the
   partial-delivery producers above, `str::parse` (init-time cast
   type), sort (unread body), and re (per-instance regex cache). A
-  SITE whose layout carries a `LabeledDefault` hole (a defaulted
-  label not written at the call) dispatches via DynCall — the
+  SITE with a defaulted label the call didn't write node-walks — the
   trampoline reads the buf AS the args and cannot fill holes
-  (`all_marshalled`, lowering.rs).
+  (lowering.rs).
   All four consts are pulled through `EvalCached`/`CachedArgs` and
   recorded per name as `BuiltinFacts` (`ctx.builtin_effect`/
   `ctx.builtin_stateless`/`ctx.builtin_sleep_restarts`/
@@ -559,13 +555,9 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what".
-- `GXDBG_DYNC=1` — print every `graphix_dyncall` dispatch (fn index,
-  site id, taint/stale masks, each arg's raw (disc, payload) words —
-  transmute_copy, no deref, so safe on a corrupt Value). The tool for
-  "what did the CLIF marshal actually hand this dispatch" — located
-  the 5b dispatch-boundary corruption (a present bottom passed
-  through as Value::Null, whose uninit payload word the typed call
-  site adopted as an ArcStr) in one run.
+- `GXDBG_DYNC=1` — print every fastcall/castcall trampoline dispatch
+  (arg count, taint/stale masks, the resulting tag). The tool for
+  "what did the CLIF marshal actually hand this call".
 - `GRAPHIX_DBG_TVAL=1` — print every `TVal` render step (deref'd type
   + naked value) as the typed printer walks. The tool for "why did
   this value print in this form" — found the union-member selection
@@ -766,26 +758,31 @@ differential fuzzer enforces bit-for-bit agreement, and a divergence is
 at least as likely a JIT bug as a node-walk one: adjudicate against the
 INTENDED semantics, never by trusting either engine.
 
-**STRICT FUSION IS THE DEFAULT** (Eric's ruling 2026-09-01,
-`design/strict_fusion.md` — "complexity needs to pay rent";
-`fa08136a`): fusion admits PURE COMPUTATION ONLY — direct FASTCALL
-dispatches and the Cast pseudo-site; any inner-Apply-backed builtin
-(stateful, effectful, seam-gated, or a defaulted-label site), a fused
-`connect`, or a handler-ful `?` refuses emission and node-walks,
-transitively through callees. Measured at the flip: 94% of kernels
-kept, benches flat, every bench program still fuses fully.
-`GRAPHIX_PERMISSIVE_FUSE=1` restores the stateful-fusion machinery
-for A/B bisection and DIES with the deletion phase (staged in the
-design doc: site identity → mask protocol → selection words/wake
-hints/birth view/wire bit 2 → interior gates → replay-word audit →
-arm-lift → the hatch itself). The follow-on calls: pure selects fuse;
-grow the FASTCALL set maximally (`is_err` converted at the flip; re::,
-str::parse, sort, escape are next; partial-delivery producers stay
-out on semantics); `#[native]` is THE advertised performance model.
-Kernel-interior rules below (site identity, wake/birth mirrors,
-stateful gates) describe the permissive machinery — deletion
-inventory, kept correct until deleted. The coverage census predates
-the flip; strict-era numbers land with the deletion phase.
+**STRICT FUSION** (Eric's ruling 2026-09-01, `design/strict_fusion.md`
+— "complexity needs to pay rent"; flipped `fa08136a`, the stateful
+machinery deleted the same day): fusion admits PURE COMPUTATION ONLY.
+A builtin fuses iff it registers a `FASTCALL` (a direct trampoline
+call on a stack buffer of borrowed `Value`s); the non-inline
+`cast<T>(x)` is the one pseudo-site (`SiteDispatch::Cast`,
+`graphix_castcall` runs the interp's exact `cast_value` under the
+kernel's env loan). Everything else — a builtin without a fast fn
+(stateful, effectful, seam-gated, or a defaulted-label site),
+`connect`, a handler-ful `?` — refuses emission and node-walks,
+transitively through callees. There is NO DynCall dispatcher, no
+inner Apply inside a kernel, no per-site identity, no selection
+memory, no arm-lift, no wake hint; a kernel's only cross-invocation
+memory is the firing boundary (prev-length words for exact HOF
+resize detection, first-call words for a callee's init view, the
+per-call-site blocks and per-activation trees that give those words
+per-slot/per-activation multiplicity) and the replay caches (audit
+pending). The runtime loans a kernel invocation exactly three
+things through scoped thread-locals: `KERNEL_ABORT`, `KERNEL_ENV`
+and the core-trait value hooks. Measured at the flip: 94% of
+kernels kept, benches flat, every bench program still fuses fully.
+The follow-on calls: pure selects fuse; grow the FASTCALL set
+maximally (`is_err` converted at the flip; re::, str::parse, sort,
+escape are next; partial-delivery producers stay out on semantics);
+`#[native]` is THE advertised performance model.
 
 ### Semantics both engines implement
 
@@ -893,9 +890,8 @@ the flip; strict-era numbers land with the deletion phase.
   collection slot values, the kernel's interior-bottom taint caches
   (replay words, owned value pairs) — so a re-selected arm whose fresh
   computation bottoms rides its history. Slot CHAINS (`SiteAnchor`:
-  selection memory, nested prev-length words, in-loop DynCall site
-  identity) are semantic per-position state and survive frames as well
-  as sleep; only `reset_replay` (frames) clears replay caches and only
+  nested prev-length words, in-loop call-site blocks) are semantic
+  per-position state and survive frames as well as sleep; only `reset_replay` (frames) clears replay caches and only
   `Drop`/truncation frees chains. An arm's WAKE resumes it: a `let` that
   is a `<-` target and holds a value is not reseeded by its re-fired
   initializer (`Event::wake_init`). A producer materializes its value
@@ -926,19 +922,16 @@ the flip; strict-era numbers land with the deletion phase.
   value is a PAST event; delivering it Fired phantom-submitted the
   admin pump's password modal), and a STATELESS builtin's eval
   re-runs from the present stale slots at wake (`CachedArgs`
-  consumes `self.slept || dyncall_wake()` — one implementation on
-  both engines; the wake view is per-dispatch DATA:
-  `DispatcherState::woke` + the emitted `graphix_wake_hint`, crossing
-  into the inner Apply via the dispatch-scoped thread-local) while a
-  stateful one retags — its
+  consumes its own `slept` bit) while a stateful one retags — its
   resident IS its state and its edge catch-up arrives as a tracked
-  fire. Kernel: wire slot 0 bit 2 = WAKE; genuine init =
-  `bit0 & !bit2` gates the stale-mask suppression AND the DynCall
-  site's first-dispatch arrival upgrade; kernels carry NO fire bits —
-  a stateful (non-restart) builtin in a VALUE-POSITION arm extent
-  de-fuses (`has_stateful_reach`, transitively; tail-position arms
-  exempt — frames/activations exclude the mechanism and
-  per-activation site blocks are the twin), so the interp select's
+  fire. Kernel: the select's forced init view (`event.init` under
+  `wake_init`) is what makes a kernel in a re-selected arm run
+  instead of riding its resident; wire slot 0 bit 2 = WAKE (the
+  arm's `wake_init` or the kernel's own slept bit), and genuine init
+  = `bit0 & !bit2` gates the fastcall stale-mask suppression, so a
+  wake delivers standing args STALE and the trampoline produces the
+  stateless re-eval's STALE result. Kernels carry NO fire bits and
+  need none — a stateful builtin never fuses, so the interp select's
   tracker, which injects THROUGH the kernel boundary, is always the
   mechanism where it matters. Things BORN at init (constants, own
   first productions) still fire; only genuine init upgrades standing
@@ -948,9 +941,8 @@ the flip; strict-era numbers land with the deletion phase.
   first consult; the guard-flip wake keeps its aug03 FIRED), `ByRef`
   seeds its cell stale. THE BIRTH RULE (aug31f ryouko 01): a
   labeled DEFAULT is born with the binding — the interp's bound
-  dispatch seeds default args FIRED, a DynCallSlot's first dispatch
-  is a BIRTH view (`wake_init` cleared; marshalled args keep honest
-  tags), and a config memo (`escape_fn!`) survives sleep; both
+  dispatch seeds default args FIRED, and a config memo (`escape_fn!`)
+  survives sleep; both
   engines broke together at 9b2e7231 (the metamorphic blind spot) —
   `findings/default-arg-birth-sep2026/`. sys::net level effects
   (Subscribe/Publish/PublishRpc) tear down in `sleep()` and
@@ -961,9 +953,8 @@ the flip; strict-era numbers land with the deletion phase.
   `dyncall-arm-init-stale-aug2026` (re-adjudicated in place),
   `lib_tests/callable.rs` `arm_wake_delivers_standing_args_stale`.
   The RESTART builtins (`once`/`take`/`skip`/`uniq`/`hold`/
-  `count`, `SLEEP_RESTARTS`) clear on sleep; a select whose arm reaches
-  one de-fuses in ANY arm extent (kernels have no per-arm sleep
-  initiator). Pins:
+  `count`, `SLEEP_RESTARTS`) clear on sleep (stateful, so never
+  fused). Pins:
   `findings/{sleep-preserves-caches-jul2026,arm-local-bind-aug2026,
   sleep-restart-gate-aug2026}/`.
 - **THE QUIET FLAG**: a re-derivation inside a quiet frame
@@ -973,38 +964,33 @@ the flip; strict-era numbers land with the deletion phase.
   not re-primed; becoming-selected grants no init view in a frame. Wire
   slot 0 is a context word (bit 0 init, bit 1 quiet — set by the wrapper
   from the interp frame, by a tail-loop body for itself, inherited by
-  callees). Three kernel mechanisms manufactured a false init view and
-  are fixed (slot `fired` reset on sleep; the fused select's `woke`
-  word; per-frame freeing of in-loop site identity). The symptom to
-  recognize: a `let rec` chain re-derived by an input that is NOT
+  callees; bit 2 wake). The symptom to recognize: a `let rec` chain re-derived by an input that is NOT
   consumed (read only by a structure-failed arm's guard) fires on the
   JIT every delivery and once on the interp. Pins:
   `findings/quiet-frame-init-view-aug2026/`.
-- **DynCall SITE IDENTITY** (`design/kernel_instance_state.md`): a
-  compiled callee's interior builtin is one `graphix_dyncall`
-  instruction reached from many emit sites, so each site claims an
-  identity word (region root: instance word; callee root: per-call-site
-  block word; inside a scaffold loop: a per-slot chain leaf) and the
-  dispatcher keys a full inner `Apply` per minted id — cache AND builtin
-  state per site, like the interp's per-CallSite instances. Key 0 (no
-  identity) remains only for qop-deliver and a callee site reached with
-  a null site block. A self-call roots a lazily grown per-ACTIVATION
-  block tree (`graphix_site_child_block`, one root per self-call site).
-  Callee kernels define in TOPOLOGICAL order over the recorded call
-  edges (a callee defined after its caller would run below a recursion
-  with no interior memory). Pins: `dyncall_site_identity_state`,
-  `findings/{dyncall-site-identity-jul2026,
-  recursive-activation-blocks-aug2026}/`.
+- **KERNEL INTERIOR MEMORY** (`design/kernel_instance_state.md`): a
+  root body claims per-INSTANCE state words (wire slot 1); a callee
+  body claims per-CALL-SITE block words (wire slot 2, `SiteLayout`)
+  that each caller supplies from its own storage — static words at a
+  root call site, a per-slot chain leaf (`SiteAnchor`,
+  `graphix_slot_state_table/blocks`) inside a scaffold loop, and for a
+  self-call a lazily grown per-ACTIVATION block tree
+  (`graphix_site_child_block`, one root per self-call site; unreached
+  activations are reclaimed after each run — the shrink=delete twin).
+  The words hold only prev-length words (exact resize detection) and
+  first-call words (a callee's init view on its first call ever),
+  so one compiled body gets the interp's per-slot/per-activation
+  multiplicity for exactly the state that decides FIRING. Callee
+  kernels define in TOPOLOGICAL order over the recorded call edges (a
+  callee defined after its caller would run below a recursion with no
+  interior memory). Pins:
+  `findings/recursive-activation-blocks-aug2026/`.
 - **Guards in kernels** tick per invocation via a PROLOGUE in
   `emit_select_arms` (the interp ticks every arm's guard every cycle);
   schedule-free guards (pure never-bottom fns of the arm's own binds)
-  stay lazy in the chain. A fused DynCall delivers non-fired args as
-  `TagValue::stale` — never absence, never `fired` (`rand` would
-  re-randomize). Tag-blind builtins (`printfn!`, `now`) gate on presence
-  by design.
+  stay lazy in the chain.
 - **Per-cycle firing (the STALE bit)**: a kernel output fires only when
-  an input feeding it fired; a lifted `<-`-target counter is threaded in
-  as a kernel input so reactive counters fuse. Collection loops fire by
+  an input feeding it fired. Collection loops fire by
   `scaffold::SlotFlags`: per-slot discs fold into a slots word and a
   prev-length word gives exact resize detection — fires iff resized ∨ a
   slot fired ∨ the source fired empty; a same-length refresh with a
@@ -1014,10 +1000,9 @@ the flip; strict-era numbers land with the deletion phase.
   acc-ignoring arm leaves the final carry stale) and the acc carry is
   one more firing source (it alone covers the empty-source chain);
   TAINT rides the carry only — consumption decides, an acc-ignoring
-  callback recovers (`fold-midchain-fired-aug2026`). Callee bodies keep per-call-site state
-  blocks (wire slot 2, `SiteLayout`) for site identity, first-dispatch
-  init words and prev-len words — never select firing memory. Residue:
-  arm-lifted connects in loops/callees de-fuse (coverage).
+  callback recovers (`fold-midchain-fired-aug2026`). Callee bodies keep
+  per-call-site state blocks (wire slot 2, `SiteLayout`) for
+  first-call words and prev-len words — never select firing memory.
 - **Collection HOFs** (`design/collection_intrinsics.md`): MapQ/FoldQ
   are compiler-owned nodes (`node/collection.rs`) — the canonical
   per-slot interpreters — and `GXLambda::emit_clif` inline-emits a
@@ -1092,7 +1077,7 @@ the flip; strict-era numbers land with the deletion phase.
   wake-ups key on `(BindId, fusion.top_id)`; clone types out of
   `with_deref` before recursing; dead statements eliminate at emit only
   when the statement subtree is effect-free, and a statement binds
-  whatever its subtree binds. The Value-shape DynCall return folds
+  whatever its subtree binds. The Value-shape call return folds
   `tagbits` like every other shape. Kernel cache keys carry the
   instance body's catch coverage and a resolution FINGERPRINT (same
   types + different callbacks ⇒ two kernels). Sig-less modules refuse
@@ -1128,11 +1113,12 @@ binds (the slot clones out as an owned local of its ABI kind,
 tail loops carrying ANY kernel param kind (Value pairs and Strings
 rebind via the clone/drop protocol; `structural_tail_loop` admits
 every kernel-encodable carried kind, so `lfold_rec` fuses and the
-hand List fold beats the intrinsic at 100k), `connect` of any RHS
-shape including lifted composite/string accumulators, every Sync builtin via
-DynCall, cross-kernel lambda calls (recursive self-calls: tail →
-rebind-and-jump, non-tail → native recursion), trait default bodies and
-fn-formal forwarding/capture.
+hand List fold beats the intrinsic at 100k), every FASTCALL builtin
+and non-inline cast via the direct trampolines, cross-kernel lambda
+calls (recursive self-calls: tail → rebind-and-jump, non-tail → native
+recursion), trait default bodies and fn-formal forwarding/capture. (The
+annotation census predates the strict flip; connects and non-fastcall
+builtins node-walk by rule now.)
 
 Fusion descends through Module/Block/Bind/CallSite/Catch/Lambda/Select
 (scrutinee, guards and each arm body get their own region passes) and
@@ -1146,8 +1132,8 @@ encodable types (`decimal`, `Fn`, `Ref`, unbound tvars). The missed-
 fusion residue, each pinned by a `#[native]` de-fuse test or an ASPIRE
 comment: select residue (whole-composite/`@`/named-rest binds, nested
 patterns INSIDE a variant payload, owned scrutinees in tail position);
-union-self trait dispatch and abstract patterns in select; arm-lifted
-connects in loops/callees; union-typed cross-kernel returns
+union-self trait dispatch and abstract patterns in select;
+union-typed cross-kernel returns
 (`rec_block_multi_member_collapses`); non-scalar string-interp parts;
 dynamic map literals; `array::group`; ByRef/Deref; decimal arith. The
 intrinsics-deletion endgame is measured in `bench/collection/README.md`.

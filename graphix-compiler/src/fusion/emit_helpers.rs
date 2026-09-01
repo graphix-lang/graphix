@@ -419,9 +419,8 @@ unsafe fn graphix_value_buf_extend_from_array(buf: *mut LPooled<Vec<Value>>, inn
 }
 
 /// Borrow-mode array push: refcount-bumps the caller's borrowed bits
-/// and pushes `Value::Array(clone)`. Used for DynCall composite args
-/// where the caller still owns its local and the dispatcher needs a
-/// separately-tracked clone.
+/// and pushes `Value::Array(clone)`. Used for composite elements read
+/// from a local the caller still owns.
 unsafe fn graphix_value_buf_push_array_borrowed(buf: *mut LPooled<Vec<Value>>, src: u64) {
     unsafe { (*buf).push(Value::Array(va_ref(&src).clone())) }
 }
@@ -442,10 +441,9 @@ safe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: 
 
 /// Move-mode value push: consumes `v` (the caller transfers
 /// ownership) and pushes it into the buf without an extra refcount
-/// bump. Used for DynCall variant args sourced from an owned producer
-/// (VariantNew, composite-return DynCall result) — the value isn't
-/// referenced anywhere else, so a borrow-mode push would leak the
-/// extra ref.
+/// bump. Used for value-shape elements sourced from an owned producer
+/// (VariantNew, a composite-return call) — the value isn't referenced
+/// anywhere else, so a borrow-mode push would leak the extra ref.
 safe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
     // Strip the tag — the buffer holds clean Values (the builtin that
     // consumes it must never see a tagged disc). A tainted field is the
@@ -475,10 +473,10 @@ unsafe fn graphix_value_buf_push_arcstr(
     unsafe { (*buf).push(Value::String((*ptr).clone())) }
 }
 
-/// Push an owned `ArcStr` onto the dyncall arg buffer, wrapping it in
-/// `Value::String`. Used for `Type::String` DynCall args — the
-/// caller's SSA holds an owned ArcStr (bit-equivalent to its raw
-/// thin pointer) and transfers ownership into the buf.
+/// Push an owned `ArcStr` onto a value buffer, wrapping it in
+/// `Value::String` — the caller's SSA holds an owned ArcStr
+/// (bit-equivalent to its raw thin pointer) and transfers ownership
+/// into the buf.
 unsafe fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: arcstr::ArcStr) {
     unsafe { (*buf).push(Value::String(s)) }
 }
@@ -532,42 +530,22 @@ unsafe fn graphix_value_buf_extend_from_list(
 
 jit_helpers! { registry = control_helpers;
 
-/// Read the `DYNCALL_PENDING` thread-local *without clearing it*.
+/// Read the `KERNEL_ABORT` thread-local *without clearing it*.
 /// JIT-emitted code calls this after every cross-kernel lambda call:
-/// a set flag means the CALLEE genuinely aborted (interrupt, depth
-/// trip) and returned the pending sentinel, so the caller drops its
-/// owned set and jumps to its own `pending_exit`. The flag stays set
-/// so that `Kernel::update`'s wrapper-level check sees it and returns
-/// `None`. `Kernel::update` resets the flag to `false` at the top of
+/// a set flag means the CALLEE aborted (interrupt, depth trip) and
+/// returned the abort sentinel, so the caller drops its owned set and
+/// jumps to its own `pending_exit`. The flag stays set so that
+/// `Kernel::update`'s wrapper-level check sees it and discards the
+/// result. `Kernel::update` resets the flag to `false` at the top of
 /// every kernel invocation, so a stale `true` from a previous run
 /// never leaks across.
 ///
-/// Returns 1 if pending was set, 0 otherwise.
-safe fn graphix_dyncall_pending_take() -> u8 {
-    DYNCALL_PENDING.with(|c| if c.get() { 1 } else { 0 })
+/// Returns 1 if the abort flag is set, 0 otherwise.
+safe fn graphix_abort_peek() -> u8 {
+    KERNEL_ABORT.with(|c| if c.get() { 1 } else { 0 })
 }
 
-/// Read AND clear the `DYNCALL_PENDING` thread-local. JIT-emitted
-/// code calls this immediately after every builtin `graphix_dyncall`:
-/// a set flag means THIS dispatch returned no value ("bottom this
-/// cycle" — e.g. `buffer::encode`'s Pad guard), which the site
-/// converts to a #219 tainted placeholder that CONTINUES — bottoming
-/// only the consumers that read it, like the node-walk, where a
-/// builtin's `None` silences only its downstream. Clearing is what
-/// keeps the pending flag meaning "genuine whole-kernel abort"
-/// (interrupt, the return-gate force) for
-/// `Kernel::update`'s wrapper check.
-///
-/// Returns 1 if pending was set, 0 otherwise.
-safe fn graphix_dyncall_pending_take_clear() -> u8 {
-    DYNCALL_PENDING.with(|c| if c.replace(false) { 1 } else { 0 })
-}
-
-/// Set `DYNCALL_PENDING` to true. Called by the JIT-emitted code
-/// at the qop-unwrap error branch — same pending signal as
-/// the dispatcher uses, just driven by a kernel-internal check
-/// instead of a `dispatch` return.
-/// The dyncall return-shape mismatch path was SILENT: the emitted
+/// The fused call's return-shape mismatch path was SILENT: the emitted
 /// check drops the wrong-shaped Value and substitutes a tainted
 /// placeholder, so a stdlib builtin whose eval violates its declared
 /// return type (sprintf-error-return-shape-aug2026) — or a genuine
@@ -581,18 +559,11 @@ safe fn graphix_shape_mismatch_warn(got_disc: u64) {
     );
 }
 
-safe fn graphix_dyncall_set_pending() {
-    DYNCALL_PENDING.with(|c| c.set(true))
-}
-
-/// Arm the per-dispatch WAKE hint (design/wake_catchup.md). Emitted
-/// immediately before a `graphix_dyncall` inside a becoming-selected
-/// select arm, with the arm's woke bit (0/1); `dispatch_typed` takes
-/// it, and `DynCallSlot::dispatch` delivers it to the inner Apply
-/// through the dispatch-scoped [`DISPATCH_WAKE`] — the wake no
-/// `sleep()` call can deliver.
-safe fn graphix_wake_hint(woke: u64) {
-    WAKE_HINT.with(|c| c.set(woke != 0))
+/// Set `KERNEL_ABORT`. Called by the JIT-emitted code on every
+/// whole-kernel abort path (interrupt poll, depth trip, bottom abort)
+/// before it jumps to `pending_exit`.
+safe fn graphix_abort_set() {
+    KERNEL_ABORT.with(|c| c.set(true))
 }
 
 /// Read the active runtime's interrupt/abort control (set in
@@ -655,79 +626,11 @@ safe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
     crate::stack::grow(|| f(args, out))
 }
 
-/// The single registered DynCall entry point. Indirects through
-/// the thread-local handle to the monomorphized dispatcher and
-/// returns the inner production as a two-word [`DynCallRet`] pair —
-/// the unified Value ABI with the production's TAINT/STALE tag riding
-/// the disc's high byte in-band (Seam B of the 5c flip; the call site
-/// adapts per its static type and never adopts a bottom's payload).
-///
-/// On a genuine dispatch abort (instance init failure): returns
-/// `(0, 0)` and sets `DYNCALL_PENDING`; JIT-emitted code
-/// take-and-clears it after the dyncall and takes the placeholder
-/// path.
-///
-/// `taint_mask`: bit `i` set = arg slot `i` is BOTTOM (the arg
-/// produced no usable value). The dispatcher delivers those slots as
-/// the honest bottom (FreshBottom / StaleBottom by the stale bit),
-/// and the wrapper's Q1 arm bottoms the invocation without calling
-/// eval — bottom propagates, authors never see it
-/// (design/dense_delivery.md; the pre-dense absence delivery and its
-/// ride-own-history semantics are the re-blessed
-/// dyncall-partial-args delta). The buf still carries a placeholder
-/// Value at that position (arity is fixed); it drops with the buf.
-/// Lambda-callee dispatch sites pass 0 (formals poison via their own
-/// protocol, unchanged).
-///
-/// `stale_mask`: bit `i` set = arg slot `i` is present but did NOT
-/// fire this cycle (its disc carries STALE). The dispatcher delivers
-/// those slots as `TagValue::stale`, so a builtin whose production
-/// gates on argument FIRING (`printfn!`'s per-arg update, `str::
-/// escape`'s `seam_arg` fired flags, `CachedArgs`' eval re-run) sees the
-/// per-argument truth instead of a phantom fire per kernel
-/// invocation (dyncall-stale-arg-fired-aug2026: `rand` re-randomized
-/// and `now` resampled the clock on every invocation).
-///
-/// `site_word`: address of the emission site's claimed SITE-IDENTITY
-/// word (dyncall-site-identity-jul2026 — the dispatcher mints an id
-/// into it and keys a per-site inner Apply on the value, so one
-/// static dyncall instruction reached from several logical call
-/// sites gets per-site cache and state, matching the node-walk's
-/// per-callsite instantiation). 0 = no identity (v1 scaffold-loop
-/// sites, recursive back-edges, qop-deliver): the shared key-0
-/// bucket, the pre-identity behavior.
-unsafe fn graphix_dyncall(
-    fn_index: u32,
-    args: *mut LPooled<Vec<Value>>,
-    taint_mask: u64,
-    stale_mask: u64,
-    site_word: *mut u64,
-) -> DynCallRet {
-    let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
-    if handle.is_null() {
-        panic!(
-            "graphix_dyncall: no DynDispatchHandle set — Kernel::update \
-             must populate the thread-local before invoking JIT'd code \
-             that calls HOFs"
-        );
-    }
-    unsafe {
-        let h = &*handle;
-        (h.dispatch)(h.state, fn_index, args, taint_mask, stale_mask, site_word)
-    }
-}
-
 /// The FASTCALL path (`BuiltIn::FASTCALL`): a stateless sync builtin
-/// called directly — no site identity, no per-site inner Apply, no
-/// `CachedArgs` memo. The kernel's argument discs decide the tag: any
-/// tainted argument bottoms the result WITHOUT calling (bottom
-/// propagates — the fn never sees a bottom), all-stale arguments make
-/// the result STALE, and `None` from the fn is this cycle's bottom.
-/// `fn_ptr` is the registered `FastFn`; `args`/`n` is the call site's
-/// stack buffer of (disc, payload) pairs, borrowed. Returns the production's
-/// two words exactly as `graphix_dyncall` does (tag in-band on the
-/// disc), so the call site's decode is shared; never touches the
-/// pending flag.
+/// called directly — no site identity, no inner Apply, no `CachedArgs`
+/// memo. `fn_ptr` is the registered `FastFn`; `args`/`n` is the call
+/// site's stack buffer of (disc, payload) pairs, borrowed. See
+/// [`fast_dispatch`] for the tag rules.
 unsafe fn graphix_fastcall(
     fn_ptr: u64,
     args: u64,
@@ -735,25 +638,87 @@ unsafe fn graphix_fastcall(
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    // SAFETY: `args` is the call site's stack buffer of `n` (disc,
-    // payload) pairs, each a valid clean `Value` the site built for
-    // this call (scalars with their variant's discriminant, composite
-    // and string words borrowed, value shapes with a cleaned disc).
-    // Viewed, never owned: nothing here drops them; the site releases
-    // what it owned after the call.
+    // SAFETY: `fn_ptr` is the `FastFn` the builtin registered
+    // (`BuiltinFacts::fastcall`), embedded by the emitter as an
+    // immediate; a fn pointer round-trips through usize.
+    let f: crate::FastFn =
+        unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
+    unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) }
+}
+
+/// The Cast pseudo-site (`SiteDispatch::Cast`): `cast<T>(x)` for a
+/// non-inline cast, run as `target.cast_value(env, x)` — the EXACT
+/// function `TypeCast::update` (the node-walk) calls, so the two
+/// evaluators agree by construction. `typ` is the site's interned
+/// destination `Type` (kept alive by the kernel's `KernelValues`);
+/// the env is the invoking kernel's loan ([`with_kernel_env`]), so a
+/// type name inside the destination resolves exactly as it would on
+/// the interp. Same buffer and tag rules as [`graphix_fastcall`].
+unsafe fn graphix_castcall(
+    typ: u64,
+    args: u64,
+    n: u64,
+    taint_mask: u64,
+    stale_mask: u64,
+) -> DynCallRet {
+    // SAFETY: `typ` is the `*const Type` the emitter baked for this
+    // site; the kernel holds the box for as long as its code lives.
+    let target = unsafe { &*(typ as *const crate::typ::Type) };
+    let env = KERNEL_ENV.with(|c| c.get());
+    if env.is_null() {
+        panic!(
+            "graphix_castcall: no kernel env loaned — Kernel::update must \
+             run the wrapper under `with_kernel_env`"
+        );
+    }
+    // SAFETY: the loan is scoped to the wrapper call this helper runs
+    // inside of (`Kernel::update`), and `Env` is not touched mutably
+    // for its duration.
+    let env = unsafe { &*env };
+    unsafe {
+        fast_dispatch(
+            |args| Some(target.cast_value(env, args[0].clone())),
+            args,
+            n,
+            taint_mask,
+            stale_mask,
+        )
+    }
+}
+
+}
+
+/// The direct-call trampoline core. The kernel's argument discs
+/// decide the tag: any tainted argument bottoms the result WITHOUT
+/// calling (bottom propagates — the fn never sees a bottom), all-stale
+/// arguments make the result STALE, and `None` from the fn is this
+/// cycle's bottom. Returns the production's two words with the tag
+/// in-band on the disc, so every call site's decode is shared; never
+/// touches the abort flag.
+///
+/// SAFETY: `args` is the call site's stack buffer of `n` (disc,
+/// payload) pairs, each a valid clean `Value` the site built for this
+/// call (scalars with their variant's discriminant, composite and
+/// string words borrowed, value shapes with a cleaned disc). Viewed,
+/// never owned: nothing here drops them; the site releases what it
+/// owned after the call.
+unsafe fn fast_dispatch(
+    call: impl FnOnce(&[Value]) -> Option<Value>,
+    args: u64,
+    n: u64,
+    taint_mask: u64,
+    stale_mask: u64,
+) -> DynCallRet {
     let args_vec: &[Value] =
         unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
     let n = n as usize;
     let all_stale = n > 0 && stale_mask == u64::MAX >> (64 - n);
-    let bottom = if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
+    let bottom =
+        if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
     let tv = if taint_mask != 0 {
         crate::TagValue::tagged(Value::Null, bottom)
     } else {
-        // SAFETY: `fn_ptr` is the `FastFn` the builtin registered
-        // (`BuiltinFacts::fastcall`), embedded by the emitter as an
-        // immediate; a fn pointer round-trips through usize.
-        let f: crate::FastFn = unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
-        match f(args_vec) {
+        match call(args_vec) {
             Some(v) => crate::TagValue::tagged(
                 v,
                 if all_stale { crate::Tag::STALE } else { crate::Tag::FIRED },
@@ -763,42 +728,16 @@ unsafe fn graphix_fastcall(
     };
     if crate::dbgenv::gxdbg_dync() {
         eprintln!(
-            "FASTCALL fn={fn_ptr:x} n={n} taint={taint_mask:b} stale={stale_mask:b} -> {:?}",
+            "FASTCALL n={n} taint={taint_mask:b} stale={stale_mask:b} -> {:?}",
             tv.tag()
         );
     }
-    // SAFETY: as in `dispatch_typed` — TagValue is the (disc, payload)
-    // pair; the bits transfer to the caller and the local's Drop is
-    // suppressed.
+    // SAFETY: TagValue is `#[repr(C)]` (disc, payload) — the same
+    // 16-byte layout as Value, tag bits included; the bits transfer to
+    // the caller and the local's Drop is suppressed.
     let tv = std::mem::ManuallyDrop::new(tv);
     let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*tv) };
     DynCallRet { word0: words[0], word1: words[1] }
-}
-
-/// Write a reactive variable from inside a JIT'd kernel — the fused
-/// form of `connect` (`x <- expr`) and a handler-ful `?`'s error
-/// delivery. Indirects through the per-call dispatch handle to a
-/// monomorphized `set_var_typed::<R, E>` (which reaches `ctx`). A `disc`
-/// that is `#219`-tainted (no value) OR STALE (did not fire this cycle)
-/// means the RHS did not fire with a value — the write is skipped,
-/// mirroring the node-walk's `if let Some(v) = ..` guard. Does NOT set
-/// the pending flag: a variable write is a side effect, not a reason to
-/// abort the kernel.
-unsafe fn graphix_set_var(bind_id: u64, disc: u64, payload: u64) {
-    let handle = DYN_DISPATCH_HANDLE.with(|c| c.get());
-    if handle.is_null() {
-        panic!(
-            "graphix_set_var: no DynDispatchHandle set — Kernel::update \
-             must populate the thread-local before invoking JIT'd code \
-             that writes variables"
-        );
-    }
-    unsafe {
-        let h = &*handle;
-        (h.set_var)(h.state, bind_id, disc, payload)
-    }
-}
-
 }
 
 // ─── Value-as-aggregate helpers ────────────────────────────────────
@@ -1418,8 +1357,8 @@ safe fn graphix_string_buf_new() -> *mut String {
     Box::into_raw(Box::new(String::new()))
 }
 
-/// Drop a string buf without finalizing — used on pending paths
-/// when a DynCall short-circuits an in-flight Concat. Null is
+/// Drop a string buf without finalizing — used on abort paths that
+/// short-circuit an in-flight Concat. Null is
 /// always a codegen bug (a pending sentinel leaked into a drop) —
 /// panic loudly instead of UB.
 unsafe fn graphix_string_buf_drop(buf: *mut String) {
@@ -1734,8 +1673,8 @@ pub fn reclaim_self_block_tree(
 /// Zero the REPLAY words through a per-activation block tree — the
 /// `replay_state_words` rule applied to every activation, so a value
 /// cached on one evaluation-frame iteration can't bridge the next at
-/// any depth. Semantic words (selection memory, first-call flags) and
-/// the honor header survive, exactly as they do in the flat case.
+/// any depth. Semantic words (prev-length words, first-call flags)
+/// and the honor header survive, exactly as they do in the flat case.
 /// Iterative like [`free_self_block_tree`], for the same reason.
 pub fn reset_self_block_tree(vecptr: u64, slots: &[u32], replay: &[u32]) {
     let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
@@ -2107,122 +2046,46 @@ safe fn graphix_record_jit_invocation() {
 
 }
 
-// ─── DynCall (HOF) dispatch plumbing ─────────────────────────────
+// ─── Kernel-invocation plumbing ──────────────────────────────────
 //
-// JIT'd kernels invoke fn-typed params (HOF args) via the
-// `graphix_dyncall` helper. The dispatch is type-erased through a
-// `DynDispatchHandle` set on a thread-local by `Kernel::update`:
-//
-//   1. Before calling the wrapper, Kernel::update builds a
-//      `DynDispatchHandle` whose `dispatch` is a monomorphized
-//      `dispatch_typed::<R, E>` function pointer and whose `state`
-//      points to a per-call struct holding the dyn_slots, ctx,
-//      event, and fn_arg_values references.
-//   2. The thread-local `DYN_DISPATCH_HANDLE` is saved and replaced
-//      with a pointer to the new handle (save-restore lets nested
-//      JIT calls stack properly).
-//   3. The wrapper runs. JIT'd code emits calls to `graphix_dyncall`
-//      with `fn_index` + an args buffer. The helper reads the
-//      handle and calls its `dispatch` function pointer.
-//   4. If the inner Apply returns `None` ("no value this cycle" —
-//      e.g. `buffer::encode`'s Pad guard), `dispatch` returns
-//      `(0, 0)` and sets `DYNCALL_PENDING`. The JIT'd call site
-//      take-and-CLEARS the flag right after the call and converts
-//      it to a #219 tainted placeholder that continues — only the
-//      consumers of that result bottom, matching the node-walk.
-//   5. After the wrapper returns, Kernel::update checks
-//      `DYNCALL_PENDING` (and resets it). A set flag now only means
-//      a GENUINE whole-kernel abort (interrupt poll,
-//      the return-gate force): the kernel result is discarded and
-//      Kernel::update returns `None`.
+// Everything a JIT'd kernel needs from the runtime it runs under is
+// loaned for the duration of one `Kernel::update` wrapper call through
+// scoped thread-locals — per-invocation data, never global state:
+// the abort flag (`KERNEL_ABORT`), the type environment
+// (`KERNEL_ENV`, for Cast sites), the interrupt control
+// (`INTERRUPT_PTR`) and the core-trait value hooks
+// (`coretraits::with_value_hooks`).
 
 use std::cell::Cell;
 
-/// Two-word return shape for `graphix_dyncall` / `dispatch_typed` —
-/// the unified Value ABI: `word0 = Value disc`, `word1 = the genuine
+/// Two-word return shape for the direct-call trampolines — the
+/// unified Value ABI: `word0 = Value disc`, `word1 = the genuine
 /// Value payload word` for EVERY return type (a scalar's widened
 /// bits, a composite's ValArray bits, a string's ArcStr bits, a
 /// value-shape's payload; Unit returns the Null disc). Matches the
 /// cranelift sig `(I64, I64)` and the SysV ABI's RAX/RDX return
 /// regs. The call site adapts per its static type (narrow a scalar,
-/// adopt owned bits, discard Unit). On pending both words are `0`.
+/// adopt owned bits, discard Unit).
 #[repr(C)]
 pub struct DynCallRet {
     pub word0: u64,
     pub word1: u64,
 }
 
-/// Type-erased per-call dispatch handle, lifetime-tied to one
-/// `Kernel::update` invocation. Built on the stack there and
-/// pointed at via the thread-local.
-#[repr(C)]
-pub struct DynDispatchHandle {
-    /// Function pointer to a monomorphized `dispatch_typed::<R, E>`.
-    /// Takes `(state, fn_index, args, taint_mask, stale_mask,
-    /// site_word)` and returns the result as a [`DynCallRet`] Value
-    /// pair (unified Value ABI). Returns `(0, 0)` and sets
-    /// `DYNCALL_PENDING` if the inner Apply returned None.
-    /// `taint_mask` bit `i` set = deliver arg slot `i` as ABSENCE;
-    /// `stale_mask` bit `i` set = deliver it as `TagValue::stale`;
-    /// `site_word` is the emission site's identity-word address, null
-    /// for the key-0 bucket (see `graphix_dyncall`).
-    pub dispatch: unsafe extern "C" fn(
-        state: *mut u8,
-        fn_index: u32,
-        args: *mut LPooled<Vec<Value>>,
-        taint_mask: u64,
-        stale_mask: u64,
-        site_word: *mut u64,
-    ) -> DynCallRet,
-    /// Function pointer to a monomorphized `set_var_typed::<R, E>`. A
-    /// fused `connect` (or a handler-ful `?`'s error delivery) writes a
-    /// reactive variable mid-kernel: `(bind_id, disc, payload)` →
-    /// `ctx.set_var`. A `#219`-tainted disc means "no value this cycle"
-    /// and is skipped (the node-walk's `if let Some(v) = ..` guard).
-    /// Unlike `dispatch` this does NOT touch the pending flag — a
-    /// variable write is a side effect that mustn't abort the kernel.
-    pub set_var:
-        unsafe extern "C" fn(state: *mut u8, bind_id: u64, disc: u64, payload: u64),
-    /// Type-erased pointer to the per-call state struct that holds
-    /// `&mut [DynCallSlot<R, E>]`, `&[Value]` (fn_arg_values),
-    /// `&mut ExecCtx<R, E>`, `&mut Event<E>`.
-    pub state: *mut u8,
-}
-
 thread_local! {
-    /// Pointer to the active `DynDispatchHandle` for the JIT'd
-    /// kernel currently on the call stack. Set/restored by
-    /// `Kernel::update`. Null when no JIT'd kernel is in flight.
-    pub static DYN_DISPATCH_HANDLE: Cell<*const DynDispatchHandle> =
+    /// Sticky abort flag: set by JIT-emitted code on a whole-kernel
+    /// abort path (interrupt poll, depth trip, bottom abort) and by a
+    /// caller propagating a callee's abort; `Kernel::update` resets it
+    /// before the wrapper call and reads it after — a set flag means
+    /// the kernel's result is the abort sentinel and is discarded.
+    pub static KERNEL_ABORT: Cell<bool> = const { Cell::new(false) };
+
+    /// The invoking kernel's type environment, loaned for the
+    /// duration of one wrapper call ([`with_kernel_env`]) — what a
+    /// Cast site's `graphix_castcall` resolves type names through.
+    /// Null when no kernel is in flight.
+    pub static KERNEL_ENV: Cell<*const crate::env::Env> =
         const { Cell::new(std::ptr::null()) };
-
-    /// Sticky abort flag. `dispatch_typed` sets it when an inner
-    /// Apply returns `None`, but the JIT'd call site immediately
-    /// take-and-clears that and converts it to a #219 tainted
-    /// placeholder — so by the time `Kernel::update` reads (and
-    /// resets) the flag after the wrapper returns, a set flag only
-    /// means a GENUINE whole-kernel abort (interrupt poll, depth
-    /// trip, the return-gate force, a callee abort propagated at the
-    /// call site): the kernel's result is discarded and `update`
-    /// itself returns `None`.
-    pub static DYNCALL_PENDING: Cell<bool> = const { Cell::new(false) };
-
-    /// The per-dispatch WAKE hint (design/wake_catchup.md): set by
-    /// `graphix_wake_hint`, emitted immediately before a DynCall
-    /// dispatch inside a becoming-selected arm, consumed (taken) by
-    /// `dispatch_typed` and folded with `DispatcherState::woke` (the
-    /// invoking kernel's own slept bit) into the dispatch's wake
-    /// view. The kernel-node-slept wake needs no hint: the kernel
-    /// tracks its own sleep like every node.
-    pub static WAKE_HINT: Cell<bool> = const { Cell::new(false) };
-
-    /// The DISPATCH-SCOPED wake view (design/wake_catchup.md): set by
-    /// `DynCallSlot::dispatch` around exactly one inner `Apply::update`
-    /// — the invoking kernel's slept bit or the emitted arm-flip hint.
-    /// Read through [`dyncall_wake`] by the shared `CachedArgs`
-    /// wrapper (an `Apply::update` has no parameter slot for it).
-    /// Thread-local, so per-evaluator by construction.
-    pub static DISPATCH_WAKE: Cell<bool> = const { Cell::new(false) };
 
     /// Raw pointer to the active runtime's [`crate::Control`], set per
     /// cycle by `do_cycle` on the thread running the node loop. Read by
@@ -2361,53 +2224,15 @@ pub fn reset_fuse_bails() {
 mod tests {
     use super::*;
 
-    /// Regression: `graphix_dyncall_pending_take` must PEEK, not
-    /// clear. The clearing variant (former behavior) caused a
-    /// latent UB on composite-DynCall pending paths — the JIT pre_
-    /// pending block consumed the flag from inside the kernel,
-    /// confusing `Kernel::update`'s wrapper-level pending check
-    /// into decoding the kernel's null sentinel as a real Value
-    /// (`Box::from_raw(0)` or `transmute([0, 0]) -> Value`).
-    /// Multiple calls in succession must all observe the same
-    /// state; the flag stays set until `Kernel::update` resets
-    /// it at the top of the NEXT kernel invocation.
     #[test]
-    fn pending_take_is_peek_not_clear() {
-        DYNCALL_PENDING.with(|c| c.set(false));
-        assert_eq!(graphix_dyncall_pending_take(), 0, "peek on cleared flag returns 0");
-        DYNCALL_PENDING.with(|c| c.set(true));
-        assert_eq!(graphix_dyncall_pending_take(), 1, "peek on set flag returns 1");
-        assert_eq!(
-            graphix_dyncall_pending_take(),
-            1,
-            "second peek still returns 1 — the take is not clearing"
-        );
-        assert!(
-            DYNCALL_PENDING.with(|c| c.get()),
-            "flag remains set after multiple peeks"
-        );
-        // Tidy up so other tests don't see a stale set flag.
-        DYNCALL_PENDING.with(|c| c.set(false));
-    }
-
-    /// `graphix_dyncall_pending_take_clear` must read AND clear —
-    /// it converts a per-site "this dispatch returned no value" into
-    /// a #219 tainted placeholder, and leaving the flag set would
-    /// make `Kernel::update`'s wrapper check discard the whole
-    /// kernel result (the item-28 whole-kernel bottom this variant
-    /// exists to prevent).
-    #[test]
-    fn pending_take_clear_clears() {
-        DYNCALL_PENDING.with(|c| c.set(false));
-        assert_eq!(graphix_dyncall_pending_take_clear(), 0, "clear on cleared flag");
-        DYNCALL_PENDING.with(|c| c.set(true));
-        assert_eq!(graphix_dyncall_pending_take_clear(), 1, "reads the set flag");
-        assert_eq!(
-            graphix_dyncall_pending_take_clear(),
-            0,
-            "second take sees the flag cleared by the first"
-        );
-        assert!(!DYNCALL_PENDING.with(|c| c.get()), "flag is clear after take_clear");
+    fn abort_peek_does_not_clear() {
+        KERNEL_ABORT.with(|c| c.set(false));
+        assert_eq!(graphix_abort_peek(), 0, "peek on cleared flag returns 0");
+        KERNEL_ABORT.with(|c| c.set(true));
+        assert_eq!(graphix_abort_peek(), 1, "peek on set flag returns 1");
+        assert_eq!(graphix_abort_peek(), 1, "second peek still returns 1");
+        assert!(KERNEL_ABORT.with(|c| c.get()), "flag remains set after multiple peeks");
+        KERNEL_ABORT.with(|c| c.set(false));
     }
 
     /// `graphix_fastcall`'s tag rules: the arg masks decide the tag,
@@ -2453,12 +2278,11 @@ mod tests {
     }
 }
 
-/// The dispatch-scoped wake view for `Apply` authors (see
-/// [`DISPATCH_WAKE`]): true only while a fused DynCall dispatch runs
-/// this update on behalf of a wake — the invoking kernel's own sleep,
-/// or a becoming-selected arm inside a fused select. Method-call
-/// sleeps are the Apply's own business (track a slept bit in your
-/// `sleep()`); this covers the wakes no `sleep()` call can deliver.
-pub fn dyncall_wake() -> bool {
-    DISPATCH_WAKE.with(|c| c.get())
+/// Loan `env` to the JIT'd code `f` runs (`KERNEL_ENV`), restoring
+/// the previous loan after — nested kernel invocations stack.
+pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -> T {
+    let prev = KERNEL_ENV.with(|c| c.replace(env as *const _));
+    let r = f();
+    KERNEL_ENV.with(|c| c.set(prev));
+    r
 }

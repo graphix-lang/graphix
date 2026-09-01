@@ -32,8 +32,7 @@ pub mod lowering;
 pub use builder::FusedKernel;
 
 use crate::{
-    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Scope, Update,
-    UserEvent,
+    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Update, UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind, Origin},
     fusion::{
@@ -247,17 +246,6 @@ pub struct FusionCtx {
     /// map are treated as `Async` + stateful (the conservative
     /// defaults), always correct.
     pub builtin_facts: ahash::AHashMap<&'static str, crate::effects::BuiltinFacts>,
-    /// True while a region pass runs in ARM POSITION (`Select::fuse`'s
-    /// guard/body descents). An arm kernel's inputs marshal off the
-    /// select's wake-forced `event.init`, so a lifted connect target's
-    /// constant seed reads FIRED on every (re)wake — the interp's
-    /// `Bind` publishes a QUIET first production there, so the interp
-    /// never starts the write loop the kernel then spins forever
-    /// (aug18a class 3, the `ep <- ep` arm face: one write per cycle
-    /// to the 64-cycle deadline). No arm-accurate seed tag → no lift:
-    /// `collect_lifted_connect_targets` returns empty under this flag
-    /// and a connect-bearing arm de-fuses via the non-lifted guard.
-    pub(crate) arm_region: std::sync::atomic::AtomicBool,
 }
 
 impl FusionCtx {
@@ -273,7 +261,6 @@ impl FusionCtx {
             stats: FusionStats::default(),
             top_id: None,
             builtin_facts: ahash::AHashMap::default(),
-            arm_region: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -381,81 +368,6 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     })
 }
 
-/// Detect "lifted" connect targets in a region — a SCALAR variable that
-/// is (a) `let`-bound in the region to a compile-time CONSTANT and (b)
-/// the target of EXACTLY ONE `connect` (`x <- e`). Such a variable is a
-/// reactive counter / accumulator whose READS must see the
-/// connect-written value (through a feeder), not the stale let-local that
-/// the kernel would otherwise bind. We route it in as a kernel INPUT;
-/// `emit_let_node`'s seed-select then reads the feeder (or the constant
-/// seed when the feeder has never fired), and the connect's `set_var`
-/// writes it. The fired-bit (STALE) makes this correct with NO cadence
-/// restriction: the constant seed (fresh at init, STALE after — used when
-/// the feeder is missing) reproduces the node-walk's one-shot `Bind` plus
-/// its downstream combineLatest cache, and `set_var_typed`'s fresh-gate
-/// reproduces `Connect::update`'s `if let Some(v) = ..` guard.
-///
-/// A non-constant seed is excluded (the node-walk re-runs the `Bind` when
-/// the seed's input fires, re-seeding the variable — the lift's
-/// fire-once seed can't model that). `ConnectDeref` (`*r <- e`) and
-/// multiple connects to one var are excluded (v1).
-pub(crate) fn collect_lifted_connect_targets<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
-) -> LPooled<nohash::IntSet<BindId>> {
-    // ARM-position regions never lift — see `FusionCtx::arm_region`.
-    if ctx.fusion.arm_region.load(std::sync::atomic::Ordering::Relaxed) {
-        return LPooled::take();
-    }
-    // A `let` INSIDE a select arm lifts like any other: the node-walk
-    // RE-SEEDS it on every arm wake (unselected arms sleep; a re-taken
-    // arm updates under `event.init = true`), and the value-position
-    // select emitter reproduces that from its selection-memory state
-    // word (arm bodies emit under an effective init — see
-    // `emit_select_value_arm`). Contexts without a state word (tail
-    // selects in recursive bodies, callee kernels) refuse the shape at
-    // emission and de-fuse (soak jul08g fuzz divergence 6).
-    let mut connect_count: LPooled<nohash::IntMap<BindId, usize>> = LPooled::take();
-    let mut const_lets: LPooled<nohash::IntSet<BindId>> = LPooled::take();
-    for_each_node(node, &mut |n| match n.view() {
-        NodeView::Connect(c) => {
-            *connect_count.entry(c.id).or_default() += 1;
-        }
-        NodeView::Bind(b) => {
-            if let Some(id) = b.single_bind_id() {
-                // The seed must be a compile-time CONSTANT (a scalar
-                // Constant, or a constant-foldable array/tuple literal /
-                // string — `node_const_value`): such a producer fires
-                // once (at init) exactly like the node-walk's `Bind` of a
-                // literal, which is what the STALE-gated seed reproduces.
-                // The shape gate matches `emit_let_node`'s lifted arms —
-                // scalar (register select), composite / string
-                // (branch-based clone-vs-seed).
-                use kernel_abi::AbiKind;
-                let shape_ok = matches!(
-                    kernel_abi::abi_kind(b.node.typ()),
-                    Some(
-                        AbiKind::Scalar(_)
-                            | AbiKind::Array
-                            | AbiKind::Tuple
-                            | AbiKind::Struct
-                            | AbiKind::String
-                    )
-                );
-                if shape_ok && lowering::node_const_value(&b.node).is_some() {
-                    const_lets.insert(id);
-                }
-            }
-        }
-        _ => {}
-    });
-    connect_count
-        .drain()
-        .filter(|&(t, count)| count == 1 && const_lets.contains(&t))
-        .map(|(t, _)| t)
-        .collect()
-}
-
 /// The single definition of "tail position" (review A5). A body ROOT
 /// is a tail position; tailness propagates inward through exactly
 /// three structural FORMERS — a `Block`'s LAST child, an
@@ -555,8 +467,8 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         }
         NodeView::CallSite(cs) => {
             // The args map is hash-ordered; walk in ArgKey order or the
-            // discovery order downstream (callee fn indices, DynCall slot
-            // bases) becomes a per-process coin flip (the #19 class).
+            // discovery order downstream (callee fn indices, the region
+            // layout) becomes a per-process coin flip (the #19 class).
             let mut args: LPooled<Vec<(&crate::node::callsite::ArgKey, &Node<R, E>)>> =
                 cs.args
                     .iter()
@@ -808,8 +720,8 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     // names shadow and monomorphizations share a name, so a name-keyed
     // map here bound call sites to the wrong kernel (audit-jul2026
     // 01/02). Kept as a Vec in DISCOVERY order: emission iterates this
-    // list to assign fn indices, DynCall slot bases, and the region
-    // layout, and a pointer-ordered map made all of those
+    // list to assign fn indices and the region layout, and a
+    // pointer-ordered map made all of those
     // ASLR-dependent — the compiled shape of the same program differed
     // across processes (#19).
     let mut callees: LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>> = LPooled::take();
@@ -1063,31 +975,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     };
     ctx.fusion.stats.attempted += 1;
     let mut inputs = collect_region_inputs(&**node, ctx);
-    // LIFT: a let-bound scalar counter/accumulator that is a `connect`
-    // target is routed in as a kernel INPUT (a feeder) so its READS see
-    // the connect-written variable, not the stale let-local. It's bound
-    // in-region (so `with_external_refs` skipped it) — add it explicitly.
-    // `emit_let_node` reads `lifted` to emit the seed-select instead of a
-    // plain let, and `emit_connect_node` reads it to allow the write.
-    let mut lifted = collect_lifted_connect_targets(node, ctx);
-    // Inject each lifted var as an input, KEEPING only those that yield a
-    // valid `FreeVarInput` (a scalar always does — but stay consistent: a
-    // var left in `lifted` without a matching feeder param would make
-    // `emit_let_node`'s seed-select fail and de-fuse). It's bound
-    // in-region, so it was never an external input (the `any` guard is
-    // defensive — it can't fire).
-    lifted.retain(|&t| {
-        if inputs.iter().any(|fv| fv.bind_id == t) {
-            return false;
-        }
-        match free_var_input(t, ctx) {
-            Some(fv) => {
-                inputs.push(fv);
-                true
-            }
-            None => false,
-        }
-    });
     // DETERMINISM: input order so far is `Refs`' nohash-set iteration
     // order — nonlinear in the ABSOLUTE BindId values, which can drift
     // between processes (detcheck gen#29: the same program compiled a
@@ -1112,13 +999,9 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         );
         return Ok(None);
     }
-    // Discover sync-builtin Apply sites BEFORE the kernel build (the
-    // same Node-based prepass the classic path runs in `fuse`):
-    // `fn_params` installs the `FnSource::Builtin` slots on the sig —
-    // the runtime (`Kernel::pre_init_builtin_slots`) constructs each
-    // site's Apply from them — and `apply_sites` lets
-    // `CallSite::emit_clif` recognise a registered site and lower it
-    // to a DynCall.
+    // Discover the fusable call sites BEFORE the kernel build:
+    // `apply_sites` lets `CallSite::emit_clif` recognise a registered
+    // site and lower it to a direct call.
     let mut discovery = lowering::BuiltinCallDiscovery::default();
     lowering::walk_node_for_builtin_calls::<R, E>(node, ctx, &mut discovery);
     // Statically-resolved lambda call sites: build (or cache-hit) each
@@ -1129,7 +1012,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let (lambda_sites, lambda_callees, callee_bodies, region_decorated) =
         discover_lambda_calls(node, ctx);
     let source_id = node.spec().id;
-    let (mut sig, _arg_types) = match sig_from_inputs(
+    let (sig, _arg_types) = match sig_from_inputs(
         arcstr::ArcStr::from(
             compact_str::format_compact!("region_{:?}", source_id).as_str(),
         ),
@@ -1148,21 +1031,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             return Ok(None);
         }
     };
-    sig.fn_params = discovery.fn_params;
-    // Per-instance identity: the lifted targets ride the state buffer
-    // (see `KernelSig::lifted`); sorted so the slot layout is
-    // deterministic (the detcheck discipline).
-    let mut lifted_ord: Vec<BindId> = lifted.iter().copied().collect();
-    lifted_ord.sort_unstable();
-    sig.lifted = lifted_ord;
-    // PER-INSTANCE identity for the lifted targets: mint a fresh
-    // BindId per target for THIS splice. The sig's `lifted` list keeps
-    // the compile-time ids (slot layout, `is_lifted` checks); the
-    // instance's state words and feeder refs carry the minted ids, so
-    // two instances of the same body (a lambda-body region compiled
-    // per apply) get two variables — the interp's per-instance binds
-    // (aug18a class 3).
-    let minted: Vec<BindId> = sig.lifted.iter().map(|_| BindId::new()).collect();
     let kernel = std::sync::Arc::new(sig);
     // The compile attempt: entry binds the declared params, then the
     // body is emitted by `emit_clif` recursion from the root. Any Err
@@ -1179,7 +1047,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             &callee_bodies,
             None,
             &ctx.env,
-            &lifted,
             // Region parent: frames reach its replay reset through the
             // FusedKernel node, so replay words are honored here.
             true,
@@ -1250,26 +1117,14 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let feeder_top = ctx.fusion.top_id.unwrap_or(source_id);
     let feeders: Box<[Node<R, E>]> = inputs
         .iter()
-        .map(|fv| {
-            let id = kernel
-                .lifted
-                .iter()
-                .position(|l| *l == fv.bind_id)
-                .map(|k| minted[k])
-                .unwrap_or(fv.bind_id);
-            genn::reference::<R, E>(ctx, id, fv.typ.clone(), feeder_top)
-        })
+        .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
         .collect();
     match builder::FusedKernel::<R, E>::new(
-        ctx,
         node.spec().clone(),
         node.typ().clone(),
         kernel,
         Some(wrapped),
         feeders,
-        &minted,
-        Scope::root(),
-        source_id,
     ) {
         Ok(n) => {
             log::debug!(
@@ -1478,15 +1333,11 @@ pub(crate) fn sig_from_inputs<'k>(
     let sig = KernelSig {
         fn_name,
         params,
-        fn_params: Vec::new(),
         return_type,
         has_tail_loop: false,
         skipped_args: Vec::new(),
         tail_invariant: Vec::new(),
-        lifted: Vec::new(),
         defined: std::sync::atomic::AtomicBool::new(false),
-        has_restart_reach: std::sync::atomic::AtomicBool::new(false),
-        has_stateful_reach: std::sync::atomic::AtomicBool::new(false),
         site_desc: std::sync::atomic::AtomicU64::new(0),
     };
     Ok((sig, arg_types))

@@ -1018,9 +1018,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
         // MUST delegate: the trait default's `Ok(None)` would silently
-        // swallow every builtin's emission hook — the call site falls
-        // to DynCall and the builtin "loses fusion" with no error
-        // anywhere (it happened when Stage D2 landed).
+        // swallow every builtin's emission hook and the builtin
+        // "loses fusion" with no error anywhere.
         self.apply.emit_clif(callsite, cx)
     }
 

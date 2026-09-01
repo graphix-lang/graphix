@@ -1,13 +1,13 @@
 //! Call emission: cross-kernel lambda calls (site blocks, arg
-//! marshalling, drops, pending cleanup) and the generic builtin
-//! `DynCall` path.
+//! marshalling, drops, pending cleanup) and the direct fastcall /
+//! cast path.
 
 use crate::{
     Node, Rt, Update, UserEvent,
     fusion::{
         LambdaCallInfo,
         kernel_abi::{self, AbiKind, PrimType},
-        lowering::{BuiltinCallSiteInfo, CaptureSlot},
+        lowering::{BuiltinCallSiteInfo, CaptureSlot, SiteDispatch},
     },
     node::callsite::CallSite,
     typ::{FnArgKind, Type},
@@ -23,34 +23,14 @@ use netidx_value::Value;
 use super::{
     abi::{
         CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
-        emit_untainted_i64, is_tainted, propagate_stale, scalar_disc, taint_if,
-        value_disc,
+        emit_untainted_i64, is_tainted, scalar_disc, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     lower::{LowerCtx, SelWord},
     nodes::{call_result_needs_value_widening, emit_elem_placeholder},
-    scalar::{
-        cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64, value_buf_push_helper,
-    },
+    scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
 };
 
-/// The SITE-IDENTITY word address for a DynCall emission site
-/// (dyncall-site-identity-jul2026): one static `graphix_dyncall`
-/// instruction can be reached on behalf of many logical call sites (a
-/// callee body compiled once, called from several caller emit sites),
-/// where the node-walk instantiates the interior builtin per
-/// callsite. The site claims one word from the same channel selects
-/// claim state — region root: an instance word (redundant with the
-/// slot's own per-instance identity, but uniform); callee root: a
-/// per-call-site block word (null-guarded — 0 on recursive
-/// back-edges, the key-0 bucket) — and the dispatcher keys a full
-/// inner Apply per minted word value. Scaffold-loop sites pass 0 in
-/// v1: their per-slot semantics keep the documented init-mask
-/// approximation (`design/collection_intrinsics.md`), a per-slot
-/// identity chain is the follow-up.
-/// Returns (word address, claimed): `claimed = false` means the
-/// key-0 bucket (no identity — the site word is const 0 or a
-/// null-guarded callee block miss).
 /// The `Value` discriminant word of each register scalar's variant —
 /// what a FASTCALL site stores beside a scalar arg's bits so the
 /// trampoline's `&[Value]` view reads a genuine `Value::I64(..)` etc.
@@ -81,510 +61,193 @@ static STRING_VALUE_DISC: std::sync::LazyLock<(u64,)> = std::sync::LazyLock::new
     (crate::tval::value_words(&Value::String(arcstr::ArcStr::new()))[0],)
 });
 
-fn emit_dyncall_site_word(cx: &mut BodyCx) -> (ClifValue, bool) {
-    if cx.ctx.loop_depth.get() > 0 {
-        // PER-SLOT identity (5c — the documented v1 follow-up): each
-        // collection position claims its own leaf through the slot
-        // chain (the select-state machinery; the pair claim's first
-        // word carries the minted id, the second is spare). The
-        // dispatcher keys a full inner Apply per minted word, so each
-        // slot gets the interp's per-position cache and builtin
-        // state — which is what lets the loop deliver HONEST stale
-        // masks (the aug08a shared-cache bleed is structurally gone)
-        // and effects stop re-firing per kernel invocation
-        // (dense delta 1+2, print_hof_once). The identity persists
-        // across frames and sleep like the interp's per-slot
-        // CallSite (`claim_slot_site_words`); only a resize truncate
-        // or `Drop` retires a slot's id.
-        if let Some(pair) = cx.claim_slot_site_words() {
-            return (pair, true);
-        }
-        return (cx.b.ins().iconst(types::I64, 0), false);
-    }
-    if let Some(off) = cx.claim_state_word() {
-        let sp = cx.state_ptr();
-        return (cx.b.ins().iadd_imm(sp, off as i64), true);
-    }
-    if let Some(off) = cx.claim_site_word() {
-        let base = cx.site_ptr();
-        let addr = cx.b.ins().iadd_imm(base, off as i64);
-        let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-        let zero = cx.b.ins().iconst(types::I64, 0);
-        return (cx.b.ins().select(has, addr, zero), true);
-    }
-    (cx.b.ins().iconst(types::I64, 0), false)
-}
-
-/// Builtin DynCall — marshal the (marshal-ordered) `args` into a
-/// fresh `LPooled<Vec<Value>>` buf, dispatch via `graphix_dyncall`
-/// against the `FnSource::Builtin` slot at `info.fn_index`, then
-/// decode the return per shape: scalar / unit / string / composite
-/// returns the unwrapped value, a Value-shape return passes the
-/// (disc, payload) pair through. A dispatch that PENDS (the builtin
-/// returned no value this cycle) is converted at this site to a #219
-/// tainted shape-safe placeholder that continues — never a
-/// whole-kernel abort (item 28).
-pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
+/// A fusable call — a `FastFn` builtin or the Cast pseudo-site
+/// ([`SiteDispatch`]): marshal the (marshal-ordered) `args` as (disc,
+/// payload) pairs into a STACK buffer the trampoline views as
+/// `&[Value]` (a scalar with its variant's discriminant word,
+/// composite/string bits borrowed, a value shape with its disc
+/// cleaned), dispatch, release what this site owned, then decode the
+/// returned pair per the static return shape: scalar / unit / string
+/// / composite returns the unwrapped value, a Value-shape return
+/// passes the (disc, payload) pair through. The trampoline computes
+/// the production's tag from the arg masks (a tainted arg bottoms the
+/// call without invoking the fn; all-stale args make the result
+/// stale; `None` is this cycle's bottom) and returns it in-band on
+/// the disc, so a bottomed or quiet result rides to its consumers as
+/// data, never as a whole-kernel abort.
+pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    _spec_id: crate::expr::ExprId,
     info: &BuiltinCallSiteInfo,
     args: &[&Node<R, E>],
 ) -> Result<CompiledExpr> {
-    if info.sleep_restarts {
-        cx.ctx.saw_restart_reach.set(true);
-        if cx.ctx.arm_depth.get() > 0 {
-            // The interior-sleep gate (P7): the interp sleeps a
-            // deselected arm's subtree, which is what re-arms
-            // once/take/skip/hold/uniq/count for the next selection
-            // (the documented arm-rewake RESTART semantics). A kernel
-            // has no interior arm-sleep initiator, so a
-            // sleep-restarting builtin inside an arm extent de-fuses
-            // the region.
-            return Err(anyhow!(
-                "emit_clif: sleep-restarting builtin DynCall inside a \
-                 select arm (no interior arm-sleep in kernels)"
-            ));
-        }
-    } else if !info.stateless {
-        cx.ctx.saw_stateful_reach.set(true);
-        if cx.ctx.value_arm_depth.get() > 0 {
-            // The STATEFUL half of the gate (wake catch-up,
-            // design/wake_catchup.md): the interp select TRACKS its
-            // arm-body inputs' fires so a woken arm's stateful sites
-            // consume exactly the events no selected reader saw —
-            // once. A kernel has no tracked fire bits, so a stateful
-            // builtin inside a VALUE-POSITION arm extent de-fuses the
-            // region to the interp select, the canonical mechanism.
-            // Tail-position arms are exempt: they wake only through
-            // frames/activations, where the mechanism is excluded and
-            // per-activation site blocks are the correct twin.
-            return Err(anyhow!(
-                "emit_clif: stateful builtin DynCall inside a \
-                 value-position select arm (no fire-tracking in kernels)"
-            ));
-        }
-    }
-    // A FASTCALL site marshals to a STACK buffer of (disc, payload)
-    // pairs the trampoline views as `&[Value]` — zero-copy, no
-    // allocation, no refcount traffic (the fn borrows; an OWNED
-    // producer arg is dropped after the call). A DynCall site builds
-    // the pooled Vec the dispatcher consumes.
-    if crate::dbgenv::graphix_strict_fuse() && info.fastcall.is_none() && !info.pseudo {
-        // STRICT FUSION (Eric's ruling 2026-09-01,
-        // design/strict_fusion.md — complexity needs to pay rent):
-        // only direct FASTCALL dispatches and the pure Cast
-        // pseudo-site fuse; every inner-Apply-backed builtin
-        // (stateful, effect, seam-gated, or a defaulted-label site)
-        // node-walks on the canonical interp.
-        return Err(anyhow!("emit_clif: strict fusion — non-fastcall builtin DynCall"));
-    }
-    let fast_slot = info.fastcall.map(|_| {
-        cx.b.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            (16 * args.len().max(1)) as u32,
-            3,
-        ))
-    });
-    let mut fast_drops: smallvec::SmallVec<[(&str, ClifValue, Option<ClifValue>); 8]> =
-        smallvec::SmallVec::new();
-    let buf = if fast_slot.is_none() {
-        let buf_new = cx.helper("graphix_value_buf_new")?;
-        let cap = cx.b.ins().iconst(types::I64, args.len() as i64);
-        let call = cx.b.ins().call(buf_new, &[cap]);
-        let buf = cx.b.inst_results(call)[0];
-        let buf_var = cx.b.declare_var(types::I64);
-        cx.b.def_var(buf_var, buf);
-        cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
-        buf
-    } else {
-        cx.b.ins().iconst(types::I64, 0)
-    };
-    // #219: each arg's disc — its TAINT bit propagates into a scalar
-    // result and force-bottoms a non-scalar result (folds away when no
-    // arg is tainted, the fast path).
-    let mut arg_taint_discs: smallvec::SmallVec<[ClifValue; 8]> =
-        smallvec::SmallVec::new();
-    for (arg_node, t) in args.iter().zip(info.arg_types.iter()) {
-        // Compare by runtime SHAPE (`AbiKind`), not exact `Type` —
-        // the direct twin of the lowering-side agreement check. The
-        // DynCall marshals by `info.arg_types`, so only the shape
-        // needs to agree; a mismatch aborts the kernel (the classic
-        // path refuses at lowering — same net effect, the subtree
-        // node-walks).
-        let Some(frozen) = kernel_abi::freeze_for_abi_normalized(arg_node.typ()) else {
-            return Err(anyhow!(
-                "emit_clif: DynCall arg type {:?} doesn't freeze concrete",
-                arg_node.typ()
-            ));
-        };
-        if kernel_abi::abi_kind(&frozen) != kernel_abi::abi_kind(t) {
-            return Err(anyhow!(
-                "emit_clif: DynCall arg shape {:?} disagrees with the \
-                 discovered arg type {t:?}",
-                frozen
-            ));
-        }
-        // For composite/value args the push helper depends on where the
-        // SSA value came from. A `Borrowed` source (a Ref read — the
-        // caller still owns it) refcount-bumps; an `Owned` source (a
-        // producer op, or a composite/Value-return DynCall result not
-        // bound to a local) transfers ownership into the buf. Using the
-        // borrowed helper on an Owned source leaks the original; the
-        // move helper on a Borrowed source double-frees it.
-        let helper_name: &str = match kernel_abi::abi_kind(t) {
-            Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
-            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                match node_composite_source(arg_node) {
-                    CompositeSource::Owned => "graphix_value_buf_push_array",
-                    CompositeSource::Borrowed => "graphix_value_buf_push_array_borrowed",
-                }
-            }
-            // Variant / Nullable / datetime / duration / bytes / map /
-            // error all ride the two-word `(disc, payload)` Value wire
-            // shape.
-            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                match node_composite_source(arg_node) {
-                    CompositeSource::Owned => "graphix_value_buf_push_value",
-                    CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
-                }
-            }
-            Some(AbiKind::String) => "graphix_value_buf_push_string",
-            Some(AbiKind::Unit) => {
-                return Err(anyhow!("emit_clif: DynCall arg has Unit type"));
-            }
-            Some(AbiKind::Null) | None => {
-                return Err(anyhow!(
-                    "DynCall arg with bare Null / non-fusable type — should \
-                     have widened to Nullable<T> at construction"
-                ));
-            }
-        };
-        let push = cx.helper(helper_name)?;
-        // #219: the helper is pure, so a garbage operand (from a missing
-        // input / div0) is harmless — push the (possibly-garbage) value
-        // and carry the arg's disc; its taint guards the result at the
-        // dyncall site. The pushed disc must be CLEAN (a tainted disc is
-        // an invalid tag — storing it builds a corrupt Value the builtin
-        // would clone/drop, UB).
-        let cv = arg_node.emit_clif(cx)?;
-        arg_taint_discs.push(cv.disc);
-        match fast_slot {
-            Some(slot) => {
-                let i = arg_taint_discs.len() - 1;
-                let (disc, payload) = match kernel_abi::abi_kind(t) {
-                    Some(AbiKind::Scalar(p)) => (
-                        cx.b.ins().iconst(types::I64, prim_value_disc(p) as i64),
-                        cv.payload,
-                    ),
-                    Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                        if node_composite_source(arg_node) == CompositeSource::Owned {
-                            fast_drops.push(("graphix_valarray_drop", cv.payload, None));
-                        }
-                        (
-                            cx.b.ins().iconst(types::I64, ARRAY_VALUE_DISC.0 as i64),
-                            cv.payload,
-                        )
-                    }
-                    // Strings are owned at production (the DynCall push
-                    // consumes them).
-                    Some(AbiKind::String) => {
-                        fast_drops.push(("graphix_arcstr_drop", cv.payload, None));
-                        (
-                            cx.b.ins().iconst(types::I64, STRING_VALUE_DISC.0 as i64),
-                            cv.payload,
-                        )
-                    }
-                    _ => {
-                        let disc = clean_disc(cx.b, cv.disc);
-                        if node_composite_source(arg_node) == CompositeSource::Owned {
-                            fast_drops.push((
-                                "graphix_value_drop",
-                                disc,
-                                Some(cv.payload),
-                            ));
-                        }
-                        (disc, cv.payload)
-                    }
-                };
-                cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
-                cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
-            }
-            None => {
-                if kernel_abi::is_value_shape(t) {
-                    cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
-                } else {
-                    cx.b.ins().call(push, &[buf, cv.payload]);
-                }
-            }
-        }
-    }
-    let dyncall = cx.helper("graphix_dyncall")?;
-    if matches!(kernel_abi::abi_kind(&info.return_type), Some(AbiKind::Null) | None) {
+    let ret_abi = kernel_abi::abi_kind(&info.return_type);
+    if matches!(ret_abi, Some(AbiKind::Null) | None) {
         return Err(anyhow!(
-            "DynCall with bare Null / non-fusable return — \
+            "emit_clif: call with bare Null / non-fusable return — \
              should have widened to Nullable<T> at construction"
         ));
     }
-    // Region-wide slot index: local fn_index + this body's base offset
-    // into the combined `dyn_slots` table.
-    let region_idx = info.fn_index + cx.fn_index_offset();
-    let fn_idx_val = cx.b.ins().iconst(types::I32, region_idx as i64);
-    // Interior-bottom v3 (Eric's ruling 2026-07-20,
-    // dyncall-partial-args-jul2026): a tainted arg is delivered as
-    // ABSENCE, not a reason to skip the call — the node-walk's seam is
-    // per-slot (a bottomed arg is silence; the builtin's cached slot
-    // keeps its previous state) and EVAL decides what a missing arg
-    // means (window(#n:0, t, bottomed) legitimately produced [] before
-    // the stdlib fix; the interior-bottom-v2 whole-call skip silenced
-    // it). Build the per-arg taint MASK the dispatcher gates slot
-    // delivery on. Effects stay safe: an all-absent delivery reaches
-    // eval only through the builtin's own production rule (CachedArgs
-    // runs eval only when a production arrived), so placeholder
-    // garbage is never observed. Each `is_tainted` folds to
-    // const-false for proven-untainted args, so the mask is const-0 on
-    // the hot path.
-    if arg_taint_discs.len() > 64 {
+    if args.len() > 64 {
         return Err(anyhow!(
-            "emit_clif: DynCall with more than 64 args — the taint \
-             mask is one word"
+            "emit_clif: call with more than 64 args — the taint mask is one word"
         ));
     }
+    let slot = cx.b.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        (16 * args.len().max(1)) as u32,
+        3,
+    ));
+    let mut drops: smallvec::SmallVec<[(&str, ClifValue, Option<ClifValue>); 8]> =
+        smallvec::SmallVec::new();
+    // #219: each arg's disc — its TAINT bit bottoms the call, its STALE
+    // bit feeds the stale mask.
+    let mut arg_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
+    for (i, (arg_node, t)) in args.iter().zip(info.arg_types.iter()).enumerate() {
+        // Compare by runtime SHAPE (`AbiKind`), not exact `Type` — the
+        // buffer is laid out by `info.arg_types`, so only the shape
+        // needs to agree.
+        let Some(frozen) = kernel_abi::freeze_for_abi_normalized(arg_node.typ()) else {
+            return Err(anyhow!(
+                "emit_clif: call arg type {:?} doesn't freeze concrete",
+                arg_node.typ()
+            ));
+        };
+        let kind = kernel_abi::abi_kind(t);
+        if kernel_abi::abi_kind(&frozen) != kind {
+            return Err(anyhow!(
+                "emit_clif: call arg shape {frozen:?} disagrees with the \
+                 discovered arg type {t:?}"
+            ));
+        }
+        let cv = arg_node.emit_clif(cx)?;
+        arg_discs.push(cv.disc);
+        // The stored disc must be CLEAN (a tainted disc is an invalid
+        // tag — the fn would see a corrupt Value); the arg's own disc
+        // carries its taint to the masks. The fn borrows the buffer, so
+        // an OWNED producer's value is released by this site after the
+        // call; strings are always owned at production.
+        let (disc, payload) = match kind {
+            Some(AbiKind::Scalar(p)) => {
+                (cx.b.ins().iconst(types::I64, prim_value_disc(p) as i64), cv.payload)
+            }
+            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+                if node_composite_source(arg_node) == CompositeSource::Owned {
+                    drops.push(("graphix_valarray_drop", cv.payload, None));
+                }
+                (cx.b.ins().iconst(types::I64, ARRAY_VALUE_DISC.0 as i64), cv.payload)
+            }
+            Some(AbiKind::String) => {
+                drops.push(("graphix_arcstr_drop", cv.payload, None));
+                (cx.b.ins().iconst(types::I64, STRING_VALUE_DISC.0 as i64), cv.payload)
+            }
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+                let disc = clean_disc(cx.b, cv.disc);
+                if node_composite_source(arg_node) == CompositeSource::Owned {
+                    drops.push(("graphix_value_drop", disc, Some(cv.payload)));
+                }
+                (disc, cv.payload)
+            }
+            Some(AbiKind::Unit) => {
+                return Err(anyhow!("emit_clif: call arg has Unit type"));
+            }
+            Some(AbiKind::Null) | None => {
+                return Err(anyhow!(
+                    "emit_clif: call arg with bare Null / non-fusable type — \
+                     should have widened to Nullable<T> at construction"
+                ));
+            }
+        };
+        cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
+        cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
+    }
+    // Interior-bottom v3 (Eric's ruling 2026-07-20): a tainted arg is
+    // a mask bit, not a reason to skip emission — the trampoline
+    // bottoms the call. Each `is_tainted` folds to const-false for a
+    // proven-untainted arg, so the mask is const-0 on the hot path.
     let mut taint_mask = cx.b.ins().iconst(types::I64, 0);
-    for (i, d) in arg_taint_discs.iter().enumerate() {
+    for (i, d) in arg_discs.iter().enumerate() {
         let t = is_tainted(cx.b, *d);
         let t64 = cx.b.ins().uextend(types::I64, t);
         let bit = cx.b.ins().ishl_imm(t64, i as i64);
         taint_mask = cx.b.ins().bor(taint_mask, bit);
     }
-    // The site identity is claimed BEFORE the masks: a claimed site
-    // (region root, callee block, or a per-slot chain leaf in loops)
-    // carries per-site inner-Apply state, which is what makes honest
-    // stale masks sound there.
-    // A FASTCALL site has no per-site state to key: no identity word.
-    let (site_word, site_claimed) = if info.fastcall.is_some() {
-        (cx.b.ins().iconst(types::I64, 0), false)
-    } else {
-        emit_dyncall_site_word(cx)
-    };
-    // An UNCLAIMED site is the shared key-0 bucket — ONE inner Apply
-    // serves every logical call site (every collection position, every
-    // recursion depth). For a builtin whose OUTPUT depends on
-    // cross-invocation state (the SLEEP_RESTARTS family) the sharing
-    // is a value divergence, not an approximation: the interp's
-    // per-slot `count(x)` instances each count their own deliveries
-    // while the shared bucket's one tally absorbs them all (aug13j
-    // hz0 fuzz 000001 — fold [x,x] with a count callback: interp 1,
-    // kernel 2). No identity storage → refuse, never pass through
-    // (the storage law). The runtime-null callee back-edge (claimed
-    // word, 0 at run time) is the recursion-adjacent residual this
-    // compile-time gate cannot see.
-    if !site_claimed && info.sleep_restarts {
-        return Err(anyhow!(
-            "emit_clif: sleep-restarting builtin DynCall at an \
-             identity-less (key-0) site — shared state would be observable"
-        ));
-    }
-    // The STALE twin (dyncall-stale-arg-fired-aug2026): bit `i` set =
-    // the arg is present but did not fire this cycle. The dispatcher
-    // delivers those slots as `TagValue::stale`, so builtins whose
-    // production gates on argument FIRING (`seam_arg`, `CachedArgs`'
-    // eval re-run, the print family's per-arg update) see the
-    // node-walk's per-argument truth — a fused `rand`/`now` no longer
-    // re-runs its effect on every kernel invocation. Delivered as
-    // STALE, never as absence: an all-constant-arg builtin must keep
-    // producing its cached value (an absent delivery would pend the
-    // dispatch and bottom it after the first invocation). Like the
-    // taint fold, each bit is const for a proven-fresh arg.
-    // UNCLAIMED scaffold-loop sites keep FIRED delivery (mask 0):
-    // they are the shared key-0 bucket — ONE inner Apply serves every
-    // collection position — and a stale delivery there makes every
-    // slot's CachedArgs surface the SHARED cache's last result
-    // instead of re-evaluating with its own position's args (aug08a).
-    // CLAIMED in-loop sites carry per-slot identity (5c) and take the
-    // honest mask like every other claimed site — per-position caches
-    // make stale rides sound, and effects stop re-firing per kernel
-    // invocation (dense delta 1+2).
-    let stale_mask = if cx.ctx.loop_depth.get() > 0 && !site_claimed {
-        cx.b.ins().iconst(types::I64, 0)
-    } else {
+    // The STALE twin: bit `i` set = the arg is present but did not
+    // fire this cycle. Suppressed under GENUINE init only — the raw
+    // kernel init (wire bit 0) minus the wake bit (wire bit 2): at
+    // genuine init every input is born and the production fires; a
+    // wake invocation delivers its standing inputs with honest stale
+    // bits (design/wake_catchup.md — the interp's stateless eval
+    // re-runs from the present stale slots at wake).
+    let stale_mask = {
         let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
-        for (i, d) in arg_taint_discs.iter().enumerate() {
+        for (i, d) in arg_discs.iter().enumerate() {
             let s = cx.b.ins().band_imm(*d, STALE);
             let sb = cx.b.ins().icmp_imm(IntCC::NotEqual, s, 0);
             let s64 = cx.b.ins().uextend(types::I64, sb);
             let bit = cx.b.ins().ishl_imm(s64, i as i64);
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
-        // Suppress the mask under GENUINE init only: the raw kernel
-        // init (wire bit 0) minus the wake bit (wire bit 2) — never a
-        // becoming-selected arm's override. WAKE DELIVERS
-        // PRESENT-BUT-STALE (design/wake_catchup.md): a wake
-        // invocation (the enclosing arm's forced init view, or this
-        // kernel node's first update after sleep) must deliver its
-        // standing inputs with honest stale bits — the wrapper's wake
-        // catch-up re-runs a STATELESS eval from the present slots,
-        // and a stateful builtin must not consume a standing value as
-        // an event (pin 02_sequential_wakers: the fired view made a
-        // woken arm's count re-count the spent input).
-        let init = cx.ctx.init_flag;
-        let wake = cx.ctx.wake_flag;
-        let genuine = {
-            let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-            let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
-            cx.b.ins().band(init_b, no_wake)
-        };
+        let (init, wake) = (cx.ctx.init_flag, cx.ctx.wake_flag);
+        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+        let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
+        let genuine = cx.b.ins().band(init_b, no_wake);
         let zero = cx.b.ins().iconst(types::I64, 0);
         cx.b.ins().select(genuine, zero, stale_mask)
     };
-    // IN-LOOP init-run exactness (katana jul21a, fold-acc-taint-jul2026):
-    // one scaffold-loop DynCall site serves EVERY collection position,
-    // so its cached slot state crosses position boundaries the
-    // node-walk's per-position CallSites never cross — riding it can
-    // resurrect a value whose per-position cache would be EMPTY (a
-    // fold's broken acc chain re-fired off another position's acc).
-    // On an INIT view the per-position caches are provably empty (the
-    // positions were just created; a newly-taken select arm's override
-    // counts — its interp sites are fresh too), so a masked delivery
-    // must not ride ANYTHING: force the mask all-ones — no production
-    // reaches eval, the dispatcher pends, and the pend paths below
-    // produce the tainted placeholder. Non-init rides keep the ruled
-    // mask semantics (a position-invariant arg's ride is correct and
-    // load-bearing; cross-position rides on non-init runs remain a
-    // known approximation — see design/collection_intrinsics.md).
-    // A CLAIMED in-loop site needs no force: its per-slot instance is
-    // fresh exactly when the position is (chain leaves reset with the
-    // slot tables), so there is no cross-position state to ride.
-    if cx.ctx.loop_depth.get() > 0 && !site_claimed {
-        let any = cx.b.ins().icmp_imm(IntCC::NotEqual, taint_mask, 0);
-        let init = cx.init_flag();
-        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-        let bottom_now = cx.b.ins().band(any, init_b);
-        let all_masked = cx.b.ins().iconst(types::I64, -1);
-        taint_mask = cx.b.ins().select(bottom_now, all_masked, taint_mask);
+    let base = cx.b.ins().stack_addr(types::I64, slot, 0);
+    let n = cx.b.ins().iconst(types::I64, args.len() as i64);
+    let call = match &info.dispatch {
+        SiteDispatch::Fast(f) => {
+            let fast = cx.helper("graphix_fastcall")?;
+            let fp = cx.b.ins().iconst(types::I64, *f as usize as i64);
+            cx.b.ins().call(fast, &[fp, base, n, taint_mask, stale_mask])
+        }
+        SiteDispatch::Cast(target) => {
+            let castcall = cx.helper("graphix_castcall")?;
+            let tp = cx.interned_type(target);
+            cx.b.ins().call(castcall, &[tp, base, n, taint_mask, stale_mask])
+        }
+    };
+    for (helper, w0, w1) in drops.drain(..) {
+        let h = cx.helper(helper)?;
+        match w1 {
+            Some(w1) => {
+                cx.b.ins().call(h, &[w0, w1]);
+            }
+            None => {
+                cx.b.ins().call(h, &[w0]);
+            }
+        }
     }
-    // 5c (Seam B): the result's firing/bottomness is the RETURNED
-    // production's own tag, in-band on `raw0` — the wrapper already
-    // joined the args into it (update_full's Tag::join + the Q1
-    // bottom arm), so the old per-arg neutral-disc folds are gone.
+    let (raw0, raw1) = {
+        let r = cx.b.inst_results(call);
+        (r[0], r[1])
+    };
     let dmerge = cx.b.create_block();
-    let pay_ty = match kernel_abi::abi_kind(&info.return_type) {
+    let pay_ty = match ret_abi {
         Some(AbiKind::Scalar(p)) => prim_to_clif(p),
         _ => types::I64,
     };
     cx.b.append_block_param(dmerge, types::I64);
     cx.b.append_block_param(dmerge, pay_ty);
-    // The buf's in-flight cover ends here: the dispatcher consumes it.
-    if fast_slot.is_none() {
-        cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    }
-    let call = match info.fastcall {
-        // FASTCALL (`BuiltIn::FASTCALL`): the builtin's registered fn,
-        // called directly on the marshalled buf with the masks — the
-        // trampoline computes the tag from them and returns the same
-        // (disc, payload) pair, so the decode below is shared.
-        Some(f) => {
-            let fast = cx.helper("graphix_fastcall")?;
-            let fp = cx.b.ins().iconst(types::I64, f as usize as i64);
-            let slot = fast_slot.expect("a fastcall site has its stack buffer");
-            let base = cx.b.ins().stack_addr(types::I64, slot, 0);
-            let n = cx.b.ins().iconst(types::I64, args.len() as i64);
-            let call = cx.b.ins().call(fast, &[fp, base, n, taint_mask, stale_mask]);
-            // The fn borrowed the buffer; release what this site owned.
-            for (helper, w0, w1) in fast_drops.drain(..) {
-                let h = cx.helper(helper)?;
-                match w1 {
-                    Some(w1) => {
-                        cx.b.ins().call(h, &[w0, w1]);
-                    }
-                    None => {
-                        cx.b.ins().call(h, &[w0]);
-                    }
-                }
-            }
-            call
-        }
-        None => {
-            // WAKE HINT (design/wake_catchup.md): a becoming-selected
-            // arm's woke bit rides to the dispatcher through a
-            // thread-local set immediately before the dispatch — the
-            // shared CachedArgs wrapper then runs its wake catch-up
-            // (STATELESS eval re-runs from the present stale slots)
-            // exactly as under the interp's node-funnel woke bit.
-            // Only the ARM override is hinted: the kernel-node-slept
-            // case already reaches the wrapper through the
-            // kernel's own slept bit (`DispatcherState::woke`),
-            // and a guard/scrutinee kernel must not wake-recompute.
-            if let Some(w) = cx.ctx.wake_override.get() {
-                let hint = cx.helper("graphix_wake_hint")?;
-                cx.b.ins().call(hint, &[w]);
-            }
-            cx.b.ins()
-                .call(dyncall, &[fn_idx_val, buf, taint_mask, stale_mask, site_word])
-        }
-    };
-    // Unified Value ABI: `graphix_dyncall` returns the result's
-    // genuine (disc, payload) Value pair for every return type; the
-    // decode below adapts per the static shape.
-    let (raw0, raw1) = {
-        let r = cx.b.inst_results(call);
-        (r[0], r[1])
-    };
-    // Take AND clear the pending flag: set means THIS dispatch
-    // returned no value ("bottom this cycle" — e.g. `buffer::encode`'s
-    // Pad guard). Converted HERE to a #219 tainted result that
-    // CONTINUES — the node-walk's builtin `None` silences only its
-    // consumers, so the whole-kernel pending abort it used to trigger
-    // killed unrelated outputs (soak jul05 item 28). Clearing keeps
-    // the flag meaning "genuine abort" for `Kernel::update`.
-    let pend = {
-        let take = cx.helper("graphix_dyncall_pending_take_clear")?;
-        let c = cx.b.ins().call(take, &[]);
-        cx.b.inst_results(c)[0]
-    };
-    // Results per return shape: the returned disc's TAINT/STALE bits
-    // ARE the production's tag — adopt them.
+    // The returned disc's TAINT/STALE bits ARE the production's tag.
     let tagbits = cx.b.ins().band_imm(raw0, TAINT | STALE);
-    // Key-0 in-loop sites deliver args FIRED (the mask-0 rationale
-    // above), so the inner Apply's returned tag cannot tell a quiet
-    // invocation from a fresh one — and the fired plane lied through
-    // a callee kernel's return disc (aug14f refwrite_guard: an
-    // unrelated input's invocation re-fired a fused select via its
-    // map-HOF callee). Restore the honest plane at the RESULT: fold
-    // the real arg discs' STALE (AND-reduced — stale iff nothing
-    // consumed fired) into the adopted tag, suppressed under the
-    // effective init view exactly like the mask path (the aug08b
-    // arm-override re-eval is genuinely fresh). Value/cache behavior
-    // is untouched — only the reported firedness.
-    let tagbits = if cx.ctx.loop_depth.get() > 0 && !site_claimed {
-        let zero = cx.b.ins().iconst(types::I64, 0);
-        let folded = propagate_stale(cx.b, zero, &arg_taint_discs);
-        let init = cx.init_flag();
-        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-        let stale_fold = cx.b.ins().select(init_b, zero, folded);
-        cx.b.ins().bor(tagbits, stale_fold)
-    } else {
-        tagbits
-    };
-    match kernel_abi::abi_kind(&info.return_type) {
+    match ret_abi {
         Some(AbiKind::Scalar(p)) => {
-            // Scalar return: the payload word carries the Value-encoded
-            // scalar bits — narrow to the prim (a bottom's placeholder
-            // payload is harmless garbage for downstream scalar
-            // arithmetic, guarded by its TAINT bit). Fold the pend bit
-            // (genuine abort) into TAINT.
+            // The payload word carries the Value-encoded scalar bits —
+            // narrow to the prim (a bottom's placeholder payload is
+            // harmless garbage for downstream scalar arithmetic,
+            // guarded by its TAINT bit).
             let value = cast_u64_to_prim(cx.b, raw1, p);
             let base = scalar_disc(cx.b, p);
             let disc = cx.b.ins().bor(base, tagbits);
-            let disc = taint_if(cx.b, disc, pend);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(value)]);
         }
         Some(AbiKind::Unit) => {
-            // Unit return: dispatcher returned the Null pair. The
-            // result is discarded by the statement position; the tag
-            // still rides so a bound unit local reads honestly.
+            // The result is discarded by the statement position; the
+            // tag still rides so a bound unit local reads honestly.
             let base = cx.b.ins().iconst(types::I64, value_disc::NULL);
             let disc = cx.b.ins().bor(base, tagbits);
-            let disc = taint_if(cx.b, disc, pend);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(raw1)]);
         }
         Some(
@@ -596,26 +259,20 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             | AbiKind::Nullable
             | AbiKind::Value,
         ) => {
-            // Pointer-carrying / two-word returns: the pending
-            // sentinel `(0, 0)` is NOT inert — every String position
-            // assumes a valid owned ArcStr (#214), zero ValArray bits
-            // can't be touched, and a zero Value disc is not a real
-            // tag. A BOTTOM return (in-band TAINT) carries only its
-            // helper-safe placeholder — never adopt its payload.
-            // Branch: on pend OR taint, produce a tainted shape-safe
-            // placeholder (preserving the return's STALE bit — a
-            // standing bottom must stay quiet) and continue to the
-            // merge. For String/composite returns the returned DISC
-            // is additionally checked against the expected shape — a
-            // dispatcher that returned the wrong Value shape is a
-            // compiler bug; adopting its payload as ArcStr/ValArray
-            // bits would be UB, so a mismatch takes the placeholder
-            // path too.
-            let pend_bl = cx.b.create_block();
+            // Pointer-carrying / two-word returns: a BOTTOM return
+            // (in-band TAINT) carries only its helper-safe placeholder
+            // — never adopt its payload. Branch: on taint, produce a
+            // tainted shape-safe placeholder (preserving the return's
+            // STALE bit — a standing bottom must stay quiet) and
+            // continue to the merge. For String/composite returns the
+            // returned DISC is additionally checked against the
+            // expected shape — a fn that returned the wrong Value
+            // shape violated its declared type; adopting its payload
+            // as ArcStr/ValArray bits would be UB, so a mismatch takes
+            // the placeholder path too, loudly.
+            let bad_bl = cx.b.create_block();
             let ok_bl = cx.b.create_block();
-            let ret_abi = kernel_abi::abi_kind(&info.return_type);
             let t = is_tainted(cx.b, raw0);
-            let bad = cx.b.ins().bor(pend, t);
             let expected_disc: Option<i64> = match ret_abi {
                 Some(AbiKind::String) => Some(value_disc::STRING),
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -623,37 +280,29 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 }
                 _ => None,
             };
-            match expected_disc {
+            let bad = match expected_disc {
                 Some(exp) => {
                     let clean0 = clean_disc(cx.b, raw0);
                     let mismatch = cx.b.ins().icmp_imm(IntCC::NotEqual, clean0, exp);
-                    let bad = cx.b.ins().bor(bad, mismatch);
-                    cx.b.ins().brif(bad, pend_bl, &[], ok_bl, &[]);
+                    cx.b.ins().bor(t, mismatch)
                 }
-                None => {
-                    cx.b.ins().brif(bad, pend_bl, &[], ok_bl, &[]);
-                }
-            }
-            cx.b.switch_to_block(pend_bl);
-            cx.b.seal_block(pend_bl);
-            // A shape-mismatched (untainted, non-pend) result still
-            // OWNS the returned Value — drop it before the placeholder
-            // so the compiler-bug path leaks nothing. The pend path's
-            // pair is the inert (0, 0) sentinel and a bottom's
-            // placeholder pair owns nothing — guard on a nonzero,
-            // UNTAINTED disc.
+                None => t,
+            };
+            cx.b.ins().brif(bad, bad_bl, &[], ok_bl, &[]);
+            cx.b.switch_to_block(bad_bl);
+            cx.b.seal_block(bad_bl);
+            // A shape-mismatched (untainted) result still OWNS the
+            // returned Value — warn and drop it before the placeholder
+            // so the declared-type violation leaks nothing
+            // (sprintf-error-return-shape-aug2026). A bottom's
+            // placeholder pair owns nothing.
             {
-                let nz = cx.b.ins().icmp_imm(IntCC::NotEqual, raw0, 0);
                 let untainted = cx.b.ins().icmp_imm(IntCC::Equal, t, 0);
-                let genuine = cx.b.ins().band(nz, untainted);
                 let drop_bl = cx.b.create_block();
                 let cont_bl = cx.b.create_block();
-                cx.b.ins().brif(genuine, drop_bl, &[], cont_bl, &[]);
+                cx.b.ins().brif(untainted, drop_bl, &[], cont_bl, &[]);
                 cx.b.switch_to_block(drop_bl);
                 cx.b.seal_block(drop_bl);
-                // genuine ⟺ the shape-mismatch path — make the value
-                // loss LOUD before dropping
-                // (sprintf-error-return-shape-aug2026).
                 let warn_h = cx.helper("graphix_shape_mismatch_warn")?;
                 cx.b.ins().call(warn_h, &[raw0]);
                 let val_drop = cx.helper("graphix_value_drop")?;
@@ -663,10 +312,6 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
                 cx.b.seal_block(cont_bl);
             }
             let ph = emit_elem_placeholder(cx, &info.return_type)?;
-            // The placeholder IS a bottom production: TAINT always,
-            // plus the return's STALE bit (a standing bottom stays
-            // quiet; pend's zero sentinel contributes none — a genuine
-            // abort reads as a fresh bottom).
             let taint_c = cx.b.ins().iconst(types::I64, TAINT);
             let ph_disc = cx.b.ins().bor(ph.disc, tagbits);
             let ph_disc = cx.b.ins().bor(ph_disc, taint_c);
@@ -675,46 +320,30 @@ pub(crate) fn emit_dyncall_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(ok_bl);
             cx.b.seal_block(ok_bl);
             let (disc, pay) = match ret_abi {
+                // `raw1` is the owned ArcStr / ValArray bits; the
+                // return's tag rides.
                 Some(AbiKind::String) => {
-                    // `raw1` is the ArcStr's bits (ownership
-                    // transferred from the dispatcher); the return's
-                    // tag rides.
                     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
                     (cx.b.ins().bor(base, tagbits), raw1)
                 }
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                    // `raw1` is owned ValArray bits.
                     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
                     (cx.b.ins().bor(base, tagbits), raw1)
                 }
-                _ => {
-                    // Value-shape: both register-words — `raw0` is the
-                    // real Value disc with the production's tag
-                    // already in-band, plus the unclaimed-site stale
-                    // fold `tagbits` carries (a `bytes`-returning
-                    // builtin in a callee's loop fired on every
-                    // invocation without it — aug22c class D).
-                    (cx.b.ins().bor(raw0, tagbits), raw1)
-                }
+                // Value-shape: `raw0` is the real Value disc with the
+                // production's tag already in-band.
+                _ => (raw0, raw1),
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
         }
-        Some(AbiKind::Null) | None => {
-            return Err(anyhow!(
-                "DynCall with bare Null / non-fusable return — \
-                 should have widened to Nullable<T> at construction"
-            ));
-        }
+        Some(AbiKind::Null) | None => unreachable!("refused above"),
     }
     cx.b.switch_to_block(dmerge);
     cx.b.seal_block(dmerge);
     let params = cx.b.block_params(dmerge);
-    let merged = CompiledExpr::new(params[0], params[1]);
     // STRICT (Eric's ruling 2026-08-13): BOTTOM PROPAGATES at the
-    // call's merge, everywhere — the ride scopes are retired with
-    // `in_ride_scope`. The select scrutinee and final-value guard
-    // rides are the designated riders (emit/select.rs, untouched).
-    Ok(merged)
+    // call's merge, everywhere.
+    Ok(CompiledExpr::new(params[0], params[1]))
 }
 
 /// Where a composite expression's pointer came from. Drives whether
@@ -776,12 +405,12 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// callee's two-word return pair, TAINT/STALE in-band in the disc — a
 /// bottomed or unfired callee RESULT rides back as data (#219),
 /// bottoming only consumers that read it, exactly like a node-walk
-/// callsite whose output didn't fire. Genuine aborts (depth trip,
-/// interrupt, async pend) still ride `DYNCALL_PENDING` and bottom the
-/// whole caller kernel.
+/// callsite whose output didn't fire. Aborts (depth trip, interrupt)
+/// ride `KERNEL_ABORT` and bottom the whole caller kernel.
 /// The PER-CALL-SITE state block argument for a cross-kernel call
-/// (wire slot 2): storage for the callee's instance memory (select
-/// selection memory, loop-table anchors), owned by THIS caller and
+/// (wire slot 2): storage for the callee's instance memory
+/// (prev-length words, first-call words, loop-table anchors), owned
+/// by THIS caller and
 /// sized by the callee's recorded [`SiteLayout`]. Four shapes:
 ///
 /// - Callee not yet defined (recursive back-edge — self-calls,
@@ -1145,54 +774,6 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     is_self: bool,
 ) -> Result<CompiledExpr> {
     let fn_name = &info.fn_name;
-    // The interior-sleep gate, callee side (P7): a call to a kernel
-    // whose body transitively reaches a sleep-restarting builtin must
-    // not emit inside a select-arm extent (the interp sleeps the
-    // arm's CallSite, which sleeps the callee instance and re-arms
-    // its builtins; kernels can't). Callees define before callers, so
-    // `defined` distinguishes a final fact from a self/back-edge
-    // call, which defers to the end-of-define check against the
-    // finalized fact (`LowerCtx::self_backedge_in_arm`).
-    {
-        use std::sync::atomic::Ordering::Relaxed;
-        if info.kernel.defined.load(Relaxed) {
-            if info.kernel.has_restart_reach.load(Relaxed) {
-                cx.ctx.saw_restart_reach.set(true);
-                if cx.ctx.arm_depth.get() > 0 {
-                    return Err(anyhow!(
-                        "lambda call `{fn_name}`: callee reaches a \
-                         sleep-restarting builtin inside a select arm \
-                         (no interior arm-sleep in kernels)"
-                    ));
-                }
-            }
-            if info.kernel.has_stateful_reach.load(Relaxed) {
-                cx.ctx.saw_stateful_reach.set(true);
-                if cx.ctx.value_arm_depth.get() > 0 {
-                    return Err(anyhow!(
-                        "lambda call `{fn_name}`: callee reaches a \
-                         stateful builtin inside a value-position \
-                         select arm (no fire-tracking in kernels)"
-                    ));
-                }
-            }
-        } else {
-            if cx.ctx.arm_depth.get() > 0 {
-                cx.ctx.self_backedge_in_arm.set(true);
-            }
-            if cx.ctx.value_arm_depth.get() > 0 {
-                cx.ctx.self_backedge_in_value_arm.set(true);
-            }
-        }
-        if is_self {
-            if cx.ctx.arm_depth.get() > 0 {
-                cx.ctx.self_backedge_in_arm.set(true);
-            }
-            if cx.ctx.value_arm_depth.get() > 0 {
-                cx.ctx.self_backedge_in_value_arm.set(true);
-            }
-        }
-    }
     // Hoist the registry borrow (a `'c` ref independent of `cx`) so the
     // slot-grouping closures below capture IT, not `cx` — otherwise the
     // closures would hold `cx` shared while the per-slot emit needs
@@ -1274,8 +855,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // shapes refuse. The slot TYPES come from the callee's signature
     // (see above), so a Bottom-typed arg NODE slips through them
     // (Bottom unifies with any signature type) — gate on the node
-    // itself, the caller-side twin of the DynCall shape-agreement
-    // check ([`node_is_bottom`]).
+    // itself ([`node_is_bottom`]).
     for s in &*slots {
         if let LambdaCallSlot::Arg(n, _) = s {
             if node_is_bottom(n) {
@@ -1354,7 +934,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // The callee's init view: the node-walk's `Callee::Static`
     // primes an instance's FIRST dispatch with a forced init view
     // (`first_update`), so a late first call — e.g. a fold callback
-    // whose loop had zero elements until a lifted source grew — still
+    // whose loop had zero elements until its source grew — still
     // fires its consts/cached reads once. Mirror it with a per-call-
     // site state word: force the callee's init flag on the first call
     // ever, then never again (the word is call-site-shared across
@@ -1540,17 +1120,16 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx.b.seal_block(rmerge);
     let r0 = cx.b.block_params(rmerge)[0];
     let r1 = cx.b.block_params(rmerge)[1];
-    // A callee that genuinely ABORTED (interrupt) left `DYNCALL_PENDING`
-    // set and returned the pending sentinel — the zero pair, NOT a real
+    // A callee that ABORTED (interrupt, depth trip) left `KERNEL_ABORT`
+    // set and returned the abort sentinel — the zero pair, NOT a real
     // value. Propagate the abort at the call site: drop the owned call
     // args, drop this kernel's owned set, and jump to `pending_exit`
     // with the flag still set (peek, not clear) so `Kernel::update`
     // discards. Without this the sentinel would flow into downstream
-    // derefs and drops. Value-level bottoms never take this path — a
-    // callee's pended DynCall converts to a #219 tainted result at its
-    // own site and rides back IN-BAND in the returned disc.
+    // derefs and drops. Value-level bottoms never take this path — they
+    // ride back IN-BAND in the returned disc.
     {
-        let peek = cx.helper("graphix_dyncall_pending_take")?;
+        let peek = cx.helper("graphix_abort_peek")?;
         let call = cx.b.ins().call(peek, &[]);
         let pending = cx.b.inst_results(call)[0];
         let abort_bl = cx.b.create_block();
@@ -1659,7 +1238,7 @@ pub(super) fn drop_owned_composites(
 ) -> Result<()> {
     // Every owned local is dropped by `kind`. Composite params/locals
     // are refcount-cloned on kernel entry; Variant/Nullable/Value locals
-    // come from entry clones / `VariantNew` / composite-return DynCall;
+    // come from entry clones / `VariantNew` / composite-return calls;
     // String locals carry an owned refcount. Scalars own nothing.
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
         env.locals.iter().map(|l| (l.kind, l.vv)).collect();
@@ -1705,14 +1284,13 @@ pub(super) fn emit_drop_local(
     Ok(())
 }
 
-/// Emit drops for everything the JIT'd kernel currently owns, for
-/// the `pre_pending` block of a composite-return DynCall that
-/// pended. This is `drop_owned_composites` plus the in-flight
-/// outer DynCall args bufs from `dyncall_buf_stack`.
+/// Emit drops for everything the JIT'd kernel currently owns, for a
+/// whole-kernel abort path: `drop_owned_composites` plus the in-flight
+/// value bufs from `value_buf_stack` and the owned HOF inputs.
 ///
 /// Ordering doesn't matter — every entry is an independent owned
 /// allocation. `use_var` at this CFG point resolves each Variable
-/// to its value along the edge from the DynCall block.
+/// to its value along the edge from the aborting block.
 pub(super) fn emit_pending_cleanup(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
@@ -1722,9 +1300,7 @@ pub(super) fn emit_pending_cleanup(
         .helper_refs
         .get("graphix_value_buf_drop")
         .ok_or_else(|| anyhow!("missing graphix_value_buf_drop"))?;
-    // Outer in-flight DynCall args bufs. The current DynCall's own
-    // buf was already popped before this is called.
-    for buf_var in ctx.dyncall_buf_stack.borrow().iter() {
+    for buf_var in ctx.value_buf_stack.borrow().iter() {
         let ptr = b.use_var(*buf_var);
         b.ins().call(buf_drop, &[ptr]);
     }
@@ -1742,12 +1318,3 @@ pub(super) fn emit_pending_cleanup(
     // Owned composite + variant locals (and entry-cloned params).
     drop_owned_composites(b, env, ctx)
 }
-
-// (The old `emit_dyncall_pending_branch` / `emit_return_pending_check`
-// pair — the site-level and return-level whole-kernel aborts for a
-// pended DynCall — is gone: every dyncall site now take-and-CLEARS the
-// pending flag and converts a pend to a #219 tainted placeholder that
-// continues, and a cross-kernel callee's genuine abort is checked and
-// propagated at the call site in `emit_lambda_call_node`. No path can
-// leave the flag set and keep executing, so a return-time peek would
-// always read false.)

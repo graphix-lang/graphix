@@ -390,8 +390,7 @@ pub struct Event<E: UserEvent> {
     /// re-selection (fuzz/pending-triage/arm_fnvalue_connect_stale.gx).
     pub wake_init: bool,
     /// The INNERMOST overlay: same-cycle transient deliveries (select
-    /// arm binds, QopDeliver, DynCall side channels, call-site formal
-    /// publishes) at depth 0, or the current evaluation frame's
+    /// arm binds, call-site formal publishes) at depth 0, or the current evaluation frame's
     /// private writes inside a framed pass. Under dense delivery
     /// (design/dense_delivery.md R3) this is NOT the value store —
     /// reads fall through the frame stack to [`Rt::store`] via
@@ -456,7 +455,6 @@ pub struct Refs {
 }
 
 pub use combine::stream::position::SourcePosition;
-pub use fusion::emit_helpers::dyncall_wake;
 
 /// Metadata captured for every `let foo = |...| 'builtin_name`
 /// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
@@ -666,8 +664,8 @@ pub type InitFn<R, E> = sync::Arc<
 /// at runtime without recompiling the arguments.
 pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Typed view for analysis-layer code (notably fusion). Default
-    /// returns `BuiltIn` — opaque, fusion treats this call as a
-    /// runtime `DynCall`. `GXLambda` overrides to `Lambda(self)`,
+    /// returns `BuiltIn` — opaque to fusion beyond the builtin's
+    /// declared facts. `GXLambda` overrides to `Lambda(self)`,
     /// `BuiltInLambda` delegates to `self.apply.view()`.
     ///
     /// The `BuiltIn` default works on `&dyn Apply` (no `Self: Sized`
@@ -775,7 +773,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     ///
     /// - `Ok(Some(cv))` — emitted; `cv` is the call's result.
     /// - `Ok(None)` — shape not handled; the call site falls back to
-    ///   its next strategy (a runtime `DynCall`, or no fusion). The
+    ///   its next strategy (a fastcall, or no fusion). The
     ///   impl MUST NOT have emitted any instructions before returning
     ///   `Ok(None)`.
     /// - `Err` — abort the whole kernel build; the subtree node-walks.
@@ -810,8 +808,8 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 ///   a walkable [`Node`] body. Fusion descends into the body via
 ///   [`GXLambda::body`].
 /// - [`BuiltIn`](ApplyView::BuiltIn) — opaque builtin. Fusion emits
-///   a runtime `DynCall` (or the builtin participates directly via
-///   [`Apply::emit_clif`]); no introspection beyond the trait
+///   a direct fastcall when the builtin registers one (or the builtin
+///   participates via [`Apply::emit_clif`]); no introspection beyond the trait
 ///   methods. The default `view()` returns this — every Apply impl
 ///   inherits opaque-builtin semantics unless it overrides.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
@@ -1080,14 +1078,10 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// documented arm-rewake RESTART builtins
     /// (`once`/`take`/`skip`/`hold`/`uniq`/`count`): an arm
     /// deselection sleeps the instance and re-arms it for the next
-    /// selection. Only meaningful for `EFFECT = Sync` builtins.
-    /// Consulted by the fusion interior-sleep gate: a kernel has no
-    /// per-arm sleep initiator, so a sleep-restarting builtin's
-    /// DynCall refuses to emit inside a fused select arm and the
-    /// region de-fuses (the node-walk's arm sleep then applies). A
-    /// wrong `false` is a semantics bug (the kernel would keep burned
-    /// state the interp re-arms); a wrong `true` only costs fusion
-    /// coverage. Default: `false` (sleep-inert).
+    /// selection. Only meaningful for `EFFECT = Sync` builtins; a
+    /// declared fact for the interp's arm-rewake semantics (such a
+    /// builtin is stateful, so it never fuses). Default: `false`
+    /// (sleep-inert).
     const SLEEP_RESTARTS: bool = false;
     /// Optional FAST CALL entry: a plain function the JIT calls
     /// directly at every fused call site of this builtin — no site
@@ -1731,13 +1725,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// keyed map would miss external lookups. Name+scope is the
     /// single canonical key that both sides see consistently.
     ///
-    /// The info captures everything fusion needs to lower an
-    /// `Apply` site whose `function` resolves to this binding into
-    /// a DynCall against a
-    /// [`fusion::kernel_abi::FnSource::Builtin`] slot: the canonical
-    /// builtin `name` (matches `ctx.builtins`), the source-level
-    /// `argspec` (with default expressions for labeled args), and
-    /// the resolved `FnType`.
+    /// The info captures everything fusion needs to recognise an
+    /// `Apply` site whose `function` resolves to this binding as a
+    /// builtin call: the canonical builtin `name` (matches
+    /// `ctx.builtins`), the source-level `argspec` (with default
+    /// expressions for labeled args), and the resolved `FnType`.
     ///
     /// Populated by [`node::bind::Bind::compile`] when the
     /// value being bound is an `ExprKind::Lambda` with
@@ -1923,9 +1915,8 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dies with the pass. But an error delivery to a `catch` handler
     /// is outward-bound, like a `<-` to a binding outside the lambda,
     /// and the private map swallowed it, so the handler never ran
-    /// (`findings/qop-tailloop-frame-swallow-aug2026`; the kernel has
-    /// no frame, so its QopDeliver wrote the real variable and the two
-    /// engines disagreed). `Qop::update` parks the delivery here
+    /// (`findings/qop-tailloop-frame-swallow-aug2026`). `Qop::update`
+    /// parks the delivery here
     /// instead; `GXLambda::update` drains it into the real map once the
     /// frames unwind. Nested frames bubble: the drain only runs at
     /// `frame_depth == 0`.

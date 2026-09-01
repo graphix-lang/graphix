@@ -1,6 +1,6 @@
 use crate::{
-    Apply, BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope,
-    Tag, TagValue, Update, UserEvent,
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
@@ -52,62 +52,6 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
         ]
         .into()
     }
-}
-
-/// The error-delivery side of a handler-ful `?` as an `Apply`, so a fused
-/// kernel can perform it through the DynCall machinery (see
-/// [`crate::fusion::kernel_abi::FnSource::QopDeliver`]). `update` receives
-/// the operator's value in `from[0]`; on an `Error` it replicates
-/// `Qop::update`'s handler path EXACTLY — `wrap_error` with this `?`'s
-/// position/origin, then write the catch handler's variable (vacant →
-/// insert into `event.variables`, occupied → `set_var`). Produces
-/// fired `Value::Null` (a completed side effect); the kernel's error
-/// branch separately aborts the cycle to bottom, matching
-/// `Qop::update`'s absent production.
-#[derive(Debug)]
-pub(crate) struct QopDeliverApply {
-    pub(crate) handler_id: BindId,
-    pub(crate) handler_top: ExprId,
-    pub(crate) own_top: ExprId,
-    pub(crate) spec: Expr,
-    pub(crate) out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for QopDeliverApply {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
-        let Some(src) = from.get_mut(0) else { return TagValue::phantom_ref() };
-        let tv = src.update(ctx, event);
-        if !tv.tag().is_fired() {
-            // deliver once per fired error event; the stale/bottom
-            // channels ride
-            return self.out.ride();
-        }
-        let v = tv.value_cloned();
-        if let Value::Error(e) = v {
-            let e = wrap_error(&ctx.env, &self.spec, (*e).clone());
-            let v = Value::Error(e.into());
-            if self.handler_top != self.own_top {
-                ctx.rt.set_var(self.handler_id, v);
-                return self.out.set(TagValue::fired(Value::Null));
-            }
-            match event.variables.entry(self.handler_id) {
-                Entry::Vacant(slot) => {
-                    slot.insert(TagValue::fired(v));
-                }
-                Entry::Occupied(_) => ctx.rt.set_var(self.handler_id, v),
-            }
-        }
-        self.out.set(TagValue::fired(Value::Null))
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -470,16 +414,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // A handler-ful `?` (`id: Some` — caught by an enclosing `try`)
-        // delivers its error by WRITING the handler's variable. The fused
-        // kernel now performs that write in-kernel via the discovered
-        // `QopDeliver` site (scalar success type only — non-scalar
-        // handler-ful `?` de-fuses inside `emit_qop_node`). The catch
-        // handler that READS the variable is always a separate kernel
-        // (next cycle), so there's no read-after-write hazard. A
-        // handler-LESS `?` (`id: None`) passes `None` — its error path is
-        // the bottom the kernel produces with no delivery.
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, self.id.map(|_| self.spec.id))
+        // A handler-ful `?` (`id: Some` — caught by an enclosing catch)
+        // delivers its error by WRITING the handler's variable: an
+        // effect, so it node-walks (design/strict_fusion.md). A
+        // handler-LESS `?` fuses — its error path is the bottom the
+        // kernel produces with no delivery.
+        if self.id.is_some() {
+            return Err(anyhow!("emit_clif: handler-ful ? is an effect — node-walks"));
+        }
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ)
     }
 }
 
@@ -584,6 +527,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `$` never has a catch handler (log + drop on error) — no delivery.
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, None)
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ)
     }
 }

@@ -57,7 +57,7 @@ pub use self::body::{
     node_is_bottom, node_loop_invariant_ref,
 };
 pub use self::call::CompositeSource;
-pub(crate) use self::call::{emit_dyncall_node, emit_lambda_call_node};
+pub(crate) use self::call::{emit_builtin_call_node, emit_lambda_call_node};
 pub(crate) use self::flow::{emit_block_node, emit_qop_node};
 pub use self::jit::{
     Jit, JitCtx, WrappedKernel, WrapperFn, compile_kernel_with_callees_direct,
@@ -67,11 +67,11 @@ pub use self::lower::{KernelStrings, KernelValues};
 pub(crate) use self::nodes::{
     call_result_needs_value_widening, emit_abstract_ref_node, emit_arith_node,
     emit_array_ref_node, emit_array_slice_node, emit_bool_node, emit_cast_node,
-    emit_checked_arith_node, emit_cmp_node, emit_connect_node, emit_const_node,
-    emit_construct_node, emit_map_new_node, emit_map_ref_node, emit_neg_node,
+    emit_checked_arith_node, emit_cmp_node, emit_const_node, emit_construct_node,
+    emit_list_new_node, emit_map_new_node, emit_map_ref_node, emit_neg_node,
     emit_not_node, emit_owned_value_operand_node, emit_ref_node,
     emit_string_interpolate_node, emit_struct_new_node, emit_struct_ref_node,
-    emit_struct_with_node, emit_list_new_node, emit_tuple_new_node, emit_tuple_ref_node,
+    emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
     emit_variant_new_node, widen_result_to_value,
 };
 pub(crate) use self::select::{emit_select_node, slot_state_sites};

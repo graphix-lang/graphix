@@ -42,6 +42,7 @@ pub(super) fn compile_into_function(
     helper_refs: &HelperRefs,
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
+    lazy_types: &std::cell::RefCell<Vec<Box<Type>>>,
     body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
@@ -228,19 +229,11 @@ pub(super) fn compile_into_function(
         init_flag,
         quiet_flag,
         wake_flag,
-        wake_override: std::cell::Cell::new(None),
         callee_refs,
         self_thunk,
         helper_refs,
-        init_override: std::cell::Cell::new(None),
         sel_fires: std::cell::RefCell::new(Vec::new()),
-        arm_depth: std::cell::Cell::new(0),
-        value_arm_depth: std::cell::Cell::new(0),
-        saw_restart_reach: std::cell::Cell::new(false),
-        saw_stateful_reach: std::cell::Cell::new(false),
-        self_backedge_in_arm: std::cell::Cell::new(false),
-        self_backedge_in_value_arm: std::cell::Cell::new(false),
-        dyncall_buf_stack: std::cell::RefCell::new(Vec::new()),
+        value_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
         site_replay_hdr: std::cell::Cell::new(None),
@@ -248,17 +241,15 @@ pub(super) fn compile_into_function(
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
+        lazy_types,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
         self_call: spec.self_call,
         type_env: spec.type_env,
-        fn_index_offset: spec.fn_index_offset,
-        lifted: spec.lifted,
-        lifted_ord: &kernel.lifted,
         state: StateChannel {
             ptr: state_ptr,
             enabled: spec.allow_state,
-            next: std::cell::Cell::new(kernel.lifted.len()),
+            next: std::cell::Cell::new(0),
             replay: std::cell::RefCell::new(Vec::new()),
             replay_value_pairs: std::cell::RefCell::new(Vec::new()),
             anchors: std::cell::RefCell::new(Vec::new()),
@@ -303,7 +294,7 @@ pub(super) fn compile_into_function(
     // itself owns nothing.
     //
     // The kernel result on the pending path is discarded by
-    // `Kernel::update` (which checks `DYNCALL_PENDING` after the
+    // `Kernel::update` (which checks `KERNEL_ABORT` after the
     // wrapper returns), so the sentinel value is never observed —
     // it just has to be a well-typed CLIF value of the right width.
     let pending_exit_block = *lower.pending_exit.borrow();
@@ -311,8 +302,8 @@ pub(super) fn compile_into_function(
         b.switch_to_block(pe);
         // Unified Value ABI: the pending sentinel is the `(0, 0)` pair
         // for every return shape (disc 0 is never a real one-hot
-        // discriminant). The caller's pending check fires from
-        // `DYNCALL_PENDING` before decoding, so the bits are never
+        // discriminant). The caller's abort check fires from
+        // `KERNEL_ABORT` before decoding, so the bits are never
         // observed.
         let s0 = b.ins().iconst(types::I64, 0);
         let s1 = b.ins().iconst(types::I64, 0);
@@ -324,32 +315,6 @@ pub(super) fn compile_into_function(
     // pending_exit). FunctionBuilder requires all blocks be sealed
     // before finalize; seal_all_blocks catches the stragglers.
     b.seal_all_blocks();
-    // The interior-sleep gate's deferred self/back-edge check (P7):
-    // a self- or back-edge call inside an arm could not consult its
-    // callee's fact mid-emission (the callee IS this kernel, or a
-    // cycle peer still defining). Now the transitive fact is final:
-    // if the body reaches a stateful builtin, that call re-enters
-    // state that only arm-sleep could restart — refuse the define.
-    if lower.self_backedge_in_arm.get() && lower.saw_restart_reach.get() {
-        return Err(anyhow::anyhow!(
-            "emit_clif: self/back-edge call inside a select arm in a \
-             kernel that reaches a sleep-restarting builtin (no \
-             interior arm-sleep in kernels)"
-        ));
-    }
-    if lower.self_backedge_in_value_arm.get() && lower.saw_stateful_reach.get() {
-        return Err(anyhow::anyhow!(
-            "emit_clif: self/back-edge call inside a value-position \
-             select arm in a kernel that reaches a stateful builtin \
-             (no fire-tracking in kernels — wake catch-up)"
-        ));
-    }
-    kernel
-        .has_restart_reach
-        .store(lower.saw_restart_reach.get(), std::sync::atomic::Ordering::Relaxed);
-    kernel
-        .has_stateful_reach
-        .store(lower.saw_stateful_reach.get(), std::sync::atomic::Ordering::Relaxed);
     let replay_words = lower.state.replay.borrow().clone();
     let replay_value_pairs = lower.state.replay_value_pairs.borrow().clone();
     let slot_table_words = lower.state.anchors.borrow().clone();
@@ -441,16 +406,18 @@ impl KernelStrings {
 /// inline.)
 pub struct KernelValues {
     lazy: Vec<Box<Value>>,
+    types: Vec<Box<Type>>,
 }
 
 impl KernelValues {
     pub fn empty() -> Self {
-        Self { lazy: Vec::new() }
+        Self { lazy: Vec::new(), types: Vec::new() }
     }
 
     /// See [`KernelStrings::with_lazy`].
-    pub fn with_lazy(mut self, lazy: Vec<Box<Value>>) -> Self {
+    pub fn with_lazy(mut self, lazy: Vec<Box<Value>>, types: Vec<Box<Type>>) -> Self {
         self.lazy = lazy;
+        self.types = types;
         self
     }
 }
@@ -487,7 +454,7 @@ pub(crate) struct SiteLayout {
     pub(crate) self_blocks: std::sync::Arc<[kernel_abi::SelfBlock]>,
 }
 
-/// A selection-memory word's address, with its null-guard obligation.
+/// A per-slot state word's address, with its null-guard obligation.
 /// Instance-channel and parent-chain words are backed by storage that
 /// always exists (`Sure`); a CALLEE's site-block words ride a base
 /// that is 0 on recursive back-edges (`Guarded`) — the consumer
@@ -585,16 +552,14 @@ pub(super) struct StateChannel {
     /// bodies only). See `BodySpec::allow_state`.
     pub(super) enabled: bool,
     /// Next unclaimed word index. `state`: the final count becomes
-    /// [`WrappedKernel::state_words`] (the runtime buffer size), and it
-    /// STARTS at `lifted_ord.len()` — the first words are reserved for
-    /// the per-instance lifted-target `BindId`s ([`KernelSig::lifted`]).
-    /// `site`: starts at 0; count + anchors become the kernel's
-    /// [`SiteLayout`], read by every caller.
+    /// [`WrappedKernel::state_words`] (the runtime buffer size).
+    /// `site`: count + anchors become the kernel's [`SiteLayout`],
+    /// read by every caller.
     pub(super) next: std::cell::Cell<usize>,
     /// Word indices of claims that are REPLAY memory (cross-invocation
     /// caches whose interp twins `reset_replay` clears — the
-    /// interior-bottom taint cache), as opposed to semantic/config
-    /// state (lifted ids, first-call-ever flags, select memory).
+    /// interior-bottom taint cache), as opposed to semantic state
+    /// (first-call-ever flags, prev-length words).
     /// `state`: `Kernel::reset_replay` zeroes exactly these, so a value
     /// cached on one evaluation-frame iteration cannot bridge a bottom
     /// on the next ([`emit_scalar_taint_cache`]). `site`: relative
@@ -677,18 +642,8 @@ pub(crate) struct LowerCtx<'a> {
     /// 0's bit 2 — this invocation runs under a wake view (the
     /// enclosing arm's forced init view or this kernel node's first
     /// update after sleep), so bit 0's init is not GENUINE init. The
-    /// stale-mask suppression reads `init & !wake`; a becoming-
-    /// selected arm INSIDE this kernel additionally scopes its own
-    /// woke bit through [`Self::wake_override`].
+    /// stale-mask suppression reads `init & !wake`.
     pub(super) wake_flag: ClifValue,
-    /// Like `init_override`, but carrying ONLY the becoming-selected
-    /// woke bit (0/1) for the arm body currently being emitted: a
-    /// DynCall site inside the arm passes it to the dispatcher (the
-    /// `graphix_wake_hint` thread-local) so the shared `CachedArgs`
-    /// wrapper runs its wake catch-up (a STATELESS eval re-runs from
-    /// the present stale slots) exactly as it does under the interp's
-    /// per-node slept bits.
-    pub(super) wake_override: std::cell::Cell<Option<ClifValue>>,
     /// The per-INSTANCE state channel (wire slot 1) — see
     /// [`StateChannel`].
     pub(super) state: StateChannel,
@@ -726,11 +681,6 @@ pub(crate) struct LowerCtx<'a> {
     /// (depth, len, src_disc, records).
     pub(super) closed_frame:
         std::cell::RefCell<Option<(u32, ClifValue, ClifValue, Vec<TruncRec>)>>,
-    /// The kernel's lifted connect targets, sorted — slot `i`'s id
-    /// lives in state word `i`. `emit_connect_node` loads its write
-    /// target from there instead of an `iconst` (per-instance
-    /// identity must never be baked into the shared code).
-    pub(super) lifted_ord: &'a [crate::BindId],
     /// Depth of enclosing scaffold loops at the current emission
     /// point. State claims are refused inside loops: a loop-body
     /// construct evaluates once PER SLOT per invocation, so one static
@@ -755,19 +705,6 @@ pub(crate) struct LowerCtx<'a> {
     /// is constructed (same constraint as `callee_refs`). Lookups
     /// are by helper name (e.g. `"graphix_valarray_get_i64"`).
     pub(super) helper_refs: &'a HelperRefs,
-    /// Per-source-position tail-call slot map (from
-    /// Effective-init override for select ARM bodies. The node-walk
-    /// updates a newly-taken arm with `event.init = true`
-    /// (node/select.rs — an arm WAKE is an init view: seeds re-fire,
-    /// constants re-deliver, connects re-write), so
-    /// `emit_select_value_arm` emits each arm body with this set to
-    /// `kernel_init | selection-changed-into-this-arm` (from the
-    /// select's state word) and [`BodyCx::init_flag`] returns it.
-    /// Nested selects compose naturally: the inner arm ORs its own
-    /// changed bit into the outer effective init it reads. `None`
-    /// outside arm bodies (and inside arms of stateless-context
-    /// selects, which refuse arm-lifted binds instead).
-    pub(super) init_override: std::cell::Cell<Option<ClifValue>>,
     /// THE BOTTOM-OUT RULE (design/activation_state.md): the
     /// compile-time stack of enclosing TAIL-position selects' own-fire
     /// summaries, innermost last — `(sound_stale, bfired)`, this
@@ -783,54 +720,13 @@ pub(crate) struct LowerCtx<'a> {
     /// bottom fires are never loop-carried, unlike the sound
     /// accumulator variable above.
     pub(super) sel_fires: std::cell::RefCell<Vec<(ClifValue, Option<ClifValue>)>>,
-    /// Depth of select-ARM body emission currently in progress (the
-    /// shared `emit_select_arms` driver increments around each arm
-    /// body). Load-bearing for the interior-sleep gate (P7): a
-    /// STATEFUL builtin's DynCall — and a call to a callee kernel
-    /// whose transitive body contains one — refuses to emit at
-    /// `arm_depth > 0`, de-fusing the region. Kernels have no
-    /// interior arm-sleep initiator, so the interp's arm-rewake
-    /// RESTART semantics can only be had by interpreting the select.
-    pub(super) arm_depth: std::cell::Cell<u32>,
-    /// Depth of VALUE-POSITION select-arm body emission in progress —
-    /// the extent of the STATEFUL half of the widened gate (wake
-    /// catch-up, design/wake_catchup.md): a stateful (non-restart)
-    /// builtin refuses only here. Tail-position arms wake only
-    /// through frames/activations, where the wake mechanism is
-    /// excluded and per-activation site blocks are the correct twin,
-    /// so `max`/`sum` in a recursive dispatch arm keep fusing.
-    pub(super) value_arm_depth: std::cell::Cell<u32>,
-    /// Accumulates "this kernel's body transitively reaches a
-    /// SLEEP-RESTARTING builtin" during emission: set by every such
-    /// DynCall emission and by every lambda call whose callee sig
-    /// carries the fact. Harvested at the end of
-    /// `compile_into_function` into `KernelSig::has_restart_reach` so
-    /// CALLERS can consult it at their own call sites (callees
-    /// define before callers).
-    pub(super) saw_restart_reach: std::cell::Cell<bool>,
-    /// The STATEFUL companion (wake catch-up): the body transitively
-    /// reaches a stateful (`!STATELESS`), non-restart builtin
-    /// DynCall. Harvested into `KernelSig::has_stateful_reach`;
-    /// refused at `value_arm_depth > 0`.
-    pub(super) saw_stateful_reach: std::cell::Cell<bool>,
-    /// A self- or back-edge lambda call was emitted at `arm_depth >
-    /// 0` — its callee's fact wasn't final mid-emission, so the
-    /// interior-sleep check is deferred to the end of
-    /// `compile_into_function` against the finalized
-    /// `saw_restart_reach`.
-    pub(super) self_backedge_in_arm: std::cell::Cell<bool>,
-    /// The VALUE-POSITION twin of `self_backedge_in_arm`, checked
-    /// against `saw_stateful_reach` at the end of define.
-    pub(super) self_backedge_in_value_arm: std::cell::Cell<bool>,
-    /// Stack of in-flight DynCall args bufs (`*mut LPooled<Vec<Value>>`
-    /// Variables). Each DynCall pushes its args buf at `buf_new` and
-    /// pops it once `graphix_dyncall` has consumed it. A forced-bottom
-    /// abort (interrupt poll, return-gate force, bottom abort, callee
-    /// genuine-abort check) drops whatever is still on this stack
-    /// (= the args bufs of OUTER, not-yet-dispatched DynCalls) plus
-    /// every owned composite/variant local via
+    /// Stack of in-flight value bufs (`*mut LPooled<Vec<Value>>`
+    /// Variables): a constructor or HOF result buffer between its
+    /// `buf_new` and its finalize. A whole-kernel abort (interrupt
+    /// poll, bottom abort, callee abort check) drops whatever is still
+    /// on this stack plus every owned composite/variant local via
     /// [`emit_pending_cleanup`].
-    pub(super) dyncall_buf_stack: std::cell::RefCell<Vec<Variable>>,
+    pub(super) value_buf_stack: std::cell::RefCell<Vec<Variable>>,
     /// Owned HOF input arrays in flight (fresh producers — a literal,
     /// slice, or inlined-HOF result consumed by a loop scaffold).
     /// Registered by `scaffold::adopt_owned_src` at loop entry and
@@ -838,7 +734,7 @@ pub(crate) struct LowerCtx<'a> {
     /// normal-path drop, so a pending exit INSIDE the loop body frees
     /// the input via [`emit_pending_cleanup`] (`graphix_valarray_drop`
     /// — these are finished owned ValArray bits, NOT bufs, hence a
-    /// separate stack from `dyncall_buf_stack`). Variables here are
+    /// separate stack from `value_buf_stack`). Variables here are
     /// always defined on the paths that can pend (the registering
     /// loop dominates its body) — unlike a JitEnv binding, an entry
     /// never outlives its defining region, so select arms stay safe.
@@ -872,19 +768,20 @@ pub(crate) struct LowerCtx<'a> {
     /// is individually boxed so its address survives Vec growth.
     pub(super) lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
     pub(super) lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
+    /// Cast sites' destination types, kept alive like `lazy_values`
+    /// (`BodyCx::interned_type`).
+    pub(super) lazy_types: &'a std::cell::RefCell<Vec<Box<Type>>>,
     /// Lazily-created single `pending_exit` block — the target of
-    /// every genuine whole-kernel abort (interrupt poll, return-gate
-    /// force, bottom abort, callee genuine-abort check). Its body
-    /// (sentinel + `return`) is emitted at the end of
-    /// `compile_into_function`. All abort paths jump here after
-    /// dropping the owned set. A pended DynCall does NOT come here —
-    /// it converts to a #219 tainted placeholder at its own site and
-    /// continues.
+    /// every whole-kernel abort (interrupt poll, bottom abort, callee
+    /// abort check). Its body (sentinel + `return`) is emitted at the
+    /// end of `compile_into_function`. All abort paths jump here after
+    /// dropping the owned set. A bottomed call does NOT come here — it
+    /// is a #219 tainted placeholder at its own site and continues.
     pub(super) pending_exit: std::cell::RefCell<Option<Block>>,
     /// Discovered sync-builtin Apply sites for the direct path
     /// (`Some` only when a [`BodyEmitter`] supplies them) — keyed by
     /// the Apply's spec id, consumed by [`BodyCx::builtin_site`] so
-    /// `CallSite::emit_clif` can lower a registered site to a DynCall.
+    /// `CallSite::emit_clif` can lower a registered site to a call.
     pub(super) builtin_apply_sites:
         Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
     /// Discovered statically-resolved lambda call sites — the direct
@@ -902,15 +799,6 @@ pub(crate) struct LowerCtx<'a> {
     /// no [`BodyEmitter`] supplies it). See [`BodyEmitter::type_env`]
     /// and [`resolve_node_typ`].
     pub(super) type_env: Option<&'a Env>,
-    /// Lifted connect-target bind ids (let-bound scalar counters routed
-    /// in as feeders). Read by [`emit_let_node`] (seed-select) and
-    /// [`emit_connect_node`] (write gate). See [`BodyEmitter::lifted`].
-    pub(super) lifted: &'a nohash::IntSet<BindId>,
-    /// DynCall `fn_index` base for the body being emitted (see
-    /// [`BodyEmitter::fn_index_offset`]). Added to every DynCall's
-    /// `info.fn_index` at emit so a callee body indexes the region-wide
-    /// combined `dyn_slots`. `0` for parents / per-slot callbacks.
-    pub(super) fn_index_offset: u32,
 }
 
 /// Resolve named/abstract type refs in a node-carried `Type` through
@@ -948,9 +836,7 @@ pub(super) struct HelperRefs {
     /// pass. Read only by [`BodyCx::call_helper`]'s debug assert:
     /// cranelift's verifier catches an arity mismatch, but only as a
     /// *compilation failure of the whole function*, which surfaces as
-    /// a silent de-fuse. `emit_qop_deliver` shipped one for a month
-    /// that way (9d042cbc grew `graphix_dyncall` to 5 params and
-    /// updated only `emit/call.rs`).
+    /// a silent de-fuse.
     pub(super) arity: BTreeMap<&'static str, usize>,
 }
 

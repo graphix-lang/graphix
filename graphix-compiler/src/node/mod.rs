@@ -5,8 +5,8 @@ use crate::{
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath, TypeDefBody},
     fusion::{
         emit::{
-            BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_connect_node,
-            emit_const_node, emit_string_interpolate_node,
+            BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
+            emit_string_interpolate_node,
         },
         fuse,
     },
@@ -1320,9 +1320,8 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // A variable write requires a FIRED RHS — the interp twin of
-        // the kernel's `set_var_typed` gate (a stale or tainted RHS
-        // must not become a cross-cycle event).
+        // A variable write requires a FIRED RHS (a stale or tainted
+        // RHS must not become a cross-cycle event).
         let tv = self.node.update(ctx, event);
         if tv.is_fired() {
             let v = tv.value_cloned();
@@ -1373,8 +1372,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         NodeView::Connect(self)
     }
 
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_connect_node(cx, &self.node, self.id)
+    fn emit_clif(&self, _cx: &mut BodyCx) -> Result<CompiledExpr> {
+        Err(anyhow::anyhow!("emit_clif: connect is an effect — node-walks"))
     }
 }
 

@@ -7,7 +7,7 @@ use crate::{
     expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         self,
-        emit::{BodyCx, CompiledExpr, emit_dyncall_node, emit_lambda_call_node},
+        emit::{BodyCx, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node},
     },
     node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, TVar, Type},
@@ -262,10 +262,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// builtin (Eric's rulings 2026-07-19/20). Builtin authors never
     /// see the taint channel: a bottomed arg is ABSENCE, the builtin's
     /// cached slot keeps its previous state, and eval decides what a
-    /// missing arg means. The kernel twins agree by construction — a
+    /// missing arg means. The kernel twin agrees by construction — a
     /// fused arg region's tainted result forces to None at the output
-    /// boundary, and a fused DynCall delivers taint-masked slots as
-    /// absence (dyncall-partial-args-jul2026). Lambda callees keep
+    /// boundary (dyncall-partial-args-jul2026). Lambda callees keep
     /// the poisoned delivery (formals poison). Set at every
     /// callee-binding site.
     pub(super) gate_tainted_args: bool,
@@ -1730,7 +1729,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 } else if ctx.frame_depth > 0 && !tag.is_bottom() {
                     // Inside a frame the store holds the STALE pre-frame
                     // value (R3: frames never write the store), so a
-                    // rebound loop formal read as a STALE DynCall arg
+                    // rebound loop formal read as a STALE call arg
                     // would reach the callee as the pre-frame value: the
                     // callee reads the distinct ARG id, which the formal
                     // overlay read-through (the store-read premise above)
@@ -2602,7 +2601,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if self.is_recursive_edge() {
             bail!("emit_clif: mutually recursive static call edge is not supported")
         }
-        // Builtin DynCall. `marshal_arg_indices[i]` is a position in
+        // A fastcall site. `marshal_arg_indices[i]` is a position in
         // the source-order arg list `spec_apply.args` — which spans
         // both labeled and positional args. The Node-side lookup has
         // to mirror that: labeled args go through `arg_named`,
@@ -2650,6 +2649,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 })
             })
             .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
-        emit_dyncall_node(cx, self.spec.id, &info, &arg_nodes)
+        emit_builtin_call_node(cx, &info, &arg_nodes)
     }
 }

@@ -309,8 +309,8 @@ pub(super) fn emit_bottom_abort(
 ) -> Result<()> {
     let pending_set = ctx
         .helper_refs
-        .get("graphix_dyncall_set_pending")
-        .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+        .get("graphix_abort_set")
+        .ok_or_else(|| anyhow!("missing graphix_abort_set"))?;
     let pre_pending = b.create_block();
     let continue_block = b.create_block();
     let pending_exit = pending_exit_block(b, ctx);
@@ -329,7 +329,7 @@ pub(super) fn emit_bottom_abort(
 /// `graphix_interrupted`, and if it returns nonzero take the kernel's
 /// abort path — set the pending flag, drop in-flight owned
 /// buffers/composites (`emit_pending_cleanup`, which drains the HOF
-/// result buffer off `dyncall_buf_stack` and drops owned params), and
+/// result buffer off `value_buf_stack` and drops owned params), and
 /// jump to `pending_exit` so `Kernel::update` yields `None`. Falls
 /// through to a fresh `continue_block` otherwise. Reused at the tail-loop
 /// head and every HOF scaffold loop head so a wedged native loop honours
@@ -350,8 +350,8 @@ pub(super) fn emit_interrupt_check(
         .ok_or_else(|| anyhow!("missing graphix_interrupted"))?;
     let pending_set = ctx
         .helper_refs
-        .get("graphix_dyncall_set_pending")
-        .ok_or_else(|| anyhow!("missing graphix_dyncall_set_pending"))?;
+        .get("graphix_abort_set")
+        .ok_or_else(|| anyhow!("missing graphix_abort_set"))?;
     let call = b.ins().call(interrupted, &[]);
     let intr = b.inst_results(call)[0];
     let pre_pending = b.create_block();
@@ -409,10 +409,9 @@ pub(super) trait BodyEmitter {
 /// docs where they're consumed).
 #[derive(Clone, Copy)]
 pub(super) struct BodySpec<'a> {
-    /// Discovered sync-builtin Apply sites for the region being
-    /// emitted (`CallSite::emit_clif` lowers a registered site to a
-    /// DynCall via [`BodyCx::builtin_site`]). `None` for callee
-    /// bodies (their inner sites are #203-unresolved).
+    /// Discovered fastcall/cast sites for the region being emitted
+    /// (`CallSite::emit_clif` lowers a registered site to a direct
+    /// call via [`BodyCx::builtin_site`]).
     pub(super) builtin_apply_sites:
         Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
     /// Discovered statically-resolved lambda call sites for the region
@@ -433,17 +432,6 @@ pub(super) struct BodySpec<'a> {
     /// classify them. NOT for binding lookups; those stay in the
     /// analysis phase, per the BodyCx design.
     pub(super) type_env: Option<&'a Env>,
-    /// Base offset added to every DynCall `fn_index` this body bakes, so
-    /// the body indexes its slots in the REGION-WIDE combined `dyn_slots`
-    /// table (parent slots first, then each callee's). `0` for the parent
-    /// (its slots lead the table) and for a callee with no DynCalls.
-    /// Doubles as the `base` half of the `(ptr, base)` JIT cache key —
-    /// see `compile_kernel_with_callees_inner`.
-    pub(super) fn_index_offset: u32,
-    /// The region's LIFTED connect-target bind ids — let-bound scalar
-    /// counters/accumulators routed in as kernel inputs (feeders).
-    /// Empty for callees and for any region with no lifts.
-    pub(super) lifted: &'a nohash::IntSet<BindId>,
     /// Whether this body may claim per-instance state words — `true`
     /// only for the region parent's root body. See
     /// [`StateChannel::enabled`].
@@ -539,30 +527,18 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Ok(self.b.ins().call(f, args))
     }
 
-    /// The EFFECTIVE `event.init` flag (`I64`, nonzero on an init
-    /// view): the kernel-init word from wire slot 0 (see
-    /// [`kernel_abi::CTX_WIRE_SLOTS`]), overridden inside select ARM
-    /// bodies with `kernel_init | selection-changed` (see
-    /// `LowerCtx::init_override` — the node-walk gives a newly-taken
-    /// arm an init view). `emit_const_node` reads it to STALE-gate a
-    /// constant: a constant fires only on an init view, then carries a
-    /// cached (stale) value.
+    /// The `event.init` flag (`I64`, nonzero on an init view): the
+    /// kernel-init word from wire slot 0 (see
+    /// [`kernel_abi::CTX_WIRE_SLOTS`]). `emit_const_node` reads it to
+    /// STALE-gate a constant: a constant fires only on an init view,
+    /// then carries a cached (stale) value.
     pub fn init_flag(&self) -> ClifValue {
-        self.ctx.init_override.get().unwrap_or(self.ctx.init_flag)
+        self.ctx.init_flag
     }
 
     /// THE QUIET FLAG (`I64`, 0/1) — see [`LowerCtx::quiet_flag`].
     pub fn quiet_flag(&self) -> ClifValue {
         self.ctx.quiet_flag
-    }
-
-    /// THE WAKE FLAG (`I64`, 0/1, design/wake_catchup.md): the
-    /// effective wake view at this emission point — a becoming-
-    /// selected arm's own woke bit when inside one
-    /// ([`LowerCtx::wake_override`]), else the kernel-invocation wake
-    /// from wire slot 0 bit 2.
-    pub fn wake_flag(&self) -> ClifValue {
-        self.ctx.wake_override.get().unwrap_or(self.ctx.wake_flag)
     }
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
@@ -584,12 +560,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// `value + 1` and read 0 as "no previous observation" — init
     /// semantics fall out of the zeroing. See
     /// `design/kernel_instance_state.md`.
-    /// State-buffer byte offset of a LIFTED connect target's
-    /// per-instance `BindId` word, if `id` is lifted in this kernel.
-    pub fn lifted_state_off(&self, id: BindId) -> Option<i32> {
-        self.ctx.lifted_ord.binary_search(&id).ok().map(|i| (i as i32) * 8)
-    }
-
     pub fn claim_state_word(&self) -> Option<i32> {
         if !self.ctx.state.enabled || self.ctx.loop_depth.get() > 0 {
             return None;
@@ -968,8 +938,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// The address of THIS slot's per-slot state word for the site at
-    /// `id` — a guarded select's selection memory, or a nested
-    /// collection loop's prev-length word ([`slot_state_sites`]) —
+    /// `id` — a nested collection loop's prev-length word
+    /// ([`slot_state_sites`]) —
     /// when the innermost open scaffold loop carries a table for it:
     /// `table + idx * 8`. `None` (fall back to the stateless
     /// approximation) when there is no open loop, the site is emitted
@@ -996,61 +966,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         } else {
             SelWord::Sure(addr)
         })
-    }
-
-    /// PER-SLOT site-identity storage for an in-loop DynCall site: a
-    /// two-word pair per slot ordinal (the first word holds the id
-    /// `graphix_dyncall` mints on a 0 read, the second is spare), in a
-    /// chain claimed ON DEMAND at the site's emission (the leaf sized
-    /// `len * 2`, pair-addressed, prefix retention at pair
-    /// granularity). The chain is SEMANTIC state, like every
-    /// [`SiteAnchor`]: it survives evaluation frames and sleep — the
-    /// node-walk's `FoldQ::reset_replay` keeps each slot's CallSite
-    /// (its identity and `first_update`) and clears only its caches,
-    /// so a framed pass re-dispatches RESUMED sites with honest stale
-    /// args (quiet-frame-init-view-aug2026/08). Truncation on shrink frees
-    /// the dead tail's pairs so a regrown slot mints fresh (MapQ's slot
-    /// rule); `Drop` frees the rest. Returns the slot's id-word
-    /// address. `None` in callee bodies (per-call-site chains would
-    /// need caller-side ownership — documented degrade, the key-0
-    /// bucket) and when the innermost frame isn't this emission's loop.
-    pub(crate) fn claim_slot_site_words(&mut self) -> Option<ClifValue> {
-        let (idx_var, len, src_disc, enclosing) = {
-            let frames = self.ctx.slot_tables.borrow();
-            let f = frames.last()?;
-            if f.depth != self.ctx.loop_depth.get() {
-                return None;
-            }
-            let enclosing: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> =
-                frames[..frames.len() - 1]
-                    .iter()
-                    .map(|g| (g.len, g.src_disc, g.idx_var))
-                    .collect();
-            (f.idx_var, f.len, f.src_disc, enclosing)
-        };
-        let off = self.claim_state_word_loop_invariant()?;
-        self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
-            rel: (off / 8) as u32,
-            own_levels: enclosing.len() as u32,
-            leaf: None,
-        });
-        // Exit-block re-ensure record (THE SHRINK-TO-ZERO RULE): this
-        // per-iteration ensure never runs on a len-0 epoch.
-        if let Some(f) = self.ctx.slot_tables.borrow_mut().last_mut() {
-            f.pending.push(TruncRec {
-                anchor: TruncAnchor::State(off),
-                n_dirs: enclosing.len() as u32,
-                leaf: TruncLeaf::Table { stride: 2 },
-                leaf_ptr: 0,
-            });
-        }
-        let sp = self.state_ptr();
-        let word_addr = self.b.ins().iadd_imm(sp, off as i64);
-        let len2 = self.b.ins().ishl_imm(len, 1);
-        let table = self.emit_slot_chain(word_addr, &enclosing, len2, src_disc).ok()?;
-        let i = self.b.use_var(idx_var);
-        let o = self.b.ins().ishl_imm(i, 4);
-        Some(self.b.ins().iadd(table, o))
     }
 
     /// Claim one word of PER-CALL-SITE block memory (wire slot 2) —
@@ -1175,13 +1090,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.env.loop_depth = self.env.loop_depth.saturating_sub(1);
     }
 
-    /// True iff `bind_id` is a LIFTED connect target in this region — a
-    /// let-bound scalar counter routed in as a feeder. `emit_let_node`
-    /// emits a seed-select for it; `emit_connect_node` allows its write.
-    pub(crate) fn is_lifted(&self, bind_id: BindId) -> bool {
-        self.ctx.lifted.contains(&bind_id)
-    }
-
     /// Stable `*const ArcStr` for `s` as an `iconst`, interned lazily
     /// at emission (no body prewalk on the direct path — coverage is
     /// exact by construction). The arena entry is individually boxed
@@ -1198,14 +1106,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             }
         };
         self.b.ins().iconst(types::I64, ptr as i64)
-    }
-
-    /// The DynCall `fn_index` base for the body being emitted — added to
-    /// every DynCall site's `info.fn_index` so a callee body indexes the
-    /// region-wide combined `dyn_slots` table. `0` for parents / per-slot
-    /// callbacks. See [`BodyEmitter::fn_index_offset`].
-    pub(crate) fn fn_index_offset(&self) -> u32 {
-        self.ctx.fn_index_offset
     }
 
     /// The discovered builtin Apply-site info for `id`, if the
@@ -1242,6 +1142,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 lazy.last().unwrap().as_ref() as *const Value
             }
         };
+        self.b.ins().iconst(types::I64, ptr as i64)
+    }
+
+    /// Stable `*const Type` for a Cast site's destination type — see
+    /// [`Self::interned_str`]; the kernel's [`KernelValues`] keeps it
+    /// alive as long as the compiled code that baked the pointer.
+    pub fn interned_type(&mut self, t: &Type) -> ClifValue {
+        let mut lazy = self.ctx.lazy_types.borrow_mut();
+        lazy.push(Box::new(t.clone()));
+        let ptr = lazy.last().unwrap().as_ref() as *const Type;
         self.b.ins().iconst(types::I64, ptr as i64)
     }
 }
@@ -1390,7 +1300,7 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 /// `pending_exit` (so `Kernel::update` returns `None`). Terminates the
 /// block.
 pub(super) fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
-    let pending_set = cx.helper("graphix_dyncall_set_pending")?;
+    let pending_set = cx.helper("graphix_abort_set")?;
     let exit = pending_exit_block(cx.b, cx.ctx);
     cx.b.ins().call(pending_set, &[]);
     emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;

@@ -550,7 +550,7 @@ const MAX_FREEZE_EXPANSIONS: usize = 256;
 /// the frozen output is FINITE and the recursive value crosses the
 /// kernel boundary as a 2-word opaque (`abi_kind` classifies a
 /// variant-union like `List` as `Variant` without recursing payloads;
-/// the List/Map collection lowering and list-typed DynCalls depend on
+/// the List/Map collection lowering and list-typed calls depend on
 /// this). A recursive NON-variant shape (a recursive tuple) also
 /// freezes finitely — such a type is uninhabited at runtime (no base
 /// case), and every consumer classifies per-level, so the leaf is
@@ -1050,145 +1050,6 @@ impl ParamKind {
     }
 }
 
-/// A function-typed kernel "parameter" — really a slot in the
-/// kernel's fn-args table. Each slot resolves to a `LambdaDef` at
-/// DynCall time; how that resolution happens depends on the
-/// [`FnSource`] tag.
-#[derive(Debug, Clone)]
-pub struct FnParam {
-    /// Graphix-level name. The fusion emitter looks up
-    /// `Apply{Ref(name)}` references against this list.
-    pub name: ArcStr,
-    /// Where to find the `LambdaDef` for this slot at runtime.
-    pub source: FnSource,
-    /// Argument types of the *callee* function. Carries scalar
-    /// primitives plus composite (Array/Tuple/Struct/Variant)
-    /// shapes — the JIT marshals each arg into a `netidx::Value`
-    /// per its declared kind before dispatch.
-    pub arg_types: Vec<Type>,
-    /// Return type of the callee. May be scalar or composite; the
-    /// dispatcher and JIT codegen branch on the kind to pick the
-    /// right encode/decode path.
-    pub return_type: Type,
-    /// The call site's real argument EXPRESSIONS, parallel to
-    /// `arg_types`. The slot's synthetic arg `Ref`s carry these specs
-    /// so a builtin that reports source context (`dbg`) sees the
-    /// genuine expression and position instead of `Expr::default()`'s
-    /// `null` at 1:1 (dyncall-apply-unwired-aug2026). Empty = unknown.
-    pub arg_specs: Vec<crate::expr::Expr>,
-    /// The real (resolved, UNFROZEN) argument types, parallel to
-    /// `arg_types` — the synthetic `Ref`s carry these so type-driven
-    /// rendering (`dbg`'s `TVal`) sees the typechecker's view (a
-    /// tuple, not the frozen ABI array). `arg_types` remains the
-    /// marshal authority. Empty = fall back to `arg_types`.
-    pub arg_orig_types: Vec<Type>,
-    /// The CALL SITE's scope. `None` = the slot owner's scope. For
-    /// pre-bound builtins this is only the FALLBACK `init` scope —
-    /// when the builtin lambda's def resolves, `pre_bind_builtin`
-    /// inits under the DEF's lexical scope, mirroring the interp
-    /// (scope-reporting builtins like `log` print it).
-    pub scope: Option<crate::Scope>,
-}
-
-/// How a [`FnParam`]'s callable is sourced at dispatch time.
-#[derive(Debug, Clone)]
-pub enum FnSource {
-    /// HOF argument: the kernel's caller passes a `LambdaDef` value
-    /// at position `arg_pos` (zero-based, in the lambda's source-
-    /// order argument list, mixed with primitive args). Kernel's
-    /// runtime extracts it from the incoming `from` slice.
-    Param { arg_pos: u32 },
-    /// Statically-resolved user binding: the `LambdaDef` lives in
-    /// `ctx.cached[bind_id]` (or, for unstable bindings,
-    /// `event.variables[bind_id]`). Set when fusion can't fuse the
-    /// callee inline (its body uses unsupported constructs) but can
-    /// still call it via Apply::update.
-    Binding { bind_id: crate::BindId },
-    /// Sync builtin call. Resolved at `Kernel::new` time by looking
-    /// up `name` in `ctx.builtins`, constructing the builtin's
-    /// `Apply<R, E>` via the registered init fn, and stashing it in
-    /// the per-kernel slot. The slot is pre-bound — `dispatch` skips
-    /// the `LambdaDef`-rebind check entirely.
-    ///
-    /// `typ` is the resolved FnType at the call site (read by
-    /// fusion off the CallSite's resolved `ftype()`), needed by
-    /// builtin init fns.
-    ///
-    /// `layout` describes the callee's full formal-arg list (one
-    /// entry per `typ.args` slot, in declaration order — same order
-    /// `Apply::update` reads `from[]`). `Positional` slots are fed
-    /// by the kernel-marshalled call args (indexed by their position
-    /// in `FnParam.arg_types`). `LabeledDefault` slots get the
-    /// captured default expression compiled once at
-    /// `pre_bind_builtin` time and never updated again (mirrors
-    /// `CallSite::bind`'s `compile_default!` macro, but resolved
-    /// once because the call site is fixed in a fused kernel).
-    Builtin {
-        name: ArcStr,
-        typ: std::sync::Arc<crate::typ::FnType>,
-        layout: std::sync::Arc<[BuiltinSlot]>,
-        /// Lambda ID of the binding this call resolves to (when the
-        /// fusion discovery pass could identify it). Used by
-        /// `Kernel::pre_bind_builtin` to look up the lambda's
-        /// env+scope so a `BuiltinSlot::LabeledDefault` whose
-        /// expression references free variables visible only in
-        /// the lambda's original module scope (e.g. `default_escape`
-        /// in `str::escape`'s `#esc = default_escape`) compiles
-        /// correctly. `None` is safe — pre_bind_builtin falls back
-        /// to compiling defaults in the kernel's own scope.
-        lambda_id: Option<crate::LambdaId>,
-    },
-    /// The `cast<T>(x)` operator, lowered as a one-argument DynCall to
-    /// the cast machinery (it's an operator, not a callable, but the
-    /// dispatch path is the same). `target` is the full structured
-    /// destination `Type`; `Kernel::new` constructs a `CastApply` that
-    /// runs `target.cast_value(&ctx.env, v)` — the SAME function the
-    /// node-walk uses, so interp/jit agree by construction. Pre-bound:
-    /// dispatch ignores the (Null placeholder) fn-arg value. Only
-    /// casts the inline emitter can't handle (a non-scalar source or
-    /// target) are registered here; scalar→scalar casts stay inline.
-    Cast { target: crate::typ::Type },
-    /// A handler-ful `?` (a `?` caught by an enclosing `try`). On the
-    /// error path the operator delivers its error by WRITING the catch
-    /// handler's variable — `wrap_error(&ctx.env, spec, e)` then
-    /// `set_var(handler_id, ..)` — exactly what `Qop::update` does. The
-    /// catch handler that READS that variable is always a separate
-    /// kernel (next cycle), so there's no read-after-write hazard.
-    /// `Kernel::new` constructs a `QopDeliverApply` carrying the handler
-    /// BindId + the `?`'s spec (for the error's position/origin).
-    QopDeliver {
-        handler_id: crate::BindId,
-        handler_top: crate::expr::ExprId,
-        own_top: crate::expr::ExprId,
-        spec: crate::expr::Expr,
-    },
-}
-
-/// Per-formal-arg routing for a [`FnSource::Builtin`] slot —
-/// one entry per arg in the callee's declared signature, in
-/// declaration order. See [`FnSource::Builtin`].
-#[derive(Debug, Clone)]
-pub enum BuiltinSlot {
-    /// Fed by the kernel — `Positional(call_idx)` reads value
-    /// `call_idx` from the kernel's marshalled call-arg list
-    /// (i.e. the `FnParam.arg_types[call_idx]`-typed value).
-    Positional(usize),
-    /// Filled at `pre_bind_builtin` time by compiling the captured
-    /// default expression. The result `Node` lives in the slot's
-    /// `arg_refs[i]` for the life of the kernel; no per-dispatch
-    /// work.
-    LabeledDefault(crate::expr::Expr),
-    /// One slot representing the variadic tail. At dispatch time,
-    /// the kernel's call args `[from_call_idx, from_call_idx + count)`
-    /// are forwarded as additional positional refs to the inner
-    /// Apply — the Apply's own vargs handling collects them into the
-    /// expected `Array<T>` per its declared FnType. `count` is fixed
-    /// at fusion time because each call site's arity is captured in
-    /// its own `FnParam` (different arities → different FnParams,
-    /// keyed by `(name, arity)` in `find_fn_input`).
-    Variadic { from_call_idx: usize, count: usize },
-}
-
 /// Map a scalar [`Value`] to the [`PrimType`] the kernel should treat
 /// it as. Variable-width variants (`Z32`/`Z64`/`V32`/`V64`) collapse
 /// to their fixed-width form (`I32`/`I64`/`U32`/`U64`), matching how
@@ -1277,7 +1138,7 @@ pub struct AbiParamDesc<'a> {
     pub wire_slot: usize,
     /// The source binding this param carries, when the input came from
     /// a real graph binding (region free-vars). `None` for synthetic
-    /// inputs (lambda args, lifted async values). The JIT entry binder
+    /// inputs (lambda args). The JIT entry binder
     /// registers it on the env slot so `Ref` emission can resolve
     /// BindId-first — exact under shadowing, where basenames alias.
     pub bind_id: Option<BindId>,
@@ -1324,19 +1185,6 @@ pub struct KernelSig {
     /// list. Vec order IS the ABI order (see [`KernelParam`]). Each
     /// is also visible as a local in the body.
     pub params: Vec<KernelParam>,
-    /// Function-typed parameters in declaration order. Distinct from
-    /// `params` because the interpreter holds them in a separate
-    /// fn-args table (the value is a `LambdaDef`, not a primitive).
-    /// a DynCall's `fn_index` indexes into this table.
-    pub fn_params: Vec<FnParam>,
-    /// LIFTED connect-target inputs (sorted by `BindId`): let-bound
-    /// reactive accumulators routed in as feeders whose IDENTITY is
-    /// per-INSTANCE data, not code. The first `lifted.len()` words of
-    /// the per-instance state buffer hold each target's `BindId`
-    /// (written at construction). Emission reserves these words
-    /// (`state_next` starts past them) and `emit_connect_node` loads
-    /// the write target from them.
-    pub lifted: Vec<BindId>,
     pub return_type: Type,
     /// True iff the body contains a self-tail-call. Backends wrap the
     /// body in `loop { ... }` (Rust) or a back-edge to the entry block
@@ -1356,20 +1204,11 @@ pub struct KernelSig {
     /// Value formal loops; a loop-carried one still de-fuses the
     /// loop).
     pub tail_invariant: Vec<u32>,
-    /// Post-define facts for the interior-sleep gate (P7): `defined`
-    /// flips true when the kernel body's CLIF define completes;
-    /// `has_restart_reach` records whether the body TRANSITIVELY
-    /// reaches a SLEEP-RESTARTING builtin DynCall (refused inside ANY
-    /// select-arm extent), and `has_stateful_reach` a merely STATEFUL
-    /// one (refused inside VALUE-POSITION arm extents — wake
-    /// catch-up, design/wake_catchup.md). Callers consult these at
-    /// their call sites — callees define before callers, so a
-    /// `defined` read of `false` means a self/back-edge call, which
-    /// takes the deferred conservative check instead. Write-once
+    /// Flips true when the kernel body's CLIF define completes.
+    /// Callees define before callers, so a `defined` read of `false`
+    /// at a call site means a self/back-edge call. Write-once
     /// monotone; Relaxed suffices (single-threaded compilation).
     pub defined: std::sync::atomic::AtomicBool,
-    pub has_restart_reach: std::sync::atomic::AtomicBool,
-    pub has_stateful_reach: std::sync::atomic::AtomicBool,
     /// This body's own call-site block shape, packed so a SELF-CALL can
     /// read it: `words | ((replay_hdr + 1) << 32)`, high half 0 for no
     /// header. A self-call has to allocate a block for the activation
@@ -1387,15 +1226,11 @@ impl Clone for KernelSig {
         KernelSig {
             fn_name: self.fn_name.clone(),
             params: self.params.clone(),
-            fn_params: self.fn_params.clone(),
-            lifted: self.lifted.clone(),
             return_type: self.return_type.clone(),
             has_tail_loop: self.has_tail_loop,
             skipped_args: self.skipped_args.clone(),
             tail_invariant: self.tail_invariant.clone(),
             defined: AtomicBool::new(self.defined.load(Relaxed)),
-            has_restart_reach: AtomicBool::new(self.has_restart_reach.load(Relaxed)),
-            has_stateful_reach: AtomicBool::new(self.has_stateful_reach.load(Relaxed)),
             site_desc: std::sync::atomic::AtomicU64::new(self.site_desc.load(Relaxed)),
         }
     }
@@ -1438,11 +1273,11 @@ pub struct SelfBlock {
 /// block-relative index inside a call-site block / [`SiteLeaf`]) owns
 /// a boxed `Vec<u64>` with `own_levels` directory levels below it;
 /// `leaf` describes the chain's BOTTOM table when its entries are
-/// per-slot call-site BLOCKS rather than plain selection words. The
-/// runtime free (`emit_helpers::free_slot_chain`) and the resize
-/// helpers walk exactly this structure, recursively.
-/// Every chain is SEMANTIC per-position state (selection memory,
-/// nested prev-length words, DynCall site identity): it survives
+/// per-slot call-site BLOCKS rather than plain words. The runtime
+/// free (`emit_helpers::free_slot_chain`) and the resize helpers walk
+/// exactly this structure, recursively.
+/// Every chain is SEMANTIC per-position state (nested prev-length
+/// words, per-slot call-site blocks): it survives
 /// evaluation frames and sleep exactly as the node-walk's per-slot
 /// instances do, is prefix-retained across resizes (the truncate
 /// helpers free the dead tail's leaves, so a regrown slot reads 0 and
@@ -1493,15 +1328,15 @@ pub struct SiteLeaf {
 /// the kernel claimed no state — `WrappedKernel::state_words == 0`): a
 /// zero-initialized buffer owned by the invoking runtime `Kernel` node,
 /// giving root-body emission sites one word each of cross-invocation
-/// memory (exact HOF resize detection, select selection memory —
+/// memory (exact HOF resize detection, first-call words —
 /// `design/kernel_instance_state.md`). Cross-kernel
 /// calls forward the caller's pointer for signature uniformity, but
 /// only the region parent's ROOT body may claim words (a callee is
 /// reached from arbitrarily many call sites, whose claims would alias).
 ///
 /// Slot 2 is the PER-CALL-SITE state block pointer (`*mut u64`): a
-/// CALLEE body's cross-invocation memory (select selection memory,
-/// loop slot-table anchors), sized by the callee's own claims
+/// CALLEE body's cross-invocation memory (prev-length words, loop
+/// slot-table anchors), sized by the callee's own claims
 /// (`site_layout`) and supplied by each CALLER from its own storage —
 /// static instance words at a root call site, per-slot chain-leaf
 /// blocks at an in-loop call site — so one compiled body gets

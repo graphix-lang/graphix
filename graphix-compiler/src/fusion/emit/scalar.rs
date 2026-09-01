@@ -593,7 +593,7 @@ pub(super) fn clif_size(p: PrimType) -> u32 {
 }
 
 /// Cast a u64 (typically the raw bits of a scalar primitive packed
-/// via [`pack_value_to_u64`] or returned from `graphix_dyncall`) to a
+/// via [`pack_value_to_u64`] or returned from a call trampoline) to a
 /// CLIF value of the target prim type. Integer truncations use
 /// `ireduce`; floats route through a same-width integer then
 /// `bitcast`.

@@ -12,8 +12,8 @@ use crate::{
     fusion::{
         self,
         kernel_abi::{
-            self, AbiKind, BuiltinSlot, FnParam, FnSource, KernelSig, Seen, abi_kind,
-            freeze_for_abi_normalized, scalar_prim,
+            self, AbiKind, KernelSig, Seen, abi_kind, freeze_for_abi_normalized,
+            scalar_prim,
         },
     },
     node::{callsite::CallSite, lambda::GXLambda},
@@ -52,12 +52,11 @@ pub struct CachedKernel {
     /// Ref id), when there was one. For a recursive callee the direct
     /// path's Node body emission recognises self-calls by this id.
     pub self_bind: Option<BindId>,
-    /// Sync builtin/cast/qop Apply sites discovered in this kernel's
-    /// BODY (`walk_node_for_builtin_calls`), parallel to the
-    /// `fn_params` slots installed on `kernel`. The body emitter
+    /// Fastcall/cast sites discovered in this kernel's BODY
+    /// (`walk_node_for_builtin_calls`). The body emitter
     /// (`CallSite::emit_clif` via `BodyCx::builtin_site`) lowers each
-    /// registered site to a DynCall against its slot. Empty for a body
-    /// with no fusable builtin calls.
+    /// registered site to a direct call. Empty for a body with no
+    /// fusable builtin calls.
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
@@ -80,86 +79,52 @@ pub struct CaptureSlot {
     pub typ: Type,
 }
 
-/// Per-Apply-site info captured by [`walk_node_for_builtin_calls`]
-/// for `CallSite::emit_clif`'s builtin DynCall arm.
-///
-/// `fn_index` is the slot index in `KernelSig.fn_params` for this
-/// call site's [`FnSource::Builtin`] entry.
-///
-/// `marshal_arg_indices` maps each kernel-level marshalled DynCall
-/// arg position to its index in `Apply.args` (source order). At
-/// emit time, the DynCall emitter walks these in order and lowers
-/// each named `Apply.args[idx].1` for the DynCall `args` vector.
-/// Skip-positions (labeled args resolved to defaults)
-/// are not in this list — they have no marshalled value; the
-/// builtin slot's `LabeledDefault` handles them runtime-side.
-///
-/// For variadic builtins, every variadic positional consumed at the
-/// call site appears as its own entry here (each filling one
-/// position in the marshalled args list, all with the same
-/// arg-type clone of the variadic element type).
+/// How a discovered site dispatches inside a kernel: the builtin's
+/// registered `FastFn`, called directly on the site's stack buffer,
+/// or the Cast pseudo-site — `Type::cast_value` against the
+/// destination type, the exact function `TypeCast::update` runs.
+#[derive(Debug, Clone)]
+pub enum SiteDispatch {
+    Fast(crate::FastFn),
+    Cast(Type),
+}
+
+/// Layout of one fusable call site — a sync builtin with a `FastFn`
+/// or a non-inline `cast<T>(x)` — captured at discovery so
+/// `emit_builtin_call_node` can marshal the call's args and decode
+/// the result. `marshal_arg_indices[i]` is the call-site arg index
+/// (into the Apply's arg list) that feeds buffer slot `i`, typed
+/// `arg_types[i]` (frozen; variadic args carry the element type).
 #[derive(Debug, Clone)]
 pub struct BuiltinCallSiteInfo {
-    pub fn_index: u32,
     pub marshal_arg_indices: Vec<usize>,
     pub arg_types: Vec<Type>,
     pub return_type: Type,
-    /// The builtin's `SLEEP_RESTARTS` fact
-    /// (`ctx.builtin_sleep_restarts`), read at discovery.
-    /// Load-bearing for the interior-sleep gate: a sleep-restarting
-    /// builtin's DynCall must not emit inside a select-arm extent —
-    /// kernels have no interior arm-sleep initiator, so the interp's
-    /// documented arm-rewake RESTART semantics
-    /// (once/take/skip/hold/uniq/count clear on sleep) can't be
-    /// reproduced there; the region de-fuses instead (P7, the
-    /// Sync-flip gate). Cast/qop pseudo-sites are sleep-inert.
-    pub sleep_restarts: bool,
-    /// A compiler-internal PURE pseudo-site (the Cast recipe): value
-    /// conversion with no state and no effect, `fastcall: None` only
-    /// as an artifact of its dispatch plumbing. Admitted under strict
-    /// fusion (design/strict_fusion.md).
-    pub pseudo: bool,
-    /// The builtin's `STATELESS` fact (`ctx.builtin_stateless`), read
-    /// at discovery. Load-bearing for the WIDENED interior-sleep gate
-    /// (design/wake_catchup.md): a STATEFUL builtin inside a select-
-    /// arm extent de-fuses — kernels have no tracked fire bits, so a
-    /// fused accumulator would miss the catch-up fires the interp
-    /// select injects and mis-consume standing values at wakes.
-    /// Cast/qop pseudo-sites are stateless.
-    pub stateless: bool,
-    /// The builtin's `FASTCALL` entry, if any: the site emits a direct
-    /// call through `graphix_fastcall` instead of a DynCall.
-    pub fastcall: Option<crate::FastFn>,
+    pub dispatch: SiteDispatch,
 }
 
-/// Output of [`walk_node_for_builtin_calls`].
+/// Output of [`walk_node_for_builtin_calls`]: `Apply.spec.id →
+/// BuiltinCallSiteInfo` so `CallSite::emit_clif` recognises a
+/// fusable site at emit time.
 #[derive(Debug, Default, Clone)]
 pub struct BuiltinCallDiscovery {
-    /// `FnParam` slots to install in the kernel sig's `fn_params` —
-    /// one per discovered builtin Apply site, in walk order.
-    pub fn_params: Vec<FnParam>,
-    /// `Apply.spec.id → BuiltinCallSiteInfo` lookup so
-    /// `CallSite::emit_clif` can recognise the call site at emit
-    /// time and lower it to a DynCall.
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
-/// Walk a Node subtree to discover builtin Apply sites: every
+/// Walk a Node subtree to discover fusable call sites: every
 /// `CallSite` whose target resolves to a sync builtin binding
-/// registered in `ctx.builtin_bindings` gets a
-/// [`FnParam`] slot ([`FnSource::Builtin`])
-/// and an `apply_sites` entry, capturing the layout `emit_dyncall`
-/// needs to dispatch via the runtime's builtin Apply machinery.
-/// Descent is [`fusion::for_each_emitted_node`]: ordinary lambda bodies
-/// remain separate kernels, while compiler-owned collection callbacks
-/// are included because their bodies emit inline in the caller. Each
-/// site reads the CallSite's resolved FnType and its compiled arg/return
+/// registered in `ctx.builtin_bindings` WITH a `FastFn`, and every
+/// non-inline `cast<T>(x)`, gets an `apply_sites` entry. Descent is
+/// [`fusion::for_each_emitted_node`]: ordinary lambda bodies remain
+/// separate kernels, while compiler-owned collection callbacks are
+/// included because their bodies emit inline in the caller. Each site
+/// reads the CallSite's resolved FnType and its compiled arg/return
 /// sub-nodes' types (post-typecheck), never the AST.
 ///
-/// Sites whose argument shape can't be lowered (unsupported arg
-/// type, async builtin, mismatched arity, …) are simply omitted —
-/// emission then fails on the un-registered site and the region
-/// stays unfused.
+/// Sites that can't be lowered (no `FastFn`, unsupported arg type,
+/// async builtin, mismatched arity, a defaulted label the call didn't
+/// write, …) are simply omitted — emission then fails on the
+/// un-registered site and the subtree node-walks.
 pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -170,117 +135,48 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
             try_register_builtin_call_from_callsite(cs, ctx, out);
         }
         NodeView::TypeCast(tc) => try_register_cast(tc, out),
-        NodeView::Qop(q) => try_register_qop_deliver(q, out),
         _ => {}
     });
 }
 
-/// Register the error-delivery DynCall for a handler-ful `?` (a `?`
-/// caught by an enclosing `try`), if `emit_qop_node` will lower it
-/// in-kernel. A handler-LESS `?` needs nothing (its error path is just
-/// bottom). The error value delivered is always a 2-word `Value::Error`,
-/// independent of the `?`'s SUCCESS type — so this registers for any
-/// success type `emit_qop_node` lowers (scalar OR string/composite/
-/// value-shape). A `Unit`/`Null` success would Err in emit (the region
-/// de-fuses, the slot goes unused — harmless).
-fn try_register_qop_deliver<R: Rt, E: UserEvent>(
-    q: &crate::node::error::Qop<R, E>,
-    out: &mut BuiltinCallDiscovery,
-) {
-    let Some((handler_id, handler_top)) = q.id else { return };
-    let Some(inner_typ) = freeze_for_abi_normalized(q.n.typ()) else { return };
-    if kernel_abi::nullable_inner(&inner_typ).is_none() {
-        return;
-    }
-    // The delivered arg is the inner's full Nullable value (the `Error` on
-    // the error path) — Value-shape (2-word). `return_type` is unused: the
-    // emitter hardcodes the Unit DynCall ret_kind and `QopDeliverApply`
-    // returns `Null`; carry the arg type as a harmless placeholder.
-    let fn_index = out.fn_params.len() as u32;
-    out.fn_params.push(FnParam {
-        name: arcstr::literal!("<qop_deliver>"),
-        source: FnSource::QopDeliver {
-            handler_id,
-            handler_top,
-            own_top: q.top_id,
-            spec: q.spec.clone(),
-        },
-        arg_types: vec![inner_typ.clone()],
-        return_type: inner_typ.clone(),
-        arg_specs: vec![q.n.spec().clone()],
-        arg_orig_types: vec![q.n.typ().clone()],
-        scope: None,
-    });
-    out.apply_sites.insert(
-        q.spec.id,
-        BuiltinCallSiteInfo {
-            fn_index,
-            marshal_arg_indices: vec![0],
-            arg_types: vec![inner_typ.clone()],
-            return_type: inner_typ,
-            sleep_restarts: false,
-            stateless: true,
-            pseudo: false,
-            fastcall: None,
-        },
-    );
-}
-
-/// Register a `cast<T>(x)` site as a one-argument DynCall to the cast
+/// Register a `cast<T>(x)` site as a one-argument call to the cast
 /// machinery, if it can't be emitted inline. A scalar→scalar cast stays
 /// inline (`emit_cast_node`'s `compile_cast` fast path — pure register
 /// arithmetic); ONLY a cast with a non-scalar source (e.g. a `datetime`)
-/// or non-scalar target needs the machinery call. Registers a
-/// `FnSource::Cast` slot + an `apply_sites` entry exactly like a builtin
-/// call, so `emit_cast_node` lowers it through the shared
-/// `emit_dyncall_node` path. The decision here MUST mirror
-/// `emit_cast_node`'s inline test, or the site would (de)register out of
-/// step with emission.
+/// or non-scalar target needs the machinery call. The decision here
+/// MUST mirror `emit_cast_node`'s inline test, or the site would
+/// (de)register out of step with emission.
 fn try_register_cast<R: Rt, E: UserEvent>(
     tc: &crate::node::TypeCast<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
     let source = tc.n.typ();
-    // Inline-able scalar→scalar cast: no slot (matches emit_cast_node's
+    // Inline-able scalar→scalar cast: no site (matches emit_cast_node's
     // fast path — NUMERIC prims only; a bool cast needs the machinery
-    // DynCall, so it registers a slot like any non-inline cast).
+    // call, so it registers like any non-inline cast).
     if scalar_prim(source).is_some_and(|p| p.is_numeric())
         && PrimType::from_type(&tc.target).is_some_and(|p| p.is_numeric())
     {
         return;
     }
-    // The source must marshal across the DynCall ABI, and the cast's
+    // The source must marshal across the call ABI, and the cast's
     // fallible result type (`[T, Error]`) must decode — otherwise the
     // site can't be lowered and emission fails on the un-registered
     // node (the region stays unfused).
     let Some(arg_frozen) = freeze_for_abi_normalized(source) else { return };
     let Some(ret_frozen) = freeze_for_abi_normalized(&tc.typ) else { return };
-    let fn_index = out.fn_params.len() as u32;
-    out.fn_params.push(FnParam {
-        name: arcstr::literal!("<cast>"),
-        source: FnSource::Cast { target: tc.target.clone() },
-        arg_types: vec![arg_frozen.clone()],
-        return_type: ret_frozen.clone(),
-        arg_specs: vec![tc.n.spec().clone()],
-        arg_orig_types: vec![source.clone()],
-        scope: None,
-    });
     out.apply_sites.insert(
         tc.spec.id,
         BuiltinCallSiteInfo {
-            fn_index,
             marshal_arg_indices: vec![0],
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
-            sleep_restarts: false,
-            stateless: true,
-            pseudo: true,
-            fastcall: None,
+            dispatch: SiteDispatch::Cast(tc.target.clone()),
         },
     );
 }
 
-/// Register one CallSite as a builtin DynCall site, if it qualifies.
+/// Register one CallSite as a fastcall site, if it qualifies.
 /// The FnType shape comes from the CallSite (`callsite.ftype()
 /// .map(|ft| ft.resolve_tvars())`); each concrete arg/return type
 /// comes from the compiled sub-nodes (`cs.arg_positional` /
@@ -358,13 +254,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             None => call_positional.push(call_idx),
         }
     }
-    let mut layout: LPooled<Vec<BuiltinSlot>> = LPooled::take();
     let mut arg_types: Vec<Type> = Vec::new();
-    // Parallel to `arg_types`: the real arg exprs and their resolved
-    // (unfrozen) types, for the slot's synthetic Refs
-    // (dyncall-apply-unwired-aug2026).
-    let mut arg_specs: Vec<crate::expr::Expr> = Vec::new();
-    let mut arg_orig_types: Vec<Type> = Vec::new();
     let mut marshal_arg_indices: Vec<usize> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
@@ -386,15 +276,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     Some(t) => t,
                     None => return,
                 };
-                let slot_idx = arg_types.len();
-                layout.push(BuiltinSlot::Positional(slot_idx));
                 arg_types.push(kt);
-                arg_specs.push(
-                    cs.arg_positional(pos_idx)
-                        .map(|n| n.spec().clone())
-                        .unwrap_or_default(),
-                );
-                arg_orig_types.push(arg_typ);
                 marshal_arg_indices.push(*call_idx);
             }
             FnArgKind::Labeled { name, has_default } => {
@@ -407,32 +289,16 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                         Some(t) => t,
                         None => return,
                     };
-                    let slot_idx = arg_types.len();
-                    layout.push(BuiltinSlot::Positional(slot_idx));
                     arg_types.push(kt);
-                    arg_specs.push(
-                        cs.arg_named(name).map(|n| n.spec().clone()).unwrap_or_default(),
-                    );
-                    arg_orig_types.push(arg_typ);
                     marshal_arg_indices.push(call_idx);
-                } else if *has_default {
-                    let default = info.argspec.iter().find_map(|src| {
-                        let n = src.pattern.single_bind()?;
-                        if n.as_str() != name.as_str() {
-                            return None;
-                        }
-                        if let Some(Some(d)) = &src.labeled {
-                            Some(d.clone())
-                        } else {
-                            None
-                        }
-                    });
-                    let default = match default {
-                        Some(d) => d,
-                        None => return,
-                    };
-                    layout.push(BuiltinSlot::LabeledDefault(default));
                 } else {
+                    // A FASTCALL sees the marshalled buffer AS the
+                    // argument list, so a defaulted label the call
+                    // didn't write is a HOLE it cannot fill
+                    // (json::write_str's defaulted #pretty made the fn
+                    // read the payload as the bool and bottom forever,
+                    // 2026-08-30). The site node-walks.
+                    let _ = has_default;
                     return;
                 }
             }
@@ -443,9 +309,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         if fn_type.vargs.is_none() {
             return;
         }
-        let from_call_idx = arg_types.len();
-        let count = remaining.len();
-        layout.push(BuiltinSlot::Variadic { from_call_idx, count });
         for (pos_idx, call_idx) in remaining {
             let arg_typ =
                 cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(|| {
@@ -460,10 +323,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 None => return,
             };
             arg_types.push(kt);
-            arg_specs.push(
-                cs.arg_positional(pos_idx).map(|n| n.spec().clone()).unwrap_or_default(),
-            );
-            arg_orig_types.push(arg_typ);
             marshal_arg_indices.push(*call_idx);
         }
     }
@@ -477,51 +336,23 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(t) => t,
         None => return,
     };
-    if !arg_types.iter().all(|t| is_dyncall_arg_supported(t)) {
+    if !arg_types.iter().all(|t| is_call_arg_supported(t)) {
         return;
     }
-    if !is_dyncall_return_supported(&return_type) {
+    if !is_call_return_supported(&return_type) {
         return;
     }
-    // FASTCALL sees the marshalled buf AS the argument list — a
-    // `LabeledDefault` slot is a HOLE the DynCall dispatcher fills
-    // from the layout but the trampoline cannot (json::write_str's
-    // defaulted #pretty made the fn read the payload as the bool and
-    // bottom forever — the toml/json jit timeouts, 2026-08-30). Such
-    // a site dispatches through the DynCall instead.
-    let all_marshalled = layout
-        .iter()
-        .all(|s| matches!(s, BuiltinSlot::Positional(_) | BuiltinSlot::Variadic { .. }));
-    let fn_index = out.fn_params.len() as u32;
-    out.fn_params.push(FnParam {
-        name: info.name.clone(),
-        source: FnSource::Builtin {
-            name: info.name.clone(),
-            typ: fn_type,
-            layout: std::sync::Arc::from_iter(layout.drain(..)),
-            lambda_id: info.lambda_id,
-        },
-        arg_types: arg_types.clone(),
-        return_type: return_type.clone(),
-        arg_specs,
-        arg_orig_types,
-        scope: Some(cs.scope().clone()),
-    });
+    // STRICT FUSION (design/strict_fusion.md): only a builtin with a
+    // registered `FastFn` fuses — every other builtin dispatch
+    // node-walks on the canonical interp.
+    let Some(fast) = ctx.builtin_fastcall(info.name.as_str()) else { return };
     out.apply_sites.insert(
         apply_id,
         BuiltinCallSiteInfo {
-            fn_index,
             marshal_arg_indices,
             arg_types,
             return_type,
-            sleep_restarts: ctx.builtin_sleep_restarts(info.name.as_str()),
-            stateless: ctx.builtin_stateless(info.name.as_str()),
-            pseudo: false,
-            fastcall: if all_marshalled {
-                ctx.builtin_fastcall(info.name.as_str())
-            } else {
-                None
-            },
+            dispatch: SiteDispatch::Fast(fast),
         },
     );
 }
@@ -1424,10 +1255,9 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         // Function-typed captures: a statically-resolvable callee is
         // handled by the body's own CallSite emit (it fires this same
         // CallSite emit and emits a CLIF call), so it isn't a value
-        // capture — skip it. A dynamic fn binding (used as a value or
-        // dispatched via DynCall) can't be lifted as a value slot;
-        // bail (the lambda stays unfused, runtime takes the interp
-        // path). Follow-up: dynamic fn captures via `fn_inputs` slots.
+        // capture — skip it. A dynamic fn binding (used as a value)
+        // can't be lifted as a value slot; bail (the lambda stays
+        // unfused, runtime takes the interp path).
         if matches!(&cap_typ, Type::Fn(_)) {
             // We can't cheaply tell static-vs-dynamic here without the
             // call site; rely on the body emit to lower static calls
@@ -1510,16 +1340,14 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     sig.has_tail_loop = has_tail;
     sig.skipped_args = skipped_args;
     sig.tail_invariant = tail_invariant;
-    // Discover sync builtin/cast/qop Apply sites in the body so they
-    // fuse as DynCalls (the same prepass `try_fuse` runs on a region
-    // root). `fn_params` installs the slots on the sig; `apply_sites`
-    // lets the body emitter recognise each call site. The inline collection
+    // Discover the fastcall/cast sites in the body (the same prepass
+    // `try_fuse` runs on a region root): `apply_sites` lets the body
+    // emitter recognise each call site. The inline collection
     // path consumes these directly (the callback body's own builtins);
     // the cross-kernel callee path consumes them via `CalleeBody`
     // (Stage 2 — the runtime combined-slot delivery).
     let mut discovery = BuiltinCallDiscovery::default();
     walk_node_for_builtin_calls(g.body(), ec, &mut discovery);
-    sig.fn_params = discovery.fn_params;
     if crate::dbgenv::graphix_dbg_kernels() {
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             eprintln!(
@@ -1689,8 +1517,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
 /// Per-input slot classification — the analysis-side view a
 /// [`kernel_abi::KernelParam`] is built from (`fusion::sig_from_inputs`
 /// translates each into its `ParamKind`). Function-typed inputs are
-/// not value slots (they ride `fn_params` / the statically-resolved
-/// call path).
+/// not value slots (they ride the statically-resolved call path).
 #[derive(Debug, Clone)]
 pub enum RegionInputKind {
     Prim(PrimType),
@@ -1722,8 +1549,8 @@ pub enum RegionInputKind {
 /// Returns `None` for types that have no kernel-input representation:
 /// - `Unit` (no value), bare `Null` (always widened to `Nullable<T>`
 ///   at the construction site).
-/// - function types (handled via the `fn_params` channel or the
-///   statically-resolved-call path, not as a value slot).
+/// - function types (handled via the statically-resolved-call path,
+///   not as a value slot).
 pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     use AbiKind;
     // FREEZE at the boundary. The Type comes from a binding's declared
@@ -1751,10 +1578,10 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     }
 }
 
-/// True if a (frozen) `Type` is a marshallable `DynCall` **argument**
+/// True if a (frozen) `Type` is a marshallable call **argument**
 /// shape — every fusable shape except `Unit` (no value to pass) and
 /// bare `Null` (always widened to `Nullable<T>` at construction).
-fn is_dyncall_arg_supported(t: &Type) -> bool {
+fn is_call_arg_supported(t: &Type) -> bool {
     use AbiKind;
     match abi_kind(t) {
         Some(
@@ -1798,10 +1625,10 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
     })
 }
 
-/// True if a (frozen) `Type` is a marshallable `DynCall` **return**
+/// True if a (frozen) `Type` is a marshallable call **return**
 /// shape — every fusable shape except bare `Null`. `Unit` IS allowed
 /// (side-effect-only sync builtins like `println` return Bottom).
-fn is_dyncall_return_supported(t: &Type) -> bool {
+fn is_call_return_supported(t: &Type) -> bool {
     use AbiKind;
     match abi_kind(t) {
         Some(

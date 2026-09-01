@@ -4,8 +4,8 @@
 //! [`Kernel`].
 
 use crate::{
-    Apply, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Update, UserEvent,
-    expr::{Expr, ExprId},
+    Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    expr::Expr,
     fusion::{emit::WrappedKernel, kernel::Kernel, kernel_abi::KernelSig},
     typ::Type,
 };
@@ -27,7 +27,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// pending-flag propagation, composite-return marshalling.
     /// Routing through `Kernel` (instead of re-implementing the
     /// dispatch surface) keeps FusedKernel minimal.
-    inner: Kernel<R, E>,
+    inner: Kernel,
 }
 
 impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
@@ -38,15 +38,11 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
 
 impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     pub fn new(
-        ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         typ: Type,
         kernel: StdArc<KernelSig>,
         wrapped: Option<StdArc<WrappedKernel>>,
         feeders: Box<[Node<R, E>]>,
-        lifted_ids: &[BindId],
-        scope: Scope,
-        top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
         // A fused node REQUIRES a JIT. There is no interpreter fallback —
@@ -63,7 +59,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 ));
             }
         };
-        let inner = Kernel::new(ctx, kernel, n_args, wrapped, lifted_ids, scope, top_id)?;
+        let inner = Kernel::new(kernel, n_args, wrapped)?;
         Ok(Node::new(Self { spec, typ, feeders, inner }))
     }
 
@@ -86,9 +82,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> &crate::TagValue {
-        // Delegate to Kernel (Apply) — drives the feeders, sets up
-        // the DynCall dispatch handle, invokes JIT (or interp), and
-        // decodes the return value. The production is HONEST (the 5c
+        // Delegate to Kernel (Apply) — drives the feeders, invokes the
+        // JIT, and decodes the return value. The production is HONEST (the 5c
         // output flip): Fired/Stale results carry their in-band tag, a
         // bottomed result is the shared FreshBottom/StaleBottom, a
         // quiet poll rides the resident. Forward it — Kernel's

@@ -19,8 +19,7 @@ use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        is_fresh, is_tainted, is_untainted, propagate_flags, scalar_disc, taint_if,
-        value_disc,
+        is_tainted, is_untainted, propagate_flags, scalar_disc, taint_if, value_disc,
     },
     body::{
         BodyCx, TailRebind, emit_kernel_bottom, emit_kernel_return,
@@ -269,9 +268,8 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
         // discarding it discards the bottom exactly like the
         // node-walk (`{println("hi"); 100}` used to pending-abort the
         // kernel and lose the 100 — soak finding 2026-07-04, item 28).
-        // Effects that can't emit (println's bare-Null return) still
-        // Err out of `emit_dyncall_node` and de-fuse the region —
-        // effects de-fuse, never silently skip.
+        // Effects never emit (strict fusion) — the region de-fuses,
+        // never silently skips.
         _ => {
             let cv = child.emit_clif(cx)?;
             emit_discard_result(cx, child, cv)?;
@@ -362,27 +360,6 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     if sel.arms.is_empty() {
         return Err(anyhow!("emit_clif: select with no arms"));
-    }
-    // The tail emitter has no selection memory (recursive bodies claim
-    // no state), so an arm-lifted connect target's wake re-seed can't
-    // be reproduced here — de-fuse. The value-position emitter handles
-    // this shape via the state word (see `emit_select_node`).
-    let has_arm_lift = sel.arms.iter().any(|(_, body)| {
-        let mut found = false;
-        fusion::for_each_node(body, &mut |n| {
-            if let NodeView::Bind(b) = n.view() {
-                if b.single_bind_id().is_some_and(|id| cx.ctx.lifted.contains(&id)) {
-                    found = true;
-                }
-            }
-        });
-        found
-    });
-    if has_arm_lift {
-        return Err(anyhow!(
-            "emit_clif: tail select arm holds a lifted connect target — \
-             no selection memory in a recursive body"
-        ));
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
@@ -509,16 +486,6 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
 ) -> Result<()> {
-    // The interior-sleep gate's deferred case (P7): a tail jump
-    // re-enters this kernel from inside an arm; whether that is
-    // sound depends on the body's finalized stateful fact, checked
-    // at the end of `compile_into_function`.
-    if cx.ctx.arm_depth.get() > 0 {
-        cx.ctx.self_backedge_in_arm.set(true);
-    }
-    if cx.ctx.value_arm_depth.get() > 0 {
-        cx.ctx.self_backedge_in_value_arm.set(true);
-    }
     let spec_apply = match &cs.spec().kind {
         ExprKind::Apply(a) => a,
         _ => {
@@ -585,124 +552,6 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     bind_id: Option<BindId>,
     value: &Node<R, E>,
 ) -> Result<()> {
-    // LIFTED connect target (a let-bound scalar counter routed in as a
-    // feeder): bind it to a SEED-SELECT — the feeder (entry param) when it
-    // has a value (untainted, i.e. ever fired), else the constant SEED
-    // (this let's value). Reproduces the node-walk exactly: the variable's
-    // value is the last `set_var`'d value, or the one-shot `Bind` seed
-    // until the first write. The seed is a STALE-gated constant
-    // (`emit_const_node` — fresh at init, stale after), so reads see the
-    // node-walk's firing; the feeder carries its own fresh/stale bit. The
-    // entry param is the binding the kernel-entry binder installed under
-    // this same `bind_id` (the lift added it to `inputs`); this let then
-    // SHADOWS it, so post-let reads resolve to the seed-select result.
-    if let Some(id) = bind_id {
-        if cx.is_lifted(id) {
-            let vv = {
-                let l = cx.env.lookup(id, name).ok_or_else(|| {
-                    anyhow!("emit_clif: lifted target `{name}` has no feeder param")
-                })?;
-                l.vv
-            };
-            let pdisc = cx.b.use_var(vv.disc);
-            let ppay = cx.b.use_var(vv.payload);
-            let valid = is_untainted(cx.b, pdisc);
-            // The feeder wins whenever it has ever fired — the seed is a
-            // BIRTH value, everywhere. At kernel init the feeder is
-            // tainted, so the seed wins there.
-            //
-            // This used to special-case a select ARM body (init-override
-            // active), re-firing the seed on every arm wake to mirror
-            // the node-walk of the time (soak jul08g fuzz divergence 6).
-            // The node-walk stopped doing that on 2026-08-14: a wake
-            // RESUMES an arm, it does not create one, so a `<-` target
-            // keeps what it accumulated while the arm slept — sleep is
-            // PAUSE (`findings/arm-local-bind-aug2026/`). The wake-init
-            // override still drives interior CACHE catch-up (DynCall
-            // sites, callee blocks); it just no longer reseeds.
-            let use_feeder = valid;
-            let frozen = kernel_abi::freeze_for_abi_normalized(value.typ());
-            let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
-            match ak {
-                Some(AbiKind::Scalar(p)) => {
-                    // Register scalars are branch-free: both sides are
-                    // plain values, select the feeder or the seed.
-                    let seed = value.emit_clif(cx)?;
-                    let disc = cx.b.ins().select(use_feeder, pdisc, seed.disc);
-                    let payload = cx.b.ins().select(use_feeder, ppay, seed.payload);
-                    bind_local(
-                        cx,
-                        name.clone(),
-                        disc,
-                        payload,
-                        LocalKind::Scalar(p),
-                        Some(id),
-                    );
-                }
-                // A composite / string accumulator (`let data = []; data <-
-                // array::push(data, x)`) needs OWNERSHIP on both sides:
-                // the feeder path CLONES the entry param (the param local
-                // keeps its own allocation — both drop at the return via
-                // `drop_owned_composites`), the seed path emits the fresh
-                // literal only when taken (no allocation to discard on the
-                // other side).
-                Some(k @ (AbiKind::Array | AbiKind::Tuple | AbiKind::Struct))
-                | Some(k @ AbiKind::String) => {
-                    let is_string = matches!(k, AbiKind::String);
-                    let use_param = cx.b.create_block();
-                    let use_seed = cx.b.create_block();
-                    let merge = cx.b.create_block();
-                    cx.b.append_block_param(merge, types::I64); // disc
-                    cx.b.append_block_param(merge, types::I64); // ptr/bits
-                    cx.b.ins().brif(use_feeder, use_param, &[], use_seed, &[]);
-                    cx.b.switch_to_block(use_param);
-                    cx.b.seal_block(use_param);
-                    let clone_helper = if is_string {
-                        cx.helper("graphix_arcstr_clone")?
-                    } else {
-                        cx.helper("graphix_valarray_clone")?
-                    };
-                    let call = cx.b.ins().call(clone_helper, &[ppay]);
-                    let cloned = cx.b.inst_results(call)[0];
-                    cx.b.ins()
-                        .jump(merge, &[BlockArg::Value(pdisc), BlockArg::Value(cloned)]);
-                    cx.b.switch_to_block(use_seed);
-                    cx.b.seal_block(use_seed);
-                    let seed = value.emit_clif(cx)?;
-                    let seed_owned = if is_string {
-                        // Strings are owned at production.
-                        seed.payload
-                    } else {
-                        ensure_owned_composite_src(
-                            cx,
-                            node_composite_source(value),
-                            seed.payload,
-                        )?
-                    };
-                    cx.b.ins().jump(
-                        merge,
-                        &[BlockArg::Value(seed.disc), BlockArg::Value(seed_owned)],
-                    );
-                    cx.b.switch_to_block(merge);
-                    cx.b.seal_block(merge);
-                    let (disc, payload) = {
-                        let params = cx.b.block_params(merge);
-                        (params[0], params[1])
-                    };
-                    let kind =
-                        if is_string { LocalKind::String } else { LocalKind::Composite };
-                    bind_local(cx, name.clone(), disc, payload, kind, Some(id));
-                }
-                other => {
-                    return Err(anyhow!(
-                        "emit_clif: lifted connect target `{name}` of shape \
-                         {other:?} — not yet supported"
-                    ));
-                }
-            }
-            return Ok(());
-        }
-    }
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
     let frozen = kernel_abi::freeze_for_abi_normalized(value.typ());
@@ -813,68 +662,6 @@ pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     Ok(())
 }
 
-/// Emit the error-delivery DynCall for a handler-ful `?` (a `?` caught
-/// by an enclosing `try` — `FnSource::QopDeliver`). Marshals the error
-/// value `cv` as the single Value-shape argument and dispatches the
-/// pre-bound `QopDeliverApply`, which runs `wrap_error` + writes the
-/// catch handler's variable (exactly `Qop::update`'s handler path). Unit
-/// return, discarded — the caller's error branch bottoms the result
-/// separately (the scalar taint). `inner_owned` selects owned vs
-/// borrowed push: the error rides the inner's ownership, and the owned
-/// push hands it to `QopDeliverApply` to drop (no separate drop here).
-fn emit_qop_deliver(
-    cx: &mut BodyCx,
-    site_id: ExprId,
-    cv: &CompiledExpr,
-    inner_owned: bool,
-) -> Result<()> {
-    if crate::dbgenv::graphix_strict_fuse() {
-        return Err(anyhow!("emit_clif: strict fusion — handler-ful ? is an effect"));
-    }
-    let info = cx
-        .builtin_site(site_id)
-        .ok_or_else(|| anyhow!("emit_clif: qop-deliver site {site_id:?} not discovered"))?
-        .clone();
-    let buf_new = cx.helper("graphix_value_buf_new")?;
-    let cap = cx.b.ins().iconst(types::I64, 1);
-    let call = cx.b.ins().call(buf_new, &[cap]);
-    let buf = cx.b.inst_results(call)[0];
-    let buf_var = cx.b.declare_var(types::I64);
-    cx.b.def_var(buf_var, buf);
-    cx.ctx.dyncall_buf_stack.borrow_mut().push(buf_var);
-    // The error rides the 2-word Value wire shape; the pushed disc must be
-    // CLEAN (a tainted disc is an invalid tag).
-    let clean = clean_disc(cx.b, cv.disc);
-    let push_name = if inner_owned {
-        "graphix_value_buf_push_value"
-    } else {
-        "graphix_value_buf_push_value_borrowed"
-    };
-    let push = cx.helper(push_name)?;
-    cx.b.ins().call(push, &[buf, clean, cv.payload]);
-    // Region-wide slot index: the site's local fn_index plus this body's
-    // base offset into the combined `dyn_slots` table.
-    let region_idx = info.fn_index + cx.fn_index_offset();
-    let fn_idx = cx.b.ins().iconst(types::I32, region_idx as i64);
-    // QopDeliverApply returns Value::Null; the pair is discarded.
-    // Taint mask 0: the single error arg was gated on `deliverable`
-    // (real, untainted) before this emits. Stale mask 0: same gate —
-    // the arg is a genuine production, so it delivers FIRED. Site word
-    // 0: `QopDeliverApply` is stateless by construction (handler_id and
-    // spec are per-slot config), so site identity buys nothing.
-    let mask0 = cx.b.ins().iconst(types::I64, 0);
-    let stale0 = cx.b.ins().iconst(types::I64, 0);
-    let site0 = cx.b.ins().iconst(types::I64, 0);
-    cx.call_helper("graphix_dyncall", &[fn_idx, buf, mask0, stale0, site0])?;
-    // `QopDeliverApply::update` structurally returns `Some(Null)` (the
-    // marshalled arg is always present), but every dyncall site clears
-    // the pending flag so it can only ever mean "genuine abort".
-    let take = cx.helper("graphix_dyncall_pending_take_clear")?;
-    cx.b.ins().call(take, &[]);
-    cx.ctx.dyncall_buf_stack.borrow_mut().pop();
-    Ok(())
-}
-
 /// `?` / `$` — both unwrap a Nullable<T> to T (else pass the value
 /// through unchanged for a non-Nullable inner, mirroring `wrap_qop`'s
 /// None branch). Scalar / string / composite success returns the
@@ -904,46 +691,20 @@ fn type_may_error(t: &Type) -> bool {
     }
 }
 
-/// The `?`/`$` bad path's deliver-or-drop (shared by the
-/// composite/string, value-shape, AND scalar arms — the scalar arm
-/// reaches it under its own `is_err` branch, since its success path
-/// is branchless). With a catch handler, branch on
-/// `deliverable` (a REAL, untainted error): the deliver CONSUMES an
-/// owned error (or clones a borrowed one), so it REPLACES the drop —
-/// delivering and dropping an owned error would double-free. A
-/// phantom (tainted) error must not deliver but an owned one still
-/// drops. Handler-less: drop the owned error; a Borrowed inner is
-/// owned by its env slot, which `emit_pending_cleanup` drops —
-/// dropping here too would double-free. `clean`/`payload` are the
-/// error Value's words.
-fn emit_qop_error_disposal(
+/// The `?`/`$` bad path's drop (shared by the composite/string,
+/// value-shape, AND scalar arms — the scalar arm reaches it under its
+/// own `is_err` branch, since its success path is branchless): drop
+/// the OWNED error; a Borrowed inner is owned by its env slot, which
+/// `emit_pending_cleanup` drops — dropping here too would
+/// double-free. `clean`/`payload` are the error Value's words.
+fn emit_qop_error_drop(
     cx: &mut BodyCx,
-    handler_site: Option<ExprId>,
-    cv: &CompiledExpr,
-    deliverable: cranelift_codegen::ir::Value,
     clean: cranelift_codegen::ir::Value,
     payload: cranelift_codegen::ir::Value,
     inner_owned: bool,
 ) -> Result<()> {
-    let value_drop = cx.helper("graphix_value_drop")?;
-    if let Some(site) = handler_site {
-        let deliver_block = cx.b.create_block();
-        let no_deliver = cx.b.create_block();
-        let merged = cx.b.create_block();
-        cx.b.ins().brif(deliverable, deliver_block, &[], no_deliver, &[]);
-        cx.b.switch_to_block(deliver_block);
-        cx.b.seal_block(deliver_block);
-        emit_qop_deliver(cx, site, cv, inner_owned)?;
-        cx.b.ins().jump(merged, &[]);
-        cx.b.switch_to_block(no_deliver);
-        cx.b.seal_block(no_deliver);
-        if inner_owned {
-            cx.b.ins().call(value_drop, &[clean, payload]);
-        }
-        cx.b.ins().jump(merged, &[]);
-        cx.b.switch_to_block(merged);
-        cx.b.seal_block(merged);
-    } else if inner_owned {
+    if inner_owned {
+        let value_drop = cx.helper("graphix_value_drop")?;
         cx.b.ins().call(value_drop, &[clean, payload]);
     }
     Ok(())
@@ -954,7 +715,6 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     _spec_id: ExprId,
     inner: &Node<R, E>,
     result_typ: &Type,
-    handler_site: Option<ExprId>,
 ) -> Result<CompiledExpr> {
     // Lockstep with the discovery-side freeze (lowering.rs
     // try_register_qop_deliver): both normalized, so a site the
@@ -1009,10 +769,6 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // returns `Some`, so a no-fire cycle delivers nothing (jul19i
     // katana divergence_000000: the taint-only gate re-delivered a div
     // error minted from a cached operand, a ghost second write to the
-    // handler var). Delivery requires FRESH — is_err && !TAINT &&
-    // !STALE; the abort/taint paths still treat it as no-value.
-    let fresh = is_fresh(cx.b, disc);
-    let deliverable = cx.b.ins().band(is_err, fresh);
     match kernel_abi::abi_kind(&success_typ) {
         // Prim success — per-value taint, branchless on the SUCCESS
         // path. The payload word holds the success bits when !is_err;
@@ -1029,7 +785,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // #219: the inner's own taint also flows through.
         Some(AbiKind::Scalar(p)) => {
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
-            if inner_owned || handler_site.is_some() {
+            if inner_owned {
                 // On the structural-error path (phantoms included —
                 // an owned tainted error is still an allocation),
                 // deliver to the catch handler's variable (mirrors
@@ -1041,15 +797,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                 cx.b.ins().brif(is_err, err_block, &[], after, &[]);
                 cx.b.switch_to_block(err_block);
                 cx.b.seal_block(err_block);
-                emit_qop_error_disposal(
-                    cx,
-                    handler_site,
-                    &cv,
-                    deliverable,
-                    clean,
-                    payload,
-                    inner_owned,
-                )?;
+                emit_qop_error_drop(cx, clean, payload, inner_owned)?;
                 cx.b.ins().jump(after, &[]);
                 cx.b.switch_to_block(after);
                 cx.b.seal_block(after);
@@ -1100,15 +848,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Handler-less: drop the owned value (a Borrowed Local is
             // owned by its env slot, which `emit_pending_cleanup` drops —
             // dropping here too would double-free).
-            emit_qop_error_disposal(
-                cx,
-                handler_site,
-                &cv,
-                deliverable,
-                clean,
-                payload,
-                inner_owned,
-            )?;
+            emit_qop_error_drop(cx, clean, payload, inner_owned)?;
             // Tainted shape-safe placeholder; the inner's STALE carries
             // (the qop fires iff its inner fired) and TAINT marks
             // no-value — downstream consumers run harmlessly on the
@@ -1193,15 +933,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // inner is owned by its env slot, which
             // `emit_pending_cleanup` -> `drop_owned_composites` already
             // drops; dropping it here too would double-free.
-            emit_qop_error_disposal(
-                cx,
-                handler_site,
-                &cv,
-                deliverable,
-                clean,
-                payload,
-                inner_owned,
-            )?;
+            emit_qop_error_drop(cx, clean, payload, inner_owned)?;
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
             let tainted_base = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
@@ -1234,10 +966,3 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         }
     }
 }
-
-// (The old `emit_dyncall_arg_taint_abort` — post-call whole-kernel
-// bottom on a tainted arg — is gone: `emit_dyncall_node` now gates the
-// CALL itself and produces a tainted placeholder, so the callee never
-// observes placeholder garbage and live chains keep flowing. Its doc's
-// "taint can't survive a composite/string let" caveat was stale:
-// `bind_local` stores the RHS disc for every LocalKind.)
