@@ -407,10 +407,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             Taken(Option<usize>),
             Undet,
         }
+        // A PRESENT scrutinee with NO retained selection must still
+        // route: selection is a VALUE question (which arm holds the
+        // value channel), not a firing one. Under the wake-forced init
+        // view a standing scrutinee reads present-but-stale
+        // (2026-08-31), so a select consulted for the first time
+        // inside a woken subtree would otherwise dead-end (Quiet with
+        // nothing retained) and the arm chain below it never
+        // materializes — the pump's identity modal ate every key.
+        // Depth 0 only: framed re-matching stays value-driven (R1).
+        let first_consult = ctx.frame_depth == 0
+            && selected.get().is_none()
+            && arg.value.is_some()
+            && !arg.tag.is_tainted();
         // A non-bottom scrutinee (bottom returned above): a quiet cycle
         // (no scrutinee trigger, no guard fire) rides the retained
         // selection through `ChainOut::Quiet`; otherwise re-match.
-        let chain = if !arg_trig && !pat_up {
+        let chain = if !arg_trig && !pat_up && !first_consult {
             ChainOut::Quiet
         } else {
             match arg.value.as_ref() {
@@ -565,6 +578,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         // a genuinely-triggering scrutinee delivery
                         // carries its own tag into the binds
                         arg_prod
+                    } else if first_consult && !pat_up {
+                        // the stale first consult (2026-08-31): the
+                        // binds carry a PAST value — deliver them
+                        // present-but-stale; the arm still evaluates
+                        // through the forced init view's
+                        // materialization rules, and firing comes
+                        // only from inputs that fired this cycle.
+                        Tag::STALE
                     } else {
                         // guard-flip wake: the scrutinee produced only
                         // its quiet ride — a STALE wake bind left the

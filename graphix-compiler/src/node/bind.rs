@@ -748,6 +748,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             } else {
                 ctx.rt.set_var(self.id, v);
             }
+        } else if event.init && !tv.tag().is_bottom() && !tv.tag().is_tainted() {
+            // The wake-forced init view reads present-but-stale
+            // (2026-08-31), but the cell must still MATERIALIZE:
+            // embedders read it directly (a tui input_handler
+            // compile_refs the handler cell — unseeded, the pump's
+            // modal never received a key), and a chainless ref's cell
+            // is its only storage. A standing STALE seed is the value
+            // rule, not a firing one — the CachedArgs eval-once arm's
+            // twin at the ByRef seam. (A never-produced child is the
+            // STALE_BOTTOM phantom, excluded by the bottom gate.)
+            ctx.rt.store_insert_standing(self.id, TagValue::stale(tv.value_cloned()));
         }
         if event.init {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
