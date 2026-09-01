@@ -201,13 +201,52 @@ EOF
 
 # ---------------------------------------------------------------- sync
 
+# THE DIRTY-TREE GUARD (2026-09-01). The loss model, lived once at the
+# aug31f deploy: the local fingerprint is captured ONCE, so a commit
+# made while the sync loop walked the fleet gave the later boxes a
+# NEWER tree than `want` — each then sat the full SYNC_WAIT in silent
+# 10s polls before a misleading per-box TREE STALE, and the fleet
+# ended half old tree, half new. Two facts close both doors:
+#   - at entry, the build inputs must be CLEAN in git (a fingerprinted
+#     file that git doesn't have is a tree no redeploy can reproduce);
+#     netidx ships too, so its build inputs are checked the same way
+#     even though the fingerprint can't see them (a dirty netidx would
+#     ship silently — worse than a stall);
+#   - per box, the local fingerprint is re-read BEFORE the rsync and a
+#     drift from `want` dies loudly at once, naming the real cause,
+#     instead of stalling box after box against a reference that no
+#     longer exists.
+# FLEET_ALLOW_DIRTY=1 skips the entry check for a deliberate
+# uncommitted-tree soak; nothing skips the drift check — a tree that
+# changes MID-DEPLOY is never deliberate.
+FP_ROOTS=(graphix-compiler graphix-rt graphix-package graphix-derive
+          graphix-shell graphix-fuzz stdlib Cargo.toml)
+
+require_clean_inputs() {
+    [[ ${FLEET_ALLOW_DIRTY:-0} == 1 ]] && return 0
+    local dirty
+    dirty=$(git -C "$repo" status --porcelain -- "${FP_ROOTS[@]}")
+    [[ -z $dirty ]] || die "refusing to sync: uncommitted build inputs in graphix \
+(commit/stash, or FLEET_ALLOW_DIRTY=1 for a deliberate dirty soak):
+$dirty"
+    dirty=$(git -C "$repo/../netidx" status --porcelain -- \
+        ':(glob)**/*.rs' ':(glob)**/*.toml' 2>/dev/null || true)
+    [[ -z $dirty ]] || die "refusing to sync: uncommitted build inputs in ../netidx \
+(commit/stash, or FLEET_ALLOW_DIRTY=1 for a deliberate dirty soak):
+$dirty"
+}
+
 sync_tree() {
-    local want h name method got waited rc=0
+    local want now h name method got waited rc=0
+    require_clean_inputs
     want=$(local_fingerprint)
     say "local build-input fingerprint: $want"
     for h in "${HOSTS[@]}"; do
         name=$(f_name "$h"); method=$(f_sync "$h")
         skip_host "$name" && continue
+        now=$(local_fingerprint)
+        [[ $now == "$want" ]] || die "local tree CHANGED during the sync \
+($want -> $now) — the fleet would end half old, half new; commit and redeploy"
         if [[ $method == rsync ]]; then
             # Both repos: graphix builds against the sibling netidx.
             rsync -a --delete --exclude target --exclude .git \
