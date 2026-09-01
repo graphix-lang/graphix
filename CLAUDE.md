@@ -925,7 +925,16 @@ INTENDED semantics, never by trusting either engine.
   only — the frame-formal FIRED overlay seed survives). Companions: a
   present scrutinee with NO retained selection still routes (depth-0
   first consult; the guard-flip wake keeps its aug03 FIRED), `ByRef`
-  seeds its cell stale. Pins: `findings/wake-catchup-sep2026/00–06`
+  seeds its cell stale. THE BIRTH RULE (aug31f ryouko 01): a
+  labeled DEFAULT is born with the binding — the interp's bound
+  dispatch seeds default args FIRED, a DynCallSlot's first dispatch
+  is a BIRTH view (`wake_init` cleared; marshalled args keep honest
+  tags), and a config memo (`escape_fn!`) survives sleep; both
+  engines broke together at 9b2e7231 (the metamorphic blind spot) —
+  `findings/default-arg-birth-sep2026/`. sys::net level effects
+  (Subscribe/Publish/PublishRpc) tear down in `sleep()` and
+  re-establish from PRESENT args on their own slept bits
+  (`net_{subscribe,publish}_arm_rewake`). Pins: `findings/wake-catchup-sep2026/00–06`
   (Eric's 43/2/21/62 table, shared-input spent, sequential wakers,
   conflation, `~` catch-up, the no-arm window, nested composition),
   `dyncall-arm-init-stale-aug2026` (re-adjudicated in place),

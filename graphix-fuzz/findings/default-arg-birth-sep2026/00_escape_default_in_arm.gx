@@ -1,0 +1,19 @@
+// A LABELED DEFAULT IS BORN WITH THE BINDING (aug31f ryouko finding
+// 01, design/wake_catchup.md): str::escape's `#esc = default_escape`
+// reaches a fresh callee only as a STANDING store read, and the
+// present-but-stale ruling (9b2e7231) stopped upgrading standing
+// reads under an arm's wake view — so an instance born at a select
+// arm's becoming-selected dispatch NEVER saw its config fire, the
+// fired-gated seam never configured, and the arm emitted nothing,
+// forever. BOTH engines broke together at those commits (the
+// metamorphic blind spot — the differential oracle saw agreement);
+// the interp side resurfaced alone once wake catch-up fixed the
+// kernel's dispatch views. Fixes: the interp CallSite's bound
+// dispatch seeds DEFAULT args FIRED (cycle-scoped, any depth — their
+// one arrival is the instance's birth); the DynCallSlot's first
+// dispatch is a BIRTH view (event.wake_init cleared — marshalled
+// args keep their honest side-channel tags); and escape's config
+// memo survives sleep (sleep is pause — clearing it demanded a fired
+// re-delivery no wake provides).
+// Expected: "\/foo\/bar" on both engines.
+{let t = select i64:0 {i64:0 => str::escape("/foo/bar"), _ => null}; t}

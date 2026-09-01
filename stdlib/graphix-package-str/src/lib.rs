@@ -528,7 +528,12 @@ macro_rules! escape_fn {
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                self.escape = None;
+                // Sleep is PAUSE: the compiled escape is a pure memo
+                // of the config arg and survives — clearing it here
+                // required a fired config re-delivery no wake provides
+                // (a default arg fires once, at the instance's birth),
+                // so a re-woken arm's escape stayed unconfigured
+                // forever (aug31f ryouko finding 01's second layer).
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {

@@ -1920,7 +1920,25 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             for (id, tv) in prods.iter() {
                 let tag = tv.tag();
                 if !tag.triggers() && !tag.is_bottom() {
-                    if ctx.frame_depth == 0 {
+                    let is_default =
+                        self.args.values().any(|a| a.id == *id && a.is_default);
+                    if is_default {
+                        // A DEFAULT IS BORN WITH THE BINDING
+                        // (design/wake_catchup.md): it is not a past
+                        // event some other reader consumed, so the
+                        // fresh callee's first dispatch is its one
+                        // arrival — deliver it FIRED, cycle-scoped, at
+                        // any depth. Under the present-but-stale wake
+                        // view the standing-stale seed left a
+                        // fired-gated builtin's config channel
+                        // (str::escape) unconfigured FOREVER when the
+                        // instance was born at an arm's becoming-
+                        // selected dispatch (aug31f ryouko finding 01
+                        // — the interp emitted nothing where the jit
+                        // escaped).
+                        event.variables.insert(*id, TagValue::fired(tv.value_cloned()));
+                        set.push(*id);
+                    } else if ctx.frame_depth == 0 {
                         // The STORE standing entry serves both dispatch
                         // views (Stale ordinarily, Fired under the
                         // real-init arm — R2). An overlay entry here

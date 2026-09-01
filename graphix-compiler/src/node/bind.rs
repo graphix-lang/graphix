@@ -600,10 +600,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 tv.retag(tag);
                 if dbg {
                     eprintln!(
-                        "REF {} @{} {:?} STANDING init={init} tag={:?} val={:?}",
+                        "REF {} @{} {:?} STANDING init={init} (ei={} wi={} fd={} fi={}) tag={:?} val={:?}",
                         self.spec,
                         self.spec.pos,
                         self.id,
+                        event.init,
+                        event.wake_init,
+                        ctx.frame_depth,
+                        ctx.frame_init,
                         tag,
                         tv.value_cloned()
                     );

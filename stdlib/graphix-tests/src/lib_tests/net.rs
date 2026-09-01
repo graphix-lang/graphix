@@ -150,3 +150,93 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// WAKE CATCH-UP at the sys::net seam (design/wake_catchup.md):
+// `Subscribe::sleep` tears the subscription down (and re-mints its
+// BindId), so a re-woken arm's subscribe must RE-ESTABLISH from the
+// present path — and since the present-but-stale ruling the wake
+// delivers the (constant) path arg with no fire, so without the
+// builtin's own slept bit the arm came back permanently
+// unsubscribed: `got` never produced again and this test hung (the
+// path must be a BINDING — a constant path re-fires under the arm's
+// forced init view, the ruled constants-fire-at-wake behavior, and
+// resubscribes without the slept bit). The
+// matcher wants proof of the full cycle: a delivery, a sleep marker
+// (-1), then a delivery of a NEWER value after the rewake.
+const NET_SUB_REWAKE: &str = r#"
+{
+  let x = i64:0;
+  let p = "/local/wakesub";
+  sys::net::publish(p, x);
+  let t = sys::time::timer(duration:0.15s, true);
+  x <- t ~ x + i64:1;
+  let flip = select x % i64:2 { i64:0 => `On, _ => `Off };
+  let got = select flip {
+    `On => { let v: i64 = sys::net::subscribe(p)$; v },
+    `Off => i64:-1
+  };
+  array::group(got, |n, _| n >= i64:6)
+}
+"#;
+
+run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            let vals: Vec<i64> = a
+                .iter()
+                .filter_map(|v| match v {
+                    Value::I64(n) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            let mut first: Option<i64> = None;
+            let mut slept = false;
+            let mut resub = false;
+            for v in vals {
+                match (first, slept) {
+                    (None, _) if v >= 0 => first = Some(v),
+                    (Some(_), false) if v == -1 => slept = true,
+                    (Some(f), true) if v > f => resub = true,
+                    _ => (),
+                }
+            }
+            resub
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The publish twin: `Publish::sleep` unpublishes, so a re-woken arm
+// must REPUBLISH from the present path/value (same slept-bit
+// mechanism as subscribe, red-green proven there). The observer
+// subscription lives OUTSIDE the select and rides netidx's durable
+// resubscribe across the unpublish window; proof of the cycle is a
+// delivery, then a NEWER delivery after the arm slept and rewoke.
+const NET_PUB_REWAKE: &str = r#"
+{
+  let x = i64:0;
+  let p = "/local/wakepub";
+  let t = sys::time::timer(duration:0.15s, true);
+  x <- t ~ x + i64:1;
+  let flip = select x % i64:2 { i64:0 => `On, _ => `Off };
+  select flip { `On => sys::net::publish(p, x), `Off => null };
+  let s: i64 = sys::net::subscribe(p)$;
+  array::group(s, |n, _| n >= i64:3)
+}
+"#;
+
+run!(net_publish_arm_rewake, NET_PUB_REWAKE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            let vals: Vec<i64> = a
+                .iter()
+                .filter_map(|v| match v {
+                    Value::I64(n) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            vals.first().is_some_and(|f| vals.iter().any(|v| v > f))
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

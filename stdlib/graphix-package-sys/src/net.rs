@@ -182,6 +182,11 @@ impl Write {
 
 #[derive(Debug)]
 pub(crate) struct Subscribe {
+    /// Wake catch-up (design/wake_catchup.md): `sleep()` tears the
+    /// subscription down, so the first update after must re-establish
+    /// it from the PRESENT path — a stale delivery at a wake is not
+    /// proof there is nothing to do.
+    slept: bool,
     cur: Option<(Path, Dval)>,
     id: BindId,
     top_id: ExprId,
@@ -205,6 +210,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
         Ok(Box::new(Subscribe {
+            slept: false,
             cur: None,
             id,
             top_id,
@@ -222,8 +228,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         event: &mut Event<E>,
     ) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
+        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
         let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
-        match (path, path_fired) {
+        match (path, path_fired || woke) {
             (_, false) => (),
             (Some(Value::String(path)), true)
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
@@ -303,6 +310,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id);
         }
@@ -563,6 +571,9 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
 
 #[derive(Debug)]
 pub(crate) struct Publish<R: Rt, E: UserEvent> {
+    /// Wake catch-up: `sleep()` unpublishes, so the first update after
+    /// must republish from the present path/value.
+    slept: bool,
     current: Option<(Path, Val)>,
     top_id: ExprId,
     x: BindId,
@@ -609,6 +620,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 let wid = BindId::new();
                 ctx.rt.ref_var(wid, top_id);
                 Ok(Box::new(Publish {
+                    slept: false,
                     current: None,
                     top_id,
                     pid,
@@ -647,6 +659,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }};
         }
+        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
         let (fv, f_fired) = seam_arg(ctx, &mut from[0], event);
         let (pathv, path_fired) = seam_arg(ctx, &mut from[1], event);
         let (val, val_fired) = seam_arg(ctx, &mut from[2], event);
@@ -654,7 +667,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
             event.variables.insert(self.pid, TagValue::fired(v));
         }
-        match ((path_fired, val_fired), (&pathv, &val)) {
+        match ((path_fired || woke, val_fired), (&pathv, &val)) {
             ((true, _), (Some(Value::String(path)), Some(v)))
                 if self.current.as_ref().map(|(p, _)| &**p != path).unwrap_or(true) =>
             {
@@ -729,6 +742,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
@@ -742,6 +756,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
 #[derive(Debug)]
 pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
+    /// Wake catch-up: `sleep()` drops the published proc, so the first
+    /// update after must republish from the present path/doc/spec.
+    slept: bool,
     id: BindId,
     top_id: ExprId,
     f: Node<R, E>,
@@ -900,6 +917,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
                 let f =
                     genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
                 let mut t = PublishRpc {
+                    slept: false,
                     queue: VecDeque::new(),
                     x,
                     id,
@@ -929,6 +947,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
         let (pathv, path_fired) = seam_arg(ctx, &mut from[0], event);
         let (docv, doc_fired) = seam_arg(ctx, &mut from[1], event);
         let (specv, spec_fired) = seam_arg(ctx, &mut from[2], event);
@@ -937,7 +956,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
             event.variables.insert(self.pid, TagValue::fired(v));
         }
-        if path_fired || doc_fired || spec_fired {
+        if path_fired || doc_fired || spec_fired || woke {
             if crate::netstate::rpc_dbg() {
                 eprintln!(
                     "RPCDBG publish_rpc {:?}: (re)publish changed={:?} had={:?}",
@@ -1102,6 +1121,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept = true;
         if crate::netstate::rpc_dbg() {
             eprintln!("RPCDBG publish_rpc {:?}: sleep (id re-minted)", self.id);
         }

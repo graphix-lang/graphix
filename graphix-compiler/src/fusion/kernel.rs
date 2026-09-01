@@ -670,8 +670,23 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             set.push(id);
         }
         let saved_init = event.init;
+        let saved_wake = event.wake_init;
         if first {
+            // The instance's BIRTH view (design/wake_catchup.md): a
+            // freshly minted inner Apply's first dispatch is a
+            // genuine init for its interior, so `wake_init` is
+            // CLEARED — its labeled-default nodes are born with the
+            // binding and must read their standing sources fresh
+            // (str::escape's `#esc = default_escape` stayed
+            // unconfigured forever under an enclosing arm's wake
+            // view — aug31f ryouko finding 01, the metamorphic half:
+            // both engines broke together at the present-but-stale
+            // commits). Marshalled args are untouched: their
+            // side-channel entries are Delivered and carry their
+            // honest tags, so a spent standing input still reads
+            // stale (pin 02_sequential_wakers).
             event.init = true;
+            event.wake_init = false;
         }
         // Return the inner Apply's production WHOLE — value and tag
         // (Seam B of the 5c flip): the call site's CLIF decodes the
@@ -702,6 +717,7 @@ impl<R: Rt, E: UserEvent> DynCallSlot<R, E> {
             eprintln!("DYNC-RET first={first} prod={words:x?}");
         }
         event.init = saved_init;
+        event.wake_init = saved_wake;
         // Cleanup: remove the side-channel entries so a downstream
         // dispatcher (or the outer event loop) doesn't see them.
         for id in set.drain(..) {

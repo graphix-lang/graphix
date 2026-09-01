@@ -1,0 +1,7 @@
+// The rewake face of 00: the arm is deselected and re-selected — the
+// default fired once at the instance's birth and never again, so the
+// re-woken escape must ride its surviving config memo (sleep is
+// pause). Expected trace (both engines): "\/foo\/bar"; "off";
+// "\/foo\/bar".
+// schedule-v1: cap=208 events=1664; in0=i64:1; in0=i64:0
+{let t = select in0 {i64:0 => str::escape("/foo/bar"), _ => "off"}; t}

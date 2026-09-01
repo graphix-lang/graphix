@@ -333,6 +333,25 @@ nested composition), all AGREE with the ruled traces, and
   which is also what keeps the frame-formal-init-view FIRED overlay
   seed intact) and per-activation site blocks are the correct twin
   (`tail_stateful_scalar` keeps fusing).
+- **THE BIRTH RULE** (aug31f ryouko finding 01, hours into the soak):
+  a LABELED DEFAULT is born with the binding — its one arrival is the
+  fresh instance's first dispatch, not a past event some reader
+  consumed. The present-but-stale ruling alone left defaults
+  permanently dark for instances born at a becoming-selected dispatch
+  (a default reaches the callee only as a standing read, and the wake
+  view no longer upgrades those): `str::escape`'s fired-gated config
+  channel never configured and the arm emitted nothing — on BOTH
+  engines, identically, from 9b2e7231 until this fix (the metamorphic
+  blind spot: the differential oracle saw agreement). Three seams:
+  the interp CallSite's bound dispatch seeds default args FIRED
+  (cycle-scoped, any depth); `DynCallSlot`'s first dispatch is a
+  BIRTH view — `event.wake_init` cleared so the slot's default nodes
+  read their standing sources fresh, while marshalled args keep their
+  honest Delivered side-channel tags (pin 02 unthreatened); and
+  `escape_fn!`'s config memo now survives sleep (sleep is pause — the
+  memo is a pure function of the config arg, and clearing it demanded
+  a fired re-delivery no wake provides). Pins:
+  `findings/default-arg-birth-sep2026/00–01`.
 - **Coverage residue**: stateful (non-restart) builtins —
   `sum`/`max`/`min`/`mean`/`product`-class — inside VALUE-position
   select arms de-fuse the region. In-kernel mask words (this doc's
