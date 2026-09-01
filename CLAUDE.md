@@ -1238,6 +1238,17 @@ the rules.
   `restore_lexical_env`) so instance-side resolution consults the
   DEFINING module's table. `use` compiles to Nop. The widget-module
   `{self, *}` idiom is the one blessed glob in exemplar code.
+  DECLARATIONS ARE STATEMENT-POSITION-ONLY (2026-08-31): `use`, static
+  `mod`, `type`, `trait` and `impl` refuse in value position (a `let`
+  RHS, a call arg, a block's value slot, a select arm body) — they are
+  ⊥-typed with a phantom value channel, and a value-position one let a
+  connect route runtime values through a ⊥ binding (aug27a `use`,
+  aug31e `type`). The companion typing fix: contains' (Bottom, TVar)
+  arm derefs a BOUND cell (⊥ ⊇ Array refuses) instead of answering
+  true — a value-position CONNECT (`let x = y <- e`) is legal by
+  design, so the arm is load-bearing, not redundant
+  (`bottom-connect-target-aug2026`). A dynamic `mod` stays an
+  expression (real `[error, null]` value).
 - **Comments** are legal only above an expression, a select arm's
   pattern, an impl method, or a struct-literal field (`parser::decorate`
   attaches them; the printers hoist them back); interior, trailing and

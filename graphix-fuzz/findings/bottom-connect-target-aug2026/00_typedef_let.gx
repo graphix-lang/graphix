@@ -1,0 +1,24 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
+// After the fix this program is a CompileErr in both modes (AGREE).
+// Found by soak aug31e (ryouko fuzz divergence_000000, 2026-08-31).
+//
+// Pre-fix: interp [f64:-1.] (dynamic `[] - 1`), jit nothing, with the
+// kernel logging
+//   kernel param `v`: runtime Array([]) doesn't match the compiled
+//   Scalar(I64) slot (typechecker static/dynamic mismatch)
+//
+// Two holes, one witness. (1) `let inner = type M = ..` put a TYPEDEF
+// in value position: the node is ⊥-typed with a phantom value channel,
+// so `inner` bound at ⊥ — the same class 82e4fbfa closed for `use`/
+// static `mod` (aug27a aieka). `type`/`trait`/`impl` are now statement-
+// position-only like the rest of the declaration family. (2) The catch
+// connect `inner <- array::filter(..)` then ran `⊥ ⊇ <site cell>` in
+// contains, whose (Bottom, TVar) arm answered TRUE for a cell ALREADY
+// BOUND to Array<string> — and under InitTVars CLOBBERED the binding
+// to ⊥. Downstream `v - outer` then typechecked v at i64 while the
+// interp routed the filter's arrays through the untyped value channel;
+// the kernel froze Scalar(I64) and bottomed every arrival at the ABI.
+// The arm now derefs a bound cell (⊥ ⊇ Array refuses, matching the
+// literal-RHS refusal); an open cell still commits 'r := ⊥, the one
+// solution.
+{let outer = never(); catch(e) outer <- i64:1; let g = || {let inner = type M = [`M(Map<string, i64>), `N]; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}

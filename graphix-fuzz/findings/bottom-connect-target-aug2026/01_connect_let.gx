@@ -1,0 +1,9 @@
+// bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
+// After the fix this program is a CompileErr in both modes (AGREE).
+// The second door into 00's contains hole, and the reason the
+// (Bottom, TVar) deref fix is load-bearing rather than redundant with
+// the declaration-position rule: a CONNECT in value position is legal
+// by design (`let x = y <- e` — connects are select-arm and callback
+// bodies), its node is ⊥-typed, and pre-fix this diverged identically
+// to 00 with no typedef anywhere.
+{let dummy = i64:0; let g = || {let inner = dummy <- i64:1; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); v - i64:1}

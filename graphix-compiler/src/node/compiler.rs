@@ -1,6 +1,5 @@
 use super::{
     Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
-    TypeDef,
     array::{Array, ArrayRef, ArraySlice, ListLit},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
@@ -10,12 +9,11 @@ use super::{
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
     select::Select,
-    traits::{Impl, Trait},
 };
 use crate::{
     CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
     expr::{
-        self, ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
+        ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
         StructWithExpr,
     },
     node::{
@@ -157,8 +155,9 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
         }
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
             ctx.env.modules.insert_cow(scope.lexical.clone());
-            let res = Block::compile(ctx, flags, spec.clone(), &scope, top_id, true, exprs)
-                .with_context(|| spec.ori.clone())?;
+            let res =
+                Block::compile(ctx, flags, spec.clone(), &scope, top_id, true, exprs)
+                    .with_context(|| spec.ori.clone())?;
             Ok(res)
         }
         ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
@@ -317,11 +316,31 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::TypeCast { expr, typ } => {
             TypeCast::compile(ctx, flags, spec.clone(), scope, top_id, expr, typ)
         }
-        ExprKind::TypeDef(expr::TypeDefExpr { name, params, body }) => {
-            TypeDef::compile(ctx, spec.clone(), scope, name, params, body)
+        // `type`/`trait`/`impl` are declarations like `use`/static `mod`
+        // above — ⊥-typed, no value channel. aug31e ryouko: `let inner =
+        // type M = ..` gave `inner` type ⊥ and a connect routed arrays
+        // through it at runtime.
+        ExprKind::TypeDef(_) => {
+            bail!(
+                "a type definition is not an expression — it may only \
+                 appear as a statement in a block or module body, not \
+                 where a value is expected"
+            )
         }
-        ExprKind::Trait(t) => Trait::compile(ctx, flags, spec.clone(), scope, t, top_id),
-        ExprKind::Impl(i) => Impl::compile(ctx, flags, spec.clone(), scope, i, top_id),
+        ExprKind::Trait(_) => {
+            bail!(
+                "a trait definition is not an expression — it may only \
+                 appear as a statement in a block or module body, not \
+                 where a value is expected"
+            )
+        }
+        ExprKind::Impl(_) => {
+            bail!(
+                "an impl is not an expression — it may only appear as a \
+                 statement in a block or module body, not where a value \
+                 is expected"
+            )
+        }
         ExprKind::Map { args } => {
             Map::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }

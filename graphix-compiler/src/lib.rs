@@ -2341,10 +2341,11 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             let c = c.clone();
             node::error::Catch::compile(ctx, flags, spec, scope, top_id, &c)
         }
-        // `mod`/`use` are declarations, legal as a top-level statement.
-        // The general `compile` rejects them (they are not expressions —
-        // see the `compile_kind` arms); compile them directly here, the
-        // statement-position twin of `compile_block_children`'s dispatch.
+        // `mod`/`use`/`type`/`trait`/`impl` are declarations, legal as a
+        // top-level statement. The general `compile` rejects them (they
+        // are not expressions — see the `compile_kind` arms); compile
+        // them directly here, the statement-position twin of
+        // `compile_block_children`'s dispatch.
         expr::ExprKind::Use { reexport, names } => {
             let (reexport, names) = (*reexport, names.clone());
             node::compile_use(ctx, flags, spec, scope, reexport, &names)
@@ -2353,6 +2354,21 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         expr::ExprKind::Module { name, value } => {
             let (name, value) = (name.clone(), value.clone());
             compiler::compile_module(ctx, flags, spec, scope, top_id, &name, &value)
+                .map(|n| (n, scope.clone()))
+        }
+        expr::ExprKind::TypeDef(td) => {
+            let td = td.clone();
+            node::TypeDef::compile(ctx, spec, scope, &td.name, &td.params, &td.body)
+                .map(|n| (n, scope.clone()))
+        }
+        expr::ExprKind::Trait(t) => {
+            let t = t.clone();
+            node::traits::Trait::compile(ctx, flags, spec, scope, &t, top_id)
+                .map(|n| (n, scope.clone()))
+        }
+        expr::ExprKind::Impl(im) => {
+            let im = im.clone();
+            node::traits::Impl::compile(ctx, flags, spec, scope, &im, top_id)
                 .map(|n| (n, scope.clone()))
         }
         _ => {

@@ -916,12 +916,23 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
                 catches.push(i);
                 children.push(node);
             }
-            ExprKind::Use { reexport, names } if !value_position => {
-                children.push(compile_use(ctx, flags, e.clone(), &scope, *reexport, names)?)
-            }
+            ExprKind::Use { reexport, names } if !value_position => children
+                .push(compile_use(ctx, flags, e.clone(), &scope, *reexport, names)?),
             ExprKind::Module { name, value } if !value_position => children.push(
                 compile_module(ctx, flags, e.clone(), &scope, top_id, name, value)?,
             ),
+            ExprKind::TypeDef(td) if !value_position => children.push(TypeDef::compile(
+                ctx,
+                e.clone(),
+                &scope,
+                &td.name,
+                &td.params,
+                &td.body,
+            )?),
+            ExprKind::Trait(t) if !value_position => children
+                .push(traits::Trait::compile(ctx, flags, e.clone(), &scope, t, top_id)?),
+            ExprKind::Impl(im) if !value_position => children
+                .push(traits::Impl::compile(ctx, flags, e.clone(), &scope, im, top_id)?),
             _ => children.push(compile(ctx, flags, e.clone(), &scope, top_id)?),
         }
     }

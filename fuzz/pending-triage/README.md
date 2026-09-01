@@ -53,3 +53,4 @@ Nothing. `fuzz/pending-ruling/` does not exist (no rulings outstanding).
 | aug30b | 2026-08-30 | 0 | — | ~3 h on the site-identity fix |
 | aug31c | 2026-08-31 | 1 | 1 | fold firing is per-slot ∨ the acc carry (`fold-midchain-fired-aug2026`) |
 | aug31d | 2026-08-31 | 0 | — | ~6 h on the aug31d tree (fold per-slot fix + or-patterns P1/P2) |
+| aug31e | 2026-08-31 | 1 | 1 | the ⊥-typed connect target (`bottom-connect-target-aug2026`): `type`/`trait`/`impl` join `use`/static `mod` as statement-position-only (82e4fbfa's family), and contains' (Bottom, TVar) arm derefs a bound cell instead of answering true (it also clobbered the binding under InitTVars). washu-chan's aug31c pull was a stale copy of the already-fixed fold finding |

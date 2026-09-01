@@ -735,14 +735,24 @@ impl Type {
             // the never-arm/union pollution still collapses, just one
             // phase later.
             (Self::TVar(_), Self::Bottom) => Ok(true),
+            // ⊥ ⊇ 'r has exactly one solution ('r := ⊥), so an OPEN cell
+            // commits under InitTVars. A BOUND cell derefs and answers
+            // for its binding — this arm used to answer true for ANY
+            // binding (and clobber it to ⊥ under InitTVars), so a
+            // ⊥-typed connect target swallowed a call whose result cell
+            // was already Array (aug31e ryouko: the kernel froze the
+            // consumer to Scalar while the interp routed arrays).
             (Self::Bottom, Self::TVar(t0)) => {
-                if let Some(Type::Bottom) = &t0.read().typ.read().typ {
-                    return Ok(true);
+                let bound = t0.read().typ.read().typ.clone();
+                match bound {
+                    Some(b) => Self::Bottom.contains_int(flags, env, hist, &b),
+                    None => {
+                        if flags.contains(ContainsFlags::InitTVars) {
+                            t0.read().typ.write().typ = Some(Self::Bottom);
+                        }
+                        Ok(true)
+                    }
                 }
-                if flags.contains(ContainsFlags::InitTVars) {
-                    t0.read().typ.write().typ = Some(Self::Bottom);
-                }
-                Ok(true)
             }
             (Self::Bottom, Self::Bottom) => Ok(true),
             (Self::Bottom, _) => Ok(false),

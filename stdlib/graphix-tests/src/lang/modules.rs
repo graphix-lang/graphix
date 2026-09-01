@@ -402,6 +402,54 @@ async fn use_value_soundness_witness_rejected() {
     );
 }
 
+// The rest of the declaration family: `type`/`trait`/`impl` are ⊥-typed
+// declarations exactly like `use`/static `mod` above, and the same
+// value-position hole existed (aug31e ryouko: `let inner = type M = ..`
+// typed `inner` ⊥ and a catch connect routed runtime arrays through it).
+// Statement position only.
+#[tokio::test]
+async fn declaration_in_value_position_is_compile_error() {
+    for src in [
+        "{let t = type M = i64; t}",
+        "{i64:1; type M = i64}",
+        "select i64:0 {_ => type M = i64}",
+        "{let t = trait Sh { val sh: fn(self) -> i64 }; t}",
+        "{trait Sh { val sh: fn(self) -> i64 }; type C = Abstract<i64>; \
+         let x = impl Sh for C { let sh = |c| c.0 }; x}",
+    ] {
+        let r = eval(src, crate::TEST_REGISTER).await;
+        let msg = match &r {
+            Err(e) => format!("{e:?}"),
+            Ok((v, _)) => {
+                panic!("declaration in value position must be rejected: {src} => {v:?}")
+            }
+        };
+        assert!(msg.contains("not an expression"), "wrong refusal for {src}: {msg}");
+    }
+}
+
+#[tokio::test]
+async fn bottom_connect_target_witness_rejected() {
+    // aug31e ryouko: both doors into the ⊥-typed connect-target hole.
+    // The first is the typedef-in-value-position witness (also refused
+    // by the declaration rule above); the second reaches the contains
+    // (Bottom, TVar) arm through a value-position CONNECT, which stays
+    // a legal expression — pre-fix the arm answered true for a site
+    // cell already bound to Array<string> and the kernel froze the
+    // consumer to Scalar(I64) while the interp routed arrays.
+    for src in [
+        r#"{let outer = never(); catch(e) outer <- i64:1; let g = || {let inner = type M = [`M(Map<string, i64>), `N]; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}"#,
+        r#"{let dummy = i64:0; let g = || {let inner = dummy <- i64:1; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); v - i64:1}"#,
+    ] {
+        let r = eval(src, crate::TEST_REGISTER).await;
+        assert!(
+            r.is_err(),
+            "the ⊥ connect-target witness must be rejected: {src} => {:?}",
+            r.map(|(v, _)| v)
+        );
+    }
+}
+
 // Face 2 residual (the admin-TUI Toast recurrence, 2026-08-31): a
 // module-PRIVATE type as a UNION MEMBER in a body annotation, reached
 // through a nested lambda's connect. The def gate's probe walks
