@@ -567,11 +567,6 @@ const TRANSITIVE_CALLEE_DYNCALL: &str = r#"
 }
 "#;
 
-// FUSES again since the 5c flip: bottom PROPAGATES (Q1) at
-// statement/merge positions, so a callee-body Value/String/composite
-// producer needs no taint-cache storage at all — the storage-law
-// refusal (callee-value-taint-passthrough-aug2026) and its ASPIREd
-// value residents are both obsolete.
 run!(transitive_callee_dyncall, TRANSITIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -1666,7 +1661,7 @@ run!(
     tail_arg_bottom_rides_cache,
     TAIL_ARG_BOTTOM_RIDES_CACHE,
     |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A bare-Array arg node under a VALUE-shaped signature slot

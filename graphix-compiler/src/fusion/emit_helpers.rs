@@ -663,28 +663,31 @@ unsafe fn graphix_fastcall(
     unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) }
 }
 
-/// The Cast pseudo-site (`SiteDispatch::Cast`): `cast<T>(x)` for a
-/// non-inline cast, run as `target.cast_value(env, x)` — the EXACT
-/// function `TypeCast::update` (the node-walk) calls, so the two
-/// evaluators agree by construction. `typ` is the site's interned
-/// destination `Type` (kept alive by the kernel's `KernelValues`);
-/// the env is the invoking kernel's loan ([`with_kernel_env`]), so a
-/// type name inside the destination resolves exactly as it would on
-/// the interp. Same buffer and tag rules as [`graphix_fastcall`].
-unsafe fn graphix_castcall(
+/// The TYPED fastcall path (`SiteDispatch::Typed`): a
+/// `TypedFastFn` — a builtin's `FASTCALL_TYPED` entry, or the Cast
+/// pseudo-site's `cast_typed` — called with the site's interned
+/// `Type` (kept alive by the kernel's `KernelValues`) and the
+/// invoking kernel's env loan ([`with_kernel_env`]), so a type name
+/// resolves exactly as it would on the interp. Same buffer and tag
+/// rules as [`graphix_fastcall`].
+unsafe fn graphix_typedcall(
+    fn_ptr: u64,
     typ: u64,
     args: u64,
     n: u64,
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    // SAFETY: `typ` is the `*const Type` the emitter baked for this
-    // site; the kernel holds the box for as long as its code lives.
-    let target = unsafe { &*(typ as *const crate::typ::Type) };
+    // SAFETY: `fn_ptr` is the `TypedFastFn` the site registered,
+    // embedded by the emitter as an immediate; `typ` is the `*const
+    // Type` it baked for this site, held for as long as its code lives.
+    let f: crate::TypedFastFn =
+        unsafe { std::mem::transmute::<usize, crate::TypedFastFn>(fn_ptr as usize) };
+    let typ = unsafe { &*(typ as *const crate::typ::Type) };
     let env = KERNEL_ENV.with(|c| c.get());
     if env.is_null() {
         panic!(
-            "graphix_castcall: no kernel env loaned — Kernel::update must \
+            "graphix_typedcall: no kernel env loaned — Kernel::update must \
              run the wrapper under `with_kernel_env`"
         );
     }
@@ -692,15 +695,7 @@ unsafe fn graphix_castcall(
     // inside of (`Kernel::update`), and `Env` is not touched mutably
     // for its duration.
     let env = unsafe { &*env };
-    unsafe {
-        fast_dispatch(
-            |args| Some(target.cast_value(env, args[0].clone())),
-            args,
-            n,
-            taint_mask,
-            stale_mask,
-        )
-    }
+    unsafe { fast_dispatch(|args| f(env, typ, args), args, n, taint_mask, stale_mask) }
 }
 
 }
@@ -2032,7 +2027,7 @@ safe fn graphix_record_jit_invocation() {
 // loaned for the duration of one `Kernel::update` wrapper call through
 // scoped thread-locals — per-invocation data, never global state:
 // the abort flag (`KERNEL_ABORT`), the type environment
-// (`KERNEL_ENV`, for Cast sites), the interrupt control
+// (`KERNEL_ENV`, for typed fastcall sites), the interrupt control
 // (`INTERRUPT_PTR`) and the core-trait value hooks
 // (`coretraits::with_value_hooks`).
 
@@ -2062,8 +2057,8 @@ thread_local! {
 
     /// The invoking kernel's type environment, loaned for the
     /// duration of one wrapper call ([`with_kernel_env`]) — what a
-    /// Cast site's `graphix_castcall` resolves type names through.
-    /// Null when no kernel is in flight.
+    /// typed fastcall site's `graphix_typedcall` resolves type names
+    /// through. Null when no kernel is in flight.
     pub static KERNEL_ENV: Cell<*const crate::env::Env> =
         const { Cell::new(std::ptr::null()) };
 

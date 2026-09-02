@@ -72,16 +72,13 @@ run!(json_struct, r#"{
     }
 }; graphix_package_core::testing::FuseExpect::None);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_read_bytes, r#"{
     let b = json::write_bytes(42)$;
     let v: i64 = json::read(b)?;
     v
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 run!(json_pretty, r#"{
     let compact = json::write_str({a: 1, b: 2})$;

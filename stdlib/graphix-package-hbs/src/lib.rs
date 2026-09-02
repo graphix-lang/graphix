@@ -2,19 +2,22 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, PrintFlag, Rt, UserEvent, deref_typ,
+    ExecCtx, FastFn, PrintFlag, Rt, UserEvent, deref_typ,
     effects::EffectKind,
     errf,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, is_struct};
+use graphix_package_core::{
+    CachedArgs, CachedVals, EvalCached, FastMemo, fast_eval, is_struct,
+};
 use graphix_package_json::value_to_json;
 use handlebars::Handlebars;
 use netidx::publisher::Typ;
 use netidx_value::Value;
+use std::cell::RefCell;
 
 fn is_null_type(t: &Type) -> bool {
     matches!(t, Type::Primitive(flags) if flags.iter().count() == 1 && flags.contains(Typ::Null))
@@ -62,29 +65,56 @@ fn register_partials(
     }
 }
 
-#[derive(Debug)]
-struct HbsRenderEv {
-    registry: Handlebars<'static>,
-    last_template: Option<ArcStr>,
-    last_strict: bool,
-    last_partials: Option<Value>,
+thread_local! {
+    static TEMPLATES: RefCell<FastMemo<(ArcStr, bool, Value), Handlebars<'static>>> =
+        RefCell::new(FastMemo::new(16));
 }
 
-impl Default for HbsRenderEv {
-    fn default() -> Self {
-        Self {
-            registry: Handlebars::new(),
-            last_template: None,
-            last_strict: false,
-            last_partials: None,
+fn build_registry(
+    strict: bool,
+    partials: &Value,
+    template: &str,
+) -> Result<Handlebars<'static>> {
+    let mut registry = Handlebars::new();
+    registry.set_strict_mode(strict);
+    register_partials(&mut registry, partials).map_err(|e| anyhow!("{e}"))?;
+    registry.register_template_string("main", template).map_err(|e| anyhow!("{e}"))?;
+    Ok(registry)
+}
+
+fn fc_render(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::Bool(strict), partials, Value::String(template), data] => {
+            let json_data = match value_to_json(data) {
+                Ok(j) => j,
+                Err(e) => return Some(errf!("HbsErr", "{e}")),
+            };
+            let key = (template.clone(), *strict, partials.clone());
+            Some(TEMPLATES.with(|c| {
+                c.borrow_mut()
+                    .with(
+                        &key,
+                        || build_registry(*strict, partials, template),
+                        |registry| match registry.render("main", &json_data) {
+                            Ok(s) => Value::String(ArcStr::from(s.as_str())),
+                            Err(e) => errf!("HbsErr", "{e}"),
+                        },
+                    )
+                    .unwrap_or_else(|e| errf!("HbsErr", "{e}"))
+            }))
         }
+        _ => None,
     }
 }
+
+#[derive(Debug, Default)]
+struct HbsRenderEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "hbs_render";
+    const FASTCALL: Option<FastFn> = Some(fc_render);
 
     fn typecheck0(
         &mut self,
@@ -120,43 +150,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
         Ok(())
     }
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        let strict = cached.get::<bool>(0)?;
-        let partials = cached.0.get(1)?.clone();
-        let template = match cached.0.get(2)?.as_ref()? {
-            Value::String(s) => s.clone(),
-            _ => return Some(errf!("HbsErr", "template must be a string")),
-        };
-        let data = cached.0.get(3)?.as_ref()?;
-        // rebuild registry if template, strict, or partials changed
-        let template_changed =
-            self.last_template.as_ref().map_or(true, |prev| prev != &template);
-        let strict_changed = self.last_strict != strict;
-        let partials_changed = self.last_partials != partials;
-        if template_changed || strict_changed || partials_changed {
-            self.registry = Handlebars::new();
-            self.registry.set_strict_mode(strict);
-            if let Some(ref p) = partials {
-                if let Err(e) = register_partials(&mut self.registry, p) {
-                    return Some(errf!("HbsErr", "{e}"));
-                }
-            }
-            match self.registry.register_template_string("main", template.as_str()) {
-                Ok(()) => (),
-                Err(e) => return Some(errf!("HbsErr", "{e}")),
-            }
-            self.last_template = Some(template);
-            self.last_strict = strict;
-            self.last_partials = partials;
-        }
-        let json_data = match value_to_json(data) {
-            Ok(j) => j,
-            Err(e) => return Some(errf!("HbsErr", "{e}")),
-        };
-        match self.registry.render("main", &json_data) {
-            Ok(s) => Some(Value::String(ArcStr::from(s.as_str()))),
-            Err(e) => Some(errf!("HbsErr", "{e}")),
-        }
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(fc_render, from)
     }
 }
 

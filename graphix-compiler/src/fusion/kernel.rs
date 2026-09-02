@@ -515,8 +515,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // and every other helper comparing or printing Values inside
         // this invocation honors core Eq/Ord/Display implementations,
         // exactly as the interp's armed operators do. The env loan is
-        // what a Cast site's `graphix_castcall` resolves type names
-        // through — the same `cast_value` call the node-walk makes.
+        // what a typed fastcall site (`graphix_typedcall`: a cast, a
+        // typed parser) resolves type names through — the same
+        // `cast_value` call the node-walk makes.
         crate::node::coretraits::with_value_hooks(ctx, event, |ctx, event| {
             let ((), raises) = super::emit_helpers::with_qop_raises(|| unsafe {
                 super::emit_helpers::with_kernel_env(&ctx.env, || {

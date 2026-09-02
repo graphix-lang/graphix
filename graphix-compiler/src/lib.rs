@@ -1046,6 +1046,20 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
 /// cycle". The JIT calls it directly with no dispatch machinery.
 pub type FastFn = fn(&[Value]) -> Option<Value>;
 
+/// The TYPED twin of [`FastFn`] (see [`BuiltIn::FASTCALL_TYPED`]): the
+/// same contract, plus the call site's resolved return `Type` and the
+/// environment it resolves in — for a builtin whose result is DIRECTED
+/// by its return type (`str::parse` casting to its `'b` target).
+pub type TypedFastFn = fn(&env::Env, &Type, &[Value]) -> Option<Value>;
+
+/// The direct-call entry a builtin registered, if any: exactly one of
+/// [`BuiltIn::FASTCALL`] / [`BuiltIn::FASTCALL_TYPED`].
+#[derive(Debug, Clone, Copy)]
+pub enum FastCall {
+    Plain(FastFn),
+    Typed(TypedFastFn),
+}
+
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// The name of the builtin, this must be package::unique_name for
     /// builtins in a package
@@ -1099,6 +1113,14 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// `init`/`update`; `eval` should delegate to the same fn so there
     /// is one implementation (`graphix_package_core::fast_eval`).
     const FASTCALL: Option<FastFn> = None;
+    /// The typed twin of `FASTCALL`, for a builtin whose result is
+    /// directed by its call site's resolved RETURN type (`str::parse`
+    /// casting the parsed value to its `'b` target): the JIT bakes the
+    /// site's `CallSite::typ()` beside the fn and loans the kernel's
+    /// env for the call, so the fn runs the interp's exact cast. Same
+    /// legality and tag rules as `FASTCALL`; at most one of the two may
+    /// be declared.
+    const FASTCALL_TYPED: Option<TypedFastFn> = None;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -2011,10 +2033,18 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
-        if T::FASTCALL.is_some() && (!T::EFFECT.is_sync() || !T::STATELESS) {
+        let fastcall = match (T::FASTCALL, T::FASTCALL_TYPED) {
+            (None, None) => None,
+            (Some(f), None) => Some(FastCall::Plain(f)),
+            (None, Some(f)) => Some(FastCall::Typed(f)),
+            (Some(_), Some(_)) => {
+                bail!("builtin {} declares both FASTCALL and FASTCALL_TYPED", T::NAME)
+            }
+        };
+        if fastcall.is_some() && (!T::EFFECT.is_sync() || !T::STATELESS) {
             bail!(
-                "builtin {} declares FASTCALL but is not Sync + STATELESS — a fast \
-                 call has no per-site state and no async production",
+                "builtin {} declares a fast call but is not Sync + STATELESS — a \
+                 fast call has no per-site state and no async production",
                 T::NAME
             )
         }
@@ -2024,7 +2054,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 effect: T::EFFECT,
                 stateless: T::STATELESS,
                 sleep_restarts: T::SLEEP_RESTARTS,
-                fastcall: T::FASTCALL,
+                fastcall,
             },
         );
         Ok(())
@@ -2071,9 +2101,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.fusion.builtin_facts.get(name).map(|f| f.sleep_restarts).unwrap_or(true)
     }
 
-    /// A registered builtin's [`BuiltIn::FASTCALL`] entry, if it
-    /// declared one.
-    pub fn builtin_fastcall(&self, name: &str) -> Option<FastFn> {
+    /// A registered builtin's direct-call entry ([`BuiltIn::FASTCALL`]
+    /// or [`BuiltIn::FASTCALL_TYPED`]), if it declared one.
+    pub fn builtin_fastcall(&self, name: &str) -> Option<FastCall> {
         self.fusion.builtin_facts.get(name).and_then(|f| f.fastcall)
     }
 

@@ -206,7 +206,22 @@ run!(str_escape, STR_ESCAPE, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "\\/foo\\/bar",
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The defaulted `#esc` marshals the site's compiled default node, so
+// the common spelling fuses natively; the escape table is a
+// thread-local `FastMemo` entry keyed by the config value.
+const STR_ESCAPE_NATIVE: &str = r#"{
+  let e = |s: string| { let r = #[native] str::escape(s)$; r };
+  e("/foo/bar")
+}"#;
+
+run!(str_escape_native, STR_ESCAPE_NATIVE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::String(s)) => s == "\\/foo\\/bar",
+        _ => false,
+    }
+});
 
 const STR_UNESCAPE: &str = r#"
   str::unescape("\\/foo\\/bar")
@@ -217,7 +232,7 @@ run!(str_unescape, STR_UNESCAPE, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "/foo/bar",
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const STR_SPLIT: &str = r#"
 {
@@ -431,4 +446,22 @@ run!(str_parse, STR_PARSE, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// `str::parse` is a TYPED fast fn: the site bakes its resolved return
+// type and the kernel casts the parsed value to it, the interp's exact
+// `cast_value` — a struct target under `#[native]`.
+const STR_PARSE_STRUCT_NATIVE: &str = r#"{
+  let p = |s: string| -> {x: i64, y: string} { let r = #[native] str::parse(s)$; r };
+  let {x, y} = p("\[\[\"x\", 41\], \[\"y\", \"z\"\]\]");
+  (x + 1, y)
+}"#;
+
+run!(str_parse_struct_native, STR_PARSE_STRUCT_NATIVE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            matches!(&a[..], [Value::I64(42), Value::String(s)] if &**s == "z")
+        }
+        _ => false,
+    }
+});

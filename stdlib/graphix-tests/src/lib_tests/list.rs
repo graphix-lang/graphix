@@ -9,20 +9,14 @@ const LIST_NIL: &str = r#"
   list::is_empty(list::nil(null))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_nil, LIST_NIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_CONS: &str = r#"
   list::to_array(list::cons(1, list::cons(2, list::cons(3, list::nil(null)))))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_cons, LIST_CONS, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -31,7 +25,7 @@ run!(list_cons, LIST_CONS, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SINGLETON: &str = r#"
   list::to_array(list::singleton(42))
@@ -67,10 +61,9 @@ const LIST_HEAD_EMPTY: &str = r#"
   list::head(list::nil(null))
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args (#131)
 run!(list_head_empty, LIST_HEAD_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Tail ────────────────────────────────────────────────────────
 
@@ -97,10 +90,9 @@ const LIST_TAIL_EMPTY: &str = r#"
   list::tail(list::nil(null))
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args (#131)
 run!(list_tail_empty, LIST_TAIL_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Uncons ──────────────────────────────────────────────────────
 
@@ -130,10 +122,9 @@ const LIST_UNCONS_EMPTY: &str = r#"
   list::uncons(list::nil(null))
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args (#131)
 run!(list_uncons_empty, LIST_UNCONS_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Is empty ────────────────────────────────────────────────────
 
@@ -141,12 +132,9 @@ const LIST_IS_EMPTY_TRUE: &str = r#"
   list::is_empty(list::nil(null))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_is_empty_true, LIST_IS_EMPTY_TRUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_IS_EMPTY_FALSE: &str = r#"
   list::is_empty(list::singleton(1))
@@ -218,12 +206,9 @@ const LIST_LEN_EMPTY: &str = r#"
   list::len(list::nil(null))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_len_empty, LIST_LEN_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Reverse ─────────────────────────────────────────────────────
 
@@ -601,9 +586,6 @@ const LIST_SORT_ASC: &str = r#"
   list::to_array(list::sort(list::from_array([5, 3, 1, 4, 2])))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_sort_asc, LIST_SORT_ASC, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
@@ -612,15 +594,12 @@ run!(list_sort_asc, LIST_SORT_ASC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SORT_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, list::from_array([5, 3, 1, 4, 2])))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_sort_desc, LIST_SORT_DESC, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[i64; 5]>() {
@@ -629,15 +608,12 @@ run!(list_sort_desc, LIST_SORT_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SORT_NUMERIC: &str = r#"
   list::to_array(list::sort(#numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_sort_numeric, LIST_SORT_NUMERIC, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[ArcStr; 5]>() {
@@ -648,15 +624,12 @@ run!(list_sort_numeric, LIST_SORT_NUMERIC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_SORT_NUMERIC_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, #numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(list_sort_numeric_desc, LIST_SORT_NUMERIC_DESC, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[ArcStr; 5]>() {
@@ -667,7 +640,7 @@ run!(list_sort_numeric_desc, LIST_SORT_NUMERIC_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // ── Enumerate ───────────────────────────────────────────────────
 

@@ -107,15 +107,12 @@ const NET_LIST_TABLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const NET_RPC0: &str = r#"
 {

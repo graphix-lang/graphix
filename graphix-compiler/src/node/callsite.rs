@@ -8,6 +8,7 @@ use crate::{
     fusion::{
         self,
         emit::{BodyCx, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node},
+        lowering::MarshalArg,
     },
     node::lambda::LambdaDef,
     typ::{FnArgKind, FnType, TVar, Type},
@@ -2601,12 +2602,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if self.is_recursive_edge() {
             bail!("emit_clif: mutually recursive static call edge is not supported")
         }
-        // A fastcall site. `marshal_arg_indices[i]` is a position in
+        // A fastcall site. A `MarshalArg::Call(i)` is a position in
         // the source-order arg list `spec_apply.args` — which spans
         // both labeled and positional args. The Node-side lookup has
         // to mirror that: labeled args go through `arg_named`,
         // positional args through `arg_positional` indexed by running
-        // positional count (not source position).
+        // positional count (not source position). A
+        // `MarshalArg::Default(name)` is this site's compiled default
+        // node for a label the call left unwritten.
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
             None => {
@@ -2641,12 +2644,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         let arg_nodes = info
-            .marshal_arg_indices
+            .marshal_args
             .iter()
-            .map(|&call_idx| {
-                source_nodes.get(call_idx).copied().ok_or_else(|| {
-                    anyhow!("emit_clif: marshal arg index {call_idx} out of range")
-                })
+            .map(|m| match m {
+                MarshalArg::Call(call_idx) => {
+                    source_nodes.get(*call_idx).copied().ok_or_else(|| {
+                        anyhow!("emit_clif: marshal arg index {call_idx} out of range")
+                    })
+                }
+                MarshalArg::Default(name) => self.arg_named(name).ok_or_else(|| {
+                    anyhow!("emit_clif: defaulted arg `{name}` has no compiled node")
+                }),
             })
             .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
         emit_builtin_call_node(cx, &info, &arg_nodes)

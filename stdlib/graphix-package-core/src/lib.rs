@@ -6,15 +6,16 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, Node, Refs, Rt, Scope, Tag, TagValue,
-    TagView, UserEvent,
+    TagView, TypedFastFn, UserEvent,
     effects::EffectKind,
+    env::Env,
     err, errf,
     expr::{Expr, ExprId},
     node::{coretraits, genn},
     typ::{FnType, TVal, Type, TypeRef},
 };
 use graphix_rt::GXRt;
-use netidx::{path::Path, subscriber::Value};
+use netidx::{path::Path, publisher::Typ, subscriber::Value};
 use netidx_core::utils::Either;
 use netidx_value::{FromValue, ValArray};
 use poolshark::local::LPooled;
@@ -36,27 +37,28 @@ pub(crate) mod queuefn;
 
 /// Extract the success type from a resolved `Result<T, E>` return type.
 /// Returns `None` if `resolved_typ` is absent or `T` contains free tvars.
-pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
-    let ft = resolved_typ?;
-    let typ = match &ft.rtype {
+/// The success member `T` of a `Result<T, E>` return type — the target
+/// a typed parser casts its parsed value to — in either the named form
+/// or the expanded `[T, Error<E>]` form (the Result alias expands when
+/// a TVar binds through `contains`), read through a bound cell (a call
+/// site's output type is its instantiation's cell). Shape only; the
+/// typecheck-time validation is [`extract_cast_type`].
+pub fn cast_target(rtype: &Type) -> Option<Type> {
+    rtype.with_deref(|t| match t? {
         Type::Ref(TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {
-            params[0].clone()
+            Some(params[0].clone())
         }
-        // Handle the expanded form [T, Error<E>] — this occurs when the
-        // Result type alias was expanded during TVar binding in contains().
         Type::Set(elements) if elements.len() == 2 => {
-            let mut success = None;
-            for elem in elements.iter() {
-                if !matches!(elem, Type::Error(_)) {
-                    success = Some(elem.clone());
-                }
-            }
-            success?
+            elements.iter().find(|elem| !matches!(elem, Type::Error(_))).cloned()
         }
-        _ => return None,
-    };
+        _ => None,
+    })
+}
+
+pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
+    let typ = cast_target(&resolved_typ?.rtype)?;
     if typ.has_unbound() {
         return None;
     }
@@ -254,7 +256,10 @@ macro_rules! abstract_wrapper {
 
 // ── Testing infrastructure ─────────────────────────────────────────
 
+pub mod memo;
 pub mod testing;
+
+pub use memo::FastMemo;
 
 // ── Shared helpers ────────────────────────────────────────────────
 
@@ -433,16 +438,57 @@ pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {
     args.get(i).and_then(|v| v.clone().cast_to::<T>().ok())
 }
 
-/// Run an `EvalCached::FASTCALL` fn over the cached argument slots —
-/// the node-walk half of a fastcall builtin, so `eval` and the JIT share
-/// one implementation. A slot that has never been delivered means the
-/// call has no value yet (bottoms never reach here — Q1).
-pub fn fast_eval(f: FastFn, from: &CachedVals) -> Option<Value> {
+/// The cached argument slots as a fast fn's `&[Value]` view. A slot
+/// that has never been delivered means the call has no value yet
+/// (bottoms never reach here — Q1).
+fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
     let mut args: LPooled<Vec<Value>> = LPooled::take();
     for v in from.0.iter() {
         args.push(v.as_ref()?.clone());
     }
-    f(&args)
+    Some(args)
+}
+
+/// Run an `EvalCached::FASTCALL` fn over the cached argument slots —
+/// the node-walk half of a fastcall builtin, so `eval` and the JIT share
+/// one implementation.
+pub fn fast_eval(f: FastFn, from: &CachedVals) -> Option<Value> {
+    f(&fast_args(from)?)
+}
+
+/// [`fast_eval`] for an `EvalCached::FASTCALL_TYPED` fn: `typ` is the
+/// call site's resolved return type, the one `typecheck1` handed the
+/// instance (`resolved.rtype`) — the JIT bakes the same site type.
+pub fn fast_eval_typed(
+    f: TypedFastFn,
+    env: &Env,
+    typ: &Type,
+    from: &CachedVals,
+) -> Option<Value> {
+    f(env, typ, &fast_args(from)?)
+}
+
+/// The sort every collection's `sort(#dir, #numeric, c)` runs: `dir`
+/// is the `Direction` tag (`Ascending`/`Descending`, anything else is
+/// no value), `numeric` compares values cast to f64. Honors core `Ord`
+/// through the value hooks like every other comparison.
+pub fn sort_values(
+    dir: &str,
+    numeric: bool,
+    vals: impl Iterator<Item = Value>,
+) -> Option<LPooled<Vec<Value>>> {
+    fn cn(v: &Value) -> Value {
+        v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
+    }
+    let mut buf: LPooled<Vec<Value>> = vals.collect();
+    match (dir, numeric) {
+        ("Ascending", true) => buf.sort_by(|a, b| cn(a).cmp(&cn(b))),
+        ("Ascending", false) => buf.sort(),
+        ("Descending", true) => buf.sort_by(|a, b| cn(b).cmp(&cn(a))),
+        ("Descending", false) => buf.sort_by(|a, b| b.cmp(a)),
+        _ => return None,
+    }
+    Some(buf)
 }
 
 pub trait EvalCached<R: Rt, E: UserEvent>:
@@ -473,6 +519,10 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     /// same fn through [`fast_eval`], so the node-walk and the JIT run
     /// one implementation.
     const FASTCALL: Option<FastFn> = None;
+    /// See `BuiltIn::FASTCALL_TYPED`. Declare with `eval` delegating
+    /// through [`fast_eval_typed`] with the return type `typecheck1`
+    /// recorded.
+    const FASTCALL_TYPED: Option<TypedFastFn> = None;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -527,6 +577,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const STATELESS: bool = T::STATELESS;
     const SLEEP_RESTARTS: bool = T::SLEEP_RESTARTS;
     const FASTCALL: Option<FastFn> = T::FASTCALL;
+    const FASTCALL_TYPED: Option<TypedFastFn> = T::FASTCALL_TYPED;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -924,47 +975,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-#[derive(Debug, Default)]
-struct ToError {
-    out: TagValue,
+fn fc_error(args: &[Value]) -> Option<Value> {
+    Some(Value::Error(args[0].clone().into()))
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ToError {
+#[derive(Debug, Default)]
+struct ToErrorEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToErrorEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "core_error";
+    const FASTCALL: Option<FastFn> = Some(fc_error);
 
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(ToError::default()))
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(fc_error, from)
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for ToError {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
-        match seam_tick(from[0].update(ctx, event))
-            .map(|e| Value::Error(e.value_cloned().into()))
-        {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-}
+type ToError = CachedArgs<ToErrorEv>;
 
 #[derive(Debug)]
 struct Once {

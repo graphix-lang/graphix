@@ -980,6 +980,20 @@ run!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Both labels defaulted: the site marshals its compiled default nodes,
+// so the plain spelling is a native fastcall.
+const ARRAY_SORT_NATIVE_DEFAULTS: &str = r#"{
+   let f = |a: Array<i64>| { let r = #[native] array::sort(a); r };
+   f([3, 1, 2])
+}"#;
+
+run!(array_sort_native_defaults, ARRAY_SORT_NATIVE_DEFAULTS, |v: Result<&Value>| {
+    match v {
+        Ok(v) => matches!(v.clone().cast_to::<[i64; 3]>(), Ok([1, 2, 3])),
+        _ => false,
+    }
+});
+
 const ARRAY_SORT1: &str = r#"
 {
    let a = [5, 4, 3, 2, 1];

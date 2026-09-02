@@ -4,7 +4,7 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::collection::list::{
@@ -13,10 +13,12 @@ use graphix_compiler::{
     },
     typ::FnType,
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
-use netidx::{publisher::Typ, subscriber::Value};
+use graphix_package_core::{
+    CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, sort_values,
+};
+use netidx::subscriber::Value;
 use netidx_value::ValArray;
-use smallvec::SmallVec;
+use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug};
 
 fn list_to_array(list: &Value) -> Option<Value> {
@@ -391,101 +393,80 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
 
 type FromArray = CachedArgs<FromArrayEv>;
 
+fn fc_concat(args: &[Value]) -> Option<Value> {
+    let mut buf: LPooled<Vec<Value>> = LPooled::take();
+    for l in args {
+        if !is_list(l) {
+            return None;
+        }
+        buf.extend(ListIter::new(l.clone()));
+    }
+    Some(from_iter_back(buf.drain(..)))
+}
+
 #[derive(Debug, Default)]
-struct ConcatEv(SmallVec<[Value; 32]>);
+struct ConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_concat";
+    const FASTCALL: Option<FastFn> = Some(fc_concat);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        // Collect all lists into a flat buffer, then build from back.
-        // This handles variadic concat: concat(l1, l2, l3, ...) = l1 ++ l2 ++ l3 ++ ...
-        let mut present = true;
-        for v in from.0.iter() {
-            match v {
-                Some(v) if is_list(v) => {
-                    self.0.extend(ListIter::new(v.clone()));
-                }
-                _ => present = false,
-            }
-        }
-        if present {
-            let result = from_iter_back(self.0.drain(..));
-            Some(result)
-        } else {
-            self.0.clear();
-            None
-        }
+        fast_eval(fc_concat, from)
     }
 }
 
 type Concat = CachedArgs<ConcatEv>;
 
+fn fc_flatten(args: &[Value]) -> Option<Value> {
+    let list = &args[0];
+    if !is_list(list) {
+        return None;
+    }
+    let mut buf: LPooled<Vec<Value>> =
+        ListIter::new(list.clone()).flat_map(ListIter::new).collect();
+    Some(from_iter_back(buf.drain(..)))
+}
+
 #[derive(Debug, Default)]
-struct FlattenEv(SmallVec<[Value; 32]>);
+struct FlattenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_flatten";
+    const FASTCALL: Option<FastFn> = Some(fc_flatten);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        for inner in ListIter::new(list.clone()) {
-            self.0.extend(ListIter::new(inner));
-        }
-        let result = from_iter_back(self.0.drain(..));
-        Some(result)
+        fast_eval(fc_flatten, from)
     }
 }
 
 type Flatten = CachedArgs<FlattenEv>;
 
+fn fc_sort(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(dir), Value::Bool(numeric), list] if is_list(list) => {
+            let mut sorted = sort_values(dir, *numeric, ListIter::new(list.clone()))?;
+            Some(from_iter_back(sorted.drain(..)))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
-struct SortEv(SmallVec<[Value; 32]>);
+struct SortEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "list_sort";
+    const FASTCALL: Option<FastFn> = Some(fc_sort);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fn cn(v: &Value) -> Value {
-            v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
-        }
-        match &from.0[..] {
-            [Some(Value::String(dir)), Some(Value::Bool(numeric)), Some(list)]
-                if is_list(list) =>
-            {
-                match &**dir {
-                    "Ascending" => {
-                        self.0.extend(ListIter::new(list.clone()));
-                        if *numeric {
-                            self.0.sort_by(|v0, v1| cn(v0).cmp(&cn(v1)))
-                        } else {
-                            self.0.sort();
-                        }
-                        Some(from_iter_back(self.0.drain(..)))
-                    }
-                    "Descending" => {
-                        self.0.extend(ListIter::new(list.clone()));
-                        if *numeric {
-                            self.0.sort_by(|a0, a1| cn(a1).cmp(&cn(a0)))
-                        } else {
-                            self.0.sort_by(|a0, a1| a1.cmp(a0));
-                        }
-                        Some(from_iter_back(self.0.drain(..)))
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
+        fast_eval(fc_sort, from)
     }
 }
 
@@ -543,32 +524,37 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
 
 type Zip = CachedArgs<ZipEv>;
 
-#[derive(Debug, Default)]
-struct UnzipEv {
-    t0: SmallVec<[Value; 32]>,
-    t1: SmallVec<[Value; 32]>,
+fn fc_unzip(args: &[Value]) -> Option<Value> {
+    let list = &args[0];
+    if !is_list(list) {
+        return None;
+    }
+    let mut t0: LPooled<Vec<Value>> = LPooled::take();
+    let mut t1: LPooled<Vec<Value>> = LPooled::take();
+    for v in ListIter::new(list.clone()) {
+        if let Value::Array(a) = v
+            && a.len() == 2
+        {
+            t0.push(a[0].clone());
+            t1.push(a[1].clone());
+        }
+    }
+    let v0 = from_iter_back(t0.drain(..));
+    let v1 = from_iter_back(t1.drain(..));
+    Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
 }
+
+#[derive(Debug, Default)]
+struct UnzipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "list_unzip";
+    const FASTCALL: Option<FastFn> = Some(fc_unzip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let list = from.0[0].as_ref()?;
-        if !is_list(list) {
-            return None;
-        }
-        for v in ListIter::new(list.clone()) {
-            if let Value::Array(a) = v {
-                if a.len() == 2 {
-                    self.t0.push(a[0].clone());
-                    self.t1.push(a[1].clone());
-                }
-            }
-        }
-        let v0 = from_iter_back(self.t0.drain(..));
-        let v1 = from_iter_back(self.t1.drain(..));
-        Some(Value::Array(ValArray::from_iter_exact([v0, v1].into_iter())))
+        fast_eval(fc_unzip, from)
     }
 }
 

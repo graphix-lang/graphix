@@ -5,14 +5,16 @@
 use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, LambdaId, Node, Refs, Rt, Scope,
+    TagValue, UserEvent,
     effects::EffectKind,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
+use graphix_package_core::{
+    CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, seam_value, sort_values,
+};
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_value::ValArray;
@@ -177,46 +179,27 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
 
 type Flatten = CachedArgs<FlattenEv>;
 
+fn fc_sort(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(dir), Value::Bool(numeric), Value::Array(a)] => {
+            let mut sorted = sort_values(dir, *numeric, a.iter().cloned())?;
+            Some(Value::Array(ValArray::from_iter_exact(sorted.drain(..))))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default)]
-struct SortEv(SmallVec<[Value; 32]>);
+struct SortEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "array_sort";
+    const FASTCALL: Option<FastFn> = Some(fc_sort);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fn cn(v: &Value) -> Value {
-            v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
-        }
-        match &from.0[..] {
-            [
-                Some(Value::String(dir)),
-                Some(Value::Bool(numeric)),
-                Some(Value::Array(a)),
-            ] => match &**dir {
-                "Ascending" => {
-                    self.0.extend(a.iter().cloned());
-                    if *numeric {
-                        self.0.sort_by(|v0, v1| cn(v0).cmp(&cn(v1)))
-                    } else {
-                        self.0.sort();
-                    }
-                    Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
-                }
-                "Descending" => {
-                    self.0.extend(a.iter().cloned());
-                    if *numeric {
-                        self.0.sort_by(|a0, a1| cn(a1).cmp(&cn(a0)))
-                    } else {
-                        self.0.sort_by(|a0, a1| a1.cmp(a0));
-                    }
-                    Some(Value::Array(ValArray::from_iter_exact(self.0.drain(..))))
-                }
-                _ => None,
-            },
-            _ => None,
-        }
+        fast_eval(fc_sort, from)
     }
 }
 

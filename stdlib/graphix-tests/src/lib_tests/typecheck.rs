@@ -156,7 +156,7 @@ run!(
         ];
         array::fold(data, 0, |acc, s| acc + json::read(s)$)
     }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // array::init — Init: json::read in unannotated init closure,
 // type must propagate through Init's resolved mftyp
@@ -211,9 +211,6 @@ run!(
 
 // core::filter — Filter: json::read piped through filter,
 // type must propagate through Filter's resolved predicate type
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     hof_filter_json_read,
     r#"{
@@ -221,7 +218,7 @@ run!(
     let v: i64 = filter(json::read(s)$, |x| x > 0);
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // ============================================================================
 // Subscribe type-aware casting

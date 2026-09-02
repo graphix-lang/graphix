@@ -84,10 +84,10 @@ pub struct BuiltinFacts {
     /// (the documented arm-rewake RESTART builtins:
     /// once/take/skip/hold/uniq/count).
     pub sleep_restarts: bool,
-    /// `BuiltIn::FASTCALL` — the direct-call entry the JIT uses at
-    /// every fused site of the builtin; without one the builtin
-    /// node-walks (design/strict_fusion.md).
-    pub fastcall: Option<crate::FastFn>,
+    /// `BuiltIn::FASTCALL` / `FASTCALL_TYPED` — the direct-call entry
+    /// the JIT uses at every fused site of the builtin; without one the
+    /// builtin node-walks (design/strict_fusion.md).
+    pub fastcall: Option<crate::FastCall>,
 }
 
 /// How a lambda recurses with respect to its own `LambdaId`. A summary

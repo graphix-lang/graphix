@@ -1,6 +1,6 @@
 //! Call emission: cross-kernel lambda calls (site blocks, arg
 //! marshalling, drops, pending cleanup) and the direct fastcall /
-//! cast path.
+//! typed-fastcall path.
 
 use crate::{
     Node, Rt, Update, UserEvent,
@@ -140,7 +140,12 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 drops.push(("graphix_arcstr_drop", cv.payload, None));
                 (cx.b.ins().iconst(types::I64, STRING_VALUE_DISC.0 as i64), cv.payload)
             }
-            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            // A bare-null arg (an optional label's `= null` default)
+            // is a value-shape pair whose disc is the Null disc — the
+            // fn reads `Value::Null`.
+            Some(
+                AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null,
+            ) => {
                 let disc = clean_disc(cx.b, cv.disc);
                 if node_composite_source(arg_node) == CompositeSource::Owned {
                     drops.push(("graphix_value_drop", disc, Some(cv.payload)));
@@ -150,11 +155,8 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             Some(AbiKind::Unit) => {
                 return Err(anyhow!("emit_clif: call arg has Unit type"));
             }
-            Some(AbiKind::Null) | None => {
-                return Err(anyhow!(
-                    "emit_clif: call arg with bare Null / non-fusable type — \
-                     should have widened to Nullable<T> at construction"
-                ));
+            None => {
+                return Err(anyhow!("emit_clif: call arg with non-fusable type"));
             }
         };
         cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
@@ -202,10 +204,11 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             let fp = cx.b.ins().iconst(types::I64, *f as usize as i64);
             cx.b.ins().call(fast, &[fp, base, n, taint_mask, stale_mask])
         }
-        SiteDispatch::Cast(target) => {
-            let castcall = cx.helper("graphix_castcall")?;
-            let tp = cx.interned_type(target);
-            cx.b.ins().call(castcall, &[tp, base, n, taint_mask, stale_mask])
+        SiteDispatch::Typed(f, typ) => {
+            let typed = cx.helper("graphix_typedcall")?;
+            let fp = cx.b.ins().iconst(types::I64, *f as usize as i64);
+            let tp = cx.interned_type(typ);
+            cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
         }
     };
     for (helper, w0, w1) in drops.drain(..) {

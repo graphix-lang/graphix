@@ -254,31 +254,26 @@ fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
     Some(())
 }
 
-#[derive(Debug)]
-pub(crate) struct EncodeEv {
-    buf: BytesMut,
+fn fc_encode(args: &[Value]) -> Option<Value> {
+    let Value::Array(arr) = &args[0] else { return None };
+    let mut buf = BytesMut::new();
+    for v in arr.iter() {
+        encode_spec(&mut buf, v)?;
+    }
+    Some(Value::Bytes(PBytes::new(buf.freeze())))
 }
 
-impl Default for EncodeEv {
-    fn default() -> Self {
-        Self { buf: BytesMut::new() }
-    }
-}
+#[derive(Debug, Default)]
+pub(crate) struct EncodeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
     const EFFECT: EffectKind = EffectKind::Sync;
+    const STATELESS: bool = true;
     const NAME: &str = "core_buffer_encode";
+    const FASTCALL: Option<FastFn> = Some(fc_encode);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let arr = match from.0.first()?.as_ref()? {
-            Value::Array(a) => a,
-            _ => return None,
-        };
-        self.buf.clear();
-        for v in arr.iter() {
-            encode_spec(&mut self.buf, v)?;
-        }
-        Some(Value::Bytes(PBytes::new(self.buf.split().freeze())))
+        fast_eval(fc_encode, from)
     }
 }
 

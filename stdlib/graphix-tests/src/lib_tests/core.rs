@@ -27,23 +27,22 @@ const FILTER_ERR: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: filter_err builtin not yet fused
+// `filter_err` node-walks by rule (its ride on a non-error is a partial
+// production); the kernel here is the array literal's `error("foo")`.
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ERROR: &str = r#"
   error("foo")
 "#;
 
-// `error(v)` is a Sync builtin (`fn(e: 'a) -> Error<'a>`) — now fuses as a
-// value-shape `DynCall` (an error value, runtime `Value::Error(Arc)`,
-// reusing the bytes/map two-register `Value` machinery).
+// `error(v)` is a fast fn; the error value is a value-shape return.
 run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ONCE: &str = r#"
 {

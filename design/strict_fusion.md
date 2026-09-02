@@ -212,6 +212,55 @@ fixture: the handler counts the fused region's raise) and the
   asserts it and errors on the cliff; stateful/effectful/async code
   runs on the reactive interpreter, structured at the seams.
 
+## The fastcall growth sweep (2026-09-02)
+
+A census of every `EFFECT = Sync` builtin without a fast fn found 57
+(the macro-generated ones included). Two compiler gaps blocked the
+common spellings before any builtin could convert:
+
+- **A labeled DEFAULT the call left unwritten** node-walked the site
+  (the trampoline reads the buffer AS the args, so an unwritten label
+  was a hole — json::write_str's `#pretty`, 2026-08-30). The CallSite
+  compiles every unwritten default as its own arg node
+  (`Arg::is_default`, typechecked per site), so discovery now marshals
+  that node like a written one (`MarshalArg::Default(name)` →
+  `CallSite::arg_named`). `sort(a)`, `escape(s)`, `hbs::render(t, d)`
+  fuse as written.
+- **A result DIRECTED by the return type** (`str::parse`'s `'b`) had
+  no way to reach the fn. `FASTCALL_TYPED` is a
+  `fn(&Env, &Type, &[Value])`: discovery bakes the site's resolved
+  `CallSite::typ()` beside the fn pointer and `graphix_typedcall`
+  runs it under the kernel's env loan — the same loan the Cast
+  pseudo-site already used, which is now the same dispatch
+  (`SiteDispatch::Typed(cast_typed, target)`; `graphix_castcall` is
+  gone). The interp twin passes `typecheck1`'s `resolved.rtype`
+  through `fast_eval_typed`, so both engines run one fn on one type.
+
+The conversions: `re::{is_match, find, captures, split, splitn}`,
+`str::{parse, escape, unescape, split, rsplit, splitn, rsplitn}`,
+`array::sort`, `list::{concat, flatten, sort, unzip}` (one
+`sort_values` in core replaces two copies), `core::error`,
+`buffer::encode`, `hbs::render`. A fn that COMPILES a configuration
+from its args (a regex, an escape table, a Handlebars registry) keeps
+it in a bounded thread-local `FastMemo` keyed by the configuring
+values — a cache, never state: a miss rebuilds from the key, one memo
+per thread serves every site, and it clears whole when full. The
+per-instance memos these replaced were the reason the builtins were
+not stateless-declarable as fast fns; they also carried a partial
+production (a bad pattern erred before the subject arrived) that was
+an accident of the code shape, not a contract, and is gone.
+
+What remains is out by RULE, not by gap: the partial-delivery
+producers (opt's short-circuits, `divide`'s reset, `filter_err`'s
+ride on a non-error), the stateful family (`count`/`sum`/`min`/
+`max`/`mean`/`product`/`uniq`/`once`/`take`/`skip`/`hold`/`window`/
+`group`/`and`/`or`), the lambda-taking HOFs (`filter`, opt's
+callback forms), effects (`print`/`dbg`/`log`/`exit`/`now`/`rand`,
+`buffer::decode`'s ref writes, the http handle constructors) and the
+json/toml/pack readers (async by design). `bench_mandelbrot_iterate`
+stays a builtin call on purpose — it is the bench's un-fused
+comparison point.
+
 ## Transition plan (as executed)
 
 1. Flip the default (`fa08136a`), admit Cast, re-annotate the fixture
@@ -220,4 +269,4 @@ fixture: the handler counts the fused region's raise) and the
    started on the five remote boxes. 3. The deletion (above) — done in
    one cut instead of the staged plan, on Eric's call, with the
    replay-word cut as the commit after. 4. The fastcall growth sweep
-   and the book chapter ride behind.
+   (above, 2026-09-02); the book chapter rides behind.

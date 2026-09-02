@@ -81,23 +81,42 @@ pub struct CaptureSlot {
 
 /// How a discovered site dispatches inside a kernel: the builtin's
 /// registered `FastFn`, called directly on the site's stack buffer,
-/// or the Cast pseudo-site — `Type::cast_value` against the
-/// destination type, the exact function `TypeCast::update` runs.
+/// or a `TypedFastFn` with the `Type` the site registered beside it —
+/// a builtin's resolved return type, or the Cast pseudo-site's
+/// destination ([`cast_typed`]).
 #[derive(Debug, Clone)]
 pub enum SiteDispatch {
     Fast(crate::FastFn),
-    Cast(Type),
+    Typed(crate::TypedFastFn, Type),
 }
 
-/// Layout of one fusable call site — a sync builtin with a `FastFn`
+/// The Cast pseudo-site's typed fast fn: `target.cast_value(env, x)`,
+/// the EXACT function `TypeCast::update` runs on the node-walk, so the
+/// two evaluators agree by construction.
+fn cast_typed(env: &Env, target: &Type, args: &[Value]) -> Option<Value> {
+    Some(target.cast_value(env, args[0].clone()))
+}
+
+/// Where one buffer slot of a fastcall site comes from: an arg the
+/// call wrote (its index in the source-order arg list, spanning
+/// labeled and positional args), or a labeled DEFAULT the call left
+/// to the callee — the CallSite's own compiled default node, looked
+/// up by name (`CallSite::arg_named`).
+#[derive(Debug, Clone)]
+pub enum MarshalArg {
+    Call(usize),
+    Default(ArcStr),
+}
+
+/// Layout of one fusable call site — a sync builtin with a fast fn
 /// or a non-inline `cast<T>(x)` — captured at discovery so
 /// `emit_builtin_call_node` can marshal the call's args and decode
-/// the result. `marshal_arg_indices[i]` is the call-site arg index
-/// (into the Apply's arg list) that feeds buffer slot `i`, typed
-/// `arg_types[i]` (frozen; variadic args carry the element type).
+/// the result. `marshal_args[i]` names the node that feeds buffer
+/// slot `i`, typed `arg_types[i]` (frozen; variadic args carry the
+/// element type).
 #[derive(Debug, Clone)]
 pub struct BuiltinCallSiteInfo {
-    pub marshal_arg_indices: Vec<usize>,
+    pub marshal_args: Vec<MarshalArg>,
     pub arg_types: Vec<Type>,
     pub return_type: Type,
     pub dispatch: SiteDispatch,
@@ -121,10 +140,9 @@ pub struct BuiltinCallDiscovery {
 /// reads the CallSite's resolved FnType and its compiled arg/return
 /// sub-nodes' types (post-typecheck), never the AST.
 ///
-/// Sites that can't be lowered (no `FastFn`, unsupported arg type,
-/// async builtin, mismatched arity, a defaulted label the call didn't
-/// write, …) are simply omitted — emission then fails on the
-/// un-registered site and the subtree node-walks.
+/// Sites that can't be lowered (no fast fn, unsupported arg type,
+/// async builtin, mismatched arity, …) are simply omitted — emission
+/// then fails on the un-registered site and the subtree node-walks.
 pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -168,10 +186,10 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     out.apply_sites.insert(
         tc.spec.id,
         BuiltinCallSiteInfo {
-            marshal_arg_indices: vec![0],
+            marshal_args: vec![MarshalArg::Call(0)],
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
-            dispatch: SiteDispatch::Cast(tc.target.clone()),
+            dispatch: SiteDispatch::Typed(cast_typed, tc.target.clone()),
         },
     );
 }
@@ -255,7 +273,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         }
     }
     let mut arg_types: Vec<Type> = Vec::new();
-    let mut marshal_arg_indices: Vec<usize> = Vec::new();
+    let mut marshal_args: Vec<MarshalArg> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
         use FnArgKind;
@@ -277,30 +295,36 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     None => return,
                 };
                 arg_types.push(kt);
-                marshal_arg_indices.push(*call_idx);
+                marshal_args.push(MarshalArg::Call(*call_idx));
             }
             FnArgKind::Labeled { name, has_default } => {
-                if let Some(call_idx) = call_labeled.remove(name.as_str()) {
-                    let arg_typ = cs
-                        .arg_named(name)
-                        .map(|n| n.typ().clone())
-                        .unwrap_or_else(|| fa.typ.clone());
-                    let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
-                        Some(t) => t,
-                        None => return,
-                    };
-                    arg_types.push(kt);
-                    marshal_arg_indices.push(call_idx);
-                } else {
-                    // A FASTCALL sees the marshalled buffer AS the
-                    // argument list, so a defaulted label the call
-                    // didn't write is a HOLE it cannot fill
-                    // (json::write_str's defaulted #pretty made the fn
-                    // read the payload as the bool and bottom forever,
-                    // 2026-08-30). The site node-walks.
-                    let _ = has_default;
-                    return;
-                }
+                // A fast fn sees the marshalled buffer AS the argument
+                // list, so every label needs a slot: one the call
+                // wrote marshals its arg node; one the call left to
+                // its default marshals the CallSite's compiled default
+                // node (`Arg::is_default`), which the typechecker
+                // resolved against this site like any written arg.
+                let (source, arg_typ) = match call_labeled.remove(name.as_str()) {
+                    Some(call_idx) => (
+                        MarshalArg::Call(call_idx),
+                        cs.arg_named(name)
+                            .map(|n| n.typ().clone())
+                            .unwrap_or_else(|| fa.typ.clone()),
+                    ),
+                    None => {
+                        if !*has_default {
+                            return;
+                        }
+                        let Some(n) = cs.arg_named(name) else { return };
+                        (MarshalArg::Default(name.clone()), n.typ().clone())
+                    }
+                };
+                let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
+                    Some(t) => t,
+                    None => return,
+                };
+                arg_types.push(kt);
+                marshal_args.push(source);
             }
         }
     }
@@ -323,7 +347,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 None => return,
             };
             arg_types.push(kt);
-            marshal_arg_indices.push(*call_idx);
+            marshal_args.push(MarshalArg::Call(*call_idx));
         }
     }
     if !call_labeled.is_empty() {
@@ -343,17 +367,18 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         return;
     }
     // STRICT FUSION (design/strict_fusion.md): only a builtin with a
-    // registered `FastFn` fuses — every other builtin dispatch
-    // node-walks on the canonical interp.
-    let Some(fast) = ctx.builtin_fastcall(info.name.as_str()) else { return };
+    // registered fast fn fuses — every other builtin dispatch
+    // node-walks on the canonical interp. A typed fast fn gets the
+    // site's resolved return type, the one its node-walk twin reads
+    // from `typecheck1`'s `resolved` FnType.
+    let dispatch = match ctx.builtin_fastcall(info.name.as_str()) {
+        Some(crate::FastCall::Plain(f)) => SiteDispatch::Fast(f),
+        Some(crate::FastCall::Typed(f)) => SiteDispatch::Typed(f, ret_typ),
+        None => return,
+    };
     out.apply_sites.insert(
         apply_id,
-        BuiltinCallSiteInfo {
-            marshal_arg_indices,
-            arg_types,
-            return_type,
-            dispatch: SiteDispatch::Fast(fast),
-        },
+        BuiltinCallSiteInfo { marshal_args, arg_types, return_type, dispatch },
     );
 }
 
@@ -1592,9 +1617,10 @@ fn is_call_arg_supported(t: &Type) -> bool {
             | AbiKind::Variant
             | AbiKind::Nullable
             | AbiKind::Value
-            | AbiKind::String,
+            | AbiKind::String
+            | AbiKind::Null,
         ) => true,
-        Some(AbiKind::Unit | AbiKind::Null) | None => false,
+        Some(AbiKind::Unit) | None => false,
     }
 }
 

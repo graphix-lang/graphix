@@ -6,14 +6,16 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, FastFn, Node, Rt, Scope, TagValue, UserEvent,
+    ExecCtx, FastFn, Node, Rt, Scope, TypedFastFn, UserEvent,
     effects::EffectKind,
+    env::Env,
     err, errf,
     expr::ExprId,
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, extract_cast_type, fast_eval, seam_value,
+    CachedArgs, CachedVals, EvalCached, FastMemo, cast_target, extract_cast_type,
+    fast_eval, fast_eval_typed,
 };
 use netidx::{path::Path, subscriber::Value};
 use netidx_value::ValArray;
@@ -466,174 +468,120 @@ fn build_escape(esc: Value) -> Result<Escape> {
     Escape::new(escape_char, &to_escape, &tr, Some(escape_non_printing))
 }
 
+thread_local! {
+    static ESCAPES: RefCell<FastMemo<Value, Escape>> = RefCell::new(FastMemo::new(16));
+}
+
+/// Run `f` over the escape table `esc` configures; an invalid
+/// configuration is the `StringError` value.
+fn with_escape(esc: &Value, f: impl FnOnce(&Escape) -> Value) -> Value {
+    static TAG: ArcStr = literal!("StringError");
+    ESCAPES.with(|c| {
+        c.borrow_mut()
+            .with(esc, || build_escape(esc.clone()), f)
+            .unwrap_or_else(|e| errf!(TAG, "escape: invalid argument {e:?}"))
+    })
+}
+
 macro_rules! escape_fn {
-    ($name:ident, $builtin_name:literal, $escape:ident) => {
-        #[derive(Debug)]
-        struct $name {
-            escape: Option<Escape>,
-            out: TagValue,
+    ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $escape:ident) => {
+        fn $fc(args: &[Value]) -> Option<Value> {
+            match args {
+                [esc, Value::String(s)] => Some(with_escape(esc, |esc| {
+                    Value::String(ArcStr::from(esc.$escape(s)))
+                })),
+                _ => None,
+            }
         }
 
-        impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
+        #[derive(Debug, Default)]
+        struct $ev;
+
+        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
             const STATELESS: bool = true;
-            const NAME: &str = $builtin_name;
+            const NAME: &str = $builtin;
+            const FASTCALL: Option<FastFn> = Some($fc);
 
-            fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut ExecCtx<R, E>,
-                _typ: &'a FnType,
-                _resolved: Option<&'d FnType>,
-                _scope: &'b Scope,
-                _from: &'c [Node<R, E>],
-                _top_id: ExprId,
-            ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { escape: None, out: TagValue::phantom() }))
-            }
-        }
-
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
-            fn update(
+            fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                from: &mut [Node<R, E>],
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                static TAG: ArcStr = literal!("StringError");
-                // both args update up front: the config error path
-                // below must not skip the data arg's update. Only a
-                // FIRED delivery is an event on either channel.
-                let esc = match seam_value(from[0].update(ctx, event)) {
-                    Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
-                    _ => None,
-                };
-                let data = match seam_value(from[1].update(ctx, event)) {
-                    Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
-                    _ => None,
-                };
-                if let Some(esc) = esc {
-                    match build_escape(esc) {
-                        Err(e) => {
-                            let v = errf!(TAG, "escape: invalid argument {e:?}");
-                            return self.out.set(TagValue::fired(v));
-                        }
-                        Ok(esc) => self.escape = Some(esc),
-                    }
-                }
-                match (&self.escape, data) {
-                    (Some(esc), Some(Value::String(s))) => self.out.set(TagValue::fired(
-                        Value::String(ArcStr::from(esc.$escape(&s))),
-                    )),
-                    (_, _) => self.out.ride(),
-                }
-            }
-
-            fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                // Sleep is PAUSE: the compiled escape is a pure memo
-                // of the config arg and survives — clearing it here
-                // required a fired config re-delivery no wake provides
-                // (a default arg fires once, at the instance's birth),
-                // so a re-woken arm's escape stayed unconfigured
-                // forever (aug31f ryouko finding 01's second layer).
-            }
-
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                // The compiled escape is a pure memo of the config
-                // arg and survives replay.
+                _ctx: &mut ExecCtx<R, E>,
+                from: &CachedVals,
+            ) -> Option<Value> {
+                fast_eval($fc, from)
             }
         }
+
+        type $name = CachedArgs<$ev>;
     };
 }
 
-escape_fn!(StringEscape, "str_escape", escape);
-escape_fn!(StringUnescape, "str_unescape", unescape);
+escape_fn!(StringEscapeEv, StringEscape, "str_escape", fc_escape, escape);
+escape_fn!(StringUnescapeEv, StringUnescape, "str_unescape", fc_unescape, unescape);
+
+macro_rules! split_fn {
+    ($ev:ident, $name:ident, $builtin:literal, $fc:ident) => {
+        #[derive(Debug, Default)]
+        struct $ev;
+
+        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
+            const NAME: &str = $builtin;
+            const FASTCALL: Option<FastFn> = Some($fc);
+
+            fn eval(
+                &mut self,
+                _ctx: &mut ExecCtx<R, E>,
+                from: &CachedVals,
+            ) -> Option<Value> {
+                fast_eval($fc, from)
+            }
+        }
+
+        type $name = CachedArgs<$ev>;
+    };
+}
+
+fn strings<'a>(it: impl Iterator<Item = &'a str>) -> Value {
+    Value::Array(ValArray::from_iter(it.map(|s| Value::String(ArcStr::from(s)))))
+}
 
 macro_rules! string_split {
-    ($name:ident, $final_name:ident, $builtin:literal, $fn:ident) => {
-        #[derive(Debug, Default)]
-        struct $name;
-
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const NAME: &str = $builtin;
-            const STATELESS: bool = true;
-
-            fn eval(
-                &mut self,
-                _ctx: &mut ExecCtx<R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                for p in &from.0[..] {
-                    if p.is_none() {
-                        return None;
-                    }
-                }
-                let pat = match &from.0[0] {
-                    Some(Value::String(s)) => s,
-                    _ => return None,
-                };
-                match &from.0[1] {
-                    Some(Value::String(s)) => Some(Value::Array(ValArray::from_iter(
-                        s.$fn(&**pat).map(|s| Value::String(ArcStr::from(s))),
-                    ))),
-                    _ => None,
-                }
+    ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $fn:ident) => {
+        fn $fc(args: &[Value]) -> Option<Value> {
+            match args {
+                [Value::String(pat), Value::String(s)] => Some(strings(s.$fn(&**pat))),
+                _ => None,
             }
         }
 
-        type $final_name = CachedArgs<$name>;
+        split_fn!($ev, $name, $builtin, $fc);
     };
 }
 
-string_split!(StringSplitEv, StringSplit, "str_split", split);
-string_split!(StringRSplitEv, StringRSplit, "str_rsplit", rsplit);
+string_split!(StringSplitEv, StringSplit, "str_split", fc_split, split);
+string_split!(StringRSplitEv, StringRSplit, "str_rsplit", fc_rsplit, rsplit);
 
 macro_rules! string_splitn {
-    ($name:ident, $final_name:ident, $builtin:literal, $fn:ident) => {
-        #[derive(Debug, Default)]
-        struct $name;
-
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $name {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const NAME: &str = $builtin;
-            const STATELESS: bool = true;
-
-            fn eval(
-                &mut self,
-                _ctx: &mut ExecCtx<R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                static TAG: ArcStr = literal!("StringSplitError");
-                for p in &from.0[..] {
-                    if p.is_none() {
-                        return None;
-                    }
+    ($ev:ident, $name:ident, $builtin:literal, $fc:ident, $fn:ident) => {
+        fn $fc(args: &[Value]) -> Option<Value> {
+            static TAG: ArcStr = literal!("StringSplitError");
+            match args {
+                [Value::String(pat), Value::I64(n), Value::String(s)] if *n > 0 => {
+                    Some(strings(s.$fn(*n as usize, &**pat)))
                 }
-                let pat = match &from.0[0] {
-                    Some(Value::String(s)) => s,
-                    _ => return None,
-                };
-                let n = match &from.0[1] {
-                    Some(Value::I64(n)) if *n > 0 => *n as usize,
-                    Some(v) => {
-                        return Some(errf!(TAG, "splitn: {v} must be a number > 0"));
-                    }
-                    None => return None,
-                };
-                match &from.0[2] {
-                    Some(Value::String(s)) => Some(Value::Array(ValArray::from_iter(
-                        s.$fn(n, &**pat).map(|s| Value::String(ArcStr::from(s))),
-                    ))),
-                    _ => None,
-                }
+                [_, n, _] => Some(errf!(TAG, "splitn: {n} must be a number > 0")),
+                _ => None,
             }
         }
 
-        type $final_name = CachedArgs<$name>;
+        split_fn!($ev, $name, $builtin, $fc);
     };
 }
 
-string_splitn!(StringSplitNEv, StringSplitN, "str_splitn", splitn);
-string_splitn!(StringRSplitNEv, StringRSplitN, "str_rsplitn", rsplitn);
+string_splitn!(StringSplitNEv, StringSplitN, "str_splitn", fc_splitn, splitn);
+string_splitn!(StringRSplitNEv, StringRSplitN, "str_rsplitn", fc_rsplitn, rsplitn);
 
 fn fc_split_escaped(args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("SplitEscError");
@@ -909,15 +857,32 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
 
 type Sub = CachedArgs<SubEv>;
 
+fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
+    static TAG: ArcStr = literal!("ParseError");
+    let raw = match args {
+        [Value::String(s)] => match s.parse::<Value>() {
+            Ok(Value::Error(e)) => return Some(errf!(TAG, "{e}")),
+            Ok(v) => v,
+            Err(e) => return Some(errf!(TAG, "{e:?}")),
+        },
+        _ => return None,
+    };
+    Some(match cast_target(rtype) {
+        Some(typ) => typ.cast_value(env, raw),
+        None => errf!("TypeError", "parse requires a concrete type annotation"),
+    })
+}
+
 #[derive(Debug, Default)]
 struct ParseEv {
-    cast_typ: Option<Type>,
+    rtype: Option<Type>,
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     const EFFECT: EffectKind = EffectKind::Sync;
     const STATELESS: bool = true;
     const NAME: &str = "str_parse";
+    const FASTCALL_TYPED: Option<TypedFastFn> = Some(fc_parse);
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -927,7 +892,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        Self { cast_typ: extract_cast_type(resolved) }
+        Self { rtype: resolved.map(|ft| ft.rtype.clone()) }
     }
 
     fn typecheck0(
@@ -944,34 +909,15 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
-        if std::env::var_os("GXDBG_PARSE").is_some() {
-            eprintln!("PARSE-TC1 cast_typ={:?} resolved={resolved:?}", self.cast_typ);
-        }
-        if self.cast_typ.is_none() {
+        if extract_cast_type(Some(resolved)).is_none() {
             bail!("str::parse requires a concrete return type")
         }
+        self.rtype = Some(resolved.rtype.clone());
         Ok(())
     }
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let raw = match &from.0[0] {
-            Some(Value::String(s)) => match s.parse::<Value>() {
-                Ok(v) => match v {
-                    Value::Error(e) => return Some(errf!(literal!("ParseError"), "{e}")),
-                    v => v,
-                },
-                Err(e) => return Some(errf!(literal!("ParseError"), "{e:?}")),
-            },
-            _ => return None,
-        };
-        if std::env::var_os("GXDBG_PARSE").is_some() {
-            eprintln!("PARSE cast_typ={:?}", self.cast_typ);
-        }
-        Some(match &self.cast_typ {
-            Some(typ) => typ.cast_value(&ctx.env, raw),
-            None => errf!("TypeError", "parse requires a concrete type annotation"),
-        })
+        fast_eval_typed(fc_parse, &ctx.env, self.rtype.as_ref()?, from)
     }
 }
 

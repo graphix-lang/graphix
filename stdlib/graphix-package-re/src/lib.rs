@@ -2,181 +2,113 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::Result;
 use arcstr::{ArcStr, literal};
-use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind, errf};
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
+use graphix_compiler::{ExecCtx, FastFn, Rt, UserEvent, effects::EffectKind, errf};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, FastMemo, fast_eval};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use regex::Regex;
-
-fn maybe_compile(s: &str, re: &mut Option<Regex>) -> Result<()> {
-    let compile = match re {
-        None => true,
-        Some(re) => re.as_str() != s,
-    };
-    if compile {
-        *re = Some(Regex::new(s)?)
-    }
-    Ok(())
-}
+use std::cell::RefCell;
 
 static TAG: ArcStr = literal!("ReError");
 
-#[derive(Debug, Default)]
-struct IsMatchEv {
-    re: Option<Regex>,
+thread_local! {
+    static PATTERNS: RefCell<FastMemo<ArcStr, Regex>> = RefCell::new(FastMemo::new(64));
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsMatchEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "re_is_match";
+/// Run `f` over the compiled `pat`; an invalid pattern is the `ReError`
+/// value.
+fn with_regex(pat: &ArcStr, f: impl FnOnce(&Regex) -> Value) -> Value {
+    PATTERNS.with(|c| {
+        c.borrow_mut()
+            .with(pat, || Ok(Regex::new(pat)?), f)
+            .unwrap_or_else(|e| errf!(TAG, "{e:?}"))
+    })
+}
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        if let Some(Value::String(s)) = &from.0[0] {
-            if let Err(e) = maybe_compile(s, &mut self.re) {
-                return Some(errf!(TAG, "{e:?}"));
-            }
+fn strings<'a>(it: impl Iterator<Item = &'a str>) -> Value {
+    Value::Array(ValArray::from_iter(it.map(|s| Value::String(s.into()))))
+}
+
+fn fc_is_match(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(pat), Value::String(s)] => {
+            Some(with_regex(pat, |re| Value::Bool(re.is_match(s))))
         }
-        if let Some(Value::String(s)) = &from.0[1] {
-            if let Some(re) = self.re.as_ref() {
-                return Some(Value::Bool(re.is_match(s)));
-            }
-        }
-        None
+        _ => None,
     }
 }
 
-type IsMatch = CachedArgs<IsMatchEv>;
-
-#[derive(Debug, Default)]
-struct FindEv {
-    re: Option<Regex>,
-}
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for FindEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "re_find";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        if let Some(Value::String(s)) = &from.0[0] {
-            if let Err(e) = maybe_compile(s, &mut self.re) {
-                return Some(errf!(TAG, "{e:?}"));
-            }
+fn fc_find(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(pat), Value::String(s)] => {
+            Some(with_regex(pat, |re| strings(re.find_iter(s).map(|m| m.as_str()))))
         }
-        if let Some(Value::String(s)) = &from.0[1] {
-            if let Some(re) = self.re.as_ref() {
-                let a = ValArray::from_iter(
-                    re.find_iter(s).map(|s| Value::String(s.as_str().into())),
-                );
-                return Some(Value::Array(a));
-            }
-        }
-        None
+        _ => None,
     }
 }
 
-type Find = CachedArgs<FindEv>;
-
-#[derive(Debug, Default)]
-struct CapturesEv {
-    re: Option<Regex>,
-}
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for CapturesEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "re_captures";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        if let Some(Value::String(s)) = &from.0[0] {
-            if let Err(e) = maybe_compile(s, &mut self.re) {
-                return Some(errf!(TAG, "{e:?}"));
-            }
-        }
-        if let Some(Value::String(s)) = &from.0[1] {
-            if let Some(re) = self.re.as_ref() {
-                let a = ValArray::from_iter(re.captures_iter(s).map(|c| {
-                    let a = ValArray::from_iter(c.iter().map(|m| match m {
-                        None => Value::Null,
-                        Some(m) => Value::String(m.as_str().into()),
-                    }));
-                    Value::Array(a)
-                }));
-                return Some(Value::Array(a));
-            }
-        }
-        None
+fn fc_captures(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(pat), Value::String(s)] => Some(with_regex(pat, |re| {
+            Value::Array(ValArray::from_iter(re.captures_iter(s).map(|c| {
+                Value::Array(ValArray::from_iter(c.iter().map(|m| match m {
+                    None => Value::Null,
+                    Some(m) => Value::String(m.as_str().into()),
+                })))
+            })))
+        })),
+        _ => None,
     }
 }
 
-type Captures = CachedArgs<CapturesEv>;
-
-#[derive(Debug, Default)]
-struct SplitEv {
-    re: Option<Regex>,
-}
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "re_split";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        if let Some(Value::String(s)) = &from.0[0] {
-            if let Err(e) = maybe_compile(s, &mut self.re) {
-                return Some(errf!(TAG, "{e:?}"));
-            }
+fn fc_split(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(pat), Value::String(s)] => {
+            Some(with_regex(pat, |re| strings(re.split(s))))
         }
-        if let Some(Value::String(s)) = &from.0[1] {
-            if let Some(re) = self.re.as_ref() {
-                let a = ValArray::from_iter(re.split(s).map(|s| Value::String(s.into())));
-                return Some(Value::Array(a));
-            }
-        }
-        None
+        _ => None,
     }
 }
 
-type Split = CachedArgs<SplitEv>;
-
-#[derive(Debug, Default)]
-struct SplitNEv {
-    re: Option<Regex>,
-    lim: Option<usize>,
-}
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for SplitNEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const NAME: &str = "re_splitn";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        if let Some(Value::String(s)) = &from.0[0] {
-            if let Err(e) = maybe_compile(s, &mut self.re) {
-                return Some(errf!(TAG, "{e:?}"));
-            }
+fn fc_splitn(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(pat), Value::I64(lim), Value::String(s)] => {
+            Some(with_regex(pat, |re| strings(re.splitn(s, *lim as usize))))
         }
-        if let Some(Value::I64(lim)) = &from.0[1] {
-            self.lim = Some(*lim as usize);
-        }
-        if let Some(Value::String(s)) = &from.0[2] {
-            if let Some(lim) = self.lim {
-                if let Some(re) = self.re.as_ref() {
-                    let a = ValArray::from_iter(
-                        re.splitn(s, lim).map(|s| Value::String(s.into())),
-                    );
-                    return Some(Value::Array(a));
-                }
-            }
-        }
-        None
+        _ => None,
     }
 }
 
-type SplitN = CachedArgs<SplitNEv>;
+macro_rules! re_fn {
+    ($ev:ident, $name:ident, $builtin:literal, $fc:ident) => {
+        #[derive(Debug, Default)]
+        struct $ev;
+
+        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
+            const EFFECT: EffectKind = EffectKind::Sync;
+            const STATELESS: bool = true;
+            const NAME: &str = $builtin;
+            const FASTCALL: Option<FastFn> = Some($fc);
+
+            fn eval(
+                &mut self,
+                _ctx: &mut ExecCtx<R, E>,
+                from: &CachedVals,
+            ) -> Option<Value> {
+                fast_eval($fc, from)
+            }
+        }
+
+        type $name = CachedArgs<$ev>;
+    };
+}
+
+re_fn!(IsMatchEv, IsMatch, "re_is_match", fc_is_match);
+re_fn!(FindEv, Find, "re_find", fc_find);
+re_fn!(CapturesEv, Captures, "re_captures", fc_captures);
+re_fn!(SplitEv, Split, "re_split", fc_split);
+re_fn!(SplitNEv, SplitN, "re_splitn", fc_splitn);
 
 #[cfg(test)]
 mod test;

@@ -231,34 +231,50 @@ Built-ins implement the `BuiltIn<R, E>` trait:
   kernel's arg discs decide the tag (a tainted
   arg bottoms the call without invoking the fn; all-stale args make the
   result stale; `None` is this cycle's bottom), through the
-  `graphix_fastcall` trampoline, which returns the same in-band-tagged
-  (disc, payload) pair as the cast pseudo-site's `graphix_castcall`
-  so the site decode is shared. Legal only with `EFFECT = Sync` + `STATELESS = true`
-  (`register_builtin` refuses otherwise); a fast fn sees ALL args
-  PRESENT (fast_eval returns None on an undelivered slot; the kernel
-  bottoms a tainted arg before the call), so an eval that PRODUCES on
-  partial delivery (opt::or/and/contains/or_default/ok_or/zip
-  short-circuit on arg0 with arg1 undelivered; core::divide's
-  mid-stream reset) must NOT convert — that interp behavior is the
+  `graphix_fastcall` trampoline. Legal only with `EFFECT = Sync` +
+  `STATELESS = true` (`register_builtin` refuses otherwise); a fast fn
+  sees ALL args PRESENT (fast_eval returns None on an undelivered
+  slot; the kernel bottoms a tainted arg before the call), so an eval
+  that PRODUCES on partial delivery (opt::or/and/contains/or_default/
+  ok_or/zip short-circuit on arg0 with arg1 undelivered;
+  core::divide's mid-stream reset; `filter_err`'s ride on a
+  non-error) must NOT convert — that interp behavior is the
   semantics. `eval` delegates to the same fn through
   `graphix_package_core::fast_eval` (one implementation). This is the
   lever the intrinsics' inline helpers give the compiler, offered to
   every package author, and under strict fusion the ONLY way a
   builtin fuses: `array::len` in a hand-written loop went from a
   140 ns dispatch to a ~3 ns direct call (bench/collection `fold_rec`
-  15.2 -> 1.5 ms). Since 2026-08-30 the stdlib is opted in BROADLY —
-  ~90 pure Sync builtins across core (math, bytes, bit ops, opt's
-  all-present subset), array, map, list, str, sys::{join,tempdir}_path
-  and the json/toml/pack writers; the holdouts are the
-  partial-delivery producers above, `str::parse` (init-time cast
-  type), sort (unread body), and re (per-instance regex cache). A
-  SITE with a defaulted label the call didn't write node-walks — the
-  trampoline reads the buf AS the args and cannot fill holes
-  (lowering.rs).
-  All four consts are pulled through `EvalCached`/`CachedArgs` and
+  15.2 -> 1.5 ms). A LABELED DEFAULT the call left unwritten marshals
+  the CallSite's own compiled default node (`MarshalArg::Default`,
+  2026-09-02) — `sort(a)`, `escape(s)`, `hbs::render(t, d)` fuse in
+  their common spelling. A fast fn whose result is DIRECTED by its
+  return type declares `FASTCALL_TYPED` instead — a
+  `fn(&Env, &Type, &[Value])` the site calls with its resolved
+  `CallSite::typ()` baked beside the fn pointer under the kernel's
+  env loan (`graphix_typedcall`; `str::parse` casts to its `'b`
+  target this way, and the non-inline `cast<T>(x)` pseudo-site is
+  the same dispatch with `cast_typed`). A CONFIGURATION a fast fn
+  compiles from its args (a regex, an escape table, a template
+  registry) lives in a bounded thread-local `FastMemo` keyed by the
+  configuring values — a cache, never state, one per thread for
+  every site. Since 2026-08-30 the stdlib is opted in BROADLY —
+  ~110 pure Sync builtins across core (math, bytes, bit ops, opt's
+  all-present subset, `error`, `buffer::encode`), array (incl.
+  `sort`), map, list (incl. `concat`/`flatten`/`sort`/`unzip`), str
+  (incl. `parse`, `escape`/`unescape`, the split family), re (all
+  five), hbs::render, sys::{join,tempdir}_path and the json/toml/pack
+  writers. What is left is out by rule: the partial-delivery
+  producers above, the stateful family (`count`/`sum`/`min`/`max`/
+  `mean`/`product`/`uniq`/`once`/`take`/`skip`/`hold`/`window`/
+  `group`/`and`/`or`), the lambda-taking HOFs (`filter`, opt's
+  `map`/`filter`/`flat_map`/`or_else`/…), effects (`print`/`dbg`/
+  `log`/`exit`/`now`/`rand`/`buffer::decode`'s ref writes/the http
+  handle constructors) and json/toml/pack `read` (async by design).
+  The consts are pulled through `EvalCached`/`CachedArgs` and
   recorded per name as `BuiltinFacts` (`ctx.builtin_effect`/
   `ctx.builtin_stateless`/`ctx.builtin_sleep_restarts`/
-  `ctx.builtin_fastcall`).
+  `ctx.builtin_fastcall`, the last a `FastCall::{Plain, Typed}`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.
@@ -761,11 +777,12 @@ INTENDED semantics, never by trusting either engine.
 **STRICT FUSION** (Eric's ruling 2026-09-01, `design/strict_fusion.md`
 — "complexity needs to pay rent"; flipped `fa08136a`, the stateful
 machinery deleted the same day): fusion admits PURE COMPUTATION ONLY.
-A builtin fuses iff it registers a `FASTCALL` (a direct trampoline
-call on a stack buffer of borrowed `Value`s); the non-inline
-`cast<T>(x)` is the one pseudo-site (`SiteDispatch::Cast`,
-`graphix_castcall` runs the interp's exact `cast_value` under the
-kernel's env loan). A `?` fuses WITH OR WITHOUT a covering `catch`
+A builtin fuses iff it registers a `FASTCALL` or `FASTCALL_TYPED` (a
+direct trampoline call on a stack buffer of borrowed `Value`s; the
+typed form also gets the site's resolved return type under the
+kernel's env loan); the non-inline `cast<T>(x)` is a typed site
+whose fn is `cast_typed` — the interp's exact `cast_value`. A `?`
+fuses WITH OR WITHOUT a covering `catch`
 (Eric 2026-09-01: a cliff that depends on whether a catch is in
 scope is the worst kind for predictable performance): the kernel
 never writes the handler's variable — a failing handler-ful `?`
@@ -776,8 +793,8 @@ one handler path `Qop::update` also uses (same-top Vacant-insert,
 cross-top `set_var`, in-frame `frame_outbox` parking). A kernel is
 thus a pure function of its inputs to (result, deliveries).
 Everything else — a builtin without a fast fn (stateful, effectful,
-seam-gated, or a defaulted-label site), `connect` — refuses emission
-and node-walks, transitively through callees. There is NO DynCall
+seam-gated), `connect` — refuses emission and node-walks,
+transitively through callees. There is NO DynCall
 dispatcher, no inner Apply inside a kernel, no per-site identity, no
 selection memory, no arm-lift, no wake hint; a kernel's only
 cross-invocation memory is the firing boundary (prev-length words
@@ -790,9 +807,9 @@ kernel invocation exactly four things through scoped thread-locals:
 hooks. Measured at the flip: 94% of
 kernels kept, benches flat, every bench program still fuses fully.
 The follow-on calls: pure selects fuse; grow the FASTCALL set
-maximally (`is_err` converted at the flip; re::, str::parse, sort,
-escape are next; partial-delivery producers stay out on semantics);
-`#[native]` is THE advertised performance model.
+maximally (done 2026-09-02 — see the `FASTCALL` entry above for the
+converted set and the by-rule remainder); `#[native]` is THE
+advertised performance model.
 
 ### Semantics both engines implement
 
