@@ -4,7 +4,7 @@ use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, errf, expr::ExprId, typ::FnType,
+    effects::Effect, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, seam_value};
 use netidx_value::{PBytes, ValArray, Value};
@@ -140,7 +140,7 @@ pub(crate) struct IoLines<const BATCHED: bool> {
 }
 
 impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED> {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = if BATCHED { "sys_io_lines_batched" } else { "sys_io_lines" };
 
     fn init<'a, 'b, 'c, 'd>(

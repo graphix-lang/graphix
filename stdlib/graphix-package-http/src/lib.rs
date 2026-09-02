@@ -9,7 +9,7 @@ use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, LambdaId,
     Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind,
+    effects::Effect,
     errf,
     expr::ExprId,
     node::genn,
@@ -221,7 +221,7 @@ pub(crate) struct HttpClientEv;
 // http::client constructs a client config — pure value computation.
 // The actual requests go through HttpRequestEv (async). Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_client";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -262,7 +262,7 @@ pub(crate) type HttpClient = CachedArgs<HttpClientEv>;
 pub(crate) struct HttpDefaultClientEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_default_client";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
@@ -279,7 +279,7 @@ pub(crate) type HttpDefaultClient = CachedArgs<HttpDefaultClientEv>;
 pub(crate) struct HttpServerAddrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_server_addr";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {

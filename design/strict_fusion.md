@@ -270,3 +270,22 @@ comparison point.
    one cut instead of the staged plan, on Eric's call, with the
    replay-word cut as the commit after. 4. The fastcall growth sweep
    (above, 2026-09-02); the book chapter rides behind.
+
+## The builtin classification collapses to one const (2026-09-02)
+
+Eric's call: the `EFFECT`/`STATELESS`/`SLEEP_RESTARTS`/`FASTCALL`/
+`FASTCALL_TYPED` consts had grown into five knobs an author had to
+know to set together, and a fast fn was easy to forget even after
+declaring Sync + stateless. They are now one `const EFFECT: Effect`
+with `Effect::{Async, Sync, Stateless(Option<FastCall>)}`: the
+invalid combinations are unrepresentable, and declaring a builtin
+stateless puts the fast-fn question in the author's face. The
+`Option` keeps the collapse-gate fact for the 13 stateless builtins
+that can never be fast fns (effects, partial-delivery producers) —
+marking those `Sync` would have made a tail loop that reaches `log`
+or `opt::or_default` retain an activation per iteration. Census at
+the flip: 22 Async, 22 Sync, 10 Stateless(None), 72 fast fns (71
+Plain, 1 Typed) across the stdlib, plus the admin package.
+`SLEEP_RESTARTS` had no reader since the strict flip deleted the
+interior-sleep gate; the restart builtins clear their latches in
+their own `sleep()`, which is where the fact always lived.

@@ -16,6 +16,7 @@ pub mod abstract_value;
 pub mod analysis;
 pub(crate) mod dbgenv;
 pub mod effects;
+pub use effects::Effect;
 pub mod env;
 pub mod expr;
 pub mod fusion;
@@ -751,10 +752,9 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// 2026-07-31): value-channel state (arg slots, the result
     /// resident) SURVIVES so a re-woken arm rides its history. Only
     /// the documented arm-rewake RESTART builtins clear their
-    /// semantic latches here (once/take/skip/hold/uniq/count — such a
-    /// builtin must declare `SLEEP_RESTARTS = true` so the fusion
-    /// interior-sleep gate keeps kernels honest), and async builtins
-    /// may tear down watches/subscriptions to re-arm on wake.
+    /// semantic latches here (once/take/skip/hold/uniq/count), and
+    /// async builtins may tear down watches/subscriptions to re-arm on
+    /// wake.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
     /// Clear REPLAY caches, preserve SEMANTIC state — the `Apply`-side
@@ -1040,87 +1040,48 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
     ExprId,
 ) -> Result<Box<dyn Apply<R, E>>>;
 
-/// Trait implemented by graphix built-in functions implemented in rust
-/// A builtin's FAST CALL entry (see [`BuiltIn::FASTCALL`]): a pure
-/// function over its present argument values; `None` is "no value this
-/// cycle". The JIT calls it directly with no dispatch machinery.
+/// A builtin's FAST CALL entry (see [`FastCall`]): a pure function
+/// over its present argument values; `None` is "no value this cycle".
+/// The JIT calls it directly with no dispatch machinery.
 pub type FastFn = fn(&[Value]) -> Option<Value>;
 
-/// The TYPED twin of [`FastFn`] (see [`BuiltIn::FASTCALL_TYPED`]): the
-/// same contract, plus the call site's resolved return `Type` and the
-/// environment it resolves in — for a builtin whose result is DIRECTED
-/// by its return type (`str::parse` casting to its `'b` target).
+/// The TYPED twin of [`FastFn`]: the same contract, plus the call
+/// site's resolved return `Type` and the environment it resolves in —
+/// for a builtin whose result is DIRECTED by its return type
+/// (`str::parse` casting to its `'b` target).
 pub type TypedFastFn = fn(&env::Env, &Type, &[Value]) -> Option<Value>;
 
-/// The direct-call entry a builtin registered, if any: exactly one of
-/// [`BuiltIn::FASTCALL`] / [`BuiltIn::FASTCALL_TYPED`].
+/// The direct-call entry a `Stateless` builtin carries
+/// ([`Effect::Stateless`]): a plain function the JIT calls directly at
+/// every fused call site — no site identity, no per-site inner `Apply`,
+/// no `CachedArgs` memo, no allocation beyond the argument buffer. The
+/// kernel decides the production's tag from its argument discs: a
+/// tainted argument bottoms the call WITHOUT invoking the fn (bottom
+/// propagates — the fn only ever sees present values), all-stale
+/// arguments make the result stale, and `None` from the fn is this
+/// cycle's bottom. Meant for CHEAP pure functions: recomputation
+/// replaces the memo, so an expensive fast fn re-evaluates on every
+/// kernel invocation in which any other region input fired. The
+/// node-walk keeps using `init`/`update`; `eval` should delegate to
+/// the same fn so there is one implementation
+/// (`graphix_package_core::fast_eval`). `Typed` is for a builtin whose
+/// result is directed by its call site's resolved RETURN type: the JIT
+/// bakes the site's `CallSite::typ()` beside the fn and loans the
+/// kernel's env for the call, so the fn runs the interp's exact cast.
 #[derive(Debug, Clone, Copy)]
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),
 }
 
+/// Trait implemented by graphix built-in functions implemented in rust
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// The name of the builtin, this must be package::unique_name for
     /// builtins in a package
     const NAME: &str;
-    /// Sync/async classification for fusion. Conservative default is
-    /// `Async`; override to `Sync` when the builtin produces all of its
-    /// output on the same cycle as the input that triggered it (it may
-    /// produce no output at all, but never on a future cycle relative
-    /// to a current trigger). See `effects::EffectKind` and
-    /// `design/whole_graph_fusion.md` for the rules and examples.
-    const EFFECT: EffectKind = EffectKind::Async;
-    /// Whether an invocation's result depends only on its arguments,
-    /// never on prior invocations of the same instance: the instance
-    /// holds no cross-invocation state (`count`/`sum`/`min`/`uniq`/
-    /// `once` accumulate or remember — NOT stateless). Effects do not
-    /// matter (`print`/`log`/`exit` are stateless: each invocation
-    /// emits once whichever instance runs it), and an internal
-    /// same-input memo or scratch buffer is fine. Only meaningful for
-    /// `EFFECT = Sync` builtins. Consulted by the tail-loop collapse
-    /// gate (`analysis::lambda_is_stateless`,
-    /// `design/recursive_activations.md` §2): a tail-recursive body
-    /// reuses ONE activation across its iterations only when every
-    /// builtin it reaches is stateless — otherwise each iteration owns
-    /// an activation, exactly as a collection slot does. A wrong `true`
-    /// is a semantics bug (two iterations would share what should be
-    /// per-iteration state); a wrong `false` only costs the loop.
-    /// Conservative default: `false`.
-    const STATELESS: bool = false;
-    /// Whether this builtin's `sleep` CLEARS semantic state — the
-    /// documented arm-rewake RESTART builtins
-    /// (`once`/`take`/`skip`/`hold`/`uniq`/`count`): an arm
-    /// deselection sleeps the instance and re-arms it for the next
-    /// selection. Only meaningful for `EFFECT = Sync` builtins; a
-    /// declared fact for the interp's arm-rewake semantics (such a
-    /// builtin is stateful, so it never fuses). Default: `false`
-    /// (sleep-inert).
-    const SLEEP_RESTARTS: bool = false;
-    /// Optional FAST CALL entry: a plain function the JIT calls
-    /// directly at every fused call site of this builtin — no site
-    /// identity, no per-site inner `Apply`, no `CachedArgs` memo, no
-    /// allocation beyond the argument buffer. The kernel decides the
-    /// production's tag from its argument discs: a tainted argument
-    /// bottoms the call WITHOUT invoking the fn (bottom propagates —
-    /// the fn only ever sees present values), all-stale arguments make
-    /// the result stale, and `None` from the fn is this cycle's bottom.
-    /// Legal only with `EFFECT = Sync` and `STATELESS = true`
-    /// (`register_builtin` refuses anything else), and meant for CHEAP
-    /// pure functions: recomputation replaces the memo, so an expensive
-    /// fastcall re-evaluates on every kernel invocation in which any
-    /// other region input fired. The node-walk keeps using
-    /// `init`/`update`; `eval` should delegate to the same fn so there
-    /// is one implementation (`graphix_package_core::fast_eval`).
-    const FASTCALL: Option<FastFn> = None;
-    /// The typed twin of `FASTCALL`, for a builtin whose result is
-    /// directed by its call site's resolved RETURN type (`str::parse`
-    /// casting the parsed value to its `'b` target): the JIT bakes the
-    /// site's `CallSite::typ()` beside the fn and loans the kernel's
-    /// env for the call, so the fn runs the interp's exact cast. Same
-    /// legality and tag rules as `FASTCALL`; at most one of the two may
-    /// be declared.
-    const FASTCALL_TYPED: Option<TypedFastFn> = None;
+    /// The builtin's classification — see [`Effect`] for the three
+    /// questions it answers. The conservative default is `Async`.
+    const EFFECT: Effect = Effect::Async;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -2033,30 +1994,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
-        let fastcall = match (T::FASTCALL, T::FASTCALL_TYPED) {
-            (None, None) => None,
-            (Some(f), None) => Some(FastCall::Plain(f)),
-            (None, Some(f)) => Some(FastCall::Typed(f)),
-            (Some(_), Some(_)) => {
-                bail!("builtin {} declares both FASTCALL and FASTCALL_TYPED", T::NAME)
-            }
-        };
-        if fastcall.is_some() && (!T::EFFECT.is_sync() || !T::STATELESS) {
-            bail!(
-                "builtin {} declares a fast call but is not Sync + STATELESS — a \
-                 fast call has no per-site state and no async production",
-                T::NAME
-            )
-        }
-        self.fusion.builtin_facts.insert(
-            T::NAME,
-            effects::BuiltinFacts {
-                effect: T::EFFECT,
-                stateless: T::STATELESS,
-                sleep_restarts: T::SLEEP_RESTARTS,
-                fastcall,
-            },
-        );
+        self.fusion.builtin_facts.insert(T::NAME, effects::BuiltinFacts::from(T::EFFECT));
         Ok(())
     }
 
@@ -2086,23 +2024,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.fusion.builtin_facts.get(name).map(|f| f.effect).unwrap_or_default()
     }
 
-    /// Look up a registered builtin's `STATELESS` declaration (see
-    /// [`BuiltIn::STATELESS`]). Returns `false` (the conservative
-    /// default) for unknown names.
+    /// Whether a registered builtin is [`Effect::Stateless`]. Returns
+    /// `false` (the conservative default) for unknown names.
     pub fn builtin_stateless(&self, name: &str) -> bool {
         self.fusion.builtin_facts.get(name).map(|f| f.stateless).unwrap_or(false)
     }
 
-    /// Look up a registered builtin's `SLEEP_RESTARTS` declaration
-    /// (see [`BuiltIn::SLEEP_RESTARTS`]). Returns `true` (the
-    /// conservative reading for the interior-sleep gate) for unknown
-    /// names.
-    pub fn builtin_sleep_restarts(&self, name: &str) -> bool {
-        self.fusion.builtin_facts.get(name).map(|f| f.sleep_restarts).unwrap_or(true)
-    }
-
-    /// A registered builtin's direct-call entry ([`BuiltIn::FASTCALL`]
-    /// or [`BuiltIn::FASTCALL_TYPED`]), if it declared one.
+    /// A registered builtin's direct-call entry, if its
+    /// [`Effect::Stateless`] carries one.
     pub fn builtin_fastcall(&self, name: &str) -> Option<FastCall> {
         self.fusion.builtin_facts.get(name).and_then(|f| f.fastcall)
     }

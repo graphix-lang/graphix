@@ -1,5 +1,5 @@
 use arcstr::ArcStr;
-use graphix_compiler::{ExecCtx, FastFn, Rt, UserEvent, effects::EffectKind, errf};
+use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use netidx_value::Value;
 
 use crate::{CachedArgs, CachedVals, EvalCached, fast_eval, fast_get};
@@ -19,10 +19,8 @@ macro_rules! unary_f64 {
             }
         }
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($ev::fast)));
             const NAME: &str = $name;
-            const FASTCALL: Option<FastFn> = Some($ev::fast);
 
             fn eval(
                 &mut self,
@@ -48,10 +46,8 @@ macro_rules! binary_f64 {
             }
         }
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($ev::fast)));
             const NAME: &str = $name;
-            const FASTCALL: Option<FastFn> = Some($ev::fast);
 
             fn eval(
                 &mut self,
@@ -76,10 +72,8 @@ macro_rules! unary_f64_pred {
             }
         }
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($ev::fast)));
             const NAME: &str = $name;
-            const FASTCALL: Option<FastFn> = Some($ev::fast);
 
             fn eval(
                 &mut self,
@@ -166,10 +160,8 @@ fn fc_clamp(args: &[Value]) -> Option<Value> {
 #[derive(Debug, Default)]
 pub(crate) struct MathClampEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_clamp)));
     const NAME: &str = "core_math_clamp";
-    const FASTCALL: Option<FastFn> = Some(fc_clamp);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_clamp, from)

@@ -5,7 +5,7 @@
 use arcstr::ArcStr;
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, errf, expr::ExprId, typ::FnType,
+    effects::Effect, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::ProgramArgs;
 use immutable_chunkmap::map::Map as CMap;
@@ -217,7 +217,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     // replayable, so a fused HOF loop's shared DynCall slot instance
     // would pend after the first element (the sys::dirs class, soak
     // jul07b). Async de-fuses it.
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "args_parse";
 
     fn init<'a, 'b, 'c, 'd>(

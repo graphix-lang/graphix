@@ -63,7 +63,7 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// the lattice join with the resolved fn-arg's effect.
     pub intrinsic_effect: Mutex<EffectKind>,
     /// Whether the body holds no per-activation state — every builtin it
-    /// reaches is `STATELESS`, no `<-` targets a binding of its own, and
+    /// reaches is `Effect::Stateless`, no `<-` targets a binding of its own, and
     /// every callee is stateless (`analysis::infer_effects`, the same
     /// fixpoint as `intrinsic_effect`). A tail loop reuses one activation
     /// only when this holds (`design/recursive_activations.md` §2).

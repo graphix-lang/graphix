@@ -388,7 +388,7 @@ fn infer_effects<R: Rt, E: UserEvent>(
 /// fixpoints from an optimistic start: `effect` (`Sync` degrading to
 /// `Async`) and `stateless` (`true` degrading to `false` — the body
 /// holds no per-activation state: every builtin it reaches is
-/// `STATELESS`, no `<-` targets one of its own bindings, every callee
+/// `Effect::Stateless`, no `<-` targets one of its own bindings, every callee
 /// is stateless). `stateless` is what lets a tail loop reuse ONE
 /// activation across its iterations (`design/recursive_activations.md`
 /// §2); everything else about a stateful Sync body is unchanged.

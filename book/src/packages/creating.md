@@ -103,7 +103,7 @@ For pure functions that just compute a result from their arguments, use
 `EvalCached`:
 
 ```rust
-use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::EffectKind};
+use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached};
 use netidx_value::Value;
 
@@ -113,9 +113,8 @@ struct MyMinEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyMinEv {
     const NAME: &str = "mylib_min";
     // Every output appears on the cycle its inputs arrive, and the
-    // result depends only on the arguments — the JIT may fuse it.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    // result depends only on the arguments; no fast call yet.
+    const EFFECT: Effect = Effect::Stateless(None);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
@@ -139,32 +138,41 @@ Then list `MyMin` in your `defpackage!` builtins. `CachedArgs` handles all the
 details of caching argument values, calling `eval` when arguments change, and
 implementing the `Apply` trait.
 
-`EFFECT` and `STATELESS` are what let the compiler fuse a call to your
-builtin into native code: `Sync` means the result is produced on the same
-cycle as the arguments that triggered it, `STATELESS` means the result
-depends only on the arguments (no tally, no memo of earlier calls). Both
-default to the conservative reading (`Async`, stateful), which keeps the
-builtin correct but out of fused kernels.
+`EFFECT` is the builtin's whole classification, three questions
+answered in one place:
+
+- `Effect::Async` — the result may arrive on a later cycle than its
+  trigger, autonomously, or never (a timer, a network read). The
+  conservative default.
+- `Effect::Sync` — every output appears on the cycle of its trigger,
+  but the instance keeps state across invocations (a tally, a memo of
+  earlier calls), or its result depends on which arguments have been
+  delivered.
+- `Effect::Stateless(fast)` — same-cycle, and the result depends only
+  on the arguments. `fast` is the fast call described next, or `None`
+  for a builtin that cannot have one (an effect such as `print`, or a
+  function that produces before all its arguments have arrived).
+
+Stateless matters twice: a tail-recursive loop reuses one activation
+across its iterations only when every builtin it reaches is stateless,
+and fusion into native code needs the fast call.
 
 #### Fast calls
 
-A fused kernel normally reaches a builtin through a general dispatch
-(`graphix_dyncall`) that marshals the arguments, keys a per-call-site
-instance and caches the result — about 140 ns per call, which dominates
-a tight loop that calls `array::len` once per element. A `Sync` +
-`STATELESS` builtin can offer a **fast call**: a plain function the
-kernel calls directly on its argument values in place, with no dispatch
-machinery and no marshal at all — a few nanoseconds per call.
+A builtin fuses into a native kernel only through a **fast call**: a
+plain function the kernel calls directly on its argument values in
+place, with no dispatch machinery and no marshal at all — a few
+nanoseconds per call, where a node-walked call costs about 140 ns.
+Without one the builtin stays correct and runs on the interpreter at
+every site.
 
 ```rust
-use graphix_compiler::FastFn;
+use graphix_compiler::{Effect, FastCall};
 use graphix_package_core::fast_eval;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyLenEv {
     const NAME: &str = "mylib_len";
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
-    const FASTCALL: Option<FastFn> = Some(my_len);
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(my_len, from)
@@ -182,12 +190,14 @@ fn my_len(args: &[Value]) -> Option<Value> {
 The contract: the function only ever sees present values (a missing or
 bottom argument bottoms the call before it is invoked), `None` means
 "no value this cycle", and the compiler decides whether the result
-fired from the arguments. Registration refuses `FASTCALL` on a builtin
-that is not `Sync` + `STATELESS`. Use it for cheap pure functions —
-there is no result cache, so the function runs on every kernel
-invocation in which any input to the enclosing region fired. Having
-`eval` delegate to the same function through `fast_eval` keeps the
-interpreter and the JIT on one implementation.
+fired from the arguments. Use it for cheap pure functions — there is no
+result cache, so the function runs on every kernel invocation in which
+any input to the enclosing region fired. Having `eval` delegate to the
+same function through `fast_eval` keeps the interpreter and the JIT on
+one implementation. A builtin whose result is directed by its call
+site's return type (`str::parse` casting to its target) declares
+`FastCall::Typed` instead: the same contract, plus the resolved type
+and the environment it resolves in.
 
 One correctness caveat: because the fast function only ever sees
 present values, an `eval` that deliberately *produces on partial

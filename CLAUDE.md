@@ -200,81 +200,60 @@ Types are structural - compatibility is based on structure, not names. Type infe
 Built-ins implement the `BuiltIn<R, E>` trait:
 - `NAME`: Function name constant
 - `init()`: Returns initialization function
-- `EFFECT` (default `Async`): sync/async classification — `Sync` iff every
-  output appears on the same cycle as its trigger (fusion boundary otherwise)
-- `STATELESS` (default `false`): declare `true` iff an invocation's result
-  depends only on its arguments, never on prior invocations of the same
-  instance — no cross-invocation state (`count`/`sum`/`min`/`uniq`/`once`
-  accumulate or remember). Effects do NOT matter (`print`/`log`/`exit`
-  are stateless — each invocation emits once whichever instance runs
-  it), and internal memos/scratch buffers are fine. Only consulted for
-  `Sync` builtins, by the TAIL-LOOP COLLAPSE GATE
-  (`analysis::lambda_is_stateless`, `design/recursive_activations.md`
-  §2, 2026-08-24): a tail-recursive body reuses ONE activation across
-  its iterations only when every builtin it reaches is stateless;
-  otherwise each iteration owns an activation like a collection slot.
-  A wrong `true` is a semantics bug (iterations would share
-  per-iteration state), a wrong `false` only costs the loop.
-- `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
-  semantic state — the arm-rewake RESTART builtins
-  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). A declared interp
-  fact (such a builtin is stateful, so it never fuses); deliberately
-  NOT `!STATELESS` (dbg/log are effectful-but-sleep-inert).
-- `FASTCALL` (default `None`, 2026-08-30): an optional
-  `fn(&[Value]) -> Option<Value>` the JIT calls DIRECTLY at every fused
-  site of the builtin — no site identity, no per-site inner `Apply`, no
-  `CachedArgs` memo, no marshal: the site stores the args' (disc,
-  payload) pairs in a STACK slot (a scalar with its variant's
-  discriminant word, composite/string bits borrowed, a value shape
-  with its disc cleaned) and the trampoline views it as `&[Value]`;
-  an OWNED producer arg is dropped by the site after the call. The
-  kernel's arg discs decide the tag (a tainted
-  arg bottoms the call without invoking the fn; all-stale args make the
-  result stale; `None` is this cycle's bottom), through the
-  `graphix_fastcall` trampoline. Legal only with `EFFECT = Sync` +
-  `STATELESS = true` (`register_builtin` refuses otherwise); a fast fn
-  sees ALL args PRESENT (fast_eval returns None on an undelivered
-  slot; the kernel bottoms a tainted arg before the call), so an eval
-  that PRODUCES on partial delivery (opt::or/and/contains/or_default/
-  ok_or/zip short-circuit on arg0 with arg1 undelivered;
-  core::divide's mid-stream reset; `filter_err`'s ride on a
-  non-error) must NOT convert — that interp behavior is the
-  semantics. `eval` delegates to the same fn through
-  `graphix_package_core::fast_eval` (one implementation). This is the
-  lever the intrinsics' inline helpers give the compiler, offered to
-  every package author, and under strict fusion the ONLY way a
-  builtin fuses: `array::len` in a hand-written loop went from a
-  140 ns dispatch to a ~3 ns direct call (bench/collection `fold_rec`
-  15.2 -> 1.5 ms). A LABELED DEFAULT the call left unwritten marshals
-  the CallSite's own compiled default node (`MarshalArg::Default`,
-  2026-09-02) — `sort(a)`, `escape(s)`, `hbs::render(t, d)` fuse in
-  their common spelling. A fast fn whose result is DIRECTED by its
-  return type declares `FASTCALL_TYPED` instead — a
-  `fn(&Env, &Type, &[Value])` the site calls with its resolved
-  `CallSite::typ()` baked beside the fn pointer under the kernel's
-  env loan (`graphix_typedcall`; `str::parse` casts to its `'b`
-  target this way, and the non-inline `cast<T>(x)` pseudo-site is
+- `EFFECT` (default `Effect::Async`, consolidated 2026-09-02 — Eric:
+  "make it easy to classify, and force awareness of `FastCall`"): the
+  builtin's ONE classification, `Effect::{Async, Sync,
+  Stateless(Option<FastCall>)}` (`effects.rs`, re-exported at the
+  root). `Async`: output may land on a later cycle than its trigger,
+  autonomously, or never. `Sync`: same-cycle, but the instance keeps
+  cross-invocation state (`count`/`sum`/`min`/`uniq`/`once`/`take`/
+  `skip`/`hold`/`window`/`group`/`and`/`or` accumulate or remember)
+  or its result depends on WHICH args were delivered (the
+  partial-delivery producers: opt's `or`/`and`/`contains`/
+  `or_default`/`ok_or`/`zip`, `filter_err`, `divide`). `Stateless(f)`:
+  same-cycle and a pure function of its args — no cross-invocation
+  state; internal memos/scratch buffers fine; effects fine (`print`/
+  `log`/`exit`/`now` emit once whichever instance runs them). It is
+  consulted by the TAIL-LOOP COLLAPSE GATE (`analysis::
+  lambda_is_stateless`, `design/recursive_activations.md` §2): a
+  tail-recursive body reuses ONE activation across its iterations only
+  when every builtin it reaches is stateless; a wrong `Stateless` is a
+  semantics bug (iterations would share per-iteration state), a wrong
+  `Sync` only costs the loop. The payload is the direct-call entry the
+  JIT uses at every fused site, `FastCall::{Plain(fn(&[Value]) ->
+  Option<Value>), Typed(fn(&Env, &Type, &[Value]) -> Option<Value>)}`,
+  or `None` for a builtin that can never be one — an effect (a kernel
+  is a pure function of its inputs and may re-evaluate) or a
+  partial-delivery producer (a fast fn sees EVERY arg present). Under
+  strict fusion a builtin fuses iff it carries a fast fn; everything
+  else node-walks, and the invalid combinations are unrepresentable
+  (the old `STATELESS`/`SLEEP_RESTARTS`/`FASTCALL`/`FASTCALL_TYPED`
+  consts and `register_builtin`'s refusals are gone; `SLEEP_RESTARTS`
+  had no reader since the strict flip — the restart builtins clear
+  their latches in their own `sleep()`). The fast fn: the site stores
+  the args' (disc, payload) pairs in a STACK slot and the trampoline
+  views it as `&[Value]`; the kernel's arg discs decide the tag (a
+  tainted arg bottoms the call without invoking the fn; all-stale args
+  make the result stale; `None` is this cycle's bottom), through
+  `graphix_fastcall`; `eval` delegates to the same fn through
+  `graphix_package_core::fast_eval` (one implementation). A LABELED
+  DEFAULT the call left unwritten marshals the CallSite's own compiled
+  default node (`MarshalArg::Default`) — `sort(a)`, `escape(s)`,
+  `hbs::render(t, d)` fuse in their common spelling. `Typed` is for a
+  result DIRECTED by its return type: the site calls it with its
+  resolved `CallSite::typ()` baked beside the fn pointer under the
+  kernel's env loan (`graphix_typedcall`; `str::parse` casts to its
+  `'b` target this way, and the non-inline `cast<T>(x)` pseudo-site is
   the same dispatch with `cast_typed`). A CONFIGURATION a fast fn
   compiles from its args (a regex, an escape table, a template
   registry) lives in a bounded thread-local `FastMemo` keyed by the
-  configuring values — a cache, never state, one per thread for
-  every site. Since 2026-08-30 the stdlib is opted in BROADLY —
-  ~110 pure Sync builtins across core (math, bytes, bit ops, opt's
-  all-present subset, `error`, `buffer::encode`), array (incl.
-  `sort`), map, list (incl. `concat`/`flatten`/`sort`/`unzip`), str
-  (incl. `parse`, `escape`/`unescape`, the split family), re (all
-  five), hbs::render, sys::{join,tempdir}_path and the json/toml/pack
-  writers. What is left is out by rule: the partial-delivery
-  producers above, the stateful family (`count`/`sum`/`min`/`max`/
-  `mean`/`product`/`uniq`/`once`/`take`/`skip`/`hold`/`window`/
-  `group`/`and`/`or`), the lambda-taking HOFs (`filter`, opt's
-  `map`/`filter`/`flat_map`/`or_else`/…), effects (`print`/`dbg`/
-  `log`/`exit`/`now`/`rand`/`buffer::decode`'s ref writes/the http
-  handle constructors) and json/toml/pack `read` (async by design).
-  The consts are pulled through `EvalCached`/`CachedArgs` and
-  recorded per name as `BuiltinFacts` (`ctx.builtin_effect`/
-  `ctx.builtin_stateless`/`ctx.builtin_sleep_restarts`/
-  `ctx.builtin_fastcall`, the last a `FastCall::{Plain, Typed}`).
+  configuring values — a cache, never state. The stdlib is opted in
+  broadly (~110 pure builtins across core, array, map, list, str, re,
+  hbs, sys::time, sys paths, the json/toml/pack writers); what is left
+  is out by rule: the partial-delivery producers, the stateful family,
+  the lambda-taking HOFs, effects, and json/toml/pack `read` (async by
+  design). The facts are recorded per name as `BuiltinFacts` (`ctx.
+  builtin_effect`/`builtin_stateless`/`builtin_fastcall`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.
@@ -777,7 +756,7 @@ INTENDED semantics, never by trusting either engine.
 **STRICT FUSION** (Eric's ruling 2026-09-01, `design/strict_fusion.md`
 — "complexity needs to pay rent"; flipped `fa08136a`, the stateful
 machinery deleted the same day): fusion admits PURE COMPUTATION ONLY.
-A builtin fuses iff it registers a `FASTCALL` or `FASTCALL_TYPED` (a
+A builtin fuses iff its `Effect::Stateless` carries a `FastCall` (a
 direct trampoline call on a stack buffer of borrowed `Value`s; the
 typed form also gets the site's resolved return type under the
 kernel's env loan); the non-inline `cast<T>(x)` is a typed site
@@ -806,8 +785,8 @@ kernel invocation exactly four things through scoped thread-locals:
 `KERNEL_ABORT`, `KERNEL_ENV`, `QOP_RAISES` and the core-trait value
 hooks. Measured at the flip: 94% of
 kernels kept, benches flat, every bench program still fuses fully.
-The follow-on calls: pure selects fuse; grow the FASTCALL set
-maximally (done 2026-09-02 — see the `FASTCALL` entry above for the
+The follow-on calls: pure selects fuse; grow the fast-fn set
+maximally (done 2026-09-02 — see the `EFFECT` entry above for the
 converted set and the by-rule remainder); `#[native]` is THE
 advertised performance model.
 
@@ -891,7 +870,7 @@ advertised performance model.
   activation per level, a STATELESS tail loop is one activation reusing
   its one state, collection slots are activations. A tail loop collapses
   to one activation only when the body is stateless
-  (`analysis::lambda_is_stateless`, the `STATELESS` builtin const).
+  (`analysis::lambda_is_stateless`, `Effect::Stateless`).
 - **Recursion** (`design/recursive_activations.md`,
   `design/atomic_recursion.md`): activations ARE collection slots.
   Instances are retained unconditionally (no park, no budget — "you
@@ -983,7 +962,7 @@ advertised performance model.
   `dyncall-arm-init-stale-aug2026` (re-adjudicated in place),
   `lib_tests/callable.rs` `arm_wake_delivers_standing_args_stale`.
   The RESTART builtins (`once`/`take`/`skip`/`uniq`/`hold`/
-  `count`, `SLEEP_RESTARTS`) clear on sleep (stateful, so never
+  `count`) clear on sleep in their own `sleep()` (stateful, so never
   fused). Pins:
   `findings/{sleep-preserves-caches-jul2026,arm-local-bind-aug2026,
   sleep-restart-gate-aug2026}/`.
@@ -1143,7 +1122,7 @@ binds (the slot clones out as an owned local of its ABI kind,
 tail loops carrying ANY kernel param kind (Value pairs and Strings
 rebind via the clone/drop protocol; `structural_tail_loop` admits
 every kernel-encodable carried kind, so `lfold_rec` fuses and the
-hand List fold beats the intrinsic at 100k), every FASTCALL builtin
+hand List fold beats the intrinsic at 100k), every fast-fn builtin
 and non-inline cast via the direct trampolines, cross-kernel lambda
 calls (recursive self-calls: tail → rebind-and-jump, non-tail → native
 recursion), trait default bodies and fn-formal forwarding/capture. (The

@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, err, expr::ExprId, typ::FnType,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
+    UserEvent, effects::Effect, err, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, seam_value,
@@ -27,7 +27,7 @@ pub(crate) struct AfterIdle {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_time_after_idle";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -170,7 +170,7 @@ pub(crate) struct Timer {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_time_timer";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -302,8 +302,7 @@ pub(crate) struct Now {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     // When trigger fires, samples the current time and emits same-cycle.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "sys_time_now";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -351,9 +350,7 @@ macro_rules! time_fn {
         pub(crate) struct $ev;
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
-            const FASTCALL: Option<FastFn> = Some($fc);
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
             const NAME: &str = $name;
 
             fn eval(

@@ -68,26 +68,79 @@ impl Default for EffectKind {
     }
 }
 
+/// A builtin's one classification (`BuiltIn::EFFECT`), the three
+/// questions an author answers in one place: does every output land
+/// on the cycle of its trigger; does an invocation's result depend on
+/// anything but its arguments; and can the JIT call it directly.
+#[derive(Debug, Clone, Copy)]
+pub enum Effect {
+    /// Input on cycle K may produce output on a later cycle,
+    /// autonomously, or never. The conservative default.
+    Async,
+    /// Same-cycle, and the instance holds cross-invocation state
+    /// (`count`/`sum`/`uniq`/`once` accumulate or remember), or its
+    /// result depends on WHICH arguments were delivered (the
+    /// partial-delivery producers: `opt::or`, `filter_err`, `divide`).
+    Sync,
+    /// Same-cycle, and an invocation's result depends only on its
+    /// arguments — no cross-invocation state, an internal memo or
+    /// scratch buffer allowed, effects allowed (`print`/`log`/`exit`
+    /// emit once whichever instance runs them). The tail-loop
+    /// collapse gate (`analysis::lambda_is_stateless`) reuses ONE
+    /// activation across a tail loop's iterations only when every
+    /// builtin it reaches is `Stateless`; a wrong `Stateless` is a
+    /// semantics bug (iterations would share per-iteration state), a
+    /// wrong `Sync` only costs the loop. The payload is the direct-call
+    /// entry the JIT uses at every fused site (`FastCall`), or `None`
+    /// for a builtin that can never be one: an effect (a kernel is a
+    /// pure function of its inputs and may re-evaluate) or a
+    /// partial-delivery producer (a fast fn sees every argument
+    /// present). Under strict fusion a builtin fuses iff it carries a
+    /// fast fn; everything else node-walks (design/strict_fusion.md).
+    Stateless(Option<crate::FastCall>),
+}
+
+impl Effect {
+    /// The sync/async lattice fact effect inference reads.
+    pub fn kind(self) -> EffectKind {
+        match self {
+            Effect::Async => EffectKind::Async,
+            Effect::Sync | Effect::Stateless(_) => EffectKind::Sync,
+        }
+    }
+
+    pub fn is_stateless(self) -> bool {
+        matches!(self, Effect::Stateless(_))
+    }
+
+    pub fn fastcall(self) -> Option<crate::FastCall> {
+        match self {
+            Effect::Stateless(f) => f,
+            Effect::Async | Effect::Sync => None,
+        }
+    }
+}
+
 /// The declared facts of a registered builtin, recorded by
-/// `ExecCtx::register_builtin` from the `BuiltIn` trait consts and
-/// looked up by name (`ExecCtx::builtin_effect` /
-/// `ExecCtx::builtin_stateless`). `default()` is the conservative
+/// `ExecCtx::register_builtin` from [`Effect`] and looked up by name
+/// (`ExecCtx::builtin_effect` / `ExecCtx::builtin_stateless` /
+/// `ExecCtx::builtin_fastcall`). `default()` is the conservative
 /// reading for an unregistered name: `Async` + stateful.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuiltinFacts {
-    /// `BuiltIn::EFFECT` — see [`EffectKind`].
     pub effect: EffectKind,
-    /// `BuiltIn::STATELESS` — delete-and-reinit is unobservable (no
-    /// cross-invocation state, no per-invocation external effect).
     pub stateless: bool,
-    /// `BuiltIn::SLEEP_RESTARTS` — `sleep()` clears semantic state
-    /// (the documented arm-rewake RESTART builtins:
-    /// once/take/skip/hold/uniq/count).
-    pub sleep_restarts: bool,
-    /// `BuiltIn::FASTCALL` / `FASTCALL_TYPED` — the direct-call entry
-    /// the JIT uses at every fused site of the builtin; without one the
-    /// builtin node-walks (design/strict_fusion.md).
     pub fastcall: Option<crate::FastCall>,
+}
+
+impl From<Effect> for BuiltinFacts {
+    fn from(e: Effect) -> Self {
+        BuiltinFacts {
+            effect: e.kind(),
+            stateless: e.is_stateless(),
+            fastcall: e.fastcall(),
+        }
+    }
 }
 
 /// How a lambda recurses with respect to its own `LambdaId`. A summary

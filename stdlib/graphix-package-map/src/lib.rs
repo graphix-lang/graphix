@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, expr::ExprId, typ::FnType,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
+    UserEvent, effects::Effect, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
@@ -24,10 +24,8 @@ fn fc_get(args: &[Value]) -> Option<Value> {
 struct GetEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get)));
     const NAME: &str = "map_get";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_get);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_get, from)
@@ -49,10 +47,8 @@ fn fc_get_or(args: &[Value]) -> Option<Value> {
 struct GetOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get_or)));
     const NAME: &str = "map_get_or";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_get_or);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_get_or, from)
@@ -74,10 +70,8 @@ fn fc_insert(args: &[Value]) -> Option<Value> {
 struct InsertEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_insert)));
     const NAME: &str = "map_insert";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_insert);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_insert, from)
@@ -97,10 +91,8 @@ fn fc_remove(args: &[Value]) -> Option<Value> {
 struct RemoveEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_remove)));
     const NAME: &str = "map_remove";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_remove);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_remove, from)

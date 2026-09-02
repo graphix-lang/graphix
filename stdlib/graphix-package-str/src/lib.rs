@@ -6,8 +6,8 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
-    ExecCtx, FastFn, Node, Rt, Scope, TypedFastFn, UserEvent,
-    effects::EffectKind,
+    ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
+    effects::Effect,
     env::Env,
     err, errf,
     expr::ExprId,
@@ -35,10 +35,8 @@ fn fc_starts_with(args: &[Value]) -> Option<Value> {
 struct StartsWithEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StartsWithEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_starts_with)));
     const NAME: &str = "str_starts_with";
-    const FASTCALL: Option<FastFn> = Some(fc_starts_with);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_starts_with, from)
@@ -60,10 +58,8 @@ fn fc_ends_with(args: &[Value]) -> Option<Value> {
 struct EndsWithEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EndsWithEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_ends_with)));
     const NAME: &str = "str_ends_with";
-    const FASTCALL: Option<FastFn> = Some(fc_ends_with);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_ends_with, from)
@@ -85,10 +81,8 @@ fn fc_contains(args: &[Value]) -> Option<Value> {
 struct ContainsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_contains)));
     const NAME: &str = "str_contains";
-    const FASTCALL: Option<FastFn> = Some(fc_contains);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_contains, from)
@@ -111,10 +105,8 @@ fn fc_strip_prefix(args: &[Value]) -> Option<Value> {
 struct StripPrefixEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripPrefixEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_strip_prefix)));
     const NAME: &str = "str_strip_prefix";
-    const FASTCALL: Option<FastFn> = Some(fc_strip_prefix);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_strip_prefix, from)
@@ -137,10 +129,8 @@ fn fc_strip_suffix(args: &[Value]) -> Option<Value> {
 struct StripSuffixEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripSuffixEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_strip_suffix)));
     const NAME: &str = "str_strip_suffix";
-    const FASTCALL: Option<FastFn> = Some(fc_strip_suffix);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_strip_suffix, from)
@@ -160,10 +150,8 @@ fn fc_trim(args: &[Value]) -> Option<Value> {
 struct TrimEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim)));
     const NAME: &str = "str_trim";
-    const FASTCALL: Option<FastFn> = Some(fc_trim);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_trim, from)
@@ -183,10 +171,8 @@ fn fc_trim_start(args: &[Value]) -> Option<Value> {
 struct TrimStartEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimStartEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim_start)));
     const NAME: &str = "str_trim_start";
-    const FASTCALL: Option<FastFn> = Some(fc_trim_start);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_trim_start, from)
@@ -206,10 +192,8 @@ fn fc_trim_end(args: &[Value]) -> Option<Value> {
 struct TrimEndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEndEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim_end)));
     const NAME: &str = "str_trim_end";
-    const FASTCALL: Option<FastFn> = Some(fc_trim_end);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_trim_end, from)
@@ -231,10 +215,8 @@ fn fc_replace(args: &[Value]) -> Option<Value> {
 struct ReplaceEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReplaceEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_replace)));
     const NAME: &str = "str_replace";
-    const FASTCALL: Option<FastFn> = Some(fc_replace);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_replace, from)
@@ -258,10 +240,8 @@ fn fc_dirname(args: &[Value]) -> Option<Value> {
 struct DirnameEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DirnameEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dirname)));
     const NAME: &str = "str_dirname";
-    const FASTCALL: Option<FastFn> = Some(fc_dirname);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_dirname, from)
@@ -284,10 +264,8 @@ fn fc_basename(args: &[Value]) -> Option<Value> {
 struct BasenameEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BasenameEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_basename)));
     const NAME: &str = "str_basename";
-    const FASTCALL: Option<FastFn> = Some(fc_basename);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_basename, from)
@@ -324,10 +302,8 @@ fn fc_row_col(args: &[Value]) -> Option<Value> {
 struct RowColEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for RowColEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_row_col)));
     const NAME: &str = "str_row_col";
-    const FASTCALL: Option<FastFn> = Some(fc_row_col);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_row_col, from)
@@ -385,10 +361,8 @@ fn fc_join(args: &[Value]) -> Option<Value> {
 struct StringJoinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringJoinEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join)));
     const NAME: &str = "str_join";
-    const FASTCALL: Option<FastFn> = Some(fc_join);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_join, from)
@@ -424,10 +398,8 @@ fn fc_concat(args: &[Value]) -> Option<Value> {
 struct StringConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringConcatEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
     const NAME: &str = "str_concat";
-    const FASTCALL: Option<FastFn> = Some(fc_concat);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_concat, from)
@@ -498,10 +470,8 @@ macro_rules! escape_fn {
         struct $ev;
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
             const NAME: &str = $builtin;
-            const FASTCALL: Option<FastFn> = Some($fc);
 
             fn eval(
                 &mut self,
@@ -525,10 +495,8 @@ macro_rules! split_fn {
         struct $ev;
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
             const NAME: &str = $builtin;
-            const FASTCALL: Option<FastFn> = Some($fc);
 
             fn eval(
                 &mut self,
@@ -605,10 +573,8 @@ fn fc_split_escaped(args: &[Value]) -> Option<Value> {
 struct StringSplitEscapedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitEscapedEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_split_escaped)));
     const NAME: &str = "str_split_escaped";
-    const FASTCALL: Option<FastFn> = Some(fc_split_escaped);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_split_escaped, from)
@@ -643,10 +609,8 @@ fn fc_splitn_escaped(args: &[Value]) -> Option<Value> {
 struct StringSplitNEscapedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitNEscapedEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_splitn_escaped)));
     const NAME: &str = "str_splitn_escaped";
-    const FASTCALL: Option<FastFn> = Some(fc_splitn_escaped);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_splitn_escaped, from)
@@ -676,10 +640,8 @@ fn fc_split_once(args: &[Value]) -> Option<Value> {
 struct StringSplitOnceEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitOnceEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_split_once)));
     const NAME: &str = "str_split_once";
-    const FASTCALL: Option<FastFn> = Some(fc_split_once);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_split_once, from)
@@ -709,10 +671,8 @@ fn fc_rsplit_once(args: &[Value]) -> Option<Value> {
 struct StringRSplitOnceEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringRSplitOnceEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rsplit_once)));
     const NAME: &str = "str_rsplit_once";
-    const FASTCALL: Option<FastFn> = Some(fc_rsplit_once);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_rsplit_once, from)
@@ -732,10 +692,8 @@ fn fc_to_lower(args: &[Value]) -> Option<Value> {
 struct StringToLowerEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToLowerEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_to_lower)));
     const NAME: &str = "str_to_lower";
-    const FASTCALL: Option<FastFn> = Some(fc_to_lower);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_to_lower, from)
@@ -755,10 +713,8 @@ fn fc_to_upper(args: &[Value]) -> Option<Value> {
 struct StringToUpperEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToUpperEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_to_upper)));
     const NAME: &str = "str_to_upper";
-    const FASTCALL: Option<FastFn> = Some(fc_to_upper);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_to_upper, from)
@@ -784,10 +740,8 @@ fn fc_sprintf(args: &[Value]) -> Option<Value> {
 struct SprintfEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SprintfEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sprintf)));
     const NAME: &str = "str_sprintf";
-    const FASTCALL: Option<FastFn> = Some(fc_sprintf);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_sprintf, from)
@@ -800,10 +754,8 @@ type Sprintf = CachedArgs<SprintfEv>;
 struct LenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(str_len)));
     const NAME: &str = "str_len";
-    const FASTCALL: Option<FastFn> = Some(str_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(str_len, from)
@@ -845,10 +797,8 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
 struct SubEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sub)));
     const NAME: &str = "str_sub";
-    const FASTCALL: Option<FastFn> = Some(fc_sub);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_sub, from)
@@ -879,10 +829,8 @@ struct ParseEv {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Typed(fc_parse)));
     const NAME: &str = "str_parse";
-    const FASTCALL_TYPED: Option<TypedFastFn> = Some(fc_parse);
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,

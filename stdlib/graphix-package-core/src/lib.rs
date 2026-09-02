@@ -5,9 +5,9 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, Node, Refs, Rt, Scope, Tag, TagValue,
-    TagView, TypedFastFn, UserEvent,
-    effects::EffectKind,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope, Tag,
+    TagValue, TagView, TypedFastFn, UserEvent,
+    effects::Effect,
     env::Env,
     err, errf,
     expr::{Expr, ExprId},
@@ -432,7 +432,7 @@ impl CachedVals {
 
 pub type ByRefChain = graphix_compiler::env::Map<BindId, BindId>;
 
-/// Typed argument read for a FASTCALL fn — the `&[Value]` twin of
+/// Typed argument read for a fast fn — the `&[Value]` twin of
 /// [`CachedVals::get`] (clone + cast).
 pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {
     args.get(i).and_then(|v| v.clone().cast_to::<T>().ok())
@@ -449,14 +449,14 @@ fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
     Some(args)
 }
 
-/// Run an `EvalCached::FASTCALL` fn over the cached argument slots —
+/// Run a builtin's fast fn over the cached argument slots —
 /// the node-walk half of a fastcall builtin, so `eval` and the JIT share
 /// one implementation.
 pub fn fast_eval(f: FastFn, from: &CachedVals) -> Option<Value> {
     f(&fast_args(from)?)
 }
 
-/// [`fast_eval`] for an `EvalCached::FASTCALL_TYPED` fn: `typ` is the
+/// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the
 /// call site's resolved return type, the one `typecheck1` handed the
 /// instance (`resolved.rtype`) — the JIT bakes the same site type.
 pub fn fast_eval_typed(
@@ -495,34 +495,8 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + 'static
 {
     const NAME: &str;
-    /// Sync/async classification for fusion. Same semantics as
-    /// `BuiltIn::EFFECT`: defaults to `Async` (conservative); override
-    /// to `Sync` when the cached operation produces all of its output
-    /// on the same cycle as the most recent input that triggered it.
-    /// `CachedArgs<T>`'s `BuiltIn` impl pulls this through to the
-    /// builtin registry.
-    const EFFECT: EffectKind = EffectKind::Async;
-    /// Same semantics as `BuiltIn::STATELESS`: `eval` is a
-    /// deterministic function of the current args with no external
-    /// effect and no cross-invocation state in `Self` (an internal
-    /// memo/scratch that never changes an output is fine) — so
-    /// deleting the instance and re-initializing it fresh is
-    /// unobservable. Conservative default: `false`. Pulled through to
-    /// the builtin registry by `CachedArgs<T>`'s `BuiltIn` impl.
-    const STATELESS: bool = false;
-    /// Same semantics as `BuiltIn::SLEEP_RESTARTS`: `sleep()` clears
-    /// semantic state (the arm-rewake RESTART builtins). Consulted by
-    /// the fusion interior-sleep gate. Default: `false` (sleep-inert
-    /// — the EvalCached wrapper's own sleep clears nothing semantic).
-    const SLEEP_RESTARTS: bool = false;
-    /// See `BuiltIn::FASTCALL`. Declare with `eval` delegating to the
-    /// same fn through [`fast_eval`], so the node-walk and the JIT run
-    /// one implementation.
-    const FASTCALL: Option<FastFn> = None;
-    /// See `BuiltIn::FASTCALL_TYPED`. Declare with `eval` delegating
-    /// through [`fast_eval_typed`] with the return type `typecheck1`
-    /// recorded.
-    const FASTCALL_TYPED: Option<TypedFastFn> = None;
+    /// The builtin's classification — see `graphix_compiler::Effect`.
+    const EFFECT: Effect = Effect::Async;
 
     fn init(
         _ctx: &mut ExecCtx<R, E>,
@@ -572,12 +546,8 @@ pub struct CachedArgs<T> {
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
-    const EFFECT: EffectKind = T::EFFECT;
+    const EFFECT: Effect = T::EFFECT;
     const NAME: &str = T::NAME;
-    const STATELESS: bool = T::STATELESS;
-    const SLEEP_RESTARTS: bool = T::SLEEP_RESTARTS;
-    const FASTCALL: Option<FastFn> = T::FASTCALL;
-    const FASTCALL_TYPED: Option<TypedFastFn> = T::FASTCALL_TYPED;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut ExecCtx<R, E>,
@@ -752,7 +722,7 @@ impl<T> CachedArgs<T> {
                 // update after this site's sleep may deliver all-stale
                 // args whose VALUES drifted while it slept (the slots
                 // above are already refreshed to the present values).
-                // A STATELESS eval is a pure function of the slots:
+                // A stateless eval is a pure function of the slots:
                 // re-run it, result STALE — the phantom arm's "value
                 // rule, not a firing one" extended from
                 // first-production to wake. A stateful eval must NOT
@@ -760,7 +730,7 @@ impl<T> CachedArgs<T> {
                 // re-run on stale slots would double-count; its edge
                 // catch-up arrives separately as a genuine fired
                 // delivery from the select's tracked fire bits).
-                if T::STATELESS && woke {
+                if T::EFFECT.is_stateless() && woke {
                     match ev.eval(ctx, cached) {
                         Some(v) => resident.set(TagValue::stale(v)),
                         None => resident.retag(Tag::STALE),
@@ -918,10 +888,8 @@ fn fc_is_err(args: &[Value]) -> Option<Value> {
 struct IsErrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsErrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_err)));
     const NAME: &str = "core_is_err";
-    const FASTCALL: Option<FastFn> = Some(fc_is_err);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_is_err, from)
@@ -936,8 +904,7 @@ struct FilterErr {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_filter_err";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -983,10 +950,8 @@ fn fc_error(args: &[Value]) -> Option<Value> {
 struct ToErrorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToErrorEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_error)));
     const NAME: &str = "core_error";
-    const FASTCALL: Option<FastFn> = Some(fc_error);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_error, from)
@@ -1009,8 +974,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     // (dyncall-stale-arg-fired-aug2026) — so the update-history-
     // sensitive state machine sees the same per-arg events in a
     // kernel as in the node-walk.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const SLEEP_RESTARTS: bool = true;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_once";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1074,8 +1038,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     // (dyncall-stale-arg-fired-aug2026) — so the update-history-
     // sensitive state machine sees the same per-arg events in a
     // kernel as in the node-walk.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const SLEEP_RESTARTS: bool = true;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_take";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1144,8 +1107,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     // (dyncall-stale-arg-fired-aug2026) — so the update-history-
     // sensitive state machine sees the same per-arg events in a
     // kernel as in the node-walk.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const SLEEP_RESTARTS: bool = true;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_skip";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1217,10 +1179,8 @@ fn fc_all(args: &[Value]) -> Option<Value> {
 struct AllEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_all)));
     const NAME: &str = "core_all";
-    const FASTCALL: Option<FastFn> = Some(fc_all);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_all, from)
@@ -1241,7 +1201,7 @@ fn add_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 struct SumEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_sum";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1266,7 +1226,7 @@ fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_product";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1291,8 +1251,7 @@ fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_divide";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1309,7 +1268,7 @@ type Divide = CachedArgs<DivideEv>;
 struct MinEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_min";
 
     // VALUE-LEVEL: each argument is compared as a whole value under
@@ -1342,7 +1301,7 @@ type Min = CachedArgs<MinEv>;
 struct MaxEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_max";
 
     // VALUE-LEVEL, no flattening — see `MinEv`.
@@ -1369,7 +1328,7 @@ type Max = CachedArgs<MaxEv>;
 struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_and";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1393,7 +1352,7 @@ type And = CachedArgs<AndEv>;
 struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -1479,10 +1438,8 @@ fn fc_shr(args: &[Value]) -> Option<Value> {
 struct BitAndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_and)));
     const NAME: &str = "core_bit_and";
-    const FASTCALL: Option<FastFn> = Some(fc_bit_and);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bit_and, from)
@@ -1495,10 +1452,8 @@ type BitAnd = CachedArgs<BitAndEv>;
 struct BitOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_or)));
     const NAME: &str = "core_bit_or";
-    const FASTCALL: Option<FastFn> = Some(fc_bit_or);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bit_or, from)
@@ -1511,10 +1466,8 @@ type BitOr = CachedArgs<BitOrEv>;
 struct BitXorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_xor)));
     const NAME: &str = "core_bit_xor";
-    const FASTCALL: Option<FastFn> = Some(fc_bit_xor);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bit_xor, from)
@@ -1545,10 +1498,8 @@ fn fc_bit_not(args: &[Value]) -> Option<Value> {
 struct BitNotEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_not)));
     const NAME: &str = "core_bit_not";
-    const FASTCALL: Option<FastFn> = Some(fc_bit_not);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bit_not, from)
@@ -1561,10 +1512,8 @@ type BitNot = CachedArgs<BitNotEv>;
 struct ShlEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shl)));
     const NAME: &str = "core_shl";
-    const FASTCALL: Option<FastFn> = Some(fc_shl);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_shl, from)
@@ -1577,10 +1526,8 @@ type Shl = CachedArgs<ShlEv>;
 struct ShrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shr)));
     const NAME: &str = "core_shr";
-    const FASTCALL: Option<FastFn> = Some(fc_shr);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_shr, from)
@@ -1604,7 +1551,7 @@ struct Filter<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_filter";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1803,8 +1750,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     // slot arrives `TagValue::stale` and the seam ticks on Fired only
     // (dyncall-stale-arg-fired-aug2026) — so the jul07c re-latch
     // divergence class is structurally closed.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const SLEEP_RESTARTS: bool = true;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_hold";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2094,8 +2040,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     // (dyncall-stale-arg-fired-aug2026) — so the update-history-
     // sensitive state machine sees the same per-arg events in a
     // kernel as in the node-walk.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const SLEEP_RESTARTS: bool = true;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_count";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2142,7 +2087,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
 struct MeanEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_mean";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -2184,8 +2129,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     // (dyncall-stale-arg-fired-aug2026) — so the update-history-
     // sensitive state machine sees the same per-arg events in a
     // kernel as in the node-walk.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const SLEEP_RESTARTS: bool = true;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_uniq";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2251,7 +2195,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
     // This is also what exempts `never()` from the dead-variadic-call
     // compile error (callsite.rs `reject_dead_variadic_call`): never()
     // is the sanctioned way to write a value that never arrives.
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "core_never";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2333,8 +2277,7 @@ struct Dbg {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_dbg";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2438,8 +2381,7 @@ struct Log {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_log";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -2499,7 +2441,7 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
-            const EFFECT: EffectKind = EffectKind::Sync;
+            const EFFECT: Effect = Effect::Sync;
             const NAME: &str = $name;
 
             fn init<'a, 'b, 'c, 'd>(
@@ -2563,10 +2505,8 @@ printfn!(Println, "core_println", "\n");
 struct ArrayLenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(array_len)));
     const NAME: &str = "core_array_len";
-    const FASTCALL: Option<FastFn> = Some(array_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(array_len, from)
@@ -2588,10 +2528,8 @@ type ArrayLen = CachedArgs<ArrayLenEv>;
 struct MapLenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(map_len)));
     const NAME: &str = "core_map_len";
-    const FASTCALL: Option<FastFn> = Some(map_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(map_len, from)
@@ -2622,10 +2560,8 @@ fn fc_map_union(args: &[Value]) -> Option<Value> {
 struct MapUnionEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_map_union)));
     const NAME: &str = "core_map_union";
-    const FASTCALL: Option<FastFn> = Some(fc_map_union);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_map_union, from)

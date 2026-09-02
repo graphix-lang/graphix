@@ -6,8 +6,8 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
-    ExecCtx, Node, Rt, Scope, UserEvent,
-    effects::EffectKind,
+    ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
+    effects::Effect,
     errf,
     typ::{FnType, Type},
 };
@@ -248,10 +248,8 @@ fn fc_write_str(args: &[Value]) -> Option<Value> {
 
 // json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_str)));
     const NAME: &str = "json_write_str";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_str);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_write_str, cached)
@@ -285,10 +283,8 @@ fn fc_write_bytes(args: &[Value]) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
     const NAME: &str = "json_write_bytes";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_write_bytes);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_write_bytes, cached)

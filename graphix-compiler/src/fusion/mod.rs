@@ -238,7 +238,7 @@ pub struct FusionCtx {
     /// then never see updates past the first cycle.
     pub(crate) top_id: Option<ExprId>,
     /// Declared facts of each registered builtin, keyed by name.
-    /// Populated by `register_builtin` from `T::EFFECT`/`T::STATELESS`.
+    /// Populated by `register_builtin` from `T::EFFECT`.
     /// The effect is read by fusion's effect inference to decide
     /// whether a builtin call site can be absorbed into a sync kernel;
     /// the stateless bit by the transient-recursion gate

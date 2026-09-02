@@ -5,7 +5,7 @@ use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
     TagValue, UserEvent, deref_typ,
-    effects::EffectKind,
+    effects::Effect,
     err, errf,
     expr::ExprId,
     node::genn,
@@ -50,7 +50,7 @@ pub(crate) struct Write {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_write";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -195,7 +195,7 @@ pub(crate) struct Subscribe {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_subscribe";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -331,7 +331,7 @@ pub(crate) struct RpcCall {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_call";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -464,7 +464,7 @@ macro_rules! list {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            const EFFECT: EffectKind = EffectKind::Async;
+            const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
@@ -587,7 +587,7 @@ pub(crate) struct Publish<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -884,7 +884,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_net_publish_rpc";
 
     fn init<'a, 'b, 'c>(

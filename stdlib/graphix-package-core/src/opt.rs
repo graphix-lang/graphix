@@ -1,8 +1,8 @@
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue,
-    UserEvent,
-    effects::EffectKind,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Refs, Rt, Scope, Tag,
+    TagValue, UserEvent,
+    effects::Effect,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
@@ -24,10 +24,8 @@ fn fc_is_some(args: &[Value]) -> Option<Value> {
 pub(crate) struct IsSomeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_some)));
     const NAME: &str = "core_opt_is_some";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_is_some);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(fc_is_some, from)
@@ -47,10 +45,8 @@ fn fc_is_none(args: &[Value]) -> Option<Value> {
 pub(crate) struct IsNoneEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_none)));
     const NAME: &str = "core_opt_is_none";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_is_none);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(fc_is_none, from)
@@ -63,8 +59,7 @@ pub(crate) type IsNone = CachedArgs<IsNoneEv>;
 pub(crate) struct ContainsEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_contains";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -91,10 +86,8 @@ fn fc_or_never(args: &[Value]) -> Option<Value> {
 pub(crate) struct OrNeverEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrNeverEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_or_never)));
     const NAME: &str = "core_opt_or_never";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_or_never);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(fc_or_never, from)
@@ -107,8 +100,7 @@ pub(crate) type OrNever = CachedArgs<OrNeverEv>;
 pub(crate) struct OrDefaultEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrDefaultEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_or_default";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -128,8 +120,7 @@ pub(crate) type OrDefault = CachedArgs<OrDefaultEv>;
 pub(crate) struct OrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -147,8 +138,7 @@ pub(crate) type Or = CachedArgs<OrEv>;
 pub(crate) struct AndEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_and";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -179,10 +169,8 @@ fn fc_xor(args: &[Value]) -> Option<Value> {
 pub(crate) struct XorEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_xor)));
     const NAME: &str = "core_opt_xor";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_xor);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(fc_xor, from)
@@ -197,8 +185,7 @@ pub(crate) type Xor = CachedArgs<XorEv>;
 pub(crate) struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_zip";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -230,10 +217,8 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
 pub(crate) struct UnzipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
     const NAME: &str = "core_opt_unzip";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_unzip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(fc_unzip, from)
@@ -248,8 +233,7 @@ pub(crate) type Unzip = CachedArgs<UnzipEv>;
 pub(crate) struct OkOrEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_ok_or";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -403,7 +387,7 @@ pub(crate) struct OptMap<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_map";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -472,7 +456,7 @@ pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_flat_map";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -547,7 +531,7 @@ pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_filter";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -648,7 +632,7 @@ pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_is_some_and";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -717,7 +701,7 @@ pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_is_none_or";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -878,7 +862,7 @@ pub(crate) struct OptOrElse<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_or_else";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -962,7 +946,7 @@ pub(crate) struct OptOkOrElse<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_ok_or_else";
 
     fn init<'a, 'b, 'c, 'd>(

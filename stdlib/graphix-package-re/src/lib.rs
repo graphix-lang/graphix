@@ -3,7 +3,7 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use arcstr::{ArcStr, literal};
-use graphix_compiler::{ExecCtx, FastFn, Rt, UserEvent, effects::EffectKind, errf};
+use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, FastMemo, fast_eval};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
@@ -86,10 +86,8 @@ macro_rules! re_fn {
         struct $ev;
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: EffectKind = EffectKind::Sync;
-            const STATELESS: bool = true;
+            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
             const NAME: &str = $builtin;
-            const FASTCALL: Option<FastFn> = Some($fc);
 
             fn eval(
                 &mut self,

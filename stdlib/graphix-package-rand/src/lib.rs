@@ -5,7 +5,7 @@
 use anyhow::Result;
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, expr::ExprId, typ::FnType,
+    effects::Effect, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick};
 use netidx::subscriber::Value;
@@ -20,7 +20,7 @@ struct Rand {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -88,7 +88,7 @@ struct Pick {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand_pick";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -135,7 +135,7 @@ struct Shuffle {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "rand_shuffle";
 
     fn init<'a, 'b, 'c, 'd>(

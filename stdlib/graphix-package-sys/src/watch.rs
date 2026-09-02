@@ -9,7 +9,7 @@ use extended_notify::{
 use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, TagValue, UserEvent, effects::EffectKind, errf, expr::ExprId, typ::FnType,
+    Scope, TagValue, UserEvent, effects::Effect, errf, expr::ExprId, typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick, seam_value};
 use netidx_value::{FromValue, ValArray, Value};
@@ -246,7 +246,7 @@ pub(crate) struct CreateWatcher {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_create";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -346,7 +346,7 @@ pub(crate) struct WatchApply {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_watch";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -507,7 +507,7 @@ pub(crate) struct WatchPath {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_path";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -582,7 +582,7 @@ pub(crate) struct WatchEvents {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_watch_events";
 
     fn init<'a, 'b, 'c, 'd>(

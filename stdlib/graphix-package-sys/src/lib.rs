@@ -6,8 +6,8 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind,
+    Apply, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue, UserEvent,
+    effects::Effect,
     errf,
     expr::ExprId,
     typ::{FnType, abstract_uuid},
@@ -435,10 +435,8 @@ fn fc_tempdir_path(args: &[Value]) -> Option<Value> {
 // sys::tempdir_path returns a path string from a TempDir handle. Pure
 // transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_tempdir_path)));
     const NAME: &str = "sys_tempdir_path";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_tempdir_path);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_tempdir_path, from)
@@ -491,10 +489,8 @@ fn fc_join_path(args: &[Value]) -> Option<Value> {
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join_path)));
     const NAME: &str = "sys_join_path";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_join_path);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_join_path, from)
@@ -517,7 +513,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     // a fused HOF loop's shared DynCall slot instance would pend after
     // the first element (the sys::dirs class, soak jul07b). Async
     // de-fuses it.
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_args";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -567,8 +563,7 @@ pub(crate) struct Exit;
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     // exit consumes its arg and terminates the process; no future-cycle
     // output. Sync.
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "sys_exit";
 
     fn init<'a, 'b, 'c, 'd>(

@@ -1,8 +1,6 @@
 use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
-use graphix_compiler::{
-    BindId, ExecCtx, FastFn, Rt, UserEvent, effects::EffectKind, errf,
-};
+use graphix_compiler::{BindId, ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use netidx_value::{PBytes, ValArray, Value};
 use nohash::IntMap;
 
@@ -20,10 +18,8 @@ fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesToStringEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string)));
     const NAME: &str = "core_bytes_to_string";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_to_string);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_to_string, from)
@@ -41,10 +37,9 @@ fn fc_bytes_to_string_lossy(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesToStringLossyEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect =
+        Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string_lossy)));
     const NAME: &str = "core_bytes_to_string_lossy";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_to_string_lossy);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_to_string_lossy, from)
@@ -62,10 +57,8 @@ fn fc_bytes_from_string(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesFromStringEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_string)));
     const NAME: &str = "core_bytes_from_string";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_from_string);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_from_string, from)
@@ -97,10 +90,8 @@ fn fc_bytes_concat(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_concat)));
     const NAME: &str = "core_bytes_concat";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_concat);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_concat, from)
@@ -118,10 +109,8 @@ fn fc_bytes_to_array(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesToArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_array)));
     const NAME: &str = "core_bytes_to_array";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_to_array);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_to_array, from)
@@ -149,10 +138,8 @@ fn fc_bytes_from_array(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesFromArrayEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_array)));
     const NAME: &str = "core_bytes_from_array";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_from_array);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_from_array, from)
@@ -170,10 +157,8 @@ fn fc_bytes_len(args: &[Value]) -> Option<Value> {
 pub(crate) struct BytesLenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_len)));
     const NAME: &str = "core_bytes_len";
-    const FASTCALL: Option<FastFn> = Some(fc_bytes_len);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_bytes_len, from)
@@ -267,10 +252,8 @@ fn fc_encode(args: &[Value]) -> Option<Value> {
 pub(crate) struct EncodeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_encode)));
     const NAME: &str = "core_buffer_encode";
-    const FASTCALL: Option<FastFn> = Some(fc_encode);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_encode, from)
@@ -342,8 +325,7 @@ macro_rules! decode_fixed {
 pub(crate) struct DecodeEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_buffer_decode";
 
     fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {

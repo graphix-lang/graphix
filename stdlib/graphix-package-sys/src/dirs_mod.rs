@@ -1,6 +1,6 @@
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::EffectKind, expr::ExprId, typ::FnType,
+    effects::Effect, expr::ExprId, typ::FnType,
 };
 use netidx::subscriber::Value;
 
@@ -22,7 +22,7 @@ macro_rules! dirs_builtin {
             // final-values tier's first catch). Async de-fuses them;
             // the node-walk's once-per-instance firing is the correct
             // reactive shape (a constant-like init fire).
-            const EFFECT: EffectKind = EffectKind::Async;
+            const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(

@@ -643,7 +643,7 @@ safe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
     crate::stack::grow(|| f(args, out))
 }
 
-/// The FASTCALL path (`BuiltIn::FASTCALL`): a stateless sync builtin
+/// The fast-call path (`Effect::Stateless(Some(_))`): a stateless builtin
 /// called directly — no site identity, no inner Apply, no `CachedArgs`
 /// memo. `fn_ptr` is the registered `FastFn`; `args`/`n` is the call
 /// site's stack buffer of (disc, payload) pairs, borrowed. See
@@ -664,7 +664,7 @@ unsafe fn graphix_fastcall(
 }
 
 /// The TYPED fastcall path (`SiteDispatch::Typed`): a
-/// `TypedFastFn` — a builtin's `FASTCALL_TYPED` entry, or the Cast
+/// `TypedFastFn` — a builtin's `FastCall::Typed` entry, or the Cast
 /// pseudo-site's `cast_typed` — called with the site's interned
 /// `Type` (kept alive by the kernel's `KernelValues`) and the
 /// invoking kernel's env loan ([`with_kernel_env`]), so a type name

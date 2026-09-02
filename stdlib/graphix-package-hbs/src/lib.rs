@@ -5,8 +5,8 @@
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, FastFn, PrintFlag, Rt, UserEvent, deref_typ,
-    effects::EffectKind,
+    ExecCtx, FastCall, PrintFlag, Rt, UserEvent, deref_typ,
+    effects::Effect,
     errf,
     typ::{FnType, Type},
 };
@@ -111,10 +111,8 @@ fn fc_render(args: &[Value]) -> Option<Value> {
 struct HbsRenderEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_render)));
     const NAME: &str = "hbs_render";
-    const FASTCALL: Option<FastFn> = Some(fc_render);
 
     fn typecheck0(
         &mut self,

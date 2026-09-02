@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BindMode, BuiltIn, Event, ExecCtx, InitFn, LambdaId, Node, Refs, Rt,
-    Scope, SourcePosition, TagValue, UserEvent,
+    Apply, BindId, BindMode, BuiltIn, Effect, Event, ExecCtx, InitFn, LambdaId, Node,
+    Refs, Rt, Scope, SourcePosition, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
     node::{genn, lambda::LambdaDef},
@@ -177,7 +177,7 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
-    const EFFECT: EffectKind = EffectKind::Async;
+    const EFFECT: Effect = Effect::Async;
     const NAME: &str = "core_queuefn";
 
     fn init<'a, 'b, 'c, 'd>(

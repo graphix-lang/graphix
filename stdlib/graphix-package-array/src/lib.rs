@@ -5,9 +5,9 @@
 use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, LambdaId, Node, Refs, Rt, Scope,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, LambdaId, Node, Refs, Rt, Scope,
     TagValue, UserEvent,
-    effects::EffectKind,
+    effects::Effect,
     expr::ExprId,
     node::genn,
     typ::{FnType, Type},
@@ -37,10 +37,8 @@ fn fc_concat(args: &[Value]) -> Option<Value> {
 struct ConcatEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
     const NAME: &str = "array_concat";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_concat);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_concat, from)
@@ -65,10 +63,8 @@ fn fc_push_back(args: &[Value]) -> Option<Value> {
 struct PushBackEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_back)));
     const NAME: &str = "array_push_back";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_push_back);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_push_back, from)
@@ -93,10 +89,8 @@ fn fc_push_front(args: &[Value]) -> Option<Value> {
 struct PushFrontEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_front)));
     const NAME: &str = "array_push_front";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_push_front);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_push_front, from)
@@ -109,7 +103,7 @@ type PushFront = CachedArgs<PushFrontEv>;
 struct WindowEv(SmallVec<[Value; 32]>);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_window";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
@@ -167,10 +161,8 @@ fn fc_flatten(args: &[Value]) -> Option<Value> {
 struct FlattenEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_flatten)));
     const NAME: &str = "array_flatten";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_flatten);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_flatten, from)
@@ -193,10 +185,8 @@ fn fc_sort(args: &[Value]) -> Option<Value> {
 struct SortEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sort)));
     const NAME: &str = "array_sort";
-    const FASTCALL: Option<FastFn> = Some(fc_sort);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(fc_sort, from)
@@ -226,10 +216,8 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
 struct DedupEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dedup)));
     const NAME: &str = "array_dedup";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_dedup);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_dedup, from)
@@ -251,10 +239,8 @@ fn fc_enumerate(args: &[Value]) -> Option<Value> {
 struct EnumerateEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_enumerate)));
     const NAME: &str = "array_enumerate";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_enumerate);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_enumerate, from)
@@ -278,10 +264,8 @@ fn fc_zip(args: &[Value]) -> Option<Value> {
 struct ZipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_zip)));
     const NAME: &str = "array_zip";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_zip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_zip, from)
@@ -318,10 +302,8 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
 struct UnzipEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
     const NAME: &str = "array_unzip";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_unzip);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_unzip, from)
@@ -344,7 +326,7 @@ struct Group<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     // Intrinsic sync; predicate effect joins at the call site (M6).
-    const EFFECT: EffectKind = EffectKind::Sync;
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_group";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -655,10 +637,8 @@ fn fc_iota(args: &[Value]) -> Option<Value> {
 struct IotaEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
-    const EFFECT: EffectKind = EffectKind::Sync;
-    const STATELESS: bool = true;
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_iota)));
     const NAME: &str = "array_iota";
-    const FASTCALL: Option<graphix_compiler::FastFn> = Some(fc_iota);
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(fc_iota, from)
