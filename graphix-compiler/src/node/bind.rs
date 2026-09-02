@@ -185,6 +185,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
+        // a destructuring let's binds are facets of one delivery
+        let mut siblings: smallvec::SmallVec<[BindId; 4]> = smallvec::SmallVec::new();
+        pattern.ids(&mut |id| siblings.push(id));
+        if let Some(&rep) = siblings.first()
+            && siblings.len() > 1
+        {
+            for id in siblings {
+                ctx.env.mark_facet(id, rep);
+            }
+        }
         // a let-bound lambda is GENERALIZED: every later reference
         // instantiates its signature (see `instantiate`). Registered
         // after the value compiled, so a `let rec` body's own

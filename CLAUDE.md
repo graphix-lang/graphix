@@ -913,7 +913,10 @@ advertised performance model.
   facet of its arm's scrutinee delivery, which that arm's match
   consumed, so `k` beside `ev@ \`Key(k)` is never re-raised at a
   nested flip after the `ev` reader handled the key — 2026-09-02,
-  `Bind::pattern`, `select_sibling_binds_spent`), set on sound
+  `Bind::pattern`, `select_sibling_binds_spent`; a destructuring
+  LET's siblings are one tracked input instead — `Bind::facet`, the
+  bits keyed by the group's representative, the catch-up delivered
+  to every sibling the arm reads — `let_sibling_binds_spent`), set on sound
   fires — even with no arm selected — and CONSUMED by whichever arm
   evaluation reads the input; an unconsumed bit delivers at wake as
   ONE catch-up FIRED at the current standing value (conflation;
@@ -1345,6 +1348,22 @@ the rules.
   an unbound rhs member is residue, never covered by a concrete lhs
   member. A select's type is the union of its arm types; a free `'b` arm
   beside an `i64` arm is not inferred to `i64` — annotate.
+- **Bool literals pool per position inside composite patterns**
+  (2026-09-02, ledger 14 of the admin campaign): arms whose only
+  refutable leaves are bool literals are grouped by SHAPE (tuple
+  arity / variant tag+arity / struct fields) in `select.rs`'s
+  `LiteralPool`; a group covers the scrutinee's member of that shape
+  once its literal vectors cover every assignment of the positions
+  any arm tests (a bind or `_` matches both), and the dead-arm walk
+  subtracts the same member — `(true, true) | (true, false) |
+  (false, _)` covers `(bool, bool)`, `` `Join(true) `` + `` `Join(false) ``
+  cover `` `Join(bool) ``, a wildcard behind either is dead. Two more
+  from the same night: `Type::could_match` has a function arm (a
+  select over `[fn(..), null]` used to refuse its bind arm — ledger
+  11), and a reserved word in a name position reports itself
+  ("note: at line: L, column: C: `ok` is a reserved word…",
+  `grow::note_reason`, reported when the failure lies on that line or
+  before it — ledger 1's reserved-word half).
 - **Set coverage distributes over product heads** (2026-08-31, the
   admin-TUI panel screens): when the `(Set, t)` single-member and prim
   walks both refuse, same-shaped members (variant tag+arity / tuple

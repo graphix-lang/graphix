@@ -399,9 +399,13 @@ narrowing from the widget seam: the same shape passed in-language
 with a bare formal, a plain callee, and a late-bound callee, and
 failed only when an arm read the whole-value capture while a sibling
 arm read the payload bind. `let`-destructured siblings (`let (a, b) =
-pair`) have the analogous facet relation and are NOT covered by this
-addendum — no program has hit it; it wants the same treatment when
-one does.
+pair`) have the analogous facet relation and got their own treatment
+the same day (the admin TUI ledger's item 4): they are NOT excluded —
+a `let` bind is a real input, and its catch-up at wake is wanted —
+but tracked as ONE input: `Bind::facet` names the destructuring's
+representative bind, `TrackedFires` keys its bits by it, and a
+consumed bit delivers the catch-up to every sibling the arm reads.
+Pin: `let_sibling_binds_spent`.
 
 A second fact from the same hunt, unrelated to the rule: the
 runtime's `compile_callable` built its call site and updated it

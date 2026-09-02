@@ -23,7 +23,7 @@ use triomphe::Arc;
 
 pub(super) fn typath<I>() -> impl Parser<I, Output = ModPath>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -53,7 +53,7 @@ where
 
 fn typeprim<I>() -> impl Parser<I, Output = Typ>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {

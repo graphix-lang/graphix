@@ -10,7 +10,7 @@ let form = |
   #help: [string, null] = null,
   #hint: [string, null] = null,
   #on_submit: fn(values: Array<string>) -> null,
-  #on_cancel: fn(e: Any) -> null,
+  #on_cancel: [fn(e: Any) -> null, null] = null,
   fields: Array<Field>
 | -> Form {
   let dim = style(#fg: `DarkGray);
@@ -26,7 +26,13 @@ let form = |
           on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
           `Stop
         },
-        kk@ `Esc => { on_cancel(kk); `Stop },
+        kk@ `Esc => {
+          select kk ~ on_cancel {
+            null as _ => never(),
+            f => f(kk)
+          };
+          `Stop
+        },
         _ => {
           let i = k ~ focus;
           line_edit::handle(&vals[i], e)

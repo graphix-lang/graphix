@@ -2221,3 +2221,31 @@ fn or_patterns_parse() {
     // the compile-time check, not the parser's).
     parse_one("let (a | b, c) = x").unwrap();
 }
+
+// ── a reserved word in a name position names itself (2026-09-02) ──
+// combine merges a refused alternative's message into the surrounding
+// expectation set: a `let` after another statement reported
+// "Unexpected `l`" at the statement's first column, and a package of
+// nine modules read that as a mystery. The refusal records its reason
+// and position, and the parse's failure reports it when the failure
+// lies on that line or before it.
+
+#[test]
+fn reserved_word_as_a_name_is_named() {
+    fn parse_program(text: &str) -> String {
+        let ori = crate::expr::Origin {
+            parent: None,
+            source: crate::expr::Source::Internal(literal!("test")),
+            text: ArcStr::from(text),
+        };
+        format!("{:#}", parse(ori).unwrap_err())
+    }
+    let msg = parse_program("let x = 1;\nlet ok = 2");
+    assert!(msg.contains("`ok` is a reserved word"), "{msg}");
+    assert!(msg.contains("line: 2, column: 5"), "{msg}");
+    let msg = parse_program("let x = { let mod = 1; mod }");
+    assert!(msg.contains("`mod` is a reserved word"), "{msg}");
+    // an unrelated failure carries no stale note
+    let msg = parse_program("let y = 1;\nlet z = (1 +");
+    assert!(!msg.contains("reserved word"), "{msg}");
+}

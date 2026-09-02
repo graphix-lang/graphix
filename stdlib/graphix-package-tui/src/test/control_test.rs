@@ -16,12 +16,10 @@ async fn suspend_without_a_display_is_an_error() -> Result<()> {
 use tui::paragraph::{self, *};
 let idle = tui::suspend(false);
 let s = tui::suspend(true);
-let status = select is_err(idle) {
-  true => "idle errored: [idle]",
-  false => select is_err(s) {
-    true => "error: [s]",
-    false => "suspended"
-  }
+let status = select (is_err(idle), is_err(s)) {
+  (false, true) => "error: [s]",
+  (false, false) => "suspended",
+  (true, _) => "idle errored: [idle]"
 };
 let result = paragraph(&status)
 "#,

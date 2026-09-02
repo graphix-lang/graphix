@@ -910,6 +910,61 @@ impl FnType {
         self.args.iter().position(|a| a.is_positional()).unwrap_or(self.args.len())
     }
 
+    /// Whether a value of type `t` could match a pattern typed `self`
+    /// — the dead-arm probe. Same arity and labels, and every
+    /// component could match; nothing is unified. Without it a
+    /// function member of a union was reported as never matching its
+    /// own type after a `null as _` arm (the admin TUI's optional
+    /// callbacks, 2026-09-02).
+    pub(super) fn could_match_int(
+        &self,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        t: &Self,
+    ) -> Result<bool> {
+        let sul = self.first_positional();
+        let tul = t.first_positional();
+        for a in &self.args[..sul] {
+            if let FnArgKind::Labeled { name: l, .. } = &a.kind {
+                match t.args.iter().find(|b| b.label() == Some(l)) {
+                    None => return Ok(false),
+                    Some(o) => {
+                        if !a.typ.could_match_int(env, hist, &o.typ)? {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+        }
+        for a in &t.args[..tul] {
+            if let FnArgKind::Labeled { name: l, has_default } = &a.kind
+                && !*has_default
+                && !self.args.iter().any(|b| b.label() == Some(l))
+            {
+                return Ok(false);
+            }
+        }
+        if self.args.len() - sul != t.args.len() - tul {
+            return Ok(false);
+        }
+        for (a, b) in self.args[sul..].iter().zip(t.args[tul..].iter()) {
+            if !a.typ.could_match_int(env, hist, &b.typ)? {
+                return Ok(false);
+            }
+        }
+        match (&self.vargs, &t.vargs) {
+            (None, None) => (),
+            (Some(a), Some(b)) => {
+                if !a.could_match_int(env, hist, b)? {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(self.rtype.could_match_int(env, hist, &t.rtype)?
+            && self.throws.could_match_int(env, hist, &t.throws)?)
+    }
+
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
         self.contains_int(
             ContainsFlags::AliasTVars | ContainsFlags::InitTVars,

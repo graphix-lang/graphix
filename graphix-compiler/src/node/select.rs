@@ -1,4 +1,8 @@
-use super::{Held, compiler::compile, pattern::StructPatternNode};
+use super::{
+    Held,
+    compiler::compile,
+    pattern::{SliceKind, StructPatternNode},
+};
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent,
@@ -10,6 +14,7 @@ use crate::{
     wrap,
 };
 use anyhow::{Context, Result, anyhow, bail};
+use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use netidx_value::Value;
@@ -252,12 +257,15 @@ fn deselect_sleep<R: Rt, E: UserEvent>(arm: &mut Node<R, E>, ctx: &mut ExecCtx<R
 #[derive(Debug, Default)]
 struct TrackedFires {
     /// Per arm: the arm BODY's free refs (referenced minus bound
-    /// within the arm, minus the arm's own pattern binds). Computed
+    /// within the arm, minus the arm's own pattern binds), keyed by
+    /// the input they are tracked under — a destructuring `let`'s
+    /// siblings share their group's representative (`Env::facet_of`),
+    /// each key carrying the ids the arm actually reads. Computed
     /// from compile-time refs at first update and REFRESHED at each
     /// deselect — the moment the arm's subtree (dynamically bound
     /// callees included) is fully materialized and its sleep begins.
-    per_arm: Vec<nohash::IntSet<BindId>>,
-    /// The union of `per_arm` — the observed set.
+    per_arm: Vec<nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>>>,
+    /// The union of `per_arm`'s keys — the observed set.
     all: nohash::IntSet<BindId>,
     /// Sound fires no arm evaluation has consumed yet.
     pending: nohash::IntSet<BindId>,
@@ -268,17 +276,20 @@ impl TrackedFires {
         env: &crate::env::Env,
         pat: &PatternNode<R, E>,
         arm: &Node<R, E>,
-    ) -> nohash::IntSet<BindId> {
+    ) -> nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>> {
         let mut r = Refs::default();
         arm.refs(&mut r);
         pat.structure_predicate.ids(&mut |id| {
             r.bound.insert(id);
         });
-        r.refed
-            .difference(&r.bound)
-            .copied()
-            .filter(|id| !env.is_pattern_bind(*id))
-            .collect()
+        let mut out: nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>> =
+            nohash::IntMap::default();
+        for id in r.refed.difference(&r.bound).copied() {
+            if !env.is_pattern_bind(id) {
+                out.entry(env.facet_of(id)).or_default().push(id);
+            }
+        }
+        out
     }
 
     fn init<R: Rt, E: UserEvent>(
@@ -287,7 +298,7 @@ impl TrackedFires {
     ) -> Self {
         let per_arm: Vec<_> =
             arms.iter().map(|(pat, n)| Self::arm_refs(env, pat, n)).collect();
-        let all = per_arm.iter().flatten().copied().collect();
+        let all = per_arm.iter().flat_map(|m| m.keys().copied()).collect();
         TrackedFires { per_arm, all, pending: nohash::IntSet::default() }
     }
 
@@ -299,7 +310,7 @@ impl TrackedFires {
         arm: &Node<R, E>,
     ) {
         self.per_arm[i] = Self::arm_refs(env, pat, arm);
-        self.all = self.per_arm.iter().flatten().copied().collect();
+        self.all = self.per_arm.iter().flat_map(|m| m.keys().copied()).collect();
         self.pending.retain(|id| self.all.contains(id));
     }
 
@@ -350,22 +361,24 @@ impl TrackedFires {
             return injected;
         }
         let Some(set) = self.per_arm.get(i) else { return injected };
-        let ids: smallvec::SmallVec<[BindId; 8]> =
-            self.pending.iter().filter(|id| set.contains(id)).copied().collect();
-        for id in ids {
-            self.pending.remove(&id);
-            let standing = match super::read_var(ctx, event, &id) {
-                // delivered live this cycle: the live delivery IS the
-                // catch-up
-                Some(super::VarRead::Delivered(_)) => None,
-                Some(super::VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
-                    Some(tv.value_cloned())
+        let keys: smallvec::SmallVec<[BindId; 8]> =
+            self.pending.iter().filter(|id| set.contains_key(id)).copied().collect();
+        for key in keys {
+            self.pending.remove(&key);
+            for id in set[&key].iter().copied() {
+                let standing = match super::read_var(ctx, event, &id) {
+                    // delivered live this cycle: the live delivery IS
+                    // the catch-up
+                    Some(super::VarRead::Delivered(_)) => None,
+                    Some(super::VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
+                        Some(tv.value_cloned())
+                    }
+                    _ => None,
+                };
+                if let Some(v) = standing {
+                    let prev = event.variables.insert(id, TagValue::fired(v));
+                    injected.push((id, prev));
                 }
-                _ => None,
-            };
-            if let Some(v) = standing {
-                let prev = event.variables.insert(id, TagValue::fired(v));
-                injected.push((id, prev));
             }
         }
         injected
@@ -385,6 +398,184 @@ impl TrackedFires {
                 }
             }
         }
+    }
+}
+
+/// The bool-literal leaves of a composite pattern in position order —
+/// `Some(b)` for a literal, `None` for a bind or `_` — or `None` when the
+/// pattern is not composite or has any other refutable leaf (another
+/// literal, a slice, a type test): such an atom pools no coverage.
+fn composite_literal_vector(
+    sp: &StructPatternNode,
+) -> Option<smallvec::SmallVec<[Option<bool>; 8]>> {
+    fn leaves(
+        sp: &StructPatternNode,
+        out: &mut smallvec::SmallVec<[Option<bool>; 8]>,
+    ) -> bool {
+        match sp {
+            StructPatternNode::Bind(_) | StructPatternNode::Ignore => {
+                out.push(None);
+                true
+            }
+            StructPatternNode::Literal(Value::Bool(b)) => {
+                out.push(Some(*b));
+                true
+            }
+            StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds } => {
+                binds.iter().all(|p| leaves(p, out))
+            }
+            StructPatternNode::Struct { all: _, binds } => {
+                let mut order: smallvec::SmallVec<
+                    [&(ArcStr, usize, StructPatternNode); 8],
+                > = binds.iter().collect();
+                order.sort_by_key(|(_, i, _)| *i);
+                order.iter().all(|(_, _, p)| leaves(p, out))
+            }
+            StructPatternNode::Variant { tag: _, all: _, binds } => {
+                binds.iter().all(|p| leaves(p, out))
+            }
+            _ => false,
+        }
+    }
+    match sp {
+        StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
+        | StructPatternNode::Struct { .. }
+        | StructPatternNode::Variant { .. } => {
+            let mut out = smallvec::SmallVec::new();
+            if leaves(sp, &mut out) && out.iter().any(|l| l.is_some()) {
+                Some(out)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The head a composite pattern tests: what groups arms in the
+/// literal pool and selects the scrutinee member they cover.
+#[derive(PartialEq, Eq)]
+enum Shape {
+    Tuple(usize),
+    Variant(ArcStr, usize),
+    Struct(smallvec::SmallVec<[ArcStr; 8]>),
+}
+
+fn shape_of(sp: &StructPatternNode) -> Option<Shape> {
+    match sp {
+        StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds } => {
+            Some(Shape::Tuple(binds.len()))
+        }
+        StructPatternNode::Variant { tag, all: _, binds } => {
+            Some(Shape::Variant(tag.clone(), binds.len()))
+        }
+        StructPatternNode::Struct { all: _, binds } => {
+            let mut names: smallvec::SmallVec<[ArcStr; 8]> =
+                binds.iter().map(|(n, _, _)| n.clone()).collect();
+            names.sort();
+            Some(Shape::Struct(names))
+        }
+        _ => None,
+    }
+}
+
+/// The scrutinee's member of this shape — the type a complete literal
+/// ladder covers — through references and unions.
+fn scrutinee_member(
+    env: &crate::env::Env,
+    scrut: &Type,
+    shape: &Shape,
+) -> Result<Option<Type>> {
+    fn walk(
+        env: &crate::env::Env,
+        t: &Type,
+        shape: &Shape,
+        depth: usize,
+    ) -> Result<Option<Type>> {
+        if depth > 8 {
+            return Ok(None);
+        }
+        let hit = t.with_deref(|t| match t {
+            Some(Type::Tuple(ts)) => {
+                Ok(matches!(shape, Shape::Tuple(n) if *n == ts.len())
+                    .then(|| Type::Tuple(ts.clone())))
+            }
+            Some(Type::Variant(tag, ts)) => Ok(matches!(
+                shape,
+                Shape::Variant(st, n) if st == tag && *n == ts.len()
+            )
+            .then(|| Type::Variant(tag.clone(), ts.clone()))),
+            Some(Type::Struct(fs)) => {
+                let same = match shape {
+                    Shape::Struct(names) => {
+                        names.len() == fs.len()
+                            && names.iter().zip(fs.iter()).all(|(n, (f, _))| n == f)
+                    }
+                    _ => false,
+                };
+                Ok(same.then(|| Type::Struct(fs.clone())))
+            }
+            Some(Type::Set(ms)) => {
+                for m in ms.iter() {
+                    if let Some(hit) = walk(env, m, shape, depth + 1)? {
+                        return Ok(Some(hit));
+                    }
+                }
+                Ok(None)
+            }
+            Some(r @ Type::Ref(_)) => walk(env, &r.lookup_ref(env)?, shape, depth + 1),
+            _ => Ok(None),
+        })?;
+        Ok(hit)
+    }
+    walk(env, scrut, shape, 0)
+}
+
+/// Composite arms whose only refutable leaves are bool literals pool
+/// coverage per POSITION: same-shaped arms cover the scrutinee's member
+/// of that shape once their literal vectors cover every assignment of
+/// the positions any of them tests, a bind or `_` matching both. The
+/// twin of the Set-distribution rule, applied to literals:
+/// `(true, true) | (true, false) | (false, _)` covers `(bool, bool)`,
+/// `` `Join(true) `` + `` `Join(false) `` cover `` `Join(bool) ``.
+#[derive(Default)]
+struct LiteralPool {
+    groups: Vec<(Shape, Vec<smallvec::SmallVec<[Option<bool>; 8]>>, bool)>,
+}
+
+impl LiteralPool {
+    /// True when this arm completes its shape's coverage.
+    fn insert(
+        &mut self,
+        shape: Shape,
+        vec: smallvec::SmallVec<[Option<bool>; 8]>,
+    ) -> bool {
+        let idx = match self.groups.iter().position(|(g, _, _)| *g == shape) {
+            Some(i) => i,
+            None => {
+                self.groups.push((shape, Vec::new(), false));
+                self.groups.len() - 1
+            }
+        };
+        let (_, vecs, done) = &mut self.groups[idx];
+        if *done || vecs.iter().any(|v| v.len() != vec.len()) {
+            return false;
+        }
+        vecs.push(vec);
+        let positions: smallvec::SmallVec<[usize; 8]> =
+            (0..vecs[0].len()).filter(|&i| vecs.iter().any(|v| v[i].is_some())).collect();
+        if positions.len() > 10 {
+            return false;
+        }
+        let complete = (0..1usize << positions.len()).all(|assign| {
+            vecs.iter().any(|v| {
+                positions.iter().enumerate().all(|(bit, &pos)| {
+                    v[pos].is_none_or(|b| b == ((assign >> bit) & 1 == 1))
+                })
+            })
+        });
+        *done = complete;
+        complete
     }
 }
 
@@ -1027,6 +1218,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // differently-typed arm is a runtime hole, not coverage).
         let mut slice_pool: smallvec::SmallVec<[(usize, bool, Type); 8]> =
             smallvec::SmallVec::new();
+        let mut literal_pool = LiteralPool::default();
         let (mut guarded_slice, mut refutable_slice) = (false, false);
         for (pat, _) in self.arms.iter_mut() {
             let inferred_irrefutable = !pat.explicit_type_predicate
@@ -1064,6 +1256,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                                         &ctx.env,
                                         &Type::Primitive(Typ::Bool.into()),
                                     )?;
+                                }
+                            } else if let Some(vec) = composite_literal_vector(sp)
+                                && let Some(shape) = shape_of(sp)
+                            {
+                                if literal_pool.insert(shape, vec)
+                                    && let Some(shape) = shape_of(sp)
+                                    && let Some(m) = scrutinee_member(
+                                        &ctx.env,
+                                        self.arg.node.typ(),
+                                        &shape,
+                                    )?
+                                {
+                                    mtype = mtype.union(&ctx.env, &m)?;
                                 }
                             } else if let Some((k, exact)) = sp.array_len_coverage() {
                                 slice_pool.push((k, exact, at.clone()));
@@ -1274,6 +1479,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             })
             .collect();
         let (mut saw_t, mut saw_f) = (false, false);
+        let mut dead_pool = LiteralPool::default();
         for (pat, _) in self.arms.iter() {
             if atype == Type::Primitive(BitFlags::empty()) {
                 bail!(
@@ -1357,6 +1563,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         atype =
                             atype.diff(&ctx.env, &Type::Primitive(Typ::Bool.into()))?;
                     }
+                }
+                if pat.guard.is_none()
+                    && let Some(vec) = composite_literal_vector(sp)
+                    && let Some(shape) = shape_of(sp)
+                    && dead_pool.insert(shape, vec)
+                    && let Some(shape) = shape_of(sp)
+                    && let Some(m) =
+                        scrutinee_member(&ctx.env, self.arg.node.typ(), &shape)?
+                {
+                    atype = atype.diff(&ctx.env, &m)?;
                 }
                 if !sp.is_refutable() && pat.guard.is_none() {
                     atype = atype.diff(&ctx.env, at)?;

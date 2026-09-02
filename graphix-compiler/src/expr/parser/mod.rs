@@ -136,7 +136,7 @@ pub fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
     f: F,
 ) -> impl Parser<I, Output = OC>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
     OC: Extend<O> + Default,
@@ -164,7 +164,7 @@ where
 // error, which makes "every comment is preserved in the AST" structural.
 fn spaces<I>() -> impl Parser<I, Output = ()>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -177,7 +177,7 @@ where
 // Trailing whitespace and blank lines after the line are skipped.
 fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -294,7 +294,7 @@ fn decorate(mut e: Expr, (mut comments, mut attrs): Leading) -> Expr {
 
 fn spaces1<I>() -> impl Parser<I, Output = ()>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -303,7 +303,7 @@ where
 
 fn doc_comment<I>() -> impl Parser<I, Output = Doc>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -324,7 +324,7 @@ where
 
 fn spstring<'a, I>(s: &'static str) -> impl Parser<I, Output = &'a str>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -333,7 +333,7 @@ where
 
 fn ident<I>(cap: bool) -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -346,12 +346,18 @@ where
 
 fn fname<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    ident(false).then(|s| {
+    (position(), ident(false)).then(|(pos, s): (SourcePosition, ArcStr)| {
         if RESERVED_BINDING.contains(&s.as_str()) {
+            grow::note_reason(
+                pos,
+                compact_str::format_compact!(
+                    "`{s}` is a reserved word and cannot be used as a name"
+                ),
+            );
             unexpected_any("can't use keyword as a function or variable name").left()
         } else {
             value(s).right()
@@ -361,7 +367,7 @@ where
 
 fn spfname<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -376,7 +382,7 @@ where
 /// by the callers that accept shorthand.
 fn fldname<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -385,7 +391,7 @@ where
 
 fn spfldname<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -394,7 +400,7 @@ where
 
 fn typname<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -416,7 +422,7 @@ where
 /// leading-only.
 fn path_root<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -440,7 +446,7 @@ where
 
 pub(crate) fn modpath<I>() -> impl Parser<I, Output = ModPath>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -454,7 +460,7 @@ where
 
 fn spmodpath<I>() -> impl Parser<I, Output = ModPath>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -463,7 +469,7 @@ where
 
 fn csep<I>() -> impl Parser<I, Output = char>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -472,7 +478,7 @@ where
 
 fn semisep<I>() -> impl Parser<I, Output = char>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -481,7 +487,7 @@ where
 
 fn sptoken<I>(t: char) -> impl Parser<I, Output = char>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -617,7 +623,7 @@ where
 /// items), or the bare receiver name `self` of an impl method.
 fn valpath<I>() -> impl Parser<I, Output = ModPath>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -1018,6 +1024,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
             .map(|(r, _)| r)
             .map_err(|e| {
                 pos = e.position;
+                grow::note_error_pos(e.position);
                 e
             })
     })
@@ -1043,6 +1050,7 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
             .map(|(r, _)| r)
             .map_err(|e| {
                 pos = e.position;
+                grow::note_error_pos(e.position);
                 e
             })
     })
@@ -1063,6 +1071,7 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
             .map(|(r, _)| r)
             .map_err(|e| {
                 pos = e.position;
+                grow::note_error_pos(e.position);
                 e
             })
     })
@@ -1098,6 +1107,7 @@ pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
             .map(|(r, _)| r)
             .map_err(|e| {
                 pos = e.position;
+                grow::note_error_pos(e.position);
                 e
             })
     })
@@ -1118,6 +1128,7 @@ pub fn parse_type(s: &str) -> anyhow::Result<Type> {
             .map(|(r, _)| r)
             .map_err(|e| {
                 pos = e.position;
+                grow::note_error_pos(e.position);
                 e
             })
     })
@@ -1137,6 +1148,7 @@ pub(super) fn parse_modpath(s: &str) -> anyhow::Result<ModPath> {
             .map(|(r, _)| r)
             .map_err(|e| {
                 pos = e.position;
+                grow::note_error_pos(e.position);
                 e
             })
     })

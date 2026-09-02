@@ -1,11 +1,13 @@
 use crate::stack::ensure_sufficient;
+use combine::stream::position::SourcePosition;
 use combine::{
     ErrorOffset, ParseError, Parser, Stream, StreamOnce,
     error::{ParseResult, StreamError, Tracked},
     parser::ParseMode,
 };
+use compact_str::CompactString;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -66,22 +68,69 @@ pub(super) fn note_refused() {
     REFUSED.with(|r| r.set(true))
 }
 
-/// Wrap a parse: clears the flag first, and reports the nesting limit
-/// rather than combine's merged expectation set when that is what
-/// actually stopped the parse.
+thread_local! {
+    /// The furthest reason a parser refused something it could name —
+    /// a reserved word where a name was expected — kept beside its
+    /// position. combine merges a refused alternative's message into
+    /// the surrounding expectation set (a whole `let` reports
+    /// "Unexpected `l`" at the statement's first column), so the
+    /// reason is recorded here and reported when the failure lies at
+    /// or before it.
+    static REASON: RefCell<Option<(SourcePosition, CompactString)>> =
+        const { RefCell::new(None) };
+    /// Where the parse failed, set by the entry point's error mapping
+    /// before [`parsing`] reports.
+    static ERROR_POS: Cell<Option<SourcePosition>> = const { Cell::new(None) };
+}
+
+fn key(p: SourcePosition) -> (i32, i32) {
+    (p.line, p.column)
+}
+
+/// Record why a name was refused at `pos`; a later refusal wins.
+pub(super) fn note_reason(pos: SourcePosition, reason: CompactString) {
+    REASON.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.as_ref().is_none_or(|(p, _)| key(*p) <= key(pos)) {
+            *r = Some((pos, reason));
+        }
+    })
+}
+
+/// Record where the parse failed.
+pub(super) fn note_error_pos(pos: SourcePosition) {
+    ERROR_POS.with(|p| p.set(Some(pos)))
+}
+
+/// Wrap a parse: clears the flags first, and reports the nesting
+/// limit rather than combine's merged expectation set when that is
+/// what actually stopped the parse, or the recorded reason when the
+/// failure lies on the line of a refused name or before it (combine
+/// reports a failed statement at its first column).
 pub(super) fn parsing<T, E: std::fmt::Display>(
     f: impl FnOnce() -> Result<T, E>,
 ) -> Result<T, String> {
     clear_refused();
+    REASON.with(|r| *r.borrow_mut() = None);
+    ERROR_POS.with(|p| p.set(None));
     f().map_err(|e| {
         if refused() {
-            format!(
+            return format!(
                 "expression nesting too deep (limit {}, see \
                  graphix_compiler::expr::parser::set_max_nesting)",
                 max_nesting()
-            )
-        } else {
-            format!("{e}")
+            );
+        }
+        let reason = REASON.with(|r| r.borrow().clone());
+        let err_pos = ERROR_POS.with(|p| p.get());
+        match reason {
+            Some((pos, reason)) if err_pos.is_none_or(|ep| ep.line <= pos.line) => {
+                format!(
+                    "{e}\n  note: at line: {}, column: {}: {reason}",
+                    pos.line, pos.column
+                )
+            }
+            _ => format!("{e}"),
         }
     })
 }

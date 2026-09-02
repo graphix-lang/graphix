@@ -46,6 +46,11 @@ pub struct Bind {
     /// tracks it as an input of its own for wake catch-up
     /// (`design/wake_catchup.md`).
     pub pattern: bool,
+    /// Bound by a destructuring `let` alongside siblings: the group's
+    /// representative bind. One delivery reaches every sibling, so
+    /// wake catch-up tracks the group as one input — a read of any
+    /// sibling spends the delivery for all of them.
+    pub facet: Option<BindId>,
 }
 
 impl fmt::Debug for Bind {
@@ -66,6 +71,7 @@ impl Clone for Bind {
             pos: self.pos,
             ori: self.ori.clone(),
             pattern: self.pattern,
+            facet: self.facet,
         }
     }
 }
@@ -1592,6 +1598,7 @@ impl Env {
             pos,
             ori,
             pattern: false,
+            facet: None,
         });
         if self.lsp_mode {
             let ide_clone = bind.clone();
@@ -1610,6 +1617,20 @@ impl Env {
 
     pub fn is_pattern_bind(&self, id: BindId) -> bool {
         self.by_id.get(&id).is_some_and(|b| b.pattern)
+    }
+
+    /// Record that `id` is one of a destructuring `let`'s siblings,
+    /// represented by `rep` for wake catch-up.
+    pub fn mark_facet(&mut self, id: BindId, rep: BindId) {
+        if let Some(b) = self.by_id.get_mut_cow(&id) {
+            b.facet = Some(rep);
+        }
+    }
+
+    /// The bind wake catch-up tracks `id` under: its `let`
+    /// destructuring group's representative, else itself.
+    pub fn facet_of(&self, id: BindId) -> BindId {
+        self.by_id.get(&id).and_then(|b| b.facet).unwrap_or(id)
     }
 
     pub fn unbind_variable(&mut self, id: BindId) {

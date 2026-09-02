@@ -12,7 +12,7 @@ use nohash::IntMap;
 use poolshark::local::LPooled;
 
 impl Type {
-    fn could_match_int(
+    pub(super) fn could_match_int(
         &self,
         env: &Env,
         hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
@@ -142,6 +142,7 @@ impl Type {
                     .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
+            (Type::Fn(f0), Type::Fn(f1)) => f0.could_match_int(env, hist, f1),
             (_, Type::Bottom) => Ok(true),
             (Type::Bottom, _) => Ok(false),
             (Type::Any, _) | (_, Type::Any) => Ok(true),

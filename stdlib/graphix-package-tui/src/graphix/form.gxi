@@ -15,7 +15,8 @@ type Form = {
 /// A modal form over `fields`: one line editor per field, Tab and
 /// Down move to the next field, BackTab and Up to the previous, Enter
 /// calls `#on_submit` with every field's text in order, Esc calls
-/// `#on_cancel` with the key; other keys edit the focused field.
+/// `#on_cancel` with the key when one is given; other keys edit the
+/// focused field.
 /// `#help` renders above the fields; `#hint` is the bottom title
 /// (defaults to the key legend). A new `fields` delivery re-seeds the
 /// editors. The focused editor is edited through a place reference,
@@ -26,6 +27,6 @@ val form: fn(
   ?#help: [string, null],
   ?#hint: [string, null],
   #on_submit: fn(values: Array<string>) -> null,
-  #on_cancel: fn(e: Any) -> null,
+  ?#on_cancel: [fn(e: Any) -> null, null],
   fields: Array<Field>
 ) -> Form;

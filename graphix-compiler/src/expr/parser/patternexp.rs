@@ -319,7 +319,7 @@ where
 
 fn underbar_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -334,7 +334,7 @@ where
 
 fn bind_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -349,7 +349,7 @@ where
 
 fn literal_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
@@ -364,7 +364,7 @@ where
 
 fn all_pattern<I>() -> impl Parser<I, Output = ArcStr>
 where
-    I: RangeStream<Token = char>,
+    I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {

@@ -2166,9 +2166,11 @@ run!(
 );
 
 // Ledger 11 (graphix-admin findings, 2026-09-02): a select over an
-// optional callback `[fn(..), null]` is refused — the dead-arm check
-// reports the bind arm as never matching the function member. The
-// intended program: the arm matches and calls it.
+// optional callback `[fn(..), null]` was refused — the dead-arm check
+// reported the bind arm as never matching the function member, because
+// `could_match` had no function arm at all. Fixed the same night: two
+// function types could match when their arities, labels and components
+// could.
 const SELECT_OPTIONAL_FN: &str = r#"
 {
   let f: [fn(x: i64) -> i64, null] = |x: i64| x + 1;
@@ -2180,9 +2182,99 @@ const SELECT_OPTIONAL_FN: &str = r#"
 "#;
 
 #[tokio::test]
-#[ignore = "ledger 11: the dead-arm check refuses a fn member matching itself"]
 async fn select_optional_fn_member_matches() -> Result<()> {
     let (v, _ctx) = eval(SELECT_OPTIONAL_FN, crate::TEST_REGISTER).await?;
     assert_eq!(v, Value::I64(42));
     Ok(())
 }
+
+// Ledger 14 (graphix-admin findings, 2026-09-02): bool literals pool
+// coverage per POSITION inside a composite pattern — same-shaped arms
+// cover the scrutinee's member of that shape once their literal
+// vectors cover every assignment of the positions any of them tests,
+// a bind or `_` matching both. Before, only a top-level `true`/`false`
+// pair completed a bool.
+const BOOL_PAIR_LADDER: &str = r#"
+{
+  let f = |a: bool, b: bool| -> i64 select (a, b) {
+    (true, true) => 3,
+    (true, false) => 2,
+    (false, _) => 1
+  };
+  f(true, true) * 100 + f(true, false) * 10 + f(false, true)
+}
+"#;
+
+run!(bool_pair_ladder_covers, BOOL_PAIR_LADDER, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(321))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+const VARIANT_BOOL_LADDER: &str = r#"
+{
+  let g = |x: [`Join(bool), `Other]| -> i64 select x {
+    `Join(true) => 1,
+    `Join(false) => 0,
+    `Other => -1
+  };
+  g(`Join(true)) * 100 + g(`Join(false)) * 10 + g(`Other)
+}
+"#;
+
+run!(variant_bool_ladder_covers, VARIANT_BOOL_LADDER, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(99))
+); graphix_package_core::testing::FuseExpect::None);
+
+// The dead-arm twin: a wildcard behind a complete ladder is dead, the
+// same as behind a full variant set.
+const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
+{
+  let f = |a: bool, b: bool| -> i64 select (a, b) {
+    (true, true) => 3,
+    (true, false) => 2,
+    (false, _) => 1,
+    _ => 0
+  };
+  f(true, true)
+}
+"#;
+
+run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Ledger 4 (graphix-admin findings, 2026-09-02): a destructuring
+// `let`'s siblings are facets of one delivery, the `let` twin of
+// `select_sibling_binds_spent`: arm 0 handles the pair through `a`, so
+// `b` is spent too, and the flip to arm 1 must not re-raise it.
+const LET_SIBLING_BINDS_SPENT: &str = r#"
+{
+  let screen = 0;
+  let seen = 0;
+  let fired = 0;
+  let pair: (i64, i64) = never();
+  let (a, b) = pair;
+  select screen {
+    0 => seen <- a ~ (seen + 1),
+    _ => fired <- b ~ (fired + 1)
+  };
+  let t1 = sys::time::timer(duration:0.05s, false);
+  pair <- t1 ~ (1, 2);
+  let t2 = sys::time::timer(duration:0.15s, false);
+  screen <- t2 ~ 1;
+  let t3 = sys::time::timer(duration:0.3s, false);
+  t3 ~ (screen, seen, fired)
+}
+"#;
+
+run!(
+    let_sibling_binds_spent,
+    LET_SIBLING_BINDS_SPENT,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) =>
+            a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
+        _ => false,
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);
