@@ -147,6 +147,11 @@ val event: input_handler::Event;
 /// terminal). Set this to true to enable mouse input.
 val mouse: bool;
 
+/// End the program the way Ctrl-C does: the terminal is restored and
+/// the runtime stops. Fires per `trigger` delivery — sample it with
+/// the key that quits (`exit(k ~ null)`).
+val exit: fn(trigger: Any) -> null;
+
 mod text;
 mod paragraph;
 mod block;

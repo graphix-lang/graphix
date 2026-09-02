@@ -1403,11 +1403,22 @@ bad diagnostic or missing capability means stop, log a finding, fix it
 here (or consciously accept it), then continue — never move decision or
 presentation logic into the package's Rust layer because Graphix was
 painful. Measure `--check` time at every size milestone. State: Phase D
-in progress — the remote tab is complete: the admin-domains landing
-screen (bookmarks, re-verified), connect by address, the panel menu,
-seven panels (queue, delegations, roster with add-admin and a policy
-editor, servers with read gates, certs, services, perms) and the
-change-password route (netidx, 2026-09-02); next the Local tab. The
+in progress — the remote tab is complete (landing, connect, the panel
+menu, seven panels, the change-password route) and the Local tab's
+first slice landed 2026-09-02: `tui::panels` (the panel machinery
+over any `Target`, opened on the menu or straight on the roster /
+this host's permissions — the remote tab is landing + connect +
+panels), `tui::local` (detection over both config roots, the action
+list, the status card with the glyph, per-slot background sync and
+credential probes, the in-process lifecycle ceremonies: renew,
+update, backup, the four local-CA ops), `tui::app` (both tabs under
+one pump; `Tab`/`q` global behind the tab's own keys; `q` needs
+`tui::exit`, added the same day). Deferred (ledger 15): the local
+Services surface, Uninstall/Join/Add-a-Parent/Install/Restore (phase
+4 ceremonies + phase 5 handoff). Two semantics facts from the slice:
+a constant-RHS connect in a select arm fires once per selection
+(organic firing; sample it), and bool literals do not pool inside
+payload/tuple positions (nested selects; ledger 14). The
 open-items ledger is the top section of
 `../netidx/design/graphix-admin-findings.md`. Open prerequisites: terminal
 suspend/resume for `sudo`/`$EDITOR` handoff (phase E); reserved-word

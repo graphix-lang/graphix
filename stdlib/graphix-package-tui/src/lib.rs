@@ -20,12 +20,16 @@ use crossterm::{
 use futures::{SinkExt, StreamExt, channel::mpsc};
 use gauge::GaugeW;
 use graphix_compiler::{
-    BindId,
+    Apply, BindId, BuiltIn, Event as GxEvent, ExecCtx, Node, Rt, Scope, TagValue,
+    UserEvent,
+    effects::Effect,
     env::Env,
     expr::{ExprId, ModPath},
+    typ::FnType,
     typ::{Type, TypeRef},
 };
 use graphix_package::CustomDisplay;
+use graphix_package_core::seam_tick;
 use graphix_rt::{CompExp, GXExt, GXHandle, TRef};
 use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
@@ -34,6 +38,7 @@ use list::ListW;
 use log::error;
 use netidx::publisher::{FromValue, Value};
 use paragraph::ParagraphW;
+use parking_lot::Mutex;
 use ratatui::{
     Frame,
     layout::{Alignment, Direction, Flex, Rect},
@@ -425,6 +430,57 @@ enum ToTui {
     Stop(oneshot::Sender<()>),
 }
 
+/// The running display's stop signal — what Ctrl-C fires — shared
+/// through libstate so a program can end itself with `tui::exit`.
+#[derive(Default)]
+struct TuiStop(Arc<Mutex<Option<oneshot::Sender<()>>>>);
+
+fn fire_stop(stop: &Mutex<Option<oneshot::Sender<()>>>) {
+    if let Some(tx) = stop.lock().take() {
+        let _ = tx.send(());
+    }
+}
+
+#[derive(Debug)]
+struct Exit;
+
+impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
+    const EFFECT: Effect = Effect::Stateless(None);
+    const NAME: &str = "tui_exit";
+
+    fn init<'a, 'b, 'c, 'd>(
+        _ctx: &'a mut ExecCtx<R, E>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        from: &mut [Node<R, E>],
+        event: &mut GxEvent<E>,
+    ) -> &TagValue {
+        if let Some(n) = from.get_mut(0)
+            && seam_tick(n.update(ctx, event)).is_some()
+            && let Some(stop) = ctx.libstate.get::<TuiStop>()
+        {
+            fire_stop(&stop.0);
+        }
+        TagValue::phantom_ref()
+    }
+
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+}
+
 struct Tui<X: GXExt> {
     to: mpsc::Sender<ToTui>,
     ph: PhantomData<X>,
@@ -439,8 +495,15 @@ impl<X: GXExt> Tui<X> {
     ) -> Self {
         let gx = gx.clone();
         let (to_tx, to_rx) = mpsc::channel(3);
+        let stop = Arc::new(Mutex::new(Some(stop)));
+        let shared = TuiStop(stop.clone());
+        let seed = gx.clone();
         task::spawn(async move {
-            if let Err(e) = run(gx, env, root, to_rx, Some(stop)).await {
+            let _ =
+                seed.with_ctx(move |ctx| *ctx.libstate.get_or_default() = shared).await;
+        });
+        task::spawn(async move {
+            if let Err(e) = run(gx, env, root, to_rx, stop).await {
                 error!("tui::run returned {e:?}")
             }
         });
@@ -506,7 +569,7 @@ async fn run<X: GXExt>(
     env: Env,
     root_exp: CompExp<X>,
     mut to_rx: mpsc::Receiver<ToTui>,
-    mut stop: Option<oneshot::Sender<()>>,
+    stop: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 ) -> Result<()> {
     let mut terminal = ratatui::init();
     let size = get_id(&env, &["tui", "size"].into())?;
@@ -546,11 +609,7 @@ async fn run<X: GXExt>(
                 },
             },
             e = events.select_next_some() => match e {
-                Ok(e) if is_ctrl_c(&e) => {
-                    if let Some(tx) = stop.take() {
-                        let _ = tx.send(());
-                    }
-                }
+                Ok(e) if is_ctrl_c(&e) => fire_stop(&stop),
                 Ok(e) => {
                     let v = event_to_value(&e);
                     if let Event::Resize(width, height) = e
@@ -599,7 +658,7 @@ impl<X: GXExt> CustomDisplay<X> for Tui<X> {
 }
 
 graphix_derive::defpackage! {
-    builtins => [],
+    builtins => [Exit],
     is_custom => |gx, env, e| {
         if let Some(typ) = e.typ.with_deref(|t| t.cloned())
             && !typ.all_bottom()

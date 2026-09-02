@@ -25,4 +25,5 @@ let line = |
 
 let size: Size = never();
 let event: input_handler::Event = never();
-let mouse: bool = never()
+let mouse: bool = never();
+let exit = |trigger: Any| -> null 'tui_exit

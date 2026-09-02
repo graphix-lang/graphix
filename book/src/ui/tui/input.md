@@ -102,6 +102,16 @@ type KeyModifier = [
 
 The `modifiers` array contains all modifiers held during the key event.
 
+## Ending the Program
+
+A TUI program runs until Ctrl-C, or until it calls `tui::exit`, which
+ends it the same way: the terminal is restored and the runtime stops.
+Fire it from the key that quits, sampled with the event:
+
+```graphix
+`Char("q") => { tui::exit(k ~ null); `Stop }
+```
+
 ## Mouse Events
 
 Mouse events require enabling mouse support first:

@@ -42,6 +42,7 @@ ratatui = { workspace = true }
 smallvec = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+parking_lot = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
