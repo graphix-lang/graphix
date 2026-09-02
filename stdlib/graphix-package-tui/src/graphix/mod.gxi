@@ -164,4 +164,5 @@ mod calendar;
 mod canvas;
 mod overlay;
 mod line_edit;
+mod form;
 mod browser;

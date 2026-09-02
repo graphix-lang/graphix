@@ -1,0 +1,28 @@
+use super::{input_handler, Line, Tui};
+
+/// One form field: its label and its initial text.
+type Field = { label: string, value: string };
+
+/// A form's surface: its view, the key handler to install on the modal
+/// layer, and its two outcomes — `submitted` is the fields' texts in
+/// order, set per Enter; `cancelled` is set per Esc. Both are values
+/// (null and false until asked), so a form composes as a struct field.
+type Form = {
+  view: Tui,
+  handle: fn(e: input_handler::Event) -> [`Stop, `Continue],
+  submitted: [Array<string>, null],
+  cancelled: bool
+};
+
+/// A modal form over `fields`: one line editor per field, Tab and
+/// Down move to the next field, BackTab and Up to the previous, Enter
+/// submits every field's text, Esc cancels; other keys edit the
+/// focused field. `#help` renders above the fields; `#hint` is the
+/// bottom title (defaults to the key legend). Render `view` inside an
+/// `input_handler(#handle: &form.handle, …)` on an overlay layer.
+val form: fn(
+  #title: string,
+  ?#help: [string, null],
+  ?#hint: [string, null],
+  fields: Array<Field>
+) -> Form;

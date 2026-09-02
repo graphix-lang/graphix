@@ -6,6 +6,14 @@ type State = { value: string, cursor: i64 };
 /// Fresh editor state holding `initial`, cursor at the end.
 val state: fn(initial: string) -> State;
 
+/// The editor's transition, pure: the state after one terminal key
+/// event — printable characters insert at the cursor; Backspace and
+/// Delete remove; Left, Right, Home, and End move — or null for an
+/// event the editor does not consume. `handle` is this applied
+/// through a reference; use `step` directly for editors held in a
+/// collection, where no reference to one element exists.
+val step: fn(st: State, e: input_handler::Event) -> [State, null];
+
 /// Apply one terminal key event to the editor: printable characters
 /// insert at the cursor; Backspace and Delete remove; Left, Right,
 /// Home, and End move. Returns `Stop for consumed events and

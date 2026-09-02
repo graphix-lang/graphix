@@ -3,62 +3,51 @@ let state = |initial: string| -> State {
     cursor: str::len(initial)
 };
 
-let handle = |st: &State, e: input_handler::Event| -> [`Stop, `Continue] select e {
+let step = |st: State, e: input_handler::Event| -> [State, null] select e {
     `Key(k) => select k.kind {
         `Press => select k.code {
-            c@ `Char(ch) => {
-                let s = c ~ *st;
-                let n = str::len(s.value);
-                *st <- {
-                    value: "[str::sub(#start:0, #len:s.cursor, s.value)$][ch][str::sub(#start:s.cursor, #len:n - s.cursor, s.value)$]",
-                    cursor: s.cursor + 1
-                };
-                `Stop
+            `Char(ch) => {
+                let n = str::len(st.value);
+                {
+                    value: "[str::sub(#start:0, #len:st.cursor, st.value)$][ch][str::sub(#start:st.cursor, #len:n - st.cursor, st.value)$]",
+                    cursor: st.cursor + 1
+                }
             },
-            c@ `Backspace => {
-                let s = c ~ *st;
-                let n = str::len(s.value);
-                select s.cursor {
-                    cur if cur > 0 => *st <- {
-                        value: "[str::sub(#start:0, #len:cur - 1, s.value)$][str::sub(#start:cur, #len:n - cur, s.value)$]",
+            `Backspace => {
+                let n = str::len(st.value);
+                select st.cursor {
+                    cur if cur > 0 => {
+                        value: "[str::sub(#start:0, #len:cur - 1, st.value)$][str::sub(#start:cur, #len:n - cur, st.value)$]",
                         cursor: cur - 1
                     },
-                    _ => never()
-                };
-                `Stop
+                    _ => st
+                }
             },
-            c@ `Delete => {
-                let s = c ~ *st;
-                let n = str::len(s.value);
-                select s.cursor {
-                    cur if cur < n => *st <- {
-                        s with value: "[str::sub(#start:0, #len:cur, s.value)$][str::sub(#start:cur + 1, #len:n - cur - 1, s.value)$]"
+            `Delete => {
+                let n = str::len(st.value);
+                select st.cursor {
+                    cur if cur < n => {
+                        st with value: "[str::sub(#start:0, #len:cur, st.value)$][str::sub(#start:cur + 1, #len:n - cur - 1, st.value)$]"
                     },
-                    _ => never()
-                };
-                `Stop
+                    _ => st
+                }
             },
-            c@ `Left => {
-                let s = c ~ *st;
-                *st <- { s with cursor: max(0, s.cursor - 1) };
-                `Stop
-            },
-            c@ `Right => {
-                let s = c ~ *st;
-                *st <- { s with cursor: min(str::len(s.value), s.cursor + 1) };
-                `Stop
-            },
-            c@ `Home => {
-                let s = c ~ *st;
-                *st <- { s with cursor: 0 };
-                `Stop
-            },
-            c@ `End => {
-                let s = c ~ *st;
-                *st <- { s with cursor: str::len(s.value) };
-                `Stop
-            },
-            _ => `Continue
+            `Left => { st with cursor: max(0, st.cursor - 1) },
+            `Right => { st with cursor: min(str::len(st.value), st.cursor + 1) },
+            `Home => { st with cursor: 0 },
+            `End => { st with cursor: str::len(st.value) },
+            _ => null
+        },
+        _ => null
+    },
+    _ => null
+};
+
+let handle = |st: &State, e: input_handler::Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select step(k ~ *st, e) {
+            null as _ => `Continue,
+            s => { *st <- s; `Stop }
         },
         _ => `Continue
     },
