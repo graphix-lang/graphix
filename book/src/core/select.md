@@ -431,6 +431,38 @@ There is no `x@ (p1 | p2)` — patterns have no grouping parentheses. A capture
 is per-alternative, and the same-binds rule keeps it symmetric:
 `t@ `D(_) | t@ `E(_) => f(t)`.
 
+## Arms That Never Fire
+
+`never()` is a value that never arrives. It is the natural body of an
+arm that has nothing to say: the arm is selected, the select produces
+nothing, and nothing downstream updates until the scrutinee moves on.
+It takes any number of arguments, all of which stay live and are
+consumed, so `never(x)` keeps `x` running without producing it.
+
+The type of a bare `never()` is bottom, which every type absorbs: a
+select whose other arms are all `string` is itself a `string`, however
+deeply the `never()` arms nest.
+
+```graphix
+let admins = select load {
+  `Roster => list_admins(target),
+  _ => never()
+};
+```
+
+A `let` whose initializer is a bare `never()` takes its type from
+whatever writes it, so `let res = never(); res <- s` types `res` as
+`s` does. Where nothing fixes the type — a field, an argument, a
+binding nothing writes — spell it: `never<T>()` types as `T`.
+
+```graphix
+let pick = never<[`Servers, `Clusters]>();
+```
+
+A struct literal with a `never<i64>()` field is a struct that never
+materializes, since a struct fires once every field has arrived; that
+is the right behaviour for a placeholder something else must write.
+
 ## Select and Connect
 
 Using select and connect together is one way to iterate in Graphix. Consider,

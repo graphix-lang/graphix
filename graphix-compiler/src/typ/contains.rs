@@ -727,13 +727,12 @@ impl Type {
             // never() typed ⊥, an eager bind broke both
             // `f(never(), i64:5)` (the shared 'a instance bound ⊥
             // first, then rejected the i64) and the connect-seed idiom
-            // (`let res = never(); res <- v` — the binding shares the
-            // call site's cell, and a ⊥-pinned binding rejects every
-            // write). Accept and leave the cell open; writers refine it
-            // during typecheck0, and a cell NOBODY refines defaults to
-            // ⊥ at the terminal settle (`TVar::settle_or_bottom`) — so
-            // the never-arm/union pollution still collapses, just one
-            // phase later.
+            // (`let res = never(); res <- v` — the binding seeds a
+            // fresh cell for its ⊥ initializer, and a ⊥-pinned cell
+            // rejects every write). Accept and leave the cell open;
+            // writers refine it during typecheck0, and a cell NOBODY
+            // refines defaults to ⊥ at the terminal settle
+            // (`TVar::settle_or_bottom`, `Bind::typecheck1`).
             (Self::TVar(_), Self::Bottom) => Ok(true),
             // ⊥ ⊇ 'r has exactly one solution ('r := ⊥), so an OPEN cell
             // commits under InitTVars. A BOUND cell derefs and answers

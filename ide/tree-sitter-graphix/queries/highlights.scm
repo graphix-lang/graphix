@@ -25,6 +25,7 @@
   "val"
   "fn"
   "cast"
+  "never"
   "any"
   "with"
   "where"

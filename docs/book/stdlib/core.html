@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0247e4b9.js";
+            window.path_to_searchindex_js = "../searchindex-50bf54f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-879b8455.js"></script>
@@ -284,9 +284,6 @@ val queue: fn(#clock:Any, x: 'a) -&gt; 'a;
 /// internally, record the number of times it updated, and pass that many v updates
 /// through immediately when they happen.
 val hold: fn(#clock:Any, x: 'a) -&gt; 'a;
-
-/// ignore updates to any argument and never return anything
-val never: fn(@args: Any) -&gt; 'a;
 
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink

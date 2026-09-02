@@ -899,7 +899,7 @@ const GATED_SCALAR_UNANNOTATED: &str = r#"
 run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(9))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // A GUARDED arm before a bind-all final was rejected "missing match
 // cases": the bind-all's inferred type predicate is a fresh TVar, and
@@ -2278,3 +2278,58 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// `never` is SYNTAX with a compile-time type (2026-09-02, ledger 2 of
+// the admin-TUI findings): bottom bare, `T` as `never<T>()`. A builtin
+// call's cell bound to bottom only at static resolution, after a select
+// had unioned its arms, so a nested select of never() arms + one call
+// typed as `['_a: _, '_b: _, string]` and had to be annotated. Now the
+// arms absorb at typecheck0: the type test below is exhaustive only if
+// `u` is exactly `string`.
+const NEVER_ARMS_ABSORB: &str = r#"
+{
+  let m: [string, null] = "b";
+  let u = select 1 {
+    1 => select m { null as _ => never(), at => at },
+    _ => never()
+  };
+  select u { string as s => str::len(s) }
+}
+"#;
+
+run!(never_arms_absorb, NEVER_ARMS_ABSORB, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// `never<T>()` carries `T` where nothing else fixes the type: a binding
+// whose only initializer never arrives.
+const NEVER_TYPED: &str = r#"
+{
+  let p = never<i64>();
+  let s = select 2 { 1 => p, _ => 5 };
+  s + 1
+}
+"#;
+
+run!(never_typed, NEVER_TYPED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(6))
+); graphix_package_core::testing::FuseExpect::Jit);
+
+// The arguments stay live and are consumed: a connect inside never's
+// argument list keeps writing while never itself produces nothing.
+const NEVER_ARGS_LIVE: &str = r#"
+{
+  let x = 0;
+  x <- select x { n if n < 3 => n + 1, _ => never() };
+  let seen = 0;
+  never(seen <- x);
+  select seen { 3 => seen, _ => never() }
+}
+"#;
+
+run!(never_args_live, NEVER_ARGS_LIVE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(3))
+); graphix_package_core::testing::FuseExpect::Jit);

@@ -111,9 +111,6 @@ val queue: fn(#clock:Any, x: 'a) -> 'a;
 /// through immediately when they happen.
 val hold: fn(#clock:Any, x: 'a) -> 'a;
 
-/// ignore updates to any argument and never return anything
-val never: fn(@args: Any) -> 'a;
-
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink
 val dbg: fn(?#dest:[`Stdout, `Stderr, Log], x: 'a) -> 'a;

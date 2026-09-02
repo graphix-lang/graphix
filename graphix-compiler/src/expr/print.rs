@@ -1013,6 +1013,13 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "any")?;
                 pretty_print_exprs(buf, args, "(", ")", ",")
             }
+            ExprKind::Never { typ, args } => {
+                match typ {
+                    Some(t) => write!(buf, "never<{t}>")?,
+                    None => write!(buf, "never")?,
+                }
+                pretty_print_exprs(buf, args, "(", ")", ",")
+            }
             ExprKind::Variant { tag: _, args } if args.len() == 0 => {
                 write!(buf, "{self}")
             }
@@ -1362,6 +1369,13 @@ impl ExprKind {
             }
             ExprKind::Any { args } => {
                 write!(f, "any")?;
+                print_exprs(f, args, "(", ")", ", ")
+            }
+            ExprKind::Never { typ, args } => {
+                match typ {
+                    Some(t) => write!(f, "never<{t}>")?,
+                    None => write!(f, "never")?,
+                }
                 print_exprs(f, args, "(", ")", ", ")
             }
             ExprKind::Tuple { args } => print_exprs(f, args, "(", ")", ", "),

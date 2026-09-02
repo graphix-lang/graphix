@@ -932,6 +932,10 @@ impl Expr {
                     function
                 }))
             }),
+            ExprKind::Never { typ, args } => Box::pin(async move {
+                let args = Arc::from(subexprs!(args));
+                expr!(ExprKind::Never { typ, args })
+            }),
             ExprKind::Any { args } => only_args!(Any, args),
             ExprKind::Array { args } => only_args!(Array, args),
             ExprKind::List { args } => only_args!(List, args),

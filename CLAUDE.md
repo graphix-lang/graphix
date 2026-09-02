@@ -1168,6 +1168,19 @@ the rules.
 
 ## Language features (current)
 
+- **`never<T>()` is syntax** (2026-09-02, ledger 2 of the admin-TUI
+  findings): `ExprKind::Never { typ, args }` → `node::Never`, typed
+  bottom bare or the spelled `T` (scoped at compile), args updated and
+  consumed, never produces (`NodeView::Never`, ASYNC like `any`, no
+  emit). A builtin's call-site cell bound to bottom only at static
+  resolution — after a select had unioned its arms in typecheck0 — so
+  nested never() arms typed as free cells and forced annotations; the
+  companion `union_int` fix derefs a BOUND cell to its binding. The
+  connect-seed idiom (`let res = never(); res <- v`) lives in the
+  binding now: an unannotated `let` over a ⊥ initializer seeds a fresh
+  cell its writers refine, settled to ⊥ by `Bind::typecheck1` if
+  nobody does. `never` is a reserved word; the core builtin is gone.
+  Pins: `lang/select.rs` `never_*`, parser `never_parses`.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0247e4b9.js";
+            window.path_to_searchindex_js = "../searchindex-50bf54f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-879b8455.js"></script>
@@ -514,6 +514,29 @@ be useful).</p>
 <p>There is no <code>x@ (p1 | p2)</code> — patterns have no grouping parentheses. A capture
 is per-alternative, and the same-binds rule keeps it symmetric:
 <code>t@ </code>D(_) | t@ <code>E(_) =&gt; f(t)</code>.</p>
+<h2 id="arms-that-never-fire"><a class="header" href="#arms-that-never-fire">Arms That Never Fire</a></h2>
+<p><code>never()</code> is a value that never arrives. It is the natural body of an
+arm that has nothing to say: the arm is selected, the select produces
+nothing, and nothing downstream updates until the scrutinee moves on.
+It takes any number of arguments, all of which stay live and are
+consumed, so <code>never(x)</code> keeps <code>x</code> running without producing it.</p>
+<p>The type of a bare <code>never()</code> is bottom, which every type absorbs: a
+select whose other arms are all <code>string</code> is itself a <code>string</code>, however
+deeply the <code>never()</code> arms nest.</p>
+<pre><code class="language-graphix">let admins = select load {
+  `Roster =&gt; list_admins(target),
+  _ =&gt; never()
+};
+</code></pre>
+<p>A <code>let</code> whose initializer is a bare <code>never()</code> takes its type from
+whatever writes it, so <code>let res = never(); res &lt;- s</code> types <code>res</code> as
+<code>s</code> does. Where nothing fixes the type — a field, an argument, a
+binding nothing writes — spell it: <code>never&lt;T&gt;()</code> types as <code>T</code>.</p>
+<pre><code class="language-graphix">let pick = never&lt;[`Servers, `Clusters]&gt;();
+</code></pre>
+<p>A struct literal with a <code>never&lt;i64&gt;()</code> field is a struct that never
+materializes, since a struct fires once every field has arrived; that
+is the right behaviour for a placeholder something else must write.</p>
 <h2 id="select-and-connect"><a class="header" href="#select-and-connect">Select and Connect</a></h2>
 <p>Using select and connect together is one way to iterate in Graphix. Consider,</p>
 <pre><code class="language-graphix">let a = [1, 2, 3, 4, 5];

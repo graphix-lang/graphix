@@ -179,6 +179,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -400,6 +404,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -697,6 +705,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -884,6 +896,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -1092,6 +1108,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -1264,6 +1284,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -1525,6 +1549,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -1708,6 +1736,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -1903,6 +1935,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -2184,6 +2220,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -2414,6 +2454,10 @@
           },
           {
             "type": "module",
+            "named": true
+          },
+          {
+            "type": "never",
             "named": true
           },
           {
@@ -2681,6 +2725,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -2929,6 +2977,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -3101,6 +3153,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -3784,6 +3840,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -4014,6 +4074,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -4265,6 +4329,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -4704,6 +4772,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -4877,6 +4949,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -5161,6 +5237,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -5332,6 +5412,10 @@
           },
           {
             "type": "module",
+            "named": true
+          },
+          {
+            "type": "never",
             "named": true
           },
           {
@@ -5508,6 +5592,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -5769,6 +5857,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -5999,6 +6091,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -6185,6 +6281,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -6287,6 +6387,253 @@
     }
   },
   {
+    "type": "never",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
+          "type": "abstract_type",
+          "named": true
+        },
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref_type",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "catch_stmt",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
+          "named": true
+        },
+        {
+          "type": "do_block",
+          "named": true
+        },
+        {
+          "type": "error_type",
+          "named": true
+        },
+        {
+          "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "impl_def",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "map_type",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "parenthesized_type",
+          "named": true
+        },
+        {
+          "type": "primitive_type",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "ref_type",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "self_type",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_type",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "tuple_type",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "type_identifier",
+          "named": true
+        },
+        {
+          "type": "type_variable",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "union_type",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
+          "named": true
+        },
+        {
+          "type": "variant_type",
+          "named": true
+        },
+        {
+          "type": "wildcard_type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "null",
     "named": true,
     "fields": {}
@@ -6353,6 +6700,10 @@
         },
         {
           "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -6531,6 +6882,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -6812,6 +7167,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -7038,6 +7397,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -7256,6 +7619,10 @@
           },
           {
             "type": "module",
+            "named": true
+          },
+          {
+            "type": "never",
             "named": true
           },
           {
@@ -7995,6 +8362,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -8223,6 +8594,10 @@
           },
           {
             "type": "module",
+            "named": true
+          },
+          {
+            "type": "never",
             "named": true
           },
           {
@@ -8674,6 +9049,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -8913,6 +9292,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -9283,6 +9666,10 @@
             "named": true
           },
           {
+            "type": "never",
+            "named": true
+          },
+          {
             "type": "or_never",
             "named": true
           },
@@ -9573,6 +9960,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -10325,6 +10716,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -10772,6 +11167,10 @@
         },
         {
           "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -11304,6 +11703,10 @@
   },
   {
     "type": "mod",
+    "named": false
+  },
+  {
+    "type": "never",
     "named": false
   },
   {

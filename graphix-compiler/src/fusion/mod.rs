@@ -508,6 +508,11 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 rec!(n)
             }
         }
+        NodeView::Never(a) => {
+            for n in a.n.iter() {
+                rec!(n)
+            }
+        }
         NodeView::Sample(s) => rec!(&s.trigger, &s.arg.node),
         NodeView::Struct(s) => {
             for c in s.n.iter() {

@@ -547,3 +547,16 @@ param knot, self-referential quantifier constraints). Alias maps are
 already per-signature (fresh per entry point; contains carries no
 name map). Do not resurrect per-Fn-boundary scoping (rank-2) or cell
 provenance machinery without a live witness this diagnosis missed.
+
+**2026-09-03 — `never` is syntax.** `never()` / `never<T>(args…)` is
+`ExprKind::Never` → `node::Never`, typed the literal ⊥ (or the spelled
+`T`) at COMPILE time, so a select unions its never() arms away in tc0
+(the builtin's call-site cell bound ⊥ only at static resolution,
+after the arms were unioned, and a nested select of never() arms + one
+call typed `['_a: _, '_b: _, string]`). The connect-seed idiom moves
+into the binding: an unannotated `let` over a ⊥ initializer seeds a
+FRESH cell (`Bind::compile`), writers refine it at their tc0, and
+`Bind::typecheck1` settles a cell nobody refined to ⊥ — piece 2 above,
+relocated from the call site to the one node that owns the binding.
+`f(never(), i64:5)` needs nothing: piece 1's no-bind arm meets the
+literal ⊥ directly.

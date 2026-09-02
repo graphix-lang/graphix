@@ -777,6 +777,7 @@ module.exports = grammar({
       $.select,
       $.any,
       $.cast,
+      $.never,
       $.do_block,
     ),
 
@@ -896,6 +897,15 @@ module.exports = grammar({
       '>',
       '(',
       $._expression,
+      ')',
+    ),
+
+    // The value that never arrives, typed where given
+    never: $ => seq(
+      'never',
+      optional(seq('<', $._type, '>')),
+      '(',
+      commaSep($._expression),
       ')',
     ),
 
@@ -1240,7 +1250,7 @@ module.exports = grammar({
       $.identifier,
       alias(choice(
         'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'type',
-        'fn', 'cast', 'if', 'use', 'rec', 'catch', 'try', 'any',
+        'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',
         'bool', 'string', 'bytes',
         'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'v32', 'z32',
         'i64', 'u64', 'v64', 'z64', 'f32', 'f64',

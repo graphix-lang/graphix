@@ -1643,6 +1643,91 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     }
 }
 
+/// `never<T>(args…)`: produces nothing, ever; its arguments stay live
+/// and are consumed. Typed `T` where given, bottom otherwise — known at
+/// compile time, so a select unions it away and a field or argument
+/// carries the declared shape.
+#[derive(Debug)]
+pub struct Never<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Node<R, E>]>,
+    resident: TagValue,
+}
+
+impl<R: Rt, E: UserEvent> Never<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        typ: &Option<Type>,
+        args: &[Expr],
+    ) -> Result<Node<R, E>> {
+        let n = args
+            .iter()
+            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
+            .collect::<Result<Box<[_]>>>()?;
+        let typ = match typ {
+            Some(t) => t.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
+            None => Type::Bottom,
+        };
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        for n in self.n.iter_mut() {
+            n.update(ctx, event);
+        }
+        self.resident.ride()
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.delete(ctx))
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.sleep(ctx))
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.iter().for_each(|n| n.refs(refs))
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n, n.typecheck0(ctx))?
+        }
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n, n.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Never(self)
+    }
+}
+
 #[derive(Debug)]
 pub struct Any<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,

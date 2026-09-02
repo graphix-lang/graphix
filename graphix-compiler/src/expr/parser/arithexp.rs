@@ -4,8 +4,8 @@ use crate::expr::{
         any, apply_args, array, array_index_suffix, cast, construct, csep, do_block,
         expr,
         grow::{grow, max_nesting, note_refused},
-        interpolated, list_lit, literal, map, raw_string, reference, select, spaces,
-        spfldname, sptoken, structure, structwith, variant,
+        interpolated, list_lit, literal, map, never_expr, raw_string, reference, select,
+        spaces, spfldname, sptoken, structure, structwith, variant,
     },
 };
 use arcstr::ArcStr;
@@ -176,6 +176,7 @@ where
         select().map(|e| (e, None)),
         variant().map(|e| (e, None)),
         cast().map(|e| (e, None)),
+        never_expr().map(|e| (e, None)),
         any().map(|e| (e, None)),
         interpolated().map(|e| (e, None)),
         (position(), token('!').with(arith()))

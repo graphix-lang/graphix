@@ -105,8 +105,9 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter(
         [
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
-            "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any", "use", "rec",
-            "catch", "try", "self", "super", "package", "pub", "trait", "impl",
+            "never", "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any",
+            "use", "rec", "catch", "try", "self", "super", "package", "pub", "trait",
+            "impl",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -126,8 +127,8 @@ pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
 /// routine and reports nothing.
 pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
-        "mod", "let", "select", "type", "fn", "cast", "if", "use", "rec", "catch", "try",
-        "pub", "trait", "impl",
+        "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
+        "catch", "try", "pub", "trait", "impl",
     ])
 });
 
@@ -547,6 +548,28 @@ where
         between(attempt(sptoken('(')), sptoken(')'), expr()),
         spaces().with(qop(reference())),
     ))
+}
+
+/// `never<T>(args…)` / `never(args…)`: the value that never arrives.
+fn never_expr<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (
+        position(),
+        attempt(string("never").skip(not_prefix())),
+        optional(attempt(between(sptoken('<'), sptoken('>'), typ()))),
+        between(
+            sptoken('('),
+            sptoken(')'),
+            sep_by_tok(expr(), csep(), attempt(sptoken(')'))),
+        ),
+    )
+        .map(|(pos, _, typ, mut args): (_, _, Option<Type>, LPooled<Vec<Expr>>)| {
+            ExprKind::Never { typ, args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
+        })
 }
 
 fn any<I>() -> impl Parser<I, Output = Expr>

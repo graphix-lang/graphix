@@ -479,6 +479,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         NodeView::Sample(_)
         | NodeView::Catch(_)
         | NodeView::Any(_)
+        | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         // Variable WRITES (`connect`, a handler-ful `?`'s error delivery)
         // and same-cycle error handling (`$`, a handler-less `?`) are

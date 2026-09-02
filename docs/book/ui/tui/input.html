@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-0247e4b9.js";
+            window.path_to_searchindex_js = "../../searchindex-50bf54f7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-879b8455.js"></script>
@@ -257,6 +257,31 @@ Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
 ];
 </code></pre>
 <p>The <code>modifiers</code> array contains all modifiers held during the key event.</p>
+<h2 id="ending-the-program"><a class="header" href="#ending-the-program">Ending the Program</a></h2>
+<p>A TUI program runs until Ctrl-C, or until it calls <code>tui::exit</code>, which
+ends it the same way: the terminal is restored and the runtime stops.
+Fire it from the key that quits, sampled with the event:</p>
+<pre><code class="language-graphix">`Char("q") =&gt; { tui::exit(k ~ null); `Stop }
+</code></pre>
+<h2 id="handing-the-terminal-to-a-program"><a class="header" href="#handing-the-terminal-to-a-program">Handing the Terminal to a Program</a></h2>
+<p>Some steps belong on the plain terminal — a <code>sudo</code> password prompt, an
+editor. <code>tui::suspend</code> takes a level: while its input is true the
+display has released the terminal (leaving the alternate screen and
+raw mode, and dropping its input reader), and when the input goes
+false the display takes it back with a full repaint. Its result is the
+display’s actual state, so start the program on the release and clear
+the level with the program’s exit:</p>
+<pre><code class="language-graphix">let suspended = false;
+{
+  catch(e) { println("could not run: [e]"); suspended &lt;- e ~ false };
+  suspended &lt;- kk ~ true;
+  let released = tui::suspend(suspended)?;
+  let go = select released { true =&gt; released, false =&gt; never() };
+  let child = sys::process::spawn(sys::process::options(#args: ["-v"], go ~ "sudo"))?;
+  let status = sys::process::wait(child.proc)?;
+  suspended &lt;- status ~ false
+}
+</code></pre>
 <h2 id="mouse-events"><a class="header" href="#mouse-events">Mouse Events</a></h2>
 <p>Mouse events require enabling mouse support first:</p>
 <pre><code class="language-graphix">tui::mouse &lt;- true

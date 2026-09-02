@@ -2181,53 +2181,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
     }
 }
 
-#[derive(Debug)]
-struct Never;
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Never {
-    // Async, deliberately: `Async` means "output may appear on a later
-    // cycle, autonomously, or never" — never() is the limiting case of
-    // that contract. Marking it Sync let it fuse as a DynCall that
-    // pended on EVERY kernel run: wasted work in used positions, and
-    // in dead positions the whole-kernel pending bottomed results the
-    // node-walk still produces (the dead-pend divergence). As a fusion
-    // boundary the node-walk handles it — zero work, exact semantics.
-    // This is also what exempts `never()` from the dead-variadic-call
-    // compile error (callsite.rs `reject_dead_variadic_call`): never()
-    // is the sanctioned way to write a value that never arrives.
-    const EFFECT: Effect = Effect::Async;
-    const NAME: &str = "core_never";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Never))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Never {
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
-        for n in from {
-            n.update(ctx, event);
-        }
-        TagValue::phantom_ref()
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-}
-
 #[derive(Debug, Clone, Copy)]
 enum Level {
     Trace,
@@ -2604,7 +2557,6 @@ graphix_derive::defpackage! {
         Count,
         Mean,
         Uniq,
-        Never,
         Dbg,
         Log,
         Print,

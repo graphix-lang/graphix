@@ -769,6 +769,7 @@ macro_rules! qop {
             ExprKind::Do { .. }
             | ExprKind::Select { .. }
             | ExprKind::TypeCast { .. }
+            | ExprKind::Never { .. }
             | ExprKind::Ref { .. }
             | ExprKind::Any { .. }
             | ExprKind::Apply { .. }
@@ -997,6 +998,14 @@ macro_rules! typecast {
     ($inner:expr) => {
         ($inner, typexp()).prop_map(|(expr, typ)| {
             ExprKind::TypeCast { expr: Arc::new(expr), typ }.to_expr_nopos()
+        })
+    };
+}
+
+macro_rules! never {
+    ($inner:expr) => {
+        (collection::vec($inner, 0..3), option::of(typexp())).prop_map(|(args, typ)| {
+            ExprKind::Never { typ, args: Arc::from(args) }.to_expr_nopos()
         })
     };
 }
@@ -1350,6 +1359,7 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             any!(inner.clone().prop_map(add_parens)),
             apply!(inner.clone().prop_map(add_parens), false),
             typecast!(inner.clone().prop_map(add_parens)),
+            never!(inner.clone().prop_map(add_parens)),
             arrayref!(inner.clone().prop_map(add_parens)),
             arrayslice!(inner.clone().prop_map(add_parens)),
             structref!(inner.clone().prop_map(add_parens)),
@@ -1420,6 +1430,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             any!(inner.clone()),
             apply!(inner.clone(), false),
             typecast!(inner.clone()),
+            never!(inner.clone()),
             do_block!(inner.clone()),
             lambda!(inner.clone()),
             bind!(inner.clone()),
@@ -2043,6 +2054,18 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::TypeCast { expr: expr0, typ: typ0 },
             ExprKind::TypeCast { expr: expr1, typ: typ1 },
         ) => dbg!(check(expr0, expr1)) && dbg!(check_type(&typ0, &typ1)),
+        (
+            ExprKind::Never { typ: typ0, args: a0 },
+            ExprKind::Never { typ: typ1, args: a1 },
+        ) => {
+            let typ = match (typ0, typ1) {
+                (None, None) => true,
+                (Some(t0), Some(t1)) => check_type(t0, t1),
+                _ => false,
+            };
+            typ && a0.len() == a1.len()
+                && a0.iter().zip(a1.iter()).all(|(a0, a1)| check(a0, a1))
+        }
         (ExprKind::Any { args: a0 }, ExprKind::Any { args: a1 }) => {
             a0.len() == a1.len() && a0.iter().zip(a1.iter()).all(|(a0, a1)| check(a0, a1))
         }

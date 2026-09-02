@@ -161,7 +161,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             let typ = match typ {
                 Some(typ) => typ.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
                 None => {
-                    let typ = node.typ().clone();
+                    // A ⊥ initializer (`let res = never()`) fixes
+                    // nothing: the binding seeds a fresh cell its
+                    // writers refine (the connect-seed idiom), settled
+                    // to ⊥ in typecheck1 if nobody does.
+                    let typ =
+                        if node.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
+                            Type::empty_tvar()
+                        } else {
+                            node.typ().clone()
+                        };
                     let ptyp = pattern.infer_type_predicate(&ctx.env, &scope.lexical)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
@@ -439,6 +448,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck1(ctx))?;
+        if let Type::TVar(tv) = &self.typ
+            && self.node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
+        {
+            tv.settle_or_bottom(&ctx.env)?;
+        }
         Ok(())
     }
 

@@ -440,6 +440,15 @@ pub enum ExprKind {
         typ: Type,
     },
     Apply(ApplyExpr),
+    /// `never<T>(args…)`: a value that never arrives, typed `T` where
+    /// given and bottom otherwise; the arguments are kept live and
+    /// consumed. Syntax rather than a builtin so its type is known at
+    /// compile time — a call site's cell binds to bottom only at
+    /// static resolution, after a select has unioned its arms.
+    Never {
+        typ: Option<Type>,
+        args: Arc<[Expr]>,
+    },
     Any {
         args: Arc<[Expr]>,
     },
@@ -880,6 +889,9 @@ impl Expr {
                 }
             }
             ExprKind::TypeCast { expr, typ: _ } => expr.fold(init, f),
+            ExprKind::Never { typ: _, args } => {
+                args.iter().fold(init, |init, e| e.fold(init, f))
+            }
             ExprKind::Apply(ApplyExpr { args, function }) => {
                 let init = function.fold(init, f);
                 args.iter().fold(init, |init, (_, e)| e.fold(init, f))

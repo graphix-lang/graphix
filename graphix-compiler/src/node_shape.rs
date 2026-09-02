@@ -370,6 +370,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         }
         V::StringInterpolate(n) => kids.extend(n.args.iter()),
         V::Any(n) => kids.extend(n.n.iter()),
+        V::Never(n) => kids.extend(n.n.iter()),
         // Accessors.
         V::StructRef(n) => kids.push(&n.source),
         V::TupleRef(n) => kids.push(&n.source),

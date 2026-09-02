@@ -98,6 +98,7 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Do { exprs }
         | StringInterpolate { args: exprs }
         | Any { args: exprs }
+        | Never { args: exprs, .. }
         | Array { args: exprs }
         | List { args: exprs }
         | Tuple { args: exprs }
@@ -238,6 +239,9 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
             StringInterpolate { args: aslice(args.iter().map(|c| r!(c)).collect()) }
         }
         Any { args } => Any { args: aslice(args.iter().map(|c| r!(c)).collect()) },
+        Never { typ, args } => {
+            Never { typ: typ.clone(), args: aslice(args.iter().map(|c| r!(c)).collect()) }
+        }
         Array { args } => Array { args: aslice(args.iter().map(|c| r!(c)).collect()) },
         List { args } => List { args: aslice(args.iter().map(|c| r!(c)).collect()) },
         Tuple { args } => Tuple { args: aslice(args.iter().map(|c| r!(c)).collect()) },

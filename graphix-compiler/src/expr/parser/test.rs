@@ -2253,3 +2253,20 @@ fn reserved_word_as_a_name_is_named() {
     let msg = parse_program("let y = 1;\nlet z = (1 +");
     assert!(!msg.contains("reserved word"), "{msg}");
 }
+
+#[test]
+fn never_parses() {
+    // `never` is syntax: bare, typed, with arguments; it round-trips
+    // through the printer and is refused as a name.
+    for s in [
+        "never()",
+        "never<i64>()",
+        "never<[`A, `B]>()",
+        "never(a, b)",
+        "never<string>(x)",
+    ] {
+        assert_eq!(parse_one(s).unwrap().to_string(), s);
+    }
+    assert!(parse_one("let never = 1").is_err());
+    assert!(parse_one("never").is_err());
+}

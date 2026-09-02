@@ -330,19 +330,25 @@ impl Type {
             (f @ Type::Fn(_), t) | (t, f @ Type::Fn(_)) => {
                 Ok(Type::Set(Arc::from_iter([f.clone(), t.clone()])))
             }
-            (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) => {
+            (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) if union_identical(t0, t1) => {
                 // See `union_identical` — a bare `t0 == t1` here
                 // collapsed two DISTINCT unbound cells and dropped the
                 // discarded cell's future binding (item 11).
-                if union_identical(t0, t1) {
-                    Ok(t0.clone())
-                } else {
-                    Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
-                }
+                Ok(t0.clone())
             }
-            (t0 @ Type::TVar(_), t1) | (t1, t0 @ Type::TVar(_)) => {
-                Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
-            }
+            // A BOUND cell unions as its binding: a `never()` arm's
+            // call-site cell is bound to ⊥ by `contains`, and only the
+            // binding lets the ⊥ arm absorb (`['_a: _, '_b: _, string]`
+            // was a select over one string arm and two never() arms,
+            // 2026-09-02). An unbound cell stays its own member.
+            (Type::TVar(tv), t1) => match tv.read().typ.read().typ.clone() {
+                Some(b) => b.union_int(env, hist, t1),
+                None => Ok(Type::Set(Arc::from_iter([self.clone(), t1.clone()]))),
+            },
+            (t0, Type::TVar(tv)) => match tv.read().typ.read().typ.clone() {
+                Some(b) => t0.union_int(env, hist, &b),
+                None => Ok(Type::Set(Arc::from_iter([t0.clone(), t.clone()]))),
+            },
             (t @ Type::ByRef(_), u) | (u, t @ Type::ByRef(_)) => {
                 Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
             }

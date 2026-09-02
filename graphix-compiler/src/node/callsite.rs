@@ -2465,13 +2465,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
             let defaulted: AHashSet<usize> =
                 dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
-            // The call's OWN result cell joins the settle set: for a
-            // callee whose declared rtype is the LITERAL ⊥ (`never()`)
-            // the cell never appears in the ftype walk — the ⊥ unifies
-            // against it WITHOUT binding (the open-cell rule in
-            // contains) — so if no writer refined it during tc0
-            // (`let res = never(); res <- v` binds it to v's type
-            // there), it is the type of a value that never arrives.
+            // The call's OWN result cell joins the settle set: a
+            // callee whose declared rtype is the LITERAL ⊥ leaves the
+            // cell out of the ftype walk — the ⊥ unifies against it
+            // WITHOUT binding (the open-cell rule in contains) — so if
+            // nothing refined it during tc0 it is the type of a value
+            // that never arrives.
             // The defaulted-arg exemption covers it too: tc0 aliased
             // `self.rtype` with the instance rtype, so for a callee
             // like `rand(#start='a, #end='a) -> 'a` this IS the

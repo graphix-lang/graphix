@@ -864,6 +864,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     ConnectDeref(&'a node::ConnectDeref<R, E>),
     StringInterpolate(&'a node::StringInterpolate<R, E>),
     Any(&'a node::Any<R, E>),
+    Never(&'a node::Never<R, E>),
     Sample(&'a node::Sample<R, E>),
     // Producers
     Struct(&'a node::data::Struct<R, E>),

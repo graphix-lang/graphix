@@ -1,5 +1,6 @@
 use super::{
-    Any, Block, Connect, ConnectDeref, Constant, Sample, StringInterpolate, TypeCast,
+    Any, Block, Connect, ConnectDeref, Constant, Never, Sample, StringInterpolate,
+    TypeCast,
     array::{Array, ArrayRef, ArraySlice, ListLit},
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
@@ -315,6 +316,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::TypeCast { expr, typ } => {
             TypeCast::compile(ctx, flags, spec.clone(), scope, top_id, expr, typ)
+        }
+        ExprKind::Never { typ, args } => {
+            Never::compile(ctx, flags, spec.clone(), scope, top_id, typ, args)
         }
         // `type`/`trait`/`impl` are declarations like `use`/static `mod`
         // above — ⊥-typed, no value channel. aug31e ryouko: `let inner =
