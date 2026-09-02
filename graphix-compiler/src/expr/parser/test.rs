@@ -2243,8 +2243,12 @@ fn reserved_word_as_a_name_is_named() {
     let msg = parse_program("let x = 1;\nlet ok = 2");
     assert!(msg.contains("`ok` is a reserved word"), "{msg}");
     assert!(msg.contains("line: 2, column: 5"), "{msg}");
+    // a construct keyword is what a statement parser probes first, so
+    // its refusal as a name says nothing about the program
     let msg = parse_program("let x = { let mod = 1; mod }");
-    assert!(msg.contains("`mod` is a reserved word"), "{msg}");
+    assert!(!msg.contains("reserved word"), "{msg}");
+    let msg = parse_program("let f = |null| 1");
+    assert!(msg.contains("`null` is a reserved word"), "{msg}");
     // an unrelated failure carries no stale note
     let msg = parse_program("let y = 1;\nlet z = (1 +");
     assert!(!msg.contains("reserved word"), "{msg}");
