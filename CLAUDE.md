@@ -1415,9 +1415,20 @@ update, backup, the four local-CA ops), `tui::app` (both tabs under
 one pump; `Tab`/`q` global behind the tab's own keys; `q` needs
 `tui::exit`, added the same day), and `tui::services` (this host's
 activation units: list/control, create/edit through an in-TUI form
-over the whole unit file, delete). Deferred (ledger 15):
-Uninstall/Join/Add-a-Parent/Install/Restore (phase 4 ceremonies +
-phase 5 handoff). Facts from the slice: a constant-RHS connect in a
+over the whole unit file, delete), and phase 4 the same evening:
+install/join/add_parent/restore_stage+finish/uninstall ceremonies
+(the teardown's CA chooser and the parent picker in Graphix;
+`install_service` does user scope in-process), and phase E the same
+night: `tui::run_in_terminal` (the display suspends, drops its
+crossterm reader, runs a program with inherited stdio, resumes; the
+runner's stop+suspend control is one libstate entry whose suspend
+receiver is parked until a display takes it) plus
+`netidx_admin::privileged` (the become-root decision lives in a shell
+wrapper the CHILD runs, so sudo's prompt lands on the released
+terminal). Needs lab validation on a real terminal. Then: the
+release-build measurement, full lab validation, the parity review;
+the ratatui TUI is deleted only after all of that (Eric). Facts from
+the slice: a constant-RHS connect in a
 select arm fires once per selection (organic firing; sample it);
 bool literals do not pool inside payload/tuple positions (nested
 selects; ledger 14); a variant arm with a payload pattern never

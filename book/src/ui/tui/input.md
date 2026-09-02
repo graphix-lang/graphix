@@ -112,6 +112,23 @@ Fire it from the key that quits, sampled with the event:
 `Char("q") => { tui::exit(k ~ null); `Stop }
 ```
 
+## Handing the Terminal to a Program
+
+Some steps belong on the plain terminal — a `sudo` password prompt, an
+editor. `tui::run_in_terminal` suspends the display (leaving the
+alternate screen and raw mode, and releasing stdin), runs a program with
+inherited stdio, and resumes with a full repaint once it exits. The
+result is the program's exit code, or an error when no display is
+running.
+
+```graphix
+let code = tui::run_in_terminal(
+  #args: ["-c", "sudo -v"],
+  #note: "Administrator privileges are needed.",
+  kk ~ "/bin/sh"
+)?
+```
+
 ## Mouse Events
 
 Mouse events require enabling mouse support first:

@@ -152,6 +152,15 @@ val mouse: bool;
 /// the key that quits (`exit(k ~ null)`).
 val exit: fn(trigger: Any) -> null;
 
+/// Hand the terminal to `program` until it exits: the display leaves
+/// the alternate screen and raw mode, releases stdin, prints `#note`
+/// when given, runs the program with inherited stdio, and resumes with
+/// a full repaint. The result is the program's exit code. Errors when
+/// no terminal display is running (a headless harness) or the program
+/// could not be started. Fires per `program` delivery — sample it with
+/// the event that asks.
+val run_in_terminal: fn(#args: Array<string>, #note: [string, null], program: string) -> Result<i64, `TerminalError(string)>;
+
 mod text;
 mod paragraph;
 mod block;

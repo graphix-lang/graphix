@@ -26,4 +26,5 @@ let line = |
 let size: Size = never();
 let event: input_handler::Event = never();
 let mouse: bool = never();
-let exit = |trigger: Any| -> null 'tui_exit
+let exit = |trigger: Any| -> null 'tui_exit;
+let run_in_terminal = |#args: Array<string>, #note: [string, null], program: string| -> Result<i64, `TerminalError(string)> 'tui_run_in_terminal

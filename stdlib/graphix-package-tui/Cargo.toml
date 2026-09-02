@@ -43,6 +43,7 @@ smallvec = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }
+compact_str = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
