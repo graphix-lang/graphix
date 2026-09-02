@@ -2115,3 +2115,25 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::Jit
 );
+
+// Ledger 11 (graphix-admin findings, 2026-09-02): a select over an
+// optional callback `[fn(..), null]` is refused — the dead-arm check
+// reports the bind arm as never matching the function member. The
+// intended program: the arm matches and calls it.
+const SELECT_OPTIONAL_FN: &str = r#"
+{
+  let f: [fn(x: i64) -> i64, null] = |x: i64| x + 1;
+  select f {
+    null as _ => 0,
+    g => g(41)
+  }
+}
+"#;
+
+#[tokio::test]
+#[ignore = "ledger 11: the dead-arm check refuses a fn member matching itself"]
+async fn select_optional_fn_member_matches() -> Result<()> {
+    let (v, _ctx) = eval(SELECT_OPTIONAL_FN, crate::TEST_REGISTER).await?;
+    assert_eq!(v, Value::I64(42));
+    Ok(())
+}
