@@ -395,14 +395,9 @@ async fn external_datetime_region_param() -> Result<()> {
                                 matches!(&v, Value::DateTime(dt) if **dt == expected),
                                 "expected 2024-01-01T00:00:01Z, got {v:?}"
                             );
-                            // STRICT FUSION: sys::time::add is a
-                            // non-fastcall DynCall and node-walks;
-                            // flips back to `> 0` when the fastcall
-                            // growth sweep converts it
-                            // (design/strict_fusion.md).
                             assert!(
-                                graphix_compiler::fusion::emit_helpers::jit_invocations() == 0,
-                                "strict fusion: datetime DynCall must node-walk"
+                                graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
+                                "a datetime fastcall site fuses across a region param"
                             );
                             ctx.shutdown().await;
                             return Ok(());

@@ -23,6 +23,10 @@ val add_dur: fn(a: duration, b: duration) -> Result<duration, `DurationError(str
 /// Subtract two durations, saturating at zero (durations are unsigned).
 val sub_dur: fn(a: duration, b: duration) -> duration;
 
+/// The time from `earlier` to `later`, saturating at zero when `later`
+/// is not after `earlier` (durations are unsigned).
+val diff: fn(later: datetime, earlier: datetime) -> duration;
+
 /// Scale a duration by a float factor (divide by scaling with 1/x).
 /// A negative, NaN, or overflowing result is a catchable error.
 val scale: fn(d: duration, by: f64) -> Result<duration, `DurationError(string)>

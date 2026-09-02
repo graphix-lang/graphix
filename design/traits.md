@@ -277,6 +277,32 @@ everywhere. The cost v2 pays that v1 does not: selecting the impl now
 BINDS tvars, so typing depends on resolution, and resolution order
 matters. Worth it, later.
 
+**Arithmetic as traits (Eric, 2026-09-02) — a v2 item, and the reason
+v2 needs an associated Output.** The admin TUI's read-gate column
+needed `until - now`, and `datetime - datetime` is refused by design:
+arithmetic is `fn('a: Number, 'a) -> 'a` (2026-07-12) and datetime/
+duration arithmetic is `sys::time` functions (`diff` was the missing
+one). The principled endgame is what `Eq`/`Ord` already are for `==`
+and `<`: the operators dispatch statically on the left operand's type
+to a trait impl, primitives keep the native fast path, user abstract
+types get operators (`Meters + Meters`, and `Meters + Seconds`
+refused — the make-invalid-states-unrepresentable win), and datetime/
+duration become core impls so `t - now` reads as it should. What that
+needs is exactly what v1 lacks: the useful cases are HETEROGENEOUS —
+`datetime - datetime -> duration`, `datetime + duration -> datetime`,
+`duration * f64 -> duration` — so the trait is Rust's `Sub<Rhs> { type
+Output }`: a trait parameter for the right operand and an associated
+result type. A homogeneous `trait Arith { val add: fn(self, other:
+self) -> self }` covers only `duration + duration`. The typing cost is
+in inference, not dispatch: `|a, b| a + b` is today one cell
+`fn('a: Number, 'a) -> 'a`; under the trait it is a bounded quantifier
+`'a: Add` with `Output = 'a` in the homogeneous case, and the
+typechecker carries the associated type through unification — the
+"parameters are OUTPUTS of impl selection" rule above makes that
+tractable (Output is determined once the self type and Rhs are), and
+resolution order matters the same way. Build it with v2, against the
+datetime/duration family as the first real module.
+
 **Higher-kinded self (`self<'a>`) — SUPERSEDED 2026-08-24: designed as the last-parameter HOLE in `recursive_activations.md` §7; the intrinsics reason below dissolved when recursion activations became the general slot mechanism, the Option reason stands and does not matter. Original text:** The `Map` trait needs
 `self` to be a type CONSTRUCTOR — kinds in unification, decomposition
 of `Array<i64>` into `Array` applied to `i64`. Rust deliberately does

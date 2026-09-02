@@ -6,4 +6,5 @@ let add = |t: datetime, d: duration| -> datetime 'sys_time_add;
 let sub = |t: datetime, d: duration| -> datetime 'sys_time_sub;
 let add_dur = |a: duration, b: duration| -> Result<duration, `DurationError(string)> 'sys_time_add_dur;
 let sub_dur = |a: duration, b: duration| -> duration 'sys_time_sub_dur;
+let diff = |later: datetime, earlier: datetime| -> duration 'sys_time_diff;
 let scale = |d: duration, by: f64| -> Result<duration, `DurationError(string)> 'sys_time_scale

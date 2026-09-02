@@ -18,7 +18,7 @@ run!(datetime_arith00, DATETIME_ARITH00, |v: Result<&Value>| match v {
         if **dt == "2024-11-05T01:00:00Z".parse::<DateTime<Utc>>().unwrap() =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH01: &str = r#"
 {
@@ -32,7 +32,7 @@ run!(datetime_arith01, DATETIME_ARITH01, |v: Result<&Value>| match v {
         if **dt == "2024-11-04T23:00:00Z".parse::<DateTime<Utc>>().unwrap() =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH02: &str = r#"
 {
@@ -44,7 +44,7 @@ const DATETIME_ARITH02: &str = r#"
 run!(datetime_arith02, DATETIME_ARITH02, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(7200) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH03: &str = r#"
 {
@@ -56,7 +56,7 @@ const DATETIME_ARITH03: &str = r#"
 run!(datetime_arith03, DATETIME_ARITH03, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(7200) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH04: &str = r#"
 {
@@ -68,7 +68,7 @@ const DATETIME_ARITH04: &str = r#"
 run!(datetime_arith04, DATETIME_ARITH04, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(1800) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH05: &str = r#"
 {
@@ -80,7 +80,7 @@ const DATETIME_ARITH05: &str = r#"
 run!(datetime_arith05, DATETIME_ARITH05, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(1800) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH06: &str = r#"
 {
@@ -92,7 +92,7 @@ const DATETIME_ARITH06: &str = r#"
 run!(datetime_arith06, DATETIME_ARITH06, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(1800) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DATETIME_ARITH07: &str = r#"
 {
@@ -234,3 +234,28 @@ const DATETIME_ARITH18: &str = r#"
 // the operator rejects at compile time (scaling is sys::time::scale).
 run!(datetime_arith18, DATETIME_ARITH18, |v: Result<&Value>| matches!(v, Err(_));
      graphix_package_core::testing::FuseExpect::None);
+
+const DATETIME_ARITH19: &str = r#"
+{
+    let x: duration = sys::time::diff(datetime:"2024-11-05T01:00:00Z", datetime:"2024-11-05T00:00:00Z");
+    x
+}
+"#;
+
+run!(datetime_arith19, DATETIME_ARITH19, |v: Result<&Value>| match v {
+    Ok(Value::Duration(dt)) if **dt == Duration::from_secs(3600) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const DATETIME_ARITH20: &str = r#"
+{
+    let x: duration = sys::time::diff(datetime:"2024-11-05T00:00:00Z", datetime:"2024-11-05T01:00:00Z");
+    x
+}
+"#;
+
+// later before earlier saturates at zero: durations are unsigned
+run!(datetime_arith20, DATETIME_ARITH20, |v: Result<&Value>| match v {
+    Ok(Value::Duration(dt)) if **dt == Duration::ZERO => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

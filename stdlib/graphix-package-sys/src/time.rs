@@ -2,10 +2,12 @@ use anyhow::{Result, bail};
 use arcstr::literal;
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, Event, ExecCtx, FastFn, Node, Rt, Scope, TagValue, UserEvent,
     effects::EffectKind, err, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::{CachedVals, seam_tick, seam_value};
+use graphix_package_core::{
+    CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, seam_value,
+};
 use netidx::{publisher::FromValue, subscriber::Value};
 use std::{ops::SubAssign, time::Duration};
 
@@ -338,12 +340,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
 }
 
 macro_rules! time_fn {
-    ($ev:ident, $ty:ident, $name:literal, |$a:ident, $b:ident| $body:expr) => {
+    ($ev:ident, $ty:ident, $fc:ident, $name:literal, |$a:ident, $b:ident| $body:expr) => {
+        fn $fc(args: &[Value]) -> Option<Value> {
+            let $a = args[0].clone().cast_to().ok()?;
+            let $b = args[1].clone().cast_to().ok()?;
+            Some($body)
+        }
+
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
-        impl<R: Rt, E: UserEvent> graphix_package_core::EvalCached<R, E> for $ev {
+
+        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: EffectKind = EffectKind::Sync;
             const STATELESS: bool = true;
+            const FASTCALL: Option<FastFn> = Some($fc);
             const NAME: &str = $name;
 
             fn eval(
@@ -351,12 +361,11 @@ macro_rules! time_fn {
                 _ctx: &mut ExecCtx<R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
-                let $a = from.get(0)?;
-                let $b = from.get(1)?;
-                Some($body)
+                fast_eval($fc, from)
             }
         }
-        pub(crate) type $ty = graphix_package_core::CachedArgs<$ev>;
+
+        pub(crate) type $ty = CachedArgs<$ev>;
     };
 }
 
@@ -369,7 +378,7 @@ static DURATION_ERR_TAG: arcstr::ArcStr = literal!("DurationError");
 // graphix #176 C); duration + duration and scaling are CATCHABLE
 // errors on overflow / negative / NaN (function-land gets the rare-
 // stdlib-fn error discipline, where the operator logged and bottomed).
-time_fn!(TimeAddEv, TimeAdd, "sys_time_add", |t, d| {
+time_fn!(TimeAddEv, TimeAdd, fc_time_add, "sys_time_add", |t, d| {
     let t: chrono::DateTime<Utc> = t;
     let d: Duration = d;
     match chrono::Duration::from_std(d).ok().and_then(|d| t.checked_add_signed(d)) {
@@ -378,7 +387,7 @@ time_fn!(TimeAddEv, TimeAdd, "sys_time_add", |t, d| {
     }
 });
 
-time_fn!(TimeSubEv, TimeSub, "sys_time_sub", |t, d| {
+time_fn!(TimeSubEv, TimeSub, fc_time_sub, "sys_time_sub", |t, d| {
     let t: chrono::DateTime<Utc> = t;
     let d: Duration = d;
     match chrono::Duration::from_std(d).ok().and_then(|d| t.checked_sub_signed(d)) {
@@ -387,7 +396,7 @@ time_fn!(TimeSubEv, TimeSub, "sys_time_sub", |t, d| {
     }
 });
 
-time_fn!(TimeAddDurEv, TimeAddDur, "sys_time_add_dur", |a, b| {
+time_fn!(TimeAddDurEv, TimeAddDur, fc_time_add_dur, "sys_time_add_dur", |a, b| {
     let a: Duration = a;
     let b: Duration = b;
     match a.checked_add(b) {
@@ -396,13 +405,19 @@ time_fn!(TimeAddDurEv, TimeAddDur, "sys_time_add_dur", |a, b| {
     }
 });
 
-time_fn!(TimeSubDurEv, TimeSubDur, "sys_time_sub_dur", |a, b| {
+time_fn!(TimeSubDurEv, TimeSubDur, fc_time_sub_dur, "sys_time_sub_dur", |a, b| {
     let a: Duration = a;
     let b: Duration = b;
     Value::Duration(a.saturating_sub(b).into())
 });
 
-time_fn!(TimeScaleEv, TimeScale, "sys_time_scale", |d, by| {
+time_fn!(TimeDiffEv, TimeDiff, fc_time_diff, "sys_time_diff", |later, earlier| {
+    let later: chrono::DateTime<Utc> = later;
+    let earlier: chrono::DateTime<Utc> = earlier;
+    Value::Duration((later - earlier).to_std().unwrap_or(Duration::ZERO).into())
+});
+
+time_fn!(TimeScaleEv, TimeScale, fc_time_scale, "sys_time_scale", |d, by| {
     let d: Duration = d;
     let by: f64 = by;
     match Duration::try_from_secs_f64(d.as_secs_f64() * by) {

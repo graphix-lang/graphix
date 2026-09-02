@@ -674,6 +674,7 @@ graphix_derive::defpackage! {
         time::TimeSub,
         time::TimeAddDur,
         time::TimeSubDur,
+        time::TimeDiff,
         time::TimeScale,
         dirs_mod::HomeDir,
         dirs_mod::CacheDir,
