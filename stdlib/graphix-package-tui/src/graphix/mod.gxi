@@ -152,21 +152,17 @@ val mouse: bool;
 /// the key that quits (`exit(k ~ null)`).
 val exit: fn(trigger: Any) -> null;
 
-/// The display, suspended: the terminal belongs to the program's own
-/// child until `resume`. Dropping the last reference resumes too.
-type Suspension;
-
-/// Suspend the display: leave the alternate screen and raw mode and
-/// release stdin, answering once the terminal is free. Run the program
-/// that needs it through `sys::process` with inherited stdio, wait for
-/// it, then `resume`. Errors when no terminal display is running (a
-/// headless harness). Fires per `trigger` delivery.
-val suspend: fn(trigger: Any) -> Result<Suspension, `TerminalError(string)>;
-
-/// Resume the display after a suspension: re-enter the alternate
-/// screen and raw mode with a full repaint. Fires per `s` delivery —
-/// sample it with the child's exit (`resume(status ~ s)`).
-val resume: fn(s: Suspension) -> null;
+/// The display is suspended while `suspended` is true: it leaves the
+/// alternate screen and raw mode and releases stdin, and takes them
+/// back with a full repaint when `suspended` goes false (or when the
+/// program goes away). The result is the display's actual state — true
+/// once the terminal has been released, false once it has been taken
+/// back — so sequence the program that needs the terminal on it: run
+/// it through `sys::process` with inherited stdio and clear
+/// `suspended` with its exit. One suspension at a time; asking while
+/// another site holds one, or with no terminal display running (a
+/// headless harness), is an error.
+val suspend: fn(suspended: bool) -> Result<bool, `TerminalError(string)>;
 
 mod text;
 mod paragraph;

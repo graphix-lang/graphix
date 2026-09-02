@@ -115,19 +115,23 @@ Fire it from the key that quits, sampled with the event:
 ## Handing the Terminal to a Program
 
 Some steps belong on the plain terminal — a `sudo` password prompt, an
-editor. `tui::suspend` releases the terminal (leaving the alternate
-screen and raw mode, and dropping the display's input reader) and
-answers with a suspension; run the program through `sys::process` with
-inherited stdio, wait for it, and `tui::resume` the display with the
-child's exit. Dropping the suspension resumes too.
+editor. `tui::suspend` takes a level: while its input is true the
+display has released the terminal (leaving the alternate screen and
+raw mode, and dropping its input reader), and when the input goes
+false the display takes it back with a full repaint. Its result is the
+display's actual state, so start the program on the release and clear
+the level with the program's exit:
 
 ```graphix
+let suspended = false;
 {
-  catch(e) println("could not run: [e]");
-  let s = tui::suspend(kk)?;
-  let child = sys::process::spawn(sys::process::options(#args: ["-v"], s ~ "sudo"))?;
+  catch(e) { println("could not run: [e]"); suspended <- e ~ false };
+  suspended <- kk ~ true;
+  let released = tui::suspend(suspended)?;
+  let go = select released { true => released, false => never() };
+  let child = sys::process::spawn(sys::process::options(#args: ["-v"], go ~ "sudo"))?;
   let status = sys::process::wait(child.proc)?;
-  tui::resume(status ~ s)
+  suspended <- status ~ false
 }
 ```
 

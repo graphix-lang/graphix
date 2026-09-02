@@ -30,9 +30,7 @@ use graphix_compiler::{
     typ::{Type, TypeRef},
 };
 use graphix_package::CustomDisplay;
-use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_tick,
-};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, seam_tick};
 use graphix_rt::{CompExp, GXExt, GXHandle, TRef};
 use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
@@ -436,48 +434,11 @@ enum ToTui {
 }
 
 /// A request to suspend the display: it leaves the alternate screen and
-/// raw mode and releases stdin, then answers with the suspension the
-/// program holds while the terminal is its child's.
+/// raw mode and releases stdin, then answers with the resume signal the
+/// requesting site holds while the terminal is its child's.
 struct Suspend {
-    ack: oneshot::Sender<Result<Value>>,
+    ack: oneshot::Sender<Result<oneshot::Sender<()>>>,
 }
-
-/// The signal the runner waits for while suspended. `tui::resume` sends
-/// it; so does dropping the last reference to the suspension, so a
-/// program that loses its child still gets its display back.
-struct SuspensionInner {
-    resume: Mutex<Option<oneshot::Sender<()>>>,
-}
-
-impl SuspensionInner {
-    fn resume(&self) {
-        if let Some(tx) = self.resume.lock().take() {
-            let _ = tx.send(());
-        }
-    }
-}
-
-impl Drop for SuspensionInner {
-    fn drop(&mut self) {
-        self.resume()
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct SuspensionValue {
-    inner: std::sync::Arc<SuspensionInner>,
-}
-
-impl fmt::Debug for SuspensionValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Suspension({:p})", std::sync::Arc::as_ptr(&self.inner))
-    }
-}
-
-graphix_package_core::impl_abstract_arc!(
-    SuspensionValue,
-    static SUSPENSION_WRAPPER = "tui::Suspension"
-);
 
 /// What a program can ask of the running display, shared through
 /// libstate: the stop signal Ctrl-C fires (`tui::exit`), and the
@@ -515,14 +476,24 @@ fn fire_stop(stop: &Mutex<Option<oneshot::Sender<()>>>) {
     }
 }
 
-/// `tui::suspend`: release the terminal to the program's own child.
+/// `tui::suspend`: the display is suspended while the input is true.
+/// The site holds the resume signal between the rising edge and the
+/// falling one — or its own drop, so a program that goes away mid-child
+/// still hands the display back.
 #[derive(Debug, Default)]
 struct SuspendEv {
     control: Option<TuiControl>,
+    held: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl Drop for SuspendEv {
+    fn drop(&mut self) {
+        fire_stop(&self.held)
+    }
 }
 
 impl EvalCachedAsync for SuspendEv {
-    type Args = TuiControl;
+    type Args = (TuiControl, Arc<Mutex<Option<oneshot::Sender<()>>>>, bool);
 
     const NAME: &str = "tui_suspend";
 
@@ -534,16 +505,28 @@ impl EvalCachedAsync for SuspendEv {
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        Self { control: Some(ctx.libstate.get_or_default::<TuiControl>().clone()) }
+        Self {
+            control: Some(ctx.libstate.get_or_default::<TuiControl>().clone()),
+            held: Arc::new(Mutex::new(None)),
+        }
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        cached.0.first()?.as_ref()?;
-        self.control.clone()
+        let suspended = cached.get::<bool>(0)?;
+        Some((self.control.clone()?, self.held.clone(), suspended))
     }
 
-    fn eval(control: Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval(
+        (control, held, suspended): Self::Args,
+    ) -> impl Future<Output = Value> + Send {
         async move {
+            if !suspended {
+                fire_stop(&held);
+                return Value::Bool(false);
+            }
+            if held.lock().is_some() {
+                return Value::Bool(true);
+            }
             if control.0.suspend_rx.lock().is_some() {
                 return errf!("TerminalError", "no terminal display is running");
             }
@@ -552,7 +535,10 @@ impl EvalCachedAsync for SuspendEv {
                 return errf!("TerminalError", "the terminal display has ended");
             }
             match done.await {
-                Ok(Ok(v)) => v,
+                Ok(Ok(resume)) => {
+                    *held.lock() = Some(resume);
+                    Value::Bool(true)
+                }
                 Ok(Err(e)) => errf!("TerminalError", "{e:#}"),
                 Err(_) => {
                     errf!("TerminalError", "the terminal display ended before suspending")
@@ -563,25 +549,6 @@ impl EvalCachedAsync for SuspendEv {
 }
 
 type SuspendB = CachedArgsAsync<SuspendEv>;
-
-/// `tui::resume`: the display takes the terminal back.
-#[derive(Debug, Default)]
-struct ResumeEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ResumeEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "tui_resume";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        match from.0.first()?.as_ref()? {
-            Value::Abstract(a) => a.downcast_ref::<SuspensionValue>()?.inner.resume(),
-            _ => return None,
-        }
-        Some(Value::Null)
-    }
-}
-
-type Resume = CachedArgs<ResumeEv>;
 
 #[derive(Debug)]
 struct Exit;
@@ -774,12 +741,7 @@ async fn run<X: GXExt>(
                     ratatui::restore();
                     let (resume_tx, resume_rx) = oneshot::channel();
                     suspended = Some(resume_rx);
-                    let v = SuspensionValue {
-                        inner: std::sync::Arc::new(SuspensionInner {
-                            resume: Mutex::new(Some(resume_tx)),
-                        }),
-                    };
-                    let _ = ack.send(Ok(SUSPENSION_WRAPPER.wrap(v)));
+                    let _ = ack.send(Ok(resume_tx));
                 }
             },
             _ = async {
@@ -858,7 +820,7 @@ impl<X: GXExt> CustomDisplay<X> for Tui<X> {
 }
 
 graphix_derive::defpackage! {
-    builtins => [Exit, SuspendB, Resume],
+    builtins => [Exit, SuspendB],
     is_custom => |gx, env, e| {
         if let Some(typ) = e.typ.with_deref(|t| t.cloned())
             && !typ.all_bottom()

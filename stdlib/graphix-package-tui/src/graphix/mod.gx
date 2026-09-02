@@ -27,5 +27,4 @@ let size: Size = never();
 let event: input_handler::Event = never();
 let mouse: bool = never();
 let exit = |trigger: Any| -> null 'tui_exit;
-let suspend = |trigger: Any| -> Result<Suspension, `TerminalError(string)> 'tui_suspend;
-let resume = |s: Suspension| -> null 'tui_resume
+let suspend = |suspended: bool| -> Result<bool, `TerminalError(string)> 'tui_suspend

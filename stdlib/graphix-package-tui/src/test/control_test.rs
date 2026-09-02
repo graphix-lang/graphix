@@ -1,9 +1,9 @@
 //! The display control a program reaches through libstate: with no
 //! terminal display running — every harness is headless — a suspend
 //! request has no taker. The runner parks the receiver in the control
-//! until a display claims it, so the call answers with an error at
-//! once instead of parking the program on an acknowledgement that can
-//! never come.
+//! until a display claims it, so a rising edge answers with an error
+//! at once instead of parking the program on an acknowledgement that
+//! can never come; the level's false side asks nothing of a display.
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
@@ -14,10 +14,14 @@ async fn suspend_without_a_display_is_an_error() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
         r#"
 use tui::paragraph::{self, *};
+let idle = tui::suspend(false);
 let s = tui::suspend(true);
-let status = select is_err(s) {
-  true => "error: [s]",
-  false => "suspended"
+let status = select is_err(idle) {
+  true => "idle errored: [idle]",
+  false => select is_err(s) {
+    true => "error: [s]",
+    false => "suspended"
+  }
 };
 let result = paragraph(&status)
 "#,
