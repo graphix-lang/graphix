@@ -1383,10 +1383,12 @@ bad diagnostic or missing capability means stop, log a finding, fix it
 here (or consciously accept it), then continue — never move decision or
 presentation logic into the package's Rust layer because Graphix was
 painful. Measure `--check` time at every size milestone. State: Phase D
-in progress — the remote tab's connect screen, panel menu, seven panels
-(queue, delegations, roster, servers with read gates, certs, services,
-perms), and the change-password route are done (netidx `268b6f7f`,
-2026-09-02); next the admin-domains landing screen, the roster's
-add-admin/policy editor, then the Local tab. Open prerequisites: terminal
+in progress — the remote tab is complete: the admin-domains landing
+screen (bookmarks, re-verified), connect by address, the panel menu,
+seven panels (queue, delegations, roster with add-admin and a policy
+editor, servers with read gates, certs, services, perms) and the
+change-password route (netidx, 2026-09-02); next the Local tab. The
+open-items ledger is the top section of
+`../netidx/design/graphix-admin-findings.md`. Open prerequisites: terminal
 suspend/resume for `sudo`/`$EDITOR` handoff (phase E); reserved-word
 parse diagnostics at package scale.
