@@ -37,6 +37,7 @@ pub(crate) mod map;
 pub(crate) mod module;
 pub(crate) mod op;
 pub(crate) mod pattern;
+pub mod place;
 pub(crate) mod select;
 pub mod traits;
 
@@ -1377,12 +1378,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     }
 }
 
+/// Where a write through a reference lands: a bound variable, or a
+/// place inside one (`design/place_references.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum WriteTarget {
+    Bind(BindId),
+    Place(BindId, place::Path),
+}
+
 #[derive(Debug)]
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub(super) rhs: Node<R, E>,
     pub(super) src_id: BindId,
-    pub(super) target_id: Option<BindId>,
+    pub(super) target: Option<WriteTarget>,
     pub(super) top_id: ExprId,
 }
 
@@ -1397,7 +1406,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         top_id: ExprId,
         spec: Expr,
     ) -> Node<R, E> {
-        Node::new(Self { spec, rhs, src_id, target_id: None, top_id })
+        Node::new(Self { spec, rhs, src_id, target: None, top_id })
     }
 
     pub(crate) fn compile(
@@ -1430,7 +1439,22 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         }
         ctx.rt.ref_var(src_id, top_id);
         let rhs = compile(ctx, flags, value.clone(), scope, top_id)?;
-        Ok(Node::new(Self { spec, rhs, src_id, target_id: None, top_id }))
+        Ok(Node::new(Self { spec, rhs, src_id, target: None, top_id }))
+    }
+
+    /// Resolve a reference value (the cell a `&` minted) to where a
+    /// write lands: a place, when the cell stands for one, else the
+    /// referent through the byref chain. A chainless plain reference
+    /// (`&(a + b)`) has nowhere to write.
+    fn resolve(ctx: &ExecCtx<R, E>, tv: &TagValue) -> Option<WriteTarget> {
+        let cell = tv.with_value(|v| match v {
+            Value::U64(id) => Some(BindId::from(*id)),
+            _ => None,
+        })?;
+        if let Some((root, path)) = ctx.rt.ref_path(&cell) {
+            return Some(WriteTarget::Place(*root, path.clone()));
+        }
+        ctx.env.byref_chain.get(&cell).map(|id| WriteTarget::Bind(*id))
     }
 }
 
@@ -1447,20 +1471,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
         let mut up = rhs_fired;
-        let as_bind = |tv: &TagValue| {
-            tv.with_value(|v| match v {
-                Value::U64(id) => Some(BindId::from(*id)),
-                _ => None,
-            })
-        };
         if let Some(tv) = event.variables.get(&self.src_id) {
-            if let Some(id) = as_bind(tv) {
-                if let Some(target_id) = ctx.env.byref_chain.get(&id) {
-                    self.target_id = Some(*target_id);
+            if let Some(t) = Self::resolve(ctx, tv) {
+                if self.target.as_ref() != Some(&t) {
+                    self.target = Some(t);
                     up = true;
                 }
             }
-        } else if self.target_id.is_none() {
+        } else if self.target.is_none() {
             // A lazily-created instance (a runtime callable's first
             // dispatch) inits on a cycle AFTER the reference value was
             // delivered — the standing store is the only place it
@@ -1471,17 +1489,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 let tv = match read {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
                 };
-                if let Some(id) = as_bind(tv) {
-                    if let Some(target_id) = ctx.env.byref_chain.get(&id) {
-                        self.target_id = Some(*target_id);
-                        up = true;
-                    }
+                if let Some(t) = Self::resolve(ctx, tv) {
+                    self.target = Some(t);
+                    up = true;
                 }
             }
         }
         if up {
-            if let (Some(v), Some(id)) = (rhs_val, self.target_id) {
-                ctx.rt.set_var(id, v);
+            match (rhs_val, &self.target) {
+                (Some(v), Some(WriteTarget::Bind(id))) => ctx.rt.set_var(*id, v),
+                (Some(v), Some(WriteTarget::Place(root, path))) => {
+                    ctx.rt.patch_var(*root, path.clone(), v)
+                }
+                _ => (),
             }
         }
         TagValue::phantom_ref()

@@ -1278,6 +1278,20 @@ pub trait Rt: Debug + Any {
     /// progress. set_var must be queued until the cycle ends and then
     /// presented as a new batch.
     fn set_var(&mut self, id: BindId, value: Value);
+    /// Queue a write THROUGH A PATH into a bound variable
+    /// (design/place_references.md): at delivery the variable's value
+    /// as it then stands is rebuilt along `path` with `value` at the
+    /// end. Queued and deferred exactly like `set_var` — same variable,
+    /// same cycle waits a cycle — which is what makes two patches to
+    /// one root land in order on each other's result.
+    fn patch_var(&mut self, id: BindId, path: node::place::Path, value: Value);
+    /// Register the place a reference cell stands for: `&root[i].f`
+    /// mints a cell like any `&`, and this is how `*r` reads through
+    /// the root and `*r <- v` patches it. Re-registered whenever the
+    /// path's keys move; cleared when the reference is deleted.
+    fn set_ref_path(&mut self, cell: BindId, root: BindId, path: node::place::Path);
+    fn ref_path(&self, cell: &BindId) -> Option<&(BindId, node::place::Path)>;
+    fn clear_ref_path(&mut self, cell: &BindId);
 
     /// The persistent tagged store (design/dense_delivery.md R3): the
     /// (production, cycle-stamp) of every bound variable's last

@@ -1,7 +1,11 @@
 use crate::GXExt;
 use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
-use graphix_compiler::{BindId, CustomBuiltinType, Rt, TagValue, expr::ExprId};
+use graphix_compiler::{
+    BindId, CustomBuiltinType, Rt, TagValue,
+    expr::ExprId,
+    node::place::{Path, VarUpdate},
+};
 use netidx_value::Value;
 use nohash::IntMap;
 use poolshark::global::GPooled;
@@ -38,7 +42,9 @@ pub struct GXRt<X: GXExt> {
     /// Also the trace recorder's cycle number (one clock).
     pub(super) cycle: u64,
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
-    pub(super) var_updates: VecDeque<(BindId, Value)>,
+    pub(super) var_updates: VecDeque<(BindId, VarUpdate)>,
+    /// The place each place-reference cell stands for (`Rt::set_ref_path`).
+    pub(super) ref_paths: IntMap<BindId, (BindId, Path)>,
     pub(super) custom_updates: VecDeque<(BindId, Box<dyn CustomBuiltinType>)>,
     pub(super) tasks: JoinSet<(BindId, Value)>,
     pub(super) custom_tasks: JoinSet<(BindId, Box<dyn CustomBuiltinType>)>,
@@ -75,6 +81,7 @@ impl<X: GXExt> GXRt<X> {
             cycle: 0,
             by_ref: IntMap::default(),
             var_updates: VecDeque::new(),
+            ref_paths: IntMap::default(),
             custom_updates: VecDeque::new(),
             updated: IntMap::default(),
             ext: X::default(),
@@ -124,6 +131,7 @@ impl<X: GXExt> Rt for GXRt<X> {
             cycle,
             by_ref,
             var_updates,
+            ref_paths,
             custom_updates,
             tasks,
             custom_tasks,
@@ -140,6 +148,7 @@ impl<X: GXExt> Rt for GXRt<X> {
         *cycle = 0;
         by_ref.clear();
         var_updates.clear();
+        ref_paths.clear();
         custom_updates.clear();
         *tasks = JoinSet::new();
         tasks.spawn(async { future::pending().await });
@@ -190,7 +199,26 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("SET_VAR {id:?} = {value}");
         }
-        self.var_updates.push_back((id, value.clone()));
+        self.var_updates.push_back((id, VarUpdate::Set(value)));
+    }
+
+    fn patch_var(&mut self, id: BindId, path: Path, value: Value) {
+        if dbg_vars() {
+            eprintln!("PATCH_VAR {id:?} {path:?} = {value}");
+        }
+        self.var_updates.push_back((id, VarUpdate::Patch(path, value)));
+    }
+
+    fn set_ref_path(&mut self, cell: BindId, root: BindId, path: Path) {
+        self.ref_paths.insert(cell, (root, path));
+    }
+
+    fn ref_path(&self, cell: &BindId) -> Option<&(BindId, Path)> {
+        self.ref_paths.get(cell)
+    }
+
+    fn clear_ref_path(&mut self, cell: &BindId) {
+        self.ref_paths.remove(cell);
     }
 
     fn notify_set(&mut self, id: BindId) {

@@ -29,17 +29,7 @@ let form = |
         kk@ `Esc => { on_cancel(kk); `Stop },
         _ => {
           let i = k ~ focus;
-          let cur = k ~ vals;
-          select line_edit::step(cur[i]$, e) {
-            null as _ => `Continue,
-            next => {
-              vals <- array::map(array::enumerate(cur), |(j, st): (i64, line_edit::State)| select j == i {
-                true => next,
-                false => st
-              });
-              `Stop
-            }
-          }
+          line_edit::handle(&vals[i], e)
         }
       },
       _ => `Continue

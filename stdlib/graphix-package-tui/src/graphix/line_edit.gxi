@@ -10,8 +10,8 @@ val state: fn(initial: string) -> State;
 /// event — printable characters insert at the cursor; Backspace and
 /// Delete remove; Left, Right, Home, and End move — or null for an
 /// event the editor does not consume. `handle` is this applied
-/// through a reference; use `step` directly for editors held in a
-/// collection, where no reference to one element exists.
+/// through a reference (a place reference such as `&editors[i]`
+/// reaches an editor held in a collection).
 val step: fn(st: State, e: input_handler::Event) -> [State, null];
 
 /// Apply one terminal key event to the editor: printable characters

@@ -8,6 +8,7 @@ use graphix_compiler::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, Source, parse_modpath, read_to_arcstr,
     },
+    node::place::{self, VarUpdate},
     node::{genn, lambda::LambdaDef},
     typ::Type,
 };
@@ -318,24 +319,48 @@ impl<X: GXExt> GX<X> {
         // not move, or a variable set N times in one cycle would show
         // its final value while the deliveries still had cycles to
         // run).
+        // A patch resolves against the store AT DELIVERY — the value
+        // as it stands after every earlier delivery — so patches to
+        // one root land in order on each other's result
+        // (design/place_references.md).
         macro_rules! push_var_event {
-            ($id:expr, $v:expr) => {
+            ($id:expr, $u:expr) => {
                 match self.event.variables.entry($id) {
                     Entry::Vacant(e) => {
-                        self.ctx.rt.store_insert(
-                            $id,
-                            graphix_compiler::TagValue::fired($v.clone()),
-                        );
-                        // an ordinary runtime delivery is a FIRED event
-                        e.insert(graphix_compiler::TagValue::fired($v));
-                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
-                            for id in exps.keys() {
-                                self.ctx.rt.updated.entry(*id).or_insert(false);
+                        let v = match $u {
+                            VarUpdate::Set(v) => Some(v),
+                            VarUpdate::Patch(path, v) => {
+                                match self.ctx.rt.store_value(&$id) {
+                                    Some(cur) => match place::write_path(&cur, &path, v) {
+                                        Ok(nv) => Some(nv),
+                                        Err(err) => {
+                                            error!("write through a reference into {:?}: {err}", $id);
+                                            None
+                                        }
+                                    },
+                                    None => {
+                                        error!("write through a reference into {:?}: no value to update", $id);
+                                        None
+                                    }
+                                }
+                            }
+                        };
+                        if let Some(v) = v {
+                            self.ctx.rt.store_insert(
+                                $id,
+                                graphix_compiler::TagValue::fired(v.clone()),
+                            );
+                            // an ordinary runtime delivery is a FIRED event
+                            e.insert(graphix_compiler::TagValue::fired(v));
+                            if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
+                                for id in exps.keys() {
+                                    self.ctx.rt.updated.entry(*id).or_insert(false);
+                                }
                             }
                         }
                     }
                     Entry::Occupied(_) => {
-                        self.ctx.rt.var_updates.push_back(($id, $v));
+                        self.ctx.rt.var_updates.push_back(($id, $u));
                     }
                 }
             };
@@ -345,7 +370,7 @@ impl<X: GXExt> GX<X> {
             push_var_event!(id, v)
         }
         for (id, v) in tasks.drain(..) {
-            push_var_event!(id, v)
+            push_var_event!(id, VarUpdate::Set(v))
         }
         for _ in 0..self.ctx.rt.custom_updates.len() {
             let (id, u) = self.ctx.rt.custom_updates.pop_front().unwrap();

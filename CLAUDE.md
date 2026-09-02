@@ -1165,6 +1165,26 @@ the rules.
 
 ## Language features (current)
 
+- **Place references** (`design/place_references.md`, 2026-09-02,
+  Eric: "not having this changed the way you wrote an API in tui;
+  that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
+  and chains over a variable (or a `*r`) are PLACES — the root
+  binding plus a path — typed as a reference to the ELEMENT (the
+  access's type minus its error, as `$` types). `*r` reads the root
+  through the path; `*r <- v` PATCHES the root: the write is queued as
+  (path, value) and resolved against the root's value AT DELIVERY
+  (`push_var_event!`), so two patches to one root in one cycle land
+  in order on each other's result, never on a stale whole. A dynamic
+  key (`&vals[focus]`) is a moving reference: it re-fires its readers
+  when the key moves and writes where it points. A missing place
+  bottoms a read (warned) and drops a write (logged). Plain `&x` is
+  unchanged (cell + byref chain, `Value::U64(cell)` on the wire; a
+  place cell still mirrors the element so embedders keep reading it);
+  `Rt::{patch_var, set_ref_path, ref_path, clear_ref_path}`,
+  `node::place::{Step, Path, VarUpdate, read_path, write_path}`.
+  References still de-fuse. The admin TUI's `tui::form` edits its
+  focused editor through `line_edit::handle(&vals[i], e)`. Pins:
+  `lang/byref.rs` `place_*`.
 - **Native List, phase A** (`design/list_native.md`, 2026-08-31):
   `List<'a>` is a compiler-known constructor like `Array` —
   `Type::List`, reserved type name (in RESERVED beside `Array`/`Map`

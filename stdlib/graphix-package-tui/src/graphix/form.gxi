@@ -18,8 +18,9 @@ type Form = {
 /// `#on_cancel` with the key; other keys edit the focused field.
 /// `#help` renders above the fields; `#hint` is the bottom title
 /// (defaults to the key legend). A new `fields` delivery re-seeds the
-/// editors. Render `view` inside an `input_handler(#handle:
-/// &form.handle, …)` on an overlay layer.
+/// editors. The focused editor is edited through a place reference,
+/// `line_edit::handle(&vals[i], e)`. Render `view` inside an
+/// `input_handler(#handle: &form.handle, …)` on an overlay layer.
 val form: fn(
   #title: string,
   ?#help: [string, null],
