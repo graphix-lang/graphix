@@ -2,7 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use async_trait::async_trait;
 use barchart::BarChartW;
@@ -30,7 +30,9 @@ use graphix_compiler::{
     typ::{Type, TypeRef},
 };
 use graphix_package::CustomDisplay;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, seam_tick};
+use graphix_package_core::{
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_tick,
+};
 use graphix_rt::{CompExp, GXExt, GXHandle, TRef};
 use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
@@ -433,21 +435,54 @@ enum ToTui {
     Stop(oneshot::Sender<()>),
 }
 
-/// A program to run on the operator's terminal while the display is
-/// suspended: the display leaves the alternate screen and raw mode,
-/// releases stdin, runs it with inherited stdio, and resumes; the reply
-/// is the exit code.
+/// A request to suspend the display: it leaves the alternate screen and
+/// raw mode and releases stdin, then answers with the suspension the
+/// program holds while the terminal is its child's.
 struct Suspend {
-    program: String,
-    args: Vec<String>,
-    note: Option<String>,
-    reply: oneshot::Sender<Result<i32>>,
+    ack: oneshot::Sender<Result<Value>>,
 }
+
+/// The signal the runner waits for while suspended. `tui::resume` sends
+/// it; so does dropping the last reference to the suspension, so a
+/// program that loses its child still gets its display back.
+struct SuspensionInner {
+    resume: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl SuspensionInner {
+    fn resume(&self) {
+        if let Some(tx) = self.resume.lock().take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl Drop for SuspensionInner {
+    fn drop(&mut self) {
+        self.resume()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SuspensionValue {
+    inner: std::sync::Arc<SuspensionInner>,
+}
+
+impl fmt::Debug for SuspensionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Suspension({:p})", std::sync::Arc::as_ptr(&self.inner))
+    }
+}
+
+graphix_package_core::impl_abstract_arc!(
+    SuspensionValue,
+    static SUSPENSION_WRAPPER = "tui::Suspension"
+);
 
 /// What a program can ask of the running display, shared through
 /// libstate: the stop signal Ctrl-C fires (`tui::exit`), and the
-/// suspend channel (`tui::run_in_terminal`). The receiver is parked here
-/// until a display takes it, and handed back when that display ends.
+/// suspend channel (`tui::suspend`). The receiver is parked here until
+/// a display takes it, and handed back when that display ends.
 struct TuiControlInner {
     stop: Mutex<Option<oneshot::Sender<()>>>,
     suspend_tx: mpsc::UnboundedSender<Suspend>,
@@ -480,17 +515,16 @@ fn fire_stop(stop: &Mutex<Option<oneshot::Sender<()>>>) {
     }
 }
 
-/// `tui::run_in_terminal`: hand the terminal to a program until it
-/// exits.
+/// `tui::suspend`: release the terminal to the program's own child.
 #[derive(Debug, Default)]
-struct RunInTerminalEv {
+struct SuspendEv {
     control: Option<TuiControl>,
 }
 
-impl EvalCachedAsync for RunInTerminalEv {
-    type Args = (TuiControl, Vec<String>, Option<String>, String);
+impl EvalCachedAsync for SuspendEv {
+    type Args = TuiControl;
 
-    const NAME: &str = "tui_run_in_terminal";
+    const NAME: &str = "tui_suspend";
 
     fn init<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
@@ -504,43 +538,50 @@ impl EvalCachedAsync for RunInTerminalEv {
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let args = cached.get::<Vec<String>>(0)?;
-        let note = match cached.0.get(1)?.as_ref()? {
-            Value::Null => None,
-            Value::String(s) => Some(s.to_string()),
-            _ => return None,
-        };
-        let program = cached.get::<String>(2)?;
-        Some((self.control.clone()?, args, note, program))
+        cached.0.first()?.as_ref()?;
+        self.control.clone()
     }
 
-    fn eval(
-        (control, args, note, program): Self::Args,
-    ) -> impl Future<Output = Value> + Send {
+    fn eval(control: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             if control.0.suspend_rx.lock().is_some() {
                 return errf!("TerminalError", "no terminal display is running");
             }
-            let (reply, done) = oneshot::channel();
-            let sent = control.0.suspend_tx.unbounded_send(Suspend {
-                program,
-                args,
-                note,
-                reply,
-            });
-            if sent.is_err() {
+            let (ack, done) = oneshot::channel();
+            if control.0.suspend_tx.unbounded_send(Suspend { ack }).is_err() {
                 return errf!("TerminalError", "the terminal display has ended");
             }
             match done.await {
-                Ok(Ok(code)) => Value::from(code as i64),
+                Ok(Ok(v)) => v,
                 Ok(Err(e)) => errf!("TerminalError", "{e:#}"),
-                Err(_) => errf!("TerminalError", "the terminal display ended mid-run"),
+                Err(_) => {
+                    errf!("TerminalError", "the terminal display ended before suspending")
+                }
             }
         }
     }
 }
 
-type RunInTerminal = CachedArgsAsync<RunInTerminalEv>;
+type SuspendB = CachedArgsAsync<SuspendEv>;
+
+/// `tui::resume`: the display takes the terminal back.
+#[derive(Debug, Default)]
+struct ResumeEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for ResumeEv {
+    const EFFECT: Effect = Effect::Stateless(None);
+    const NAME: &str = "tui_resume";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        match from.0.first()?.as_ref()? {
+            Value::Abstract(a) => a.downcast_ref::<SuspensionValue>()?.inner.resume(),
+            _ => return None,
+        }
+        Some(Value::Null)
+    }
+}
+
+type Resume = CachedArgs<ResumeEv>;
 
 #[derive(Debug)]
 struct Exit;
@@ -679,6 +720,9 @@ async fn run<X: GXExt>(
         None => mpsc::unbounded().1,
     };
     let mut terminal = ratatui::init();
+    // the display's suspension: no draws while it holds one; the
+    // resume signal is a select branch
+    let mut suspended: Option<oneshot::Receiver<()>> = None;
     let size = get_id(&env, &["tui", "size"].into())?;
     let event = get_id(&env, &["tui", "event"].into())?;
     let mut mouse: TRef<X, bool> =
@@ -692,11 +736,13 @@ async fn run<X: GXExt>(
     let mut events: Option<Fuse<EventStream>> = Some(EventStream::new().fuse());
     let mut root: TuiW = Box::new(EmptyW);
     let notify = loop {
-        terminal.draw(|f| {
-            if let Err(e) = root.draw(f, f.area()) {
-                error!("error drawing {e:?}")
-            }
-        })?;
+        if suspended.is_none() {
+            terminal.draw(|f| {
+                if let Err(e) = root.draw(f, f.area()) {
+                    error!("error drawing {e:?}")
+                }
+            })?;
+        }
         select! {
             m = to_rx.next() => match m {
                 None => break oneshot::channel().0,
@@ -717,28 +763,42 @@ async fn run<X: GXExt>(
                     }
                 },
             },
-            s = suspend_rx.next() => if let Some(Suspend { program, args, note, reply }) = s {
-                drop(events.take());
-                ratatui::restore();
-                if let Some(note) = note {
-                    println!("\n{note}");
+            s = suspend_rx.next() => if let Some(Suspend { ack }) = s {
+                if suspended.is_some() {
+                    let _ = ack.send(Err(anyhow!("the display is already suspended")));
+                } else {
+                    drop(events.take());
+                    if let Some(true) = mouse.t {
+                        set_mouse(false)
+                    }
+                    ratatui::restore();
+                    let (resume_tx, resume_rx) = oneshot::channel();
+                    suspended = Some(resume_rx);
+                    let v = SuspensionValue {
+                        inner: std::sync::Arc::new(SuspensionInner {
+                            resume: Mutex::new(Some(resume_tx)),
+                        }),
+                    };
+                    let _ = ack.send(Ok(SUSPENSION_WRAPPER.wrap(v)));
                 }
-                let what = program.clone();
-                let ran = task::spawn_blocking(move || {
-                    std::process::Command::new(&program)
-                        .args(&args)
-                        .status()
-                        .with_context(|| format!("running {program}"))
-                        .map(|s| s.code().unwrap_or(-1))
-                })
-                .await
-                .unwrap_or_else(|e| Err(anyhow!("running {what}: {e}")));
+            },
+            _ = async {
+                match suspended.as_mut() {
+                    Some(rx) => {
+                        let _ = rx.await;
+                    }
+                    None => futures::future::pending().await,
+                }
+            } => {
+                suspended = None;
                 terminal = ratatui::init();
                 if let Ok(size) = terminal.size() {
                     let _ = terminal.resize(size.into());
                 }
+                if let Some(true) = mouse.t {
+                    set_mouse(true)
+                }
                 events = Some(EventStream::new().fuse());
-                let _ = reply.send(ran);
             },
             e = async {
                 match events.as_mut() {
@@ -767,10 +827,12 @@ async fn run<X: GXExt>(
             }
         }
     };
-    if let Some(true) = mouse.t {
-        set_mouse(false)
+    if suspended.is_none() {
+        if let Some(true) = mouse.t {
+            set_mouse(false)
+        }
+        ratatui::restore();
     }
-    ratatui::restore();
     *control.0.suspend_rx.lock() = Some(suspend_rx);
     let _ = notify.send(());
     Ok(())
@@ -796,7 +858,7 @@ impl<X: GXExt> CustomDisplay<X> for Tui<X> {
 }
 
 graphix_derive::defpackage! {
-    builtins => [Exit, RunInTerminal],
+    builtins => [Exit, SuspendB, Resume],
     is_custom => |gx, env, e| {
         if let Some(typ) = e.typ.with_deref(|t| t.cloned())
             && !typ.all_bottom()

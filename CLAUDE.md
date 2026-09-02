@@ -1419,10 +1419,13 @@ over the whole unit file, delete), and phase 4 the same evening:
 install/join/add_parent/restore_stage+finish/uninstall ceremonies
 (the teardown's CA chooser and the parent picker in Graphix;
 `install_service` does user scope in-process), and phase E the same
-night: `tui::run_in_terminal` (the display suspends, drops its
-crossterm reader, runs a program with inherited stdio, resumes; the
-runner's stop+suspend control is one libstate entry whose suspend
-receiver is parked until a display takes it) plus
+night: `tui::suspend`/`tui::resume` (the display drops its crossterm
+reader and restores the terminal; the program runs its child through
+`sys::process` with inherited stdio and resumes it with the exit;
+draws pause while the runner holds a suspension and updates keep
+applying — a runner blocked in its select arm would deadlock the
+shell loop; the runner's stop+suspend control is one libstate entry
+whose suspend receiver is parked until a display takes it) plus
 `netidx_admin::privileged` (the become-root decision lives in a shell
 wrapper the CHILD runs, so sudo's prompt lands on the released
 terminal). Needs lab validation on a real terminal. Then: the
