@@ -121,6 +121,16 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
 pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
     LazyLock::new(|| AHashSet::from_iter(["self", "super", "package"]));
 
+/// The reserved words that BEGIN a construct — what a statement or
+/// expression parser probes for first, so their refusal as a name is
+/// routine and reports nothing.
+pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
+    AHashSet::from_iter([
+        "mod", "let", "select", "type", "fn", "cast", "if", "use", "rec", "catch", "try",
+        "pub", "trait", "impl",
+    ])
+});
+
 /// The words refused in BINDING positions (`let`, params, labeled args,
 /// pattern binds, module/val names): everything reserved except the
 /// type-name keywords.
@@ -352,12 +362,19 @@ where
 {
     (position(), ident(false)).then(|(pos, s): (SourcePosition, ArcStr)| {
         if RESERVED_BINDING.contains(&s.as_str()) {
-            grow::note_reason(
-                pos,
-                compact_str::format_compact!(
-                    "`{s}` is a reserved word and cannot be used as a name"
-                ),
-            );
+            // A construct keyword (`select`, `let`, `mod`, …) is refused
+            // here whenever an alternative probes a statement's first
+            // token as a name, which is ordinary parsing, not a mistake
+            // worth a note; the words that never begin a construct are
+            // the ones a program meant as names.
+            if !CONSTRUCT_KEYWORDS.contains(&s.as_str()) {
+                grow::note_reason(
+                    pos,
+                    compact_str::format_compact!(
+                        "`{s}` is a reserved word and cannot be used as a name"
+                    ),
+                );
+            }
             unexpected_any("can't use keyword as a function or variable name").left()
         } else {
             value(s).right()

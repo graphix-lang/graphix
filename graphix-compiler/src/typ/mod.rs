@@ -1458,6 +1458,28 @@ impl Type {
         })
     }
 
+    /// True when a `Bottom` sits anywhere in the type's own structure
+    /// (parameters included; function signatures and references are
+    /// leaves) — the diagnostic test for a type predicate that spelled
+    /// `_`, which is bottom in type position, where a wildcard was
+    /// meant.
+    pub fn has_bottom(&self) -> bool {
+        crate::stack::ensure_sufficient(|| {
+            self.with_deref(|t| match t {
+                Some(Type::Bottom) => true,
+                Some(
+                    Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t),
+                ) => t.has_bottom(),
+                Some(Type::Map { key, value }) => key.has_bottom() || value.has_bottom(),
+                Some(Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts)) => {
+                    ts.iter().any(|t| t.has_bottom())
+                }
+                Some(Type::Struct(fs)) => fs.iter().any(|(_, t)| t.has_bottom()),
+                _ => false,
+            })
+        })
+    }
+
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {
         match self {
             // A constructor application whose constructor has bound IS

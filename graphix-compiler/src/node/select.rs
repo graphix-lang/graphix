@@ -1489,6 +1489,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
             if !&pat.type_predicate.could_match(&ctx.env, &atype)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
+                    if pat.explicit_type_predicate && pat.type_predicate.has_bottom() {
+                        bail!(
+                            "pattern {} will never match {}, unused match cases (`_` in a \
+                             type is bottom, the type of never(); a type test that admits \
+                             any parameter is spelled with Any, e.g. Error<Any>)",
+                            pat.type_predicate,
+                            atype
+                        )
+                    }
                     bail!(
                         "pattern {} will never match {}, unused match cases",
                         pat.type_predicate,
