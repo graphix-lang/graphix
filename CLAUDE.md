@@ -908,7 +908,12 @@ advertised performance model.
   only events it re-raises are the fires no selected reader saw,
   once, at their current value.* Three mechanisms: (1) each select
   keeps one fire bit per ARM-BODY input (free refs, refreshed at
-  deselect; guards/scrutinee/pattern binds excluded), set on sound
+  deselect; guards, the scrutinee and PATTERN BINDS excluded — this
+  select's own AND every enclosing select's: a pattern bind is a
+  facet of its arm's scrutinee delivery, which that arm's match
+  consumed, so `k` beside `ev@ \`Key(k)` is never re-raised at a
+  nested flip after the `ev` reader handled the key — 2026-09-02,
+  `Bind::pattern`, `select_sibling_binds_spent`), set on sound
   fires — even with no arm selected — and CONSUMED by whichever arm
   evaluation reads the input; an unconsumed bit delivers at wake as
   ONE catch-up FIRED at the current standing value (conflation;

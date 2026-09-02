@@ -933,6 +933,8 @@ impl<X: GXExt> GX<X> {
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone());
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
+        self.ctx.begin_runtime_node(eid);
+        graphix_compiler::check_and_fuse(&mut self.ctx, &mut n)?;
         self.event.init = true;
         n.update(&mut self.ctx, &mut self.event);
         self.event.clear();

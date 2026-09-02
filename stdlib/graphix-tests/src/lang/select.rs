@@ -2064,3 +2064,54 @@ const OR_PAYLOAD_UNEQUAL: &str = r#"
 run!(or_payload_unequal_rejected, OR_PAYLOAD_UNEQUAL, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
+
+// An enclosing select's pattern binds are facets of one delivery:
+// arm 0 handles the key through the whole-value capture `ev`, so the
+// payload bind `k` is spent too, and the flip to arm 1 must not
+// re-raise it (2026-09-02, the admin TUI's landing screen: the
+// connect form's Enter fired with no keypress).
+const SELECT_SIBLING_BINDS_SPENT: &str = r#"
+{
+  type Ev = [`Key([`Enter, `Other]), `Mouse];
+  let screen = 0;
+  let fired = 0;
+  let seen = 0;
+  let keys = |k: [`Enter, `Other]| -> null select k {
+    kk@ `Enter => { fired <- (kk ~ fired) + 1; null },
+    `Other => null
+  };
+  let landing = |e: Ev| -> null select e {
+    `Key(k) => select k {
+      kk@ `Enter => { seen <- (kk ~ seen) + 1; null },
+      `Other => null
+    },
+    `Mouse => null
+  };
+  let handle = |e: Ev| -> null select e {
+    ev@ `Key(k) => select screen {
+      0 => landing(ev),
+      _ => keys(k)
+    },
+    `Mouse => null
+  };
+  let e: Ev = never();
+  let out = handle(e);
+  let t1 = sys::time::timer(duration:0.05s, false);
+  e <- t1 ~ `Key(`Enter);
+  let t2 = sys::time::timer(duration:0.15s, false);
+  screen <- t2 ~ 1;
+  let t3 = sys::time::timer(duration:0.3s, false);
+  t3 ~ (screen, seen, fired)
+}
+"#;
+
+run!(
+    select_sibling_binds_spent,
+    SELECT_SIBLING_BINDS_SPENT,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) =>
+            a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
+        _ => false,
+    };
+    graphix_package_core::testing::FuseExpect::Jit
+);

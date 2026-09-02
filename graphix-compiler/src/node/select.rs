@@ -139,6 +139,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     spec.ori.clone(),
                 )
                 .with_context(|| format!("in select at {}", spec.pos))?;
+                pat.structure_predicate.ids(&mut |id| ctx.env.mark_pattern_bind(id));
                 let n = compile(ctx, flags, spec.clone(), &scope, top_id)?;
                 Ok((pat, n))
             })
@@ -238,12 +239,16 @@ fn deselect_sleep<R: Rt, E: UserEvent>(arm: &mut Node<R, E>, ctx: &mut ExecCtx<R
 /// the degenerate case) — so a woken arm receives, as genuine FIRED
 /// deliveries conflated to the current standing value, exactly the
 /// fires no selected reader saw, once, and everything else
-/// present-but-stale. Guards, the scrutinee, and the select's own
-/// pattern binds are OUTSIDE the mechanism (they have their own
-/// consult/wake rules). Semantic state: survives sleep and
-/// `reset_replay`, cleared only by consumption. Frames are excluded
-/// entirely (framed passes run against private variable maps — loop
-/// plumbing, not the reactive world).
+/// present-but-stale. Guards, the scrutinee, and pattern binds —
+/// this select's own AND any enclosing select's — are OUTSIDE the
+/// mechanism: a pattern bind is a facet of its arm's scrutinee
+/// delivery, which that arm's match consumed; tracking `k` beside
+/// `ev@ \`Key(k)` re-raised a key the `ev` reader had handled
+/// (2026-09-02, the landing screen's connect-screen phantom). Semantic
+/// state: survives sleep and `reset_replay`, cleared only by
+/// consumption. Frames are excluded entirely (framed passes run
+/// against private variable maps — loop plumbing, not the reactive
+/// world).
 #[derive(Debug, Default)]
 struct TrackedFires {
     /// Per arm: the arm BODY's free refs (referenced minus bound
@@ -260,6 +265,7 @@ struct TrackedFires {
 
 impl TrackedFires {
     fn arm_refs<R: Rt, E: UserEvent>(
+        env: &crate::env::Env,
         pat: &PatternNode<R, E>,
         arm: &Node<R, E>,
     ) -> nohash::IntSet<BindId> {
@@ -268,23 +274,31 @@ impl TrackedFires {
         pat.structure_predicate.ids(&mut |id| {
             r.bound.insert(id);
         });
-        r.refed.difference(&r.bound).copied().collect()
+        r.refed
+            .difference(&r.bound)
+            .copied()
+            .filter(|id| !env.is_pattern_bind(*id))
+            .collect()
     }
 
-    fn init<R: Rt, E: UserEvent>(arms: &[(PatternNode<R, E>, Node<R, E>)]) -> Self {
+    fn init<R: Rt, E: UserEvent>(
+        env: &crate::env::Env,
+        arms: &[(PatternNode<R, E>, Node<R, E>)],
+    ) -> Self {
         let per_arm: Vec<_> =
-            arms.iter().map(|(pat, n)| Self::arm_refs(pat, n)).collect();
+            arms.iter().map(|(pat, n)| Self::arm_refs(env, pat, n)).collect();
         let all = per_arm.iter().flatten().copied().collect();
         TrackedFires { per_arm, all, pending: nohash::IntSet::default() }
     }
 
     fn refresh_arm<R: Rt, E: UserEvent>(
         &mut self,
+        env: &crate::env::Env,
         i: usize,
         pat: &PatternNode<R, E>,
         arm: &Node<R, E>,
     ) {
-        self.per_arm[i] = Self::arm_refs(pat, arm);
+        self.per_arm[i] = Self::arm_refs(env, pat, arm);
         self.all = self.per_arm.iter().flatten().copied().collect();
         self.pending.retain(|id| self.all.contains(id));
     }
@@ -384,7 +398,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
         }
         if self.tracked.is_none() {
-            self.tracked = Some(TrackedFires::init(&self.arms));
+            self.tracked = Some(TrackedFires::init(&ctx.env, &self.arms));
         }
         let Self {
             selected,
@@ -744,7 +758,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         // included) is fully materialized — the
                         // compile-time refs walk cannot see through a
                         // lambda literal into an instantiated body
-                        tracked.refresh_arm(j, &arms[j].0, &arms[j].1);
+                        tracked.refresh_arm(&ctx.env, j, &arms[j].0, &arms[j].1);
                     }
                     selected.set(Some(i));
                     // The wake bind is part of the arm's INIT VIEW: on
@@ -812,7 +826,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
                 (None, Some(j)) => {
                     deselect_sleep(&mut arms[j].1, ctx);
-                    tracked.refresh_arm(j, &arms[j].0, &arms[j].1);
+                    tracked.refresh_arm(&ctx.env, j, &arms[j].0, &arms[j].1);
                     selected.set(None);
                     None
                 }

@@ -370,3 +370,42 @@ nested composition), all AGREE with the ruled traces, and
   select arms de-fuse the region. In-kernel mask words (this doc's
   original mechanism) remain the path to reclaiming that coverage
   if it ever matters; the semantics would be unchanged.
+
+## Addendum (2026-09-02): pattern binds of enclosing selects are outside the tracker
+
+The admin TUI's landing screen found a hole in the as-built tracker.
+The tab's handler is `select e { ev@ \`Key(k) => select k.kind {
+\`Press => select screen { \`Landing => land.handle(ev), \`Connect =>
+connect_keys(k), … } } }`. Enter on the landing arm requested a
+connect; the tab switched `screen` to `Connect`; the inner select's
+first consult of the `Connect` arm dispatched `connect_keys(k)` with
+`k` FIRED — the connect form's Enter fired with no keypress, and a
+second connect started without the glyph. The tracker excluded only
+the select's OWN pattern binds; to the inner `select screen`, the
+outer arm's `ev` and `k` were two free inputs, the `Landing` arm had
+consumed `ev` but not `k`, and the flip delivered `k` as an unseen
+fire.
+
+`ev` and `k` are one delivery destructured two ways, and the outer
+arm's match is what consumed it. The rule: pattern binds of ANY
+select — this one's and every enclosing one's — are outside the
+mechanism. Built as `Bind::pattern` (marked at `Select::compile` for
+each arm's structure-predicate ids) and a filter in
+`TrackedFires::arm_refs`. In-language pins: `select_sibling_binds_spent`
+(lang/select.rs, both engines) and the callable-layer
+`callable_body_flip_reads_standing_key_stale`; the widget-level twin
+lives in the admin package's landing test. Found through six probes
+narrowing from the widget seam: the same shape passed in-language
+with a bare formal, a plain callee, and a late-bound callee, and
+failed only when an arm read the whole-value capture while a sibling
+arm read the payload bind. `let`-destructured siblings (`let (a, b) =
+pair`) have the analogous facet relation and are NOT covered by this
+addendum — no program has hit it; it wants the same treatment when
+one does.
+
+A second fact from the same hunt, unrelated to the rule: the
+runtime's `compile_callable` built its call site and updated it
+without the compile pipeline — no typecheck0/1, no analysis, no
+fusion (the interface predates typecheck1). It runs `check_and_fuse`
+now, the extracted tail of `compile_stmt`; nothing skips
+typechecking.

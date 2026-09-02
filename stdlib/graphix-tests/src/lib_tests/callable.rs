@@ -213,3 +213,145 @@ async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
     }
     bail!("the legitimate fire never landed (last={last:?})")
 }
+
+/// A callable's body flips its own routing state from a key it consumed
+/// (the admin TUI's landing: Enter on the landing arm requests a
+/// connect, the tab switches its screen to the connect form). The
+/// screen flip selects the connect arm for the first time with the
+/// same key still standing — and that arm's callee must read it STALE
+/// (the landing arm consumed the fire), never dispatch on it. Found
+/// 2026-09-02: the callable's call site skipped the compile pipeline,
+/// and in its unchecked body the first dispatch read the standing
+/// pattern bind as fired.
+const FLIP: &str = r#"
+type Key = { code: [`Enter, `Other], kind: [`Press, `Release] };
+type Event = [`Key(Key), `Mouse];
+let screen = 0;
+let fired = 0;
+let req: [i64, null] = null;
+let land = {
+  handle: |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.code {
+      kk@ `Enter => { req <- kk ~ 1; `Stop },
+      `Other => `Continue
+    },
+    `Mouse => `Continue
+  }
+};
+select req {
+  null as _ => never(),
+  _ => screen <- 1
+};
+let connect_keys = |k: Key| -> [`Stop, `Continue] select k.code {
+  kk@ `Enter => { fired <- (kk ~ fired) + 1; `Stop },
+  `Other => `Continue
+};
+let handle = |e: Event| -> [`Stop, `Continue] select e {
+  ev@ `Key(k) => select k.kind {
+    `Press => select screen {
+      0 => land.handle(ev),
+      _ => connect_keys(k)
+    },
+    `Release => `Continue
+  },
+  `Mouse => `Continue
+};
+let result = (screen, fired)
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(100);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(FLIP)),
+    )]);
+    let resolver = VfsResolver::new(tbl);
+    let ctx =
+        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
+    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let expr_id = compiled.exprs.last().context("no exprs")?.id;
+    let handle_l = {
+        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        gx.compile_callable(r.last.clone().context("no handle")?).await?
+    };
+    handle_l
+        .call(ValArray::from_iter_exact(
+            [Value::Array(ValArray::from_iter_exact(
+                [
+                    Value::from("Key"),
+                    Value::Array(ValArray::from_iter_exact(
+                        [
+                            Value::Array(ValArray::from_iter_exact(
+                                [Value::from("code"), Value::from("Enter")].into_iter(),
+                            )),
+                            Value::Array(ValArray::from_iter_exact(
+                                [Value::from("kind"), Value::from("Press")].into_iter(),
+                            )),
+                        ]
+                        .into_iter(),
+                    )),
+                ]
+                .into_iter(),
+            ))]
+            .into_iter(),
+        ))
+        .await?;
+    // settle: the request flips the screen with no further key
+    for _ in 0..4 {
+        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+    }
+    let deadline = tokio::time::sleep(Duration::from_secs(20));
+    tokio::pin!(deadline);
+    let mut last = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    for ev in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = ev
+                            && id == expr_id
+                        {
+                            last = Some(v);
+                        }
+                    }
+                    if let Some(Value::Array(pair)) = &last
+                        && pair[0] == Value::I64(1)
+                    {
+                        // the screen flipped; one more batch for a phantom
+                        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+                        if let Ok(Some(mut b)) = tokio::time::timeout(
+                            Duration::from_millis(500),
+                            rx.recv(),
+                        )
+                        .await
+                        {
+                            for ev in b.drain(..) {
+                                if let GXEvent::Updated(id, v) = ev && id == expr_id {
+                                    last = Some(v);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    match last {
+        Some(Value::Array(pair))
+            if pair[0] == Value::I64(1) && pair[1] == Value::I64(0) =>
+        {
+            Ok(())
+        }
+        Some(Value::Array(pair)) if pair[0] == Value::I64(1) => bail!(
+            "phantom fire: the screen flip dispatched the connect arm's callee on \
+             the standing key (fired={})",
+            pair[1]
+        ),
+        v => bail!("the screen never flipped: {v:?}"),
+    }
+}

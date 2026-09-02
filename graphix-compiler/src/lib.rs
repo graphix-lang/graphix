@@ -1984,6 +1984,16 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.control.interrupted()
     }
 
+    /// Open a compile frame for a node built at runtime outside any
+    /// statement (a callable's call site): the fusion top id and a fresh
+    /// deferred-settles frame, what `compile_stmt` opens for a statement
+    /// before [`check_and_fuse`] closes it.
+    pub fn begin_runtime_node(&mut self, top_id: ExprId) {
+        self.fusion.top_id = Some(top_id);
+        self.pending_settles.clear();
+        self.pending_settles.push(Vec::new());
+    }
+
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
         if node::collection::CollectionIntrinsic::from_name(T::NAME).is_some() {
             bail!("{} is a collection intrinsic reserved by the compiler", T::NAME)
@@ -2235,6 +2245,39 @@ pub fn compile<R: Rt, E: UserEvent>(
     compile_stmt(ctx, flags, scope, spec).map(|(n, _)| n)
 }
 
+/// The passes every node runs after it is built and before it updates:
+/// both typecheck passes, the deferred settles, function-property
+/// analysis (effect + recursion — the node-walk reads its tail-loop
+/// facts too, not just fusion; it needs resolved call sites and a
+/// complete `bind_to_lambda`, so it follows typecheck1 and precedes
+/// fusion), the typedef resolution-cell seeding (every name's final
+/// target is registered exactly here, in BOTH modes — seeding under the
+/// fusion gate alone made `--no-fusion` a different typechecker), and
+/// fusion. Runtime-built nodes — a callable's call site — run it too:
+/// nothing skips typechecking. The caller restores its env on `Err`.
+pub fn check_and_fuse<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    node: &mut Node<R, E>,
+) -> Result<()> {
+    let st = Instant::now();
+    node.typecheck0(ctx)?;
+    if let Err(e) = node.typecheck1(ctx) {
+        ctx.pending_settles.clear();
+        ctx.pending_settles.push(Vec::new());
+        return Err(e);
+    }
+    drain_pending_settles(ctx)?;
+    info!("typecheck time {:?}", st.elapsed());
+    analysis::analyze(node, ctx)?;
+    ctx.env.seed_typedef_refs();
+    if ctx.fusion.enabled {
+        let st = Instant::now();
+        fusion::fuse(node, ctx)?;
+        info!("fusion time {:?}", st.elapsed());
+    }
+    Ok(())
+}
+
 /// Drain the DEFERRED terminal settles (see
 /// [`ExecCtx::pending_settles`]): run after each TOP-LEVEL statement
 /// (Block/Module children, gated on no re-drive being in progress)
@@ -2363,44 +2406,9 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             return Err(err);
         }
     }
-    let st = Instant::now();
-    if let Err(e) = node.typecheck0(ctx) {
+    if let Err(e) = check_and_fuse(ctx, &mut node) {
         ctx.env = env;
         return Err(e);
-    }
-    if let Err(e) = node.typecheck1(ctx) {
-        ctx.pending_settles.clear();
-        ctx.pending_settles.push(Vec::new());
-        ctx.env = env;
-        return Err(e);
-    }
-    if let Err(e) = drain_pending_settles(ctx) {
-        ctx.env = env;
-        return Err(e);
-    }
-    info!("typecheck time {:?}", st.elapsed());
-    // Function-property analysis (effect + recursion). Runs ALWAYS — the
-    // node-walk interpreter reads its results (the tail-loop facts) too,
-    // not just fusion. Must come after typecheck1 (it needs resolved call
-    // sites + a complete `bind_to_lambda`) and before fusion (which reads
-    // the shared `tail_loop` fact).
-    if let Err(e) = analysis::analyze(&node, ctx) {
-        ctx.env = env;
-        return Err(e);
-    }
-    // Every name's final target is registered exactly here — the one
-    // order-correct moment to fill typedef resolution cells. It runs in
-    // BOTH modes: a ref whose cell is filled and one whose cell is empty
-    // take different paths through `contains`, so seeding under the
-    // fusion gate alone made `--no-fusion` a different typechecker.
-    ctx.env.seed_typedef_refs();
-    if ctx.fusion.enabled {
-        let st = Instant::now();
-        if let Err(e) = fusion::fuse(&mut node, ctx) {
-            ctx.env = env;
-            return Err(e);
-        }
-        info!("fusion time {:?}", st.elapsed());
     }
     // Registry-attribute honesty reconciliation (see `attr_census`): a
     // decorated expression the fusion walk neither dispatched nor absorbed

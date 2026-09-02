@@ -1523,6 +1523,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 typ: Type::empty_tvar(),
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
+                pattern: false,
             },
         );
         let gate_scope = def.scope.with_catch((faux_id, ExprId::new()));

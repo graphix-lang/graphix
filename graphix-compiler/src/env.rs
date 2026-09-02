@@ -41,6 +41,11 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
+    /// Bound by a select arm's pattern: a facet of the arm's scrutinee
+    /// delivery, which the arm's match consumes — so no nested select
+    /// tracks it as an input of its own for wake catch-up
+    /// (`design/wake_catchup.md`).
+    pub pattern: bool,
 }
 
 impl fmt::Debug for Bind {
@@ -60,6 +65,7 @@ impl Clone for Bind {
             typ: self.typ.clone(),
             pos: self.pos,
             ori: self.ori.clone(),
+            pattern: self.pattern,
         }
     }
 }
@@ -1585,6 +1591,7 @@ impl Env {
             typ,
             pos,
             ori,
+            pattern: false,
         });
         if self.lsp_mode {
             let ide_clone = bind.clone();
@@ -1592,6 +1599,17 @@ impl Env {
             ide_defs.insert_cow(CompactString::from(name), ide_clone);
         }
         self.by_id.get_mut_cow(id).unwrap()
+    }
+
+    /// Record that `id` is bound by a select arm's pattern.
+    pub fn mark_pattern_bind(&mut self, id: BindId) {
+        if let Some(b) = self.by_id.get_mut_cow(&id) {
+            b.pattern = true;
+        }
+    }
+
+    pub fn is_pattern_bind(&self, id: BindId) -> bool {
+        self.by_id.get(&id).is_some_and(|b| b.pattern)
     }
 
     pub fn unbind_variable(&mut self, id: BindId) {
