@@ -416,21 +416,27 @@ impl Type {
                 Ok(t)
             }
             (Type::Tuple(t0), Type::Tuple(t1)) => {
-                if t0 == t1 {
+                if same_resolved(t0.iter(), t1.iter()) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     Ok(self.clone())
                 }
             }
             (Type::Struct(t0), Type::Struct(t1)) => {
-                if t0.len() == t1.len() && t0 == t1 {
+                let same = t0.len() == t1.len()
+                    && t0.iter().zip(t1.iter()).all(|((n0, _), (n1, _))| n0 == n1)
+                    && same_resolved(
+                        t0.iter().map(|(_, t)| t),
+                        t1.iter().map(|(_, t)| t),
+                    );
+                if same {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     Ok(self.clone())
                 }
             }
             (Type::Variant(tg0, t0), Type::Variant(tg1, t1)) => {
-                if tg0 == tg1 && t0.len() == t1.len() && t0 == t1 {
+                if tg0 == tg1 && same_resolved(t0.iter(), t1.iter()) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
                     Ok(self.clone())
@@ -605,5 +611,29 @@ impl Type {
 
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
         Ok(self.diff_int(env, &mut RefHist::new(LPooled::take()), t)?.normalize())
+    }
+}
+
+/// Positional equality through bound type variables: a select arm's
+/// predicate carries its binds' cells (`\`Bad('m)`), unified against the
+/// scrutinee's member before the residual is computed, and the member
+/// is subtracted only when the payloads agree once those cells are
+/// read. `Any` in the subtrahend (an ignored payload) covers anything.
+fn same_resolved<'a, 'b>(
+    t0: impl IntoIterator<Item = &'a Type>,
+    t1: impl IntoIterator<Item = &'b Type>,
+) -> bool {
+    let mut t0 = t0.into_iter();
+    let mut t1 = t1.into_iter();
+    loop {
+        match (t0.next(), t1.next()) {
+            (None, None) => return true,
+            (Some(a), Some(b)) => {
+                if a != b && *b != Type::Any && a.resolve_tvars() != b.resolve_tvars() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
     }
 }

@@ -1413,12 +1413,17 @@ list, the status card with the glyph, per-slot background sync and
 credential probes, the in-process lifecycle ceremonies: renew,
 update, backup, the four local-CA ops), `tui::app` (both tabs under
 one pump; `Tab`/`q` global behind the tab's own keys; `q` needs
-`tui::exit`, added the same day). Deferred (ledger 15): the local
-Services surface, Uninstall/Join/Add-a-Parent/Install/Restore (phase
-4 ceremonies + phase 5 handoff). Two semantics facts from the slice:
-a constant-RHS connect in a select arm fires once per selection
-(organic firing; sample it), and bool literals do not pool inside
-payload/tuple positions (nested selects; ledger 14). The
+`tui::exit`, added the same day), and `tui::services` (this host's
+activation units: list/control, create/edit through an in-TUI form
+over the whole unit file, delete). Deferred (ledger 15):
+Uninstall/Join/Add-a-Parent/Install/Restore (phase 4 ceremonies +
+phase 5 handoff). Facts from the slice: a constant-RHS connect in a
+select arm fires once per selection (organic firing; sample it);
+bool literals do not pool inside payload/tuple positions (nested
+selects; ledger 14); a variant arm with a payload pattern never
+narrowed the arms after it — `Type::diff` compared payloads with
+`==` against the pattern's bind cells — fixed (`same_resolved`,
+pins `variant_*payload_arm_narrows`). The
 open-items ledger is the top section of
 `../netidx/design/graphix-admin-findings.md`. Open prerequisites: terminal
 suspend/resume for `sudo`/`$EDITOR` handoff (phase E); reserved-word

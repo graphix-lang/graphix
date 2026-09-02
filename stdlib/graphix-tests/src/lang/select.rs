@@ -1029,6 +1029,55 @@ run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, |v: Result<&Value
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
+// A variant arm with a PAYLOAD bind narrows the arms after it the way
+// `null as _` and a bare variant do: the residual reaching `n` cannot
+// be `` `Bad ``. The residual subtraction compared the arm's predicate
+// (`` `Bad('m) ``, its bind's cell) against the member with `==`, and a
+// bound cell never equals its binding, so the member stayed and `n`
+// kept the whole union (the admin TUI's unit-form parsers, 2026-09-02).
+const VARIANT_PAYLOAD_ARM_NARROWS: &str = r#"
+{
+  let g = |x: [i64, `Bad(string)]| -> i64 select x {
+    `Bad(m) => str::len(m),
+    n => n + 1
+  };
+  g(41) + g(`Bad("xyz"))
+}
+"#;
+
+run!(variant_payload_arm_narrows, VARIANT_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(45))
+); graphix_package_core::testing::FuseExpect::None);
+
+// The same through a named member and an ignored payload: the bind
+// after `` `Bad(_) `` is the alias's type alone, so it can fill a field
+// declared as it.
+const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
+{
+  type T = [`OnStart, `OnAccess(Array<string>)];
+  let p = |s: string| -> [T, `Bad(string)] select s {
+    "" => `OnStart,
+    "bad" => `Bad("bad"),
+    t => `OnAccess([t])
+  };
+  let g = |s: string| -> [{ t: T }, `Bad(string)] select p(s) {
+    `Bad(_) => `Bad("no"),
+    t => { t }
+  };
+  select g("x") {
+    `Bad(_) => 0,
+    { t: `OnAccess(ps) } => array::len(ps),
+    { t: `OnStart } => -1
+  }
+}
+"#;
+
+run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); graphix_package_core::testing::FuseExpect::Jit);
+
 // A GUARDED select used to force its result FRESH on every kernel
 // invocation ("over-fire, safe") — but firing is observable through
 // `count`: with an unrelated reactive input in the region, the fused
