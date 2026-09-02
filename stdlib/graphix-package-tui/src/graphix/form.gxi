@@ -3,26 +3,28 @@ use super::{input_handler, Line, Tui};
 /// One form field: its label and its initial text.
 type Field = { label: string, value: string };
 
-/// A form's surface: its view, the key handler to install on the modal
-/// layer, and its two outcomes — `submitted` is the fields' texts in
-/// order, set per Enter; `cancelled` is set per Esc. Both are values
-/// (null and false until asked), so a form composes as a struct field.
+/// A form's surface: its view and the key handler to install on the
+/// modal layer. Its outcomes are callbacks, like every widget's events
+/// — a struct re-fires as a whole, so an outcome stored in a field
+/// would re-deliver on every re-render.
 type Form = {
   view: Tui,
-  handle: fn(e: input_handler::Event) -> [`Stop, `Continue],
-  submitted: [Array<string>, null],
-  cancelled: bool
+  handle: fn(e: input_handler::Event) -> [`Stop, `Continue]
 };
 
 /// A modal form over `fields`: one line editor per field, Tab and
 /// Down move to the next field, BackTab and Up to the previous, Enter
-/// submits every field's text, Esc cancels; other keys edit the
-/// focused field. `#help` renders above the fields; `#hint` is the
-/// bottom title (defaults to the key legend). Render `view` inside an
-/// `input_handler(#handle: &form.handle, …)` on an overlay layer.
+/// calls `#on_submit` with every field's text in order, Esc calls
+/// `#on_cancel` with the key; other keys edit the focused field.
+/// `#help` renders above the fields; `#hint` is the bottom title
+/// (defaults to the key legend). A new `fields` delivery re-seeds the
+/// editors. Render `view` inside an `input_handler(#handle:
+/// &form.handle, …)` on an overlay layer.
 val form: fn(
   #title: string,
   ?#help: [string, null],
   ?#hint: [string, null],
+  #on_submit: fn(values: Array<string>) -> null,
+  #on_cancel: fn(e: Any) -> null,
   fields: Array<Field>
 ) -> Form;

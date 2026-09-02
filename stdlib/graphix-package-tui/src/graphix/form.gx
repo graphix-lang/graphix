@@ -5,23 +5,28 @@ use super::line_edit;
 use super::paragraph::{self, *};
 use super::text::{self, *};
 
-let form = |#title: string, #help: [string, null] = null, #hint: [string, null] = null, fields: Array<Field>| -> Form {
+let form = |
+  #title: string,
+  #help: [string, null] = null,
+  #hint: [string, null] = null,
+  #on_submit: fn(values: Array<string>) -> null,
+  #on_cancel: fn(e: Any) -> null,
+  fields: Array<Field>
+| -> Form {
   let dim = style(#fg: `DarkGray);
   let n = array::len(fields);
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
-  let submitted: [Array<string>, null] = null;
-  let cancelled = false;
   let handle = |e: input_handler::Event| -> [`Stop, `Continue] select e {
     `Key(k) => select k.kind {
       `Press => select k.code {
         `Tab | `Down => { focus <- (k ~ focus + 1) % n; `Stop },
         `BackTab | `Up => { focus <- (k ~ focus + n - 1) % n; `Stop },
         kk@ `Enter => {
-          submitted <- kk ~ array::map(vals, |v: line_edit::State| v.value);
+          on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
           `Stop
         },
-        kk@ `Esc => { cancelled <- kk ~ true; `Stop },
+        kk@ `Esc => { on_cancel(kk); `Stop },
         _ => {
           let i = k ~ focus;
           let cur = k ~ vals;
@@ -63,5 +68,5 @@ let form = |#title: string, #help: [string, null] = null, #hint: [string, null] 
     #title_bottom: &line(#style: dim, legend),
     &layout(#direction: &`Vertical, &array::concat(help_rows, rows))
   );
-  { view, handle, submitted, cancelled }
+  { view, handle }
 }
