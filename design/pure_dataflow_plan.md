@@ -77,20 +77,24 @@ consulted-guard bottom rulings, the FreshBottom logging rule, the
 Decisions to pin first (my recommendations; each is a one-line
 ruling):
 
-1. **What the taken bit gates.** Connects, and the ISSUE of event
-   effects (`spawn`, an rpc call, `write`, `println`); never a level
-   effect (`subscribe`, `publish`, `timer`, `suspend`, `PublishRpc`).
-   `Effect::Async` covers both today; it grows a `Follow`/`Issue`
-   distinction declared per builtin. The alternative — gate connects
-   only and rely on the sampling discipline — is Eric's literal
-   sentence and is also acceptable; the port is safe under either.
-2. **The `[T, null]` key list.** `subscribe`, `publish`, `timer`'s
-   duration, `PublishRpc`'s path, `tui::suspend`'s bool (already a
-   level), `sys::fs::watch`, the gui/tui runners' subscriptions.
-   `null` tears down; a bottomed arg (until B lands) means no change.
-3. **A dead-write diagnostic**: a connect whose RHS is a literal inside
-   a select arm never fires after init under A. Warn. This is not the
-   declined lint on a working tool (ledger 3+13) — the write is dead.
+1. **What the taken bit gates.** RULED (Eric, 2026-09-03: "given that
+   using the taken bit in this way solves the sample tax you can
+   consider it ruled in favor"): connects, and the ISSUE of event
+   effects (`spawn`, an rpc call, `write`, `println`) — both sampled
+   on the arm's matching delivery per decision 5; never a level effect
+   (`subscribe`, `publish`, `timer`, `suspend`, `PublishRpc`).
+   `Effect::Async` grows a `Follow`/`Issue` distinction declared per
+   builtin.
+2. **The `[T, null]` key list.** RULED fine, expand as needed (Eric):
+   `subscribe`, `publish`, `timer`'s duration, `PublishRpc`'s path,
+   `tui::suspend`'s bool (already a level), `sys::fs::watch`, the
+   gui/tui runners' subscriptions. `null` tears down; a bottomed arg
+   (until B lands) means no change.
+3. ~~A dead-write diagnostic for a literal RHS in an arm.~~ DROPPED
+   (Eric): under decision 5 an unsampled connect in an arm is sampled
+   on the scrutinee delivery, so `screen <- \`Pick` fires on every
+   matching delivery — it is not dead, it is the on-entry write, and
+   the port's three constant writes are correct as written.
 4. **Refusal wording** for a recursive call through an impure callee
    under its own select.
 5. **The write rule** (`pure_select.md` §11, "The write rule"): a
@@ -138,8 +142,9 @@ Work:
   write's dead-write warning.
 - A7. The kernel: `event.init` under `wake_init` and the wire's wake
   bit go; genuine init is `bit0` alone.
-- A8. The port: three constant writes sampled, three outer-bind
-  dispatches route the key; `milestone_latency` before and after.
+- A8. The port: the three outer-bind dispatches route the key if the
+  latency number says so; `milestone_latency` before and after. (The
+  three constant writes are correct under decision 5 — no edit.)
 - A9. Book: the select chapter's "Writing From an Arm" becomes one
   sentence; the sleep/wake chapters go.
 - A10. CLAUDE.md rules rewritten in the same change (the semantics
@@ -156,9 +161,9 @@ named).
 
 Decisions to pin first:
 
-1. `Update::update -> Option<&Value>` (borrowed, the resident is the
-   slot) or `Option<Value>`. Borrowed keeps dense delivery's one real
-   win (zero copies down delegation chains).
+1. `Update::update -> Option<&Value>` — RULED (Eric): borrowed, the
+   resident is the slot; keeps dense delivery's one real win (zero
+   copies down delegation chains).
 2. An absent scrutinee or guard is NO DECISION this cycle: the select
    produces nothing and keeps its selection for routing only — the
    next scrutinee production re-matches. Same on both engines (a

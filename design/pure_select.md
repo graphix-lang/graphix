@@ -348,7 +348,9 @@ real and I think each one is a point in its favor:
   untaken arm keeps counting. No entry birth, no §7 delta 1. This is
   the "count outside, read inside" semantics with the count written
   inside.
-- **No entry birth for connects.** A connect in an arm writes when
+- **No entry birth for connects** — SUPERSEDED by the write rule
+  below (a connect in an arm fires on the arm's matching delivery).
+  As first written: a connect in an arm writes when
   its RHS fires and the arm is taken. `screen <- \`Pick` writes only
   if the constant fires while taken — at init, if the arm is taken
   then — so the on-entry tool is the sampled form the select chapter
@@ -536,10 +538,10 @@ Against the campaign's findings, honestly:
    sampled), which is what makes it teachable. Three genuine constant
    writes in the port (`toast <- null` landing.gx:173, `policy_open <-
    true` panels.gx:927, `gate_sel <- 0` panels.gx:967) go silent under
-   §11 and need `x ~`. A constant RHS of a connect inside an arm is
-   DEAD CODE under §11 — it never fires after init — so a diagnostic
-   for it is a dead-write warning, not the lint on a working tool that
-   ledger 3+13 declined.
+   §11 as first written and would have needed `x ~` — SUPERSEDED by
+   the write rule (§11): an unsampled connect in an arm is sampled on
+   the scrutinee delivery, so all three are correct as written and no
+   dead-write diagnostic is needed (Eric, same day).
 3. **The `run` ladders** (the ceremony dispatch, local.gx 455–500,
    755–790): `x@ \`Renew => renew(x)` keys the effect on the arm's own
    bind, which is absent unless the arm matches. Already
@@ -583,8 +585,9 @@ the level/event effect distinction declared per builtin, since
 port's pain barely at all — because the port was already written in
 §11's discipline, taught by the bugs §11 removes. The port's remaining
 pain is the chain class, which is `seq`'s, and `seq` is smaller under
-§11. The port's bill: three constant writes become sampled, three
-dispatches route the key, and a latency measurement.
+§11. The port's bill, after the write rule: three dispatches route the key
+if the latency number says so, and a latency measurement. The 120-odd
+`~`s inside arm writes become optional.
 
 ### 13.3 The ledger, classified (both `seq` and §11 adopted)
 
