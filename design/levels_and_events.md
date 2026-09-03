@@ -1,6 +1,6 @@
 # Levels and events — the kind model
 
-Status: proposed, 2026-09-03; REVISED the same day (§0). The concrete form of P1–P4 in
+Status: proposed, 2026-09-03; REVISED the same day (§0); see `pure_select.md` for the alternative that removes sleep instead, which needs only §0's residual kind. The concrete form of P1–P4 in
 `seq_blocks.md` §4.2, written for Eric's question: *how can levels and
 events be different while still keeping the good features of the
 language?*
