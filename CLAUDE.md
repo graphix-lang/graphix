@@ -1180,6 +1180,14 @@ would resurrect the GIR vocabulary tax (`node_shape.rs`).
 
 ### Design documents
 
+**DECIDED 2026-09-03, NOT YET BUILT** (`design/pure_dataflow_plan.md`,
+Eric): three semantics changes in order — (A) select arms always
+update, no sleep (`pure_select.md` §11), (B) sparse delivery, no
+bottom value (§12), (C) `seq` blocks (`seq_blocks.md`, lowering
+`pure_select.md` §13.1). Until each lands, the rules in this file
+stand; a session picking the work up starts from the plan's step
+list and its "decisions to pin first".
+
 `design/README.md` is the index (built / proposed / superseded). The
 docs hold the rationale and the as-built records; this file holds only
 the rules.
