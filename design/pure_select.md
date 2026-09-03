@@ -561,3 +561,30 @@ port's pain barely at all — because the port was already written in
 pain is the chain class, which is `seq`'s, and `seq` is smaller under
 §11. The port's bill: three constant writes become sampled, three
 dispatches route the key, and a latency measurement.
+
+### 13.3 The ledger, classified (both `seq` and §11 adopted)
+
+The admin campaign's findings file has 50 dated entries plus the
+open-items ledger. Sorted by what solves them:
+
+| class | entries | solved by |
+|---|---|---|
+| sleep/wake semantics (phantom replay, sibling-bind phantom, constant-RHS-per-selection; ledger 4, 13) | 5 | §11 — the class is gone |
+| sequencing (the privileged handoff; the ceremony `Trigger` stall; the accidental counter inside a chain) | 3 | `seq` — the handoff is a block; a step samples every leaf at entry, so a self-read inside a step cannot loop |
+| types, coverage, diagnostics, the compiler (reserved words ×4, slice coverage, def/use resolution, abstract predicates, or-captures, the rectangle, the caller's env, `never()` typing, `Error as _`, `[fn, null]` arms, payload narrowing, bool pooling, set-contains residue, datetime arithmetic, the fastcall sweep, place references) | ~22 | neither — all fixed as they came, except ledger 5 (arithmetic traits) and "no union subtraction in select" |
+| package and tui capabilities (overlay, suspend, the question pump, forms, services, `tui::exit`, the harness, deps) | ~12 | neither — port work, done |
+| perf and scale milestones | 4 | neither — measured; the fusion pre-gate is open |
+| test-side | ~4 | neither |
+
+By count, the two together close about 8 of 50. By cost they close
+the deepest class (the wake seam, a month of engine churn whose last
+two rounds were the port's) and the one that recurs by construction
+(every ceremony is a chain). What remains from the chair, not the
+ledger: the option-narrowing ladder `select x ~ y { null as _ =>
+never(), v => … }` — 54 sites in the port, the port's most-typed
+shape, a union-subtraction or null-`?` question that neither
+proposal touches; the sampling discipline in handlers (inherent —
+§11 makes it the one rule); the accidental self-loop in a HANDLER
+(seq prevents it only inside a block; the lint was declined); the
+component-callback rule (organic firing of structs; fine once known);
+the fusion pre-gate.
