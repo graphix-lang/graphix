@@ -411,8 +411,10 @@ effects (`\`Confirm => spawn(cmd)` issues per delivery of `Confirm`,
 not per change of `cmd`); level effects follow. ONE IDIOM CHANGES:
 `select go { true => x <- x + 1, _ => never() }` becomes one increment
 per delivery of `go`; the loop is `x <- x ~ x + 1`, or the book's form
-with `x` as the scrutinee (each write re-delivers it). Per-delivery is
-the reading that never spins.
+with `x` as the scrutinee (each write re-delivers it). RULED (Eric,
+same day): "when I said gated I meant sampled … when you put `x <- x +
+1` in a select arm you almost never mean to build a free running loop,
+you mean to increment x when go is true." Per-delivery is the rule.
 
 **Verdict.** Prefer this over §3. It has one fewer implicit contract
 (presence), one fewer special case (entry birth), one fewer dependency

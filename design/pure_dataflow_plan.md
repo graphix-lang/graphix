@@ -99,9 +99,13 @@ ruling):
    root keeps its own trigger; the same for event-effect issues. This
    is what makes `select screen { A => x <- A, B => x <- B }` do what
    it says, removes `k ~` from handler writes, and makes the accidental
-   counter unwritable in a handler. Recommended yes. The one idiom
-   that changes — an unsampled self-loop in an arm becomes one step
-   per delivery — needs Eric's explicit ruling.
+   counter unwritable in a handler. RULED yes (Eric, 2026-09-03:
+   "when I said gated I meant sampled … when you put `x <- x + 1` in
+   a select arm you almost never mean to build a free running loop,
+   you mean to increment x when go is true"). An unsampled self-loop
+   in an arm is one step per delivery; the free-running form is
+   spelled `x <- x ~ x + 1`, and the book's counter (`x` as its own
+   scrutinee) loops because each write re-delivers the scrutinee.
 
 Work:
 
