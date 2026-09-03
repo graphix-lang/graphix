@@ -1482,8 +1482,15 @@ parked until a display takes it; the site holds the resume signal and
 its drop resumes) plus
 `netidx_admin::privileged` (the become-root decision lives in a shell
 wrapper the CHILD runs, so sudo's prompt lands on the released
-terminal). Needs lab validation on a real terminal. Then: the
-release-build measurement, full lab validation, the parity review;
+terminal). Needs lab validation on a real terminal. The RELEASE MEASUREMENT is
+done (2026-09-03, 5,434 lines): registration 93ms, app-main compile
+455ms (228ms with fusion off — 324 of 1,286 kernel attempts fuse,
+and a failed attempt costs a compile), first frame 584ms; a
+role-menu key p50 3.2ms, a text key 0.17ms, a render 0.12ms
+(`milestone_timing`/`milestone_latency`, ignored, run by hand in
+both profiles). Follow-ups: a cheap fusion pre-gate for the
+decidable refusals; a profile of the role-menu key. Then: full lab
+validation, the parity review;
 the ratatui TUI is deleted only after all of that (Eric). Facts from
 the slice: a constant-RHS connect in a
 select arm fires once per selection (organic firing — Eric 2026-09-03:

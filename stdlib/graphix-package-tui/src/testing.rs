@@ -200,6 +200,44 @@ impl TuiTestHarness {
         self.drain().await
     }
 
+    /// Deliver a crossterm event and report how long the runtime took
+    /// to settle after it: the time from dispatch to the LAST update
+    /// batch that arrived, with the quiescence wait itself excluded
+    /// (zero when the event produced no update). The measurement
+    /// behind the milestone latency numbers.
+    pub async fn dispatch_event_timed(&mut self, e: Event) -> Result<Duration> {
+        let start = std::time::Instant::now();
+        let v = event_to_value(&e);
+        self.widget.handle_event(e, v).await.context("widget handle_event")?;
+        let mut settled = Duration::ZERO;
+        let timeout = tokio::time::sleep(Duration::from_millis(100));
+        tokio::pin!(timeout);
+        loop {
+            tokio::select! {
+                biased;
+                Some(mut batch) = self.rx.recv() => {
+                    for event in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = event {
+                            if self.watched.contains_key(&id) {
+                                self.watched.insert(id, v.clone());
+                            }
+                            self.widget
+                                .handle_update(id, v)
+                                .await
+                                .context("widget handle_update")?;
+                        }
+                    }
+                    settled = start.elapsed();
+                    timeout.as_mut().reset(
+                        tokio::time::Instant::now() + Duration::from_millis(50)
+                    );
+                }
+                _ = &mut timeout => break,
+            }
+        }
+        Ok(settled)
+    }
+
     /// Render the widget into the test backend's buffer and return a
     /// reference to that buffer. The render path is exactly the one
     /// the live runtime takes — `Terminal::draw(|f| widget.draw(f, area))`
