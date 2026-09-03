@@ -579,12 +579,26 @@ open-items ledger. Sorted by what solves them:
 By count, the two together close about 8 of 50. By cost they close
 the deepest class (the wake seam, a month of engine churn whose last
 two rounds were the port's) and the one that recurs by construction
-(every ceremony is a chain). What remains from the chair, not the
-ledger: the option-narrowing ladder `select x ~ y { null as _ =>
-never(), v => … }` — 54 sites in the port, the port's most-typed
-shape, a union-subtraction or null-`?` question that neither
-proposal touches; the sampling discipline in handlers (inherent —
-§11 makes it the one rule); the accidental self-loop in a HANDLER
-(seq prevents it only inside a block; the lint was declined); the
-component-callback rule (organic firing of structs; fine once known);
-the fusion pre-gate.
+(every ceremony is a chain).
+
+What I listed as remaining, and Eric's rulings on each (same day):
+
+- The option-narrowing ladder `select x ~ y { null as _ => never(),
+  v => … }` — 54 sites — is `opt::or_never(x ~ y)`, which exists in
+  core, is `Stateless` with a fast fn, and the port never used
+  (`opt::` appears zero times). Not a language gap: the quick
+  reference had no `opt` entry. Fixed there; the port's 54 sites
+  convert mechanically.
+- Sampling is the nature of the beast. Making the async part
+  effortless in exchange for some sample points is the trade, and
+  `seq` keeps it from getting out of hand. Not pain; not to be
+  designed away.
+- The self-loop is the same: the nature of the beast, and useful once
+  understood.
+- Fusion: this application will be started by netidx-tools, which sets
+  up a shell like the browser's. If fusion is not worth it for a UI,
+  that shell turns it off (`CFlag::FusionDisabled` through
+  `ShellBuilder::enable_flags`, the switch `--no-fusion` already uses),
+  and probably the browser should too. Fusion is a deployment decision
+  of the embedder: on for stream processors, off for UIs. The
+  pre-gate stops being a UI item.
