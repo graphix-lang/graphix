@@ -322,3 +322,130 @@ a kernel, and everything that is not pure is wiring.
    sleep/wake pin against §6–§7 (expected: identical traces except the
    §7 deltas, each of which becomes a new pin stating the new rule).
 5. **Soak**, a quiet round-day before "landed".
+
+## 11. The always-update variant (Eric, same day)
+
+> Always update every arm of the select, but only update the variables
+> in the taken arm. That implementation might be easier than hoisting.
+> `select x { null => net::subscribe("/foo"), s => net::subscribe(s) }`:
+> today "/foo" isn't subscribed when `x` is null; in this world it
+> would still be subscribed, but its output ignored unless `x` is null.
+> Change stateful builtins like publish and subscribe to take an
+> Option for the path; unpublish/unsubscribe on null.
+
+Nearly equivalent to §3, and simpler to build. The differences are
+real and I think each one is a point in its favor:
+
+- **Effect lifetime is explicit, not implied by selection.** Under
+  hoisting a subscription in an arm exists while the arm is taken
+  (§4's presence rule, an implicit contract per builtin). Here a
+  select never turns anything on or off — it picks a value — and the
+  program turns an effect off by giving it `null`, which is visible in
+  the signature (`subscribe(path: [string, null])`). The presence
+  ruling of §4 is unnecessary; a bottomed argument means "no change",
+  as it does for every builtin today.
+- **A stateful builtin in an arm sees everything.** `count(x)` in an
+  untaken arm keeps counting. No entry birth, no §7 delta 1. This is
+  the "count outside, read inside" semantics with the count written
+  inside.
+- **No entry birth for connects.** A connect in an arm writes when
+  its RHS fires and the arm is taken. `screen <- \`Pick` writes only
+  if the constant fires while taken — at init, if the arm is taken
+  then — so the on-entry tool is the sampled form the select chapter
+  already documents, `screen <- x ~ \`Pick`, which fires per delivery
+  of the scrutinee while taken. The constant-fires-per-selection
+  behavior goes, replaced by one explicit spelling. §7 delta 3 (a
+  level sampled in an arm fires at every entry) does not arise either:
+  `x <- r ~ v` fires when `r` fires, taken or not, and writes only if
+  taken. That is the memoryless rule with no births at all.
+- **The phantom classes still vanish.** `submitted <- t ~ (submitted +
+  1)` in the modal arm: the `~` fires when Enter fires; if the arm is
+  not taken the write is dropped; when the arm becomes taken nothing
+  fires. No standing value is re-raised because nothing is ever
+  re-surfaced — every node saw every fire live. The occurrence kind
+  is not needed for correctness here; it remains a diagnostic (an
+  event read as a level) if wanted.
+
+**The one thing "always update" cannot mean literally: recursion.**
+`select n { 0 => 1, n => n * f(n - 1) }` with every arm updated
+dispatches `f(-1)` when `n` is 0, and never stops. An untaken arm
+holding a recursive call must not be evaluated, and the clean rule is
+§1's: **a pure arm is evaluated only when taken** (unobservable, so
+free), **an impure arm is always updated** (observable, so it must
+be). Per-arm purity comes from the existing analysis
+(`lambda_is_stateless` over the arm's subtree). A recursive call
+through an IMPURE callee under its own select is then the one shape
+with no meaning — it would be evaluated untaken and diverge — and it
+is decidable at compile time (`mark_recursion` knows the cycle, the
+effect analysis knows the state), so it is refused with a diagnostic.
+The kernel side is unchanged: kernels are pure, their selects are
+lazy chains already.
+
+**Implementation.** No AST transform. `Select::update` updates its
+impure arms every cycle and its pure arms on demand; the taken arm's
+index rides down as a per-cycle context bit (like the frame flags) so
+that `Connect` writes only under a taken arm, nested selects
+conjoining; `sleep()` and everything in §5 goes; `subscribe`/`publish`/
+`timer`/`suspend` take `[T, null]` keys and tear down on `null`. The
+interp's per-cycle cost grows by the walk of impure untaken arms
+(organic ride-skips make it a tree walk, not a recompute) — measurable
+on the admin TUI with `milestone_latency`, and bounded by fusion: a
+pure screen is a kernel whose walk is one fire-bit check.
+
+**Verdict.** Prefer this over §3. It has one fewer implicit contract
+(presence), one fewer special case (entry birth), one fewer dependency
+(the kind), and a smaller implementation. What it asks of the
+programmer is exactly one thing: an effect whose lifetime should
+follow a selection must be told so, with `null`.
+
+## 12. Open: is dense bottom still necessary?
+
+Eric, same day: "Before JIT we were getting along just fine with no
+Bottom representation besides update returning None. I think we may
+have added Bottom when we were trying to fuse stateful kernels and it
+may not even be necessary anymore."
+
+The record (`dense_delivery.md`, built 2026-08-13) gives three defects
+of the sparse currency and one structural reason the tag could not be
+removed. Read against what has been deleted since, each stands on a
+leg that is gone or going:
+
+| reason for dense delivery | what it stood on | status |
+|---|---|---|
+| tag-blindness: 81 raw `Apply` builtins read `Some(_)` as fired — `once` burned on a stale RE-SURFACING, `count` over-counted, `print` duplicated | standing values re-surfaced at arm wake and frame re-derivation — i.e. SLEEP | gone under §1/§11: every awake node sees every fire live; nothing is re-surfaced |
+| "the tail spine's becoming-selected path needs 'emitted, but not an event' — a second bit by definition" | stateful interiors inside tail-loop frames and re-selected arms | gone: arms are pure (a tail loop's body is a select), and a stateful body was never collapsed to one activation anyway |
+| two bottoms (`None` vs tainted production), taint propagation R3, "bottom never reaches authors" | poisoning consumers so that stateful kernels and their residents would not RIDE a pre-bottom value | strict fusion deleted the residents, the replay and DynCall; a pure kernel has nothing to ride |
+| the empirical capstone, `fire_gate_missing_fire_aug08d` | a DynCall fire gate (`dyncall-fire-gate-aug2026/00`) | DynCall is deleted; the pin must still AGREE, but it no longer argues for the currency |
+
+The hypothesis, then: with pure select and strict fusion, the interp
+can return to `Option<Value>` — `None` is "nothing this cycle",
+consumers keep the one cache they always had — and the two bits
+survive only where they are load-bearing, at the KERNEL BOUNDARY: the
+wrapper's per-input cache is empty (never produced) or full, and an
+input fired this cycle or did not. Same bits, one place.
+
+What it would delete: the four-state algebra and `TagView`, R3 bottom
+propagation, `FreshBottom`/`StaleBottom` (consumed in 12 compiler
+files today, densest in `collection.rs`, `tval.rs`, `op.rs`), the
+bottom-scrutinee and consulted-guard rulings (a quiet scrutinee is
+quiet; a guard that never produced leaves the select waiting, which is
+what it does now), the strict-`&&` ruling, "bottom never reaches
+authors", the FreshBottom-only logging rule, `Bind`'s quiet
+re-publish, the phantom resident. What changes: "became absent" is
+inexpressible — `1/0` logs and does not update, and consumers keep
+their last value, which is the pre-dense semantics and is consistent
+with the language's actual answer to failure (errors are VALUES;
+`?`/`$`/checked arithmetic). A collection whose callback produced
+nothing for a slot waits for the slot, as it did before.
+
+What must be checked before believing it: the `builtin-taint-gate-
+jul2026`, `taint-cache-callee-jul2026` and `dyncall-fire-gate-aug2026`
+pins under the new currency (AGREE is required; the mechanism they
+pinned is gone); the fuzz oracle's trace, which records tags; whether
+any bench program's fusion depends on taint bits reaching the kernel
+mid-region (a `?` inside a kernel raises onto the delivery queue and
+needs no taint — `QOP_RAISES`); and the interp's per-cycle cost, which
+sparse delivery should reduce (no ride-downgrade walk on quiet
+cycles). Sequence: pure select first (it removes two of the four
+legs), then a sparse-currency prototype behind the same corpus gate,
+as its own design doc.
