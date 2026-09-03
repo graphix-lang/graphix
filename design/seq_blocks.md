@@ -1,4 +1,4 @@
-# `do` blocks: sequencing across cycles
+# `seq` blocks: sequencing across cycles
 
 Status: **proposed, not built** (2026-09-03). Origin: the post-port
 assessment of the netidx-admin rewrite (5,434 lines of Graphix). Eric:
@@ -11,7 +11,7 @@ well") and to progress reporting through captured variables (Eric:
 "why couldn't it `progress <- 0, ..., progress <- 1` where progress is
 a capture?").
 
-The one-line version: **a `do` block is a `select` the compiler
+The one-line version: **a `seq` block is a `select` the compiler
 writes.** Every ceremony in the port is a hand-written state machine
 over a step variable — `select` over it, `<-` advancing it, `~` gating
 each step, `never<T>()` seeds carrying values between steps, a catch
@@ -79,7 +79,7 @@ file: `local.gx` 1,300 lines, 13 seeds, 21 catch blocks, 74 samples.
 ## 2. What it looks like
 
 ```graphix
-let privileged = |req: PrivReq| do req {
+let privileged = |req: PrivReq| seq req {
   catch(e) {
     select (e.0).error {
       `TerminalError(m) | `ProcessError(m) =>
@@ -112,13 +112,13 @@ let priv_exit = privileged(priv_req);
 `suspended` and `released` stay outside: `tui::suspend(suspended)` is
 a LEVEL and a level lives at module scope, driven by a variable the
 steps write (§7). Progress, toasts, focus and the exit level are all
-written the same way — a do block is an ordered issuer of effects that
+written the same way — a seq block is an ordered issuer of effects that
 waits between them, not primarily a value producer.
 
 A poll loop:
 
 ```graphix
-do go {
+seq go {
   let st = loop {
     select status(target) {
       `Ready(r) => break r,
@@ -140,12 +140,12 @@ on being a second language, and a second language inside Graphix
 converges on Rust, which the project already has as its computation
 leaf. The collection intrinsics replaced it.
 
-`do` is the other axis. Nothing inside a do block runs sequentially
+`seq` is the other axis. Nothing inside a seq block runs sequentially
 within a cycle: each step is a live reactive expression, and "next"
 means "the cycle after this one produced". There is no mutation
 (bindings are ordinary lets; cross-step values ride variables), no
 within-cycle loop (an iteration is a re-selection, one per cycle at
-least), and nothing a kernel needs to know (a do block is `Async` by
+least), and nothing a kernel needs to know (a seq block is `Async` by
 construction; its steps' interiors fuse or not exactly as today). It
 is the Rust `async fn` move, not the Rust `fn` move: Rust did not add a
 second evaluation model for async either, it lowers the function to
@@ -157,7 +157,7 @@ machine's. The compute loops stay where they are: `let rec`, the HOFs,
 ## 4. Syntax
 
 ```
-do [trigger] { stmt* [expr] }
+seq [trigger] { stmt* [expr] }
 
 stmt   := let pat = expr ;
         | expr ;                         // an effect, a watch, a derivation
@@ -169,8 +169,8 @@ stmt   := let pat = expr ;
         | catch(e) expr ;                // at the top of the block only (§5.8)
 ```
 
-`do { .. }` without a trigger runs once at init. `if` is already a
-reserved word. The keyword is provisional (§10).
+`seq { .. }` without a trigger runs once at init. `if` is already a
+reserved word. The keyword reclaims the integer-sequence builtin (§10).
 
 ## 5. Semantics
 
@@ -228,7 +228,7 @@ of writing `?`.
 
 **R8 — The value.** The block's value is its last expression's, fired
 once per completed run, stale between runs, bottom before the first
-completion. A `do` inside a lambda is a callable ceremony; a call to
+completion. A `seq` inside a lambda is a callable ceremony; a call to
 one from a step is itself an async step and composes by R3.
 
 **R9 — Levels live outside.** A level effect (`tui::suspend`,
@@ -237,12 +237,12 @@ step: a passed step sleeps, and a slept level is torn down. Steps write
 the variable that drives the level and `until` waits for its response.
 
 **R10 — Do blocks are `Async`.** The machine node-walks; each step's
-sync interior fuses as it would anywhere. `#[sync]` on a do block is a
+sync interior fuses as it would anywhere. `#[sync]` on a seq block is a
 compile error, `#[native]` inside a step means what it means today.
 
 ## 6. The lowering
 
-An AST-to-AST desugar (`expr/do_desugar.rs`, the precedent is the sync
+An AST-to-AST desugar (`expr/seq_desugar.rs`, the precedent is the sync
 subset's P1 desugar, which validated "no new node types; both
 evaluators inherit the semantics from one spec"). Positions carry from
 each statement to the nodes it lowers to, so a type error names the
@@ -409,15 +409,15 @@ machine — the round-trip test covers the lowering's output.
    bottom. If the hand-lowered machine is only shorter, the construct
    saves typing; if the surface form is the readable one, it earns the
    keyword.
-1. Parser + AST: `ExprKind::Do { trigger, body }` with a `Stmt` enum;
+1. Parser + AST: `ExprKind::Seq { trigger, body }` with a `Stmt` enum;
    the printer; the proptest generator; tree-sitter.
-2. The desugar (`expr/do_desugar.rs`) and `--expand`.
+2. The desugar (`expr/seq_desugar.rs`) and `--expand`.
 3. Pins, one fixture per rule (R1..R10), each run on both engines:
    drop-while-busy; once-per-entry issue; presence-wait on the second
    run; sync coalescing; the let cell crossing an arm; branch with a
    payload bind; a two-arm loop and a one-arm loop; `break v`; `for`
    over an array taken at entry; abort with cleanup and the enclosing
-   catch seeing the error; the value fired once per run; a do-lambda
+   catch seeing the error; the value fired once per run; a seq-lambda
    called from a step.
 4. Port: every ceremony in `local.gx`, the change-password route, the
    landing's connect. Measure lines, `--check` time, and read it.
@@ -426,18 +426,21 @@ machine — the round-trip test covers the lowering's output.
 
 ## 10. Open questions
 
-- **The keyword.** `do` reads well and has the Haskell precedent, but
-  `ExprKind::Do` is the block AST today (rename it `Block`). `seq` is
-  a builtin. Alternatives: `run`, `flow`, `steps`.
-- **`if` generally.** If `if` becomes bool sugar over select inside do
+- **The keyword** is `seq` (Eric, 2026-09-03: "that's what it actually
+  is"; `do` was the draft's name and collides with the block AST's
+  `ExprKind::Do`). The integer-sequence builtin `seq(i, j)` becomes
+  `range(i, j)` — about ten sites: the fuzz generator, three findings
+  fixtures, one example, one test, the embedding chapter — and `seq`
+  joins the reserved words. Nothing else in the tree uses the name.
+- **`if` generally.** If `if` becomes bool sugar over select inside seq
   blocks it is hard to justify refusing it outside them. Decide once.
 - **Retrigger policies.** `busy` (drop) is the default. `queue` is
   what `~` gives for free (one pending run). `restart` needs the
   stale-production guard (a run generation in the step variable) and a
   cancellation story. `timeout(d)` aborts a stalled run through the
-  error path. Spelling: `do(#on_retrigger: `Queue) go { .. }` or
+  error path. Spelling: `seq(#on_retrigger: `Queue) go { .. }` or
   nothing in v1.
-- **Nested `do`** as a statement (a sub-machine triggered by the
+- **Nested `seq`** as a statement (a sub-machine triggered by the
   entry) — falls out of R3 and R8 if the inner block's trigger is the
   outer entry, but a lambda call is the same thing; v2.
 - **Mid-block `catch`** (§6.8).
