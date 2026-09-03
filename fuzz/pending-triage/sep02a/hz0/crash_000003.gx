@@ -1,4 +1,0 @@
-// CRASH: child signal: 6 (SIGABRT) | memory allocation of 136 bytes failed | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-// do not promote to findings/ until fixed (regress runs in-process)
-// mutant:
-{let a = [i64:0, i64:1, i64:2, i64:3, i64:4, i64:5]; let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let err1: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let m = {"a" => i64:1, "b" => i64:2, "c" => i64:3}; catch(e) select e.0.error {`ArithError(_) => err1 <- e, _ => e?}; error(`B)?; a[i64:6]?; [err0, err1]}
