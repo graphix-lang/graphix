@@ -70,29 +70,69 @@ pub(super) fn note_refused() {
 
 thread_local! {
     /// The furthest reason a parser refused something it could name —
-    /// a reserved word where a name was expected — kept beside its
-    /// position. combine merges a refused alternative's message into
-    /// the surrounding expectation set (a whole `let` reports
-    /// "Unexpected `l`" at the statement's first column), so the
-    /// reason is recorded here and reported when the failure lies at
-    /// or before it.
-    static REASON: RefCell<Option<(SourcePosition, CompactString)>> =
-        const { RefCell::new(None) };
+    /// a reserved word where a name was expected, a `[` that opens no
+    /// interpolation — kept beside its position and, for a refused
+    /// token, its length. combine merges a refused alternative's
+    /// message into the surrounding expectation set (a whole `let`
+    /// reports "Unexpected `l`" at the statement's first column), so
+    /// the reason is recorded here and reported when the failure lies
+    /// on its line — inside the token itself when one is given, since
+    /// a word refused as a name may have parsed as a literal in
+    /// another alternative (`let x = true +;` probes `true` as a name).
+    static REASON: RefCell<Option<Reason>> = const { RefCell::new(None) };
     /// Where the parse failed, set by the entry point's error mapping
     /// before [`parsing`] reports.
     static ERROR_POS: Cell<Option<SourcePosition>> = const { Cell::new(None) };
+    /// The furthest point any branch of the parse reached. combine
+    /// reports a failed statement at whichever alternative failed
+    /// last, and `attempt` resets the input on the way out, so the
+    /// branch that got deepest into the program — the one the author
+    /// was writing — is otherwise forgotten. Every recursion knot
+    /// records its input position here, on success as well (a failure
+    /// in the combinator right after a knot — the `]` a string
+    /// interpolation expects — is not seen by any knot, and the knot's
+    /// own end is within a token of it).
+    static FURTHEST: Cell<Option<SourcePosition>> = const { Cell::new(None) };
+}
+
+#[derive(Clone)]
+struct Reason {
+    pos: SourcePosition,
+    /// The refused token's length in chars, when the reason explains
+    /// a failure only inside that token.
+    span: Option<usize>,
+    reason: CompactString,
+}
+
+impl Reason {
+    fn explains(&self, failure: SourcePosition) -> bool {
+        failure.line == self.pos.line
+            && match self.span {
+                None => true,
+                Some(n) => {
+                    self.pos.column <= failure.column
+                        && failure.column <= self.pos.column + n as i32
+                }
+            }
+    }
 }
 
 fn key(p: SourcePosition) -> (i32, i32) {
     (p.line, p.column)
 }
 
-/// Record why a name was refused at `pos`; a later refusal wins.
-pub(super) fn note_reason(pos: SourcePosition, reason: CompactString) {
+/// Record why something was refused at `pos`; a later refusal wins.
+/// `span` is the refused token's length when the reason explains a
+/// failure only inside that token.
+pub(super) fn note_reason(
+    pos: SourcePosition,
+    span: Option<usize>,
+    reason: CompactString,
+) {
     REASON.with(|r| {
         let mut r = r.borrow_mut();
-        if r.as_ref().is_none_or(|(p, _)| key(*p) <= key(pos)) {
-            *r = Some((pos, reason));
+        if r.as_ref().is_none_or(|p| key(p.pos) <= key(pos)) {
+            *r = Some(Reason { pos, span, reason });
         }
     })
 }
@@ -102,36 +142,100 @@ pub(super) fn note_error_pos(pos: SourcePosition) {
     ERROR_POS.with(|p| p.set(Some(pos)))
 }
 
-/// Wrap a parse: clears the flags first, and reports the nesting
-/// limit rather than combine's merged expectation set when that is
-/// what actually stopped the parse, or the recorded reason when the
-/// failure lies on the line of a refused name or before it (combine
-/// reports a failed statement at its first column).
+fn note_furthest(pos: SourcePosition) {
+    FURTHEST.with(|f| {
+        if f.get().is_none_or(|p| key(p) < key(pos)) {
+            f.set(Some(pos))
+        }
+    })
+}
+
+/// How a parse failed: the position reported and the message,
+/// already rendered with the source line, a caret and any note.
+#[derive(Debug)]
+pub struct ParseFailure {
+    pub pos: SourcePosition,
+    pub msg: String,
+}
+
+impl std::fmt::Display for ParseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.msg)
+    }
+}
+
+/// The source line at `pos` with a caret under its column, the line
+/// windowed around the caret when it is long.
+fn snippet(text: &str, pos: SourcePosition) -> String {
+    let Some(line) = text.lines().nth((pos.line.max(1) - 1) as usize) else {
+        return String::new();
+    };
+    let col = (pos.column.max(1) - 1) as usize;
+    let chars: Vec<char> = line.chars().collect();
+    const WIDTH: usize = 100;
+    let start = if col > WIDTH { col - WIDTH / 2 } else { 0 };
+    let end = chars.len().min(start + WIDTH);
+    let shown: String = chars[start..end].iter().collect();
+    let pad: String = chars[start..col.min(end)]
+        .iter()
+        .map(|c| if *c == '\t' { '\t' } else { ' ' })
+        .collect();
+    let lead = if start > 0 { "…" } else { "" };
+    let trail = if end < chars.len() { "…" } else { "" };
+    format!("    {lead}{shown}{trail}\n    {}{pad}^", if start > 0 { " " } else { "" })
+}
+
+/// Wrap a parse of `text`: clears the flags first, then reports the
+/// nesting limit when that is what stopped the parse; otherwise the
+/// FURTHEST point any branch reached, with the source line and a
+/// caret — combine's own message only when it failed there too (an
+/// alternative that failed earlier reports stale expectations) — and
+/// the recorded reason when a refused name lies on that line.
 pub(super) fn parsing<T, E: std::fmt::Display>(
+    text: &str,
     f: impl FnOnce() -> Result<T, E>,
-) -> Result<T, String> {
+) -> Result<T, ParseFailure> {
     clear_refused();
     REASON.with(|r| *r.borrow_mut() = None);
     ERROR_POS.with(|p| p.set(None));
+    FURTHEST.with(|p| p.set(None));
     f().map_err(|e| {
+        let err_pos = ERROR_POS.with(|p| p.get()).unwrap_or_default();
         if refused() {
-            return format!(
-                "expression nesting too deep (limit {}, see \
-                 graphix_compiler::expr::parser::set_max_nesting)",
-                max_nesting()
-            );
+            return ParseFailure {
+                pos: err_pos,
+                msg: format!(
+                    "expression nesting too deep (limit {}, see \
+                     graphix_compiler::expr::parser::set_max_nesting)",
+                    max_nesting()
+                ),
+            };
         }
-        let reason = REASON.with(|r| r.borrow().clone());
-        let err_pos = ERROR_POS.with(|p| p.get());
-        match reason {
-            Some((pos, reason)) if err_pos.is_none_or(|ep| ep.line <= pos.line) => {
-                format!(
-                    "{e}\n  note: at line: {}, column: {}: {reason}",
-                    pos.line, pos.column
-                )
-            }
-            _ => format!("{e}"),
+        let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
+        let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
+        let mut msg = if pos == err_pos {
+            format!("{e}")
+        } else {
+            format!(
+                "Parse error at line: {}, column: {}\nthe parser could not \
+                 continue past this point",
+                pos.line, pos.column
+            )
+        };
+        let snippet = snippet(text, pos);
+        if !snippet.is_empty() {
+            msg.push('\n');
+            msg.push_str(&snippet);
         }
+        if let Some(r) = REASON.with(|r| r.borrow().clone())
+            && r.explains(pos)
+        {
+            msg.push_str(&format!(
+                "\n  note: at line: {}, column: {}: {}",
+                r.pos.line, r.pos.column, r.reason
+            ));
+        }
+        ParseFailure { pos, msg }
     })
 }
 
@@ -147,7 +251,7 @@ pub(super) struct GrowStack<P>(P);
 
 impl<Input, P> Parser<Input> for GrowStack<P>
 where
-    Input: Stream,
+    Input: Stream<Position = SourcePosition>,
     P: Parser<Input>,
 {
     type Output = P::Output;
@@ -181,6 +285,16 @@ where
             ensure_sufficient(|| p.parse_mode(mode, input, state))
         };
         DEPTH.with(|d| d.set(d.get() - 1));
+        // A token matcher advances past the token it rejects before
+        // reporting a peek mismatch, so on failure the error's own
+        // position is the exact one; on success the input's is.
+        match &r {
+            ParseResult::CommitOk(_) | ParseResult::PeekOk(_) => {
+                note_furthest(input.position())
+            }
+            ParseResult::CommitErr(e) => note_furthest(e.position()),
+            ParseResult::PeekErr(e) => note_furthest(e.error.position()),
+        }
         r
     }
 

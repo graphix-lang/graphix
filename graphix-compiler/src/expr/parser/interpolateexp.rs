@@ -1,4 +1,8 @@
-use super::{GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr, grow::grow, sptoken};
+use super::{
+    GRAPHIX_ESC, GRAPHIX_MUST_ESC, expr,
+    grow::{grow, note_reason},
+    sptoken,
+};
 use crate::expr::{Expr, ExprId, ExprKind, get_origin};
 use combine::{
     RangeStream, attempt, between, choice, many, not_followed_by, optional,
@@ -7,6 +11,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
+use compact_str::CompactString;
 use netidx_value::Value;
 use netidx_value::parser::escaped_string;
 use poolshark::local::LPooled;
@@ -61,6 +66,21 @@ parser! {
         let interp_part = || attempt(
             between(token('['), sptoken(']'), expr()).map(Intp::Expr)
         );
+        // A `[` that does not open a well-formed `[expr]` ends the
+        // string parse; the note names the escape (the failure itself
+        // lands wherever the expression inside stopped).
+        let bracket_note = || (position(), token('[')).then(|(pos, _)| {
+            note_reason(
+                pos,
+                None,
+                CompactString::const_new(
+                    "`[` opens an interpolated expression inside a string; write \
+                     `\\[` for a literal bracket (or a \"\"\"template\"\"\", where \
+                     brackets are plain text)",
+                ),
+            );
+            unexpected_any("string interpolation").map(|_: ()| unreachable!())
+        });
         let chunk_part = || (
             position(),
             escaped_string(&GRAPHIX_MUST_ESC, &GRAPHIX_ESC),
@@ -135,7 +155,7 @@ parser! {
             between(
                 token('"'),
                 token('"'),
-                many(choice((interp_part(), chunk_part()))),
+                many(choice((interp_part(), chunk_part(), bracket_note()))),
             ),
         )
             .map(|(pos, toks): (_, LPooled<Vec<Intp>>)| finish(pos, toks));

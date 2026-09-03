@@ -440,6 +440,24 @@ thread-local instead, and every parser entry point runs through
 `grow::parsing`, which reports the real reason. Set the flag
 (`note_refused`) from any new refusal site.
 
+**Parse errors report the FURTHEST point reached** (2026-09-03, ledger
+1 of the admin campaign): combine reports a failed statement at
+whichever alternative failed last and `attempt` resets the input on
+the way out, so three different mistakes on line 5 of a select arm all
+reported ``Unexpected ` ` `` at line 2 (the space after `select`).
+Every `GrowStack` knot now records its input position (on success
+too — the combinator right after a knot, the `]` an interpolation
+expects, is seen by no knot) and `grow::parsing` reports the furthest
+one with the SOURCE LINE and a caret; combine's own message is kept
+only when it failed there too. Site notes ride the same reporter
+(`grow::note_reason(pos, span, reason)`): a reserved word in a name
+position (span = the word — it explains a failure only inside that
+word, since `true` in `let x = true +;` was probed as a name and
+parsed as a literal), a `[` that opens no `[expr]` in a string, a
+`duration:` unit netidx does not know (`min` parses as `m`+`in`), and
+`///` in a `.gx`. Pins: `parser/test.rs` `parse_errors_report_the_
+furthest_point`, `reserved_word_as_a_name_is_named`.
+
 Nesting costs the compiler ~326KB of RSS and ~7ms per level at
 opt-level 0 (~5x less optimized), so the limit also bounds how much a
 small hostile input can amplify: 1000 knots is ~330 levels of

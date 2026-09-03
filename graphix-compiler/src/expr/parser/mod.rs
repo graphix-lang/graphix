@@ -193,8 +193,21 @@ where
     I::Range: Range,
 {
     attempt(
-        string("//")
-            .with(not_followed_by(token('/')))
+        (position(), string("//"), optional(attempt(token('/'))))
+            .then(|(pos, _, doc)| match doc {
+                Some(_) => {
+                    grow::note_reason(
+                        pos,
+                        None,
+                        compact_str::CompactString::const_new(
+                            "`///` is a doc comment, legal only in a .gxi interface \
+                             file; a .gx file comments with `//`",
+                        ),
+                    );
+                    unexpected_any("doc comment").left()
+                }
+                None => value(()).right(),
+            })
             .with(many::<String, _, _>(none_of(['\n']))),
     )
     .skip(combine::parser::char::spaces())
@@ -371,6 +384,7 @@ where
             if !CONSTRUCT_KEYWORDS.contains(&s.as_str()) {
                 grow::note_reason(
                     pos,
+                    Some(s.chars().count()),
                     compact_str::format_compact!(
                         "`{s}` is a reserved word and cannot be used as a name"
                     ),
@@ -648,14 +662,52 @@ where
     // nor claims segments of its own. `grow` gives it headroom at the
     // boundary; bounding it properly needs the same treatment in
     // netidx-value.
-    grow((position(), parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix()))).then(
-        |(pos, v)| match v {
-            Value::String(_) => {
-                unexpected_any("parse error in string interpolation").left()
-            }
-            v => value(ExprKind::Constant(v).to_expr(pos)).right(),
-        },
+    // A quoted string is `interpolated()`'s alone: parsed here it
+    // would consume the whole literal before the refusal, and the
+    // failure would be reported past it.
+    attempt(
+        grow((
+            position(),
+            not_followed_by(token('"')),
+            parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix()),
+        ))
+        .map(|(pos, _, v)| ExprKind::Constant(v).to_expr(pos)),
     )
+    .or(grow(duration_unit_note()))
+}
+
+/// A diagnostic arm behind the literal parser: a `duration:` literal
+/// whose unit is not one of netidx's names its unit, since the value
+/// parser accepts the longest unit prefix (`min` parses as `m` plus
+/// `in`) and the failure lands on the letters after it.
+fn duration_unit_note<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    const UNITS: [&str; 9] = ["ns", "us", "ms", "s", "m", "h", "d", "M", "y"];
+    (
+        attempt(string("duration:")),
+        many1::<CompactString, _, _>(satisfy(|c: char| {
+            c.is_ascii_digit() || c == '.' || c == '-' || c == '+'
+        })),
+        position(),
+        many1::<CompactString, _, _>(satisfy(|c: char| c.is_alphabetic())),
+    )
+        .then(|(_, _, pos, unit): (_, CompactString, _, CompactString)| {
+            if !UNITS.contains(&unit.as_str()) {
+                grow::note_reason(
+                    pos,
+                    None,
+                    compact_str::format_compact!(
+                        "`{unit}` is not a duration unit; the units are ns, us, ms, \
+                         s, m, h, d, M and y (`duration:30.m`)"
+                    ),
+                );
+            }
+            unexpected_any("duration literal").map(|_: ()| unreachable!())
+        })
 }
 
 /// A value path: `x`, `m::x`, `Trait::m` (an uppercase interior
@@ -1055,20 +1107,19 @@ parser! {
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
-    let mut pos = SourcePosition::default();
-    let mut r: LPooled<Vec<Expr>> = grow::parsing(|| {
+    let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
         sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp.to_expr(pos))
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(&*ori.text))
             .map(|(r, _)| r)
             .map_err(|e| {
-                pos = e.position;
                 grow::note_error_pos(e.position);
                 e
             })
     })
     .map_err(|e| {
+        let pos = e.pos;
         anyhow::Error::msg(e).context(ParserContext { ori: ori.clone(), pos })
     })?;
     Ok(Arc::from_iter(r.drain(..)))
@@ -1081,20 +1132,19 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
-    let mut pos = SourcePosition::default();
-    let mut r: LPooled<Vec<SigItem>> = grow::parsing(|| {
+    let mut r: LPooled<Vec<SigItem>> = grow::parsing(&ori.text, || {
         sep_by1_tok(sig_item(), semisep(), eof())
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(&*ori.text))
             .map(|(r, _)| r)
             .map_err(|e| {
-                pos = e.position;
                 grow::note_error_pos(e.position);
                 e
             })
     })
     .map_err(|e| {
+        let pos = e.pos;
         anyhow::Error::msg(e).context(ParserContext { ori: ori.clone(), pos })
     })?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
@@ -1102,20 +1152,19 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
 
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
-    let mut pos = SourcePosition::default();
-    grow::parsing(|| {
+    grow::parsing(s, || {
         expr()
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(s))
             .map(|(r, _)| r)
             .map_err(|e| {
-                pos = e.position;
                 grow::note_error_pos(e.position);
                 e
             })
     })
     .map_err(|e| {
+        let pos = e.pos;
         anyhow::Error::msg(e)
             .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
     })
@@ -1138,20 +1187,19 @@ pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
 
 /// Parse one fntype expression
 pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
-    let mut pos = SourcePosition::default();
-    grow::parsing(|| {
+    grow::parsing(s, || {
         fntype()
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(s))
             .map(|(r, _)| r)
             .map_err(|e| {
-                pos = e.position;
                 grow::note_error_pos(e.position);
                 e
             })
     })
     .map_err(|e| {
+        let pos = e.pos;
         anyhow::Error::msg(e)
             .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
     })
@@ -1159,40 +1207,38 @@ pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
 
 /// Parse one type expression
 pub fn parse_type(s: &str) -> anyhow::Result<Type> {
-    let mut pos = SourcePosition::default();
-    grow::parsing(|| {
+    grow::parsing(s, || {
         typ()
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(s))
             .map(|(r, _)| r)
             .map_err(|e| {
-                pos = e.position;
                 grow::note_error_pos(e.position);
                 e
             })
     })
     .map_err(|e| {
+        let pos = e.pos;
         anyhow::Error::msg(e)
             .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
     })
 }
 
 pub(super) fn parse_modpath(s: &str) -> anyhow::Result<ModPath> {
-    let mut pos = SourcePosition::default();
-    grow::parsing(|| {
+    grow::parsing(s, || {
         modpath()
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(s))
             .map(|(r, _)| r)
             .map_err(|e| {
-                pos = e.position;
                 grow::note_error_pos(e.position);
                 e
             })
     })
     .map_err(|e| {
+        let pos = e.pos;
         anyhow::Error::msg(e)
             .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
     })

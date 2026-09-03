@@ -2232,14 +2232,6 @@ fn or_patterns_parse() {
 
 #[test]
 fn reserved_word_as_a_name_is_named() {
-    fn parse_program(text: &str) -> String {
-        let ori = crate::expr::Origin {
-            parent: None,
-            source: crate::expr::Source::Internal(literal!("test")),
-            text: ArcStr::from(text),
-        };
-        format!("{:#}", parse(ori).unwrap_err())
-    }
     let msg = parse_program("let x = 1;\nlet ok = 2");
     assert!(msg.contains("`ok` is a reserved word"), "{msg}");
     assert!(msg.contains("line: 2, column: 5"), "{msg}");
@@ -2252,6 +2244,52 @@ fn reserved_word_as_a_name_is_named() {
     // an unrelated failure carries no stale note
     let msg = parse_program("let y = 1;\nlet z = (1 +");
     assert!(!msg.contains("reserved word"), "{msg}");
+}
+
+/// A program's parse failure, rendered as the shell shows it.
+fn parse_program(text: &str) -> String {
+    let ori = crate::expr::Origin {
+        parent: None,
+        source: crate::expr::Source::Internal(literal!("test")),
+        text: ArcStr::from(text),
+    };
+    format!("{:#}", parse(ori).unwrap_err())
+}
+
+#[test]
+fn parse_errors_report_the_furthest_point() {
+    // combine reports the last alternative to fail — the statement
+    // probe at the select's head, line 2 column 15 for every mistake
+    // below — and `attempt` resets the input on the way out; the
+    // reporter names the furthest point any branch reached, with the
+    // source line and a caret, and the site notes ride along.
+    let arm = |body: &str| {
+        format!(
+            "let x = 1;\nlet r = select x {{\n  1 => {{\n    {body}\n    y\n  }},\n  _ => 2\n}};\nr"
+        )
+    };
+    let msg = parse_program(&arm("let y = x +;"));
+    assert!(msg.contains("line: 4, column: 16"), "{msg}");
+    assert!(msg.contains("    let y = x +;\n") && msg.contains("^"), "{msg}");
+    assert!(!msg.contains("column: 15"), "{msg}");
+    let msg = parse_program(&arm("let y = \"score [name] is [0, 1\";"));
+    assert!(msg.contains("line: 4, column: 32"), "{msg}");
+    assert!(msg.contains("`[` opens an interpolated expression"), "{msg}");
+    let msg = parse_program(&arm("let y = duration:30.min;"));
+    assert!(msg.contains("line: 4, column: 28"), "{msg}");
+    assert!(msg.contains("`min` is not a duration unit"), "{msg}");
+    let msg = parse_program(&arm("let y = {a: 1, b: };"));
+    assert!(msg.contains("line: 4, column: 23"), "{msg}");
+    let msg = parse_program("/// the doc\nlet x = 1;\nx");
+    assert!(msg.contains("`///` is a doc comment"), "{msg}");
+    // a word probed as a name that parsed as a literal in another
+    // alternative explains nothing: the note is scoped to its word
+    let msg = parse_program("let x = true +;\nx");
+    assert!(!msg.contains("reserved word"), "{msg}");
+    assert!(msg.contains("line: 1, column: 15"), "{msg}");
+    let msg = parse_program("let x = 1;\nlet r = select x { true => 1, _ => 0 } +;\nr");
+    assert!(!msg.contains("reserved word"), "{msg}");
+    assert!(msg.contains("line: 2, column: 41"), "{msg}");
 }
 
 #[test]
