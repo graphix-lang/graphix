@@ -111,7 +111,7 @@ let priv_exit = privileged(priv_req);
 
 `suspended` and `released` stay outside: `tui::suspend(suspended)` is
 a LEVEL and a level lives at module scope, driven by a variable the
-steps write (§7). Progress, toasts, focus and the exit level are all
+steps write (§8). Progress, toasts, focus and the exit level are all
 written the same way — a seq block is an ordered issuer of effects that
 waits between them, not primarily a value producer.
 
@@ -154,7 +154,169 @@ source reads in execution order while the semantics stay the
 machine's. The compute loops stay where they are: `let rec`, the HOFs,
 `#[native]`.
 
-## 4. Syntax
+## 4. The semantics underneath
+
+This section is here because the construct and the language's firing
+semantics are intertwined both ways (Eric, 2026-09-03): the lowering
+depends on the semantics as they stand, and the construct may absorb
+some of the complexity a program otherwise meets bare. So: what
+bothers me about the semantics, root causes before symptoms, then the
+semantics I would want, then what each has to do with `seq`.
+
+### 4.1 What is hard, and why
+
+It is not `select`. `select` is where the difficulties meet, because
+it is the one place arms sleep and wake, but its rules are symptoms.
+The roots, in the order I would rank them:
+
+1. **The event channel is implicit.** Every expression carries two
+   things, a value (present, absent, standing) and an event (fired
+   this cycle), and the surface shows only the value. The event
+   channel is what decides when a connect writes, when an effect
+   issues and when a callback runs, and programs steer it with `~`,
+   `uniq`, `filter`, `once`, `hold`, `queue`, the structure of a
+   select, and the constant-versus-sampled distinction in a connect's
+   right-hand side. `~` alone does three jobs: sequence a call
+   (`f(t ~ x)`), sample state at an event (`c ~ counter`), and gate a
+   constant (`t ~ \`Pick`). The deeper form of the same thing: a
+   LEVEL (a value with a present; a reader wants the current one) and
+   an EVENT (a fire that matters once; a reader must not miss it) are
+   the same kind of thing in the language, and the wake catch-up
+   design (`design/wake_catchup.md`) exists to reconcile them after
+   the fact: events that fired while an arm slept are re-raised, once,
+   conflated, while levels are read as they stand. Eric's 43/2/21/62
+   table is the cost of deciding case by case what a mixed thing is.
+
+2. **Bottom is several things.** Never produced; dropped this cycle
+   (`filter`, `never()`, a `$`); an async result not yet arrived; a
+   standing bottom after a value. The engine's fired-by-bottom algebra
+   is principled, but the distinctions leak: `~` holds a trigger's
+   debt if its right-hand side has NEVER materialized and pays it as a
+   fresh bottom if the side has materialized before (§7.3 is a
+   workaround for exactly this — a step that waited on its first run
+   stalls on its second); a bottom read stalls silently, with no way
+   to tell "not yet" from "never"; a bottom scrutinee bottoms a
+   select whose taken arm was an active producer (ruled; `hold` is the
+   tool; still a trap the reader has to know).
+
+3. **Init and wake are special cycles.** Constants fire at init and
+   never again, so a constant write in an arm fires once per selection
+   (a tool, per the ruling, and also the reason a `println` in an arm
+   runs on the first selection only); a guard that has never produced
+   makes the select undecidable at init (the init-phantom); a woken
+   arm forces a recompute, reads standing values stale, re-matches its
+   scrutinee, and receives conflated catch-up fires; the kernel wire
+   distinguishes genuine init from wake by a bit. Each rule is right in
+   isolation. Together they mean a program's first cycle and an arm's
+   re-selection follow rules its tenth cycle does not.
+
+4. **`select`'s own rules** are where the three above surface: the
+   consulted-guard rule, bottom-out, own-firing through a retained
+   selection, pattern binds as facets of the scrutinee delivery and
+   therefore excluded from catch-up (§7.2 leans on this), the once-
+   per-selection constant write. A user who knows 1–3 predicts them;
+   one who does not meets them one at a time.
+
+5. **Three failure channels.** A bottom (silent, the unchecked
+   operators, `$`), an in-band `Error` value (typed, matched), and a
+   thrown error (`?` to the nearest installed handler along the call
+   chain). Which channel a builtin uses is convention ("hot operators
+   log and bottom; rare stdlib functions return a catchable Error").
+   A reader has to know all three and the convention.
+
+6. **Variables are queues of writes**, one delivery per cycle, in
+   write order; a second write to a variable already delivered this
+   cycle is re-queued for the next (`push_var_event!`). This is a
+   clean rule and nobody states it. It matters here: a step variable
+   written by a transition and by the abort in the same cycle is two
+   deliveries, and the lowering has to make the abort's win.
+
+7. **State multiplicity.** A stateful builtin (`count`, `once`) inside
+   a lambda, a callback, an arm or a recursion is per instance, per
+   slot, per activation — principled (`design/activation_state.md`)
+   and hard to explain; smaller than the rest.
+
+The typing subtleties of the last month (coverage distribution, the
+union rectangle, never-typing) are second order next to these: they
+produce compile errors, not surprises at runtime.
+
+### 4.2 The semantics I would want
+
+Stated as principles, each with the rule it would replace.
+
+- **P1 — Levels and events are different kinds, and the reader can
+  tell which is which.** A binding is a level: reading it yields the
+  present value and never history. An event is a fire consumed
+  exactly once; `queue` makes a stream of them lossless; `hold` turns
+  an event into a level; `~` samples a level on an event, and that is
+  its one job. Conversion is always explicit. With this, wake catch-up
+  is not a table: levels need none (read the present) and events need
+  a queue, and the conflation rule (deliver an unconsumed fire once at
+  the current value) disappears, because a conflated event is a level
+  read. The language already gropes toward it: `Any` is the de facto
+  event type in every trigger parameter (`|t: Any|`, `#trig: Any`), and
+  the sibling-bind ruling (a pattern bind is a facet of a delivery,
+  not an event) is P1 applied to one case.
+- **P2 — One bottom.** Bottom means absent: no event, and no memory of
+  ever having been present. No program-visible construct behaves
+  differently because a bottom was once a value. `~`'s debt is the
+  violation: either drop when the level is absent, or wait for it
+  consistently.
+- **P3 — Effects issue on events; derivations follow levels.** A pure
+  expression is a live derivation of its inputs. An effect (an async
+  call, a connect, a print) is issued by an event and not re-issued
+  by a level changing. Organic firing already says this; what it lacks
+  is a way to say which inputs are events.
+- **P4 — No special cycles.** Init is one event, program start;
+  constants are levels (present from birth, never firing); an effect
+  at top level issues on the start event; a wake is not an event.
+  Under P4 the constant write in an arm does nothing, and "on entering
+  this state" is written `cursor <- s ~ 0` with `s` the entry event,
+  which is what the lowering writes anyway (§7.6). The tool survives,
+  spelled.
+- **P5 — Variables are queues.** Already true (4.1 item 6); write it
+  down, and say what two writes in one cycle mean.
+
+Not on the list, because I would keep them: organic firing as the
+core rule; sleep as pause; activation multiplicity; catch as a handler
+rather than control flow; bottom scrutinee ⇒ bottom select (under P2
+it is "an absent level decides nothing", which is right); the
+consulted-guard rule (a guard is a level; absent is undecidable).
+
+### 4.3 What this has to do with `seq`
+
+A `seq` block is P1–P4 applied to one program class by construction.
+Its trigger is an event, consumed once per run (R1). Its inputs are
+levels, read as they stand at a step's entry (R2). Its effects issue
+on the entry event and never on a level moving (R2, R3). It has no
+special cycles: entry IS an event, whether first, re-entry, or a
+loop's back-edge, so a step behaves the same on every run (R2, §7.2).
+Where the language's rules leak through the lowering, an atom absorbs
+the leak, and each atom is priced by the principle it stands in for:
+
+| leak | today's rule | the atom | under the principle |
+|---|---|---|---|
+| a step's input absent at entry | `~` debt asymmetry (P2) | the presence select, §7.3 | `f(pc ~ x)` waits or drops, consistently |
+| the entry must reach a nested watch | pattern binds excluded from catch-up; a scrutinee's own variable maybe (P1) | a sibling `entered` variable, §7.2 | the entry is an event; the watch queues it |
+| a retrigger while running | `~` holds one pending trigger (P1) | `filter` as the busy gate, §7.1 | the policy is a choice between `queue` and drop |
+| a transition on a same-arm re-match | constants fire per selection (P4) | never write a constant RHS, §7.6 | nothing to avoid: constants never fire |
+| two writes to the step variable | variables are queues (P5) | the abort must deliver last | the same, stated |
+
+Two consequences. First, the construct can be built on today's
+semantics: every atom is expressible, and step 0 of the plan is the
+proof. Second, the atoms are the measurement of what the language's
+rules cost a program that wants sequential meaning: if P1–P4 were
+adopted language-wide, the lowering would shrink to `f(pc ~ x)` and
+`pc <- pc ~ \`Next`, and the same simplification would reach every
+hand-written machine that does not use `seq`. That is the sense in
+which `seq` mitigates the complexity: it is a pilot of the semantics
+under P1–P4 in the class of programs that suffers most, and if it
+reads right there, the principles have earned a hearing for the
+language as a whole. The book test from the assessment stands: if the
+rules of §4.2 cannot be written in five pages a newcomer can hold, the
+model is still too subtle.
+
+## 5. Syntax
 
 ```
 seq [trigger] { stmt* [expr] }
@@ -166,18 +328,18 @@ stmt   := let pat = expr ;
         | if expr { stmt* } [else { stmt* }] ;        // sugar over select on bool
         | loop { stmt* } | while expr { stmt* } | for pat in expr { stmt* }
         | break [expr] ; | continue ;
-        | catch(e) expr ;                // at the top of the block only (§5.8)
+        | catch(e) expr ;                // at the top of the block only (§7.8)
 ```
 
 `seq { .. }` without a trigger runs once at init. `if` is already a
-reserved word. The keyword reclaims the integer-sequence builtin (§10).
+reserved word. The keyword reclaims the integer-sequence builtin (§11).
 
-## 5. Semantics
+## 6. Semantics
 
 Numbered so fixtures can cite them.
 
 **R1 — Run.** A run starts when the trigger fires while no run is in
-progress; a trigger during a run is dropped (the busy policy; §10 for
+progress; a trigger during a run is dropped (the busy policy; §11 for
 restart/queue). If the trigger is a bare variable, the body's reads of
 that name see the value the run started with.
 
@@ -197,7 +359,7 @@ is active (that is what lets `until released` wait for a level to
 flip). The classification is `analysis::infer_effects`' per-node
 fact, so the lowering pays nothing new. Consecutive same-cycle steps
 coalesce into one arm; an async completion and every connect end an
-arm (§6.4).
+arm (§7.4).
 
 **R4 — A `let` binds the step's first production for the rest of the
 run.** Later steps read it; a later ITERATION overwrites it before its
@@ -215,7 +377,7 @@ the body; `break v` writes the loop's value and transitions past it.
 `while c` is `loop { select c { false => break, true => null }; .. }`
 with the exit at the top;
 `for x in xs` is an index loop over `xs` taken at the loop's entry.
-An iteration re-enters arms; it never re-instantiates anything (§6.6).
+An iteration re-enters arms; it never re-instantiates anything (§7.6).
 Accumulators are captured variables written as steps (`total <- total
 + x`), read by the next iteration.
 
@@ -240,7 +402,7 @@ the variable that drives the level and `until` waits for its response.
 sync interior fuses as it would anywhere. `#[sync]` on a seq block is a
 compile error, `#[native]` inside a step means what it means today.
 
-## 6. The lowering
+## 7. The lowering
 
 An AST-to-AST desugar (`expr/seq_desugar.rs`, the precedent is the sync
 subset's P1 desugar, which validated "no new node types; both
@@ -249,7 +411,7 @@ each statement to the nodes it lowers to, so a type error names the
 step. `graphix --expand` prints the lowered program: the machine is
 inspectable, which is the debugging story.
 
-### 6.1 The skeleton
+### 7.1 The skeleton
 
 ```graphix
 {
@@ -271,15 +433,15 @@ The cells need no annotations: the Bind ⊥-seed rule (2026-09-03)
 types an unannotated `let x = never()` from its writers. The busy gate
 is `filter`, not `t ~ select pc { .. }`: `~` holds a trigger's debt
 until its RHS first materializes and then pays it, which is a queue of
-one, not a drop (§10 lists it as the `queue` policy).
+one, not a drop (§11 lists it as the `queue` policy).
 
-### 6.2 The entry event
+### 7.2 The entry event
 
 Inside arm `Ak`, the step variable read as a free variable — `pc`
 itself — fires on every delivery into the arm: first entry, re-entry
 after another arm, and a same-arm re-delivery on a loop's back-edge.
 It is the one event every atom below samples on. It must be a free
-variable and not the arm's pattern bind, because a nested watch (§6.3)
+variable and not the arm's pattern bind, because a nested watch (§7.3)
 relies on the wake catch-up tracker re-raising it, and pattern binds
 are excluded from that tracker by design (`Bind::pattern`, 2026-09-02:
 a pattern bind is a facet of its arm's scrutinee delivery). Whether a
@@ -287,7 +449,7 @@ free read of the scrutinee's own variable is tracked is the first
 thing the prototype confirms; if not, the machine writes a sibling
 `entered` variable beside every `pc` write and samples on that.
 
-### 6.3 The issue atom
+### 7.3 The issue atom
 
 A step with an effect and variable inputs `x1..xn`:
 
@@ -310,7 +472,7 @@ doing exactly "wait for presence, then issue once". On a re-entry with
 present inputs the select re-matches at wake and the entry's delivery
 that cycle is consumed by the arm: one issue.
 
-### 6.4 Arms and chains
+### 7.4 Arms and chains
 
 Steps chain inside an arm as an ordinary block: each step's inputs
 include the previous step's completion (its binding, or a hidden
@@ -328,7 +490,7 @@ the same cycle (`x_c <- x`), so both land in one batch and the next
 arm's entry samples the new values (`Sample::update` updates its
 argument before it samples).
 
-### 6.5 Branches
+### 7.5 Branches
 
 A select step is an arm boundary: the scrutinee is the arm's last
 step; its transition writes the FIRST arm-label of the chosen
@@ -336,7 +498,7 @@ alternative (`pc <- v ~ select v { pat1 => `B1, pat2 => `C1 }`, with
 the pattern binds re-established in the alternative's first arm from a
 cell). Each alternative's last arm transitions to the join label.
 
-### 6.6 Loops
+### 7.6 Loops
 
 A label is an arm; the back-edge is a `pc` write of the label; a
 same-arm back-edge (a one-arm body) is a same-value write, which
@@ -348,36 +510,41 @@ per SELECTION and not on a same-arm re-match (the select chapter's
 "Writing From an Arm"), so every transition is sampled on the entry
 event or on the step's completion.
 
-### 6.7 What sleep does for free
+### 7.7 What sleep does for free
 
 A passed arm sleeps, and sleep is pause: a timer step's pending timer
 is cancelled (`Timer::sleep` unrefs it), a `sys::net` level effect
 tears down, a process spawn is not cancelled (`kill_on_drop` is on
-drop). §7 states what this does and does not give.
+drop). §8 states what this does and does not give.
 
-### 6.8 Errors
+### 7.8 Errors
 
 The user's `catch` is allowed only at the top of the block and it is
 cleanup, not a handler: the lowered machine has one handler, outermost,
 whose body is the cleanup, the reset, and the rethrow. Handler-side
 `?` resolves to the predecessor, so the enclosing block's catch sees
-the error as it would from a plain block. A mid-block catch (covering
+the error as it would from a plain block. The step variable is a queue
+(§4.1, item 6): a transition and the abort's reset written in one cycle
+deliver over two, in write order, so a transition must not be queued
+behind a reset — the transition writes are gated on the handler not
+having fired this cycle, or the reset carries a run generation the
+stale transition fails to match. A mid-block catch (covering
 only later steps) would have to be duplicated into every later arm;
 not in v1.
 
-## 7. Costs and limits
+## 8. Costs and limits
 
 - **Cycles.** One per async completion, one per connect, one per
   back-edge. A cycle is well under a millisecond in release (a text
   key is 0.17ms end to end at 5.4k lines), so a six-step ceremony adds
   about a millisecond to work that takes seconds.
 - **No cancellation.** A retrigger cannot cancel an in-flight step
-  beyond what sleep does (§6.7); the busy policy is the default because
+  beyond what sleep does (§7.7); the busy policy is the default because
   restart would deliver a stale production into a fresh run. A step
   that never completes (a watch on a level that never flips, an
   operation that never answers) stalls the run, exactly as a
   hand-written machine stalls today. A `timeout` policy is the honest
-  fix and is open (§10).
+  fix and is open (§11).
 - **No within-cycle iteration.** A loop whose body is all same-cycle
   steps runs one iteration per cycle: the counter idiom, observable and
   interruptible. Collapsing it into a within-cycle loop is possible
@@ -387,7 +554,7 @@ not in v1.
   example.
 - **Fusion** is untouched (R10).
 
-## 8. Typing and diagnostics
+## 9. Typing and diagnostics
 
 The step variable's type is a generated variant; cells are seeded
 cells (Bind ⊥-seed); `break` values unify with the loop's binding; the
@@ -398,12 +565,12 @@ effect nor a derivation of anything (a bare constant) is a warning.
 The desugared program must print (`--expand`) and re-parse to the same
 machine — the round-trip test covers the lowering's output.
 
-## 9. Plan
+## 10. Plan
 
 0. **The go/no-go, before any parser work.** Lower the privileged
    handoff (§2) BY HAND in the port, atoms and all, and diff it against
    `local.gx` as it stands. Two questions: does the machine written
-   with the atoms behave (the §6.2 tracker question; the §6.3 presence
+   with the atoms behave (the §7.2 tracker question; the §7.3 presence
    gate on a second run; a timer loop's re-arm), and is the surface
    form the first version of that ceremony a reader follows top to
    bottom. If the hand-lowered machine is only shorter, the construct
@@ -424,7 +591,7 @@ machine — the round-trip test covers the lowering's output.
 5. Book: a chapter beside `select`, with R9 and the counter-idiom
    warning.
 
-## 10. Open questions
+## 11. Open questions
 
 - **The keyword** is `seq` (Eric, 2026-09-03: "that's what it actually
   is"; `do` was the draft's name and collides with the block AST's
@@ -443,7 +610,7 @@ machine — the round-trip test covers the lowering's output.
 - **Nested `seq`** as a statement (a sub-machine triggered by the
   entry) — falls out of R3 and R8 if the inner block's trigger is the
   outer entry, but a lambda call is the same thing; v2.
-- **Mid-block `catch`** (§6.8).
+- **Mid-block `catch`** (§7.8).
 - **`until`** as sugar or as a documented select spelling.
 - **The trigger snapshot** (R1's last sentence): needed, or is the
   one-cycle race between the trigger's delivery and the first arm's
