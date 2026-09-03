@@ -1,0 +1,5 @@
+// bisect: compile-time non-termination (both engines) — FIXED, kept as regress pin.
+// The campaign's shape (hz0 sep02a crash_000003, the map dropped): the
+// handler's mismatched-union connect inside a select on the error's
+// tag, with a rethrow arm. A CompileErr in both modes after the fix.
+{let a = [i64:0, i64:1, i64:2, i64:3, i64:4, i64:5]; let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let err1: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); catch(e) select e.0.error {`ArithError(_) => err1 <- e, _ => e?}; error(`B)?; a[i64:6]?; [err0, err1]}

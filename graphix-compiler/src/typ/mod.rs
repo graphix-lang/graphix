@@ -88,6 +88,14 @@ struct RefHist<H: IsoPoolable> {
     /// (Any, primitives, tvars) have no content key and keep `None`,
     /// preserving their cycle break.
     content_ids: LPooled<AHashMap<NormKey, usize>>,
+    /// The scrutinee ids of the coverage-distribution probes in
+    /// progress (`set_covers_by_distribution`). The probe re-expands a
+    /// recursive alias through `lookup_ref` and re-asks `contains` on
+    /// each position, so a recursive field reaches the same probe one
+    /// level deeper with the cycle memo already dropped by the direct
+    /// walk's failure; a probe that depends on its own verdict claims
+    /// nothing.
+    distributing: SmallVec<[usize; 4]>,
     epoch: u64,
     next_id: usize,
 }
@@ -115,6 +123,7 @@ impl<H: IsoPoolable> RefHist<H> {
             probe_pairs: LPooled::take(),
             probe_pins: LPooled::take(),
             content_ids: LPooled::take(),
+            distributing: SmallVec::new(),
             epoch: 0,
             next_id: 0,
         }

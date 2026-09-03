@@ -1,0 +1,11 @@
+// bisect: compile-time non-termination (both engines) — FIXED, kept as regress pin.
+// After the fix this program is a CompileErr in both modes (AGREE): the
+// connect's target is declared over a different error union than the
+// catch delivers, a plain type mismatch. Before it, `contains` on two
+// instantiations of the recursive ErrChain alias looped: the Ref×Ref
+// cycle memo is dropped once the direct walk fails, and the coverage
+// distribution probe re-expands the alias through lookup_ref with no
+// memo of its own, so the failing `cause`-field question was asked one
+// level deeper forever (hz0 sep02a: two hangs, a stack-budget abort
+// and an OOM, all at compile time).
+{let err1: Error<ErrChain<[`ArithError(string)]>> = never(); catch(e) err1 <- e; error(`B)?; 1}

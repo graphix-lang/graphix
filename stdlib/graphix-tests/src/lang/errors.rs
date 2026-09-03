@@ -509,3 +509,28 @@ run!(catch_through_call, CATCH_THROUGH_CALL, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// hz0 sep02a (2026-09-03): a connect of the catch variable into a
+// binding declared over a DIFFERENT error union is a plain type
+// mismatch. `contains` on two instantiations of the recursive ErrChain
+// alias looped instead — the Ref×Ref cycle memo is dropped once the
+// direct walk fails, and the coverage-distribution probe re-expanded
+// the alias without a memo of its own, one level deeper per round.
+// The timeout turns a regression into a failure rather than a hang.
+#[tokio::test]
+async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
+    let src = "{let err1: Error<ErrChain<[`ArithError(string)]>> = never(); \
+               catch(e) err1 <- e; error(`B)?; 1}";
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        graphix_package_core::testing::eval(src, crate::TEST_REGISTER),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the mismatch check did not terminate"))?;
+    let e = match r {
+        Ok((v, _)) => anyhow::bail!("expected a type mismatch, got {v}"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(e.contains("does not contain"), "{e}");
+    Ok(())
+}

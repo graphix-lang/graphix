@@ -1,0 +1,4 @@
+// CRASH: child signal: 9 (SIGKILL) | [2026-09-02T15:34:57Z ERROR graphix_compiler::stack] stack budget (1073741824 bytes) exceeded by a recursion — aborting the runtime (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget) | [2026-09-02T15:34:57Z ERROR graphix_compiler::stack] stack budget (1073741824 bytes) exceeded by a recursion — aborting the runtime (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)
+// do not promote to findings/ until fixed (regress runs in-process)
+// mutant:
+{let a = [i64:0, i64:1, i64:-9223372036854775808, i64:3, i64:4, i64:0]; let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let err1: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); catch(e) err0 <- e; catch(e) select e.0.error {`ArithError(_) => err1 <- e, _ => e?}; math::clamp(f64:-3., f64:0., f64:10.)?; a[i64:6]?; [err0, err1]}

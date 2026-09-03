@@ -1481,6 +1481,26 @@ impl Type {
         s: &Arc<[Type]>,
         t: &Self,
     ) -> Result<bool> {
+        let t_id = hist.ref_id(t, env);
+        if let Some(id) = t_id {
+            if hist.distributing.contains(&id) {
+                return Ok(false);
+            }
+            hist.distributing.push(id);
+        }
+        let r = Self::set_covers_by_distribution_inner(env, hist, s, t);
+        if t_id.is_some() {
+            hist.distributing.pop();
+        }
+        r
+    }
+
+    fn set_covers_by_distribution_inner(
+        env: &Env,
+        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        s: &Arc<[Type]>,
+        t: &Self,
+    ) -> Result<bool> {
         fn head(env: &Env, t: &Type) -> Type {
             let mut cur = t.clone();
             for _ in 0..64 {
