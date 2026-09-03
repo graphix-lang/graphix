@@ -406,6 +406,11 @@ compile error, `#[native]` inside a step means what it means today.
 
 ## 7. The lowering
 
+> Under `pure_select.md` §11 (arms always updated, no sleep) this
+> lowering shrinks to a `~` chain with a busy flag and one catch — no
+> `pc` for a straight-line block; see `pure_select.md` §13.1. What
+> follows is the lowering on TODAY's semantics.
+
 An AST-to-AST desugar (`expr/seq_desugar.rs`, the precedent is the sync
 subset's P1 desugar, which validated "no new node types; both
 evaluators inherit the semantics from one spec"). Positions carry from

@@ -449,3 +449,115 @@ sparse delivery should reduce (no ride-downgrade walk on quiet
 cycles). Sequence: pure select first (it removes two of the four
 legs), then a sparse-currency prototype behind the same corpus gate,
 as its own design doc.
+
+## 13. Interaction with `seq`, and what it relieves in the port
+
+### 13.1 `seq` under always-update
+
+The `seq_blocks.md` §7 lowering — a select over a step variable `pc`
+with effectful arms — leaned on sleep to gate each step's effects.
+Under §11 an arm gates nothing but connects, so the lowering must key
+every effect explicitly, and the explicit form is smaller than the
+`pc` machine:
+
+- A straight-line `seq` is a `~` CHAIN: each step's leaves are
+  sampled on the previous step's completion event, which is an event
+  by construction (an async step's first production, a same-cycle
+  effect's issue, a pure step's derivation). No `pc`.
+- R1 (drop retriggers while busy) is one variable: `busy <- start ~
+  true`, cleared by the last step's completion and by the handler, and
+  `filter(trigger, |_| !busy)` at the head.
+- Abort is the catch: a failed step produces nothing, so no later step
+  is ever triggered; the handler runs the user's cleanup and clears
+  `busy`. Nothing to unwind.
+- A branch is a pure select choosing which chain's head trigger fires;
+  a loop is `any(entry, back_edge)` as a step's trigger; `until c` is
+  `select c { true => c, false => never() }` — the port's `go`.
+- `~` waits on every absence (K5), so no presence select anywhere.
+
+The port's privileged handoff is already this form, by hand
+(`local.gx` ~690–720): `suspended <- cmd ~ true`, `let released =
+tui::suspend(suspended)?`, `let go = select released { true =>
+released, false => never() }`, `println(go ~ …)`, `spawn(options(#args:
+cmd.args, go ~ cmd.program))?`, `wait(child.proc)?`, `suspended <-
+status ~ false`. So under §11, `seq` is exactly "the compiler writes
+the `~`s, the busy flag and the catch scope, and names the steps" —
+the same construct as proposed, with a lowering a reader can check by
+eye. Of §4.3's atoms: the presence select is gone (K5); the `entered`
+variable is gone (a step's trigger IS the previous completion); the
+busy gate stays as one variable; the constant-RHS rule has nothing to
+apply to (every leaf in the chain is sampled); the abort order is P5.
+
+They are a package. §11 alone makes the ceremony class HARDER to
+hand-write — an effect not keyed on an event issues whenever its
+arguments fire, and the arm no longer saves you — and `seq` is what
+writes the keys. `seq` alone, on today's semantics, needs §7's `pc`
+machine and its atoms. Together, the port's chains become blocks, and
+the blocks lower to what the port already writes.
+
+### 13.2 What it relieves in the port
+
+Against the campaign's findings, honestly:
+
+1. **The sleep/wake phantom class** — the phantom submit, the
+   sibling-bind phantom, the select wake re-match, the default-arg
+   birth, a month of the fired/stale seam flip-flopping. The largest
+   engine-side sink of the campaign. §11 deletes the class. On the
+   port's side these cost test-driven diagnosis, not code: every fix
+   was an engine fix, and the port changes nothing here.
+2. **The sampling discipline** — 126 `<- x ~` sites; "handlers sample
+   the event". NOT relieved: `x <- f(x)` loops are inherent, and an
+   effect keyed on an outside level must sample. But it becomes THE
+   rule instead of one of two (constants fire per selection vs
+   sampled), which is what makes it teachable. Three genuine constant
+   writes in the port (`toast <- null` landing.gx:173, `policy_open <-
+   true` panels.gx:927, `gate_sel <- 0` panels.gx:967) go silent under
+   §11 and need `x ~`. A constant RHS of a connect inside an arm is
+   DEAD CODE under §11 — it never fires after init — so a diagnostic
+   for it is a dead-write warning, not the lint on a working tool that
+   ledger 3+13 declined.
+3. **The `run` ladders** (the ceremony dispatch, local.gx 455–500,
+   755–790): `x@ \`Renew => renew(x)` keys the effect on the arm's own
+   bind, which is absent unless the arm matches. Already
+   always-update-safe. Unchanged.
+4. **The outer-bind dispatches** (app.gx 24–25, remote.gx 117–119,
+   local.gx 1259–1262: `\`Landing => land.handle(ev)` with `ev` bound
+   by an ENCLOSING select): under §11 every screen's handler runs on
+   every key — the arm is impure, so it is always updated — with its
+   connects suppressed by the taken bit, which therefore must
+   propagate into callees dispatched from an arm (a per-cycle context
+   bit, like the frame flags). Correct, but the per-key cost becomes
+   the sum over screens' handlers (the role-menu key is 3.2ms today).
+   The shape §11 wants, and the one "select decides what data flows"
+   names, is to route the KEY: `let ev_for = select screen {
+   \`Landing => \`Landing(ev), \`Connect => \`Connect(ev), … }` and key
+   each handler on its own tag. Three sites; measure with
+   `milestone_latency` either way.
+5. **Panel loads**: keyed on open/refresh already and carried by the
+   question bus (panels.gx issues no effect directly). Unchanged; no
+   "every panel loads at connect".
+6. **The chain class** (the handoff; install/finish/uninstall): relieved
+   by `seq`, not by §11; §11 makes `seq` smaller (13.1).
+7. Everything else on the ledger — `never<T>`, the ⊥-seed rule,
+   coverage distribution, the union rectangle, `could_match`'s Fn arm,
+   place references, `tui::form`, the parser's furthest point, compile
+   time — is orthogonal.
+
+**The one rule §11 must add.** Which effects the taken bit gates.
+Connects, certainly (Eric's words). Level effects never (his example:
+the untaken `subscribe` stays live). Event effects in an untaken arm —
+a `println`, a `spawn` keyed on an OUTSIDE event? Either (a) gate them
+too — "an untaken arm's outputs are ignored: its writes and its
+issues", the natural reading of "select decides what flows", and it
+makes `\`A => spawn(k ~ cmd)` safe — or (b) gate connects only and
+rely on the sampling discipline. The port is safe under either (its
+event effects are keyed on binds). (a) is the safer default and needs
+the level/event effect distinction declared per builtin, since
+`Effect::Async` covers both `subscribe` and `spawn` today.
+
+**Verdict.** §11 relieves the engine's pain nearly entirely and the
+port's pain barely at all — because the port was already written in
+§11's discipline, taught by the bugs §11 removes. The port's remaining
+pain is the chain class, which is `seq`'s, and `seq` is smaller under
+§11. The port's bill: three constant writes become sampled, three
+dispatches route the key, and a latency measurement.
