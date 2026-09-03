@@ -1486,7 +1486,10 @@ terminal). Needs lab validation on a real terminal. Then: the
 release-build measurement, full lab validation, the parity review;
 the ratatui TUI is deleted only after all of that (Eric). Facts from
 the slice: a constant-RHS connect in a
-select arm fires once per selection (organic firing; sample it);
+select arm fires once per selection (organic firing — Eric 2026-09-03:
+that is the trigger on the selection changing, a tool, not a lint;
+handlers sample the event; the select chapter's "Writing From an
+Arm");
 bool literals do not pool inside payload/tuple positions (nested
 selects; ledger 14); a variant arm with a payload pattern never
 narrowed the arms after it — `Type::diff` compared payloads with

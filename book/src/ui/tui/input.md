@@ -212,6 +212,13 @@ tui::input_handler::input_handler(
 )
 ```
 
+The `Up` and `Down` arms sample the event (`e ~ count + 1`). A write
+inside a select arm fires when its right-hand side fires: `count <-
+count + 1` would fire again on its own update and loop, and a constant
+such as `mode <- \`Insert` fires once when the arm becomes selected
+rather than on every key. Both are useful, and the select chapter's
+"Writing From an Arm" spells out when.
+
 ### Conditional Handling
 
 The `#enabled` parameter allows dynamically enabling/disabling a handler:

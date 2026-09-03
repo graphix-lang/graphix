@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-50bf54f7.js";
+            window.path_to_searchindex_js = "../searchindex-9642fc8b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-879b8455.js"></script>
@@ -556,6 +556,32 @@ select a {
 <p>This is not normally how we would get the length of an array in Graphix, or even
 how we would do something with every element of an array (see <code>array::map</code> and
 <code>array::fold</code>), however it illustrates the power of select and connect together.</p>
+<h3 id="writing-from-an-arm"><a class="header" href="#writing-from-an-arm">Writing From an Arm</a></h3>
+<p>A connect inside an arm is an ordinary node of that arm: it fires
+when its right-hand side fires. That gives two distinct tools.</p>
+<p>A right-hand side that samples the scrutinee fires on every delivery
+into the arm:</p>
+<pre><code class="language-graphix">select k {
+  x if x != 5 =&gt; s &lt;- x ~ 100,
+  _ =&gt; never()
+}
+</code></pre>
+<p>A constant right-hand side fires when the arm becomes selected, and
+not again while the same arm keeps matching: a constant has no input,
+so a re-match of the same arm with a new value re-emits the arm
+without re-running the write. That is a trigger on the selection
+changing, which is what an “on entering this state” write wants:</p>
+<pre><code class="language-graphix">select screen {
+  `Menu =&gt; cursor &lt;- 0,
+  _ =&gt; never()
+}
+</code></pre>
+<p>Measured over ten deliveries of <code>k</code> into the first select, with the
+arm deselected at 5 and reselected at 6, the sampled write fires nine
+times and a constant write in its place twice. Event handlers usually
+want the sampled form. An arm <code>`Enter =&gt; screen &lt;- `Pick</code> fires on
+the first Enter and not on the second while the arm stays selected,
+so a handler samples the event: <code>`Enter =&gt; screen &lt;- ev ~ `Pick</code>.</p>
 
                     </main>
 

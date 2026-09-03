@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-50bf54f7.js";
+            window.path_to_searchindex_js = "../../searchindex-9642fc8b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-879b8455.js"></script>
@@ -346,6 +346,11 @@ tui::input_handler::input_handler(
   &amp;tui::paragraph::paragraph("[count]")
 )
 </code></pre>
+<p>The <code>Up</code> and <code>Down</code> arms sample the event (<code>e ~ count + 1</code>). A write
+inside a select arm fires when its right-hand side fires: <code>count &lt;- count + 1</code> would fire again on its own update and loop, and a constant
+such as <code>mode &lt;- \</code>Insert` fires once when the arm becomes selected
+rather than on every key. Both are useful, and the select chapter’s
+“Writing From an Arm” spells out when.</p>
 <h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
 <p>The <code>#enabled</code> parameter allows dynamically enabling/disabling a handler:</p>
 <pre><code class="language-graphix">let editing = false;
