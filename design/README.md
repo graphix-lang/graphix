@@ -43,7 +43,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 |---|---|
 | `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
 | `seq_blocks.md` | `seq` blocks: sequencing across cycles — a `select` the compiler writes (steps, branches, loops, abort); proposed 2026-09-03, go/no-go = hand-lower one ceremony |
-| `levels_and_events.md` | levels vs events as a KIND: retained vs unretained value channel, inferred, coercing one way; `~` waits on every absence (not only the first), deletes the wake tracker, makes event selects fusable; proposed 2026-09-03, go/no-go = a throwaway kind checker's migration counts |
+| `levels_and_events.md` | levels vs events as a KIND — revised same day (§0): async results are LEVELS (retention is the feature), only occurrences lack a standing value, the tracker stays; `~` waits on every absence; residual = a compile error for occurrence-as-state + pure event selects; proposed 2026-09-03, go/no-go = a throwaway kind checker's counts |
 | `strict_fusion.md` | RULED + BUILT 2026-09-01: fusion is pure+fastcall only; the stateful-kernel machinery is deleted (the record of what went) |
 | `fusion_lowering_split.md` | split `try_fuse` into analysis + lowering (legibility) |
 | `interp_lazy_bind_cost.md` | partial: what remains of the interp's per-activation cost (see header) |

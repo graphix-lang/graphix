@@ -1,6 +1,6 @@
 # Levels and events — the kind model
 
-Status: proposed, 2026-09-03. The concrete form of P1–P4 in
+Status: proposed, 2026-09-03; REVISED the same day (§0). The concrete form of P1–P4 in
 `seq_blocks.md` §4.2, written for Eric's question: *how can levels and
 events be different while still keeping the good features of the
 language?*
@@ -13,6 +13,54 @@ implicitly and the other only by name, and every rule that today asks
 "was this fire a change or an occurrence?" is answered by the kind
 instead of by a table. Organic firing is untouched: it is a rule about
 the fire bit, and both kinds keep it.
+
+## 0. Revision (2026-09-03, same day — Eric's objection)
+
+> "The very property that made the async part of the netidx-admin
+> TUI port effortless is the property you're proposing we eliminate."
+
+Correct. §2–§5 below classify async results (`wait`, an rpc reply, an
+http response, `lines`) as events, so `let status = wait(child.proc)?`
+would need `hold` before a widget could show it — the plumbing tax
+(reflex's `holdDyn` on every event) that the port never paid: a reply,
+a probe result, a process exit all become values the graph follows,
+from anywhere, whenever they land. Retaining every value IS the
+feature. The revision, which supersedes the bullets it names:
+
+- **An async result is a LEVEL with a birth** (K3, §5 class 5):
+  absent until it arrives, then a standing value — like a
+  subscription, a variable, a file read. Retention stays for all of
+  them; nothing in the port's style changes.
+- **Only OCCURRENCES lack a standing value**: callback parameters,
+  key/mouse events, timer ticks, stream items, rpc-server call
+  arrivals, `queue` output. "The last key press" is not state, and
+  treating it as state is every phantom the campaign found.
+- **The tracker stays** (§4, retracting "the tracker deletes"). For a
+  level, conflation is the RIGHT semantics: a change missed during
+  sleep is one fact about the present, delivered once — it is what
+  lets `toast <- r ~ "done"` in an arm work when the reply landed
+  while the arm slept. Under the revision the tracker serves levels
+  only; events have nothing standing to deliver, so the pattern-bind
+  exclusion (`Bind::pattern`) becomes structural instead of a special
+  case. `Bind::facet` (let siblings of a level) stays as is.
+- **What the kind still buys**: a compile error where an occurrence is
+  read as state (`&e`, `text(&"[e]")`); event selects that are sync
+  and pure (K7 — a key handler fuses end to end, no `k ~`); the
+  exclusion rules falling out of the type. **What it no longer buys**:
+  deleting the tracker; fusing `~` (already withdrawn at K5).
+- **Most of the `seq` simplification needs no kind.** Three rulings
+  on existing semantics do it: `~` waits on every absence (K5,
+  settled); `once(x)` inside an arm IS the entry event (the restart
+  contract, today); and, optionally under P4, constants do not
+  re-fire at wake with `once(c)` as the spelled tool. None touches the
+  type language. The residual kind proposal earns a type only if the
+  occurrence-as-state class shows up in the checker's counts (§6 step
+  1) as a real bug source — the phantom submit, the landing sibling
+  phantom and the `k ~` rule are all of that class — and it is a much
+  smaller change than §2–§5 describe. Measure before arguing.
+
+The sections below are kept as written for the record; read them
+through this revision.
 
 ## 1. What the runtime already has
 
