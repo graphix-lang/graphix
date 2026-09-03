@@ -392,6 +392,28 @@ interp's per-cycle cost grows by the walk of impure untaken arms
 on the admin TUI with `milestone_latency`, and bounded by fusion: a
 pure screen is a kernel whose walk is one fire-bit check.
 
+**The write rule (Eric, same day: "if every connect in an arm is
+gated by the taken bit, then `select screen { A => x <- A, B => x <-
+B }` does exactly what the programmer intends").** The bit alone does
+not — a constant fires at init, so on entering `B` nothing fires and
+`x` stays `A`. What makes it happen: **a connect written inside an arm
+fires when the arm's select delivers a matching scrutinee, reading its
+RHS as it stands** — a write in an arm is implicitly sampled on its own
+scrutinee. Consequences: the `k ~` in every handler write goes
+(`\`Up => selected <- selected - 1` fires once per key); the accidental
+counter in a handler is unwritable (the RHS's own change does not fire
+the write). Clauses: an explicit `~` at the RHS root keeps its own
+trigger (`x <- tick ~ v` in an arm fires on the tick while taken — the
+port's 126 sampled writes keep their meaning); the taken bit keeps one
+job, gating the writes of callees dispatched from an untaken enclosing
+arm; an absent RHS banks like `~`. The same rule extends to event
+effects (`\`Confirm => spawn(cmd)` issues per delivery of `Confirm`,
+not per change of `cmd`); level effects follow. ONE IDIOM CHANGES:
+`select go { true => x <- x + 1, _ => never() }` becomes one increment
+per delivery of `go`; the loop is `x <- x ~ x + 1`, or the book's form
+with `x` as the scrutinee (each write re-delivers it). Per-delivery is
+the reading that never spins.
+
 **Verdict.** Prefer this over §3. It has one fewer implicit contract
 (presence), one fewer special case (entry birth), one fewer dependency
 (the kind), and a smaller implementation. What it asks of the

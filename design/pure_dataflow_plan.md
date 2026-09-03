@@ -93,11 +93,21 @@ ruling):
    declined lint on a working tool (ledger 3+13) — the write is dead.
 4. **Refusal wording** for a recursive call through an impure callee
    under its own select.
+5. **The write rule** (`pure_select.md` §11, "The write rule"): a
+   connect inside an arm fires on the arm's matching scrutinee
+   delivery with the RHS as it stands; an explicit `~` at the RHS
+   root keeps its own trigger; the same for event-effect issues. This
+   is what makes `select screen { A => x <- A, B => x <- B }` do what
+   it says, removes `k ~` from handler writes, and makes the accidental
+   counter unwritable in a handler. Recommended yes. The one idiom
+   that changes — an unsampled self-loop in an arm becomes one step
+   per delivery — needs Eric's explicit ruling.
 
 Work:
 
 - A1. `Select::update`: impure arms every cycle, pure arms while
-  taken; per-arm purity from `lambda_is_stateless` over the arm's
+  taken; the write rule (decision 5) — `Connect` under an arm fires
+  on the arm's matching delivery unless its RHS root is a `~`; per-arm purity from `lambda_is_stateless` over the arm's
   subtree at compile; the taken index as a per-cycle context bit
   (beside the frame flags) that `Connect` and the issue-class builtin
   wrappers consult, propagated into callees dispatched from an arm,
