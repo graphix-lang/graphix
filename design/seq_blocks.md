@@ -256,7 +256,9 @@ Stated as principles, each with the rule it would replace.
   read. The language already gropes toward it: `Any` is the de facto
   event type in every trigger parameter (`|t: Any|`, `#trig: Any`), and
   the sibling-bind ruling (a pattern bind is a facet of a delivery,
-  not an event) is P1 applied to one case.
+  not an event) is P1 applied to one case. The full kind model — the
+  rules, the witnesses replayed, what it deletes and what it costs —
+  is `levels_and_events.md`.
 - **P2 — One bottom.** Bottom means absent: no event, and no memory of
   ever having been present. No program-visible construct behaves
   differently because a bottom was once a value. `~`'s debt is the
