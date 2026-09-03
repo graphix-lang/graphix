@@ -57,14 +57,20 @@ The rules:
   given, the level's change event is taken. `count(l)`, `x <- l`,
   `l ~ v` all mean today what they mean today. This is the rule that
   keeps existing programs compiling.
-- **K5 Sample.** `e ~ l` is the value of `l` at each occurrence of `e`;
-  an absent `l` means no occurrence — drop. Waiting for the first value
-  is `hold(#clock: e, l)`, which exists and documents exactly that
-  contract ("if clock updates when no v is held, record the number of
-  times and pass that many through when they happen"). `~` becomes a
-  pure function of its two inputs and its debt (`Sample::triggered`,
-  the banked `set_var` payments, the taint-after-first asymmetry) is
-  deleted.
+- **K5 Sample.** `e ~ l` is the value of `l` at each occurrence of `e`,
+  and if `l` is absent at the occurrence, its next value: the trigger
+  is banked and paid when `l` arrives. Arrival order is not under the
+  programmer's control (Eric): a trigger at init or a timer tick
+  routinely precedes the subscription or async result it samples, and
+  a sample that dropped those would make `f(trigger ~ x)` silently do
+  nothing. Today's `Sample` banks exactly this way until the right
+  side's FIRST value and drops a trigger during any later absence
+  (`held()`'s tainted arm) — the memory of having been present that
+  P2 forbids. Under K5 the bank applies to every absence, which is the
+  contract `hold(#clock, v)` already documents ("if clock updates when
+  no v is held, record the number of times and pass that many through
+  when they happen"), so `~` and `hold(#clock: e, l)` become one thing.
+  The counter stays, so `~` stays outside fusion.
 - **K6 Connect.** `x <- e` writes the level `x` at each occurrence of
   `e`; variables are queues (P5). `x <- l` is `x <- changes(l)` by K4,
   so the loop idiom `x <- x + 1` is unchanged and now reads as what it
@@ -120,8 +126,8 @@ the kinds, with no fire bits anywhere:
 | a `let` sibling (`let (a, b) = pair`) | one tracked input, catch-up to every read sibling | `a`, `b` are facets of a level: present at wake (K1) |
 
 And the `seq` atoms (`seq_blocks.md` §4.3), which were the measurement:
-the presence select collapses to `f(entry ~ x)` (K5 drops, or
-`hold(#clock: entry, x)` waits); the sibling `entered` variable is
+the presence select is unnecessary — `f(entry ~ x)` waits on every
+run, not only the first (K5); the sibling `entered` variable is
 `once(pc)` (K9); the busy gate is a choice between `queue` and drop
 (K4/K9); the "never write a constant RHS" rule has nothing left to
 avoid (K9); the abort ordering is P5, stated. A `seq` step IS an event
@@ -129,11 +135,8 @@ arm (K7) whose completion is the step's own event.
 
 ## 4. What the kinds delete
 
-- `Sample`'s debt: `triggered`, the banked `set_var` payments,
-  `held()`'s tainted-after-first bottom. `~` becomes pure and, since
-  it no longer carries cross-invocation state, FUSABLE — the one
-  operator fusion does not descend through today (`fusion` "not
-  through `~`, `<-`").
+- `Sample`'s asymmetry: `held()`'s tainted-after-first bottom. The
+  bank itself stays and applies uniformly (K5).
 - The tracker: `TrackedFires`, `Bind::pattern`, `Bind::facet`, the
   catch-up injection, the conflation rule, the at-most-once-per-select
   consumption, the wake bit's fastcall stale-mask gate. Forced
@@ -151,7 +154,8 @@ bottom scrutinee ⇒ bottom select (an absent level decides nothing; an
 event select between occurrences is absent — one rule, no exception);
 the consulted-guard rule; the init-phantom guard (a guard over an
 absent level is undecidable, P2); the restart contracts; variables as
-queues; strict fusion, with `~` and event selects joining it.
+queues; strict fusion, with event selects joining it and `~` still
+outside it.
 
 ## 5. What it costs
 
@@ -165,10 +169,13 @@ changes (§6). The classes:
    `hold(e)` — one word, and it says what it does. Results routed
    through a variable (`let res = never<T>(); res <- …`, the port's
    dominant idiom) are already levels and need nothing.
-2. **`~` sites that relied on wait-before-first.** Silent under K5
-   (drop). The prototype checker flags every `e ~ l` where `l` can be
-   absent at `e`'s first occurrence; each becomes `hold(#clock: e, l)`
-   or was a latent bug.
+2. **`~` sites that relied on the drop.** A trigger during a
+   transient absence of the right side (a derivation that errored, a
+   subscription that went away) now defers to the next value instead
+   of vanishing. The checker can flag `e ~ l` where `l` is a fallible
+   derivation; each is either the intended wait or wants an explicit
+   `filter`. Expected rare: the drop was the accident, the wait was
+   the contract.
 3. **Constant writes in arms** (`screen <- \`Pick`). Write once ever
    under K9; the per-entry meaning is `once(\`Pick)`. Grep-able: a
    literal RHS of `<-` inside a select arm. The port has a handful.
@@ -211,8 +218,7 @@ monomorphic instantiation; no new pass ("passes earn their place").
    against §3 — the expected outcome is identical traces with less
    machinery, and any pin that moves is a case §3 missed.
 3. **Event selects** (K7): a select mode, sync arms, per-occurrence
-   match, no sleep; the kernel emits it as a pure select. `~` joins
-   fusion.
+   match, no sleep; the kernel emits it as a pure select.
 4. **`seq`** on top (`seq_blocks.md` §10), with the lowering from §4.3's
    right-hand column.
 5. Soak each of 2–4 (a semantics change is not landed until it has a
@@ -221,10 +227,9 @@ monomorphic instantiation; no new pass ("passes earn their place").
 ## 7. Open
 
 - **The name of the latch.** `hold(e)` is FRP's word (`stepper`/`hold`
-  in Elliott, `hold` in reflex) but today's `hold(#clock, v)` is a
-  sample-and-hold-with-wait. Either the latch takes `hold` and the
-  waiting sample is spelled `hold(#clock: e, l)` (one name, the clock
-  selects the form), or the latch is `latch(e)`. One name is better.
+  in Elliott, `hold` in reflex). Under K5 today's `hold(#clock, v)` is
+  `clock ~ v`, so the name is free for the latch once the clocked form
+  is retired; the alternative is `latch(e)` and no retirement.
 - **Spelling `Event<T>`.** A type constructor is the honest form and
   what makes the class-1 error a compile error rather than a runtime
   absence. An alternative is kinds as an analysis fact with no type
