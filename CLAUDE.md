@@ -1403,7 +1403,14 @@ the rules.
   union must cover the member's (`contains::set_covers_by_distribution`)
   — so `` [`P(A), `P(B)] ⊇ `P([A, B]) `` and the nested-variant select
   ladder is exhaustive. Pure probe, cell-free scrutinee side only,
-  commits nothing. The dual fix: `union`'s Variant×Variant arm merges
+  commits nothing. A probe IN PROGRESS for the same scrutinee ref
+  claims nothing on re-entry (`RefHist::distributing`, 2026-09-03):
+  the probe re-expands a recursive alias through `lookup_ref` with no
+  memo of its own, and the Ref×Ref cycle memo is dropped once the
+  direct walk fails, so a mismatched `Error<ErrChain<..>>` connect
+  re-asked the `cause`-field question one level deeper forever (hz0
+  sep02a: hangs, a stack-budget abort, an OOM — all at compile time;
+  `errchain-distribution-loop-sep2026`). The dual fix: `union`'s Variant×Variant arm merges
   component-wise only when ≤1 position differs (`union_identical` per
   slot) — the arity≥2 rectangle collapse (`` `P(A,X) ∪ `P(B,Y) `` →
   `` `P([A,B],[X,Y]) ``) invented the off-diagonal and select coverage
