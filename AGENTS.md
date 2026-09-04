@@ -405,13 +405,16 @@ let y = seq go {
 `if` and loops are not seq steps yet. Nested `select` is an ordinary
 expression. The integer-sequence builtin is `range(i, j)`.
 
-A seq let's value is standing after the next step. Top-level `<-` in
-later steps still fire (the lowering samples on `pc`). A helper that
-samples on the let (`t ~`) does not — put that write in the step
-immediately after the let, while the result is still firing. A step
-that is `never()` stalls the run (later triggers busy-drop); skip
-with `_ => null`. Ceremony handlers that swallow after a toast wrap
-seq in an outer `catch` — seq's own catch resets and rethrows.
+A seq let's value is standing after the next step. Fan-out from one
+wait (toast and refresh, several writes) is one `{ }` — a do block is
+one step, same cycle. Writes inside that block sample on the let
+(`load <- r ~ \`Queue`, `screen <- t ~ \`Panels`). The block's last
+expression is the wait's value (`r`) so the seq step has a presence
+to finish — a connect as last expr never produces and the machine
+stays busy.
+A step that is `never()` stalls the run (later triggers busy-drop);
+skip with `_ => null`. Ceremony handlers that swallow after a toast
+wrap seq in an outer `catch` — seq's own catch resets and rethrows.
 
 ### Sample Operator (`~`)
 

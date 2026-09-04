@@ -1233,7 +1233,9 @@ the rules.
   actions, services, landing save/discover, remote connect). A seq
   let's fire is only live in the next step; later top-level `<-` still
   fire (`pc` sample) but a helper that samples on the let (`t ~`)
-  does not. `never()` in a step stalls the run.
+  does not. Fan-out from one wait is a `{ }` do block — one step, same
+  cycle; its last expression is the wait's value so the step has a
+  presence. `never()` in a step stalls the run.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
