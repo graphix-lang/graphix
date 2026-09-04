@@ -424,9 +424,9 @@ inspectable, which is the debugging story.
 {
   let pc = `Idle;                       // [`Idle, `A1, `A2, ..]
   let x_c = never();                    // one cell per let read across arms
-  let idle = pc == `Idle;
+  let idle = select pc { `Idle => true, _ => false };
   catch(e) { <user cleanup>; pc <- e ~ `Idle; e? };
-  let t = filter(<trigger>, |_| idle);  // R1: dropped while running
+  let t = filter(<trigger>, |x| x ~ idle);  // R1: dropped while running
   pc <- t ~ `A1;
   select pc {
     `Idle => never(),
@@ -451,10 +451,12 @@ It is the one event every atom below samples on. It must be a free
 variable and not the arm's pattern bind, because a nested watch (§7.3)
 relies on the wake catch-up tracker re-raising it, and pattern binds
 are excluded from that tracker by design (`Bind::pattern`, 2026-09-02:
-a pattern bind is a facet of its arm's scrutinee delivery). Whether a
-free read of the scrutinee's own variable is tracked is the first
-thing the prototype confirms; if not, the machine writes a sibling
-`entered` variable beside every `pc` write and samples on that.
+a pattern bind is a facet of its arm's scrutinee delivery). Prototype
+2026-09-04 (`lang/seq.rs`): a free read of `pc` IS re-raised into the
+nested watch; a pattern bind of the outer scrutinee is not. No sibling
+`entered` variable. The busy predicate must consume the trigger
+(`filter(t, |x| x ~ idle)`, not `|_| idle` — an unused parameter does
+not fire the lambda).
 
 ### 7.3 The issue atom
 
@@ -477,7 +479,10 @@ materialize the arm wakes and the catch-up delivers the entry once,
 FIRED, at the current value — the wake catch-up ruling (2026-09-01)
 doing exactly "wait for presence, then issue once". On a re-entry with
 present inputs the select re-matches at wake and the entry's delivery
-that cycle is consumed by the arm: one issue.
+that cycle is consumed by the arm: one issue. Prototype 2026-09-04:
+a bare `pc ~ x` issues nothing even on the first wait — a `never()`
+producer is a materialized bottom, so the sample consumes its debt at
+entry. Presence is required from run one, not only run two.
 
 ### 7.4 Arms and chains
 
@@ -574,15 +579,17 @@ machine — the round-trip test covers the lowering's output.
 
 ## 10. Plan
 
-0. **The go/no-go, before any parser work.** Lower the privileged
-   handoff (§2) BY HAND in the port, atoms and all, and diff it against
-   `local.gx` as it stands. Two questions: does the machine written
-   with the atoms behave (the §7.2 tracker question; the §7.3 presence
-   gate on a second run; a timer loop's re-arm), and is the surface
-   form the first version of that ceremony a reader follows top to
-   bottom. If the hand-lowered machine is only shorter, the construct
-   saves typing; if the surface form is the readable one, it earns the
-   keyword.
+0. **The go/no-go, before any parser work.** DONE 2026-09-04. Atoms
+   pinned in `lang/seq.rs` (both engines): free `pc` read wakes a
+   nested watch; pattern bind does not; presence select issues on a
+   second run; a bare `pc ~ x` issues nothing even on the first wait
+   (`never()` is a materialized bottom); busy-drop with `|x| x ~ idle`;
+   same-arm re-entry via a sampled write; `until` a level that flips
+   after entry. The privileged handoff in `local.gx` is the §7 machine
+   (levels hoisted: `tui::suspend(suspended)` lives beside the select,
+   not in a step). The machine is longer than the `~` chain it
+   replaced — it does not save typing. The keyword earns its keep only
+   as the surface in §2. Parser is unblocked.
 1. Parser + AST: `ExprKind::Seq { trigger, body }` with a `Stmt` enum;
    the printer; the proptest generator; tree-sitter.
 2. The desugar (`expr/seq_desugar.rs`) and `--expand`.

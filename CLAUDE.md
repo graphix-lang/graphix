@@ -1190,7 +1190,8 @@ a stateful/async callee is not pure — those arms still sleep. The
 write rule (compiler-sampled `<-` in an arm) was withdrawn: sometimes
 you want a write on every scrutinee fire and sometimes you do not,
 and `~` is how you choose. `seq` is unblocked as the 2026-09-03 `pc`
-machine.
+machine: atoms pinned (`lang/seq.rs`), privileged handoff hand-lowered
+in the admin TUI; parser next (`design/seq_blocks.md` §10).
 
 `design/README.md` is the index (built / proposed / superseded). The
 docs hold the rationale and the as-built records; this file holds only

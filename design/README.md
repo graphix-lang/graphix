@@ -42,7 +42,7 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | doc | what |
 |---|---|
 | `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
-| `seq_blocks.md` | `seq` blocks: sequencing across cycles — a `select` the compiler writes (steps, branches, loops, abort); proposed 2026-09-03, go/no-go = hand-lower one ceremony |
+| `seq_blocks.md` | `seq` blocks: sequencing across cycles — a `select` the compiler writes; go/no-go DONE 2026-09-04 (atoms in `lang/seq.rs`, handoff lowered in the port); parser next |
 | `levels_and_events.md` | levels vs events as a KIND — revised same day (§0): async results are LEVELS (retention is the feature), only occurrences lack a standing value, the tracker stays; `~` waits on every absence; residual = a compile error for occurrence-as-state + pure event selects; proposed 2026-09-03, go/no-go = a throwaway kind checker's counts |
 | `pure_dataflow_plan.md` | A (mux-select) and B (sparse delivery) WITHDRAWN 2026-09-04; sleep is pause; keepers `~!` / skip-sleep on pure arms; write rule withdrawn; `seq` (C) next as the sleep-era `pc` machine |
 | `pure_select.md` | select arms are PURE, sleep disappears (Eric's alternative, 2026-09-03): impure code in an arm is sugar for a hoisted, arm-gated form (a gated level is born at entry, a gated occurrence is not); level effects follow presence; deletes wake catch-up, Held, the restart contracts, 115 sleep impls; §11 = Eric's always-update variant (preferred: pure arms lazy, impure arms always on, `null`-keyed effects, no hoist); §12 = is dense bottom still necessary; §13 = seq becomes a `~` chain, the port is already written in this discipline; go/no-go = the counts over the port |
