@@ -359,3 +359,64 @@ run!(seq_do_two_writes, SEQ_DO_TWO_WRITES, |v: Result<&Value>| match v {
     Ok(Value::I64(34)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_DO_VALUE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let y = seq {
+    do {
+      let x = 3;
+      x + 1
+    }
+  };
+  select step { 6 => y, _ => never() }
+}
+"#;
+
+run!(seq_do_value, SEQ_DO_VALUE, |v: Result<&Value>| match v {
+    Ok(Value::I64(4)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_DO_VALUE_AFTER_WAIT: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => true, _ => never() };
+  let delayed = never<i64>();
+  delayed <- select step { 4 => 42, _ => never() };
+  let y = seq go {
+    do {
+      let r = delayed;
+      r + 1
+    }
+  };
+  select step { 8 => y, _ => never() }
+}
+"#;
+
+run!(seq_do_value_after_wait, SEQ_DO_VALUE_AFTER_WAIT, |v: Result<&Value>| match v {
+    Ok(Value::I64(43)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_DO_VALUE_NOT_LAST: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let y = seq {
+    do {
+      let x = 3;
+      x + 1
+    };
+    99
+  };
+  select step { 6 => y, _ => never() }
+}
+"#;
+
+run!(seq_do_value_not_last, SEQ_DO_VALUE_NOT_LAST, |v: Result<&Value>| match v {
+    Ok(Value::I64(99)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
