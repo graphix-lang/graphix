@@ -59,6 +59,9 @@ pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub handler: Node<R, E>,
     constraint: Option<Type>,
+    /// Throws unioned into the bind before `catch(e: T)` ascribes `T`
+    /// onto it. Coverage is this snapshot, not the bind after ascription.
+    thrown: Option<Type>,
     bind_id: BindId,
     top_id: ExprId,
     typ: Type,
@@ -112,6 +115,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             spec,
             handler,
             constraint: c.constraint.clone(),
+            thrown: None,
             bind_id,
             top_id,
             typ: Type::Bottom,
@@ -146,29 +150,42 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        // Siblings typecheck first, so Qop/CallSite throws are already
+        // unioned into the bind. Snapshot them, then ascribe `T` so the
+        // handler sees `e: T` rather than the inferred union.
+        if let Some(t) = self.constraint.clone() {
+            let tv = {
+                let bind = ctx
+                    .env
+                    .by_id
+                    .get(&self.bind_id)
+                    .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+                match &bind.typ {
+                    Type::TVar(tv) => tv.clone(),
+                    _ => unreachable!(),
+                }
+            };
+            if self.thrown.is_none() {
+                let contents = tv.read().typ.read().typ.clone().unwrap_or(Type::Bottom);
+                self.thrown = Some(contents);
+            }
+            tv.read().typ.write().typ = Some(t);
+        }
         wrap!(self.handler, self.handler.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
-        // The declared constraint is a contract on what the handler
-        // can receive: by now every covered `?` (Qop tc0) and call
-        // site (CallSite tc0 throws-union) has accumulated into the
-        // bind's cell — the owning block runs catches after its other
-        // children in both passes. Runtime-bound instances accumulate
-        // MORE later (their interior `?`s re-union at bind-time tc0),
-        // but soundly within this check: a call site's compile-time
-        // `ftype.throws` union supersets what its instances add,
-        // because interior `?`s feed the callee's declared/inferred
-        // throws through the def gate.
+        // `catch(e: T)`: T is the type of `e`. It must still cover every
+        // error the region throws (the snapshot from typecheck0). A call
+        // site's compile-time `ftype.throws` supersets later instance
+        // interiors, so this stays sound for runtime-bound callees.
         if let Some(t) = &self.constraint {
-            let bind = ctx
-                .env
-                .by_id
-                .get(&self.bind_id)
-                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
-            let accumulated = bind.typ.clone();
-            wrap!(self, t.check_contains(&ctx.env, &accumulated))?;
+            let accumulated = self
+                .thrown
+                .as_ref()
+                .ok_or_else(|| anyhow!("BUG: catch ascription snapshot missing"))?;
+            wrap!(self, t.check_contains(&ctx.env, accumulated))?;
         }
         Ok(())
     }

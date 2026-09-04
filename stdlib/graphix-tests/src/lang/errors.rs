@@ -534,3 +534,51 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
     assert!(e.contains("does not contain"), "{e}");
     Ok(())
 }
+
+// `catch(e: T)` ascribes `T` to `e`. A handler that `?`-rethrows typechecks
+// even when the covered region throws nothing (`e` is `Error<Any>`, not ⊥).
+const CATCH_ASCRIPTION_RETHROW_NO_THROW: &str = r#"
+{
+  catch(e: Error<Any>) e?;
+  7
+}
+"#;
+
+run!(catch_ascription_rethrow_no_throw, CATCH_ASCRIPTION_RETHROW_NO_THROW, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Ascribed rethrow still delivers to the enclosing catch.
+const CATCH_ASCRIPTION_RETHROW: &str = r#"
+{
+  let caught = never();
+  catch(e) caught <- e ~ 1;
+  {
+    catch(e: Error<Any>) e?;
+    [0][1]?;
+    99
+  };
+  caught
+}
+"#;
+
+run!(catch_ascription_rethrow, CATCH_ASCRIPTION_RETHROW, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Coverage is unchanged: T must still contain every thrown error.
+#[tokio::test]
+async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
+    let src = r#"{
+        let a = [1, 2, 3];
+        catch(e: Error<ErrChain<`ArithError(string)>>) never(e);
+        a[10]?
+    }"#;
+    let r = graphix_package_core::testing::eval(src, crate::TEST_REGISTER).await;
+    assert!(
+        r.is_err(),
+        "too-narrow catch(e: T) must be rejected, got {:?}",
+        r.map(|(v, _)| v)
+    );
+    Ok(())
+}

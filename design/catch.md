@@ -79,8 +79,10 @@ planning (see the commit for details):
 - Blocks/module bodies run catches LAST, INNERMOST FIRST, in update and
   both typecheck passes — the try-era handler-after-body order that makes
   same-cycle Vacant-insert delivery (including inner-handler rethrow) land.
-- The `catch(e: T)` constraint (parsed-but-dead under try) is now checked
-  against the accumulated error union at typecheck1.
+- `catch(e: T)` ascribes `T` to `e` in the handler (2026-09-04). Coverage
+  is unchanged: `T` must contain the accumulated throw union (snapshotted
+  before ascription, checked at typecheck1). Unannotated `catch(e)` still
+  infers `e` from that union.
 - The covering node carries (BindId, top) — there is no registry:
   `DynScope::catch()` IS the lookup (`Env.catch`/`lookup_catch` died
   2026-08-25 with the chain; the lambda def gate compiles its body under a

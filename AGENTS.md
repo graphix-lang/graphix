@@ -460,7 +460,7 @@ error(`NotFound("missing"))?
   another_op()?
 }
 
-// catch(e: T) expr checks T against the union of coverable errors.
+// catch(e: T) ascribes T to e; T must still cover every thrown error.
 // A second catch in a block shadows the first below it; a handler's
 // own ? rethrows to the PREVIOUS catch (or the next one out).
 

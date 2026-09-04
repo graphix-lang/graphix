@@ -100,9 +100,9 @@ division by zero rather than throwing.
 
 ### Constraining the error type
 
-The binder may carry a type annotation, `catch(e: T) expr`, which the
-compiler checks against the union of every error type the covered region can
-throw — a contract on what the handler must be prepared to receive.
+The binder may carry a type annotation, `catch(e: T) expr`. That is a
+type ascription: `e` has type `T` in the handler. The compiler still
+checks that `T` contains every error the covered region can throw.
 
 ## Checked Errors
 
