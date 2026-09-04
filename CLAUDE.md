@@ -1191,8 +1191,8 @@ write rule (compiler-sampled `<-` in an arm) was withdrawn: sometimes
 you want a write on every scrutinee fire and sometimes you do not,
 and `~` is how you choose. Straight-line `seq` is built (2026-09-04,
 `if`/loops held): AST-to-AST pc machine, `range` for the old `seq(i,j)`
-builtin; privileged handoff in the admin TUI is surface `seq`
-(`design/seq_blocks.md`).
+builtin; the admin TUI port uses surface `seq` for every multi-step
+ceremony (`design/seq_blocks.md`).
 
 `design/README.md` is the index (built / proposed / superseded). The
 docs hold the rationale and the as-built records; this file holds only
@@ -1228,8 +1228,12 @@ the rules.
   level; one catch at the top is cleanup + reset + rethrow; `?` aborts
   the run. No trigger = run at init. A bare-variable trigger is
   snapshotted. `until` is reserved and legal only as a seq step. The
-  integer builtin is `range(i, j)`. Pins: `lang/seq.rs`. The privileged
-  handoff in netidx-admin `local.gx` is the first surface use.
+  integer builtin is `range(i, j)`. Pins: `lang/seq.rs`. The admin TUI
+  port uses it for every multi-step ceremony (local lifecycle, panel
+  actions, services, landing save/discover, remote connect). A seq
+  let's fire is only live in the next step; later top-level `<-` still
+  fire (`pc` sample) but a helper that samples on the let (`t ~`)
+  does not. `never()` in a step stalls the run.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
@@ -1529,7 +1533,11 @@ role-menu key p50 3.2ms, a text key 0.17ms, a render 0.12ms
 both profiles). Follow-ups: a cheap fusion pre-gate for the
 decidable refusals; a profile of the role-menu key. Then: full lab
 validation, the parity review;
-the ratatui TUI is deleted only after all of that (Eric). Facts from
+the ratatui TUI is deleted only after all of that (Eric). Seq conversion
+of the port's multi-step ceremonies landed 2026-09-04 (local lifecycle,
+panel actions, services, landing save/discover, remote connect); a seq
+let's fire is only live in the next step — later `t ~` on it does not
+write (ledger 16). Facts from
 the slice: a constant-RHS connect in a
 select arm fires once per selection (organic firing — Eric 2026-09-03:
 that is the trigger on the selection changing, a tool, not a lint;
