@@ -1,12 +1,12 @@
 # The plan: always-update select, no bottom value, `seq`
 
-Status: DECIDED 2026-09-03 (Eric: "I actually think this change — seq,
-select always updating every arm, and eliminating bottom as a value —
-is worth doing"), not started. This document is the sequencing and
-the acceptance criteria; the designs are `pure_select.md` (§11 the
-select, §12 the bottom question, §13 seq's lowering and the port),
-`seq_blocks.md` (the construct), and `levels_and_events.md` §0 (the
-kind, which the always-update select no longer needs for correctness).
+Status: A (mux-select / delete sleep) WITHDRAWN 2026-09-04. B
+(sparse delivery) WITHDRAWN 2026-09-04. Sleep is pause. Keepers from A
+back-ported onto the pre-mux tree: `~!`, pure non-recursive arms skip
+`sleep`. The write rule was withdrawn 2026-09-04 (the compiler cannot
+choose per-delivery vs becoming-selected). `seq` (C) is
+unblocked as the 2026-09-03 `pc` machine (`seq_blocks.md` §7),
+which leans on sleep for step exit actions.
 
 ## 1. The end state, on one page
 
@@ -97,29 +97,25 @@ ruling):
    the port's three constant writes are correct as written.
 4. **Refusal wording** for a recursive call through an impure callee
    under its own select.
-5. **The write rule** (`pure_select.md` §11, "The write rule"): a
-   connect inside an arm fires on the arm's matching scrutinee
-   delivery with the RHS as it stands; an explicit `~` at the RHS
-   root keeps its own trigger; the same for event-effect issues. This
-   is what makes `select screen { A => x <- A, B => x <- B }` do what
-   it says, removes `k ~` from handler writes, and makes the accidental
-   counter unwritable in a handler. RULED yes (Eric, 2026-09-03:
+5. **The write rule** (`pure_select.md` §11, "The write rule") —
+   WITHDRAWN 2026-09-04 (Eric: sometimes you want a write on every
+   scrutinee fire and sometimes you do not, and the compiler choosing
+   one makes the semantics worse). A connect writes when its RHS
+   fires. `~` is how the programmer chooses cadence. Equality is
+   never a firing condition. The 2026-09-03 ruling below is history.
+   Originally: a connect inside an arm fires on the arm's matching
+   scrutinee delivery with the RHS as it stands; an explicit `~` at
+   the RHS root keeps its own trigger. RULED yes (Eric, 2026-09-03:
    "when I said gated I meant sampled … when you put `x <- x + 1` in
    a select arm you almost never mean to build a free running loop,
-   you mean to increment x when go is true"). An unsampled self-loop
-   in an arm is one step per delivery; the free-running form is
-   spelled `x <- x ~ x + 1`, and the book's counter (`x` as its own
-   scrutinee) loops because each write re-delivers the scrutinee.
+   you mean to increment x when go is true").
 
 Work:
 
 - A1. `Select::update`: impure arms every cycle, pure arms while
-  taken; the write rule (decision 5) — `Connect` under an arm fires
-  on the arm's matching delivery unless its RHS root is a `~`; per-arm purity from `lambda_is_stateless` over the arm's
-  subtree at compile; the taken index as a per-cycle context bit
-  (beside the frame flags) that `Connect` and the issue-class builtin
-  wrappers consult, propagated into callees dispatched from an arm,
-  conjoined through nesting.
+  taken. WITHDRAWN with A: sleep is pause; keepers are `~!` and
+  skip-sleep on pure non-recursive arms. The write rule (decision 5)
+  is withdrawn separately: `Connect` writes when its RHS fires.
 - A2. Delete sleep and everything in §1's list that belongs to it.
   `Node`'s guarded `sleep` funnel goes; `Sample::sleep` was only a
   forward.

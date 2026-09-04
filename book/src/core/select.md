@@ -493,34 +493,18 @@ how we would do something with every element of an array (see `array::map` and
 ### Writing From an Arm
 
 A connect inside an arm is an ordinary node of that arm: it fires
-when its right-hand side fires. That gives two distinct tools.
-
-A right-hand side that samples the scrutinee fires on every delivery
-into the arm:
+when its right-hand side fires. Sample the event when the write
+should run on every delivery into the arm; a constant right-hand
+side fires when the constant does (init, or the arm's wake).
 
 ```graphix
-select k {
-  x if x != 5 => s <- x ~ 100,
+select k.code {
+  kk@ `Up => sel <- kk ~ (sel - 1),
+  kk@ `Down => sel <- kk ~ (sel + 1),
+  `Enter => screen <- `Pick,
   _ => never()
 }
 ```
 
-A constant right-hand side fires when the arm becomes selected, and
-not again while the same arm keeps matching: a constant has no input,
-so a re-match of the same arm with a new value re-emits the arm
-without re-running the write. That is a trigger on the selection
-changing, which is what an "on entering this state" write wants:
-
-```graphix
-select screen {
-  `Menu => cursor <- 0,
-  _ => never()
-}
-```
-
-Measured over ten deliveries of `k` into the first select, with the
-arm deselected at 5 and reselected at 6, the sampled write fires nine
-times and a constant write in its place twice. Event handlers usually
-want the sampled form. An arm `` `Enter => screen <- `Pick `` fires on
-the first Enter and not on the second while the arm stays selected,
-so a handler samples the event: `` `Enter => screen <- ev ~ `Pick ``.
+`e ~! v` is the strict sample: `v` at each fire of `e`, and bottom
+with no bank when `v` is bottom. `~` still banks.

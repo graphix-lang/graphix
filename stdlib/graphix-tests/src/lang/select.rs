@@ -2333,3 +2333,140 @@ run!(never_args_live, NEVER_ARGS_LIVE, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(3))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A sampled write in an arm keeps the sample as its trigger: `x` is
+// 30 at step 6 (last `On` sample is step 3), not a free-running loop.
+const ARM_SAMPLED_WRITE_KEEPS_TRIGGER: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let mode: [`On, `Off] = `On;
+  mode <- select step { 3 => `Off, _ => never() };
+  let x = 0;
+  select mode { `On => x <- step ~ (step * 10), `Off => never() };
+  select step { 6 => x, _ => never() }
+}
+"#;
+
+run!(arm_sampled_write_keeps_trigger, ARM_SAMPLED_WRITE_KEEPS_TRIGGER, |v: Result<&Value>| match v {
+    Ok(Value::I64(30)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The compiler does not sample an ungated write on the scrutinee:
+// three `Go` deliveries write the sampled counter three times and the
+// constant once (init of the arm). `~` is how you choose per-delivery.
+const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let k = select step { 1 | 2 | 3 => `Go, _ => never() };
+  let sampled = 0;
+  let once = 0;
+  select k {
+    `Go => {
+      sampled <- k ~ (sampled + 1);
+      once <- 1
+    }
+  };
+  select step { 6 => (sampled, once), _ => never() }
+}
+"#;
+
+run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(1)]),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 3 => s + 1, _ => never() };
+  let err: [`None, `Bad] = `None;
+  let x = { catch(e) err <- e ~ `Bad; select step { 2 => error(`E)?, _ => 0 } };
+  select step { 3 => (err, x), _ => never() }
+}
+"#;
+
+run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => matches!(&a[..], [Value::String(t), _] if &**t == "Bad"),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// `e ~! v` is `v` at each fire of `e` and bottom when `v` is bottom —
+// no bank. Three triggers arrive before `v` exists: `~` banks them and
+// pays all three when `v` arrives (three writes); `~!` drops them and
+// samples only the trigger that finds `v` present (one write).
+const STRICT_SAMPLE_NO_BANK: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 12 => s + 1, _ => never() };
+  let t = select step { 1 | 2 | 3 | 6 => step, _ => never() };
+  let v = never<string>();
+  v <- select step { 5 => "v", _ => never() };
+  let banked = 0;
+  banked <- (t ~ v) ~ (banked + 1);
+  let strict = 0;
+  strict <- (t ~! v) ~ (strict + 1);
+  select step { 12 => (banked, strict), _ => never() }
+}
+"#;
+
+run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(4), Value::I64(1)]),
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A write under `select chosen` where `chosen` starts as `never()`:
+// the arm sleeps (it has a `<-`), wakes on the first delivery, and
+// the nested confirm write fires. The admin TUI's uninstall confirm.
+const ARM_WRITE_FROM_NEVER: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 4 => s + 1, _ => never() };
+  type Act = [`Go, `Skip];
+  let chosen = never<Act>();
+  chosen <- select step { 2 => `Go, _ => never() };
+  let confirm: [{message: string, action: Act}, null] = null;
+  let text = |a: Act| -> [string, null] select a {
+    `Go => "Remove this install?",
+    _ => null
+  };
+  select chosen {
+    a => select text(a) {
+      null as _ => never(),
+      m => confirm <- { message: m, action: a }
+    }
+  };
+  select step {
+    4 => select confirm { null as _ => "", c => c.message },
+    _ => never()
+  }
+}
+"#;
+
+run!(arm_write_from_never, ARM_WRITE_FROM_NEVER, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) => &**s == "Remove this install?",
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A skip-sleep (pure) arm over a delayed scrutinee still computes on
+// first take: no init-prime, no wake. The admin TUI's action-list title.
+const SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 4 => s + 1, _ => never() };
+  let detected: [string, null] = null;
+  detected <- select step { 2 => "CA", _ => never() };
+  let title = select detected {
+    null as _ => "",
+    d => str::concat(d, " (tls)")
+  };
+  select step { 4 => title, _ => never() }
+}
+"#;
+
+run!(skip_sleep_arm_computes_on_first_take, SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) => &**s == "CA (tls)",
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -1071,6 +1071,7 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Mod { lhs, rhs } => binop!("%", lhs, rhs),
             ExprKind::CheckedMod { lhs, rhs } => binop!("%?", lhs, rhs),
             ExprKind::Sample { lhs, rhs } => binop!("~", lhs, rhs),
+            ExprKind::StrictSample { lhs, rhs } => binop!("~!", lhs, rhs),
             ExprKind::Not { expr } => match &expr.kind {
                 ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";"),
                 _ => {
@@ -1479,6 +1480,7 @@ impl ExprKind {
             ExprKind::Mod { lhs, rhs } => write!(f, "{lhs} % {rhs}"),
             ExprKind::CheckedMod { lhs, rhs } => write!(f, "{lhs} %? {rhs}"),
             ExprKind::Sample { lhs, rhs } => write!(f, "{lhs} ~ {rhs}"),
+            ExprKind::StrictSample { lhs, rhs } => write!(f, "{lhs} ~! {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => write!(f, "*{e}"),
             ExprKind::Neg(e) => write!(f, "-{e}"),

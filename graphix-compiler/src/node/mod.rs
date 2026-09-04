@@ -1325,8 +1325,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         // RHS must not become a cross-cycle event).
         let tv = self.node.update(ctx, event);
         if tv.is_fired() {
-            let v = tv.value_cloned();
-            ctx.rt.set_var(self.id, v)
+            ctx.rt.set_var(self.id, tv.value_cloned())
         }
         TagValue::phantom_ref()
     }
@@ -1843,6 +1842,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 #[derive(Debug)]
 pub struct Sample<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
+    /// `~!`: a trigger that finds the RHS bottom produces bottom and
+    /// banks nothing; `~` banks it and pays at the RHS's first value.
+    strict: bool,
     triggered: usize,
     pub typ: Type,
     id: BindId,
@@ -1861,6 +1863,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         top_id: ExprId,
         lhs: &Arc<Expr>,
         rhs: &Arc<Expr>,
+        strict: bool,
     ) -> Result<Node<R, E>> {
         let id = BindId::new();
         ctx.rt.ref_var(id, top_id);
@@ -1868,6 +1871,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = arg.node.typ().clone();
         Ok(Node::new(Self {
+            strict,
             triggered: 0,
             id,
             top_id,
@@ -1888,10 +1892,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // by a bottoming recursive callee holds its debt until the
         // trigger recovers, exactly the kernel.
         let t = self.trigger.update(ctx, event);
-        if t.tag().is_fired() {
+        let fired = t.tag().is_fired();
+        self.arg.update(ctx, event);
+        if self.strict {
+            return match (fired, self.arg.value.as_ref(), self.arg.tag.is_tainted()) {
+                (true, Some(v), false) => self.resident.set(TagValue::fired(v.clone())),
+                (true, _, _) => {
+                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                }
+                (false, _, _) => self.resident.ride(),
+            };
+        }
+        if fired {
             self.triggered += 1;
         }
-        self.arg.update(ctx, event);
         let var = event.variables.get(&self.id).cloned();
         let held = || match &self.arg.value {
             Some(_) if self.arg.tag.is_tainted() => {

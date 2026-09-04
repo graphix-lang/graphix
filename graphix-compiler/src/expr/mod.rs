@@ -561,6 +561,12 @@ pub enum ExprKind {
         lhs: Arc<Expr>,
         rhs: Arc<Expr>,
     },
+    /// `lhs ~! rhs` — the STRICT sample: `rhs` at each fire of `lhs`,
+    /// and bottom (no bank, no debt) when `rhs` is bottom.
+    StrictSample {
+        lhs: Arc<Expr>,
+        rhs: Arc<Expr>,
+    },
 }
 
 impl ExprKind {
@@ -965,7 +971,8 @@ impl Expr {
             | ExprKind::Lt { lhs, rhs }
             | ExprKind::Gte { lhs, rhs }
             | ExprKind::Lte { lhs, rhs }
-            | ExprKind::Sample { lhs, rhs } => {
+            | ExprKind::Sample { lhs, rhs }
+            | ExprKind::StrictSample { lhs, rhs } => {
                 let init = lhs.fold(init, f);
                 rhs.fold(init, f)
             }

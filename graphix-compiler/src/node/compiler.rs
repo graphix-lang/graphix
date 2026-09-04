@@ -409,7 +409,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
             CheckedMod::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
         }
         ExprKind::Sample { lhs, rhs } => {
-            Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
+            Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, false)
+        }
+        ExprKind::StrictSample { lhs, rhs } => {
+            Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, true)
         }
     }
 }

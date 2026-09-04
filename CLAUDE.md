@@ -1180,13 +1180,17 @@ would resurrect the GIR vocabulary tax (`node_shape.rs`).
 
 ### Design documents
 
-**DECIDED 2026-09-03, NOT YET BUILT** (`design/pure_dataflow_plan.md`,
-Eric): three semantics changes in order — (A) select arms always
-update, no sleep (`pure_select.md` §11), (B) sparse delivery, no
-bottom value (§12), (C) `seq` blocks (`seq_blocks.md`, lowering
-`pure_select.md` §13.1). Until each lands, the rules in this file
-stand; a session picking the work up starts from the plan's step
-list and its "decisions to pin first".
+**Mux-select WITHDRAWN 2026-09-04** (`design/pure_dataflow_plan.md`):
+always-update impure arms and deleting sleep did not simplify the
+engine (sparse delivery died on the JIT; `seq` lost exit actions).
+Sleep is pause again. Keepers from that arc: `~!` (strict sample, no
+bank); a pure non-recursive arm skips `sleep` (nothing to pause) and
+is not updated while untaken. A `<-`, a catch, a sample, an `any`, or
+a stateful/async callee is not pure — those arms still sleep. The
+write rule (compiler-sampled `<-` in an arm) was withdrawn: sometimes
+you want a write on every scrutinee fire and sometimes you do not,
+and `~` is how you choose. `seq` is unblocked as the 2026-09-03 `pc`
+machine.
 
 `design/README.md` is the index (built / proposed / superseded). The
 docs hold the rationale and the as-built records; this file holds only
@@ -1194,6 +1198,14 @@ the rules.
 
 ## Language features (current)
 
+- **`~!` and skip-sleep** (2026-09-04, keepers from the withdrawn
+  mux-select arc): `e ~! v` is `v` at each fire of `e` and bottom with
+  no bank when `v` is bottom; `~` still banks. A connect writes when
+  its RHS fires. Sample the event when a write should run on every
+  delivery into the arm; a constant RHS fires when the constant does
+  (init, or the arm's wake). A pure non-recursive arm skips `sleep`
+  (nothing to pause) and is not updated while untaken; a `<-` is not
+  pure, so a write arm still sleeps.
 - **`never<T>()` is syntax** (2026-09-02, ledger 2 of the admin-TUI
   findings): `ExprKind::Never { typ, args }` → `node::Never`, typed
   bottom bare or the spelled `T` (scoped at compile), args updated and

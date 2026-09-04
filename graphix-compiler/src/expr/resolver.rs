@@ -1064,6 +1064,7 @@ impl Expr {
             ExprKind::Gte { lhs, rhs } => bin_op!(Gte, lhs, rhs),
             ExprKind::Lte { lhs, rhs } => bin_op!(Lte, lhs, rhs),
             ExprKind::Sample { lhs, rhs } => bin_op!(Sample, lhs, rhs),
+            ExprKind::StrictSample { lhs, rhs } => bin_op!(StrictSample, lhs, rhs),
         }
     }
 }

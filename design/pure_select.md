@@ -394,6 +394,12 @@ interp's per-cycle cost grows by the walk of impure untaken arms
 on the admin TUI with `milestone_latency`, and bounded by fusion: a
 pure screen is a kernel whose walk is one fire-bit check.
 
+**The write rule — WITHDRAWN 2026-09-04** (Eric: sometimes you want a
+write on every scrutinee fire and sometimes you do not, and making
+that choice in the compiler makes the semantics worse). A connect
+writes when its RHS fires; `~` is how you choose cadence. The
+2026-09-03 text below is the withdrawn rule.
+
 **The write rule (Eric, same day: "if every connect in an arm is
 gated by the taken bit, then `select screen { A => x <- A, B => x <-
 B }` does exactly what the programmer intends").** The bit alone does

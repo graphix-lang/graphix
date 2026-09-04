@@ -819,6 +819,65 @@ fn lambda_def<'a, R: Rt, E: UserEvent>(
     ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
 }
 
+fn callee_lambda<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> Option<LambdaId> {
+    if let Some(target) = cs.static_target() {
+        return Some(target.definition);
+    }
+    if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
+        return Some(g.id());
+    }
+    if let NodeView::Ref(r) = cs.fnode().view() {
+        if let Some(v) = ctx.bind_to_lambda.get(&r.id) {
+            if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
+                return Some(d.id);
+            }
+        }
+    }
+    None
+}
+
+/// Sleep an untaken arm unless it is pure computation with no
+/// recursive call: there is nothing to pause, so skip `sleep` and
+/// skip `update` while it is untaken. A `<-`, a catch, a sample, an
+/// `any`, or a stateful/async callee is not pure. A recursive arm
+/// still sleeps (shrink-on-deselect lives on the sleep walk). An
+/// unresolved callee or a fused kernel is treated as possibly
+/// recursive, so we sleep — the safe default; a kernel reclaims its
+/// own activations.
+pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    node: &Node<R, E>,
+) -> bool {
+    let eff: IntMap<LambdaId, LambdaFacts> = IntMap::default();
+    let self_ids: IntMap<BindId, LambdaId> = IntMap::default();
+    let mut pure = true;
+    let mut recurses = false;
+    fusion::for_each_node(node, &mut |n| match n.view() {
+        NodeView::Sample(_)
+        | NodeView::Any(_)
+        | NodeView::Never(_)
+        | NodeView::Connect(_)
+        | NodeView::ConnectDeref(_)
+        | NodeView::Catch(_) => pure = false,
+        NodeView::FusedKernel(_) => recurses = true,
+        NodeView::CallSite(cs) => {
+            if callee_lambda(cs, ctx)
+                .and_then(|lid| lambda_def(ctx, lid))
+                .is_some_and(|d| *d.recursion.lock() != RecursionKind::NotRecursive)
+            {
+                recurses = true;
+            }
+            let f = callee_facts(cs, &eff, &self_ids, ctx);
+            pure &= f.effect.is_sync() && f.stateless;
+        }
+        _ => (),
+    });
+    !pure || recurses
+}
+
 /// The tail-loop collapse gate (`design/recursive_activations.md` §2):
 /// a tail loop reuses ONE activation only when its body is stateless
 /// (which implies Sync). Any other body — async, or Sync but reaching

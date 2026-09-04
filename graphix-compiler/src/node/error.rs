@@ -60,6 +60,7 @@ pub struct Catch<R: Rt, E: UserEvent> {
     pub handler: Node<R, E>,
     constraint: Option<Type>,
     bind_id: BindId,
+    top_id: ExprId,
     typ: Type,
 }
 
@@ -106,11 +107,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         // the same block or an outer one — never to itself.
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
         let covered = scope.with_catch((bind_id, top_id));
+        ctx.rt.ref_var(bind_id, top_id);
         let node = Node::new(Self {
             spec,
             handler,
             constraint: c.constraint.clone(),
             bind_id,
+            top_id,
             typ: Type::Bottom,
         });
         Ok((node, covered))
@@ -130,6 +133,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        ctx.rt.unref_var(self.bind_id, self.top_id);
         self.handler.delete(ctx);
     }
 
@@ -178,6 +182,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
+        refs.bound.insert(self.bind_id);
         self.handler.refs(refs);
     }
 

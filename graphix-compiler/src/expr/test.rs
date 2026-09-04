@@ -1244,6 +1244,7 @@ fn binop_precedence(e: &ExprKind) -> Option<u8> {
         ExprKind::Mod { .. } => "%",
         ExprKind::CheckedMod { .. } => "%?",
         ExprKind::Sample { .. } => "~",
+        ExprKind::StrictSample { .. } => "~!",
         _ => return None,
     };
     Some(precedence(op).0)
@@ -1324,6 +1325,7 @@ fn add_parens(mut e: Expr) -> Expr {
         ExprKind::Mod { lhs, rhs } => fix_binop!("%", Mod, lhs, rhs),
         ExprKind::CheckedMod { lhs, rhs } => fix_binop!("%?", CheckedMod, lhs, rhs),
         ExprKind::Sample { lhs, rhs } => fix_binop!("~", Sample, lhs, rhs),
+        ExprKind::StrictSample { lhs, rhs } => fix_binop!("~!", StrictSample, lhs, rhs),
         ExprKind::Not { expr } => ExprKind::Not {
             expr: Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(expr), 255)),
         },
@@ -2075,6 +2077,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (
             ExprKind::Sample { lhs: l0, rhs: r0 },
             ExprKind::Sample { lhs: l1, rhs: r1 },
+        ) => check(l0, l1) && check(r0, r1),
+        (
+            ExprKind::StrictSample { lhs: l0, rhs: r0 },
+            ExprKind::StrictSample { lhs: l1, rhs: r1 },
         ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
         (_, _) => false,

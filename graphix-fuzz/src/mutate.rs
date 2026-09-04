@@ -180,7 +180,8 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         | CheckedDiv { lhs, rhs }
         | Mod { lhs, rhs }
         | CheckedMod { lhs, rhs }
-        | Sample { lhs, rhs } => {
+        | Sample { lhs, rhs }
+        | StrictSample { lhs, rhs } => {
             f(lhs);
             f(rhs);
         }
@@ -338,6 +339,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         Mod { lhs, rhs } => Mod { lhs: ra!(lhs), rhs: ra!(rhs) },
         CheckedMod { lhs, rhs } => CheckedMod { lhs: ra!(lhs), rhs: ra!(rhs) },
         Sample { lhs, rhs } => Sample { lhs: ra!(lhs), rhs: ra!(rhs) },
+        StrictSample { lhs, rhs } => StrictSample { lhs: ra!(lhs), rhs: ra!(rhs) },
     };
     Expr::new(kind, e.pos)
 }

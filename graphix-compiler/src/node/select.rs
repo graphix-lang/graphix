@@ -93,6 +93,11 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// Wake-catch-up fire tracking (design/wake_catchup.md). `None`
     /// until the first update (arm ref sets need the compiled tree).
     tracked: Option<TrackedFires>,
+    /// Per arm: sleep on deselect? False only for a pure
+    /// non-recursive body — nothing to pause, so skip `sleep` and
+    /// skip `update` while untaken. `None` until the first update
+    /// (callee facts need the analysis).
+    sleep_on_deselect: Option<Vec<bool>>,
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -117,6 +122,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             shallow_sealed: false,
             slept: false,
             tracked: None,
+            sleep_on_deselect: None,
         })
     }
 
@@ -163,6 +169,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             shallow_sealed: false,
             slept: false,
             tracked: None,
+            sleep_on_deselect: None,
         }))
     }
 }
@@ -591,6 +598,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         if self.tracked.is_none() {
             self.tracked = Some(TrackedFires::init(&ctx.env, &self.arms));
         }
+        if self.sleep_on_deselect.is_none() {
+            self.sleep_on_deselect = Some(
+                self.arms
+                    .iter()
+                    .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
+                    .collect(),
+            );
+        }
         let Self {
             selected,
             arg,
@@ -603,8 +618,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow_sealed: _,
             slept,
             tracked,
+            sleep_on_deselect,
         } = self;
         let tracked = tracked.as_mut().expect("tracked initialized above");
+        let sleep_on_deselect: &[bool] =
+            sleep_on_deselect.as_deref().expect("sleep_on_deselect computed above");
         // WAKE CATCH-UP (design/wake_catchup.md): the first update
         // after this select's sleep re-matches from the present
         // scrutinee — a reselected arm recomputes from the world as it
@@ -943,7 +961,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         );
                     }
                     if let Some(j) = selected.get() {
-                        deselect_sleep(&mut arms[j].1, ctx);
+                        if sleep_on_deselect[j] {
+                            deselect_sleep(&mut arms[j].1, ctx);
+                        }
                         // refresh the sleeper's tracked read set now,
                         // while its subtree (dynamically bound callees
                         // included) is fully materialized — the
@@ -990,17 +1010,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         Tag::FIRED
                     };
                     bind!(i, wake_tag);
-                    // The init view is REAL (kernels force their input
-                    // view, call sites prime, refs read standing entries
-                    // as Fired), but flagged as a WAKE: the arm is
-                    // RESUMED, not created, so a `<-` target that
-                    // already holds a value is not reseeded by its own
-                    // initializer — sleep is PAUSE. A first-ever
-                    // selection needs no special case: nothing has
-                    // published yet, so the seed applies normally.
+                    // Resume a SLEPT arm under the wake view (sleep is
+                    // pause). A skip-sleep arm was never paused and
+                    // never updated: this evaluation is its birth
+                    // (`event.init`), not a wake — `wake_init` would
+                    // make nested standing scrutinees look like
+                    // deliveries. Unit variants (and anything else
+                    // that materializes only on init) need the birth.
                     let (init, wake) = (event.init, event.wake_init);
                     event.init = true;
-                    event.wake_init = true;
+                    if sleep_on_deselect[i] {
+                        event.wake_init = true;
+                    }
                     let (t, v) = arm_prod!(i);
                     event.init = init;
                     event.wake_init = wake;
@@ -1016,7 +1037,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     emit!(t, v)
                 }
                 (None, Some(j)) => {
-                    deselect_sleep(&mut arms[j].1, ctx);
+                    if sleep_on_deselect[j] {
+                        deselect_sleep(&mut arms[j].1, ctx);
+                    }
                     tracked.refresh_arm(&ctx.env, j, &arms[j].0, &arms[j].1);
                     selected.set(None);
                     None
@@ -1045,6 +1068,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow_sealed: _,
             slept: _,
             tracked: _,
+            sleep_on_deselect: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -1066,6 +1090,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow_sealed: _,
             slept,
             tracked: _,
+            sleep_on_deselect: _,
         } = self;
         *slept = true;
         arg.sleep(ctx);
@@ -1104,6 +1129,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow_sealed: _,
             slept: _,
             tracked: _,
+            sleep_on_deselect: _,
         } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
@@ -1127,6 +1153,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             shallow_sealed: _,
             slept: _,
             tracked: _,
+            sleep_on_deselect: _,
         } = self;
         arg.node.refs(refs);
         for (pat, arm) in arms {

@@ -105,7 +105,8 @@ async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
                 && id == eid
             {
                 blocks.push(
-                    graphix_compiler::fusion::emit_helpers::LIVE_SELF_BLOCKS.load(Relaxed),
+                    graphix_compiler::fusion::emit_helpers::LIVE_SELF_BLOCKS
+                        .load(Relaxed),
                 );
             }
         }

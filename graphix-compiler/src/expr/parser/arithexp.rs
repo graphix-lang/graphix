@@ -277,6 +277,7 @@ fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
         "&&" => mk!(And),
         "||" => mk!(Or),
         "~" => mk!(Sample),
+        "~!" => mk!(StrictSample),
         _ => unreachable!(),
     }
 }
@@ -285,7 +286,7 @@ fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
 /// Higher precedence binds tighter.
 pub(crate) fn precedence(op: &str) -> (u8, bool) {
     match op {
-        "~" => (0, true),
+        "~" | "~!" => (0, true),
         "||" => (1, true),
         "&&" => (2, true),
         "==" | "!=" => (3, true),
@@ -359,6 +360,7 @@ parser! {
                     attempt(string("/")),
                     attempt(string("%?")),
                     attempt(string("%")),
+                    attempt(string("~!")),
                     string("~"),
                 )))),
                 arith_term(),
