@@ -293,3 +293,69 @@ const SEQ_QOP_ABORTS: &str = r#"
 run!(seq_qop_aborts, SEQ_QOP_ABORTS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_DO_FANOUT_RERUNS: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
+  let trig = select step { 1 | 5 => step, _ => never() };
+  let n = 0;
+  seq trig {
+    do {
+      n <- n + 1
+    }
+  };
+  select step { 10 => n, _ => never() }
+}
+"#;
+
+run!(seq_do_fanout_reruns, SEQ_DO_FANOUT_RERUNS, |v: Result<&Value>| match v {
+    Ok(Value::I64(2)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_DO_LET_INSIDE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => true, _ => never() };
+  let delayed = never<i64>();
+  delayed <- select step { 4 => 42, _ => never() };
+  let y = 0;
+  seq go {
+    do {
+      let x = delayed;
+      y <- x
+    }
+  };
+  select step { 8 => y, _ => never() }
+}
+"#;
+
+run!(seq_do_let_inside, SEQ_DO_LET_INSIDE, |v: Result<&Value>| match v {
+    Ok(Value::I64(42)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_DO_TWO_WRITES: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let go = select step { 1 => true, _ => never() };
+  let a = 0;
+  let b = 0;
+  seq go {
+    do {
+      let x = 3;
+      a <- x;
+      b <- x + 1
+    }
+  };
+  select step { 6 => a * 10 + b, _ => never() }
+}
+"#;
+
+run!(seq_do_two_writes, SEQ_DO_TWO_WRITES, |v: Result<&Value>| match v {
+    Ok(Value::I64(34)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

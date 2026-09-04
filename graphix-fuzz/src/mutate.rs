@@ -158,6 +158,11 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         }
         Catch(c) => f(&c.handler),
         Until(x) => f(x),
+        SeqDo { body } => {
+            for e in body.iter() {
+                f(e);
+            }
+        }
         Seq { trigger, body } => {
             if let Some(t) = trigger {
                 f(t);
@@ -323,6 +328,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
             handler: ra!(&c.handler),
         })),
         Until(x) => Until(ra!(x)),
+        SeqDo { body } => SeqDo { body: aslice(body.iter().map(|c| r!(c)).collect()) },
         Seq { trigger, body } => Seq {
             trigger: trigger.as_ref().map(|t| ra!(t)),
             body: aslice(body.iter().map(|c| r!(c)).collect()),

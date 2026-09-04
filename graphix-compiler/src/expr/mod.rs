@@ -486,6 +486,11 @@ pub enum ExprKind {
     /// `until expr` — wait until a bool level is true. Legal only as a
     /// seq step.
     Until(Arc<Expr>),
+    /// `do { stmts }` — several seq statements as one arm. Legal only
+    /// as a seq step (`design/seq_blocks.md`).
+    SeqDo {
+        body: Arc<[Expr]>,
+    },
     Qop(Arc<Expr>),
     OrNever(Arc<Expr>),
     Catch(Arc<CatchExpr>),
@@ -964,6 +969,7 @@ impl Expr {
                 body.iter().fold(init, |init, e| e.fold(init, f))
             }
             ExprKind::Until(e) => e.fold(init, f),
+            ExprKind::SeqDo { body } => body.iter().fold(init, |init, e| e.fold(init, f)),
             ExprKind::Catch(c) => c.handler.fold(init, f),
             ExprKind::Qop(e)
             | ExprKind::OrNever(e)

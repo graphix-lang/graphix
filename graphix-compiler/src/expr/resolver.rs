@@ -1026,6 +1026,10 @@ impl Expr {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Until(Arc::new(e)))
             }),
+            ExprKind::SeqDo { body } => Box::pin(async move {
+                let body = Arc::from(subexprs!(body));
+                expr!(ExprKind::SeqDo { body })
+            }),
             ExprKind::Qop(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Qop(Arc::new(e)))

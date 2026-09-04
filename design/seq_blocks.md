@@ -324,6 +324,7 @@ model is still too subtle.
 seq [trigger] { stmt* [expr] }
 
 stmt   := let pat = expr ;
+        | do { stmt* [expr] } ;          // one arm: waits then issues together
         | expr ;                         // an effect, a watch, a derivation
         | until expr ;                   // sugar: select expr { true => null, false => never() }
         | select expr { pat [if g] => body, ... } ;   // body = { stmt* [expr] } or expr
@@ -361,7 +362,8 @@ is active (that is what lets `until released` wait for a level to
 flip). The classification is `analysis::infer_effects`' per-node
 fact, so the lowering pays nothing new. Consecutive same-cycle steps
 coalesce into one arm; an async completion and every connect end an
-arm (§7.4).
+arm (§7.4). `do { … }` is the override: several statements, one arm,
+connects pc-sampled, lets inside.
 
 **R4 — A `let` binds the step's first production for the rest of the
 run.** Later steps read it; a later ITERATION overwrites it before its

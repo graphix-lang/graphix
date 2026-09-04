@@ -69,19 +69,7 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
         }
     }
     for (i, e) in steps.iter().enumerate() {
-        if let ExprKind::Bind(b) = &e.kind {
-            if b.rec {
-                return Err(anyhow!("let rec is not a seq step")
-                    .context(ErrorContext((*e).clone())));
-            }
-            let mut ns: Vec<ArcStr> = Vec::new();
-            b.pattern.with_names(&mut |n| ns.push(n.clone()));
-            for n in ns {
-                let cell = ArcStr::from(format_compact!("seqc{id}_{i}_{n}").as_str());
-                names.insert(n, cell.clone());
-                cells.push((cell, e.pos));
-            }
-        }
+        collect_step_binds(e, id, i, &mut names, &mut cells)?;
     }
 
     let pc_typ = pc_type(n);
@@ -161,13 +149,7 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
         };
         let last = i + 1 == n;
         let mut this_let: AHashMap<ArcStr, ArcStr> = AHashMap::new();
-        if let ExprKind::Bind(b) = &step.kind {
-            b.pattern.with_names(&mut |n| {
-                if let Some(cell) = names.get(n) {
-                    this_let.insert(n.clone(), cell.clone());
-                }
-            });
-        }
+        fill_this_let(step, &names, &mut this_let);
         let arm = step_arm(
             step,
             pc.as_str(),
@@ -216,6 +198,9 @@ fn step_arm(
                     (pat_lit(Value::Bool(false)), never(pos)),
                 ],
             ))
+        }
+        ExprKind::SeqDo { body } => {
+            lower_do_stmts(body, pc, next, last, result, vname, visible, this_let)
         }
         ExprKind::Bind(b) => {
             let value = rewrite(&b.value, visible);
@@ -269,6 +254,202 @@ fn step_arm(
                 ));
             }
             body.push(trans);
+            Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
+        }
+    }
+}
+
+fn collect_step_binds(
+    e: &Expr,
+    id: u64,
+    step_i: usize,
+    names: &mut AHashMap<ArcStr, ArcStr>,
+    cells: &mut Vec<(ArcStr, SourcePosition)>,
+) -> Result<()> {
+    match &e.kind {
+        ExprKind::SeqDo { body } => {
+            for (j, s) in body.iter().enumerate() {
+                collect_do_bind(s, id, step_i, j, names, cells)?;
+            }
+            Ok(())
+        }
+        ExprKind::Bind(b) => {
+            if b.rec {
+                return Err(
+                    anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
+                );
+            }
+            let mut ns: Vec<ArcStr> = Vec::new();
+            b.pattern.with_names(&mut |n| ns.push(n.clone()));
+            for n in ns {
+                let cell =
+                    ArcStr::from(format_compact!("seqc{id}_{step_i}_{n}").as_str());
+                names.insert(n, cell.clone());
+                cells.push((cell, e.pos));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn collect_do_bind(
+    e: &Expr,
+    id: u64,
+    step_i: usize,
+    j: usize,
+    names: &mut AHashMap<ArcStr, ArcStr>,
+    cells: &mut Vec<(ArcStr, SourcePosition)>,
+) -> Result<()> {
+    match &e.kind {
+        ExprKind::SeqDo { body } => {
+            for (k, s) in body.iter().enumerate() {
+                collect_do_bind(s, id, step_i, j * 32 + k + 1, names, cells)?;
+            }
+            Ok(())
+        }
+        ExprKind::Bind(b) => {
+            if b.rec {
+                return Err(
+                    anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
+                );
+            }
+            let mut ns: Vec<ArcStr> = Vec::new();
+            b.pattern.with_names(&mut |n| ns.push(n.clone()));
+            for n in ns {
+                let cell =
+                    ArcStr::from(format_compact!("seqc{id}_{step_i}_{j}_{n}").as_str());
+                names.insert(n, cell.clone());
+                cells.push((cell, e.pos));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn fill_this_let(
+    e: &Expr,
+    names: &AHashMap<ArcStr, ArcStr>,
+    this_let: &mut AHashMap<ArcStr, ArcStr>,
+) {
+    match &e.kind {
+        ExprKind::SeqDo { body } => {
+            for s in body.iter() {
+                fill_this_let(s, names, this_let);
+            }
+        }
+        ExprKind::Bind(b) => {
+            b.pattern.with_names(&mut |n| {
+                if let Some(cell) = names.get(n) {
+                    this_let.insert(n.clone(), cell.clone());
+                }
+            });
+        }
+        _ => (),
+    }
+}
+
+fn lower_do_stmts(
+    stmts: &[Expr],
+    pc: &str,
+    next: &str,
+    last_step: bool,
+    result: &str,
+    vname: &str,
+    visible: &AHashMap<ArcStr, ArcStr>,
+    this_let: &AHashMap<ArcStr, ArcStr>,
+) -> Result<Expr> {
+    let trans = |pos: SourcePosition| {
+        connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)))
+    };
+    let Some((head, rest)) = stmts.split_first() else {
+        panic!("empty do body");
+    };
+    let pos = head.pos;
+    let rest_empty = rest.is_empty();
+    let tail = |visible: &AHashMap<ArcStr, ArcStr>| -> Result<Expr> {
+        if rest_empty {
+            Ok(trans(pos))
+        } else {
+            lower_do_stmts(rest, pc, next, last_step, result, vname, visible, this_let)
+        }
+    };
+    match &head.kind {
+        ExprKind::Until(_) => {
+            Err(anyhow!("until is not a do statement")
+                .context(ErrorContext(head.clone())))
+        }
+        ExprKind::Catch(_) => Err(anyhow!(
+            "a seq catch must be the first statement of the seq, not inside do"
+        )
+        .context(ErrorContext(head.clone()))),
+        ExprKind::SeqDo { body } => {
+            let mut flat: Vec<Expr> = body.iter().cloned().collect();
+            flat.extend(rest.iter().cloned());
+            lower_do_stmts(&flat, pc, next, last_step, result, vname, visible, this_let)
+        }
+        ExprKind::Bind(b) => {
+            if b.rec {
+                return Err(anyhow!("let rec is not a seq step")
+                    .context(ErrorContext(head.clone())));
+            }
+            let value = rewrite(&b.value, visible);
+            let mut vis = visible.clone();
+            b.pattern.with_names(&mut |n| {
+                vis.remove(n);
+            });
+            let mut body =
+                vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
+            b.pattern.with_names(&mut |n| {
+                if let Some(cell) = this_let.get(n) {
+                    body.push(connect(
+                        pos,
+                        cell.as_str(),
+                        sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
+                    ));
+                }
+            });
+            if rest_empty && last_step {
+                body.push(connect(
+                    pos,
+                    result,
+                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
+                ));
+            }
+            body.push(tail(&vis)?);
+            Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
+        }
+        ExprKind::Connect { name, value, deref } => {
+            let value = rewrite(value, visible);
+            let target = rewrite_path(name, visible);
+            let mut body = vec![connect_path(
+                pos,
+                target,
+                *deref,
+                sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
+            )];
+            if rest_empty && last_step {
+                body.push(connect(
+                    pos,
+                    result,
+                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
+                ));
+            }
+            body.push(tail(visible)?);
+            Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
+        }
+        _ => {
+            let e = rewrite(head, visible);
+            let mut body = Vec::new();
+            if rest_empty && last_step {
+                body.push(connect(
+                    pos,
+                    result,
+                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
+                ));
+            }
+            body.push(tail(visible)?);
             Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
         }
     }
@@ -364,6 +545,19 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
             deref: *deref,
         },
         ExprKind::Until(x) => ExprKind::Until(Arc::new(rewrite(x, map))),
+        ExprKind::SeqDo { body } => {
+            let mut inner = map.clone();
+            let mut out = Vec::with_capacity(body.len());
+            for x in body.iter() {
+                out.push(rewrite(x, &inner));
+                if let ExprKind::Bind(b) = &x.kind {
+                    b.pattern.with_names(&mut |n| {
+                        inner.remove(n);
+                    });
+                }
+            }
+            ExprKind::SeqDo { body: Arc::from(out) }
+        }
         ExprKind::Seq { trigger, body } => {
             let trigger = trigger.as_ref().map(|t| Arc::new(rewrite(t, map)));
             let mut inner = map.clone();

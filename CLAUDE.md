@@ -1191,7 +1191,8 @@ write rule (compiler-sampled `<-` in an arm) was withdrawn: sometimes
 you want a write on every scrutinee fire and sometimes you do not,
 and `~` is how you choose. Straight-line `seq` is built (2026-09-04,
 `if`/loops held): AST-to-AST pc machine, `range` for the old `seq(i,j)`
-builtin; the admin TUI port uses surface `seq` for every multi-step
+builtin; `do { }` is one seq arm (lets inside, pc-sampled connects).
+The admin TUI port uses surface `seq`/`do` for every multi-step
 ceremony (`design/seq_blocks.md`).
 
 `design/README.md` is the index (built / proposed / superseded). The
@@ -1228,14 +1229,10 @@ the rules.
   level; one catch at the top is cleanup + reset + rethrow; `?` aborts
   the run. No trigger = run at init. A bare-variable trigger is
   snapshotted. `until` is reserved and legal only as a seq step. The
-  integer builtin is `range(i, j)`. Pins: `lang/seq.rs`. The admin TUI
-  port uses it for every multi-step ceremony (local lifecycle, panel
-  actions, services, landing save/discover, remote connect). A seq
-  let's fire is only live in the next step; later top-level `<-` still
-  fire (`pc` sample) but a helper that samples on the let (`t ~`)
-  does not. Fan-out from one wait is a `{ }` do block — one step, same
-  cycle; its last expression is the wait's value so the step has a
-  presence. `never()` in a step stalls the run.
+  integer builtin is `range(i, j)`. `do { stmts }` is several statements
+  as one arm (lets inside, connects pc-sampled). Pins: `lang/seq.rs`
+  `seq_do_*`. The admin TUI port uses seq/`do` for every multi-step
+  ceremony. `never()` in a step stalls the run.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`

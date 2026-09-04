@@ -107,7 +107,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "never", "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any",
             "use", "rec", "catch", "try", "self", "super", "package", "pub", "trait",
-            "impl", "seq", "until",
+            "impl", "seq", "until", "do",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -128,7 +128,7 @@ pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
 pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
-        "catch", "try", "pub", "trait", "impl", "seq", "until",
+        "catch", "try", "pub", "trait", "impl", "seq", "until", "do",
     ])
 });
 
@@ -825,13 +825,49 @@ where
     )
 }
 
+fn seq_do<I>() -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(
+        spaces().with(
+            (
+                position(),
+                string("do").skip(not_prefix()).with(spaces()).with(between(
+                    sptoken('{'),
+                    sptoken('}'),
+                    sep_by1_tok_exp(
+                        choice((until_expr(), expr())),
+                        semisep(),
+                        token('}'),
+                        |pos| ExprKind::NoOp.to_expr(pos),
+                    ),
+                )),
+            )
+                .then(|(pos, mut body): (_, LPooled<Vec<Expr>>)| {
+                    if body.is_empty()
+                        || (body.len() == 1 && matches!(body[0].kind, ExprKind::NoOp))
+                    {
+                        unexpected_any("a do block must contain at least one statement")
+                            .left()
+                    } else {
+                        let body = Arc::from_iter(body.drain(..));
+                        value(ExprKind::SeqDo { body }.to_expr(pos)).right()
+                    }
+                }),
+        ),
+    )
+}
+
 fn seq_body_item<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((until_expr(), expr()))
+    choice((until_expr(), seq_do(), expr()))
 }
 
 pub(super) fn seq<I>() -> impl Parser<I, Output = Expr>

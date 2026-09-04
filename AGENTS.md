@@ -395,26 +395,29 @@ level is true. `?` aborts the run (the block's `catch`, if any, is
 cleanup; the error rethrows). Levels (`tui::suspend`, publish, …)
 stay outside the block and are written from steps.
 
+`do { stmts }` is several statements as one step: waits, then issues
+together, gating implicit. A let can sit inside.
+
 ```graphix
 let y = seq go {
   until ready;
   9
 }
+
+seq result {
+  do {
+    let r = result?;
+    toast <- { title: "Done", lines: ["ok"], error: false };
+    load <- `Queue
+  }
+}
 ```
 
 `if` and loops are not seq steps yet. Nested `select` is an ordinary
-expression. The integer-sequence builtin is `range(i, j)`.
-
-A seq let's value is standing after the next step. Fan-out from one
-wait (toast and refresh, several writes) is one `{ }` — a do block is
-one step, same cycle. Writes inside that block sample on the let
-(`load <- r ~ \`Queue`, `screen <- t ~ \`Panels`). The block's last
-expression is the wait's value (`r`) so the seq step has a presence
-to finish — a connect as last expr never produces and the machine
-stays busy.
-A step that is `never()` stalls the run (later triggers busy-drop);
-skip with `_ => null`. Ceremony handlers that swallow after a toast
-wrap seq in an outer `catch` — seq's own catch resets and rethrows.
+expression. The integer-sequence builtin is `range(i, j)`. A step that
+is `never()` stalls the run (later triggers busy-drop); skip with
+`_ => null`. Ceremony handlers that swallow after a toast wrap seq in
+an outer `catch` — seq's own catch resets and rethrows.
 
 ### Sample Operator (`~`)
 

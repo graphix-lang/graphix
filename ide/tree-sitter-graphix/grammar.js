@@ -893,9 +893,20 @@ module.exports = grammar({
       '}',
     ),
 
-    _seq_item: $ => choice($.until, $._expression),
+    _seq_item: $ => choice($.until, $.seq_do, $._expression),
 
     until: $ => seq('until', $._expression),
+
+    seq_do: $ => seq(
+      'do',
+      '{',
+      seq(
+        repeat(seq(choice($.until, $._expression), ';')),
+        choice($.until, $._expression),
+        optional(';'),
+      ),
+      '}',
+    ),
 
     match_arm: $ => seq(
       field('pattern', $.pattern),
@@ -1271,7 +1282,7 @@ module.exports = grammar({
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'until',
+        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'until', 'do',
         'type',
         'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',
         'bool', 'string', 'bytes',

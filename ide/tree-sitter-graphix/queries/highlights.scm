@@ -14,6 +14,7 @@
   "select"
   "seq"
   "until"
+  "do"
   "if"
   "catch"
 ] @keyword.control

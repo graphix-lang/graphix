@@ -318,6 +318,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Until(_) => {
             crate::bailat!(spec, "`until` is only legal in a seq block")
         }
+        ExprKind::SeqDo { .. } => {
+            crate::bailat!(spec, "`do` is only legal in a seq block")
+        }
         ExprKind::Select(SelectExpr { arg, arms }) => {
             Select::compile(ctx, flags, spec.clone(), scope, top_id, arg, arms)
         }

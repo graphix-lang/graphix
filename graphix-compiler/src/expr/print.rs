@@ -972,6 +972,7 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "until ")?;
                 e.fmt_pretty(buf)
             }
+            ExprKind::SeqDo { body } => pretty_print_exprs(buf, body, "do {", "}", ";"),
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
             ExprKind::List { args } => pretty_print_exprs(buf, args, "[<", ">]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
@@ -1369,6 +1370,7 @@ impl ExprKind {
                 print_exprs(f, body, "{", "}", "; ")
             }
             ExprKind::Until(e) => write!(f, "until {e}"),
+            ExprKind::SeqDo { body } => print_exprs(f, body, "do {", "}", "; "),
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),
             ExprKind::List { args } => print_exprs(f, args, "[<", ">]", ", "),

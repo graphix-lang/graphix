@@ -2096,6 +2096,9 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }
         (ExprKind::Until(a), ExprKind::Until(b)) => check(a, b),
+        (ExprKind::SeqDo { body: a }, ExprKind::SeqDo { body: b }) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| check(x, y))
+        }
         (_, _) => false,
     }
 }

@@ -2319,6 +2319,8 @@ fn seq_parses() {
         "seq { let x = 1; x }",
         "seq go { until ready; 1 }",
         "seq { catch(e) e; 1 }",
+        "seq t { do { let x = 1; x } }",
+        "seq { do { 1 } }",
     ] {
         let e = parse_one(s).unwrap();
         assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
@@ -2328,4 +2330,6 @@ fn seq_parses() {
     assert!(parse_one("let seq = 1").is_err());
     assert!(parse_one("seq").is_err());
     assert!(parse_one("until x").is_err());
+    assert!(parse_one("do { 1 }").is_err());
+    assert!(parse_one("let do = 1").is_err());
 }
