@@ -1,7 +1,7 @@
 use tui::{line, span, style, Span};
 use tui::paragraph::{self, *};
 
-let span: Array<Span> = select seq(0, 256)$ {
+let span: Array<Span> = select range(0, 256)$ {
     i => [
         span(#style:style(#fg:`Indexed(i)), "██"),
         span("[i]"),

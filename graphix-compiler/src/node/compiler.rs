@@ -311,6 +311,13 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::StructWith(StructWithExpr { source, replace }) => {
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
+        ExprKind::Seq { .. } => {
+            let lowered = crate::expr::seq::desugar(spec)?;
+            compile(ctx, flags, lowered, scope, top_id)
+        }
+        ExprKind::Until(_) => {
+            crate::bailat!(spec, "`until` is only legal in a seq block")
+        }
         ExprKind::Select(SelectExpr { arg, arms }) => {
             Select::compile(ctx, flags, spec.clone(), scope, top_id, arg, arms)
         }

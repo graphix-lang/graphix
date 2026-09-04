@@ -157,6 +157,15 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
             }
         }
         Catch(c) => f(&c.handler),
+        Until(x) => f(x),
+        Seq { trigger, body } => {
+            if let Some(t) = trigger {
+                f(t);
+            }
+            for e in body.iter() {
+                f(e);
+            }
+        }
         Lambda(l) => {
             if let Either::Left(body) = &l.body {
                 f(body);
@@ -313,6 +322,11 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
             constraint: c.constraint.clone(),
             handler: ra!(&c.handler),
         })),
+        Until(x) => Until(ra!(x)),
+        Seq { trigger, body } => Seq {
+            trigger: trigger.as_ref().map(|t| ra!(t)),
+            body: aslice(body.iter().map(|c| r!(c)).collect()),
+        },
         Lambda(l) => {
             let mut nl = (**l).clone();
             if let Either::Left(body) = &l.body {

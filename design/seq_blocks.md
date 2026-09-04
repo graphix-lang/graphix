@@ -1,6 +1,6 @@
 # `seq` blocks: sequencing across cycles
 
-Status: **proposed, not built** (2026-09-03). Origin: the post-port
+Status: **straight-line built** (2026-09-04). `if`/loops held. Origin: the post-port
 assessment of the netidx-admin rewrite (5,434 lines of Graphix). Eric:
 "we actually wrote a sync language subset at one point and concluded it
 was a total disaster and the sync language subset was Rust" — the
@@ -590,18 +590,18 @@ machine — the round-trip test covers the lowering's output.
    not in a step). The machine is longer than the `~` chain it
    replaced — it does not save typing. The keyword earns its keep only
    as the surface in §2. Parser is unblocked.
-1. Parser + AST: `ExprKind::Seq { trigger, body }` with a `Stmt` enum;
-   the printer; the proptest generator; tree-sitter.
-2. The desugar (`expr/seq_desugar.rs`) and `--expand`.
-3. Pins, one fixture per rule (R1..R10), each run on both engines:
-   drop-while-busy; once-per-entry issue; presence-wait on the second
-   run; sync coalescing; the let cell crossing an arm; branch with a
-   payload bind; a two-arm loop and a one-arm loop; `break v`; `for`
-   over an array taken at entry; abort with cleanup and the enclosing
-   catch seeing the error; the value fired once per run; a seq-lambda
-   called from a step.
-4. Port: every ceremony in `local.gx`, the change-password route, the
-   landing's connect. Measure lines, `--check` time, and read it.
+1. Parser + AST: DONE (straight-line). `ExprKind::Seq` / `Until`;
+   `seq`/`until` reserved; `seq(i, j)` renamed `range`; printer;
+   tree-sitter `seq_block`. No `Stmt` enum — body is `[Expr]`. Proptest
+   generator not yet (Until is not a top-level expr).
+2. The desugar (`expr/seq.rs`): DONE for lets, connects, expression
+   steps, `until`, one catch at the top, `?` abort. One arm per step.
+   `--expand` not yet.
+3. Pins: atoms (go/no-go) plus surface `seq_value` / `seq_let_then_use`
+   / `seq_trigger_and_until` / `seq_busy_drops` / `seq_qop_aborts`.
+   Branch/loop pins wait on if/loops.
+4. Port: privileged handoff in `local.gx` is surface `seq`. Other
+   ceremonies still chains.
 5. Book: a chapter beside `select`, with R9 and the counter-idiom
    warning.
 

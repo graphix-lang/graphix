@@ -959,6 +959,19 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, ")")
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
+            ExprKind::Seq { trigger, body } => {
+                write!(buf, "seq ")?;
+                if let Some(t) = trigger {
+                    t.fmt_pretty(buf)?;
+                    buf.kill_newline();
+                    write!(buf, " ")?;
+                }
+                pretty_print_exprs(buf, body, "{", "}", ";")
+            }
+            ExprKind::Until(e) => {
+                write!(buf, "until ")?;
+                e.fmt_pretty(buf)
+            }
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
             ExprKind::List { args } => pretty_print_exprs(buf, args, "[<", ">]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
@@ -1348,6 +1361,14 @@ impl ExprKind {
             ExprKind::Trait(t) => write!(f, "{t}"),
             ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
+            ExprKind::Seq { trigger, body } => {
+                write!(f, "seq ")?;
+                if let Some(t) = trigger {
+                    write!(f, "{t} ")?;
+                }
+                print_exprs(f, body, "{", "}", "; ")
+            }
+            ExprKind::Until(e) => write!(f, "until {e}"),
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),
             ExprKind::List { args } => print_exprs(f, args, "[<", ">]", ", "),

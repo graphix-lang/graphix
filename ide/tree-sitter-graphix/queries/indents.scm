@@ -3,6 +3,7 @@
   (module_body)
   (do_block)
   (select)
+  (seq_block)
   (struct)
   (map)
   (array)

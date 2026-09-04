@@ -67,7 +67,7 @@ The same grammar works outside `use`: `super::helper(x)` and
 ## The core prelude
 
 The root items of the `core` package (`print`, `println`, `cast`,
-`error`, `filter`, `once`, `never`, `seq`, `Any`, `Result`, ...) and
+`error`, `filter`, `once`, `never`, `range`, `Any`, `Result`, ...) and
 the primitive type names are implicitly imported into every module.
 They can be shadowed by explicit declarations and imports.
 

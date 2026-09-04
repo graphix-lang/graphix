@@ -325,6 +325,7 @@ fn value_pos(k: &ExprKind) -> bool {
             | ExprKind::Impl(_)
             | ExprKind::Connect { .. }
             | ExprKind::Catch(_)
+            | ExprKind::Until(_)
     )
 }
 
@@ -352,6 +353,7 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
                 | ExprKind::Select(_)
                 | ExprKind::Catch(_)
                 | ExprKind::Do { .. }
+                | ExprKind::Seq { .. }
         );
     *idx += 1;
     mutate::for_each_child(e, &mut |c| {

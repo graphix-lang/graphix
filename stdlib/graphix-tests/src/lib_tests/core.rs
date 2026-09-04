@@ -768,14 +768,14 @@ run!(uniq, UNIQ, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const SEQ: &str = r#"
-  array::group(seq(0, 4), |n, _| n == 4)
+const RANGE: &str = r#"
+  array::group(range(0, 4), |n, _| n == 4)
 "#;
 
 // ASPIRE: Jit (currently None) — doesn't fuse its body into a
 // kernel yet; the prior "fused" status was the hollow
 // `result`-wrapper identity kernel (#139 identity suppression).
-run!(seq, SEQ, |v: Result<&Value>| {
+run!(range, RANGE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(0), Value::I64(1), Value::I64(2), Value::I64(3)] => true,

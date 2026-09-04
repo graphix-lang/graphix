@@ -7,4 +7,4 @@
 // the signature already declares (rare-stdlib-fn error contract). The
 // subtraction runs in i128 — j - i overflows i64 for exactly the
 // ranges being rejected (graphix-package-core Seq::update).
-array::group(seq(i64:-9223372036854775808, i64:4), |n, _| n == i64:4)
+array::group(range(i64:-9223372036854775808, i64:4), |n, _| n == i64:4)

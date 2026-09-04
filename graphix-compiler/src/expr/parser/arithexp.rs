@@ -5,7 +5,7 @@ use crate::expr::{
         expr,
         grow::{grow, max_nesting, note_refused},
         interpolated, list_lit, literal, map, never_expr, raw_string, reference, select,
-        spaces, spfldname, sptoken, structure, structwith, variant,
+        seq, spaces, spfldname, sptoken, structure, structwith, variant,
     },
 };
 use arcstr::ArcStr;
@@ -174,6 +174,7 @@ where
         byref_arith().map(|e| (e, None)),
         deref_arith().map(|e| (e, None)),
         select().map(|e| (e, None)),
+        seq().map(|e| (e, None)),
         variant().map(|e| (e, None)),
         cast().map(|e| (e, None)),
         never_expr().map(|e| (e, None)),

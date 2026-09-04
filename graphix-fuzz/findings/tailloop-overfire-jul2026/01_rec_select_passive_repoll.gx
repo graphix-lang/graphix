@@ -20,4 +20,4 @@
 // (fresh-body-per-level emulation) — it must apply only to passes
 // AFTER a pending_tail_call rebind, never the first.
 // minimized:
-{seq(i64:0, i64:2); {let rec g = |n: i64| -> i64 select n {i64:0 => cast<i64>(true)$, _ => g(n - i64:1)}; g(i64:0)}}
+{range(i64:0, i64:2); {let rec g = |n: i64| -> i64 select n {i64:0 => cast<i64>(true)$, _ => g(n - i64:1)}; g(i64:0)}}

@@ -775,6 +775,7 @@ module.exports = grammar({
       $.unary_expression,
       $.apply,
       $.select,
+      $.seq_block,
       $.any,
       $.cast,
       $.never,
@@ -874,6 +875,27 @@ module.exports = grammar({
       commaSep1($.match_arm),
       '}',
     ),
+
+    // `seq [trigger] { stmts }` — trigger is a path or `(expr)`, never a
+    // full expr (postfix `{` is map_ref). `until` is a seq-body item.
+    seq_block: $ => seq(
+      'seq',
+      optional(choice(
+        $.parenthesized_expression,
+        $.reference,
+      )),
+      '{',
+      seq(
+        repeat(seq($._seq_item, ';')),
+        $._seq_item,
+        optional(';'),
+      ),
+      '}',
+    ),
+
+    _seq_item: $ => choice($.until, $._expression),
+
+    until: $ => seq('until', $._expression),
 
     match_arm: $ => seq(
       field('pattern', $.pattern),
@@ -1249,7 +1271,8 @@ module.exports = grammar({
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'type',
+        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'until',
+        'type',
         'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',
         'bool', 'string', 'bytes',
         'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'v32', 'z32',

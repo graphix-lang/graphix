@@ -297,11 +297,11 @@ the predicate returns true. Its type is
 For example,
 
 ```graphix
-let n = seq(0, 100);
+let n = range(0, 100);
 array::group(n, |_, n| (n == 50) || (n == 99))
 ```
 
-`seq(0, 100)` updates 100 times from 0 to 99. The `array::group` will
+`range(0, 100)` updates 100 times from 0 to 99. The `array::group` will
 create two arrays, one containing `[0, .. 50]` and the other
 containing `[51, .. 99]`.
 

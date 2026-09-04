@@ -2083,6 +2083,19 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::StrictSample { lhs: l1, rhs: r1 },
         ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
+        (
+            ExprKind::Seq { trigger: t0, body: b0 },
+            ExprKind::Seq { trigger: t1, body: b1 },
+        ) => {
+            let trig = match (t0, t1) {
+                (None, None) => true,
+                (Some(a), Some(b)) => check(a, b),
+                _ => false,
+            };
+            trig && b0.len() == b1.len()
+                && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
+        }
+        (ExprKind::Until(a), ExprKind::Until(b)) => check(a, b),
         (_, _) => false,
     }
 }

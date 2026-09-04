@@ -15,4 +15,4 @@
 // fix the node-walk. The empty arm must emit only when the array arg
 // or the init arg actually fired this cycle.
 // minimized:
-{seq(i64:0, i64:5)$; array::fold(array::init(i64:0, |i: i64| i), i64:42, |a, x| a + x)}
+{range(i64:0, i64:5)$; array::fold(array::init(i64:0, |i: i64| i), i64:42, |a, x| a + x)}

@@ -386,6 +386,25 @@ select val {
 **Key**: unselected arms are put to sleep (subscriptions paused, no
 computation). First matching arm wins.
 
+### Seq — Straight-line ceremonies
+
+`seq [trigger] { stmts }` runs the statements in order, one step per
+async completion or connect. No trigger = once at init. A trigger
+while a run is in progress is dropped. `until e` waits until a bool
+level is true. `?` aborts the run (the block's `catch`, if any, is
+cleanup; the error rethrows). Levels (`tui::suspend`, publish, …)
+stay outside the block and are written from steps.
+
+```graphix
+let y = seq go {
+  until ready;
+  9
+}
+```
+
+`if` and loops are not seq steps yet. Nested `select` is an ordinary
+expression. The integer-sequence builtin is `range(i, j)`.
+
 ### Sample Operator (`~`)
 
 Returns right side's value when left side produces an event.
@@ -622,7 +641,7 @@ fn<'s: Read + Write>(s: 's) -> null      // `+` joins bounds
 `filter_err(v)`, `count(v)`, `once(v)`, `uniq(v)`, `sum(v)`,
 `product(v)`, `min(v)`, `max(v)`, `mean(v)`, `and(a,b)`, `or(a,b)`,
 `all(v)`, `queue(v)`, `hold(v)`, `take(n,v)`, `skip(n,v)`,
-`throttle(dur,v)`, `never()`, `seq(start,end)`
+`throttle(dur,v)`, `never()`, `range(start,end)`
 
 **array**: `map`, `filter`, `filter_map`, `fold`, `flatten`, `find`,
 `find_map`, `concat`, `push`, `push_front`, `window(#n, trigger, val)`,

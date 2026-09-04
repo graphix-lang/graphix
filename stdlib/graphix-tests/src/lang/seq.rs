@@ -1,6 +1,5 @@
-// The seq `pc` machine atoms (`design/seq_blocks.md` §7), hand-written.
-// Go/no-go for the construct: do the atoms behave on today's sleep and
-// wake catch-up. No `seq` syntax yet.
+// seq (`design/seq_blocks.md`): pc-machine atoms, then the surface
+// construct. Straight-line only — no if/loop.
 
 use anyhow::Result;
 use graphix_package_core::run;
@@ -208,4 +207,89 @@ const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
 run!(seq_until_level_flips, SEQ_UNTIL_LEVEL_FLIPS, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "Done",
     _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_VALUE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 4 => s + 1, _ => never() };
+  let y = seq { 7 };
+  select step { 4 => y, _ => never() }
+}
+"#;
+
+run!(seq_value, SEQ_VALUE, |v: Result<&Value>| match v {
+    Ok(Value::I64(7)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_LET_THEN_USE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let y = seq {
+    let x = 3;
+    x + 1
+  };
+  select step { 6 => y, _ => never() }
+}
+"#;
+
+run!(seq_let_then_use, SEQ_LET_THEN_USE, |v: Result<&Value>| match v {
+    Ok(Value::I64(4)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_TRIGGER_AND_UNTIL: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 10 => s + 1, _ => never() };
+  let go = select step { 2 => true, _ => never() };
+  let ready = false;
+  ready <- select step { 5 => true, _ => never() };
+  let y = seq go {
+    until ready;
+    9
+  };
+  select step { 10 => y, _ => never() }
+}
+"#;
+
+run!(seq_trigger_and_until, SEQ_TRIGGER_AND_UNTIL, |v: Result<&Value>| match v {
+    Ok(Value::I64(9)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_BUSY_DROPS: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 12 => s + 1, _ => never() };
+  let trig = select step { 1 | 2 | 3 => step, _ => never() };
+  let go = false;
+  go <- select step { 8 => true, _ => never() };
+  let n = 0;
+  n <- seq trig {
+    until go;
+    n + 1
+  };
+  select step { 12 => n, _ => never() }
+}
+"#;
+
+run!(seq_busy_drops, SEQ_BUSY_DROPS, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const SEQ_QOP_ABORTS: &str = r#"
+{
+  let caught = never();
+  catch(e) caught <- e ~ 1;
+  seq { [0][1]?; 99 };
+  caught
+}
+"#;
+
+run!(seq_qop_aborts, SEQ_QOP_ABORTS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);

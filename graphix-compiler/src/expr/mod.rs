@@ -38,6 +38,7 @@ pub mod parser;
 mod pattern;
 pub mod print;
 mod resolver;
+pub(crate) mod seq;
 pub mod serialize;
 #[cfg(test)]
 mod test;
@@ -476,6 +477,15 @@ pub enum ExprKind {
     },
     Struct(StructExpr),
     Select(SelectExpr),
+    /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
+    /// a select over a step variable (`design/seq_blocks.md`).
+    Seq {
+        trigger: Option<Arc<Expr>>,
+        body: Arc<[Expr]>,
+    },
+    /// `until expr` — wait until a bool level is true. Legal only as a
+    /// seq step.
+    Until(Arc<Expr>),
     Qop(Arc<Expr>),
     OrNever(Arc<Expr>),
     Catch(Arc<CatchExpr>),
@@ -946,6 +956,14 @@ impl Expr {
                     e.fold(init, f)
                 })
             }
+            ExprKind::Seq { trigger, body } => {
+                let init = match trigger {
+                    Some(t) => t.fold(init, f),
+                    None => init,
+                };
+                body.iter().fold(init, |init, e| e.fold(init, f))
+            }
+            ExprKind::Until(e) => e.fold(init, f),
             ExprKind::Catch(c) => c.handler.fold(init, f),
             ExprKind::Qop(e)
             | ExprKind::OrNever(e)

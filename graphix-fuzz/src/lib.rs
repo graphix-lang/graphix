@@ -3170,8 +3170,8 @@ fn crash_key(prog: &str) -> String {
         if c.is_ascii_digit()
             || (c == '-' && chars.peek().is_some_and(|n| n.is_ascii_digit()))
         {
-            // A leading `-` folds into the digit run: `seq(-N, M)` and
-            // `seq(N, M)` are the same crash shape, but keying the sign
+            // A leading `-` folds into the digit run: `range(-N, M)` and
+            // `range(N, M)` are the same crash shape, but keying the sign
             // separately doubled every runaway family (soak jul05
             // item 7). A `-` NOT followed by a digit (subtraction of a
             // variable, `->`) still keys literally. `x-1` keys the same
@@ -4953,7 +4953,7 @@ mod tests {
     fn crash_key_sign_fold() {
         // A leading minus folds into the digit run — `-N` and `N` key
         // identically (soak jul05 item 7's family doubling)...
-        assert_eq!(crash_key("seq(-9223372036854775808, 4)"), crash_key("seq(0, 4)"));
+        assert_eq!(crash_key("range(-9223372036854775808, 4)"), crash_key("range(0, 4)"));
         // ...while operator variants stay distinct...
         assert_ne!(crash_key("n <= 1"), crash_key("n == 1"));
         // ...and a minus NOT followed by a digit keys literally.

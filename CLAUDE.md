@@ -1189,9 +1189,10 @@ is not updated while untaken. A `<-`, a catch, a sample, an `any`, or
 a stateful/async callee is not pure — those arms still sleep. The
 write rule (compiler-sampled `<-` in an arm) was withdrawn: sometimes
 you want a write on every scrutinee fire and sometimes you do not,
-and `~` is how you choose. `seq` is unblocked as the 2026-09-03 `pc`
-machine: atoms pinned (`lang/seq.rs`), privileged handoff hand-lowered
-in the admin TUI; parser next (`design/seq_blocks.md` §10).
+and `~` is how you choose. Straight-line `seq` is built (2026-09-04,
+`if`/loops held): AST-to-AST pc machine, `range` for the old `seq(i,j)`
+builtin; privileged handoff in the admin TUI is surface `seq`
+(`design/seq_blocks.md`).
 
 `design/README.md` is the index (built / proposed / superseded). The
 docs hold the rationale and the as-built records; this file holds only
@@ -1220,6 +1221,15 @@ the rules.
   cell its writers refine, settled to ⊥ by `Bind::typecheck1` if
   nobody does. `never` is a reserved word; the core builtin is gone.
   Pins: `lang/select.rs` `never_*`, parser `never_parses`.
+- **`seq` blocks** (`design/seq_blocks.md`, straight-line 2026-09-04;
+  `if`/loops held): `seq [trigger] { stmt* [expr] }` desugars to a
+  pc machine (Idle/S0..Sn, `filter` busy-drop, presence select + free
+  `pc` read per step). Lets become cells; `until e` waits on a bool
+  level; one catch at the top is cleanup + reset + rethrow; `?` aborts
+  the run. No trigger = run at init. A bare-variable trigger is
+  snapshotted. `until` is reserved and legal only as a seq step. The
+  integer builtin is `range(i, j)`. Pins: `lang/seq.rs`. The privileged
+  handoff in netidx-admin `local.gx` is the first surface use.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`

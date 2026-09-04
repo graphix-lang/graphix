@@ -1012,6 +1012,20 @@ impl Expr {
                 .await?;
                 expr!(ExprKind::Select(SelectExpr { arg, arms: Arc::from(arms) }))
             }),
+            ExprKind::Seq { trigger, body } => Box::pin(async move {
+                let trigger = match trigger {
+                    Some(t) => Some(Arc::new(
+                        t.resolve_modules_int(scope, prepend, resolvers).await?,
+                    )),
+                    None => None,
+                };
+                let body = Arc::from(subexprs!(body));
+                expr!(ExprKind::Seq { trigger, body })
+            }),
+            ExprKind::Until(e) => Box::pin(async move {
+                let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::Until(Arc::new(e)))
+            }),
             ExprKind::Qop(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Qop(Arc::new(e)))

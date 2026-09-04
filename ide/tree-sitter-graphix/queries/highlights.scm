@@ -12,6 +12,8 @@
 ; -- Keywords -------------------------------------------------------
 [
   "select"
+  "seq"
+  "until"
   "if"
   "catch"
 ] @keyword.control

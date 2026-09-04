@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     expr::{
-        ApplyExpr, Arg, BindExpr, Doc, LambdaExpr, ModuleKind, SelectExpr, StructExpr,
-        StructurePattern, UseItem, print::PrettyDisplay,
+        ApplyExpr, Arg, BindExpr, Doc, ExprKind, LambdaExpr, ModuleKind, SelectExpr,
+        StructExpr, StructurePattern, UseItem, print::PrettyDisplay,
     },
     typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
@@ -2307,4 +2307,25 @@ fn never_parses() {
     }
     assert!(parse_one("let never = 1").is_err());
     assert!(parse_one("never").is_err());
+}
+
+#[test]
+fn seq_parses() {
+    for s in [
+        "seq { 1 }",
+        "seq t { 1 }",
+        "seq{1}",
+        "seq (t) { 1 }",
+        "seq { let x = 1; x }",
+        "seq go { until ready; 1 }",
+        "seq { catch(e) e; 1 }",
+    ] {
+        let e = parse_one(s).unwrap();
+        assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
+        let again = parse_one(&e.to_string()).unwrap();
+        assert!(matches!(again.kind, ExprKind::Seq { .. }), "round-trip of {s}: {}", e);
+    }
+    assert!(parse_one("let seq = 1").is_err());
+    assert!(parse_one("seq").is_err());
+    assert!(parse_one("until x").is_err());
 }
