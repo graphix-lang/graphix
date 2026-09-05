@@ -478,6 +478,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         // on the handler/loop interplay.
         NodeView::Sample(_)
         | NodeView::Catch(_)
+        | NodeView::SeqGuard(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,

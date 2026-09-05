@@ -580,7 +580,10 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
     let v = tv.value_cloned();
     std::mem::forget(tv);
-    QOP_RAISES.with(|q| q.borrow_mut().push((site as *const crate::node::error::QopSite, v)));
+    // SAFETY: the kernel's interned QopSite outlives this invocation.
+    let site = unsafe { &*(site as *const crate::node::error::QopSite) };
+    site.handler.raise();
+    QOP_RAISES.with(|q| q.borrow_mut().push((site, v)));
 }
 
 /// Read the active runtime's interrupt/abort control (set in

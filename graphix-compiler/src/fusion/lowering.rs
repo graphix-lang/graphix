@@ -904,7 +904,7 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
     crate::fusion::for_each_node(body, &mut |n| match n.view() {
-        NodeView::Qop(q) => match q.id {
+        NodeView::Qop(q) => match q.handler.as_ref().map(|h| h.id()) {
             Some((bind, top)) => {
                 cov.push(bind.inner());
                 cov.push(top.inner());
@@ -1652,8 +1652,7 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 }
 
 /// True if a (frozen) `Type` is a marshallable call **return**
-/// shape — every fusable shape except bare `Null`. `Unit` IS allowed
-/// (side-effect-only sync builtins like `println` return Bottom).
+/// shape — every fusable shape except bare `Null`. `Unit` IS allowed.
 fn is_call_return_supported(t: &Type) -> bool {
     use AbiKind;
     match abi_kind(t) {

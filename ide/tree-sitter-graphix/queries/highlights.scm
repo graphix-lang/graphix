@@ -13,6 +13,7 @@
 [
   "select"
   "seq"
+  "seqq"
   "until"
   "do"
   "if"

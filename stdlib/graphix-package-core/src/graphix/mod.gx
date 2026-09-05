@@ -27,9 +27,9 @@ let queue = |#clock: Any, v: 'a| -> 'a 'core_queue;
 let queuefn = |#count: &[i64, null] = &null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
 let hold = |#clock: Any, v: 'a| -> 'a 'core_hold;
 let dbg = |#dest: [`Stdout, `Stderr, Log] = `Stderr, v: 'a| -> 'a 'core_dbg;
-let log = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_log;
-let print = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_print;
-let println = |#dest: Log = `Stdout, msg: 'a| -> _ 'core_println;
+let log = |#dest: Log = `Stdout, msg: 'a| -> null 'core_log;
+let print = |#dest: Log = `Stdout, msg: 'a| -> null 'core_print;
+let println = |#dest: Log = `Stdout, msg: 'a| -> null 'core_println;
 let throttle = |#rate: duration = duration:0.5s, v: 'a| -> 'a 'core_throttle;
 
 let map_union = |a: Map<'k, 'v>, b: Map<'k, 'v>| -> Map<'k, 'v> 'core_map_union;

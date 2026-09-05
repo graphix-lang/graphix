@@ -879,7 +879,7 @@ module.exports = grammar({
     // `seq [trigger] { stmts }` — trigger is a path or `(expr)`, never a
     // full expr (postfix `{` is map_ref). `until` is a seq-body item.
     seq_block: $ => seq(
-      'seq',
+      choice('seq', 'seqq'),
       optional(choice(
         $.parenthesized_expression,
         $.reference,

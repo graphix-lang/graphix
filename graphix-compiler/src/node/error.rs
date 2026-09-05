@@ -1,10 +1,10 @@
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent,
+    BindId, CFlag, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, Tag, TagValue, Update, UserEvent,
     compiler::compile,
     deref_typ,
     env::Env,
-    expr::{self, Expr, ExprId, ModPath},
+    expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, emit_qop_node},
     typ::{Type, TypeRef},
@@ -58,6 +58,10 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
 pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub handler: Node<R, E>,
+    pub(crate) seq_abort: Option<SeqAbort<R, E>>,
+    own_handler: ErrorHandler,
+    received: u64,
+    last_cycle: Option<u64>,
     constraint: Option<Type>,
     /// Throws unioned into the bind before `catch(e: T)` ascribes `T`
     /// onto it. Coverage is this snapshot, not the bind after ascription.
@@ -67,22 +71,13 @@ pub struct Catch<R: Rt, E: UserEvent> {
     typ: Type,
 }
 
+#[derive(Debug)]
+pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
+    pub(crate) node: Node<R, E>,
+    pending: bool,
+}
+
 impl<R: Rt, E: UserEvent> Catch<R, E> {
-    /// Compile a `catch(e) expr` statement. Only reachable from the
-    /// statement-position dispatch in [`super::compile_block_children`]
-    /// (blocks/module bodies) and the toplevel entry — the generic
-    /// `compiler.rs` arm rejects other positions. Returns the node and
-    /// the ADVANCED scope: subsequent siblings compile with the
-    /// dynamic path extended by this catch's `c<id>` segment, so all
-    /// three lookup clocks (Qop compile, CallSite typecheck, lambda
-    /// instance bind — including LATE runtime binds) resolve coverage
-    /// by path depth exactly like nested `try` blocks did. The lexical
-    /// path is NOT extended: exports/typedefs/mods after a catch stay
-    /// visible to the outside world (external resolution walks up,
-    /// never down). Segment names derive from the spec's ExprId (the
-    /// `do{id}` precedent), so a transient re-bind of a callee with an
-    /// interior catch overwrites its registration instead of leaking a
-    /// fresh key per rebind.
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -110,10 +105,24 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         // the same block or an outer one — never to itself.
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
         let covered = scope.with_catch((bind_id, top_id));
+        let seq_abort = c
+            .seq_abort
+            .as_ref()
+            .map(|e| {
+                Ok::<_, anyhow::Error>(SeqAbort {
+                    node: compile(ctx, flags, (**e).clone(), &catch_scope, top_id)?,
+                    pending: false,
+                })
+            })
+            .transpose()?;
         ctx.rt.ref_var(bind_id, top_id);
         let node = Node::new(Self {
             spec,
             handler,
+            seq_abort,
+            own_handler: covered.dynamic.handler().unwrap(),
+            received: 0,
+            last_cycle: None,
             constraint: c.constraint.clone(),
             thrown: None,
             bind_id,
@@ -126,27 +135,55 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // The handler is a live reactive expression; its value channel
-        // is discarded — a catch installation never produces. The
-        // owning block updates catches AFTER its other children
-        // (innermost first), so a same-cycle Vacant-insert delivery
-        // from a covered `?` — or from an inner handler's rethrow — is
-        // seen this cycle (the try-era handler-after-body order).
         let _ = self.handler.update(ctx, event);
+        let cycle = ctx.rt.cycle();
+        if self.last_cycle != Some(cycle)
+            && matches!(super::read_var(ctx, event, &self.bind_id),
+                Some(super::VarRead::Delivered(tv)) if tv.tag().is_fired())
+        {
+            self.last_cycle = Some(cycle);
+            self.received = self.received.wrapping_add(1);
+            self.own_handler.handled();
+            if let Some(abort) = &mut self.seq_abort {
+                abort.pending = true;
+            }
+        }
+        if let Some(abort) = &mut self.seq_abort {
+            if abort.pending
+                && self.received == self.own_handler.generation()
+                && !self.own_handler.has_nested_errors()
+            {
+                abort.pending = false;
+                let init = std::mem::replace(&mut event.init, true);
+                let frame_init = std::mem::replace(&mut ctx.frame_init, true);
+                let _ = abort.node.update(ctx, event);
+                ctx.frame_init = frame_init;
+                event.init = init;
+            }
+        }
         TagValue::phantom_ref()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.unref_var(self.bind_id, self.top_id);
         self.handler.delete(ctx);
+        if let Some(abort) = &mut self.seq_abort {
+            abort.node.delete(ctx);
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.handler.sleep(ctx);
+        if let Some(abort) = &mut self.seq_abort {
+            abort.node.sleep(ctx);
+        }
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.handler.reset_replay(ctx);
+        if let Some(abort) = &mut self.seq_abort {
+            abort.node.reset_replay(ctx);
+        }
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -171,11 +208,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
             tv.read().typ.write().typ = Some(t);
         }
-        wrap!(self.handler, self.handler.typecheck0(ctx))
+        wrap!(self.handler, self.handler.typecheck0(ctx))?;
+        if let Some(abort) = &mut self.seq_abort {
+            wrap!(abort.node, abort.node.typecheck0(ctx))?;
+        }
+        Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
+        if let Some(abort) = &mut self.seq_abort {
+            wrap!(abort.node, abort.node.typecheck1(ctx))?;
+        }
         // `catch(e: T)`: T is the type of `e`. It must still cover every
         // error the region throws (the snapshot from typecheck0). A call
         // site's compile-time `ftype.throws` supersets later instance
@@ -201,6 +245,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn refs(&self, refs: &mut Refs) {
         refs.bound.insert(self.bind_id);
         self.handler.refs(refs);
+        if let Some(abort) = &self.seq_abort {
+            abort.node.refs(refs);
+        }
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -213,6 +260,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         // read is necessarily a separate kernel. The handler's own
         // subtrees fuse.
         crate::fusion::fuse(&mut self.handler, ctx)?;
+        if let Some(abort) = &mut self.seq_abort {
+            crate::fusion::fuse(&mut abort.node, ctx)?;
+        }
         Ok(None)
     }
 }
@@ -232,11 +282,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
 pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
-    (id, handler_top): (BindId, ExprId),
+    handler: &ErrorHandler,
     own_top: ExprId,
     spec: &Expr,
     e: Value,
 ) {
+    let (id, handler_top) = handler.id();
     let e = wrap_error(&ctx.env, spec, e);
     let v = Value::Error(e.into());
     if handler_top != own_top {
@@ -259,7 +310,7 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
 /// kept alive by the kernel's `KernelValues`.
 #[derive(Debug)]
 pub struct QopSite {
-    pub handler: (BindId, ExprId),
+    pub(crate) handler: ErrorHandler,
     pub own_top: ExprId,
     pub spec: Expr,
 }
@@ -274,10 +325,11 @@ pub struct Qop<R: Rt, E: UserEvent> {
     /// installed by an earlier input) must go through `rt.set_var` —
     /// the insert only reaches nodes that update later in the same
     /// cycle, and cross-top ordering is not ours to assume.
-    pub id: Option<(BindId, ExprId)>,
+    pub(crate) handler: Option<ErrorHandler>,
     pub(crate) top_id: ExprId,
     pub n: Node<R, E>,
     resident: TagValue,
+    flags: BitFlags<CFlag>,
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
@@ -290,27 +342,37 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         e: &Expr,
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
-        let id = match scope.dynamic.catch() {
-            None => {
-                if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
-                    bail!(
-                        "ERROR: {} at {} error raised by ? will not be caught",
-                        spec.ori,
-                        spec.pos
-                    )
-                }
-                if flags.contains(CFlag::WarnUnhandled) {
-                    eprintln!(
-                        "WARNING: {} at {} error raised by ? will not be caught",
-                        spec.ori, spec.pos
-                    );
-                }
-                None
-            }
-            o => o,
-        };
+        let handler = scope.dynamic.handler();
+        if handler.is_none() && !matches!(spec.kind, ExprKind::Rethrow(_)) {
+            Self::check_unhandled(flags, &spec)?;
+        }
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self { spec, typ, id, top_id, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            handler,
+            top_id,
+            n,
+            resident: TagValue::phantom(),
+            flags,
+        }))
+    }
+
+    fn check_unhandled(flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
+        if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
+            bail!(
+                "ERROR: {} at {} error raised by ? will not be caught",
+                spec.ori,
+                spec.pos
+            )
+        }
+        if flags.contains(CFlag::WarnUnhandled) {
+            eprintln!(
+                "WARNING: {} at {} error raised by ? will not be caught",
+                spec.ori, spec.pos
+            );
+        }
+        Ok(())
     }
 }
 
@@ -326,16 +388,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             Value::Error(e) => Some(e.clone()),
             _ => None,
         });
-        // Handler dispatch and logging key on the error arriving as an
-        // EVENT: a stale error re-delivery is the value channel and
-        // rides (no re-dispatch, no log spam — Q2's standing-bottoms-
-        // never-log rule).
         let fired = tv.tag().is_fired();
         match err {
             None => tv,
             Some(_) if !fired => self.resident.ride(),
-            Some(e) => match self.id {
+            Some(e) => match &self.handler {
                 Some(handler) => {
+                    handler.raise();
                     deliver_error(
                         ctx,
                         event,
@@ -349,8 +408,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
                 None => {
-                    // LOG EVERYWHERE (Q2): a fresh unhandled error
-                    // logs at every depth; standing bottoms never log.
                     log::error!(
                         "unhandled error in {} at {} {e}",
                         self.spec.ori,
@@ -432,6 +489,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             )
         }
         wrap!(self.n, self.n.typecheck0(ctx))?;
+        if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+            if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
+                return self.typ.check_contains(&ctx.env, &Type::Bottom);
+            }
+            if self.handler.is_none() {
+                Self::check_unhandled(self.flags, &self.spec)?;
+            }
+        }
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             format_with_flags(PrintFlag::DerefTVars, || {
@@ -441,9 +506,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         let err = Type::Primitive(Typ::Error.into());
         let rtyp = self.n.typ().diff(&ctx.env, &err)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        if let Some((id, _)) = self.id {
+        if let Some(handler) = &self.handler {
+            let (id, _) = handler.id();
             let etyp = self.n.typ().diff(&ctx.env, &rtyp)?;
-            let etyp = wrap!(self, fix_echain_typ(&ctx, &etyp))?;
+            let etyp = if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+                etyp
+            } else {
+                wrap!(self, fix_echain_typ(&ctx, &etyp))?
+            };
             let bind = ctx.env.by_id.get(&id).ok_or_else(|| anyhow!("BUG: catch"))?;
             match &bind.typ {
                 Type::TVar(tv) => {
@@ -470,19 +540,126 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // A handler-ful `?` (`id: Some` — caught by an enclosing catch)
-        // raises its error onto the invocation's delivery queue; the
-        // kernel node delivers it after the run through
-        // [`deliver_error`], the interp's exact path. A handler-LESS
-        // `?` just bottoms.
-        let handler = self.id.map(|handler| {
+        let handler = self.handler.as_ref().map(|handler| {
             cx.interned_qop_site(QopSite {
-                handler,
+                handler: handler.clone(),
                 own_top: self.top_id,
                 spec: self.spec.clone(),
             })
         });
         emit_qop_node(cx, self.spec.id, &self.n, &self.typ, handler)
+    }
+}
+
+#[derive(Debug)]
+enum GuardState {
+    Sleeping,
+    Running(u64),
+    Failed,
+}
+
+#[derive(Debug)]
+pub struct SeqGuard<R: Rt, E: UserEvent> {
+    spec: Expr,
+    pub(crate) n: Node<R, E>,
+    handler: ErrorHandler,
+    state: GuardState,
+    resident: TagValue,
+}
+
+impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        e: &Expr,
+    ) -> Result<Node<R, E>> {
+        let handler =
+            scope.dynamic.handler().ok_or_else(|| anyhow!("BUG: seq handler"))?;
+        let n = compile(ctx, flags, e.clone(), scope, top_id)?;
+        Ok(Node::new(Self {
+            spec,
+            n,
+            handler,
+            state: GuardState::Sleeping,
+            resident: TagValue::phantom(),
+        }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let generation = match self.state {
+            GuardState::Sleeping => {
+                let generation = self.handler.generation();
+                self.state = GuardState::Running(generation);
+                generation
+            }
+            GuardState::Running(generation) => generation,
+            GuardState::Failed => {
+                if self.handler.has_nested_errors() {
+                    let _ = self.n.update(ctx, event);
+                }
+                return self.resident.ride();
+            }
+        };
+        if generation == self.handler.generation() || self.handler.has_nested_errors() {
+            let value = self.n.update(ctx, event);
+            if generation == self.handler.generation()
+                && !self.handler.has_nested_errors()
+            {
+                return value;
+            }
+        }
+        if generation != self.handler.generation() {
+            self.state = GuardState::Failed;
+        }
+        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.state = GuardState::Sleeping;
+        self.n.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.state = GuardState::Sleeping;
+        self.n.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck0(ctx)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck1(ctx)
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        self.n.typ()
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::SeqGuard(self)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        crate::fusion::fuse(&mut self.n, ctx)?;
+        Ok(None)
     }
 }
 

@@ -341,6 +341,10 @@ reserved word. The keyword reclaims the integer-sequence builtin (§11).
 
 Numbered so fixtures can cite them.
 
+`seqq` is the queued form described in [seqq.md](seqq.md). It captures
+request inputs at enqueue time instead of R2's step-entry sampling;
+`seq` retains its existing busy-drop behavior.
+
 **R1 — Run.** A run starts when the trigger fires while no run is in
 progress; a trigger during a run is dropped (the busy policy; §11 for
 restart/queue). If the trigger is a bare variable, the body's reads of
@@ -353,17 +357,21 @@ exactly once per reaching. Nothing in a passed step re-fires: its arm
 is asleep. This is `f(trigger ~ x)` applied mechanically, and it is the
 rule the hand-written ceremonies get wrong.
 
-**R3 — Completion is the step's effect class.** A step the analysis
-classifies `Async` completes on its first non-bottom fired production.
-A step with only same-cycle effects (a connect, `println`, a stateful
-`Sync` builtin) completes at issue. A pure step is a derivation: it
-completes when its value is present, and it stays live while its arm
-is active (that is what lets `until released` wait for a level to
-flip). The classification is `analysis::infer_effects`' per-node
-fact, so the lowering pays nothing new. Consecutive same-cycle steps
-coalesce into one arm; an async completion and every connect end an
-arm (§7.4). `do { … }` is the override: several statements, one arm,
-connects pc-sampled, lets inside.
+**R3 — Calls acknowledge completion with a production.** An effectful
+call completes on its first non-bottom fired production for that
+invocation. `print`, `println`, and `log` emit `null` after processing
+each message, including repeated identical messages. An asynchronous
+call emits its result or acknowledgement when the operation completes,
+not merely when its arguments arrive. Bottom means no completion;
+`never()` needs no special treatment. Third-party effects without a
+completion event cannot be waited on by `seq` without adapting their
+API. A connect completes at issue; its write lands next cycle.
+A pure step is a derivation: it completes when its value is present,
+and it stays live while its arm is active (that is what lets
+`until released` wait for a level to flip). Consecutive same-cycle
+steps coalesce into one arm; an async completion and every connect
+end an arm (§7.4). `do { … }` is the override: several statements,
+one arm, connects pc-sampled, lets inside.
 
 **R4 — A `let` binds the step's first production for the rest of the
 run.** Later steps read it; a later ITERATION overwrites it before its
@@ -388,7 +396,7 @@ Accumulators are captured variables written as steps (`total <- total
 **R7 — A `?` aborts the run.** The lowered block installs ONE handler
 outermost: it runs the user's cleanup (the block's own `catch`, if
 any), resets the step variable to idle, and rethrows to the enclosing
-handler. A step cannot swallow an error and continue; to handle a
+handler. The block's own catch cannot swallow an error and continue; to handle a
 failure inside the ceremony, match the Result in a select step instead
 of writing `?`.
 
@@ -535,14 +543,26 @@ drop). §8 states what this does and does not give.
 
 The user's `catch` is allowed only at the top of the block and it is
 cleanup, not a handler: the lowered machine has one handler, outermost,
-whose body is the cleanup, the reset, and the rethrow. Handler-side
+whose per-error body is the cleanup and the rethrow. Its separate abort
+action resets the PC once all the run's errors have been delivered (and
+returns one queue credit for `seqq`). Handler-side
 `?` resolves to the predecessor, so the enclosing block's catch sees
-the error as it would from a plain block. The step variable is a queue
-(§4.1, item 6): a transition and the abort's reset written in one cycle
-deliver over two, in write order, so a transition must not be queued
-behind a reset — the transition writes are gated on the handler not
-having fired this cycle, or the reset carries a run generation the
-stale transition fails to match. A mid-block catch (covering
+the error as it would from a plain block. Every sequence installs this
+handler, including sequences whose errors arise only through calls.
+The generated rethrow forwards the inferred error type; a nonthrowing
+sequence does not acquire a throws type.
+
+Each step value, connect RHS, and `until` condition passes through a
+completion guard before its continuation. Each statement within `do`
+has the same boundary. A guard records its handler's error generation
+on activation and rejects completion if that generation changes. Raises
+advance the generation immediately, before deferred delivery or cleanup.
+Failure stays latched until the guard sleeps. Thus no success transition,
+carried value, or block output is queued for a failed step; the handler's
+reset does not compete with a queued advance. See
+[seq_error_guards.md](seq_error_guards.md) for the runtime and JIT boundary.
+
+A mid-block catch (covering
 only later steps) would have to be duplicated into every later arm;
 not in v1.
 
@@ -617,12 +637,11 @@ machine — the round-trip test covers the lowering's output.
   joins the reserved words. Nothing else in the tree uses the name.
 - **`if` generally.** If `if` becomes bool sugar over select inside seq
   blocks it is hard to justify refusing it outside them. Decide once.
-- **Retrigger policies.** `busy` (drop) is the default. `queue` is
-  what `~` gives for free (one pending run). `restart` needs the
+- **Retrigger policies.** `seq` drops requests while busy; `seqq`
+  queues captured request tuples ([seqq.md](seqq.md)). `restart` needs the
   stale-production guard (a run generation in the step variable) and a
   cancellation story. `timeout(d)` aborts a stalled run through the
-  error path. Spelling: `seq(#on_retrigger: `Queue) go { .. }` or
-  nothing in v1.
+  error path.
 - **Nested `seq`** as a statement (a sub-machine triggered by the
   entry) — falls out of R3 and R8 if the inner block's trigger is the
   outer entry, but a lambda call is the same thing; v2.

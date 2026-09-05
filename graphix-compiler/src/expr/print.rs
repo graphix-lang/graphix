@@ -959,11 +959,21 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, ")")
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
-            ExprKind::Seq { trigger, body } => {
-                write!(buf, "seq ")?;
+            ExprKind::Seq { queued, trigger, body } => {
+                write!(buf, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
+                    let parens = !matches!(
+                        t.kind,
+                        ExprKind::Ref { .. } | ExprKind::ExplicitParens(_)
+                    );
+                    if parens {
+                        write!(buf, "(")?;
+                    }
                     t.fmt_pretty(buf)?;
                     buf.kill_newline();
+                    if parens {
+                        write!(buf, ")")?;
+                    }
                     write!(buf, " ")?;
                 }
                 pretty_print_exprs(buf, body, "{", "}", ";")
@@ -1046,11 +1056,12 @@ impl PrettyDisplay for ExprKind {
                 pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",")
             }
             ExprKind::Struct(st) => st.fmt_pretty(buf),
-            ExprKind::Qop(e) => {
+            ExprKind::Qop(e) | ExprKind::Rethrow(e) => {
                 e.fmt_pretty(buf)?;
                 buf.kill_newline();
                 writeln!(buf, "?")
             }
+            ExprKind::SeqGuard(e) => e.fmt_pretty(buf),
             ExprKind::OrNever(e) => {
                 e.fmt_pretty(buf)?;
                 buf.kill_newline();
@@ -1362,10 +1373,17 @@ impl ExprKind {
             ExprKind::Trait(t) => write!(f, "{t}"),
             ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
-            ExprKind::Seq { trigger, body } => {
-                write!(f, "seq ")?;
+            ExprKind::Seq { queued, trigger, body } => {
+                write!(f, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
-                    write!(f, "{t} ")?;
+                    if matches!(
+                        t.kind,
+                        ExprKind::Ref { .. } | ExprKind::ExplicitParens(_)
+                    ) {
+                        write!(f, "{t} ")?;
+                    } else {
+                        write!(f, "({t}) ")?;
+                    }
                 }
                 print_exprs(f, body, "{", "}", "; ")
             }
@@ -1412,7 +1430,8 @@ impl ExprKind {
             }
             ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
-            ExprKind::Qop(e) => write!(f, "{}?", e),
+            ExprKind::Qop(e) | ExprKind::Rethrow(e) => write!(f, "{}?", e),
+            ExprKind::SeqGuard(e) => write!(f, "{e}"),
             ExprKind::OrNever(e) => write!(f, "{}$", e),
             ExprKind::Catch(c) => match &c.constraint {
                 None => write!(f, "catch({}) {}", c.bind, c.handler),

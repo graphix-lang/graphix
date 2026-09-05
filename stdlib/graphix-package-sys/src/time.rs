@@ -104,6 +104,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
             ctx.rt.unref_var(id, self.eid);
         }
@@ -282,6 +283,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.out = TagValue::phantom();
         self.repeat_v = None;
         self.timeout = None;
         self.repeat = Repeat::No;

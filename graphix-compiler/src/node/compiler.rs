@@ -5,7 +5,7 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-    error::Qop,
+    error::{Qop, SeqGuard},
     lambda::Lambda,
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
@@ -287,7 +287,12 @@ fn compile_kind<R: Rt, E: UserEvent>(
             CallSite::compile(ctx, flags, spec.clone(), scope, top_id, args, f)
         }
         ExprKind::Bind(b) => Bind::compile(ctx, flags, spec.clone(), scope, top_id, b),
-        ExprKind::Qop(e) => Qop::compile(ctx, flags, spec.clone(), scope, top_id, e),
+        ExprKind::Qop(e) | ExprKind::Rethrow(e) => {
+            Qop::compile(ctx, flags, spec.clone(), scope, top_id, e)
+        }
+        ExprKind::SeqGuard(e) => {
+            SeqGuard::compile(ctx, flags, spec.clone(), scope, top_id, e)
+        }
         ExprKind::OrNever(e) => {
             OrNever::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
@@ -312,7 +317,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
         ExprKind::Seq { .. } => {
-            let lowered = crate::expr::seq::desugar(spec)?;
+            let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
             compile(ctx, flags, lowered, scope, top_id)
         }
         ExprKind::Until(_) => {

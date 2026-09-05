@@ -73,7 +73,7 @@ use std::{
     mem,
     sync::{
         self, LazyLock,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -748,13 +748,12 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     fn refs<'a>(&self, _refs: &mut Refs) {}
 
     /// Put the builtin to sleep — used by constructs like select for
-    /// unselected branches. Sleep is PAUSE, not reset (Eric's ruling
-    /// 2026-07-31): value-channel state (arg slots, the result
-    /// resident) SURVIVES so a re-woken arm rides its history. Only
-    /// the documented arm-rewake RESTART builtins clear their
-    /// semantic latches here (once/take/skip/hold/uniq/count), and
-    /// async builtins may tear down watches/subscriptions to re-arm on
-    /// wake.
+    /// unselected branches. Paused computations retain their values
+    /// and semantic state. Builtins that discard pending work or
+    /// detach an event source must also clear their outputs to phantom:
+    /// a restarted operation has no completion until it produces one.
+    /// Documented restart builtins also clear their semantic latches
+    /// (once/take/skip/hold/uniq/count).
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
     /// Clear REPLAY caches, preserve SEMANTIC state — the `Apply`-side
@@ -856,6 +855,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     FoldQ(&'a node::collection::FoldQBase<R, E>),
     Select(&'a node::select::Select<R, E>),
     Catch(&'a node::error::Catch<R, E>),
+    SeqGuard(&'a node::error::SeqGuard<R, E>),
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
     ExplicitParens(&'a node::ExplicitParens<R, E>),
@@ -2164,11 +2164,55 @@ impl Scope {
 /// and the top the handler node lives under (cross-top deliveries
 /// take the `set_var` path).
 #[derive(Clone, Default)]
-pub struct DynScope(Option<triomphe::Arc<DynNode>>);
+pub struct DynScope(Option<ErrorHandler>);
 
 struct DynNode {
     catch: (BindId, ExprId),
+    raised: AtomicU64,
+    /// Raised to descendant handlers and not yet processed by them.
+    nested: AtomicU64,
     parent: DynScope,
+}
+
+#[derive(Clone)]
+pub(crate) struct ErrorHandler(Arc<DynNode>);
+
+impl ErrorHandler {
+    pub(crate) fn id(&self) -> (BindId, ExprId) {
+        self.0.catch
+    }
+
+    pub(crate) fn raise(&self) {
+        self.0.raised.fetch_add(1, Ordering::Relaxed);
+        let mut parent = self.0.parent.0.as_ref();
+        while let Some(handler) = parent {
+            handler.0.nested.fetch_add(1, Ordering::Relaxed);
+            parent = handler.0.parent.0.as_ref();
+        }
+    }
+
+    pub(crate) fn handled(&self) {
+        let mut parent = self.0.parent.0.as_ref();
+        while let Some(handler) = parent {
+            let pending = handler.0.nested.fetch_sub(1, Ordering::Relaxed);
+            debug_assert!(pending > 0, "unraised nested error");
+            parent = handler.0.parent.0.as_ref();
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.0.raised.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn has_nested_errors(&self) -> bool {
+        self.0.nested.load(Ordering::Relaxed) != 0
+    }
+}
+
+impl Debug for ErrorHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.id().fmt(f)
+    }
 }
 
 impl DynScope {
@@ -2177,12 +2221,21 @@ impl DynScope {
     }
 
     pub fn with_catch(&self, catch: (BindId, ExprId)) -> Self {
-        Self(Some(triomphe::Arc::new(DynNode { catch, parent: self.clone() })))
+        Self(Some(ErrorHandler(Arc::new(DynNode {
+            catch,
+            raised: AtomicU64::new(0),
+            nested: AtomicU64::new(0),
+            parent: self.clone(),
+        }))))
     }
 
     /// The innermost visible handler, if any.
     pub fn catch(&self) -> Option<(BindId, ExprId)> {
-        self.0.as_ref().map(|n| n.catch)
+        self.0.as_ref().map(ErrorHandler::id)
+    }
+
+    pub(crate) fn handler(&self) -> Option<ErrorHandler> {
+        self.0.clone()
     }
 
     /// The number of handlers visible from here.
@@ -2191,7 +2244,7 @@ impl DynScope {
         let mut cur = self.0.as_ref();
         while let Some(node) = cur {
             n += 1;
-            cur = node.parent.0.as_ref();
+            cur = node.0.parent.0.as_ref();
         }
         n
     }
@@ -2210,8 +2263,8 @@ impl std::fmt::Debug for DynScope {
 impl Drop for DynNode {
     fn drop(&mut self) {
         let mut next = self.parent.0.take();
-        while let Some(arc) = next {
-            match triomphe::Arc::try_unwrap(arc) {
+        while let Some(handler) = next {
+            match Arc::try_unwrap(handler.0) {
                 Ok(mut node) => next = node.parent.0.take(),
                 Err(_) => break,
             }

@@ -352,6 +352,8 @@ pub struct CatchExpr {
     pub bind: ArcStr,
     pub constraint: Option<Type>,
     pub handler: Arc<Expr>,
+    /// Compiler-only: this catch unconditionally rethrows before aborting.
+    pub seq_abort: Option<Arc<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -480,6 +482,7 @@ pub enum ExprKind {
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
     /// a select over a step variable (`design/seq_blocks.md`).
     Seq {
+        queued: bool,
         trigger: Option<Arc<Expr>>,
         body: Arc<[Expr]>,
     },
@@ -492,6 +495,10 @@ pub enum ExprKind {
         body: Arc<[Expr]>,
     },
     Qop(Arc<Expr>),
+    /// Compiler-generated forwarding; a nonthrowing region supplies bottom.
+    Rethrow(Arc<Expr>),
+    /// Compiler-generated sequence completion boundary.
+    SeqGuard(Arc<Expr>),
     OrNever(Arc<Expr>),
     Catch(Arc<CatchExpr>),
     ByRef(Arc<Expr>),
@@ -961,7 +968,7 @@ impl Expr {
                     e.fold(init, f)
                 })
             }
-            ExprKind::Seq { trigger, body } => {
+            ExprKind::Seq { trigger, body, .. } => {
                 let init = match trigger {
                     Some(t) => t.fold(init, f),
                     None => init,
@@ -970,8 +977,16 @@ impl Expr {
             }
             ExprKind::Until(e) => e.fold(init, f),
             ExprKind::SeqDo { body } => body.iter().fold(init, |init, e| e.fold(init, f)),
-            ExprKind::Catch(c) => c.handler.fold(init, f),
+            ExprKind::Catch(c) => {
+                let init = c.handler.fold(init, f);
+                match &c.seq_abort {
+                    Some(e) => e.fold(init, f),
+                    None => init,
+                }
+            }
             ExprKind::Qop(e)
+            | ExprKind::Rethrow(e)
+            | ExprKind::SeqGuard(e)
             | ExprKind::OrNever(e)
             | ExprKind::ByRef(e)
             | ExprKind::Deref(e)

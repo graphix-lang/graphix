@@ -5,24 +5,36 @@
 //! read of `pc` is the issue atom.
 
 use super::{
-    ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprKind, LambdaExpr, ModPath, Pattern,
-    SelectExpr, StructurePattern,
+    ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
+    Pattern, SelectExpr, StructurePattern,
 };
 use crate::{
+    env::Env,
     expr::ErrorContext,
+    stack::ensure_sufficient,
     typ::{TVar, Type},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
+use indexmap::IndexMap;
 use netidx_core::{path::Path, utils::Either};
 use netidx_value::Value;
 use triomphe::Arc;
 
-pub fn desugar(spec: &Expr) -> Result<Expr> {
-    let ExprKind::Seq { trigger, body } = &spec.kind else {
+type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition)>;
+
+pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
+    match &spec.kind {
+        ExprKind::Seq { queued: true, .. } => desugar_queued(spec, env, scope),
+        _ => desugar_plain(spec, None),
+    }
+}
+
+fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
+    let ExprKind::Seq { trigger, body, .. } = &spec.kind else {
         panic!("desugar_seq on a non-seq");
     };
     let pos = spec.pos;
@@ -60,16 +72,11 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
     let result = format_compact!("seqr{id}");
     let trig_cell = format_compact!("seqt{id}");
 
-    let mut names: AHashMap<ArcStr, ArcStr> = AHashMap::new();
-    let mut cells: Vec<(ArcStr, SourcePosition)> = Vec::new();
-    if let Some(t) = trigger.as_ref() {
-        if let Some(n) = simple_ref_name(t) {
-            names.insert(n.clone(), ArcStr::from(trig_cell.as_str()));
-            cells.push((ArcStr::from(trig_cell.as_str()), t.pos));
-        }
-    }
-    for (i, e) in steps.iter().enumerate() {
-        collect_step_binds(e, id, i, &mut names, &mut cells)?;
+    let trigger_bind =
+        trigger.as_ref().and_then(|t| simple_ref_name(t).map(|n| (n, t.pos)));
+    let mut cells = CarriedBinds::new();
+    for e in &steps {
+        collect_step_binds(e, &mut cells)?;
     }
 
     let pc_typ = pc_type(n);
@@ -77,7 +84,10 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
     prelude.push(let_bind(pos, pc.as_str(), Some(pc_typ), variant(pos, "Idle")));
     prelude.push(let_bind(pos, idle.as_str(), None, idle_of(pos, pc.as_str())));
     prelude.push(let_bind(pos, result.as_str(), None, never(pos)));
-    for (cell, cpos) in &cells {
+    if let Some((_, tpos)) = &trigger_bind {
+        prelude.push(let_bind(*tpos, trig_cell.as_str(), None, never(*tpos)));
+    }
+    for (cell, cpos) in cells.values() {
         prelude.push(let_bind(*cpos, cell.as_str(), None, never(*cpos)));
     }
 
@@ -94,26 +104,18 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
         pc.as_str(),
         sample(pos, r#ref(pos, t_name.as_str()), variant(pos, "S0")),
     ));
-    if names.values().any(|c| c.as_str() == trig_cell.as_str()) {
+    if trigger_bind.is_some() {
         start.push(connect(pos, trig_cell.as_str(), r#ref(pos, t_name.as_str())));
     }
 
     let mut visible: AHashMap<ArcStr, ArcStr> = AHashMap::new();
-    if let Some(t) = trigger {
-        if let Some(n) = simple_ref_name(t) {
-            visible.insert(n, ArcStr::from(trig_cell.as_str()));
-        }
+    if let Some((n, _)) = trigger_bind {
+        visible.insert(n, ArcStr::from(trig_cell.as_str()));
     }
     let err_bind =
         catch.as_ref().map(|c| c.bind.clone()).unwrap_or_else(|| ArcStr::from("e"));
-    let may_throw = steps.iter().any(|e| expr_may_throw(e))
-        || catch.as_ref().is_some_and(|c| expr_may_throw(&c.handler));
-    let catch_node = if catch.is_some() || may_throw {
-        let reset = connect(
-            pos,
-            pc.as_str(),
-            sample(pos, r#ref(pos, err_bind.as_str()), variant(pos, "Idle")),
-        );
+    let catch_node = {
+        let reset = connect(pos, pc.as_str(), variant(pos, "Idle"));
         let mut handler_map = visible.clone();
         handler_map.remove(&err_bind);
         let user = catch.as_ref().map(|c| rewrite(&c.handler, &handler_map));
@@ -121,20 +123,20 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
         if let Some(h) = user {
             handler_body.push(h);
         }
-        handler_body.push(reset);
-        if may_throw {
-            handler_body.push(qop(pos, r#ref(pos, err_bind.as_str())));
+        let mut abort_body = vec![reset];
+        if let Some(clock) = abort_clock {
+            abort_body.push(connect(pos, clock, boolean(pos, true)));
         }
-        Some(
-            ExprKind::Catch(Arc::new(CatchExpr {
-                bind: err_bind,
-                constraint: catch.as_ref().and_then(|c| c.constraint.clone()),
-                handler: Arc::new(block(pos, handler_body)),
-            }))
-            .to_expr(pos),
-        )
-    } else {
-        None
+        handler_body.push(
+            ExprKind::Rethrow(Arc::new(r#ref(pos, err_bind.as_str()))).to_expr(pos),
+        );
+        ExprKind::Catch(Arc::new(CatchExpr {
+            bind: err_bind,
+            constraint: catch.as_ref().and_then(|c| c.constraint.clone()),
+            handler: Arc::new(block(pos, handler_body)),
+            seq_abort: Some(Arc::new(block(pos, abort_body))),
+        }))
+        .to_expr(pos)
     };
 
     let vname = format_compact!("seqv{id}");
@@ -148,8 +150,6 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
             ArcStr::from(format_compact!("S{}", i + 1).as_str())
         };
         let last = i + 1 == n;
-        let mut this_let: AHashMap<ArcStr, ArcStr> = AHashMap::new();
-        fill_this_let(step, &names, &mut this_let);
         let arm = step_arm(
             step,
             pc.as_str(),
@@ -158,21 +158,196 @@ pub fn desugar(spec: &Expr) -> Result<Expr> {
             result.as_str(),
             vname.as_str(),
             &visible,
-            &this_let,
+            &cells,
         )?;
         arms.push((pat_variant(&tag), arm));
-        visible.extend(this_let);
+        expose_step_binds(step, &cells, &mut visible);
     }
 
     let machine = select(pos, r#ref(pos, pc.as_str()), arms);
     let mut body_exprs = prelude;
-    if let Some(c) = catch_node {
-        body_exprs.push(c);
-    }
+    body_exprs.push(catch_node);
     body_exprs.extend(start);
     body_exprs.push(machine);
     body_exprs.push(r#ref(pos, result.as_str()));
     Ok(block(pos, body_exprs))
+}
+
+fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
+    let ExprKind::Seq { trigger, body, .. } = &spec.kind else { unreachable!() };
+    let pos = spec.pos;
+    let id = spec.id.inner();
+    let request = format_compact!("seqqrequest{id}");
+    let clock = format_compact!("seqqclock{id}");
+    let activation = format_compact!("seqqactivation{id}");
+    let input = format_compact!("seqqinput{id}");
+    let result = format_compact!("seqqresult{id}");
+    let trigger_name = trigger.as_ref().and_then(|t| simple_ref_name(t));
+    let body =
+        ExprKind::Seq { queued: false, trigger: None, body: body.clone() }.to_expr(pos);
+    let captures = body.fold(IndexMap::new(), &mut |mut caps, e| {
+        if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
+            &e.kind
+            && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
+            && env.trait_methods.get(&bind.id).is_none()
+        {
+            let n = caps.len();
+            caps.entry(
+                simple_name(name).unwrap_or_else(|| ArcStr::from(name.0.as_ref())),
+            )
+            .or_insert_with(|| {
+                let mut expr = e.clone();
+                expr.kind = ExprKind::Ref { name: name.clone() };
+                (expr, ArcStr::from(format_compact!("seqqcap{id}_{n}").as_str()), bind.id)
+            });
+        }
+        caps
+    });
+    let mut names: AHashMap<_, _> =
+        captures.iter().map(|(n, (_, c, _))| (n.clone(), c.clone())).collect();
+    let written = rewrite(&body, &names).fold(AHashSet::new(), &mut |mut names, e| {
+        if let ExprKind::Connect { name, deref: false, .. } = &e.kind
+            && let Some(n) = simple_name(name)
+        {
+            names.insert(n);
+        }
+        names
+    });
+    let written: AHashSet<_> = captures
+        .values()
+        .filter_map(|(_, name, id)| written.contains(name).then_some(*id))
+        .collect();
+    names.retain(|name, _| !written.contains(&captures[name].2));
+    let body = rewrite_with(&body, &names, true);
+    let used = body.fold(AHashSet::new(), &mut |mut names, e| {
+        if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
+            &e.kind
+            && let Some(n) = simple_name(name)
+        {
+            names.insert(n);
+        }
+        names
+    });
+    let captures: Vec<_> =
+        captures.into_iter().filter(|(_, (_, c, _))| used.contains(c)).collect();
+    let mut prelude = vec![
+        let_bind(pos, clock.as_str(), None, never(pos)),
+        let_bind(pos, activation.as_str(), None, boolean(pos, true)),
+        let_bind(
+            pos,
+            request.as_str(),
+            None,
+            trigger.as_ref().map_or_else(|| boolean(pos, true), |t| (**t).clone()),
+        ),
+    ];
+    let mut args = vec![r#ref(pos, request.as_str())];
+    for (name, (expr, _, _)) in &captures {
+        args.push(if trigger_name.as_ref() == Some(name) {
+            r#ref(pos, request.as_str())
+        } else {
+            expr.clone()
+        });
+    }
+    for (i, arg) in args.iter_mut().enumerate() {
+        let name = format_compact!("seqqseed{id}_{i}");
+        prelude.push(let_bind(
+            pos,
+            name.as_str(),
+            None,
+            ExprKind::Any {
+                args: Arc::from_iter([
+                    arg.clone(),
+                    sample(pos, r#ref(pos, activation.as_str()), arg.clone()),
+                ]),
+            }
+            .to_expr(pos),
+        ));
+        *arg = apply_core(
+            pos,
+            "hold",
+            vec![
+                (Some(ArcStr::from("clock")), r#ref(pos, name.as_str())),
+                (None, r#ref(pos, name.as_str())),
+            ],
+        );
+    }
+    let payload = if captures.is_empty() {
+        args.pop().unwrap()
+    } else {
+        ExprKind::Tuple { args: Arc::from(args) }.to_expr(pos)
+    };
+    prelude.push(let_bind(
+        pos,
+        input.as_str(),
+        None,
+        apply_core(
+            pos,
+            "queue",
+            vec![
+                (
+                    Some(ArcStr::from("clock")),
+                    ExprKind::Any {
+                        args: Arc::from_iter([
+                            r#ref(pos, activation.as_str()),
+                            r#ref(pos, clock.as_str()),
+                        ]),
+                    }
+                    .to_expr(pos),
+                ),
+                (None, sample(pos, r#ref(pos, request.as_str()), payload)),
+            ],
+        ),
+    ));
+    for (i, (_, (_, name, _))) in captures.iter().enumerate() {
+        prelude.push(let_bind(
+            pos,
+            name.as_str(),
+            None,
+            ExprKind::TupleRef {
+                source: Arc::new(r#ref(pos, input.as_str())),
+                field: i + 1,
+            }
+            .to_expr(pos),
+        ));
+    }
+    let ExprKind::Seq { body, .. } = &body.kind else { unreachable!() };
+    let machine = ExprKind::Seq {
+        queued: false,
+        trigger: Some(Arc::new(r#ref(pos, input.as_str()))),
+        body: body.clone(),
+    }
+    .to_expr(pos);
+    prelude.push(let_bind(
+        pos,
+        result.as_str(),
+        None,
+        desugar_plain(&machine, Some(clock.as_str()))?,
+    ));
+    prelude.push(connect(
+        pos,
+        clock.as_str(),
+        sample(pos, r#ref(pos, result.as_str()), boolean(pos, true)),
+    ));
+    prelude.push(r#ref(pos, result.as_str()));
+    Ok(block(pos, prelude))
+}
+
+fn boolean(pos: SourcePosition, value: bool) -> Expr {
+    ExprKind::Constant(Value::Bool(value)).to_expr(pos)
+}
+
+fn apply_core(
+    pos: SourcePosition,
+    name: &str,
+    args: Vec<(Option<ArcStr>, Expr)>,
+) -> Expr {
+    ExprKind::Apply(ApplyExpr {
+        function: Arc::new(
+            ExprKind::Ref { name: ModPath::from(["core", name]) }.to_expr(pos),
+        ),
+        args: Arc::from(args),
+    })
+    .to_expr(pos)
 }
 
 fn step_arm(
@@ -183,13 +358,13 @@ fn step_arm(
     result: &str,
     vname: &str,
     visible: &AHashMap<ArcStr, ArcStr>,
-    this_let: &AHashMap<ArcStr, ArcStr>,
+    cells: &CarriedBinds,
 ) -> Result<Expr> {
     let pos = step.pos;
     let trans = connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)));
     match &step.kind {
         ExprKind::Until(e) => {
-            let e = rewrite(e, visible);
+            let e = guard(rewrite(e, visible));
             Ok(select(
                 pos,
                 e,
@@ -200,14 +375,14 @@ fn step_arm(
             ))
         }
         ExprKind::SeqDo { body } => {
-            lower_do_stmts(body, pc, next, last, result, vname, visible, this_let)
+            lower_do_stmts(body, pc, next, last, result, vname, visible, cells)
         }
         ExprKind::Bind(b) => {
-            let value = rewrite(&b.value, visible);
+            let value = guard(rewrite(&b.value, visible));
             let mut body =
                 vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
             b.pattern.with_names(&mut |n| {
-                let cell = this_let.get(n).cloned().unwrap_or_else(|| n.clone());
+                let (cell, _) = &cells[&(step.id, n.clone())];
                 body.push(connect(
                     pos,
                     cell.as_str(),
@@ -225,7 +400,7 @@ fn step_arm(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         ExprKind::Connect { name, value, deref } => {
-            let value = rewrite(value, visible);
+            let value = guard(rewrite(value, visible));
             let target = rewrite_path(name, visible);
             let mut body = vec![connect_path(
                 pos,
@@ -244,7 +419,7 @@ fn step_arm(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
-            let e = rewrite(step, visible);
+            let e = guard(rewrite(step, visible));
             let mut body = Vec::new();
             if last {
                 body.push(connect(
@@ -259,95 +434,50 @@ fn step_arm(
     }
 }
 
-fn collect_step_binds(
-    e: &Expr,
-    id: u64,
-    step_i: usize,
-    names: &mut AHashMap<ArcStr, ArcStr>,
-    cells: &mut Vec<(ArcStr, SourcePosition)>,
-) -> Result<()> {
-    match &e.kind {
-        ExprKind::SeqDo { body } => {
-            for (j, s) in body.iter().enumerate() {
-                collect_do_bind(s, id, step_i, j, names, cells)?;
-            }
-            Ok(())
-        }
-        ExprKind::Bind(b) => {
-            if b.rec {
-                return Err(
-                    anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
-                );
-            }
-            let mut ns: Vec<ArcStr> = Vec::new();
-            b.pattern.with_names(&mut |n| ns.push(n.clone()));
-            for n in ns {
-                let cell =
-                    ArcStr::from(format_compact!("seqc{id}_{step_i}_{n}").as_str());
-                names.insert(n, cell.clone());
-                cells.push((cell, e.pos));
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn collect_do_bind(
-    e: &Expr,
-    id: u64,
-    step_i: usize,
-    j: usize,
-    names: &mut AHashMap<ArcStr, ArcStr>,
-    cells: &mut Vec<(ArcStr, SourcePosition)>,
-) -> Result<()> {
-    match &e.kind {
-        ExprKind::SeqDo { body } => {
-            for (k, s) in body.iter().enumerate() {
-                collect_do_bind(s, id, step_i, j * 32 + k + 1, names, cells)?;
-            }
-            Ok(())
-        }
-        ExprKind::Bind(b) => {
-            if b.rec {
-                return Err(
-                    anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
-                );
-            }
-            let mut ns: Vec<ArcStr> = Vec::new();
-            b.pattern.with_names(&mut |n| ns.push(n.clone()));
-            for n in ns {
-                let cell =
-                    ArcStr::from(format_compact!("seqc{id}_{step_i}_{j}_{n}").as_str());
-                names.insert(n, cell.clone());
-                cells.push((cell, e.pos));
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn fill_this_let(
-    e: &Expr,
-    names: &AHashMap<ArcStr, ArcStr>,
-    this_let: &mut AHashMap<ArcStr, ArcStr>,
-) {
-    match &e.kind {
+fn collect_step_binds(e: &Expr, cells: &mut CarriedBinds) -> Result<()> {
+    ensure_sufficient(|| match &e.kind {
         ExprKind::SeqDo { body } => {
             for s in body.iter() {
-                fill_this_let(s, names, this_let);
+                collect_step_binds(s, cells)?;
+            }
+            Ok(())
+        }
+        ExprKind::Bind(b) => {
+            if b.rec {
+                return Err(
+                    anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
+                );
+            }
+            b.pattern.with_names(&mut |n| {
+                let cell =
+                    ArcStr::from(format_compact!("seqc{}_{n}", e.id.inner()).as_str());
+                cells.insert((e.id, n.clone()), (cell, e.pos));
+            });
+            Ok(())
+        }
+        _ => Ok(()),
+    })
+}
+
+fn expose_step_binds(
+    e: &Expr,
+    cells: &CarriedBinds,
+    visible: &mut AHashMap<ArcStr, ArcStr>,
+) {
+    ensure_sufficient(|| match &e.kind {
+        ExprKind::SeqDo { body } => {
+            for s in body.iter() {
+                expose_step_binds(s, cells, visible);
             }
         }
         ExprKind::Bind(b) => {
             b.pattern.with_names(&mut |n| {
-                if let Some(cell) = names.get(n) {
-                    this_let.insert(n.clone(), cell.clone());
-                }
+                let (cell, _) = &cells[&(e.id, n.clone())];
+                visible.insert(n.clone(), cell.clone());
             });
         }
         _ => (),
-    }
+    })
 }
 
 fn lower_do_stmts(
@@ -358,8 +488,12 @@ fn lower_do_stmts(
     result: &str,
     vname: &str,
     visible: &AHashMap<ArcStr, ArcStr>,
-    this_let: &AHashMap<ArcStr, ArcStr>,
+    cells: &CarriedBinds,
 ) -> Result<Expr> {
+    let stmts = match stmts {
+        [body @ .., Expr { kind: ExprKind::NoOp, .. }] => body,
+        _ => stmts,
+    };
     let trans = |pos: SourcePosition| {
         connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)))
     };
@@ -372,7 +506,7 @@ fn lower_do_stmts(
         if rest_empty {
             Ok(trans(pos))
         } else {
-            lower_do_stmts(rest, pc, next, last_step, result, vname, visible, this_let)
+            lower_do_stmts(rest, pc, next, last_step, result, vname, visible, cells)
         }
     };
     match &head.kind {
@@ -387,14 +521,10 @@ fn lower_do_stmts(
         ExprKind::SeqDo { body } => {
             let mut flat: Vec<Expr> = body.iter().cloned().collect();
             flat.extend(rest.iter().cloned());
-            lower_do_stmts(&flat, pc, next, last_step, result, vname, visible, this_let)
+            lower_do_stmts(&flat, pc, next, last_step, result, vname, visible, cells)
         }
         ExprKind::Bind(b) => {
-            if b.rec {
-                return Err(anyhow!("let rec is not a seq step")
-                    .context(ErrorContext(head.clone())));
-            }
-            let value = rewrite(&b.value, visible);
+            let value = guard(rewrite(&b.value, visible));
             let mut vis = visible.clone();
             b.pattern.with_names(&mut |n| {
                 vis.remove(n);
@@ -402,13 +532,12 @@ fn lower_do_stmts(
             let mut body =
                 vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
             b.pattern.with_names(&mut |n| {
-                if let Some(cell) = this_let.get(n) {
-                    body.push(connect(
-                        pos,
-                        cell.as_str(),
-                        sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
-                    ));
-                }
+                let (cell, _) = &cells[&(head.id, n.clone())];
+                body.push(connect(
+                    pos,
+                    cell.as_str(),
+                    sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
+                ));
             });
             if rest_empty && last_step {
                 body.push(connect(
@@ -421,7 +550,7 @@ fn lower_do_stmts(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         ExprKind::Connect { name, value, deref } => {
-            let value = rewrite(value, visible);
+            let value = guard(rewrite(value, visible));
             let target = rewrite_path(name, visible);
             let mut body = vec![connect_path(
                 pos,
@@ -440,7 +569,7 @@ fn lower_do_stmts(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
-            let e = rewrite(head, visible);
+            let e = guard(rewrite(head, visible));
             let mut body = Vec::new();
             if rest_empty && last_step {
                 body.push(connect(
@@ -453,10 +582,6 @@ fn lower_do_stmts(
             Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
         }
     }
-}
-
-fn expr_may_throw(e: &Expr) -> bool {
-    e.fold(false, &mut |acc, n| acc || matches!(n.kind, ExprKind::Qop(_)))
 }
 
 fn pc_type(n_steps: usize) -> Type {
@@ -524,23 +649,38 @@ fn simple_name(p: &ModPath) -> Option<ArcStr> {
 }
 
 fn rewrite_path(p: &ModPath, map: &AHashMap<ArcStr, ArcStr>) -> ModPath {
-    match simple_name(p) {
-        Some(n) => match map.get(&n) {
-            Some(cell) => ModPath::from([cell.as_str()]),
-            None => p.clone(),
-        },
+    let name = simple_name(p);
+    match map.get(name.as_deref().unwrap_or_else(|| p.0.as_ref())) {
+        Some(cell) => ModPath::from([cell.as_str()]),
         None => p.clone(),
     }
 }
 
 fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
+    rewrite_with(e, map, false)
+}
+
+fn shadow_step(e: &Expr, map: &mut AHashMap<ArcStr, ArcStr>) {
+    match &e.kind {
+        ExprKind::Bind(b) => b.pattern.with_names(&mut |n| {
+            map.remove(n);
+        }),
+        ExprKind::SeqDo { body } => body.iter().for_each(|e| shadow_step(e, map)),
+        _ => (),
+    }
+}
+
+fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Expr {
     if map.is_empty() {
         return e.clone();
     }
+    let rewrite =
+        |e: &Expr, map: &AHashMap<ArcStr, ArcStr>| rewrite_with(e, map, captures);
     let kind = match &e.kind {
+        ExprKind::Until(_) | ExprKind::ByRef(_) if captures => return e.clone(),
         ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
         ExprKind::Connect { name, value, deref } => ExprKind::Connect {
-            name: rewrite_path(name, map),
+            name: if captures && !deref { name.clone() } else { rewrite_path(name, map) },
             value: Arc::new(rewrite(value, map)),
             deref: *deref,
         },
@@ -550,32 +690,26 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
             let mut out = Vec::with_capacity(body.len());
             for x in body.iter() {
                 out.push(rewrite(x, &inner));
-                if let ExprKind::Bind(b) = &x.kind {
-                    b.pattern.with_names(&mut |n| {
-                        inner.remove(n);
-                    });
-                }
+                shadow_step(x, &mut inner);
             }
             ExprKind::SeqDo { body: Arc::from(out) }
         }
-        ExprKind::Seq { trigger, body } => {
+        ExprKind::Seq { queued, trigger, body } => {
             let trigger = trigger.as_ref().map(|t| Arc::new(rewrite(t, map)));
             let mut inner = map.clone();
             let mut out = Vec::with_capacity(body.len());
             for x in body.iter() {
                 out.push(rewrite(x, &inner));
-                if let ExprKind::Bind(b) = &x.kind {
-                    b.pattern.with_names(&mut |n| {
-                        inner.remove(n);
-                    });
-                }
+                shadow_step(x, &mut inner);
             }
-            ExprKind::Seq { trigger, body: Arc::from(out) }
+            ExprKind::Seq { queued: *queued, trigger, body: Arc::from(out) }
         }
         ExprKind::ExplicitParens(x) => {
             ExprKind::ExplicitParens(Arc::new(rewrite(x, map)))
         }
         ExprKind::Qop(x) => ExprKind::Qop(Arc::new(rewrite(x, map))),
+        ExprKind::Rethrow(x) => ExprKind::Rethrow(Arc::new(rewrite(x, map))),
+        ExprKind::SeqGuard(x) => ExprKind::SeqGuard(Arc::new(rewrite(x, map))),
         ExprKind::OrNever(x) => ExprKind::OrNever(Arc::new(rewrite(x, map))),
         ExprKind::ByRef(x) => ExprKind::ByRef(Arc::new(rewrite(x, map))),
         ExprKind::Deref(x) => ExprKind::Deref(Arc::new(rewrite(x, map))),
@@ -627,7 +761,13 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
             rec: b.rec,
             pattern: b.pattern.clone(),
             typ: b.typ.clone(),
-            value: rewrite(&b.value, map),
+            value: if b.rec {
+                let mut inner = map.clone();
+                shadow_step(e, &mut inner);
+                rewrite(&b.value, &inner)
+            } else {
+                rewrite(&b.value, map)
+            },
         })),
         ExprKind::StructRef { source, field } => ExprKind::StructRef {
             source: Arc::new(rewrite(source, map)),
@@ -691,6 +831,7 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
                 bind: c.bind.clone(),
                 constraint: c.constraint.clone(),
                 handler: Arc::new(rewrite(&c.handler, &inner)),
+                seq_abort: c.seq_abort.as_ref().map(|e| Arc::new(rewrite(e, &inner))),
             }))
         }
         ExprKind::Lambda(l) => {
@@ -867,8 +1008,9 @@ fn sample(pos: SourcePosition, lhs: Expr, rhs: Expr) -> Expr {
     ExprKind::Sample { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
 }
 
-fn qop(pos: SourcePosition, e: Expr) -> Expr {
-    ExprKind::Qop(Arc::new(e)).to_expr(pos)
+fn guard(e: Expr) -> Expr {
+    let pos = e.pos;
+    ExprKind::SeqGuard(Arc::new(e)).to_expr(pos)
 }
 
 fn select(pos: SourcePosition, arg: Expr, arms: Vec<(Pattern, Expr)>) -> Expr {

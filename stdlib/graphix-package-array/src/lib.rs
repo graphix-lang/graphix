@@ -518,6 +518,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx.rt.unref_var(self.0, self.1);
         self.0 = BindId::new();
         ctx.rt.ref_var(self.0, self.1);
+        self.2 = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -603,8 +604,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
         self.queue.clear();
         self.triggered = 0;
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {

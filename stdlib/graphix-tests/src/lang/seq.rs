@@ -1,6 +1,7 @@
 // seq (`design/seq_blocks.md`): pc-machine atoms, then the surface
 // construct. Straight-line only — no if/loop.
 
+use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
 use graphix_package_core::run;
 use netidx::publisher::Value;
@@ -420,3 +421,48 @@ run!(seq_do_value_not_last, SEQ_DO_VALUE_NOT_LAST, |v: Result<&Value>| match v {
     Ok(Value::I64(99)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+async fn do_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
+    use arcstr::format;
+
+    for form in ["seq", "seqq"] {
+        let requests =
+            if form == "seq" { "1 => 1, 15 => 2, 30 => 3" } else { "1 | 2 | 3 => step" };
+        for semi in ["", ";"] {
+            for (body, tail) in [
+                ("n <- n + 1", ""),
+                ("let x = request", ""),
+                ("let x = request; x", ""),
+                ("let x = request; n <- x", "; n"),
+            ] {
+                let code = format!(
+                    r#"{{
+                        let step = 0;
+                        step <- select step {{ n if n < 40 => n + 1, _ => never() }};
+                        let request = select step {{ {requests}, _ => never() }};
+                        let n = 0;
+                        {form} request {{ do {{ {body}{semi} }}{tail} }}
+                    }}"#
+                );
+                let (values, _) = run_delta(&code, fusion_disabled).await?;
+                assert_eq!(as_i64s(&values), [1, 2, 3], "{code}");
+            }
+        }
+        for body in ["request; never();", "{ let x = request; x; };"] {
+            let code = format!("{form} {{ do {{ let request = 1; {body} }}; 42 }}");
+            let (values, _) = run_delta(&code, fusion_disabled).await?;
+            assert!(values.is_empty(), "{code}: {values:?}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn do_trailing_semicolon_interp() -> Result<()> {
+    do_trailing_semicolon(true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn do_trailing_semicolon_jit() -> Result<()> {
+    do_trailing_semicolon(false).await
+}

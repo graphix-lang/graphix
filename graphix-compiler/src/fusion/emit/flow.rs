@@ -63,28 +63,18 @@ pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -
         // A Module PUBLISHES its binds into the persistent env —
         // readable by any Ref outside the region and by every
         // later-installed top expression — so a `mod m;` statement is
-        // never dead. Eliminating one deadlocked the spliced region:
-        // the whole-file Do fused with the module's constant routed IN
-        // as a feeder while the module (that feeder's only producer)
-        // was eliminated as a dead statement and deleted with the
-        // splice — the kernel waited forever on its own input
-        // (`mod m0; m0::c` under the shell's file wrap, found probing
-        // the fuzzer's cross-module vocabulary, 2026-07-08). The
-        // node-walk runs the "dead" statement and delivers.
+        // never dead.
         NodeView::Module(_) => ok = false,
         // A signature-less module is `Block { module: true }`, not a
-        // `Module` node — the SAME publisher, so the same rule
-        // (modstmt-fused-no-publish-aug2026: dead-elim dropped the
-        // statement whole and its exports starved every outside
-        // reader).
+        // `Module` node — the SAME publisher, so the same rule.
         NodeView::Block(b) if b.module => ok = false,
         NodeView::Impl(_) => ok = false,
         // A catch INSTALLATION is never dead: eliminating it from a
         // fused block would silently drop the handler while covered
         // `?`s keep delivering to its variable.
-        NodeView::Catch(_) => ok = false,
+        NodeView::Catch(_) | NodeView::SeqGuard(_) => ok = false,
         NodeView::Qop(q) => {
-            if q.id.is_some() {
+            if q.handler.is_some() {
                 ok = false
             }
         }

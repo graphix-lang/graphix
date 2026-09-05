@@ -212,6 +212,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
             abort.abort();
         }
         self.tree_val = None;
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -312,6 +313,7 @@ macro_rules! db_event_accessor {
                     ctx.rt.unref_var(bid, self.top_id);
                 }
                 self.cached.clear();
+                self.out = TagValue::phantom();
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {

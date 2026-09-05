@@ -863,6 +863,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.delete(ctx);
         self.running = false;
+        self.out = TagValue::phantom();
         let id = BindId::new();
         ctx.rt.ref_var(id, self.top_id);
         self.id = id;
@@ -1728,6 +1729,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         ctx.rt.ref_var(self.id, self.top_id);
         self.triggered = 0;
         self.queue.clear();
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -1890,6 +1892,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2018,6 +2021,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.last = None;
         self.wait = Duration::ZERO;
         self.last_v = None;
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -2331,6 +2335,7 @@ struct Log {
     scope: Scope,
     dest: LogDest,
     buf: String,
+    out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
@@ -2349,6 +2354,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
             scope: scope.clone(),
             dest: LogDest::Stdout,
             buf: String::new(),
+            out: TagValue::phantom(),
         }))
     }
 }
@@ -2366,18 +2372,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         {
             self.dest = d;
         }
-        if let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
-        {
-            self.buf.clear();
-            write!(self.buf, "{}: ", self.scope.lexical).unwrap();
-            let typ = from[1].typ().clone();
-            let buf = &mut self.buf;
-            coretraits::with_value_hooks(ctx, event, |ctx, _| {
-                write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v: &v }).unwrap()
-            });
-            emit_line(ctx, self.dest, &self.buf, "\n");
-        }
-        TagValue::phantom_ref()
+        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+        else {
+            return self.out.ride();
+        };
+        self.buf.clear();
+        write!(self.buf, "{}: ", self.scope.lexical).unwrap();
+        let typ = from[1].typ().clone();
+        let buf = &mut self.buf;
+        coretraits::with_value_hooks(ctx, event, |ctx, _| {
+            write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v: &v }).unwrap()
+        });
+        emit_line(ctx, self.dest, &self.buf, "\n");
+        self.out.set(TagValue::fired(Value::Null))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -2391,6 +2398,7 @@ macro_rules! printfn {
         struct $type {
             dest: LogDest,
             buf: String,
+            out: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
@@ -2405,7 +2413,11 @@ macro_rules! printfn {
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { dest: LogDest::Stdout, buf: String::new() }))
+                Ok(Box::new(Self {
+                    dest: LogDest::Stdout,
+                    buf: String::new(),
+                    out: TagValue::phantom(),
+                }))
             }
         }
 
@@ -2422,22 +2434,23 @@ macro_rules! printfn {
                 {
                     self.dest = d;
                 }
-                if let Some(v) =
+                let Some(v) =
                     seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
-                {
-                    self.buf.clear();
-                    let typ = from[1].typ().clone();
-                    let buf = &mut self.buf;
-                    coretraits::with_value_hooks(ctx, event, |ctx, _| {
-                        match &v {
-                            Value::String(s) => write!(buf, "{s}"),
-                            v => write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v }),
-                        }
-                        .unwrap()
-                    });
-                    emit_line(ctx, self.dest, &self.buf, $suffix);
-                }
-                TagValue::phantom_ref()
+                else {
+                    return self.out.ride();
+                };
+                self.buf.clear();
+                let typ = from[1].typ().clone();
+                let buf = &mut self.buf;
+                coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                    match &v {
+                        Value::String(s) => write!(buf, "{s}"),
+                        v => write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v }),
+                    }
+                    .unwrap()
+                });
+                emit_line(ctx, self.dest, &self.buf, $suffix);
+                self.out.set(TagValue::fired(Value::Null))
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}

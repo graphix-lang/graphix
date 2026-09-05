@@ -107,7 +107,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "never", "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any",
             "use", "rec", "catch", "try", "self", "super", "package", "pub", "trait",
-            "impl", "seq", "until", "do",
+            "impl", "seq", "seqq", "until", "do",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -128,7 +128,7 @@ pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
 pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
-        "catch", "try", "pub", "trait", "impl", "seq", "until", "do",
+        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "do",
     ])
 });
 
@@ -878,7 +878,10 @@ where
 {
     (
         position(),
-        attempt(string("seq").skip(not_prefix())),
+        choice((
+            attempt(string("seqq").skip(not_prefix())).map(|_| true),
+            attempt(string("seq").skip(not_prefix())).map(|_| false),
+        )),
         spaces(),
         optional(attempt(
             not_followed_by(token('{'))
@@ -893,7 +896,7 @@ where
         ),
     )
         .then(
-            |(pos, _, _, trigger, mut body): (
+            |(pos, queued, _, trigger, mut body): (
                 _,
                 _,
                 _,
@@ -907,7 +910,7 @@ where
                 } else {
                     let body = Arc::from_iter(body.drain(..));
                     value(
-                        ExprKind::Seq { trigger: trigger.map(Arc::new), body }
+                        ExprKind::Seq { queued, trigger: trigger.map(Arc::new), body }
                             .to_expr(pos),
                     )
                     .right()
@@ -1139,6 +1142,7 @@ where
                 bind,
                 constraint,
                 handler: Arc::new(handler),
+                seq_abort: None,
             }))
             .to_expr(pos)
         })

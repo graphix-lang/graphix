@@ -2321,13 +2321,24 @@ fn seq_parses() {
         "seq { catch(e) e; 1 }",
         "seq t { do { let x = 1; x } }",
         "seq { do { 1 } }",
+        "seqq { 1 }",
+        "seqq request { let x = 1; x }",
+        "seqq (request ~ value) { until ready; do { 1; 2 } }",
     ] {
         let e = parse_one(s).unwrap();
         assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
         let again = parse_one(&e.to_string()).unwrap();
-        assert!(matches!(again.kind, ExprKind::Seq { .. }), "round-trip of {s}: {}", e);
+        match (&e.kind, &again.kind) {
+            (ExprKind::Seq { queued: a, .. }, ExprKind::Seq { queued: b, .. }) => {
+                assert_eq!(*a, s.starts_with("seqq"));
+                assert_eq!(a, b);
+            }
+            _ => panic!("round-trip of {s}: {e}"),
+        }
     }
     assert!(parse_one("let seq = 1").is_err());
+    assert!(parse_one("let seqq = 1").is_err());
+    assert!(parse_one("seqq").is_err());
     assert!(parse_one("seq").is_err());
     assert!(parse_one("until x").is_err());
     assert!(parse_one("do { 1 }").is_err());

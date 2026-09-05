@@ -5208,8 +5208,17 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "STRING",
-          "value": "seq"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "seq"
+            },
+            {
+              "type": "STRING",
+              "value": "seqq"
+            }
+          ]
         },
         {
           "type": "CHOICE",

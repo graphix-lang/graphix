@@ -795,6 +795,7 @@ macro_rules! catch_stmt {
                     bind,
                     constraint,
                     handler: Arc::new(handler),
+                    seq_abort: None,
                 }))
                 .to_expr_nopos()
             },
@@ -1434,6 +1435,17 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             typecast!(inner.clone()),
             never!(inner.clone()),
             do_block!(inner.clone()),
+            (
+                any::<bool>(),
+                option::of(reference()),
+                collection::vec(inner.clone(), 1..5),
+            )
+                .prop_map(|(queued, trigger, body)| ExprKind::Seq {
+                    queued,
+                    trigger: trigger.map(Arc::new),
+                    body: Arc::from(body),
+                }
+                .to_expr_nopos()),
             lambda!(inner.clone()),
             bind!(inner.clone()),
             connect!(inner.clone()),
@@ -1953,9 +1965,18 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Qop(e0), ExprKind::Qop(e1)) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),
         (ExprKind::Catch(c0), ExprKind::Catch(c1)) => {
-            let CatchExpr { bind: b0, constraint: c0, handler: h0 } = &**c0;
-            let CatchExpr { bind: b1, constraint: c1, handler: h1 } = &**c1;
-            b0 == b1 && check_type_opt(c0, c1) && check(h0, h1)
+            let CatchExpr { bind: b0, constraint: c0, handler: h0, seq_abort: a0 } =
+                &**c0;
+            let CatchExpr { bind: b1, constraint: c1, handler: h1, seq_abort: a1 } =
+                &**c1;
+            b0 == b1
+                && check_type_opt(c0, c1)
+                && check(h0, h1)
+                && match (a0, a1) {
+                    (None, None) => true,
+                    (Some(a0), Some(a1)) => check(a0, a1),
+                    _ => false,
+                }
         }
         (ExprKind::Ref { name: name0 }, ExprKind::Ref { name: name1 }) => {
             dbg!(name0 == name1)
@@ -2084,15 +2105,17 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
         (
-            ExprKind::Seq { trigger: t0, body: b0 },
-            ExprKind::Seq { trigger: t1, body: b1 },
+            ExprKind::Seq { queued: q0, trigger: t0, body: b0 },
+            ExprKind::Seq { queued: q1, trigger: t1, body: b1 },
         ) => {
             let trig = match (t0, t1) {
                 (None, None) => true,
                 (Some(a), Some(b)) => check(a, b),
                 _ => false,
             };
-            trig && b0.len() == b1.len()
+            q0 == q1
+                && trig
+                && b0.len() == b1.len()
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }
         (ExprKind::Until(a), ExprKind::Until(b)) => check(a, b),

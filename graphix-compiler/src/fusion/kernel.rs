@@ -536,7 +536,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                     crate::node::error::deliver_error(
                         ctx,
                         event,
-                        site.handler,
+                        &site.handler,
                         site.own_top,
                         &site.spec,
                         (*e).clone(),

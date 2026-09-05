@@ -912,6 +912,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.queue.clear();
         self.ready = true;
         self.handler.sleep(ctx);
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {

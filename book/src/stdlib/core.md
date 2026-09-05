@@ -1,5 +1,11 @@
 # Core
 
+`print`, `println`, and `log` produce a `null` event after processing each
+message. This acknowledgement lets a `seq` step advance, including when
+the same message is printed again. Changing only the destination produces
+no acknowledgement. If an enclosing expression should produce nothing,
+end its block with `never()` explicitly.
+
 ```graphix
 type Sint = [ i8, i16, i32, z32, i64, z64 ];
 type Uint = [ u8, u16, u32, v32, u64, v64 ];
@@ -116,17 +122,17 @@ val hold: fn(#clock:Any, x: 'a) -> 'a;
 val dbg: fn(?#dest:[`Stdout, `Stderr, Log], x: 'a) -> 'a;
 
 /// print a log message to stdout, stderr or the specified log level using the rust log
-/// crate. Unlike dbg, log does not also return the value.
-val log: fn(?#dest:Log, x: 'a) -> _;
+/// crate. Returns null after processing each message.
+val log: fn(?#dest:Log, x: 'a) -> null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
-/// crate. Unlike dbg, log does not also return the value. Does not automatically insert
-/// a newline and does not add the source module/location.
-val print: fn(?#dest:Log, x: 'a) -> _;
+/// crate. Does not automatically insert a newline or add the source module/location.
+/// Returns null after processing each message.
+val print: fn(?#dest:Log, x: 'a) -> null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
-/// crate followed by a newline. Unlike dbg, log does not also return the value.
-val println: fn(?#dest:Log, x: 'a) -> _;
+/// crate followed by a newline. Returns null after processing each message.
+val println: fn(?#dest:Log, x: 'a) -> null;
 
 /// Throttle v so it updates at most every #rate, where rate is a
 /// duration (default 0.5 seconds). Intermediate updates that push v

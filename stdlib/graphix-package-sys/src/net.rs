@@ -158,6 +158,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.out = TagValue::phantom();
         match &mut self.dv {
             Either::Left((_, dv)) => {
                 let dv = dv.clone();
@@ -311,6 +312,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept = true;
+        self.out = TagValue::phantom();
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id);
         }
@@ -448,6 +450,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx.rt.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -537,6 +540,7 @@ macro_rules! list {
                 self.id = BindId::new();
                 ctx.rt.ref_var(self.id, self.top_id);
                 self.current = None;
+                self.out = TagValue::phantom();
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -743,6 +747,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept = true;
+        self.out = TagValue::phantom();
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
@@ -1122,6 +1127,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept = true;
+        self.out = TagValue::phantom();
         if crate::netstate::rpc_dbg() {
             eprintln!("RPCDBG publish_rpc {:?}: sleep (id re-minted)", self.id);
         }

@@ -189,14 +189,8 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         ctx.rt.unref_var(self.id, self.top_id);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The reader owns the stream's position; a slept-then-woken
-        // instance must not start a second one over the same bytes, so
-        // `started` stays set. Re-key the wake registration exactly as
-        // `array::iter` does.
-        ctx.rt.unref_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
+    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+        self.out = TagValue::phantom();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {

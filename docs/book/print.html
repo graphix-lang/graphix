@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9642fc8b.js";
+            window.path_to_searchindex_js = "searchindex-85106f99.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-879b8455.js"></script>
+        <script src="toc-ca61ab31.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1539,7 +1539,7 @@ bindings at the top of the file.</li>
 <code>let p: package::tui::Pump = ...</code> are both valid.</p>
 <h2 id="the-core-prelude"><a class="header" href="#the-core-prelude">The core prelude</a></h2>
 <p>The root items of the <code>core</code> package (<code>print</code>, <code>println</code>, <code>cast</code>,
-<code>error</code>, <code>filter</code>, <code>once</code>, <code>never</code>, <code>seq</code>, <code>Any</code>, <code>Result</code>, …) and
+<code>error</code>, <code>filter</code>, <code>once</code>, <code>never</code>, <code>range</code>, <code>Any</code>, <code>Result</code>, …) and
 the primitive type names are implicitly imported into every module.
 They can be shadowed by explicit declarations and imports.</p>
 <h2 id="scoping"><a class="header" href="#scoping">Scoping</a></h2>
@@ -1983,30 +1983,90 @@ how we would do something with every element of an array (see <code>array::map</
 <code>array::fold</code>), however it illustrates the power of select and connect together.</p>
 <h3 id="writing-from-an-arm"><a class="header" href="#writing-from-an-arm">Writing From an Arm</a></h3>
 <p>A connect inside an arm is an ordinary node of that arm: it fires
-when its right-hand side fires. That gives two distinct tools.</p>
-<p>A right-hand side that samples the scrutinee fires on every delivery
-into the arm:</p>
-<pre><code class="language-graphix">select k {
-  x if x != 5 =&gt; s &lt;- x ~ 100,
+when its right-hand side fires. Sample the event when the write
+should run on every delivery into the arm; a constant right-hand
+side fires when the constant does (init, or the arm’s wake).</p>
+<pre><code class="language-graphix">select k.code {
+  kk@ `Up =&gt; sel &lt;- kk ~ (sel - 1),
+  kk@ `Down =&gt; sel &lt;- kk ~ (sel + 1),
+  `Enter =&gt; screen &lt;- `Pick,
   _ =&gt; never()
 }
 </code></pre>
-<p>A constant right-hand side fires when the arm becomes selected, and
-not again while the same arm keeps matching: a constant has no input,
-so a re-match of the same arm with a new value re-emits the arm
-without re-running the write. That is a trigger on the selection
-changing, which is what an “on entering this state” write wants:</p>
-<pre><code class="language-graphix">select screen {
-  `Menu =&gt; cursor &lt;- 0,
-  _ =&gt; never()
+<p><code>e ~! v</code> is the strict sample: <code>v</code> at each fire of <code>e</code>, and bottom
+with no bank when <code>v</code> is bottom. <code>~</code> still banks.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="seq-and-seqq"><a class="header" href="#seq-and-seqq">Seq and Seqq</a></h1>
+<p><code>seq trigger { ... }</code> runs steps in order. A trigger arriving during a run
+is dropped. <code>seqq trigger { ... }</code> queues requests instead, with one run
+active at a time. Without a trigger, either form runs once at initialization.</p>
+<pre><code class="language-graphix">let request = count(sys::time::timer(duration:20.ms, 3)?);
+let label = "job";
+seqq request {
+    let reply = sys::time::after_idle(duration:60.ms, "[label] [request]");
+    println(reply);
+    reply
 }
 </code></pre>
-<p>Measured over ten deliveries of <code>k</code> into the first select, with the
-arm deselected at 5 and reselected at 6, the sampled write fires nine
-times and a constant write in its place twice. Event handlers usually
-want the sampled form. An arm <code>`Enter =&gt; screen &lt;- `Pick</code> fires on
-the first Enter and not on the second while the arm stays selected,
-so a handler samples the event: <code>`Enter =&gt; screen &lt;- ev ~ `Pick</code>.</p>
+<p>This processes all three requests in order. The block’s last step supplies
+its output; each new output releases the next queued request, even when the
+output equals the previous one. Effectful calls must produce a completion
+value: <code>println</code>, for example, returns <code>null</code> after printing. <code>never()</code>
+stalls the current run and therefore stops the queue from advancing.</p>
+<p>A trailing semicolon in <code>do { ... }</code> does not add a step or discard the
+last statement’s value. That statement supplies the <code>do</code>’s completion and,
+when it is the sequence’s last step, its output. Ordinary <code>{ ... }</code> blocks
+retain their usual trailing-semicolon behavior.</p>
+<p>A later <code>let x = ...</code> creates a new binding, even inside <code>do</code>. Its
+initializer sees the preceding <code>x</code>; earlier references and closures
+continue to refer to that preceding binding. The new binding can have a
+different type.</p>
+<h2 id="captured-inputs"><a class="header" href="#captured-inputs">Captured inputs</a></h2>
+<p><code>seqq</code> captures the external values read by its body. At each trigger it
+samples them together into one tuple and queues that tuple. Later changes
+to those inputs do not change a queued request or reissue a waiting step.
+Bindings declared inside the block retain their ordinary scope.</p>
+<p>A capture uses its last produced value; it need not produce on the same
+cycle as the request. If its source becomes bottom, its previous value is
+still usable. These snapshots can therefore contain stale data.</p>
+<p>Until every capture has produced at least once, there is no complete tuple
+to sample. Requests wait for that first tuple, and those early requests can
+share the first available snapshot, including its latest trigger value.
+Initialize required inputs before issuing requests if each request must
+carry its exact arrival-time values.</p>
+<p>Capture is shallow: references retain their identity and remain live when
+dereferenced. Capturing a function does not snapshot the external state
+read inside that function.</p>
+<p>A write through a captured reference uses that queued handle, even if the
+source reference variable subsequently points somewhere else.</p>
+<h2 id="live-state-and-waits"><a class="header" href="#live-state-and-waits">Live state and waits</a></h2>
+<p><code>until ready</code> observes the live condition, rather than a queued copy of it.
+Connect destinations remain the original variables. An external variable
+written directly by the block also remains live when read, so queued
+<code>count &lt;- count + 1</code> operations can accumulate rather than overwrite one
+another with an old count. Taking <code>&amp;state</code> refers to the original state.</p>
+<p>Keep persistent effects such as subscriptions and <code>tui::suspend</code> outside
+the block; steps can update their inputs and wait for their responses.</p>
+<p>A thrown error aborts the current request, runs the block’s <code>catch</code> handler
+if present, resets the sequence, and releases the next request. The error
+is rethrown to the enclosing handler; it is not a successful block output.
+If a run raises several errors, each reaches cleanup and is rethrown. The
+sequence resets and releases the queue only once, after those deliveries,
+keeping the failed request’s captured inputs in place for cleanup. This
+does not wait for asynchronous work started by the cleanup handler.
+Like an ordinary <code>catch</code>, cleanup remains reactive. Sample its side-effect
+arguments on the error, for example <code>println(e ~ "failed [request]")</code>,
+so later captured-value changes do not reissue the effect.</p>
+<p>An error reaching the sequence’s handler takes precedence over a value
+produced by the same step. The failing step cannot publish a result or
+start subsequent statements, including subsequent statements within <code>do</code>.
+This is not rollback: effects already performed inside an ordinary
+expression remain performed. An error handled by a nested ordinary
+<code>catch</code>, without rethrowing to the sequence, does not abort the run.</p>
+<p>The queue is unbounded. A producer faster than the block can consume will
+grow it; a permanently stalled run can retain all subsequent requests.
+Sleeping the enclosing expression discards pending queued work, following
+the ordinary <code>queue</code> sleep behavior.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Graphix are represented by the <code>Error&lt;'a&gt;</code> type. A new instance of
@@ -2089,9 +2149,9 @@ one triggered. Note the use of the checked division operator <code>/?</code> com
 <code>?</code> to propagate the error – unchecked <code>/</code> would simply return bottom on
 division by zero rather than throwing.</p>
 <h3 id="constraining-the-error-type"><a class="header" href="#constraining-the-error-type">Constraining the error type</a></h3>
-<p>The binder may carry a type annotation, <code>catch(e: T) expr</code>, which the
-compiler checks against the union of every error type the covered region can
-throw — a contract on what the handler must be prepared to receive.</p>
+<p>The binder may carry a type annotation, <code>catch(e: T) expr</code>. That is a
+type ascription: <code>e</code> has type <code>T</code> in the handler. The compiler still
+checks that <code>T</code> contains every error the covered region can throw.</p>
 <h2 id="checked-errors"><a class="header" href="#checked-errors">Checked Errors</a></h2>
 <p>Graphix function types are annotated by the type of error they might raise. In
 most cases this is automatic, but for some higher order functions it may be
@@ -4455,6 +4515,11 @@ module is always imported with an implicit use statement.</p>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="core"><a class="header" href="#core">Core</a></h1>
+<p><code>print</code>, <code>println</code>, and <code>log</code> produce a <code>null</code> event after processing each
+message. This acknowledgement lets a <code>seq</code> step advance, including when
+the same message is printed again. Changing only the destination produces
+no acknowledgement. If an enclosing expression should produce nothing,
+end its block with <code>never()</code> explicitly.</p>
 <pre><code class="language-graphix">type Sint = [ i8, i16, i32, z32, i64, z64 ];
 type Uint = [ u8, u16, u32, v32, u64, v64 ];
 type Int = [ Sint, Uint ];
@@ -4536,8 +4601,8 @@ val take: fn(#n:Any, x: 'a) -&gt; 'a;
 /// skip n updates from e and return the rest. The internal count is reset when n updates.
 val skip: fn(#n:Any, x: 'a) -&gt; 'a;
 
-/// seq will update j - i times, starting at i and ending at j - 1
-val seq: fn(i: i64, j: i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
+/// range will update j - i times, starting at i and ending at j - 1
+val range: fn(i: i64, j: i64) -&gt; Result&lt;i64, `SeqError(string)&gt;;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -&gt; bool;
@@ -4570,17 +4635,17 @@ val hold: fn(#clock:Any, x: 'a) -&gt; 'a;
 val dbg: fn(?#dest:[`Stdout, `Stderr, Log], x: 'a) -&gt; 'a;
 
 /// print a log message to stdout, stderr or the specified log level using the rust log
-/// crate. Unlike dbg, log does not also return the value.
-val log: fn(?#dest:Log, x: 'a) -&gt; _;
+/// crate. Returns null after processing each message.
+val log: fn(?#dest:Log, x: 'a) -&gt; null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
-/// crate. Unlike dbg, log does not also return the value. Does not automatically insert
-/// a newline and does not add the source module/location.
-val print: fn(?#dest:Log, x: 'a) -&gt; _;
+/// crate. Does not automatically insert a newline or add the source module/location.
+/// Returns null after processing each message.
+val print: fn(?#dest:Log, x: 'a) -&gt; null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
-/// crate followed by a newline. Unlike dbg, log does not also return the value.
-val println: fn(?#dest:Log, x: 'a) -&gt; _;
+/// crate followed by a newline. Returns null after processing each message.
+val println: fn(?#dest:Log, x: 'a) -&gt; null;
 
 /// Throttle v so it updates at most every #rate, where rate is a
 /// duration (default 0.5 seconds). Intermediate updates that push v
@@ -14729,6 +14794,13 @@ events is,</p>
 </ul>
 </li>
 </ul>
+<h2 id="sleeping-asynchronous-builtins"><a class="header" href="#sleeping-asynchronous-builtins">Sleeping asynchronous builtins</a></h2>
+<p>If sleeping a builtin discards pending work or detaches an event source,
+also reset its output to <code>TagValue::phantom()</code>. On wake, a restarted
+operation must wait for its own completion instead of exposing the previous
+activation’s result. This applies outside <code>seq</code> as well as inside it.
+Retain outputs for paused computations whose semantic value remains valid;
+do not reset every builtin merely because it is classified asynchronous.</p>
 <h2 id="implementing-once"><a class="header" href="#implementing-once">Implementing Once</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -14954,10 +15026,10 @@ argument’s updates internally, and creates an array out of them when
 the predicate returns true. Its type is</p>
 <p><code>fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
 <p>For example,</p>
-<pre><code class="language-graphix">let n = seq(0, 100);
+<pre><code class="language-graphix">let n = range(0, 100);
 array::group(n, |_, n| (n == 50) || (n == 99))
 </code></pre>
-<p><code>seq(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
+<p><code>range(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
 create two arrays, one containing <code>[0, .. 50]</code> and the other
 containing <code>[51, .. 99]</code>.</p>
 <p>The implementation needs to build a <code>Node</code> representing the

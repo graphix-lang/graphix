@@ -468,7 +468,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::CallSite(cs) => {
             // The args map is hash-ordered; walk in ArgKey order or the
             // discovery order downstream (callee fn indices, the region
-            // layout) becomes a per-process coin flip (the #19 class).
+            // layout) becomes a per-process coin flip.
             let mut args: LPooled<Vec<(&crate::node::callsite::ArgKey, &Node<R, E>)>> =
                 cs.args
                     .iter()
@@ -489,8 +489,14 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 rec!(body)
             }
         }
-        NodeView::Catch(c) => rec!(&c.handler),
+        NodeView::Catch(c) => {
+            rec!(&c.handler);
+            if let Some(abort) = &c.seq_abort {
+                rec!(&abort.node);
+            }
+        }
         NodeView::Qop(q) => rec!(&q.n),
+        NodeView::SeqGuard(g) => rec!(&g.n),
         NodeView::OrNever(o) => rec!(&o.n),
         NodeView::ExplicitParens(p) => rec!(&p.n),
         NodeView::TypeCast(t) => rec!(&t.n),

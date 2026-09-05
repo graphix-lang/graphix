@@ -60,6 +60,15 @@ events is,
     - once::update returns Some(Value::DateTime(..))
     - println prints the datetime
 
+## Sleeping asynchronous builtins
+
+If sleeping a builtin discards pending work or detaches an event source,
+also reset its output to `TagValue::phantom()`. On wake, a restarted
+operation must wait for its own completion instead of exposing the previous
+activation's result. This applies outside `seq` as well as inside it.
+Retain outputs for paused computations whose semantic value remains valid;
+do not reset every builtin merely because it is classified asynchronous.
+
 ## Implementing Once
 
 ```rust

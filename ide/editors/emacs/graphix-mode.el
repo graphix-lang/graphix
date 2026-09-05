@@ -83,7 +83,8 @@
 
 (defvar graphix-font-lock-keywords
   (let ((keywords '("let" "rec" "mod" "use" "type" "fn" "select" "if" "try"
-                     "catch" "cast" "any" "with" "where" "throws" "as"))
+                     "catch" "cast" "any" "with" "where" "throws" "as"
+                     "seq" "seqq" "until" "do"))
         (builtins '("true" "false" "null" "ok"))
         (types '("bool" "string" "bytes" "i8" "u8" "i16" "u16"
                  "i32" "u32" "v32" "z32" "i64" "u64" "v64" "z64"
@@ -142,7 +143,7 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 1: keywords
      :language 'graphix
      :feature 'keyword
-     '(["mod" "use" "let" "rec" "type" "fn" "select" "if" "catch"
+     '(["mod" "use" "let" "rec" "type" "fn" "select" "seq" "seqq" "until" "do" "if" "catch"
         "cast" "any" "with" "where" "throws" "as"] @font-lock-keyword-face)
 
      ;; Level 1: strings

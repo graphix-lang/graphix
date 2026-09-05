@@ -88,6 +88,8 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         | Module { .. } => {}
         ExplicitParens(x)
         | Qop(x)
+        | Rethrow(x)
+        | SeqGuard(x)
         | OrNever(x)
         | ByRef(x)
         | Deref(x)
@@ -156,14 +158,19 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
                 f(body);
             }
         }
-        Catch(c) => f(&c.handler),
+        Catch(c) => {
+            f(&c.handler);
+            if let Some(e) = &c.seq_abort {
+                f(e);
+            }
+        }
         Until(x) => f(x),
         SeqDo { body } => {
             for e in body.iter() {
                 f(e);
             }
         }
-        Seq { trigger, body } => {
+        Seq { trigger, body, .. } => {
             if let Some(t) = trigger {
                 f(t);
             }
@@ -242,6 +249,8 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
         | Module { .. } => e.kind.clone(),
         ExplicitParens(x) => ExplicitParens(ra!(x)),
         Qop(x) => Qop(ra!(x)),
+        Rethrow(x) => Rethrow(ra!(x)),
+        SeqGuard(x) => SeqGuard(ra!(x)),
         OrNever(x) => OrNever(ra!(x)),
         ByRef(x) => ByRef(ra!(x)),
         Deref(x) => Deref(ra!(x)),
@@ -326,10 +335,12 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
             bind: c.bind.clone(),
             constraint: c.constraint.clone(),
             handler: ra!(&c.handler),
+            seq_abort: c.seq_abort.as_ref().map(|e| ra!(e)),
         })),
         Until(x) => Until(ra!(x)),
         SeqDo { body } => SeqDo { body: aslice(body.iter().map(|c| r!(c)).collect()) },
-        Seq { trigger, body } => Seq {
+        Seq { queued, trigger, body } => Seq {
+            queued: *queued,
             trigger: trigger.as_ref().map(|t| ra!(t)),
             body: aslice(body.iter().map(|c| r!(c)).collect()),
         },

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-9642fc8b.js";
+            window.path_to_searchindex_js = "../searchindex-85106f99.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-879b8455.js"></script>
+        <script src="../toc-ca61ab31.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -234,6 +234,13 @@ events is,</p>
 </ul>
 </li>
 </ul>
+<h2 id="sleeping-asynchronous-builtins"><a class="header" href="#sleeping-asynchronous-builtins">Sleeping asynchronous builtins</a></h2>
+<p>If sleeping a builtin discards pending work or detaches an event source,
+also reset its output to <code>TagValue::phantom()</code>. On wake, a restarted
+operation must wait for its own completion instead of exposing the previous
+activation’s result. This applies outside <code>seq</code> as well as inside it.
+Retain outputs for paused computations whose semantic value remains valid;
+do not reset every builtin merely because it is classified asynchronous.</p>
 <h2 id="implementing-once"><a class="header" href="#implementing-once">Implementing Once</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -459,10 +466,10 @@ argument’s updates internally, and creates an array out of them when
 the predicate returns true. Its type is</p>
 <p><code>fn(v: 'a, f: fn(len: i64, x: 'a) -&gt; bool) -&gt; Array&lt;'a&gt;</code></p>
 <p>For example,</p>
-<pre><code class="language-graphix">let n = seq(0, 100);
+<pre><code class="language-graphix">let n = range(0, 100);
 array::group(n, |_, n| (n == 50) || (n == 99))
 </code></pre>
-<p><code>seq(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
+<p><code>range(0, 100)</code> updates 100 times from 0 to 99. The <code>array::group</code> will
 create two arrays, one containing <code>[0, .. 50]</code> and the other
 containing <code>[51, .. 99]</code>.</p>
 <p>The implementation needs to build a <code>Node</code> representing the
