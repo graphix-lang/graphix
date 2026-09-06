@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(4, I64(5))], capped: false }], stdout: [] })
-// jit: Trace(Trace { epochs: [Epoch { events: [(4, I64(1))], capped: false }], stdout: [] })
-// mutant: {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select {type Panel = [`D, `Q, `R]; type Screen = [`Connect, `Panel(Panel)]; let s: Screen = `Panel(`D); select s {`Connect => i64:0, `Panel(`Q) => i64:1, `Panel(`D) => i64:2, `Panel(`R) => i64:3}} {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; let c = count(f(i64:3)); select count(x) {i64:4 => c, _ => never()}}
-// minimized:
-{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let rec f = |n| select n {i64:0 => select {type Panel = [`D, `Q, `R]; type Screen = [`Connect, `Panel(Panel)]; let s: Screen = `Panel(`D); select s {`Connect => i64:0, `Panel(`Q) => i64:1, `Panel(`D) => i64:2, `Panel(`R) => i64:3}} {i64:0 if m == i64:0 => i64:1, _ => i64:2}, _ => f(n - i64:1)}; let c = count(f(i64:3)); select count(x) {i64:4 => c, _ => never()}}

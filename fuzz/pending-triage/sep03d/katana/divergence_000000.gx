@@ -1,6 +1,0 @@
-// bisect: fusion/JIT bug (interp != jit)
-// interp: Trace(Trace { epochs: [Epoch { events: [(0, I64(1))], capped: false }], stdout: [] })
-// jit: Timeout
-// mutant: {let a: Array<i64> = []; select a {[x] => {let x = array::iter([i64:1, i64:1, i64:-100]); let data = i64:42; count(select x > i64:0 {true => data, false => {let rec go = |n: i64, acc: string| -> string select n {i64:0 => acc, _ => go(i64:10, "[acc].")}; go(i64:5, "x")}})}, [] => i64:1, _ => i64:0}}
-// minimized:
-{let a: Array<i64> = []; select a {[x] => {let x = array::iter([i64:1, i64:1, i64:-100]); let data = i64:42; {let rec go = |n: i64, acc: string| -> string select n {i64:0 => acc, _ => go(i64:10, "[acc].")}; go(i64:5, "x")}}, [] => i64:1, _ => i64:0}}
