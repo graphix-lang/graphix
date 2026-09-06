@@ -10,6 +10,38 @@ use poolshark::local::LPooled;
 use std::iter;
 use triomphe::Arc;
 
+fn is_empty_ty(t: &Type) -> bool {
+    match t {
+        Type::Bottom => true,
+        Type::Primitive(p) => p.is_empty(),
+        _ => false,
+    }
+}
+
+fn diff_already_normal(before: &Type, after: &Type) -> bool {
+    match (before, after) {
+        (_, Type::Primitive(p)) if p.is_empty() => true,
+        (Type::Set(s), Type::Set(out)) => {
+            let mut i = 0;
+            for o in out.iter() {
+                loop {
+                    if i >= s.len() {
+                        return false;
+                    }
+                    let j = i;
+                    i += 1;
+                    if s[j] == *o {
+                        break;
+                    }
+                }
+            }
+            true
+        }
+        (Type::Set(s), t) => s.iter().any(|m| m == t),
+        _ => false,
+    }
+}
+
 /// Structural identity for union-collapse decisions, and for the
 /// param dedup under `RefHist::ref_id`'s cycle keys — identity
 /// decisions where "equal" must not rest on None == None across
@@ -417,12 +449,27 @@ impl Type {
                 }
                 Ok(Self::flatten_set(s.drain(..)))
             }
-            (Type::Set(s), t) => Ok(Self::flatten_set(
-                s.iter()
-                    .map(|s| s.diff_int(env, hist, t))
-                    .collect::<Result<LPooled<Vec<_>>>>()?
-                    .drain(..),
-            )),
+            (Type::Set(s), t) => {
+                let mut diffs: LPooled<Vec<Type>> = LPooled::take();
+                let mut partial = false;
+                for m in s.iter() {
+                    let d = m.diff_int(env, hist, t)?;
+                    if !is_empty_ty(&d) && d != *m {
+                        partial = true;
+                    }
+                    diffs.push(d);
+                }
+                if partial {
+                    Ok(Self::flatten_set(diffs.drain(..)))
+                } else {
+                    diffs.retain(|d| !is_empty_ty(d));
+                    Ok(match diffs.len() {
+                        0 => Type::Primitive(BitFlags::empty()),
+                        1 => diffs.pop().unwrap(),
+                        _ => Type::Set(Arc::from_iter(diffs.drain(..))),
+                    })
+                }
+            }
             (t, Type::Set(s)) => {
                 let mut t = t.clone();
                 for st in s.iter() {
@@ -625,7 +672,8 @@ impl Type {
     }
 
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
-        Ok(self.diff_int(env, &mut RefHist::new(LPooled::take()), t)?.normalize())
+        let r = self.diff_int(env, &mut RefHist::new(LPooled::take()), t)?;
+        if diff_already_normal(self, &r) { Ok(r) } else { Ok(r.normalize()) }
     }
 }
 
