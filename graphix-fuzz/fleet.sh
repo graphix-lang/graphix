@@ -309,6 +309,7 @@ nohup bash -lc "
     df -h /Volumes/Games | tail -1
     cd ~/proj/graphix
     cargo build --release -p graphix-fuzz
+    mkdir -p ~/tmp/target/release
     cp /Volumes/Games/cargo/release/graphix-fuzz ~/tmp/target/release/graphix-fuzz
     GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale ~/bin/soak-start $camp $seed $workers $mix
     echo FLEET_LAUNCH_OK
