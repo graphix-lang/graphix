@@ -1,0 +1,30 @@
+// A tail-position select whose SCRUTINEE stands bottom returned a
+// FRESH bottom on every invocation, where the node-walk returns a
+// STANDING one.
+//
+// `emit_tail_select` (fusion/emit/flow.rs ~398) branches a tainted
+// scrutinee straight to `emit_kernel_return` with an
+// `emit_elem_placeholder` — and that placeholder's disc is TAINT with
+// no STALE, i.e. a fresh bottom, whatever the scrutinee's own trigger
+// was. The value-position twin gets this right: `emit_select_bottom_
+// value` ORs the scrutinee's `stale_bits` into the trap disc.
+//
+// Here `1 / 0` is a fresh bottom at init and a STANDING one forever
+// after, so `f(1)` is a fresh bottom at init and quiet afterwards.
+// `v` is a `<-` target, so the difference is observable: a FRESH
+// production re-publishes the binding, and the republish lands in the
+// same cycle as the connect's queued write and clobbers it.
+//
+//   interp: `v` publishes bottom at init, stays quiet, and the connect
+//           delivers -> [1:i64:1]
+//   jit:    `v` re-publishes a fresh bottom every cycle, so the write
+//           never survives -> []
+//
+// The non-tail twin (`|n| select 1 / 0 { m => m }`) always agreed —
+// only the tail-position return path mints the placeholder.
+{
+    let rec f = |n: i64| -> i64 select 1 / 0 { m => f(m) };
+    let v = f(1);
+    v <- 1;
+    v
+}

@@ -1,0 +1,21 @@
+// washu-chan sep04a divergence_000002, minimized: the tail-select face
+// of 00 reached through a PLACE reference rather than a bare connect,
+// and with the bottom arriving from the arm body (`m / m` at m = 0)
+// rather than from a constant-folded scrutinee.
+//
+// `f(f(1))` — the inner call bottoms at init, the outer one stands
+// bottom after, and `*r <- 1` writes through the reference. Same
+// verdict as 00: the fused tail return minted FRESH every cycle and
+// the republished bottom ate the write.
+//
+//   interp: [1:i64:1]     jit (pre-fix): []
+{
+    let rec f = |n: i64| -> i64 select n {
+        m if m <= 0 => m / m,
+        m => f(0)
+    };
+    let v = f(f(1));
+    let r = &v;
+    *r <- 1;
+    v
+}

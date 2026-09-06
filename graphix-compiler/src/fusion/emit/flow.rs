@@ -402,7 +402,14 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         cx.b.ins().brif(valid, arms_bl, &[], taint_bl, &[]);
         cx.b.switch_to_block(taint_bl);
         cx.b.seal_block(taint_bl);
-        let ph = emit_elem_placeholder(cx, ret)?;
+        // The placeholder is a FRESH bottom; the emission's
+        // bottomness must mirror the scrutinee's trigger instead (a
+        // STANDING bottom scrutinee is not an event, so the return is
+        // StaleBottom). The value-position twin is the `stale_bits`
+        // fold in `emit_select_bottom_value`; the node-walk twin is
+        // Select's bottom-out arm.
+        let mut ph = emit_elem_placeholder(cx, ret)?;
+        ph.disc = cx.b.ins().bor(ph.disc, scrut_stale_bit);
         emit_kernel_return(cx, ret, ph, CompositeSource::Owned)?;
         cx.b.switch_to_block(arms_bl);
         cx.b.seal_block(arms_bl);

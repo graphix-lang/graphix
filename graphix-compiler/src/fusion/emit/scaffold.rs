@@ -827,8 +827,15 @@ impl SlotFlags {
         let len = self.len.expect("exact_stale requires a recorded len");
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
-        let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
         let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
+        // A TAINTED source computes no length at all in the node-walk
+        // (`forced_taint` returns before the resize walk), so it can
+        // never be a resize here either. The stored word is held for
+        // the same reason (`recorded`, below), and comparing that held
+        // word against this cycle's CLAMPED length made every quiet
+        // over-limit cycle read as a resize.
+        let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
+        let resized = cx.b.ins().band(resized, valid);
         let recorded = cx.b.ins().select(valid, lenp1, stored);
         cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
         let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);

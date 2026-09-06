@@ -1,0 +1,25 @@
+// The same symptom from the collection scaffold: an OVER-LIMIT
+// `array::init` count is bottom on both engines, but the fused loop
+// re-minted that bottom FRESH on every quiet cycle.
+//
+// `SlotFlags::exact_stale` (fusion/emit/scaffold.rs) holds the
+// prev-length word when the source is tainted (`recorded =
+// select(valid, lenp1, stored)`) but still computed `resized = stored
+// != lenp1` against the CLAMPED length — so the held word (0) never
+// matched len+1 (1) and every cycle read as a resize, which fires.
+// The node-walk's `forced_taint` arm computes no length at all: it
+// returns FreshBottom iff the SOURCE triggered, else rides.
+//
+// The count here is a literal, so it fires only at init:
+//   interp: fresh bottom at init, standing bottom after -> the
+//           connect's [1] survives -> [1:[i64:1]]
+//   jit:    a fresh bottom every cycle re-publishes `v` and clobbers
+//           the queued write -> []
+//
+// The sibling pins in `init-over-limit-aug2026/` cover the clamp's
+// other two effects (retained slots, the clobbered length memory).
+{
+    let v = array::init(16777217, |i: i64| i);
+    v <- [1];
+    v
+}
