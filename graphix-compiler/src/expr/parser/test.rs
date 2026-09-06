@@ -2344,3 +2344,14 @@ fn seq_parses() {
     assert!(parse_one("do { 1 }").is_err());
     assert!(parse_one("let do = 1").is_err());
 }
+
+#[test]
+fn seq_do_statement_list_is_capped() {
+    let n = max_nesting();
+    let body = std::iter::repeat("1").take(n).collect::<Vec<_>>().join("; ");
+    parse_one(&format!("seq {{ do {{ {body} }} }}")).unwrap();
+    let body = std::iter::repeat("1").take(n + 1).collect::<Vec<_>>().join("; ");
+    let err = parse_one(&format!("seq {{ do {{ {body} }} }}")).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("nesting too deep"), "{msg}");
+}

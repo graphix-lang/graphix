@@ -36,8 +36,8 @@ use std::sync::LazyLock;
 use triomphe::Arc;
 
 mod grow;
-use grow::grow;
 pub use grow::{DEFAULT_MAX_NESTING, max_nesting, set_max_nesting};
+use grow::{grow, note_refused};
 
 mod interpolateexp;
 use interpolateexp::interpolated;
@@ -847,11 +847,17 @@ where
                 )),
             )
                 .then(|(pos, mut body): (_, LPooled<Vec<Expr>>)| {
-                    if body.is_empty()
-                        || (body.len() == 1 && matches!(body[0].kind, ExprKind::NoOp))
-                    {
+                    let n =
+                        body.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).count();
+                    if n == 0 {
                         unexpected_any("a do block must contain at least one statement")
                             .left()
+                    } else if n > max_nesting() {
+                        // Statement lists are parsed iteratively, then
+                        // folded into nested selects. GrowStack never
+                        // sees the width.
+                        note_refused();
+                        unexpected_any("expression nesting too deep").left()
                     } else {
                         let body = Arc::from_iter(body.drain(..));
                         value(ExprKind::SeqDo { body }.to_expr(pos)).right()

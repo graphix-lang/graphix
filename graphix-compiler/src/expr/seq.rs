@@ -507,6 +507,21 @@ fn lower_do_stmts(
     visible: &AHashMap<ArcStr, ArcStr>,
     cells: &CarriedBinds,
 ) -> Result<Expr> {
+    ensure_sufficient(|| {
+        lower_do_stmts_inner(stmts, pc, next, last_step, result, vname, visible, cells)
+    })
+}
+
+fn lower_do_stmts_inner(
+    stmts: &[Expr],
+    pc: &str,
+    next: &str,
+    last_step: bool,
+    result: &str,
+    vname: &str,
+    visible: &AHashMap<ArcStr, ArcStr>,
+    cells: &CarriedBinds,
+) -> Result<Expr> {
     let stmts = match stmts {
         [body @ .., Expr { kind: ExprKind::NoOp, .. }] => body,
         _ => stmts,
@@ -517,6 +532,11 @@ fn lower_do_stmts(
     let Some((head, rest)) = stmts.split_first() else {
         panic!("empty do body");
     };
+    if stmts.len() > super::parser::max_nesting() {
+        return Err(
+            anyhow!("expression nesting too deep").context(ErrorContext(head.clone()))
+        );
+    }
     let pos = head.pos;
     let rest_empty = rest.is_empty();
     let tail = |visible: &AHashMap<ArcStr, ArcStr>| -> Result<Expr> {
@@ -754,6 +774,14 @@ fn shadow_step(e: &Expr, map: &mut AHashMap<ArcStr, ArcStr>) {
 }
 
 fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, mode: Rewrite<'_>) -> Expr {
+    ensure_sufficient(|| rewrite_with_inner(e, map, mode))
+}
+
+fn rewrite_with_inner(
+    e: &Expr,
+    map: &AHashMap<ArcStr, ArcStr>,
+    mode: Rewrite<'_>,
+) -> Expr {
     if map.is_empty() && !matches!(mode, Rewrite::Issue(_)) {
         return e.clone();
     }
@@ -1157,5 +1185,43 @@ fn pat_variant(tag: &str) -> Pattern {
             binds: Arc::from(Vec::<StructurePattern>::new()),
         },
         guard: None,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn lower_ones(n: usize) -> Result<Expr> {
+        let stmts: Vec<Expr> =
+            (0..n).map(|_| ExprKind::Constant(Value::I64(1)).to_expr_nopos()).collect();
+        lower_do_stmts(
+            &stmts,
+            "pc",
+            "Idle",
+            true,
+            "r",
+            "v",
+            &AHashMap::new(),
+            &CarriedBinds::new(),
+        )
+    }
+
+    #[test]
+    fn do_body_over_limit_is_a_compile_error() {
+        let err = lower_ones(super::super::parser::max_nesting() + 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("nesting too deep"), "{msg}");
+    }
+
+    #[test]
+    fn do_body_at_the_limit_does_not_overflow() {
+        let n = super::super::parser::max_nesting();
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || lower_ones(n).expect("desugars"))
+            .expect("spawn")
+            .join()
+            .expect("do-body lowering overflowed the stack");
     }
 }

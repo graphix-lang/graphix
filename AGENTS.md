@@ -1170,7 +1170,7 @@ Behind the feature today:
 | `build_standalone_produces_working_binary` | graphix-package | a full standalone build |
 | `download_source_extracts_package_at_expected_root` | graphix-package | downloads a released crate (needs network) |
 | `deep_ast_drops_without_overflow` | graphix-compiler | ~40s, 50k-deep AST teardown |
-| `deep_nesting_does_not_overflow` | graphix-shell | ~80s, 22 shapes x 2 depths in child processes |
+| `deep_nesting_does_not_overflow` | graphix-shell | ~80s, 23 shapes x 2 depths in child processes |
 
 Measured 2026-08-24: **19.5 min of test wall time down to 6.1**, and
 `graphix-package` alone goes 705.8s -> 0.03s (its other 26 tests were
@@ -1425,10 +1425,12 @@ and the netidx `literal()` boundary) via the `GrowStack` combinator in
 `node_const_value`; `Type::{contains_int, normalize_int,
 scope_refs_int}`; `would_cycle_seen`; `freeze_for_abi_d`;
 `StructurePattern`'s walks in both `expr/pattern.rs` and
-`node/pattern.rs`; the node-walk's non-tail lambda dispatch; and
+`node/pattern.rs`; the node-walk's non-tail lambda dispatch;
 `Type::is_a_int` (a runtime type test recurses through VALUE
 structure, so a recursive ADT makes its depth program-driven —
-found by P2b's fold_list fixture, 2026-08-25).
+found by P2b's fold_list fixture, 2026-08-25); and seq's
+`lower_do_stmts` / `rewrite_with` (a `do` statement list is parsed
+iteratively, then folded into nested selects).
 
 **`Node` is a newtype, not `Box<dyn Update>`.** That is what makes the
 tree passes tractable: its inherent methods shadow the nine recursive
@@ -1477,9 +1479,10 @@ knots, not source constructs (one `(1 + …)` level costs three), and
 enforced in the same `GrowStack` that claims the stack. Constructs
 parsed by an ITERATIVE loop that folds into a nested AST bypass that
 counter and are capped separately at the fold — `arith_term`'s postfix
-chain (`s.a.a.a…`, `a[0][0]…`) and `arith`'s operator chain
-(`1 + 1 + 1 + …`). A new `many(...)`-into-nested-AST parser needs the
-same cap.
+chain (`s.a.a.a…`, `a[0][0]…`), `arith`'s operator chain
+(`1 + 1 + 1 + …`), and a `do` body's statement list (seq lowering
+nests one select per statement). A new `many(...)`-into-nested-AST
+parser needs the same cap.
 
 combine merges a committed error with the surrounding alternatives'
 expectations, so a refusal's own message does NOT survive to the top
@@ -1512,7 +1515,7 @@ stack. Its own test binary because `set_max_nesting` is process-global.
 Note that `#[cfg(test)]` code is invisible to a plain `cargo check` —
 use `--all-targets` when a change can break a move out of a field.
 
-`graphix-shell/tests/deep_nesting.rs` is the regression net — 22 shapes
+`graphix-shell/tests/deep_nesting.rs` is the regression net — 23 shapes
 × two depths, each in a CHILD PROCESS on a 512KB stack (a quarter of a
 tokio worker), batched 8 at a time. Child processes because an overflow
 aborts, so it can't be caught in-process and the child is what names
