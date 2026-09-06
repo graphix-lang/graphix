@@ -521,7 +521,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     let mut cell = tv.typ.write();
                     cell.typ = match &cell.typ {
                         None => Some(etyp.clone()),
-                        Some(t) => Some(t.union(&ctx.env, &etyp)?),
+                        Some(t) => Some(Type::union(&ctx.env, &[t, &etyp])?),
                     };
                 }
                 _ => unreachable!(),

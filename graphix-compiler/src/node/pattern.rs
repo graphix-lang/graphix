@@ -143,7 +143,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
                     // the union of the alternatives seen so far, in
                     // the recorded entry AND the env binding the body
                     // typechecks against
-                    let u = t0.union(&ctx.env, typ)?;
+                    let u = Type::union(&ctx.env, &[t0, typ])?;
                     map.insert(name.clone(), (id, u.clone()));
                     if let Some(b) = ctx.env.by_id.get(&id) {
                         let mut b = b.clone();

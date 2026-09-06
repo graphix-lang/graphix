@@ -132,16 +132,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
             wrap!(n, n.typecheck0(ctx))?
         }
-        let ktype = self
-            .keys
-            .iter()
-            .fold(Ok(Type::Bottom), |acc, n| n.typ().union(&ctx.env, &acc?));
-        let ktype = wrap!(self, ktype)?;
-        let vtype = self
-            .vals
-            .iter()
-            .fold(Ok(Type::Bottom), |acc, n| n.typ().union(&ctx.env, &acc?));
-        let vtype = wrap!(self, vtype)?;
+        let bottom = Type::Bottom;
+        let mut kts: LPooled<Vec<&Type>> = LPooled::take();
+        kts.push(&bottom);
+        kts.extend(self.keys.iter().map(|n| n.typ()));
+        let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
+        let mut vts: LPooled<Vec<&Type>> = LPooled::take();
+        vts.push(&bottom);
+        vts.extend(self.vals.iter().map(|n| n.typ()));
+        let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }

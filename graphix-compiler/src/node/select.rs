@@ -18,6 +18,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use std::sync::atomic::Ordering;
 
 atomic_id!(SelectId);
@@ -1218,9 +1219,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }
         }
-        let mut rtype = Type::Primitive(BitFlags::empty());
-        let mut mtype = Type::Primitive(BitFlags::empty());
-        let mut itype = Type::Primitive(BitFlags::empty());
+        let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
+        let mut mtypes: LPooled<Vec<Type>> = LPooled::take();
+        let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
         let mut saw_true = false;
         let mut saw_false = false;
         // An UNGUARDED wildcard (an arm whose pattern is irrefutable
@@ -1247,10 +1248,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             smallvec::SmallVec::new();
         let mut literal_pool = LiteralPool::default();
         let (mut guarded_slice, mut refutable_slice) = (false, false);
-        for (pat, _) in self.arms.iter_mut() {
+        for (pat, _) in self.arms.iter() {
             let inferred_irrefutable = !pat.explicit_type_predicate
                 && pat.structure_predicate.matches_anything();
-            match &mut pat.guard {
+            match &pat.guard {
                 // The guard's OWN typecheck0 runs in the second loop,
                 // after the bind narrowing — see the note there.
                 Some(_) => {
@@ -1273,16 +1274,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         );
                         for (sp, at) in atoms.iter() {
                             if !sp.is_refutable() {
-                                mtype = mtype.union(&ctx.env, at)?
+                                mtypes.push(at.clone())
                             } else if let StructPatternNode::Literal(Value::Bool(b)) = sp
                             {
                                 saw_true |= *b;
                                 saw_false |= !*b;
                                 if saw_true && saw_false {
-                                    mtype = mtype.union(
-                                        &ctx.env,
-                                        &Type::Primitive(Typ::Bool.into()),
-                                    )?;
+                                    mtypes.push(Type::Primitive(Typ::Bool.into()));
                                 }
                             } else if let Some(vec) = composite_literal_vector(sp)
                                 && let Some(shape) = shape_of(sp)
@@ -1295,7 +1293,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                                         &shape,
                                     )?
                                 {
-                                    mtype = mtype.union(&ctx.env, &m)?;
+                                    mtypes.push(m);
                                 }
                             } else if let Some((k, exact)) = sp.array_len_coverage() {
                                 slice_pool.push((k, exact, at.clone()));
@@ -1307,7 +1305,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }
             if !inferred_irrefutable {
-                itype = itype.union(&ctx.env, &pat.type_predicate)?;
+                itypes.push(&pat.type_predicate);
             }
             // NOTE: rtype (the arm-result union) is built in the
             // SECOND loop, after each arm's typecheck0 — an arm whose
@@ -1319,6 +1317,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // STRUCTS; the fused return slot then leaked the struct
             // pointer as a scalar — soak jul08o).
         }
+        let itype = Type::union(&ctx.env, &itypes)?;
+        drop(itypes);
         if wildcard {
             // Exhaustive by construction — but still narrow an
             // under-constrained scrutinee against the union of the
@@ -1390,7 +1390,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                                         }
                                     }
                                     if all {
-                                        mtype = mtype.union(&ctx.env, &m)?;
+                                        mtypes.push(m);
                                     }
                                 }
                             }
@@ -1408,6 +1408,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 slice_note
                     .push_str(" (a guarded slice arm cannot establish length coverage)");
             }
+            let mtype =
+                Type::union(&ctx.env, &mtypes.iter().collect::<LPooled<Vec<_>>>())?;
             let scrut = self.arg.node.typ().clone();
             mtype.check_contains(&ctx.env, &scrut).map_err(|e| {
                 format_with_flags(PrintFlag::DerefTVars, || {
@@ -1472,11 +1474,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
             }
             wrap!(n, n.typecheck0(ctx))?;
-            rtype = rtype.union(&ctx.env, n.typ())?;
+            rtypes.push(n.typ());
             if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
                 ntype = ntype.diff(&ctx.env, &pat.type_predicate)?;
             }
         }
+        self.typ = Type::union(&ctx.env, &rtypes)?;
+        drop(rtypes);
         // The dead-arm walk: `atype` is the residual scrutinee — what
         // can still reach each arm — and an arm that could match none
         // of it is refused. Coverage subtracts LENGTH-precisely for
@@ -1615,7 +1619,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }
         }
-        self.typ = rtype;
         Ok(())
     }
 

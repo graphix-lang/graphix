@@ -2346,7 +2346,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         let mut cell = tv.typ.write();
                         cell.typ = match &cell.typ {
                             None => Some(t),
-                            Some(inner) => Some(inner.union(&ctx.env, &t)?),
+                            Some(inner) => Some(Type::union(&ctx.env, &[inner, &t])?),
                         };
                     }
                 }

@@ -548,11 +548,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
         for n in &mut self.n {
             wrap!(n, n.typecheck0(ctx))?
         }
-        let rtype = Type::Bottom;
-        let rtype = wrap!(
-            self,
-            self.n.iter().fold(Ok(rtype), |rtype, n| n.typ().union(&ctx.env, &rtype?))
-        )?;
+        let bottom = Type::Bottom;
+        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
+        ts.push(&bottom);
+        ts.extend(self.n.iter().map(|n| n.typ()));
+        let rtype = wrap!(self, Type::union(&ctx.env, &ts))?;
         let rtype = match rtype {
             Type::Bottom => Type::List(Arc::new(Type::empty_tvar())),
             t => Type::List(Arc::new(t)),
@@ -635,11 +635,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         for n in &mut self.n {
             wrap!(n, n.typecheck0(ctx))?
         }
-        let rtype = Type::Bottom;
-        let rtype = wrap!(
-            self,
-            self.n.iter().fold(Ok(rtype), |rtype, n| n.typ().union(&ctx.env, &rtype?))
-        )?;
+        let bottom = Type::Bottom;
+        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
+        ts.push(&bottom);
+        ts.extend(self.n.iter().map(|n| n.typ()));
+        let rtype = wrap!(self, Type::union(&ctx.env, &ts))?;
         let rtype = match rtype {
             Type::Bottom => Type::Array(Arc::new(Type::empty_tvar())),
             t => Type::Array(Arc::new(t)),

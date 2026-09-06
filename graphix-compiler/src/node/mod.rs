@@ -1552,7 +1552,7 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
         if let Err(e) = target.check_cast(&ctx.env) {
             bail!("in cast at {} {e}", spec.pos);
         }
-        let typ = target.union(&ctx.env, &CAST_ERR)?;
+        let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
         Ok(Node::new(Self { spec, typ, target, n, resident: TagValue::phantom() }))
     }
 }
@@ -1786,11 +1786,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck0(ctx))?
         }
-        let rtyp = Type::Bottom;
-        let rtyp = wrap!(
-            self,
-            self.n.iter().fold(Ok(rtyp), |rtype, n| rtype?.union(&ctx.env, n.typ()))
-        )?;
+        let bottom = Type::Bottom;
+        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
+        ts.push(&bottom);
+        ts.extend(self.n.iter().map(|n| n.typ()));
+        let rtyp = wrap!(self, Type::union(&ctx.env, &ts))?;
         let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
         self.typ.check_contains(&ctx.env, &rtyp)?;
         Ok(())

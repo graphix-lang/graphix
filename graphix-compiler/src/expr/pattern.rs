@@ -204,22 +204,24 @@ impl StructurePattern {
             }
             Self::Slice { list, all: _, binds }
             | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
-                let t =
-                    binds.iter().fold(Ok::<_, anyhow::Error>(Type::Bottom), |t, p| {
-                        Ok(t?.union(env, &p.infer_type_predicate(env, scope)?)?)
-                    })?;
-                let t = match t {
+                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
+                for p in binds.iter() {
+                    ts.push(p.infer_type_predicate(env, scope)?);
+                }
+                let t = match Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())?
+                {
                     Type::Bottom => Type::empty_tvar(),
                     t => t,
                 };
                 Ok(if *list { Type::List(Arc::new(t)) } else { Type::Array(Arc::new(t)) })
             }
             Self::SliceSuffix { all: _, head: _, suffix: binds } => {
-                let t =
-                    binds.iter().fold(Ok::<_, anyhow::Error>(Type::Bottom), |t, p| {
-                        Ok(t?.union(env, &p.infer_type_predicate(env, scope)?)?)
-                    })?;
-                let t = match t {
+                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
+                for p in binds.iter() {
+                    ts.push(p.infer_type_predicate(env, scope)?);
+                }
+                let t = match Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())?
+                {
                     Type::Bottom => Type::empty_tvar(),
                     t => t,
                 };
@@ -446,15 +448,21 @@ impl StructurePattern {
                     _ => return Ok(None),
                 };
                 let mut changed = false;
-                let mut t = Type::Bottom;
+                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
                 for p in binds.iter() {
                     let sub = p
                         .complete_type_predicate_inner(env, pt, &st, depth + 1)?
                         .inspect(|_| changed = true)
                         .unwrap_or_else(|| (**pt).clone());
-                    t = t.union(env, &sub)?;
+                    ts.push(sub);
                 }
-                return Ok(changed.then(|| Type::List(Arc::new(t))));
+                if !changed {
+                    return Ok(None);
+                }
+                return Ok(Some(Type::List(Arc::new(Type::union(
+                    env,
+                    &ts.iter().collect::<SmallVec<[_; 8]>>(),
+                )?))));
             }
             Self::Slice { list: false, all: _, binds }
             | Self::SlicePrefix { list: false, all: _, prefix: binds, tail: _ }
@@ -470,15 +478,21 @@ impl StructurePattern {
                     _ => return Ok(None),
                 };
                 let mut changed = false;
-                let mut t = Type::Bottom;
+                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
                 for p in binds.iter() {
                     let sub = p
                         .complete_type_predicate_inner(env, pt, &st, depth + 1)?
                         .inspect(|_| changed = true)
                         .unwrap_or_else(|| (**pt).clone());
-                    t = t.union(env, &sub)?;
+                    ts.push(sub);
                 }
-                Ok(changed.then(|| Type::Array(Arc::new(t))))
+                if !changed {
+                    return Ok(None);
+                }
+                Ok(Some(Type::Array(Arc::new(Type::union(
+                    env,
+                    &ts.iter().collect::<SmallVec<[_; 8]>>(),
+                )?))))
             }
             Self::Or(alts) => {
                 let pts = match ptype {

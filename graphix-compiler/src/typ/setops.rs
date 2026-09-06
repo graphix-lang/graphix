@@ -355,8 +355,17 @@ impl Type {
         }
     }
 
-    pub fn union(&self, env: &Env, t: &Self) -> Result<Self> {
-        Ok(self.union_int(env, &mut RefHist::new(LPooled::take()), t)?.normalize())
+    pub fn union(env: &Env, ts: &[&Type]) -> Result<Self> {
+        let mut iter = ts.iter().copied();
+        let Some(first) = iter.next() else {
+            return Ok(Type::Primitive(BitFlags::empty()));
+        };
+        let mut hist = RefHist::new(LPooled::take());
+        let mut acc = first.clone();
+        for t in iter {
+            acc = acc.union_int(env, &mut hist, t)?;
+        }
+        Ok(acc.normalize())
     }
 
     fn diff_int(
