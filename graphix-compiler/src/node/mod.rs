@@ -417,34 +417,21 @@ pub(crate) fn gather<R: Rt, E: UserEvent>(
     (trig, fired, bottom)
 }
 
-/// The dense recompute gate + bottom join, shared by every node that
-/// computes from its children's productions. Skip (ride) unless a
-/// consumed production triggered, the resident is a bottom needing a
-/// value-channel refill, or recomputation is forced — an evaluation
-/// frame (R1: framed passes recompute unconditionally — exactly the
-/// kernel) or the first update after this node's sleep (wake
-/// catch-up: a slept node's stale inputs may have drifted,
-/// design/wake_catchup.md). Any consumed bottom bottoms the result:
-/// FreshBottom iff a delivery triggered this cycle, else the quiet
-/// ride (the join rule — standing bottoms never re-mint events).
+/// A strict computation propagates consumed bottom before considering
+/// its cached result. Quiet recomputation cannot manufacture an event.
 macro_rules! dense_gate {
     ($self:ident, $ctx:ident, $trig:expr, $bottom:expr) => {{
-        // Wake catch-up (design/wake_catchup.md): every user struct
-        // owns a `slept` bit its `sleep()` sets — the first update
-        // after refuses the ride (a slept node's stale inputs may
-        // have drifted). Taken here so the macro enforces the field.
         let woke = std::mem::take(&mut $self.slept);
-        if !($trig || $self.resident.tag().is_bottom() || $ctx.frame_depth > 0 || woke) {
-            return $self.resident.ride();
-        }
+        $crate::node::dense_gate!($self.resident, $ctx, $trig, $bottom, woke);
+    }};
+    ($resident:expr, $ctx:ident, $trig:expr, $bottom:expr, $woke:expr) => {{
         if $bottom {
-            return if $trig {
-                $self
-                    .resident
-                    .set($crate::TagValue::tagged(Value::Null, $crate::Tag::FRESH_BOTTOM))
-            } else {
-                $self.resident.ride()
-            };
+            let tag =
+                if $trig { $crate::Tag::FRESH_BOTTOM } else { $crate::Tag::STALE_BOTTOM };
+            return $resident.set($crate::TagValue::tagged(Value::Null, tag));
+        }
+        if !($trig || $resident.tag().is_bottom() || $ctx.frame_depth > 0 || $woke) {
+            return $resident.ride();
         }
     }};
 }
@@ -1169,21 +1156,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
                 if t.is_bottom() {
                     bottom = true
                 } else if !bottom {
-                    // gathered by clone within the iteration — the same
-                    // clone the old cache fill paid per delivery
                     vals.push(tv.value_cloned())
                 }
             }
-            if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0 || woke) {
-                return resident.ride();
-            }
-            if bottom {
-                return if trig {
-                    resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                } else {
-                    resident.ride()
-                };
-            }
+            dense_gate!(resident, ctx, trig, bottom, woke);
             let tag = if fired { Tag::FIRED } else { Tag::STALE };
             let mut buf: LPooled<String> = LPooled::take();
             for (typ, v) in typs.iter().zip(vals.iter()) {
@@ -1586,14 +1562,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
         if tag.is_tainted() {
-            // never cast a taint placeholder — pass the bottom on with
-            // the production's own freshness (the join rule: a standing
-            // bottom rides, a triggering one is an event)
-            if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            }
+            self.resident.set(TagValue::tagged(Value::Null, tag))
         } else {
             let v = tv.value_cloned();
             self.resident.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), tag))

@@ -58,7 +58,6 @@ async fn seq_iterators(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "F2: field access retains its output across an async restart"]
 async fn seq_projected_iterator() -> Result<()> {
     for fusion_disabled in [true, false] {
         let code = r#"{
@@ -71,6 +70,41 @@ async fn seq_projected_iterator() -> Result<()> {
         assert_eq!(as_i64s(&values), [1, 10]);
     }
     Ok(())
+}
+
+async fn seq_composed_iterators(fusion_disabled: bool) -> Result<()> {
+    for expr in [
+        "(map::iter({go => go})).1 + 0",
+        "(array::iter([go]), 0).0",
+        "({x: array::iter([go])}).x",
+        "(array::iter([{x: go}])).x",
+        "array::iter([[go]])[0]?",
+        "array::iter([{0 => go}]){0}?",
+        "cast<i64>(array::iter([go]))?",
+        "-(-array::iter([go]))",
+    ] {
+        let code = format!(
+            r#"{{
+                let step = 0;
+                step <- select step {{ s if s < 35 => s + 1, _ => never() }};
+                let go = select step {{ 1 | 15 | 30 => step, _ => never() }};
+                seq go {{ let reply = {expr}; reply }}
+            }}"#
+        );
+        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [1, 15, 30], "{expr}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn seq_composed_iterators_interp() -> Result<()> {
+    seq_composed_iterators(true).await
+}
+
+#[tokio::test]
+async fn seq_composed_iterators_jit() -> Result<()> {
+    seq_composed_iterators(false).await
 }
 
 async fn seq_io(fusion_disabled: bool) -> Result<()> {

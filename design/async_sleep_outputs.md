@@ -43,16 +43,30 @@ the reader, permanently disconnecting subsequent lines. The existing
 reader's progress is unchanged, but a reselected listener starts without
 an old output and can receive later lines from that reader.
 
-## Remaining F2 case
+## Strict consumers and kernels
 
 Resetting a builtin does not invalidate every enclosing expression's
-resident. `seq go { let reply = (map::iter({go => go})).1; reply }`
-still consumes the previous result on the second run: the tuple field
-access rides its own old output when its child returns a standing bottom.
-`seq_projected_iterator` preserves this failing reproducer as an explicitly
-ignored test. Awaiting the tuple in its own step verifies the iterator's
-reset independently of field-access retention. F2 is therefore not fully
-resolved by the builtin audit.
+resident. A strict consumer must propagate a consumed bottom before
+considering its cached result. This applies even to `StaleBottom`: it
+invalidates the value channel without creating an event. With multiple
+consumed inputs, any bottom makes the result bottom, fresh only if at
+least one consumed input triggered.
+
+The interpreter's shared strict gate, unary operators, casts, abstract
+constructors, and field projections follow this rule. A valid quiet
+input can refill a bottom resident without firing. Sleep forces quiet
+recomputation when needed; it does not make a stale production fresh.
+
+The kernel wrapper also invokes generated code when a feeder is bottom
+or its own resident is bottom. It cannot simply bottom the whole kernel:
+a feeder used only by an untaken select arm must not affect the output.
+Generated code propagates the tags along consumed paths and the wrapper
+stores the resulting value and freshness. This preserves branch-local
+consumption while preventing the wrapper's quiet fast path from reusing
+an invalid output.
+
+This does not change the history retained by `hold`, bindings, or async
+operations that remain awake.
 
 ## Validation
 
@@ -60,9 +74,23 @@ resolved by the builtin audit.
 with timers (including identical payloads), file reads, network subscribe
 and RPC, queues and iterators, plus ordinary select reentry, live
 debounce value retention, and line-reader delivery after reentry. The
-passing cases run with fusion enabled and disabled.
+cases run with fusion enabled and disabled. The projected-iterator
+regression is enabled, with additional repeated-run cases covering
+composed projections, tuple/struct construction, array/map lookup,
+casts, and arithmetic.
 
-The Graphix suite passes 2496 tests, with the remaining F2 reproducer
-explicitly ignored. The netidx-admin suite passed 28 tests with its two
-existing ignored tests. The Windows GNU all-targets check for netidx-tools
-and netidx-admin passes, with the existing unused `sh_quote` import warning.
+`stdlib/graphix-tests/src/lib_tests/bottom.rs` drives all four production
+tags directly, both with and without sleep. It checks exact freshness,
+quiet invalidation and recovery, and an unused bottom feeder. Native
+cases require `#[native]` compilation, so interpreter fallback cannot
+mask a kernel discrepancy.
+
+The compiler suite passes 168 tests. The Graphix suite passes 2566 tests;
+its only two failures are the pre-existing `seq_shadow::sampled_closure`
+interpreter/JIT regressions described in the review's F7 follow-up.
+All 64 fuzzer tests pass, including scheduled-input comparisons and the
+120-program generated sweep (690 fused regions, zero budget skips).
+The netidx-admin package passes 28 tests, with its two existing
+measurement tests ignored.
+The Windows GNU all-targets check passes for `netidx-tools` and
+`netidx-admin`, with the existing unused `sh_quote` import warning.

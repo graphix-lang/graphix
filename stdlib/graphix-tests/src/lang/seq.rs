@@ -315,6 +315,28 @@ run!(seq_do_fanout_reruns, SEQ_DO_FANOUT_RERUNS, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+#[tokio::test]
+async fn seq_nested_connect_completion() -> Result<()> {
+    let code = r#"{
+        let step = 0;
+        step <- select step { s if s < 20 => s + 1, _ => never() };
+        let go = select step { 1 | 10 => step, _ => never() };
+        let refresh = never<i64>();
+        seq go {
+            do {
+                let r = go;
+                select r { r => { refresh <- r; null } }
+            };
+            go
+        }
+    }"#;
+    for fusion_disabled in [true, false] {
+        let (values, _) = run_delta(code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [1, 10]);
+    }
+    Ok(())
+}
+
 const SEQ_DO_LET_INSIDE: &str = r#"
 {
   let step = 0;

@@ -63,14 +63,9 @@ pub struct Kernel {
     /// what makes its interior taint caches (scrutinee rides, call-
     /// result caches) live rather than inert.
     site: Box<[u64]>,
-    /// The kernel's RESULT slot on the value channel — the last value
-    /// a run produced, absent until the first run. A region is pure
-    /// by construction (effects de-fuse), so when a poll delivers only
-    /// STALE productions (an evaluation frame re-running a node-walked
-    /// loop around this kernel — the only place stale productions
-    /// originate) the retained result is exactly what a re-run would
-    /// compute; re-surface it retagged STALE instead of running the
-    /// JIT. The `CachedArgs::resident` twin.
+    /// Reusable only outside frames and wakes, with valid quiet feeders
+    /// and a valid cached result. Bottom feeders may belong to untaken
+    /// branches, so only executing the kernel determines output validity.
     resident: TagValue,
     /// Recursion-shrink reclaim (the JIT twin of the interp's activation
     /// delete). `self_gen` is bumped each invocation and stamped into
@@ -184,21 +179,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         event: &mut Event<E>,
     ) -> &TagValue {
         let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
-        // Poll every feeder once and take its production HONESTLY
-        // (Seam A of the 5c flip): the production's tag IS the staging
-        // truth — no retained arg slots, no reconstructed fired flags.
-        // The dense interp delivers every awake node's production
-        // every cycle, so a quiet feeder's ride carries the same value
-        // the old retained slot held, tagged STALE; the R2 store read
-        // is the wake/arm-replay memory the slots duplicated. A
-        // bottomed feeder (fresh, standing, or the never-produced
-        // phantom) carries no value — the staging below packs the
-        // param kind's helper-safe placeholder with TAINT, bare for a
-        // TRIGGERING bottom (a poison event this cycle), TAINT|STALE
-        // for a standing one (nothing new — must not fire loop/select
-        // machinery). The kernel invokes iff any production TRIGGERED
-        // (fired or FreshBottom) — the R1 recompute-skip otherwise.
         let mut any_updated = false;
+        let mut any_bottom = false;
         let mut polled: smallvec::SmallVec<[(Tag, Option<Value>); 16]> =
             smallvec::SmallVec::with_capacity(from.len());
         for src in from.iter_mut() {
@@ -207,23 +189,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             if tag.triggers() {
                 any_updated = true;
             }
+            any_bottom |= tag.is_bottom();
             let v = if tag.is_bottom() { None } else { Some(tv.value_cloned()) };
             polled.push((tag, v));
-        }
-        // Fire at init even when no input triggered. A zero-input
-        // kernel (a pure-constant let-chain, a call on inlined
-        // constants) has no other way to run; and a kernel whose
-        // missing inputs the output doesn't consume must still produce
-        // at init — the node-walk evaluates every binding once at
-        // init (sleeping arms keep an un-taken arm's missing input out
-        // of the result), and the validity taint reproduces that here:
-        // missing inputs are tainted, and the kernel bottoms only if
-        // the taken path consumes one (#219). The forced init view a
-        // select grants a re-selected arm (`event.init` under
-        // `wake_init`) lands here too: the kernel recomputes from the
-        // standing world (design/wake_catchup.md).
-        if !any_updated && event.init {
-            any_updated = true;
         }
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
@@ -235,15 +203,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 ctx.frame_depth
             );
         }
-        if !any_updated {
-            // Nothing triggered: the R1 skip — the region is pure and
-            // its inputs' values are unchanged since the last run, so
-            // the resident IS what a re-run would compute. RIDE it (the
-            // dense quiet production: STALE set in place, bottomness
-            // kept); a never-run kernel rides its phantom. This is the
-            // 5c output flip's quiet arm — the old any_produced/absent
-            // split was the sparse depth-0 hole (a quiet kernel
-            // vanished where every dense node delivers).
+        if !(any_updated
+            || any_bottom
+            || event.init
+            || woke
+            || ctx.frame_depth > 0
+            || self.resident.tag().is_bottom())
+        {
             return self.resident.ride();
         }
         if crate::dbgenv::graphix_dbg_invoke() {
@@ -255,66 +221,21 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 polled.iter().map(|(_, v)| v.is_some()).collect::<Vec<_>>()
             );
         }
-        // Test instrumentation: a fused kernel has committed to
-        // running this cycle (JIT or interp). Bump the fused-kernel
-        // execution counter so the test harness can distinguish
-        // "fused but ran on interp" from "no fusion". The JIT path
-        // additionally bumps `JIT_INVOCATIONS` inside its wrapper.
         #[cfg(debug_assertions)]
         record_fusion_invocation();
-        // Build the kernel's value-bearing args in params (= source)
-        // order (`param_opts`). A MISSING input is NOT a whole-kernel
-        // abort: it feeds `None` (bottom) into `param_opts`, and the
-        // kernel emits `None` only if the OUTPUT consumes that bottom —
-        // `select c { 0 => x, 1 => never_fired }` with `c=0` must still
-        // yield `x` (#219: a missing input packs a taint-marked
-        // helper-safe placeholder, and the kernel bottoms only if the
-        // taken output path consumes it).
         let k = &self.kernel;
         let n_params = k.params.len();
         let mut param_opts: smallvec::SmallVec<[Option<Value>; 16]> =
             smallvec::smallvec![None; n_params];
-        // Per-param production TAG, indexed like `param_opts` — the
-        // honest staging truth (Seam A): a present-but-not-fired param
-        // packs STALE, a triggering bottom packs bare TAINT, a
-        // standing bottom TAINT|STALE. An unwired param (not in
-        // `arg_layout` — shouldn't happen) defaults to the standing
-        // bottom.
         let mut param_tags: smallvec::SmallVec<[Tag; 16]> =
             smallvec::smallvec![Tag::STALE_BOTTOM; n_params];
         for (i, (tag, v)) in polled.drain(..).enumerate() {
             param_opts[i] = v;
             param_tags[i] = tag;
         }
-        // JIT dispatch — the unified Value ABI. Every param is two wire
-        // words: a disc (a genuine one-hot Value discriminant carrying
-        // #219 TAINT / STALE) then the genuine Value payload word. A
-        // MISSING input is NOT an abort — it packs the kind's
-        // helper-safe placeholder (`Value::Null` / empty ValArray /
-        // empty ArcStr) with `TAINT` set, so the kernel runs and
-        // bottoms only if the taken path consumes it. A value that
-        // doesn't match the compiled slot shape is the
-        // never-tvar/obs-4 typechecker-unsoundness class (the static
-        // type lied about the runtime value) — treated as MISSING so
-        // the runtime survives; the divergence stays visible to the
-        // fuzzer as a missing fire.
         let wrapped = &self.jit;
-        // A present param that did NOT fire this cycle carries STALE
-        // (a value-channel ride: a consumer fires only if some OTHER
-        // input fired). A bottomed param packs TAINT — bare for a
-        // TRIGGERING bottom (a poison event this cycle), TAINT|STALE
-        // for a standing one (a re-delivered bottom must not fire
-        // loop/select machinery) — the honest per-param tag from
-        // `polled` (Seam A), a shape MISMATCH being the one locally
-        // minted fresh poison.
         let taint = TAINT as u64;
         let stale = STALE as u64;
-        // (disc, payload) words of a `repr(u64)` Value (16 bytes,
-        // layout pinned by the const_assert in `emit_helpers`).
-        // Routed through `value_words` — a raw two-word read types out
-        // the UNDEF payload lane of dataless/narrow variants (a
-        // value-shaped param can stage `Value::Null` or a `Bool`),
-        // the release-only poison class the aug13a fleet gate caught.
         let bits = |v: &Value| -> (u64, u64) {
             let [d, p] = crate::tval::value_words(v);
             (d, p)
@@ -445,24 +366,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // param in ABI (= params) order.
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
-        // Slot 0: the invocation-uniform init view the emitted
-        // const_stale_gate reads (bit 0) — inside a frame the honest
-        // view is `ctx.frame_init` (frames force `event.init`, so the
-        // raw flag fired every in-frame const per pass — the Constant
-        // node's own gate, node/mod.rs), the bind.rs/lambda.rs idiom
-        // at the wire slot — the QUIET bit (bit 1): the invocation
-        // re-derives inside a frame that is not its own init, where a
-        // re-selection or a first call is loop plumbing and grants no
-        // init view (`LowerCtx::quiet_flag`) — and the WAKE bit
-        // (bit 2, design/wake_catchup.md): this invocation runs under
-        // a wake view, not genuine init — either the enclosing select
-        // arm's forced init view (`event.wake_init`) or this kernel
-        // node's own first update after sleep (its own slept bit —
-        // the kernel tracks its sleep locally). Bit 0 stays the FORCED view (wakes
-        // included — constants fire at wake on both engines); bit 2
-        // is what lets the emitted stale-mask suppression subtract
-        // wakes and keep standing deliveries honest
-        // (`bit0 & !bit2` = genuine init).
+        // Slot 0 carries the invocation's forced init view (bit 0),
+        // quiet frame view (bit 1), and wake view (bit 2). Genuine init
+        // is bit0 & !bit2; a wake cannot freshen standing deliveries.
         let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
         let quiet = ctx.frame_depth > 0 && !ctx.frame_init;
         let wake = (ctx.frame_depth == 0 && event.wake_init) || woke;
@@ -587,25 +493,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
         }
         if pending {
-            // A whole-kernel abort (interrupt poll, depth trip, a
-            // propagated callee abort) — value-level bottoms ride
-            // in-band and never reach here (a stale/bottom result
-            // returns honestly, decoded below).
-            // The kernel's *out slot holds the pending_exit sentinel
-            // (garbage scalar / null pointer); every abort path
-            // dropped the owned set before jumping there, so nothing
-            // to decode. Split by CAUSE:
-            //
-            // - A DEPTH TRIP is a DELIVERED FreshBottom, not silence —
-            //   the interp's tripped dispatch mints one and its
-            //   consumers poison (missing_fire_epoch3_aug08e). Peek,
-            //   don't take: the wrapping `FusedKernel` takes the flag
-            //   for the diagnostic.
-            // - An in-frame abort poisons the frame's slot caches
-            //   (jul10h 000009 — an absence left them riding the
-            //   previous iteration's value).
-            // - An interrupt abort is "re-fire next cycle": nothing
-            //   was computed — ride.
+            // Abort paths have dropped their owned values. The out
+            // slot is a sentinel, not a Value, and cannot be decoded.
             if crate::dbgenv::graphix_dbg_invoke() {
                 eprintln!(
                     "KERNEL RESULT {} PENDING fd={}",
@@ -617,33 +506,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             }
             return self.resident.ride();
         }
-        // Decode the wrapper's *out pair — the unified Value ABI:
-        // every kernel returns the genuine (disc, payload) words of a
-        // Value it owns (a scalar's payload widened per
-        // `pack_value_to_u64`'s rules, a composite's ValArray bits, a
-        // string's ArcStr bits, a value-shape's payload), with its
-        // honest TAINT/STALE tag riding the disc in-band (the return
-        // gate is gone). Route through `TagValue` (the sole raw-words
-        // -> Value gateway): `.value()` masks the tag bits before the
-        // `Value` materializes, so a flagged disc never reaches a
-        // clone/drop (the UB class).
-        //
         // SAFETY: the kernel's return path wrote a real Value's words
         // into the out slot (the pending path returned before the
-        // decode).
+        // decode). TagValue masks TAINT/STALE before materializing it.
         let tv = unsafe { TagValue::from_raw(out[0], out[1]) };
         let tag = tv.tag();
         if crate::dbgenv::graphix_dbg_invoke() {
             eprintln!("KERNEL RESULT {} tag={tag:?} pending=false", self.kernel.fn_name);
         }
         if tag.is_bottom() {
-            // A bottomed result: the returned words own a helper-safe
-            // placeholder — free it and PERSIST the bottom on the value
-            // channel (the interp op twin, node/op.rs): the R1 quiet
-            // ride must deliver StaleBottom afterwards, because a
-            // re-run against the same inputs would bottom again. Riding
-            // the pre-bottom value instead let a de-fused consumer
-            // re-fire it as real (soak aug14f).
             drop(tv.value());
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }

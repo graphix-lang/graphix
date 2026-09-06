@@ -66,7 +66,7 @@ repeated identical messages, delayed inputs, and ordinary and `do`
 seq steps in both engines. All 2,482 Graphix tests and 28 netidx-admin
 tests pass after this change (the latter's two measurement tests remain
 ignored). The book rebuild passes. The Windows check is blocked by a
-missing `x86_64-w64-mingw32-gcc`. The nested-connect case below remains open.
+missing `x86_64-w64-mingw32-gcc` at that point.
 
 This blocks the netidx port's privileged handoff in
 [local.gx:774](/home/eric/proj/netidx/graphix-package-netidx-admin/src/graphix/tui/local.gx:774): the do block starts
@@ -75,6 +75,12 @@ release. Neither process spawn nor the subsequent resume can execute.
 The non-escalation branch of the uninstall outcome also ends in a nested
 connect (`_ => refresh <- r`), leaving that sequence busy after its first
 such result under the current lowering.
+
+Follow-up: the non-escalation branch now ends in
+`{ refresh <- r; null }`, matching the escalation branch's explicit
+completion. Ordinary connect expressions still return bottom. The
+`seq_nested_connect_completion` regression checks that this nested
+effect-and-completion pattern releases successive runs in both engines.
 
 ## F2 — P1: an async step accepts the previous run's reply
 
@@ -108,10 +114,13 @@ operations in the admin port.
 Follow-up: the builtin audit in [async_sleep_outputs.md](async_sleep_outputs.md)
 resets outputs for restarted operations. This fixes the direct timer,
 file-read, network-call, and iterator cases without changing seq lowering.
-F2 remains open for surrounding expressions that retain their own output:
-projecting a map iterator's tuple inside the awaited expression still
-accepts the previous run's projected value. The failing regression is
-preserved as `seq_projected_iterator` (explicitly ignored).
+The remaining projected-iterator case required strict consumers to
+propagate standing bottom instead of riding their previous value. The
+interpreter and kernel wrapper now enforce that distinction, preserving
+freshness and ignoring bottom feeders on unconsumed native branches.
+`seq_projected_iterator` is enabled, accompanied by composed-iterator
+restart tests and direct four-tag interpreter/native regressions; see
+the same design note for the kernel's recomputation rule.
 
 ## F3 — P1: changing inputs reissue a waiting operation
 

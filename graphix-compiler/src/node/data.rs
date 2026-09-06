@@ -411,11 +411,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         let tv = self.source.update(ctx, event);
         let tag = tv.tag();
         if tag.is_bottom() {
-            return if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         let v = tv.value_cloned();
         let res = match v {
@@ -812,11 +808,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         let tv = self.arg.update(ctx, event);
         let tag = tv.tag();
         if tag.is_bottom() {
-            return if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         let v = abstract_value::wrap(self.id, self.name.clone(), tv.value_cloned());
         self.resident.set(TagValue::tagged(v, tag))
@@ -915,11 +907,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         let tv = self.source.update(ctx, event);
         let tag = tv.tag();
         if tag.is_bottom() {
-            return if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         let v = tv.value_cloned();
         let res = match v {

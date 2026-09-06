@@ -2,6 +2,7 @@ mod args;
 mod arith;
 mod array;
 mod bitwise;
+mod bottom;
 mod buffer;
 mod callable;
 mod core;

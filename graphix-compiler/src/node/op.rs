@@ -1,6 +1,6 @@
-use super::{CFlag, compiler::compile, coretraits};
+use super::{CFlag, compiler::compile, coretraits, dense_gate};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     defetyp,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
@@ -95,21 +95,6 @@ macro_rules! compare_op {
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
             ) -> &TagValue {
-                // Dense two-channel propagation, the CLIF
-                // `propagate_flags` twin: recompute on a TRIGGERING
-                // production (R1 — the skip is depth-0 only; a bottom
-                // resident refills from the value channel; frames
-                // recompute unconditionally). Bottomness derives from
-                // the consumed PRODUCTION tags (the join rule): any
-                // consumed bottom bottoms the result, fresh iff a
-                // delivery triggered.
-                //
-                // The comparison itself runs under the value-hook loan
-                // (`coretraits::with_value_hooks`): a `Value` operator
-                // reaching an abstract with a core `Eq`/`Ord`
-                // implementation calls it — the same seam map keys and
-                // sort go through, so `a == b`, `(a, x) == (b, y)` and
-                // a map keyed by `a` all mean the same thing.
                 let woke = std::mem::take(&mut self.slept);
                 let (lhs, rhs, resident) =
                     (&mut self.lhs, &mut self.rhs, &mut self.resident);
@@ -118,16 +103,7 @@ macro_rules! compare_op {
                     let r = rhs.update(ctx, event);
                     let (lt, rt) = (l.tag(), r.tag());
                     let trig = lt.triggers() || rt.triggers();
-                    if !(trig || resident.tag().is_bottom() || ctx.frame_depth > 0 || woke) {
-                        return resident.ride();
-                    }
-                    if lt.is_bottom() || rt.is_bottom() {
-                        return if trig {
-                            resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                        } else {
-                            resident.ride()
-                        };
-                    }
+                    dense_gate!(resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
                     let fired = lt.is_fired() || rt.is_fired();
                     let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
                     let v = l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()));
@@ -299,16 +275,7 @@ macro_rules! bool_op {
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
                 let trig = lt.triggers() || rt.triggers();
-                if !(trig || self.resident.tag().is_bottom() || ctx.frame_depth > 0 || woke) {
-                    return self.resident.ride();
-                }
-                if lt.is_bottom() || rt.is_bottom() {
-                    return if trig {
-                        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                    } else {
-                        self.resident.ride()
-                    };
-                }
+                dense_gate!(self.resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
                 let fired = lt.is_fired() || rt.is_fired();
                 let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
                 let v = l.with_value(|lv| {
@@ -425,14 +392,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
         if tag.is_bottom() {
-            // the join rule (the binop twin, see Neg): fresh iff the
-            // delivery triggered, else ride — never re-mint a
-            // standing bottom as a phantom event.
-            return if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         match tv.with_value(|v| match v {
             Value::Bool(b) => Some(!*b),
@@ -533,18 +493,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
         if tag.is_bottom() {
-            // the join rule (the binop twin): fresh iff the delivery
-            // triggered, else ride. The unconditional FRESH_BOTTOM
-            // re-mint this replaced turned a quiet STANDING bottom
-            // into a phantom event every cycle, and the enclosing
-            // Bind's triggering-only publish stomped externally
-            // written values with it (aug13c byref_bottom_write_lost
-            // — the ByRef machinery was innocent).
-            return if tag.triggers() {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
         let neg = tv.with_value(|v| match v {
             Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
@@ -899,42 +848,18 @@ macro_rules! arith_op {
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
             ) -> &TagValue {
-                // R1: recompute on TRIGGERING productions (a stale
-                // ride carries an unchanged value); a bottom resident
-                // still computes so a stale-filled first evaluation
-                // produces (the value channel fills through ops). The
-                // skip is valid ONLY at frame depth 0 (the R1 law):
-                // inside frames stale chains carry ADVANCING values
-                // (tail_jump_fired_plumbing), so a framed pass
-                // recomputes unconditionally — exactly the kernel.
-                // Bottomness derives from the consumed PRODUCTION tags
-                // (the join rule): any consumed bottom bottoms the
-                // result, fresh iff a delivery triggered. Logging
-                // stays trig-gated (Q2: a standing bottom re-derived
-                // in a frame never re-logs).
                 let woke = std::mem::take(&mut self.slept);
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
                 let trig = lt.triggers() || rt.triggers();
-                if !(trig
-                    || self.resident.tag().is_bottom()
-                    || ctx.frame_depth > 0
-                    || woke)
-                {
-                    return self.resident.ride();
-                }
-                if lt.is_bottom() || rt.is_bottom() {
-                    // never attempt the op on a bottom placeholder —
-                    // pass the bottom toward its force point (and
-                    // don't log a synthetic error off it)
-                    return if trig {
-                        self.resident
-                            .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                    } else {
-                        self.resident.ride()
-                    };
-                }
+                dense_gate!(
+                    self.resident,
+                    ctx,
+                    trig,
+                    lt.is_bottom() || rt.is_bottom(),
+                    woke
+                );
                 let fired = lt.is_fired() || rt.is_fired();
                 let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
                 if !$checked {
