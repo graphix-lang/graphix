@@ -67,3 +67,10 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | doc | when |
 |---|---|
 | `status_2026-08-30.md` | whole-project assessment at the end of the recursion/traits/select arc |
+
+## Review records
+
+| doc | what |
+|---|---|
+| `seq_review_2026-09-04.md` | the seq + netidx-admin CR: F1-Fn with dispositions |
+| `seq_review_2026-09-06.md` | re-check of the 2026-09-05 review at `c46fd6c1`: what closed, what remains (R1-R7) |
