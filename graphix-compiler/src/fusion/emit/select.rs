@@ -2177,6 +2177,11 @@ fn select_bind_id(b: &SelectArmBind) -> BindId {
 /// every name so its guard evaluates each invocation; the masked
 /// semantics deliver bottom, and the arm-exit scope drops handle the
 /// owned shapes).
+///
+/// STANDING unconditionally, and that is the difference from
+/// `nodes::emit_bottom_placeholder`, which follows a trigger: a
+/// delivery that never happened is never an event, so there is no
+/// trigger to follow. Same reasoning as [`mask_unmatched`].
 fn placeholder_for_kind(
     cx: &mut BodyCx,
     kind: LocalKind,

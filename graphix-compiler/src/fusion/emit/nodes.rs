@@ -1064,41 +1064,63 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     Ok((cv.payload, src, cv.disc))
 }
 
-/// A helper-safe placeholder (payload of `elem`'s CLIF type) plus the
-/// matching TAINTED disc for a skipped read — what a tainted source's
-/// consumer gets instead of an unchecked out-of-bounds read (#219: it
-/// runs harmlessly downstream; the taint gates at the output).
-pub(super) fn emit_elem_placeholder(
+/// A shape-safe BOTTOM of `elem`'s ABI kind for a position that has no
+/// value this cycle — a skipped read over a tainted source, a `?` that
+/// took its error, a select whose scrutinee or guard bottomed, a call
+/// that returned the wrong shape. The payload is helper-safe and owned
+/// (#219: the consumer chain runs on it harmlessly and drops it like
+/// any other local); the TAINT bit is what gates at the output.
+///
+/// `fires` are the discs whose tags govern this production. A bottom is
+/// still a PRODUCTION, so its STALE bit follows the ordinary organic
+/// firing rule — it fired iff a consumed input fired — and folding it
+/// HERE is what keeps that decision from being forgotten: the raw disc
+/// is a FRESH bottom, and the tail-position select returned it
+/// untouched, so a standing bottom re-fired every cycle
+/// (`findings/standing-bottom-refire-sep2026`). Pass the scrutinee's
+/// disc, the operand's, the source's, the returned tag word. `&[]`
+/// says nothing reads this tag — the one such site is the interrupt /
+/// stack-budget tear-down, whose whole run is discarded.
+///
+/// The absent-delivery twin is `select::placeholder_for_kind`, which is
+/// unconditionally STANDING: a delivery that never happened is never an
+/// event, so it has no trigger to follow.
+pub(super) fn emit_bottom_placeholder(
     cx: &mut BodyCx,
     elem: &Type,
+    fires: &[ClifValue],
 ) -> Result<CompiledExpr> {
-    match kernel_abi::abi_kind(elem) {
+    let cv = match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
             let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
-            Ok(CompiledExpr::new(disc, zero_const(cx.b, p)))
+            CompiledExpr::new(disc, zero_const(cx.b, p))
         }
         Some(AbiKind::String) => {
             let helper = cx.helper("graphix_arcstr_empty")?;
             let call = cx.b.ins().call(helper, &[]);
             let s = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT);
-            Ok(CompiledExpr::new(disc, s))
+            CompiledExpr::new(disc, s)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let helper = cx.helper("graphix_valarray_empty")?;
             let call = cx.b.ins().call(helper, &[]);
             let a = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
-            Ok(CompiledExpr::new(disc, a))
+            CompiledExpr::new(disc, a)
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
         | Some(AbiKind::Unit) => {
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
             let zero = cx.b.ins().iconst(types::I64, 0);
-            Ok(CompiledExpr::new(disc, zero))
+            CompiledExpr::new(disc, zero)
         }
-        other => Err(anyhow!("emit_clif: no placeholder for shape {other:?}")),
-    }
+        other => {
+            return Err(anyhow!("emit_clif: no placeholder for shape {other:?}"));
+        }
+    };
+    let disc = propagate_flags(cx.b, cv.disc, fires);
+    Ok(CompiledExpr::new(disc, cv.payload))
 }
 
 /// Taint-guarded structural element read: a tainted source carries a
@@ -1134,7 +1156,7 @@ fn emit_guarded_element_read(
     cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
     cx.b.switch_to_block(skip_bl);
     cx.b.seal_block(skip_bl);
-    let ph = emit_elem_placeholder(cx, elem)?;
+    let ph = emit_bottom_placeholder(cx, elem, &[src_disc])?;
     cx.b.ins().jump(merge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);
@@ -1206,7 +1228,7 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
     cx.b.switch_to_block(skip_bl);
     cx.b.seal_block(skip_bl);
-    let ph = emit_elem_placeholder(cx, &rep)?;
+    let ph = emit_bottom_placeholder(cx, &rep, &[cv.disc])?;
     cx.b.ins().jump(merge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
     cx.b.switch_to_block(merge);
     cx.b.seal_block(merge);

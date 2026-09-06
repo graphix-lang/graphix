@@ -28,7 +28,7 @@ use super::{
         ensure_owned_value_src, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
-    nodes::emit_elem_placeholder,
+    nodes::emit_bottom_placeholder,
     scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_select_arms},
 };
@@ -402,14 +402,12 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         cx.b.ins().brif(valid, arms_bl, &[], taint_bl, &[]);
         cx.b.switch_to_block(taint_bl);
         cx.b.seal_block(taint_bl);
-        // The placeholder is a FRESH bottom; the emission's
-        // bottomness must mirror the scrutinee's trigger instead (a
-        // STANDING bottom scrutinee is not an event, so the return is
-        // StaleBottom). The value-position twin is the `stale_bits`
-        // fold in `emit_select_bottom_value`; the node-walk twin is
-        // Select's bottom-out arm.
-        let mut ph = emit_elem_placeholder(cx, ret)?;
-        ph.disc = cx.b.ins().bor(ph.disc, scrut_stale_bit);
+        // A STANDING bottom scrutinee is not an event, so the return
+        // is a standing bottom too: the emission's freshness is the
+        // scrutinee's. The value-position twin is
+        // `emit_select_bottom_value`; the node-walk twin is Select's
+        // bottom-out arm.
+        let ph = emit_bottom_placeholder(cx, ret, &[scrut.disc()])?;
         emit_kernel_return(cx, ret, ph, CompositeSource::Owned)?;
         cx.b.switch_to_block(arms_bl);
         cx.b.seal_block(arms_bl);
@@ -467,11 +465,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         // history stops the chain — return the bottom that arrived,
         // with the outcome's freshness.
         &mut |cx, stale_bits| {
-            let mut ph = emit_elem_placeholder(cx, ret)?;
-            let d = cx.b.ins().band_imm(ph.disc, !STALE);
-            let d = cx.b.ins().bor(d, stale_bits);
-            let d = cx.b.ins().bor_imm(d, TAINT);
-            ph.disc = d;
+            let ph = emit_bottom_placeholder(cx, ret, &[stale_bits])?;
             emit_kernel_return(cx, ret, ph, CompositeSource::Owned)
         },
     )

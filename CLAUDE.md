@@ -1131,7 +1131,16 @@ advertised performance model.
   already safe (`emit_kernel_return`'s whole-env drop; the tail-rebind
   epilogue's above-param-mark sweep). Pinned by the `leakcheck`
   witnesses `select-payload-bind`/`select-list-binds` — run leakcheck
-  whenever a change adds a new owned-local class.
+  whenever a change adds a new owned-local class. A BOTTOM IS A
+  PRODUCTION (2026-09-06): its STALE bit follows the same trigger fold
+  as a value, so `nodes::emit_bottom_placeholder` takes the governing
+  discs and folds them itself — `&[]` only where the run is being torn
+  down (the interrupt / stack-budget abort). The ABSENT-delivery
+  placeholders (`select::placeholder_for_kind`, `mask_unmatched`) are
+  standing by construction instead: a delivery that never happened is
+  never an event, so it has no trigger to follow. Leaving the fold to
+  the caller is what let the tail-position select re-fire a standing
+  bottom every cycle (`standing-bottom-refire-sep2026`).
 
 ### Coverage (current)
 

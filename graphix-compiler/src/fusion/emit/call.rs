@@ -27,7 +27,7 @@ use super::{
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     lower::{LowerCtx, SelWord},
-    nodes::{call_result_needs_value_widening, emit_elem_placeholder},
+    nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
 };
 
@@ -314,12 +314,9 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 cx.b.switch_to_block(cont_bl);
                 cx.b.seal_block(cont_bl);
             }
-            let ph = emit_elem_placeholder(cx, &info.return_type)?;
-            let taint_c = cx.b.ins().iconst(types::I64, TAINT);
-            let ph_disc = cx.b.ins().bor(ph.disc, tagbits);
-            let ph_disc = cx.b.ins().bor(ph_disc, taint_c);
+            let ph = emit_bottom_placeholder(cx, &info.return_type, &[tagbits])?;
             cx.b.ins()
-                .jump(dmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph.payload)]);
+                .jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
             cx.b.switch_to_block(ok_bl);
             cx.b.seal_block(ok_bl);
             let (disc, pay) = match ret_abi {
@@ -1022,7 +1019,9 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(abort_bl);
         cx.b.seal_block(abort_bl);
         emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
-        let ph = emit_elem_placeholder(cx, if widen { node_typ } else { ret })?;
+        // No `fires`: the abort discards the whole run, so nothing
+        // reads this production's tag.
+        let ph = emit_bottom_placeholder(cx, if widen { node_typ } else { ret }, &[])?;
         cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
         cx.b.switch_to_block(call_bl);
         cx.b.seal_block(call_bl);

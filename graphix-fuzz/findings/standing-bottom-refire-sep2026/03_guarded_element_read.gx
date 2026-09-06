@@ -1,0 +1,25 @@
+// One of the seven contract pins for THE BOTTOM-PRODUCTION RULE (the
+// sep04a audit, 2026-09-06): a fused bottom's STALE bit follows its
+// trigger, exactly like a value's. Each pin drives a STANDING bottom
+// through one placeholder-consuming emitter path under a `<-` target
+// — the sep04a observable, since a `<-` target's binding re-publishes
+// whenever its initializer PRODUCES, so a bottom re-minted FRESH lands
+// in the write's own cycle and eats it. Interp: the write survives.
+//
+// Path: the taint-guarded element read — tuple slot
+// (nodes.rs, emit_guarded_element_read)
+//
+// Every one of these was already correct when the audit ran — the
+// fold was present at each of these call sites, and only the
+// tail-position select (pins 00/02) had lost it. They are pins
+// because the fold is now the placeholder's own job
+// (`emit_bottom_placeholder(cx, typ, fires)`), and a refactor that
+// hands the raw pair back to a consumer re-opens the class. Each was
+// confirmed RED against a build with every placeholder STALE fold
+// removed, so this green is evidence and not absence.
+{
+    let g = |n: i64| -> i64 (select n / 0 { m => (m, m) }).0;
+    let v = g(1);
+    v <- 1;
+    v
+}
