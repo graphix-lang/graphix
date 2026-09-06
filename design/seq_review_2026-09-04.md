@@ -151,7 +151,10 @@ Follow-up: `seqq` queues a tuple of the trigger and captured inputs, held
 for the duration of each run. It retains last-produced capture values,
 keeps `until` and directly written state live, and leaves ordinary seq's
 busy-drop behavior unchanged. See [seqq.md](seqq.md). General step-entry
-sampling for ordinary seq remains separate from this opt-in queued form.
+sampling is now applied to calls in both forms as well: the issue atom
+waits for complete inputs, samples once with `~!`, and keeps that snapshot
+while awaiting completion. Queueing remains opt-in; see `seq_blocks.md`
+§7.3 and `lang::seq_calls::inputs_ready_together`.
 
 ## F4 — P1: an error does not suppress an already-queued transition
 
@@ -294,7 +297,10 @@ engines. No runtime change is needed.
 
 The regression work also exposed a stall without shadowing:
 `seq request { let x = request; let f = |v| v ~ x; f(request) }`
-produces nothing for spaced requests in either engine. A closure using
-`v + x` and called with `0` works. The sampled-closure case is retained as
-a separate failing regression pending investigation; it is not addressed
-by changing carried-binding identity.
+produced nothing for spaced requests in either engine. The earlier step
+had already consumed the request's fire; the final call received a
+standing argument, so its sample never triggered. The issue-atom lowering
+now supplies a fresh, strict argument snapshot to each call, waits for
+missing inputs, and retains the snapshot while awaiting completion. This
+is separate from carried-binding identity; see `seq_blocks.md` §7.3 and
+the `lang::seq_calls` and `lang::seq_shadow::sampled_closure` regressions.

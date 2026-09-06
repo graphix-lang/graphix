@@ -395,6 +395,14 @@ level is true. `?` aborts the run (the block's `catch`, if any, is
 cleanup; the error rethrows). Levels (`tui::suspend`, publish, …)
 stay outside the block and are written from steps.
 
+Calls in `seq`/`seqq` wait for all explicit arguments, snapshot them
+together with `~!`, and issue once per entry. Bottom at entry clears a
+previous snapshot; input changes after issuance do not interrupt the
+pending result. Function bodies, reference contents, `until` conditions,
+and cleanup handlers keep their reactive clocks. `~!` tracks current
+bottom: a valid trigger sampling bottom emits fresh bottom and banks
+nothing; RHS recovery alone does not fire. See `design/seq_blocks.md` §7.3.
+
 `do { stmts }` is several statements as one step: waits, then issues
 together, gating implicit. A let can sit inside.
 

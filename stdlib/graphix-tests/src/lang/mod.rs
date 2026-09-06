@@ -19,6 +19,7 @@ mod organic_deltas;
 mod printing;
 mod select;
 mod seq;
+mod seq_calls;
 mod seq_errors;
 mod seq_shadow;
 mod seqq;

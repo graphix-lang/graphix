@@ -85,11 +85,13 @@ quiet invalidation and recovery, and an unused bottom feeder. Native
 cases require `#[native]` compilation, so interpreter fallback cannot
 mask a kernel discrepancy.
 
-The compiler suite passes 168 tests. The Graphix suite passes 2566 tests;
-its only two failures are the pre-existing `seq_shadow::sampled_closure`
-interpreter/JIT regressions described in the review's F7 follow-up.
-All 64 fuzzer tests pass, including scheduled-input comparisons and the
-120-program generated sweep (690 fused regions, zero budget skips).
+The compiler suite passes 168 tests. The Graphix suite passes 2582 tests,
+including the `seq_shadow::sampled_closure` interpreter/JIT regressions:
+the separate issue-atom lowering now supplies fresh call arguments (see
+`seq_blocks.md` §7.3). Direct strict-sample tests also verify fresh bottom
+on a valid clock, no banked trigger, and exact interpreter/native consumer
+tags. All 64 fuzzer tests pass, including scheduled-input comparisons and
+the generated sweep.
 The netidx-admin package passes 28 tests, with its two existing
 measurement tests ignored.
 The Windows GNU all-targets check passes for `netidx-tools` and

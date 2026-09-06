@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-85106f99.js";
+            window.path_to_searchindex_js = "searchindex-ba799024.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2021,6 +2021,26 @@ retain their usual trailing-semicolon behavior.</p>
 initializer sees the preceding <code>x</code>; earlier references and closures
 continue to refer to that preceding binding. The new binding can have a
 different type.</p>
+<h2 id="call-inputs"><a class="header" href="#call-inputs">Call inputs</a></h2>
+<p>In both forms, each call waits until all its explicit arguments are
+present, then samples them together with <code>~!</code> and issues once. This gives
+standing values a fresh call event, including values carried from an
+earlier step:</p>
+<pre><code class="language-graphix">seq request {
+    let x = request;
+    let f = |v| v ~ x;
+    f(request)
+}
+</code></pre>
+<p>If an argument is bottom at entry, the call waits; it cannot reuse a
+previous run’s snapshot. After issuance, later argument changes or bottom
+do not change the snapshot or interrupt the pending result. Nested calls
+get their own snapshots. Calls without explicit arguments retain their
+ordinary activation behavior.</p>
+<p>This clocks the call site, not the function body: callbacks and captured
+state inside a function remain reactive. References are sampled as
+handles, not copies of their contents. Calls inside <code>until</code> conditions and
+<code>catch</code> handlers retain their ordinary reactive behavior.</p>
 <h2 id="captured-inputs"><a class="header" href="#captured-inputs">Captured inputs</a></h2>
 <p><code>seqq</code> captures the external values read by its body. At each trigger it
 samples them together into one tuple and queues that tuple. Later changes

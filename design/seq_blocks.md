@@ -470,29 +470,45 @@ not fire the lambda).
 
 ### 7.3 The issue atom
 
-A step with an effect and variable inputs `x1..xn`:
+A call with explicit inputs `x1..xn` lowers to this shape (names are
+unique per source call):
 
 ```graphix
-select (x1, .., xn) {
-  v => f(pc ~ v.0, .., pc ~ v.(n-1), pc ~ "constant")
+{
+  let args = (pc, x1, .., xn);
+  select (any(pc, core::once(args)) ~! args) {
+    issued => f(issued.1, .., issued.n)
+  }
 }
 ```
 
-Constants sample on the entry event directly; variables go through a
-presence select. Why not `f(pc ~ x1, ..)`: if `x1` is bottom when the
-entry fires, `~` produces a fresh bottom and consumes the debt (a
-bottoming RHS that has materialized before), so the call bottoms and
-the step stalls forever on every run after the first. With the
-presence select, a bottom input leaves no arm selected, the entry's
-fire bit stays unconsumed in the select's tracker, and when the inputs
-materialize the arm wakes and the catch-up delivers the entry once,
-FIRED, at the current value — the wake catch-up ruling (2026-09-01)
-doing exactly "wait for presence, then issue once". On a re-entry with
-present inputs the select re-matches at wake and the entry's delivery
-that cycle is consumed by the arm: one issue. Prototype 2026-09-04:
-a bare `pc ~ x` issues nothing even on the first wait — a `never()`
-producer is a materialized bottom, so the sample consumes its debt at
-entry. Presence is required from run one, not only run two.
+The strict tuple includes the entry clock, so present standing inputs
+produce a fresh tuple on entry. `once` admits the first complete tuple
+and resets its admission flag on sleep. `any` merges simultaneous entry
+and readiness into one event. The entry event also reaches `~!` when an
+input is bottom: it clears the previous snapshot with fresh bottom,
+without banking a sample. Readiness supplies a new event when the
+missing inputs arrive. All arguments, including constants and labeled
+arguments, come from the same snapshot. Inline lambda arguments are
+always present and remain at the call site, sampled there with `pc ~!`
+on the same issue cycle. Moving them into the tuple would deprive their
+bodies of the call's contextual parameter types. If every argument is an
+inline lambda, the readiness value is `pc` alone rather than a tuple.
+
+The presence select watches the snapshot, not live inputs. Once issued,
+a pending callee keeps running even if an input later becomes bottom;
+later input events cannot reissue it. Both `seq` and `seqq` use this
+lowering, including calls nested in expressions and `do`. Lambda
+bodies/defaults, reference contents, cleanup handlers, and `until`
+conditions keep their own reactive clocks. Nested sequences lower their
+own bodies. Calls without explicit arguments retain ordinary activation.
+
+`~!` already tracks the current RHS tag as well as its held payload in
+both engines. A valid trigger sampling bottom produces fresh bottom;
+RHS recovery alone does not fire or pay a banked trigger. The direct-tag
+tests in `lib_tests/bottom.rs` pin this contract, including a forced-native
+consumer of the sampler's output. `lang/seq_calls.rs` pins issue cadence,
+delayed inputs, re-entry, and pending-result continuity.
 
 ### 7.4 Arms and chains
 

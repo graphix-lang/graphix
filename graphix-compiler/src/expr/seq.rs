@@ -1,8 +1,8 @@
 //! AST-to-AST lowering of `seq` (`design/seq_blocks.md` §7).
 //!
 //! Straight-line only: lets, connects, expression steps, `until`, one
-//! catch at the top. Each step is its own arm. Presence-select + a free
-//! read of `pc` is the issue atom.
+//! catch at the top. Each step is its own arm; calls consume one strict
+//! argument snapshot per entry.
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
@@ -22,9 +22,26 @@ use compact_str::format_compact;
 use indexmap::IndexMap;
 use netidx_core::{path::Path, utils::Either};
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use triomphe::Arc;
 
 type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition)>;
+
+#[derive(Clone, Copy)]
+enum Rewrite<'a> {
+    Bindings,
+    Captures,
+    Issue(&'a str),
+}
+
+impl Rewrite<'_> {
+    fn deferred(self) -> Self {
+        match self {
+            Self::Issue(_) => Self::Bindings,
+            mode => mode,
+        }
+    }
+}
 
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     match &spec.kind {
@@ -218,7 +235,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         .filter_map(|(_, name, id)| written.contains(name).then_some(*id))
         .collect();
     names.retain(|name, _| !written.contains(&captures[name].2));
-    let body = rewrite_with(&body, &names, true);
+    let body = rewrite_with(&body, &names, Rewrite::Captures);
     let used = body.fold(AHashSet::new(), &mut |mut names, e| {
         if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
             &e.kind
@@ -339,13 +356,13 @@ fn boolean(pos: SourcePosition, value: bool) -> Expr {
 fn apply_core(
     pos: SourcePosition,
     name: &str,
-    args: Vec<(Option<ArcStr>, Expr)>,
+    args: impl IntoIterator<Item = (Option<ArcStr>, Expr)>,
 ) -> Expr {
     ExprKind::Apply(ApplyExpr {
         function: Arc::new(
             ExprKind::Ref { name: ModPath::from(["core", name]) }.to_expr(pos),
         ),
-        args: Arc::from(args),
+        args: Arc::from_iter(args),
     })
     .to_expr(pos)
 }
@@ -378,7 +395,7 @@ fn step_arm(
             lower_do_stmts(body, pc, next, last, result, vname, visible, cells)
         }
         ExprKind::Bind(b) => {
-            let value = guard(rewrite(&b.value, visible));
+            let value = issue_expr(&b.value, visible, pc);
             let mut body =
                 vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
             b.pattern.with_names(&mut |n| {
@@ -400,7 +417,7 @@ fn step_arm(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         ExprKind::Connect { name, value, deref } => {
-            let value = guard(rewrite(value, visible));
+            let value = issue_expr(value, visible, pc);
             let target = rewrite_path(name, visible);
             let mut body = vec![connect_path(
                 pos,
@@ -419,7 +436,7 @@ fn step_arm(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
-            let e = guard(rewrite(step, visible));
+            let e = issue_expr(step, visible, pc);
             let mut body = Vec::new();
             if last {
                 body.push(connect(
@@ -524,7 +541,7 @@ fn lower_do_stmts(
             lower_do_stmts(&flat, pc, next, last_step, result, vname, visible, cells)
         }
         ExprKind::Bind(b) => {
-            let value = guard(rewrite(&b.value, visible));
+            let value = issue_expr(&b.value, visible, pc);
             let mut vis = visible.clone();
             b.pattern.with_names(&mut |n| {
                 vis.remove(n);
@@ -550,7 +567,7 @@ fn lower_do_stmts(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         ExprKind::Connect { name, value, deref } => {
-            let value = guard(rewrite(value, visible));
+            let value = issue_expr(value, visible, pc);
             let target = rewrite_path(name, visible);
             let mut body = vec![connect_path(
                 pos,
@@ -569,7 +586,7 @@ fn lower_do_stmts(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
-            let e = guard(rewrite(head, visible));
+            let e = issue_expr(head, visible, pc);
             let mut body = Vec::new();
             if rest_empty && last_step {
                 body.push(connect(
@@ -657,7 +674,73 @@ fn rewrite_path(p: &ModPath, map: &AHashMap<ArcStr, ArcStr>) -> ModPath {
 }
 
 fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
-    rewrite_with(e, map, false)
+    rewrite_with(e, map, Rewrite::Bindings)
+}
+
+fn issue_expr(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, pc: &str) -> Expr {
+    guard(rewrite_with(e, map, Rewrite::Issue(pc)))
+}
+
+fn inline_lambda(mut e: &Expr) -> bool {
+    while let ExprKind::ExplicitParens(inner) = &e.kind {
+        e = inner;
+    }
+    matches!(e.kind, ExprKind::Lambda(_))
+}
+
+fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
+    if call.args.is_empty() {
+        let mut expr = spec.clone();
+        expr.kind = ExprKind::Apply(call);
+        return expr;
+    }
+    let pos = spec.pos;
+    let input = format_compact!("seqargs{}", spec.id.inner());
+    let issued = format_compact!("seqissued{}", spec.id.inner());
+    let mut args: LPooled<Vec<Expr>> = LPooled::take();
+    args.reserve(call.args.len() + 1);
+    args.push(r#ref(pos, pc));
+    call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
+        let value = if inline_lambda(arg) {
+            ExprKind::StrictSample {
+                lhs: Arc::new(r#ref(arg.pos, pc)),
+                rhs: Arc::new(arg.clone()),
+            }
+            .to_expr(arg.pos)
+        } else {
+            let field = args.len();
+            args.push(arg.clone());
+            ExprKind::TupleRef {
+                source: Arc::new(r#ref(arg.pos, issued.as_str())),
+                field,
+            }
+            .to_expr(arg.pos)
+        };
+        (label.clone(), value)
+    }));
+    let input_tuple = if args.len() == 1 {
+        args.pop().unwrap()
+    } else {
+        ExprKind::Tuple { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
+    };
+    let mut expr = spec.clone();
+    expr.id = ExprId::new();
+    expr.kind = ExprKind::Apply(call);
+    let ready = apply_core(pos, "once", [(None, r#ref(pos, input.as_str()))]);
+    let snapshot = ExprKind::StrictSample {
+        lhs: Arc::new(
+            ExprKind::Any { args: Arc::from_iter([r#ref(pos, pc), ready]) }.to_expr(pos),
+        ),
+        rhs: Arc::new(r#ref(pos, input.as_str())),
+    }
+    .to_expr(pos);
+    block(
+        pos,
+        vec![
+            let_bind(pos, input.as_str(), None, input_tuple),
+            select(pos, snapshot, vec![(pat_bind(issued.as_str()), expr)]),
+        ],
+    )
 }
 
 fn shadow_step(e: &Expr, map: &mut AHashMap<ArcStr, ArcStr>) {
@@ -670,12 +753,12 @@ fn shadow_step(e: &Expr, map: &mut AHashMap<ArcStr, ArcStr>) {
     }
 }
 
-fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Expr {
-    if map.is_empty() {
+fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, mode: Rewrite<'_>) -> Expr {
+    if map.is_empty() && !matches!(mode, Rewrite::Issue(_)) {
         return e.clone();
     }
-    let rewrite =
-        |e: &Expr, map: &AHashMap<ArcStr, ArcStr>| rewrite_with(e, map, captures);
+    let captures = matches!(mode, Rewrite::Captures);
+    let rewrite = |e: &Expr, map: &AHashMap<ArcStr, ArcStr>| rewrite_with(e, map, mode);
     let kind = match &e.kind {
         ExprKind::Until(_) | ExprKind::ByRef(_) if captures => return e.clone(),
         ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
@@ -684,7 +767,9 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
             value: Arc::new(rewrite(value, map)),
             deref: *deref,
         },
-        ExprKind::Until(x) => ExprKind::Until(Arc::new(rewrite(x, map))),
+        ExprKind::Until(x) => {
+            ExprKind::Until(Arc::new(rewrite_with(x, map, mode.deferred())))
+        }
         ExprKind::SeqDo { body } => {
             let mut inner = map.clone();
             let mut out = Vec::with_capacity(body.len());
@@ -699,7 +784,7 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
             let mut inner = map.clone();
             let mut out = Vec::with_capacity(body.len());
             for x in body.iter() {
-                out.push(rewrite(x, &inner));
+                out.push(rewrite_with(x, &inner, mode.deferred()));
                 shadow_step(x, &mut inner);
             }
             ExprKind::Seq { queued: *queued, trigger, body: Arc::from(out) }
@@ -711,7 +796,9 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
         ExprKind::Rethrow(x) => ExprKind::Rethrow(Arc::new(rewrite(x, map))),
         ExprKind::SeqGuard(x) => ExprKind::SeqGuard(Arc::new(rewrite(x, map))),
         ExprKind::OrNever(x) => ExprKind::OrNever(Arc::new(rewrite(x, map))),
-        ExprKind::ByRef(x) => ExprKind::ByRef(Arc::new(rewrite(x, map))),
+        ExprKind::ByRef(x) => {
+            ExprKind::ByRef(Arc::new(rewrite_with(x, map, mode.deferred())))
+        }
         ExprKind::Deref(x) => ExprKind::Deref(Arc::new(rewrite(x, map))),
         ExprKind::Neg(x) => ExprKind::Neg(Arc::new(rewrite(x, map))),
         ExprKind::Not { expr } => ExprKind::Not { expr: Arc::new(rewrite(expr, map)) },
@@ -805,12 +892,18 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
                 sw.replace.iter().map(|(n, v)| (n.clone(), rewrite(v, map))),
             ),
         }),
-        ExprKind::Apply(a) => ExprKind::Apply(ApplyExpr {
-            function: Arc::new(rewrite(&a.function, map)),
-            args: Arc::from_iter(
-                a.args.iter().map(|(n, v)| (n.clone(), rewrite(v, map))),
-            ),
-        }),
+        ExprKind::Apply(a) => {
+            let call = ApplyExpr {
+                function: Arc::new(rewrite(&a.function, map)),
+                args: Arc::from_iter(
+                    a.args.iter().map(|(n, v)| (n.clone(), rewrite(v, map))),
+                ),
+            };
+            if let Rewrite::Issue(pc) = mode {
+                return issue_call(e, call, pc);
+            }
+            ExprKind::Apply(call)
+        }
         ExprKind::Select(s) => ExprKind::Select(SelectExpr {
             arg: Arc::new(rewrite(&s.arg, map)),
             arms: Arc::from_iter(s.arms.iter().map(|(p, b)| {
@@ -830,8 +923,11 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
             ExprKind::Catch(Arc::new(CatchExpr {
                 bind: c.bind.clone(),
                 constraint: c.constraint.clone(),
-                handler: Arc::new(rewrite(&c.handler, &inner)),
-                seq_abort: c.seq_abort.as_ref().map(|e| Arc::new(rewrite(e, &inner))),
+                handler: Arc::new(rewrite_with(&c.handler, &inner, mode.deferred())),
+                seq_abort: c
+                    .seq_abort
+                    .as_ref()
+                    .map(|e| Arc::new(rewrite_with(e, &inner, mode.deferred()))),
             }))
         }
         ExprKind::Lambda(l) => {
@@ -846,7 +942,9 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
                 .iter()
                 .map(|a| Arg {
                     labeled: match &a.labeled {
-                        Some(Some(d)) => Some(Some(rewrite(d, map))),
+                        Some(Some(d)) => {
+                            Some(Some(rewrite_with(d, map, mode.deferred())))
+                        }
                         other => other.clone(),
                     },
                     pattern: a.pattern.clone(),
@@ -855,7 +953,7 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, captures: bool) -> Exp
                 })
                 .collect();
             let body = match &l.body {
-                Either::Left(b) => Either::Left(rewrite(b, &inner)),
+                Either::Left(b) => Either::Left(rewrite_with(b, &inner, mode.deferred())),
                 Either::Right(s) => Either::Right(s.clone()),
             };
             ExprKind::Lambda(Arc::new(LambdaExpr {

@@ -30,6 +30,32 @@ initializer sees the preceding `x`; earlier references and closures
 continue to refer to that preceding binding. The new binding can have a
 different type.
 
+## Call inputs
+
+In both forms, each call waits until all its explicit arguments are
+present, then samples them together with `~!` and issues once. This gives
+standing values a fresh call event, including values carried from an
+earlier step:
+
+```graphix
+seq request {
+    let x = request;
+    let f = |v| v ~ x;
+    f(request)
+}
+```
+
+If an argument is bottom at entry, the call waits; it cannot reuse a
+previous run's snapshot. After issuance, later argument changes or bottom
+do not change the snapshot or interrupt the pending result. Nested calls
+get their own snapshots. Calls without explicit arguments retain their
+ordinary activation behavior.
+
+This clocks the call site, not the function body: callbacks and captured
+state inside a function remain reactive. References are sampled as
+handles, not copies of their contents. Calls inside `until` conditions and
+`catch` handlers retain their ordinary reactive behavior.
+
 ## Captured inputs
 
 `seqq` captures the external values read by its body. At each trigger it
