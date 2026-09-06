@@ -51,13 +51,14 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # call): its src==dest rsync is a quick-check noop (.git/target excluded).
 # It joins a soak only when idle — launch it alone with FLEET_ONLY rather
 # than folding it into a full-fleet launch while a session is live.
+
+# Disabled but may return
+# "aieka:rsync:288:4:linux"
+# "ryouko:rsync:256:1:linux"
 HOSTS=(
-    "hz0:rsync:160:1:linux"
-    "aieka:rsync:288:4:linux"
     "katana:rsync:64:4:darwin"
-    "ryouko:rsync:256:1:linux"
-    "mazikeen:rsync:112:4:linux"
     "washu-chan:rsync:128:1:linux"
+    "mazikeen:rsync:112:4:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}
