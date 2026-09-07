@@ -1245,7 +1245,22 @@ the rules.
   integer builtin is `range(i, j)`. `do { stmts }` is several statements
   as one arm (lets inside, connects pc-sampled). Pins: `lang/seq.rs`
   `seq_do_*`. The admin TUI port uses seq/`do` for every multi-step
-  ceremony. `never()` in a step stalls the run.
+  ceremony. `never()` in a step stalls the run. **`try { .. }
+  with(e[: T]) { .. }`** (2026-09-07, `design/seq_blocks.md` §7.9,
+  R11) is seq's error handling: an error-triggered BRANCH — try-body
+  and with-body statements are arms; each try-body arm carries a
+  generated `Catch` whose `seq_abort` jumps to the with body's entry
+  after the failed step's errors drain and whose `seq_capture` writes
+  the FIRST error into the with body's `e` cell and unions its inferred
+  throws into the cell's type (exact: a can't-throw arm contributes
+  ⊥). `catch` is refused anywhere in a seq body (`refuse_catch`, a
+  `fold`; lambda literals included). Seq level only (refused in
+  `do`). A call-free `?` in a step is sampled on the entry event
+  (`Qop(pc ~! x)`, R2 applied to `?`) so a carried error raises at
+  every entry. A `?` whose residual is uninhabited types Bottom (a
+  with body ending in `e?`). Value: both tails write the statement's
+  cell; the with value must fit the try body's type (annotated lets
+  pass their annotation to the carried cell). Pins: `lang/seq_try.rs`.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`

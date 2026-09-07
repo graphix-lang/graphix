@@ -18,7 +18,7 @@
 
 use graphix_compiler::expr::{
     ApplyExpr, BindExpr, CatchExpr, Expr, ExprKind, Origin, SelectExpr, StructExpr,
-    StructWithExpr, StructurePattern,
+    StructWithExpr, StructurePattern, TryWithExpr,
     parser::{self, parse_one},
 };
 use netidx::utils::Either;
@@ -167,6 +167,14 @@ pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Until(x) => f(x),
         SeqDo { body } => {
             for e in body.iter() {
+                f(e);
+            }
+        }
+        TryWith(t) => {
+            for e in t.body.iter() {
+                f(e);
+            }
+            for e in t.handler.iter() {
                 f(e);
             }
         }
@@ -336,9 +344,16 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
             constraint: c.constraint.clone(),
             handler: ra!(&c.handler),
             seq_abort: c.seq_abort.as_ref().map(|e| ra!(e)),
+            seq_capture: c.seq_capture.clone(),
         })),
         Until(x) => Until(ra!(x)),
         SeqDo { body } => SeqDo { body: aslice(body.iter().map(|c| r!(c)).collect()) },
+        TryWith(t) => TryWith(Arc::new(TryWithExpr {
+            body: aslice(t.body.iter().map(|c| r!(c)).collect()),
+            bind: t.bind.clone(),
+            constraint: t.constraint.clone(),
+            handler: aslice(t.handler.iter().map(|c| r!(c)).collect()),
+        })),
         Seq { queued, trigger, body } => Seq {
             queued: *queued,
             trigger: trigger.as_ref().map(|t| ra!(t)),

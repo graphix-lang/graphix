@@ -40,6 +40,9 @@ timeout -k 2 40 ~/tmp/target/debug/graphix --no-fusion repro.gx
 | `seq.rs`'s dead `Until(_) \| Bind(_) \| _` patterns | **open (R5)** |
 | docs and coverage drift | **open (R7)** |
 | the proptest round-trip doesn't generate `seq` | **partly fixed (R7)** |
+| a `do`-level `catch` that swallows wedges the machine | **closed (R8)** — `catch` refused anywhere in a seq; `try … with` built (seq_blocks.md §7.9) |
+| a handler's `e?` double-wraps the error TYPE of a call-originated error | **fixed (R9)** — `fix_echain_typ` recognizes the expanded chain; `error_payloads` destructures again |
+| a `~` step re-enters on its previous run's resident | **open (R10)** — found by the try pins; pre-existing |
 
 ### The withdrawn item
 
@@ -273,14 +276,188 @@ real second consumer, which is what clears the abstraction bar.
   uncovered. (`do_block!` in the generator builds `ExprKind::Do`, an
   ordinary block — not `SeqDo`.)
 
+## R8 — P1: a `do`-level `catch` that swallows wedges the machine
+
+New with the R2 change. Location:
+[error.rs:580](../graphix-compiler/src/node/error.rs#L580) —
+`SeqGuard::compile` takes `scope.dynamic.handler()`, the NEAREST
+handler — together with [seq.rs:547](../graphix-compiler/src/expr/seq.rs#L547),
+which installs a do-level `catch` as a block sibling ahead of the guarded
+statements, so the user's catch IS that nearest handler.
+
+```graphix
+{
+  let step = 0;
+  step <- select step { n if n < 40 => n + 1, _ => never() };
+  let go = select step { 1 | 10 => step, _ => never() };
+  let runs = 0;
+  catch(e) println(e ~ "outer");
+  let r = seq go {
+    do {
+      catch(e) println(e ~ "swallowed [go]");
+      select go { 1 => { error(`Oops)?; go }, _ => go }
+    }
+  };
+  runs <- r ~ runs + 1;
+  select step { 39 => { println("runs=[runs]"); sys::exit(0) }, _ => never() }
+}
+```
+
+Expected, per §7.8 and the book ("an error handled by a `catch` inside
+`do { ... }`, without rethrowing to the sequence, does not abort the
+run") and because the statement still produced a value: `swallowed 1`,
+the first run completes with `r = 1`, request 10 runs, `runs=2`.
+Observed in both engines: `swallowed 1` then `runs=0`. The first run
+never completes, request 10 is busy-dropped, and nothing ever resets
+the PC — the sequence is wedged for good. Control: the same catch one
+brace deeper, `do { { catch(e) ...; select go { ... } } }`, completes
+with `r = 1` and takes request 10. A different result for a pair of
+braces is the split R2 set out to remove.
+
+Why: a guard records ITS handler's error generation, and a raise
+advances the handler's generation immediately, whether or not the
+handler will rethrow. For a do-level catch the guard's handler is the
+user's catch, so the guard latches `Failed` on the raise, never passes
+the value, and the machine's handler (which is what resets the PC)
+never hears of it. In the nested-block spelling the user's catch sits
+INSIDE the guarded subtree: the guard's handler is the machine's, and
+the nested count holds the guard until the user's handler has run —
+swallow passes the value, rethrow advances the machine's generation and
+latches.
+
+Fix: key every guard on the SEQUENCE's handler, not the nearest one.
+`Catch::compile` knows which catch is the machine's
+(`c.seq_abort.is_some()`); flag that node in the `DynScope` chain and
+have `SeqGuard::compile` walk to the nearest flagged node. The nested
+count already propagates through intermediate handlers, which is what
+makes the nested-block spelling right today, so the do-level spelling
+inherits the same behavior: a swallowed error leaves the statement's
+own value in charge — a value continues, a bottom stalls like
+`never()`, exactly §7.8's sentence.
+
+Pin: `lang/seq_errors.rs` beside `nested_handler_choices`, the same
+swallow/rethrow handler pair with the catch as a do-statement; expected
+`[1, 2, 3]` / `[2, 3]` like the nested one.
+
+**Disposition (2026-09-07, Eric):** superseded rather than fixed, and
+BUILT the same day. The nearest-vs-machine keying is a symptom: a
+`catch` is an event monitor, and a sequence needs control flow.
+`catch` is refused anywhere in a seq body and the construct is
+`try … with` ([seq_blocks.md §7.9](seq_blocks.md#79-try--with), R11).
+Under it the nearest-handler keying is correct by construction,
+because the nearest handler in a try-body arm always leaves the
+region. The witness above is a compile error naming `try`
+(`lang/seq_try.rs` `refusals`); its `try` spelling is
+`recovers_value`.
+
+## R9 — fixed: a handler's `e?` double-wraps the TYPE of a call-originated error
+
+**Fixed 2026-09-07** with the `try … with` build: `fix_echain_typ`
+(`node/error.rs`) now recognizes the chain in its expanded struct form
+and as a `Ref` resolved in another scope (the callee's throws carry
+both spellings), so a handler-side `e?` forwards the type without
+nesting it. The witness below prints `outer 1`; `error_payloads`
+destructures the payload at both handlers again. Original write-up
+follows.
+
+Pre-existing in plain Graphix, but R2 made it the only spelling of a
+seq cleanup that rethrows, and `error_payloads` pinned the symptom.
+Location: [error.rs:474](../graphix-compiler/src/node/error.rs#L474) —
+`fix_echain_typ` recognizes an `ErrChain` only as the root `Ref`, not in
+its expanded struct form.
+
+```graphix
+{
+  let step = 0;
+  step <- select step { n if n < 20 => n + 1, _ => never() };
+  let go = select step { 1 => 1, _ => never() };
+  let bad = |v| { error(`Oops(v))?; v };
+  catch(e) select (e.0).error { `Oops(n) => println("outer [n]") };
+  { catch(e) e?; bad(go) };
+  select step { 19 => sys::exit(0), _ => never() }
+}
+```
+
+Expected: compiles and prints `outer 1` — which it does when the inner
+error is raised inline (`error(`Oops(go))?` in place of `bad(go)`).
+Observed: refused, "missing match cases … `` `Oops('_) `` does not
+contain `{cause: [null, ErrChain<`Oops(i64)>], error: `Oops(i64), ori:
+Ori, pos: Pos}`" — the outer `e` is typed
+`Error<ErrChain<ErrChain<`Oops(i64)>>>`. The VALUE is right
+(`wrap_error` chains: `cause` is the previous chain, `error` stays the
+original payload); only the type is wrapped twice. With
+`println("[(e.0).error]")` in place of the select the typed printer logs
+"type … does not match value" and falls back to the naked form,
+`["Oops", 1]`.
+
+Why: a call-originated error reaches the inner catch through the call
+site's `throws`, which carries the alias in EXPANDED form (CLAUDE.md,
+"Type Alias Expansion in Contains"), and `fix_echain_typ` matches only
+`Ref(root::ErrChain)`, so it wraps the struct again. The machine's own
+`Rethrow` had the expanded case handled (the sentence the R2 commit
+removed from `seq_error_guards.md`); a user's `e?` does not.
+
+Consequence: `error_payloads` (`seq_errors.rs:375`) now asserts
+`caught ["Oops", 1]` as the expected output — the naked fallback. Its
+previous `caught 1` (the outer select destructuring `` `Oops(n) ``) was
+the correct behavior and stopped compiling for exactly this reason. Fix
+`fix_echain_typ` (recognize the expanded struct, or compare through the
+env the way `ERRCHAIN.is_a` does for values), then restore the select
+spelling in the test; the JIT shares the typing so both engines move
+together.
+
+Aside, R4-adjacent: a step that can only throw, `seq go {
+error(`Oops(1))? }`, is refused with the generated-code message
+"pattern `'_: []` will never match `'_: []`, unused match cases" — the
+continuation select over an empty-typed step. Same family as R4's
+silent bottom; the refusal is right, the message is not.
+
+## R10 — P2: a `~` step re-enters on its previous run's resident
+
+Found 2026-09-07 by the first draft of `lang/seq_try.rs`
+(`seqq_credit`), not caused by `try … with`. A step spelled as a
+sample over an issued call:
+
+```graphix
+seqq request {
+  let x = try { bad(request)? } with(e) { println("toast"); 0 };
+  sys::time::timer(duration:2.ms, false) ~ x
+}
+```
+
+with requests 1, 2, 3 (1 fails and recovers to 0). Expected `[0, 2, 3]`.
+Observed in both engines: `[0, 0, 0]`, `toast` once. Run 1 is right.
+Runs 2 and 3 complete IMMEDIATELY at the tail step's entry with run 1's
+value: the `Sample` keeps its held resident across the arm's sleep
+(sleep is pause; `~`'s arg is one of the three `Held` ride sites), the
+wake presents it stale-present, the completion guard passes it, and the
+continuation select routes on a present scrutinee with no retained
+selection — exactly the path a pure derivation of carried cells
+legitimately completes through. The timer is re-issued (the presence
+select's `once` cleared on sleep) but its fire is never waited for.
+
+The same tail written as a call, `sys::time::after_idle(duration:2.ms, x)`,
+is correct, because the issue atom snapshots `x` at entry and an
+async call presents bottom until its new result. So the hazard is
+specific to a `~` whose RHS is a level and whose LHS is the step's
+wait: the step's value is present before the wait completes. The
+guard cannot tell the two stale-present cases apart by tag alone.
+Candidates: the lowering could rewrite a top-level `a ~ b` step to
+`a ~! b` (no bank, no resident ride — the strict form is the one the
+issue atom already uses), or the `~` node's resident could be excluded
+from the wake re-present inside a seq arm. Eric's call; the pin is the
+program above with `[0, 2, 3]` expected.
+
 ## Suggested order
 
 1. **R1.** An abort is the worst outcome available and the fix is two
    `ensure_sufficient` wrappers.
-2. **R2.** Closed: seq-toplevel `catch` / `{ ... }` refused.
-3. **R3** and **R4** — both small, both user-visible as confusing
-   failures in generated code.
-4. **R5**, then **R6**/**R7** as cleanup.
+2. **R8.** Closed by `try … with` (seq_blocks.md §7.9).
+3. **R2.** Closed: seq-toplevel `catch` / `{ ... }` refused.
+4. **R3**, **R4** and **R10** — small, user-visible as confusing
+   failures (R10 is a wrong value, which is worse than a stall).
+   R9 is fixed.
+5. **R5**, then **R6**/**R7** as cleanup.
 
-Each of R1–R4 is a short `run!` fixture. R2 is pinned by
+Each of R1–R4, R8 and R9 is a short `run!` fixture. R2 is pinned by
 `seq_statement_refusals` and by `nested_handler_choices` using `do`.

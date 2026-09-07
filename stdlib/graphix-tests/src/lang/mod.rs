@@ -22,6 +22,7 @@ mod seq;
 mod seq_calls;
 mod seq_errors;
 mod seq_shadow;
+mod seq_try;
 mod seqq;
 mod traits;
 mod tuples_structs;

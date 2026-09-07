@@ -1,6 +1,7 @@
 # `seq` blocks: sequencing across cycles
 
-Status: **straight-line built** (2026-09-04). `if`/loops held. Origin: the post-port
+Status: **straight-line built** (2026-09-04). `if`/loops held.
+`try … with` ruled and built 2026-09-07 (§7.9, R11). Origin: the post-port
 assessment of the netidx-admin rewrite (5,434 lines of Graphix). Eric:
 "we actually wrote a sync language subset at one point and concluded it
 was a total disaster and the sync language subset was Rust" — the
@@ -333,10 +334,15 @@ stmt   := let pat = expr ;
         | if expr { stmt* } [else { stmt* }] ;        // sugar over select on bool
         | loop { stmt* } | while expr { stmt* } | for pat in expr { stmt* }
         | break [expr] ; | continue ;
+        | try { stmt* [expr] } with(e[: T]) { stmt* [expr] } ;   // §7.9, R11; seq level only
 ```
 
-A seq-toplevel `catch` or `{ ... }` is a compile error. Cleanup wraps
-the seq; grouped ordinary Graphix (including `catch`) lives in `do { ... }`.
+`catch` is refused anywhere in a seq body — as a statement, inside
+`do`, or nested in a step's expression; a lambda literal's body is its
+own dynamic scope and is exempt. A bare `{ ... }` statement is refused;
+`do { ... }` groups statements. Error handling inside a sequence is
+`try … with` (§7.9); a wrapper `catch` around the seq is ordinary
+Graphix and sees an aborted run's error.
 
 `seq { .. }` without a trigger runs once at init. `if` is already a
 reserved word. The keyword reclaims the integer-sequence builtin (§11).
@@ -397,13 +403,16 @@ An iteration re-enters arms; it never re-instantiates anything (§7.6).
 Accumulators are captured variables written as steps (`total <- total
 + x`), read by the next iteration.
 
-**R7 — A `?` aborts the run.** The lowered block installs ONE handler
-outermost: it resets the step variable to idle and rethrows to the
-enclosing handler. There is no seq-statement `catch`. Cleanup wraps the
-seq; a `catch` inside `do { ... }` is ordinary Graphix (it covers later
-do-statements, and a rethrow reaches the sequence's handler). To handle
-a failure without aborting the ceremony, match the Result in a step
-instead of writing `?`.
+**R7 — A `?` aborts the run, unless a `try` takes it.** The lowered
+block installs ONE handler outermost: it resets the step variable to
+idle and rethrows to the enclosing handler. An error raised inside a
+`try` body — by a `?`, a callee's throw, or a fused `?` — takes the
+with branch instead (R11). `catch` is refused anywhere in a seq body:
+an install can observe an error but cannot produce the value the next
+step waits for, so inside a sequence it can only rethrow or stall
+(seq_review_2026-09-06.md R2, R8). Cleanup and recovery are
+`try … with`; a wrapper `catch` around the seq still sees an aborted
+run's error.
 
 **R8 — The value.** The block's value is its last expression's, fired
 once per completed run, stale between runs, bottom before the first
@@ -418,6 +427,13 @@ the variable that drives the level and `until` waits for its response.
 **R10 — Do blocks are `Async`.** The machine node-walks; each step's
 sync interior fuses as it would anywhere. `#[sync]` on a seq block is a
 compile error, `#[native]` inside a step means what it means today.
+
+**R11 — `try … with` is an error-triggered branch.** Stated in full in
+§7.9: an error raised anywhere in the try body transfers control to the
+with body's first step with `e` bound to the first error; the with
+body's last step continues after the `try`; an error in the with body
+goes to the enclosing `try`, else to the machine; the statement's type
+is the union of the two bodies' last values.
 
 ## 7. The lowering
 
@@ -562,14 +578,13 @@ drop). §8 states what this does and does not give.
 
 ### 7.8 Errors
 
-A seq-toplevel `catch` is a compile error: as a seq statement it would
-abort the run (the machine's handler), and inside `{ ... }` it would
-not, and that split is not worth the surface. Wrap the seq for cleanup.
-A `catch` inside `do { ... }` is ordinary Graphix — an install covering
-later do-statements, not a value-gated step (it never produces, so it
-cannot be last). A rethrow from it reaches the sequence's generated
-handler; a swallow does not, and a later do-statement that bottoms
-stalls that statement the same way `never()` does.
+`catch` is refused anywhere in a seq body (§5; the reasons are R7 and
+§7.9). Two forms were tried and withdrawn: a seq-toplevel `catch` as
+cleanup (its rethrow was delivered twice, review R2) and an ordinary
+`catch` inside `do` (a swallow wedged the machine: the failed statement
+never produces, and the completion guard keyed on the user's handler
+never released, review R8). Cleanup wraps the seq; recovery and
+cleanup-then-abort are `try … with` (§7.9).
 
 The lowered machine has one handler, outermost, whose body is the
 rethrow. Its separate abort action resets the PC once all the run's
@@ -588,12 +603,228 @@ carried value, or block output is queued for a failed step; the handler's
 reset does not compete with a queued advance. See
 [seq_error_guards.md](seq_error_guards.md) for the runtime and JIT boundary.
 
+### 7.9 `try … with`
+
+Ruled 2026-09-07 (Eric): "we're trying to adapt an event monitor
+(`catch`) to something that should be control flow." The record is
+[seq_review_2026-09-06.md](seq_review_2026-09-06.md) R2 and R8: a
+seq-level `catch` as cleanup delivered a rethrown error twice, and the
+replacement, an ordinary `catch` inside `do`, wedged the machine on a
+swallow. Both are the same mismatch. A `catch` is an install: it can
+observe an error, but it cannot produce the value the next step waits
+for, and it cannot say "the rest of the block does not run". Inside a
+sequence it can therefore only rethrow or stall. A sequence has a
+program counter, so its error handling is a branch:
+
+```
+try { stmt* [expr] } with(e[: T]) { stmt* [expr] }
+```
+
+The statement's value is the try body's last expression, or, if the
+body raised, the with body's. `try`/`with` are already reserved words;
+`try` leads, so there is no clash with `{s with ..}`. Seq level only:
+`try` inside `do` is refused, like `until`. `catch` is refused anywhere
+in a seq body — as a statement, inside `do`, or nested in a step's
+expression (a lambda literal's body is its own dynamic scope and is not
+part of the sequence). No `finally`: success cleanup is the next
+statement, failure cleanup is the with body.
+
+```graphix
+seq req {
+  let cmd = escalate_command(req.argv, req)?;
+  let code = try {
+    let child = sys::process::spawn(options(cmd))?;
+    let status = sys::process::wait(child.proc)?;
+    status.code
+  } with(e) {
+    toast <- failed(e);
+    -1
+  };
+  report(code)
+}
+```
+
+`code` is `[i64, null]` from the try body or `-1` from the with body;
+`report` runs either way. Cleanup-then-abort is `with(e) { cleanup; e? }`:
+the `?` in the with body reaches the enclosing `try`, else the machine,
+which resets and rethrows to the wrapper. There is no double delivery,
+because the `try` consumed the original.
+
+**Why a handler, not a syntactic match on `?`.** Errors reach a region
+through the DYNAMIC scope, not the text. A callee's `?` resolves at its
+call site's handler, so `try { f(x) } with(e) { .. }` where `f` throws
+internally has no `?` in the try body at all, and a fused `?` raises
+through the same `ErrorHandler` as the interpreter's (`QopSite`, the
+kernel's delivery drain). The try body must therefore install a real
+`Catch` node whose dynamic scope covers exactly the try body's arms.
+The same fact is why the machine installs its handler unconditionally
+(§7.8, the `expr_may_throw` finding).
+
+**R11 — `try … with` is an error-triggered branch.** The try body's
+statements are steps, and so are the with body's. An error raised in
+the try body at any depth — a `?` in a step, a callee's throw, a fused
+`?` — transfers control to the with body's first step with `e` bound to
+the first error of the failure. The with body's last step continues to
+the statement after the `try`. An error raised in the with body goes to
+the enclosing `try`, else to the machine (abort, reset, rethrow). A
+`let` inside either body is scoped to that body; `e` is scoped to the
+with body. The statement's type is the union of the two bodies' last
+values; a with body that ends in `e?` is bottom-typed, so the union is
+the try body's type. `e` is typed as a `catch` bind is — the union of
+the try body's throws, as `Error<ErrChain<..>>` — and `with(e: T)` is
+`catch(e: T)`'s ascription rule: `T` must cover that union.
+
+**The lowering.** A try is a branch (§7.5) whose edge is an error
+instead of a value. Try-body arms `T1..Tm` and with-body arms `W1..Wn`
+are ordinary arms of the one select; both tails write the statement's
+cell (when the try is a `let` or the block's last expression) and
+transition to the join label `J`, the statement after. Each try-body
+arm carries a generated handler whose action is a JUMP. For the example
+above, one arm per statement:
+
+```graphix
+{
+  let pc = `Idle;            // [`Idle, `A1, `T1, `T2, `T3, `W1, `W2, `J1]
+  let cmd_c = never(); let child_c = never(); let status_c = never();
+  let code_c = never(); let e_c = never();
+  ...
+  catch(e) { pc <- `Idle; e? };                       // the machine's handler
+  select pc {
+    `Idle => never(),
+    `A1 => { <issue escalate_command>; cmd_c <- cmd; pc <- cmd ~ `T1 },
+    `T1 => {
+      catch(e) e_c <- once(e);                        // abort action: pc <- `W1
+      <issue spawn(cmd_c)>; child_c <- child; pc <- child ~ `T2
+    },
+    `T2 => {
+      catch(e) e_c <- once(e);                        // abort action: pc <- `W1
+      <issue wait(child_c.proc)>; status_c <- status; pc <- status ~ `T3
+    },
+    `T3 => {
+      catch(e) e_c <- once(e);                        // abort action: pc <- `W1
+      code_c <- pc ~ status_c.code; pc <- pc ~ `J1
+    },
+    `W1 => { toast <- pc ~ failed(e_c); pc <- pc ~ `W2 },
+    `W2 => { code_c <- pc ~ -1; pc <- pc ~ `J1 },
+    `J1 => { <issue report(code_c)>; r <- ..; pc <- .. ~ `Idle }
+  }
+}
+```
+
+The per-arm handler is the machine's `Catch` with a different abort
+action: the `seq_abort` slot already runs ONCE, after the failed step's
+errors have all been delivered (`received == generation` and no nested
+errors outstanding), under a forced init view so its constant label
+fires. Only the label changes: `` `W1 `` instead of `` `Idle ``. The
+capture is the `Catch` node's own (`CatchExpr::seq_capture`, the cell's
+name): at runtime it writes the first delivery of each failure (the
+delivery that flips `pending`) to the cell, and at typecheck it unions
+its bind's inferred throws into the cell's type — after its siblings,
+like every catch, so the union is exact and an arm that cannot throw
+contributes ⊥. (A handler-side write `e_c <- once(e)` was tried first
+and failed twice: the connect aliased the cell to the first arm's
+frozen bind cell, so a second arm's different error type — or a ⊥
+arm — was refused, and `once`'s return cell is unresolved when the
+with body typechecks.) Nothing is rethrown: the try consumed the error.
+
+Two more facts the build settled. A call-free `?` in a step is
+sampled on the entry event (`Qop(pc ~! x)`, R2 applied to `?`): the
+with body's `e?` reads a cell, and a stale error raised only when a
+catch-up fire happened to deliver it (a `println("[e.0]")` step before
+it consumed the fire and the rethrow never happened). And a `?` whose
+residual is uninhabited types Bottom rather than the empty union, so
+the continuation select absorbs it. The value cell is a plain carried
+cell: the try body's tail (lowered first) types it and the with body's
+value must fit; an annotated `let` passes its annotation to the cell,
+which is how a union is spelled.
+
+Three consequences of this shape:
+
+- **The guard is right by construction.** A step's completion guard
+  keys on the nearest handler (`SeqGuard::compile`); in a try-body arm
+  that is the jump handler, whose generation advances at the raise, so
+  the guard latches and no success transition, carried write or result
+  is queued for the failed step (§7.8's rule) — and unlike a user
+  `catch`, the nearest handler always LEAVES the region, so the latch is
+  never a wedge. R8's nearest-vs-machine question does not arise.
+- **Duplication is free.** The handler is per arm, but it is generated
+  and it is only a capture and a jump; the objection to duplicating a
+  mid-block `catch` was about user code and its effects. One `Catch`
+  node per try-body arm, updated per cycle as a phantom — the cost of a
+  try body that never fails.
+- **Sleep does the cleanup it always does.** After the jump the failed
+  arm sleeps: its pending timer is cancelled, a level effect inside it
+  tears down (§7.7). The with body then runs as ordinary steps.
+
+Nesting composes by arm ownership: an arm carries the jump handler of
+the innermost `try` whose BODY contains its statement; a with-body arm
+therefore carries the enclosing try's handler, if any, and none
+otherwise, so an error in a with body reaches the enclosing try or the
+machine. A `try` inside a future `select`/loop body is the same: labels
+compose, and the join is the next statement of the enclosing body.
+
+Multiple errors from one step (two `?` in one block both raise in the
+same cycle): the jump waits for the drain exactly as the machine's
+reset does, `e` is the first, the rest are consumed. This is the one
+place the construct differs from an exception system, and it is the
+reactive fact underneath: both `?` evaluated.
+
+`seqq`: a taken with branch is not an abort — the run continues and
+returns its credit at completion as usual; an abort from the with body
+is the machine's abort.
+
+Refused: `try` outside a seq; `try` inside `do`; `catch` anywhere in a
+seq body (message names `try … with` and the wrapper); an empty try
+body; `with` without `try`; `until` inside either body follows the
+existing rule (a seq statement, legal in both bodies since both are
+step lists).
+
+`with(_)` is accepted when the handler does not need the error; the
+parentheses stay.
+
+**Pins** (`lang/seq_try.rs`, both engines, `seq` and `seqq`):
+
+- `recovers_value` — the with body supplies the value, the next
+  statement runs, the machine is idle for the next request.
+- `callee_throw` — the try body has no `?`; `bad` throws internally
+  (Eric's question: this is why it is a handler).
+- `cleanup_rethrow` — `with(e) { cleanup; e? }`: cleanup once, the
+  wrapper sees the error once, the machine resets, the next request
+  runs (R2's witness in its final spelling), with and without reading
+  `e` in the cleanup step.
+- `nested` — inner with rethrows to the outer with; outer recovers.
+- `multiple_errors` — three `?` in one step: with runs once, `e` is
+  the first, the wrapper sees nothing.
+- `async_step` — the failing step follows an async one.
+- `value_forms` — a let before the try read in the with body; the
+  connect form with `with(_)`; a bare try mid-sequence; a bare try as
+  the value.
+- `seqq_credit` — a recovered request releases the next at completion,
+  an aborting with body at the reset.
+- `refusals` — `try` in `do` (bare and as a let value), `catch` as a
+  statement, in `do`, in a nested block and in a lambda literal, the
+  R8 witness, `try` outside a seq and nested in an expression, a
+  try-body let read after the try, `e` read after the with, a let
+  annotation the bodies do not fit, a `with(e: T)` that does not cover
+  the body's throws.
+- `expr/parser/test.rs` `try_with_parses` — round trips, empty bodies
+  refused, `try` refused as a name.
+- `lang/seq_errors.rs` — every former do-catch fixture in the try
+  spelling; `error_payloads` destructures the payload at both handlers
+  (R9).
+
+Not pinned: a `?` inside a fused region of a try body (the guard is a
+fusion boundary and the `?` raises through the same handler either
+way; the jit-mode runs of every fixture exercise whatever fuses).
+
 ## 8. Costs and limits
 
 - **Cycles.** One per async completion, one per connect, one per
   back-edge. A cycle is well under a millisecond in release (a text
   key is 0.17ms end to end at 5.4k lines), so a six-step ceremony adds
   about a millisecond to work that takes seconds.
+  A taken with branch (§7.9) costs the failed step's drain (one cycle
+  per extra error raised by that step) plus the jump.
 - **No cancellation.** A retrigger cannot cancel an in-flight step
   beyond what sleep does (§7.7); the busy policy is the default because
   restart would deliver a stale production into a fresh run. A step
@@ -640,8 +871,9 @@ machine — the round-trip test covers the lowering's output.
    generator not yet (Until is not a top-level expr).
 2. The desugar (`expr/seq.rs`): DONE for lets, connects, expression
    steps, `until`, `do`, `?` abort. One arm per step. A seq-toplevel
-   `catch` or `{ ... }` is refused; `catch` inside `do` is an ordinary
-   install. `--expand` not yet.
+   `catch` or `{ ... }` is refused; `catch` inside `do` is still an
+   ordinary install in the tree (to be refused with item 6).
+   `--expand` not yet.
 3. Pins: atoms (go/no-go) plus surface `seq_value` / `seq_let_then_use`
    / `seq_trigger_and_until` / `seq_busy_drops` / `seq_qop_aborts`.
    Branch/loop pins wait on if/loops.
@@ -649,6 +881,14 @@ machine — the round-trip test covers the lowering's output.
    ceremonies still chains.
 5. Book: a chapter beside `select`, with R9 and the counter-idiom
    warning.
+6. `try … with` (§7.9, R11): DONE 2026-09-07 — parser + AST
+   (`ExprKind::TryWith`; printer; tree-sitter `try_with`), the desugar
+   (`Machine`: label allocator, `Sink` tail writes, `lower_try` with
+   the per-arm jump `Catch` and its `seq_capture`), `catch` refused
+   anywhere in a seq body, `try` refused in `do`, review R9 fixed
+   (`fix_echain_typ` recognizes the expanded chain). Pins:
+   `lang/seq_try.rs`; `lang/seq_errors.rs` rewritten to the try
+   spelling. Not yet: the port's toast ceremonies.
 
 ## 11. Open questions
 

@@ -1,14 +1,16 @@
 //! AST-to-AST lowering of `seq` (`design/seq_blocks.md` §7).
 //!
-//! Straight-line only: lets, connects, expression steps, `until`, `do`.
-//! A seq-toplevel `catch` or `{ ... }` is refused — wrap the seq, or
-//! group ordinary Graphix (including `catch`) inside `do { ... }`. The
-//! machine installs one handler that resets and rethrows. Each step is
-//! its own arm; calls consume one strict argument snapshot per entry.
+//! Straight-line plus `try … with`: lets, connects, expression steps,
+//! `until`, `do`, and the error-triggered branch (§7.9). `catch` is
+//! refused anywhere in a seq body; a bare `{ ... }` statement is
+//! refused. The machine installs one handler that resets and rethrows;
+//! each try-body arm carries a generated handler that jumps to the with
+//! body. Each step is its own arm; calls consume one strict argument
+//! snapshot per entry.
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
-    Pattern, SelectExpr, StructurePattern,
+    Pattern, SelectExpr, StructurePattern, TryWithExpr,
 };
 use crate::{
     env::Env,
@@ -25,9 +27,13 @@ use indexmap::IndexMap;
 use netidx_core::{path::Path, utils::Either};
 use netidx_value::Value;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use triomphe::Arc;
 
-type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition)>;
+/// A carried cell per let name (and per try's `e`): its generated
+/// name, the declaring position, and the let's annotation when the
+/// pattern is a plain name (so a union-typed try value can be spelled).
+type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition, Option<Type>)>;
 
 #[derive(Clone, Copy)]
 enum Rewrite<'a> {
@@ -64,13 +70,8 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     }
     let mut steps: Vec<&Expr> = Vec::new();
     for e in body.iter() {
+        refuse_catch(e)?;
         match &e.kind {
-            ExprKind::Catch(_) => {
-                return Err(anyhow!(
-                    "catch is not a seq statement; write it around the seq, or inside do {{ ... }}"
-                )
-                .context(ErrorContext(e.clone())));
-            }
             ExprKind::Do { .. } => {
                 return Err(anyhow!(
                     "a block is not a seq statement; use do {{ ... }} to group statements"
@@ -85,7 +86,6 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
         return Err(anyhow!("a seq block must contain at least one step")
             .context(ErrorContext(spec.clone())));
     }
-    let n = steps.len();
     let pc = format_compact!("seqpc{id}");
     let idle = format_compact!("seqidle{id}");
     let result = format_compact!("seqr{id}");
@@ -98,38 +98,16 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
         collect_step_binds(e, &mut cells)?;
     }
 
-    let pc_typ = pc_type(n);
-    let mut prelude: Vec<Expr> = Vec::new();
-    prelude.push(let_bind(pos, pc.as_str(), Some(pc_typ), variant(pos, "Idle")));
-    prelude.push(let_bind(pos, idle.as_str(), None, idle_of(pos, pc.as_str())));
-    prelude.push(let_bind(pos, result.as_str(), None, never(pos)));
-    if let Some((_, tpos)) = &trigger_bind {
-        prelude.push(let_bind(*tpos, trig_cell.as_str(), None, never(*tpos)));
-    }
-    for (cell, cpos) in cells.values() {
-        prelude.push(let_bind(*cpos, cell.as_str(), None, never(*cpos)));
-    }
-
     let trig_expr = match trigger {
         Some(t) => (**t).clone(),
         None => ExprKind::Constant(Value::Bool(true)).to_expr(pos),
     };
     let t_name = format_compact!("seqgo{id}");
     let filter = apply_filter(pos, trig_expr, lambda_idle(pos, idle.as_str()));
-    let mut start: Vec<Expr> = Vec::new();
-    start.push(let_bind(pos, t_name.as_str(), None, filter));
-    start.push(connect(
-        pos,
-        pc.as_str(),
-        sample(pos, r#ref(pos, t_name.as_str()), variant(pos, "S0")),
-    ));
-    if trigger_bind.is_some() {
-        start.push(connect(pos, trig_cell.as_str(), r#ref(pos, t_name.as_str())));
-    }
 
     let mut visible: AHashMap<ArcStr, ArcStr> = AHashMap::new();
-    if let Some((n, _)) = trigger_bind {
-        visible.insert(n, ArcStr::from(trig_cell.as_str()));
+    if let Some((n, _)) = &trigger_bind {
+        visible.insert(n.clone(), ArcStr::from(trig_cell.as_str()));
     }
     let err_bind = ArcStr::from("e");
     let catch_node = {
@@ -145,42 +123,278 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
                 ExprKind::Rethrow(Arc::new(r#ref(pos, err_bind.as_str()))).to_expr(pos),
             ),
             seq_abort: Some(Arc::new(block(pos, abort_body))),
+            seq_capture: None,
         }))
         .to_expr(pos)
     };
 
     let vname = format_compact!("seqv{id}");
-    let mut arms: Vec<(Pattern, Expr)> = Vec::new();
-    arms.push((pat_variant("Idle"), never(pos)));
-    for (i, step) in steps.iter().enumerate() {
-        let tag = format_compact!("S{i}");
-        let next = if i + 1 == n {
-            ArcStr::from("Idle")
-        } else {
-            ArcStr::from(format_compact!("S{}", i + 1).as_str())
-        };
-        let last = i + 1 == n;
-        let arm = step_arm(
-            step,
-            pc.as_str(),
-            next.as_str(),
-            last,
-            result.as_str(),
-            vname.as_str(),
-            &visible,
-            &cells,
-        )?;
-        arms.push((pat_variant(&tag), arm));
-        expose_step_binds(step, &cells, &mut visible);
+    let mut machine = Machine {
+        pc: pc.as_str(),
+        result: result.as_str(),
+        vname: vname.as_str(),
+        cells: &cells,
+        labels: Vec::new(),
+        arms: Vec::new(),
+    };
+    let entry = machine.fresh();
+    let mut sink = Sink::new();
+    sink.push(Write::Result);
+    machine.lower_stmts(&steps, entry.clone(), ArcStr::from("Idle"), &sink, &visible)?;
+    let Machine { labels, arms: body_arms, .. } = machine;
+
+    let mut prelude: Vec<Expr> = Vec::new();
+    prelude.push(let_bind(
+        pos,
+        pc.as_str(),
+        Some(pc_type(&labels)),
+        variant(pos, "Idle"),
+    ));
+    prelude.push(let_bind(pos, idle.as_str(), None, idle_of(pos, pc.as_str())));
+    prelude.push(let_bind(pos, result.as_str(), None, never(pos)));
+    if let Some((_, tpos)) = &trigger_bind {
+        prelude.push(let_bind(*tpos, trig_cell.as_str(), None, never(*tpos)));
+    }
+    for (cell, cpos, typ) in cells.values() {
+        prelude.push(let_bind(*cpos, cell.as_str(), typ.clone(), never(*cpos)));
+    }
+    let mut start: Vec<Expr> = Vec::new();
+    start.push(let_bind(pos, t_name.as_str(), None, filter));
+    start.push(connect(
+        pos,
+        pc.as_str(),
+        sample(pos, r#ref(pos, t_name.as_str()), variant(pos, entry.as_str())),
+    ));
+    if trigger_bind.is_some() {
+        start.push(connect(pos, trig_cell.as_str(), r#ref(pos, t_name.as_str())));
     }
 
-    let machine = select(pos, r#ref(pos, pc.as_str()), arms);
+    let mut arms: Vec<(Pattern, Expr)> = Vec::with_capacity(body_arms.len() + 1);
+    arms.push((pat_variant("Idle"), never(pos)));
+    arms.extend(body_arms.into_iter().map(|(label, arm)| (pat_variant(&label), arm)));
+    let select_pc = select(pos, r#ref(pos, pc.as_str()), arms);
     let mut body_exprs = prelude;
     body_exprs.push(catch_node);
     body_exprs.extend(start);
-    body_exprs.push(machine);
+    body_exprs.push(select_pc);
     body_exprs.push(r#ref(pos, result.as_str()));
     Ok(block(pos, body_exprs))
+}
+
+/// `catch` is refused anywhere in a seq body (design/seq_blocks.md R7):
+/// an install can observe an error but cannot produce the value the
+/// next step waits for, so inside a sequence it can only rethrow or
+/// stall. Lambda literals are walked too — hoist the function.
+fn refuse_catch(e: &Expr) -> Result<()> {
+    let found = e.fold(None, &mut |found: Option<Expr>, x| {
+        found.or_else(|| matches!(x.kind, ExprKind::Catch(_)).then(|| x.clone()))
+    });
+    match found {
+        None => Ok(()),
+        Some(c) => Err(anyhow!(
+            "catch is not allowed inside a seq: `?` aborts the run, \
+             `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
+             seq sees the abort"
+        )
+        .context(ErrorContext(c))),
+    }
+}
+
+/// What the tail of a statement list does with its value, in order:
+/// bind a `let`'s pattern and write its carried cells, write a
+/// connect's target, publish the block's result.
+#[derive(Clone)]
+enum Write {
+    Let { pattern: StructurePattern, typ: Option<Type>, id: ExprId },
+    Connect { name: ModPath, deref: bool },
+    Result,
+}
+
+type Sink = SmallVec<[Write; 2]>;
+
+/// The arms under construction. Labels are allocated as statements are
+/// lowered (`S{k}`, not contiguous per statement — a `try` allocates
+/// its with-body's entry ahead of its body's arms); the pc type is the
+/// set of every label allocated.
+struct Machine<'a> {
+    pc: &'a str,
+    result: &'a str,
+    vname: &'a str,
+    cells: &'a CarriedBinds,
+    labels: Vec<ArcStr>,
+    arms: Vec<(ArcStr, Expr)>,
+}
+
+impl Machine<'_> {
+    fn fresh(&mut self) -> ArcStr {
+        let l = ArcStr::from(format_compact!("S{}", self.labels.len()).as_str());
+        self.labels.push(l.clone());
+        l
+    }
+
+    /// Lower `stmts` as consecutive arms: the first at `entry`, the
+    /// last transitioning to `next` after the sink's writes. A `let`'s
+    /// names become visible to the statements after it.
+    fn lower_stmts(
+        &mut self,
+        stmts: &[&Expr],
+        entry: ArcStr,
+        next: ArcStr,
+        sink: &Sink,
+        visible: &AHashMap<ArcStr, ArcStr>,
+    ) -> Result<()> {
+        let n = stmts.len();
+        let mut entries = Vec::with_capacity(n);
+        entries.push(entry);
+        for _ in 1..n {
+            let l = self.fresh();
+            entries.push(l);
+        }
+        let mut vis = visible.clone();
+        for (i, stmt) in stmts.iter().enumerate() {
+            let next_i = if i + 1 < n { entries[i + 1].clone() } else { next.clone() };
+            let none = Sink::new();
+            let sink_i = if i + 1 == n { sink } else { &none };
+            self.lower_stmt(stmt, entries[i].clone(), next_i, sink_i, &vis)?;
+            expose_step_binds(stmt, self.cells, &mut vis);
+        }
+        Ok(())
+    }
+
+    fn lower_stmt(
+        &mut self,
+        stmt: &Expr,
+        entry: ArcStr,
+        next: ArcStr,
+        sink: &Sink,
+        visible: &AHashMap<ArcStr, ArcStr>,
+    ) -> Result<()> {
+        ensure_sufficient(|| match &stmt.kind {
+            ExprKind::TryWith(t) => self.lower_try(stmt, t, entry, next, sink, visible),
+            ExprKind::Bind(b) if matches!(b.value.kind, ExprKind::TryWith(_)) => {
+                let ExprKind::TryWith(t) = &b.value.kind else { unreachable!() };
+                let mut sink = sink.clone();
+                sink.insert(
+                    0,
+                    Write::Let {
+                        pattern: b.pattern.clone(),
+                        typ: b.typ.clone(),
+                        id: stmt.id,
+                    },
+                );
+                self.lower_try(&b.value, t, entry, next, &sink, visible)
+            }
+            ExprKind::Connect { name, value, deref }
+                if matches!(value.kind, ExprKind::TryWith(_)) =>
+            {
+                let ExprKind::TryWith(t) = &value.kind else { unreachable!() };
+                let mut sink = sink.clone();
+                sink.insert(0, Write::Connect { name: name.clone(), deref: *deref });
+                self.lower_try(value, t, entry, next, &sink, visible)
+            }
+            _ => {
+                let arm = step_arm(
+                    stmt,
+                    self.pc,
+                    next.as_str(),
+                    sink,
+                    self.result,
+                    self.vname,
+                    visible,
+                    self.cells,
+                )?;
+                self.arms.push((entry, arm));
+                Ok(())
+            }
+        })
+    }
+
+    /// §7.9: the try body's arms each carry a generated handler that
+    /// captures the first error of a failure into the with body's cell
+    /// (`seq_capture`: the `Catch` node writes it and unions its
+    /// inferred throws into the cell's type) and whose drain action
+    /// jumps to the with body's entry. Both bodies' tails perform the
+    /// sink's writes and transition to `next`.
+    fn lower_try(
+        &mut self,
+        spec: &Expr,
+        t: &TryWithExpr,
+        entry: ArcStr,
+        next: ArcStr,
+        sink: &Sink,
+        visible: &AHashMap<ArcStr, ArcStr>,
+    ) -> Result<()> {
+        let pos = spec.pos;
+        let body: Vec<&Expr> =
+            t.body.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
+        let handler: Vec<&Expr> =
+            t.handler.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
+        let with_entry = self.fresh();
+        let e_cell = self.cells[&(spec.id, t.bind.clone())].0.clone();
+        let mark = self.arms.len();
+        self.lower_stmts(&body, entry, next.clone(), sink, visible)?;
+        let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
+        for (_, arm) in self.arms[mark..].iter_mut() {
+            let jump = ExprKind::Catch(Arc::new(CatchExpr {
+                bind: caught.clone(),
+                constraint: t.constraint.clone(),
+                handler: Arc::new(never(pos)),
+                seq_abort: Some(Arc::new(connect(
+                    pos,
+                    self.pc,
+                    variant(pos, with_entry.as_str()),
+                ))),
+                seq_capture: Some(e_cell.clone()),
+            }))
+            .to_expr(pos);
+            let inner = std::mem::replace(arm, never(pos));
+            *arm = block(pos, vec![jump, inner]);
+        }
+        let mut wvis = visible.clone();
+        wvis.insert(t.bind.clone(), e_cell);
+        self.lower_stmts(&handler, with_entry, next, sink, &wvis)
+    }
+}
+
+/// The tail writes of a statement list, sampled on the entry event
+/// (`pc`) so they land with the transition.
+fn sink_writes(
+    sink: &Sink,
+    pos: SourcePosition,
+    pc: &str,
+    result: &str,
+    vname: &str,
+    cells: &CarriedBinds,
+    visible: &AHashMap<ArcStr, ArcStr>,
+) -> Vec<Expr> {
+    let mut out = Vec::new();
+    for w in sink.iter() {
+        match w {
+            Write::Let { pattern, typ, id } => {
+                out.push(let_pat(pos, pattern.clone(), typ.clone(), r#ref(pos, vname)));
+                pattern.with_names(&mut |n| {
+                    let (cell, _, _) = &cells[&(*id, n.clone())];
+                    out.push(connect(
+                        pos,
+                        cell.as_str(),
+                        sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
+                    ));
+                });
+            }
+            Write::Connect { name, deref } => out.push(connect_path(
+                pos,
+                rewrite_path(name, visible),
+                *deref,
+                sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
+            )),
+            Write::Result => out.push(connect(
+                pos,
+                result,
+                sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
+            )),
+        }
+    }
+    out
 }
 
 fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
@@ -364,7 +578,7 @@ fn step_arm(
     step: &Expr,
     pc: &str,
     next: &str,
-    last: bool,
+    sink: &Sink,
     result: &str,
     vname: &str,
     visible: &AHashMap<ArcStr, ArcStr>,
@@ -372,6 +586,7 @@ fn step_arm(
 ) -> Result<Expr> {
     let pos = step.pos;
     let trans = connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)));
+    let writes = || sink_writes(sink, pos, pc, result, vname, cells, visible);
     match &step.kind {
         ExprKind::Until(e) => {
             let e = guard(rewrite(e, visible));
@@ -385,27 +600,21 @@ fn step_arm(
             ))
         }
         ExprKind::SeqDo { body } => {
-            lower_do_stmts(body, pc, next, last, result, vname, visible, cells)
+            lower_do_stmts(body, pc, next, sink, result, vname, visible, cells)
         }
         ExprKind::Bind(b) => {
             let value = issue_expr(&b.value, visible, pc);
             let mut body =
                 vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
             b.pattern.with_names(&mut |n| {
-                let (cell, _) = &cells[&(step.id, n.clone())];
+                let (cell, _, _) = &cells[&(step.id, n.clone())];
                 body.push(connect(
                     pos,
                     cell.as_str(),
                     sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
                 ));
             });
-            if last {
-                body.push(connect(
-                    pos,
-                    result,
-                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-                ));
-            }
+            body.extend(writes());
             body.push(trans);
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
@@ -418,26 +627,13 @@ fn step_arm(
                 *deref,
                 sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
             )];
-            if last {
-                body.push(connect(
-                    pos,
-                    result,
-                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-                ));
-            }
+            body.extend(writes());
             body.push(trans);
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
             let e = issue_expr(step, visible, pc);
-            let mut body = Vec::new();
-            if last {
-                body.push(connect(
-                    pos,
-                    result,
-                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-                ));
-            }
+            let mut body = writes();
             body.push(trans);
             Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
         }
@@ -452,18 +648,34 @@ fn collect_step_binds(e: &Expr, cells: &mut CarriedBinds) -> Result<()> {
             }
             Ok(())
         }
+        ExprKind::TryWith(t) => {
+            let cell = ArcStr::from(format_compact!("seqe{}", e.id.inner()).as_str());
+            cells.insert((e.id, t.bind.clone()), (cell, e.pos, None));
+            for s in t.body.iter().chain(t.handler.iter()) {
+                collect_step_binds(s, cells)?;
+            }
+            Ok(())
+        }
         ExprKind::Bind(b) => {
             if b.rec {
                 return Err(
                     anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
                 );
             }
+            let annotated = matches!(b.pattern, StructurePattern::Bind(_));
             b.pattern.with_names(&mut |n| {
                 let cell =
                     ArcStr::from(format_compact!("seqc{}_{n}", e.id.inner()).as_str());
-                cells.insert((e.id, n.clone()), (cell, e.pos));
+                let typ = if annotated { b.typ.clone() } else { None };
+                cells.insert((e.id, n.clone()), (cell, e.pos, typ));
             });
+            if matches!(b.value.kind, ExprKind::TryWith(_)) {
+                collect_step_binds(&b.value, cells)?;
+            }
             Ok(())
+        }
+        ExprKind::Connect { value, .. } if matches!(value.kind, ExprKind::TryWith(_)) => {
+            collect_step_binds(value, cells)
         }
         _ => Ok(()),
     })
@@ -482,7 +694,7 @@ fn expose_step_binds(
         }
         ExprKind::Bind(b) => {
             b.pattern.with_names(&mut |n| {
-                let (cell, _) = &cells[&(e.id, n.clone())];
+                let (cell, _, _) = &cells[&(e.id, n.clone())];
                 visible.insert(n.clone(), cell.clone());
             });
         }
@@ -494,14 +706,14 @@ fn lower_do_stmts(
     stmts: &[Expr],
     pc: &str,
     next: &str,
-    last_step: bool,
+    sink: &Sink,
     result: &str,
     vname: &str,
     visible: &AHashMap<ArcStr, ArcStr>,
     cells: &CarriedBinds,
 ) -> Result<Expr> {
     ensure_sufficient(|| {
-        lower_do_stmts_inner(stmts, pc, next, last_step, result, vname, visible, cells)
+        lower_do_stmts_inner(stmts, pc, next, sink, result, vname, visible, cells)
     })
 }
 
@@ -509,7 +721,7 @@ fn lower_do_stmts_inner(
     stmts: &[Expr],
     pc: &str,
     next: &str,
-    last_step: bool,
+    sink: &Sink,
     result: &str,
     vname: &str,
     visible: &AHashMap<ArcStr, ArcStr>,
@@ -536,42 +748,38 @@ fn lower_do_stmts_inner(
         if rest_empty {
             Ok(trans(pos))
         } else {
-            lower_do_stmts(rest, pc, next, last_step, result, vname, visible, cells)
+            lower_do_stmts(rest, pc, next, sink, result, vname, visible, cells)
         }
     };
+    let writes = |visible: &AHashMap<ArcStr, ArcStr>| -> Vec<Expr> {
+        if rest_empty {
+            sink_writes(sink, pos, pc, result, vname, cells, visible)
+        } else {
+            Vec::new()
+        }
+    };
+    let is_try = |e: &Expr| matches!(e.kind, ExprKind::TryWith(_));
     match &head.kind {
         ExprKind::Until(_) => {
             Err(anyhow!("until is not a do statement")
                 .context(ErrorContext(head.clone())))
         }
-        ExprKind::Catch(c) => {
-            if rest_empty {
-                return Err(anyhow!("catch cannot be the last statement of do")
-                    .context(ErrorContext(head.clone())));
-            }
-            let mut handler_map = visible.clone();
-            handler_map.remove(&c.bind);
-            let handler = rewrite(&c.handler, &handler_map);
-            let rest =
-                lower_do_stmts(rest, pc, next, last_step, result, vname, visible, cells)?;
-            Ok(block(
-                pos,
-                vec![
-                    ExprKind::Catch(Arc::new(CatchExpr {
-                        bind: c.bind.clone(),
-                        constraint: c.constraint.clone(),
-                        handler: Arc::new(handler),
-                        seq_abort: None,
-                    }))
-                    .to_expr(pos),
-                    rest,
-                ],
-            ))
-        }
+        ExprKind::TryWith(_) => Err(anyhow!(
+            "try is a seq statement, not a do statement; write it at the seq level"
+        )
+        .context(ErrorContext(head.clone()))),
+        ExprKind::Bind(b) if is_try(&b.value) => Err(anyhow!(
+            "try is a seq statement, not a do statement; write it at the seq level"
+        )
+        .context(ErrorContext(head.clone()))),
+        ExprKind::Connect { value, .. } if is_try(value) => Err(anyhow!(
+            "try is a seq statement, not a do statement; write it at the seq level"
+        )
+        .context(ErrorContext(head.clone()))),
         ExprKind::SeqDo { body } => {
             let mut flat: Vec<Expr> = body.iter().cloned().collect();
             flat.extend(rest.iter().cloned());
-            lower_do_stmts(&flat, pc, next, last_step, result, vname, visible, cells)
+            lower_do_stmts(&flat, pc, next, sink, result, vname, visible, cells)
         }
         ExprKind::Bind(b) => {
             let value = issue_expr(&b.value, visible, pc);
@@ -582,20 +790,14 @@ fn lower_do_stmts_inner(
             let mut body =
                 vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
             b.pattern.with_names(&mut |n| {
-                let (cell, _) = &cells[&(head.id, n.clone())];
+                let (cell, _, _) = &cells[&(head.id, n.clone())];
                 body.push(connect(
                     pos,
                     cell.as_str(),
                     sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
                 ));
             });
-            if rest_empty && last_step {
-                body.push(connect(
-                    pos,
-                    result,
-                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-                ));
-            }
+            body.extend(writes(&vis));
             body.push(tail(&vis)?);
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
@@ -608,40 +810,24 @@ fn lower_do_stmts_inner(
                 *deref,
                 sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
             )];
-            if rest_empty && last_step {
-                body.push(connect(
-                    pos,
-                    result,
-                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-                ));
-            }
+            body.extend(writes(visible));
             body.push(tail(visible)?);
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
             let e = issue_expr(head, visible, pc);
-            let mut body = Vec::new();
-            if rest_empty && last_step {
-                body.push(connect(
-                    pos,
-                    result,
-                    sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-                ));
-            }
+            let mut body = writes(visible);
             body.push(tail(visible)?);
             Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
         }
     }
 }
 
-fn pc_type(n_steps: usize) -> Type {
-    let mut mem = Vec::with_capacity(n_steps + 1);
+fn pc_type(labels: &[ArcStr]) -> Type {
+    let mut mem = Vec::with_capacity(labels.len() + 1);
     mem.push(Type::Variant(ArcStr::from("Idle"), Arc::from(Vec::<Type>::new())));
-    for i in 0..n_steps {
-        mem.push(Type::Variant(
-            ArcStr::from(format_compact!("S{i}").as_str()),
-            Arc::from(Vec::<Type>::new()),
-        ));
+    for l in labels {
+        mem.push(Type::Variant(l.clone(), Arc::from(Vec::<Type>::new())));
     }
     Type::Set(Arc::from(mem))
 }
@@ -712,6 +898,10 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
 
 fn issue_expr(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, pc: &str) -> Expr {
     guard(rewrite_with(e, map, Rewrite::Issue(pc)))
+}
+
+fn has_call(e: &Expr) -> bool {
+    e.fold(false, &mut |acc, x| acc || matches!(x.kind, ExprKind::Apply(_)))
 }
 
 fn inline_lambda(mut e: &Expr) -> bool {
@@ -820,6 +1010,24 @@ fn rewrite_with_inner(
             }
             ExprKind::SeqDo { body: Arc::from(out) }
         }
+        ExprKind::TryWith(t) => {
+            let stmts = |stmts: &[Expr], mut inner: AHashMap<ArcStr, ArcStr>| {
+                let mut out = Vec::with_capacity(stmts.len());
+                for x in stmts.iter() {
+                    out.push(rewrite(x, &inner));
+                    shadow_step(x, &mut inner);
+                }
+                Arc::from(out)
+            };
+            let mut with_map = map.clone();
+            with_map.remove(&t.bind);
+            ExprKind::TryWith(Arc::new(TryWithExpr {
+                body: stmts(&t.body, map.clone()),
+                bind: t.bind.clone(),
+                constraint: t.constraint.clone(),
+                handler: stmts(&t.handler, with_map),
+            }))
+        }
         ExprKind::Seq { queued, trigger, body } => {
             let trigger = trigger.as_ref().map(|t| Arc::new(rewrite(t, map)));
             let mut inner = map.clone();
@@ -833,7 +1041,23 @@ fn rewrite_with_inner(
         ExprKind::ExplicitParens(x) => {
             ExprKind::ExplicitParens(Arc::new(rewrite(x, map)))
         }
-        ExprKind::Qop(x) => ExprKind::Qop(Arc::new(rewrite(x, map))),
+        ExprKind::Qop(x) => {
+            let x = rewrite(x, map);
+            match mode {
+                // R2: a `?` over a level (no call to wait for) reads it
+                // as it stands at entry, so a carried error raises at
+                // every entry and not only when a catch-up fire happens
+                // to deliver it.
+                Rewrite::Issue(pc) if !has_call(&x) => ExprKind::Qop(Arc::new(
+                    ExprKind::StrictSample {
+                        lhs: Arc::new(r#ref(x.pos, pc)),
+                        rhs: Arc::new(x),
+                    }
+                    .to_expr(e.pos),
+                )),
+                _ => ExprKind::Qop(Arc::new(x)),
+            }
+        }
         ExprKind::Rethrow(x) => ExprKind::Rethrow(Arc::new(rewrite(x, map))),
         ExprKind::SeqGuard(x) => ExprKind::SeqGuard(Arc::new(rewrite(x, map))),
         ExprKind::OrNever(x) => ExprKind::OrNever(Arc::new(rewrite(x, map))),
@@ -969,6 +1193,7 @@ fn rewrite_with_inner(
                     .seq_abort
                     .as_ref()
                     .map(|e| Arc::new(rewrite_with(e, &inner, mode.deferred()))),
+                seq_capture: c.seq_capture.clone(),
             }))
         }
         ExprKind::Lambda(l) => {
@@ -1208,11 +1433,13 @@ mod test {
     fn lower_ones(n: usize) -> Result<Expr> {
         let stmts: Vec<Expr> =
             (0..n).map(|_| ExprKind::Constant(Value::I64(1)).to_expr_nopos()).collect();
+        let mut sink = Sink::new();
+        sink.push(Write::Result);
         lower_do_stmts(
             &stmts,
             "pc",
             "Idle",
-            true,
+            &sink,
             "r",
             "v",
             &AHashMap::new(),

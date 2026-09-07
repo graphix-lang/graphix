@@ -983,6 +983,14 @@ impl PrettyDisplay for ExprKind {
                 e.fmt_pretty(buf)
             }
             ExprKind::SeqDo { body } => pretty_print_exprs(buf, body, "do {", "}", ";"),
+            ExprKind::TryWith(t) => {
+                pretty_print_exprs(buf, &t.body, "try {", "}", ";")?;
+                match &t.constraint {
+                    None => write!(buf, " with({}) ", t.bind)?,
+                    Some(ty) => write!(buf, " with({}: {ty}) ", t.bind)?,
+                }
+                pretty_print_exprs(buf, &t.handler, "{", "}", ";")
+            }
             ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
             ExprKind::List { args } => pretty_print_exprs(buf, args, "[<", ">]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
@@ -1389,6 +1397,14 @@ impl ExprKind {
             }
             ExprKind::Until(e) => write!(f, "until {e}"),
             ExprKind::SeqDo { body } => print_exprs(f, body, "do {", "}", "; "),
+            ExprKind::TryWith(t) => {
+                print_exprs(f, &t.body, "try {", "}", "; ")?;
+                match &t.constraint {
+                    None => write!(f, " with({}) ", t.bind)?,
+                    Some(ty) => write!(f, " with({}: {ty}) ", t.bind)?,
+                }
+                print_exprs(f, &t.handler, "{", "}", "; ")
+            }
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),
             ExprKind::List { args } => print_exprs(f, args, "[<", ">]", ", "),

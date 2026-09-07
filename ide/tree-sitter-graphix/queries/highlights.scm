@@ -13,6 +13,8 @@
 [
   "select"
   "seq"
+  "try"
+  "with"
   "seqq"
   "until"
   "do"

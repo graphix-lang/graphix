@@ -2,7 +2,7 @@ use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
         ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
-        set_origin,
+        TryWithExpr, set_origin,
     },
     typ::{FnType, Type},
 };
@@ -876,6 +876,23 @@ where
     choice((until_expr(), seq_do(), expr()))
 }
 
+/// A brace-delimited seq statement list (the body of `seq`, `try`
+/// and `with`). Empty positions come back as `NoOp`.
+fn seq_stmts<I>() -> impl Parser<I, Output = LPooled<Vec<Expr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    between(
+        sptoken('{'),
+        sptoken('}'),
+        sep_by1_tok_exp(seq_body_item(), semisep(), token('}'), |pos| {
+            ExprKind::NoOp.to_expr(pos)
+        }),
+    )
+}
+
 pub(super) fn seq<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -893,13 +910,7 @@ where
             not_followed_by(token('{'))
                 .with(choice((between(token('('), sptoken(')'), expr()), reference()))),
         )),
-        between(
-            sptoken('{'),
-            sptoken('}'),
-            sep_by1_tok_exp(seq_body_item(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos)
-            }),
-        ),
+        seq_stmts(),
     )
         .then(
             |(pos, queued, _, trigger, mut body): (
@@ -1149,23 +1160,69 @@ where
                 constraint,
                 handler: Arc::new(handler),
                 seq_abort: None,
+                seq_capture: None,
             }))
             .to_expr(pos)
         })
 }
 
-/// try/catch was removed from the language (2026-08-06,
-/// design/catch.md); `try` stays reserved so old code gets a
-/// direction instead of a confusing generic parse failure.
-fn try_removed<I>() -> impl Parser<I, Output = Expr>
+/// `try { stmts } with(e[: T]) { stmts }` — a seq statement
+/// (design/seq_blocks.md §7.9). Parsed wherever an expression is so
+/// `let x = try .. with ..` reads naturally; the compiler refuses it
+/// outside seq statement position.
+fn try_with<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(string("try").skip(space())).then(|_| {
-        unexpected_any("try/catch was removed; install a handler with `catch(e) expr` covering the rest of its enclosing block")
-    })
+    (
+        position().skip(attempt(string("try").skip(not_prefix()))),
+        spaces().with(seq_stmts()),
+        spaces().skip(string("with").skip(not_prefix())),
+        between(
+            sptoken('('),
+            sptoken(')'),
+            (
+                spaces().with(choice((
+                    attempt(token('_').skip(look_ahead(sptoken(')'))))
+                        .map(|_| ArcStr::from("_")),
+                    fname(),
+                ))),
+                spaces().with(optional(token(':').with(typ()))),
+            ),
+        ),
+        spaces().with(seq_stmts()),
+    )
+        .then(
+            |(pos, mut body, _, (bind, constraint), mut handler): (
+                _,
+                LPooled<Vec<Expr>>,
+                _,
+                _,
+                LPooled<Vec<Expr>>,
+            )| {
+                let empty = |b: &LPooled<Vec<Expr>>| {
+                    b.iter().all(|e| matches!(e.kind, ExprKind::NoOp))
+                };
+                if empty(&body) {
+                    unexpected_any("a try body must contain at least one step").left()
+                } else if empty(&handler) {
+                    unexpected_any("a with body must contain at least one step").left()
+                } else {
+                    value(
+                        ExprKind::TryWith(Arc::new(TryWithExpr {
+                            body: Arc::from_iter(body.drain(..)),
+                            bind,
+                            constraint,
+                            handler: Arc::from_iter(handler.drain(..)),
+                        }))
+                        .to_expr(pos),
+                    )
+                    .right()
+                }
+            },
+        )
 }
 
 fn byref<I>() -> impl Parser<I, Output = Expr>
@@ -1198,7 +1255,7 @@ parser! {
                 module(),
                 use_module(),
                 catch_stmt(),
-                try_removed(),
+                try_with(),
                 typedef(),
                 trait_decl(),
                 impl_decl(),

@@ -4,8 +4,8 @@ use crate::{
     expr::{
         ApplyExpr, BindExpr, CatchExpr, CouldNotResolve, Expr, ExprId, ExprKind,
         LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem,
-        SigKind, Source, StructExpr, StructWithExpr, StructurePattern, TypeDefExpr,
-        UseItem, parser, read_to_arcstr, serialize,
+        SigKind, Source, StructExpr, StructWithExpr, StructurePattern, TryWithExpr,
+        TypeDefExpr, UseItem, parser, read_to_arcstr, serialize,
     },
     format_with_flags,
 };
@@ -1030,6 +1030,16 @@ impl Expr {
                 let body = Arc::from(subexprs!(body));
                 expr!(ExprKind::SeqDo { body })
             }),
+            ExprKind::TryWith(t) => Box::pin(async move {
+                let body = Arc::from(subexprs!(t.body));
+                let handler = Arc::from(subexprs!(t.handler));
+                expr!(ExprKind::TryWith(Arc::new(TryWithExpr {
+                    body,
+                    bind: t.bind.clone(),
+                    constraint: t.constraint.clone(),
+                    handler,
+                })))
+            }),
             ExprKind::Qop(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Qop(Arc::new(e)))
@@ -1060,6 +1070,7 @@ impl Expr {
                     constraint: c.constraint.clone(),
                     handler: Arc::new(handler),
                     seq_abort,
+                    seq_capture: c.seq_capture.clone(),
                 })))
             }),
             ExprKind::ByRef(e) => Box::pin(async move {

@@ -2346,6 +2346,31 @@ fn seq_parses() {
 }
 
 #[test]
+fn try_with_parses() {
+    for s in [
+        "seq { try { 1 } with(e) { 2 } }",
+        "seq { try { f()? } with(e: Error<`E>) { println(e); 0 } }",
+        "seq { let x = try { let b = 1; b } with(_) { 0 }; x }",
+        "seq { x <- try { 1 } with(e) { e? } }",
+        "seq go { try { try { 1 } with(e) { e? } } with(e) { 2 } }",
+        "seq { try { do { 1; 2 } } with(e) { until ready; 3 } }",
+    ] {
+        let e = parse_one(s).unwrap();
+        let printed = e.to_string();
+        let again = parse_one(&printed).unwrap();
+        assert_eq!(again.to_string(), printed, "{s}");
+        let tries = e.fold(0usize, &mut |n, x| {
+            n + usize::from(matches!(x.kind, ExprKind::TryWith(_)))
+        });
+        assert!(tries >= 1, "{s} -> {printed}");
+    }
+    assert!(parse_one("seq { try { } with(e) { 1 } }").is_err());
+    assert!(parse_one("seq { try { 1 } with(e) { } }").is_err());
+    assert!(parse_one("seq { try { 1 } }").is_err());
+    assert!(parse_one("let try = 1").is_err());
+}
+
+#[test]
 fn seq_do_statement_list_is_capped() {
     let n = max_nesting();
     let body = std::iter::repeat("1").take(n).collect::<Vec<_>>().join("; ");

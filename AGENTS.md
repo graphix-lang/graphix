@@ -392,16 +392,24 @@ computation). First matching arm wins.
 async completion or connect. No trigger = once at init. A trigger
 while a run is in progress is dropped. `until e` waits until a bool
 level is true. `?` aborts the run; the generated handler resets and
-rethrows. A seq-toplevel `catch` or `{ ... }` is a compile error —
-wrap the seq, or put ordinary Graphix (including `catch`) in
-`do { ... }`. Levels (`tui::suspend`, publish, …) stay outside the
-block and are written from steps.
+rethrows. `catch` is refused ANYWHERE in a seq body (an install cannot
+produce the value the next step waits for); a bare `{ ... }` statement
+is refused too. Error handling inside a seq is
+`try { steps } with(e[: T]) { steps }`: an error anywhere in the try
+body (a `?`, a callee's throw) jumps to the with body with `e` = the
+FIRST error; the with body's last step continues after the try; its
+value is the statement's (`let x = try .. with(e) { default }`,
+`x <- try ..`, bare). A `?` in the with body aborts the run
+(`with(e) { cleanup; e? }`); an enclosing `try` catches it first.
+Seq level only (refused in `do`); the with value must fit the try
+body's type (annotate the let for a union). Levels (`tui::suspend`,
+publish, …) stay outside the block and are written from steps.
 
 Calls in `seq`/`seqq` wait for all explicit arguments, snapshot them
 together with `~!`, and issue once per entry. Bottom at entry clears a
 previous snapshot; input changes after issuance do not interrupt the
-pending result. Function bodies, reference contents, `until` conditions,
-and `catch` handlers keep their reactive clocks. `~!` tracks current
+pending result. Function bodies, reference contents and `until`
+conditions keep their reactive clocks. `~!` tracks current
 bottom: a valid trigger sampling bottom emits fresh bottom and banks
 nothing; RHS recovery alone does not fire. See `design/seq_blocks.md` §7.3.
 
@@ -426,8 +434,9 @@ seq result {
 `if` and loops are not seq steps yet. Nested `select` is an ordinary
 expression. The integer-sequence builtin is `range(i, j)`. A step that
 is `never()` stalls the run (later triggers busy-drop); skip with
-`_ => null`. Ceremony handlers that swallow after a toast wrap seq in
-an outer `catch` — the generated handler resets and rethrows.
+`_ => null`. A ceremony that toasts and continues is
+`try { .. } with(e) { toast <- ..; default }`; one that toasts and
+fails wraps the seq in a `catch`, or ends its with body with `e?`.
 
 ### Sample Operator (`~`)
 

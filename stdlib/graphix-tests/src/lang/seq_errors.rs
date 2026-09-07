@@ -106,7 +106,7 @@ async fn restart(fusion_disabled: bool) -> Result<()> {
         for (body, expected) in [
             ("bad(request)", "caught"),
             (
-                r#"do { catch(e) { println(e ~ "cleanup"); e? }; bad(request) }"#,
+                r#"try { bad(request) } with(e) { println("cleanup"); e? }"#,
                 "cleanup\ncaught",
             ),
         ] {
@@ -135,8 +135,8 @@ async fn restart(fusion_disabled: bool) -> Result<()> {
 async fn scoped_errors(fusion_disabled: bool) -> Result<()> {
     for code in [
         r#"{ catch(e) println(e ~ "caught"); error(`Oops)?; 42 }"#,
-        r#"seq { do { { catch(e) println(e ~ "caught"); error(`Oops)?; 42 } } }"#,
-        r#"seqq { do { { catch(e) println(e ~ "caught"); error(`Oops)?; 42 } } }"#,
+        r#"seq { try { error(`Oops)?; 42 } with(e) { println("caught"); 42 } }"#,
+        r#"seqq { try { error(`Oops)?; 42 } with(e) { println("caught"); 42 } }"#,
         r#"{
             catch(e) println(e ~ "caught");
             seq { do { { error(`Oops)?; 0 } } };
@@ -218,21 +218,20 @@ async fn multiple_errors(fusion_disabled: bool) -> Result<()> {
                     }};
                     catch(e) println("caught [(e.0).error]");
                     {form} request {{
-                        do {{
-                            catch(e) {{ println(e ~ "cleanup [request] [(e.0).error]"); e? }};
-                            {body}
+                        try {{ {body} }} with(e) {{
+                            println("cleanup [request] [(e.0).error]");
+                            e?
                         }}
                     }}
                 }}"#
             );
             let (values, out) = run_delta(&code, fusion_disabled).await?;
             assert_eq!(as_i64s(&values), [2, 4, 5], "{form}: {body}\n{out}");
+            // Three `?` raise in one cycle; the with body sees the first
+            // and rethrows it once. The other two are consumed (§7.9).
             let expected = [1, 3]
                 .into_iter()
-                .flat_map(|v| {
-                    ["First", "Second", "Third"]
-                        .map(|tag| format!("cleanup {v} {tag}\ncaught {tag}"))
-                })
+                .map(|v| format!("cleanup {v} First\ncaught First"))
                 .collect::<Vec<_>>()
                 .join("\n");
             assert_eq!(out.trim(), expected, "{form}: {body}");
@@ -243,40 +242,29 @@ async fn multiple_errors(fusion_disabled: bool) -> Result<()> {
 
 async fn nested_multiple_errors(fusion_disabled: bool) -> Result<()> {
     for inner in ["seq", "seqq"] {
-        for bridge in ["null;", "catch(e) e?;"] {
-            let code = format!(
-                r#"{{
+        let code = format!(
+            r#"{{
                 {CLOCK}
                 let request = select step {{ 1 | 2 | 3 => step, _ => never() }};
                 catch(e) println("caught [(e.0).error]");
                 seqq request {{
-                    do {{
-                        catch(e) {{ println(e ~ "outer [request] [(e.0).error]"); e? }};
-                        {{
-                          {bridge}
-                          {inner} {{
-                            do {{
-                              catch(e) {{ println(e ~ "inner [request] [(e.0).error]"); e? }};
-                              select request {{
-                                  1 => {{ error(`First)?; error(`Second)?; 1 }},
-                                  _ => request
-                              }}
-                            }}
-                          }}
+                    try {{
+                        {inner} {{
+                            try {{
+                                select request {{
+                                    1 => {{ error(`First)?; error(`Second)?; 1 }},
+                                    _ => request
+                                }}
+                            }} with(e) {{ println("inner [request] [(e.0).error]"); e? }}
                         }}
-                    }};
+                    }} with(e) {{ println("outer [request] [(e.0).error]"); e? }};
                     request
                 }}
             }}"#
-            );
-            let (values, out) = run_delta(&code, fusion_disabled).await?;
-            assert_eq!(as_i64s(&values), [2, 3], "{inner}: {bridge}\n{out}");
-            assert_eq!(
-                out.trim(),
-                "inner 1 First\nouter 1 First\ncaught First\ninner 1 Second\nouter 1 Second\ncaught Second",
-                "{inner}: {bridge}"
-            );
-        }
+        );
+        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [2, 3], "{inner}\n{out}");
+        assert_eq!(out.trim(), "inner 1 First\nouter 1 First\ncaught First", "{inner}");
     }
     Ok(())
 }
@@ -285,11 +273,10 @@ async fn recursive_multiple_errors(fusion_disabled: bool) -> Result<()> {
     for (body, expected) in [
         ("select request { 1 => bad(1000), _ => request }", "caught Same\ncaught Same"),
         (
-            r#"do {
-                    catch(e) { println(e ~ "cleanup [request]"); e? };
+            r#"try {
                     select request { 1 => bad(1000), _ => request }
-                }"#,
-            "cleanup 1\ncaught Same\ncleanup 1\ncaught Same",
+                } with(e) { println("cleanup [request]"); e? }"#,
+            "cleanup 1\ncaught Same",
         ),
     ] {
         let code = format!(
@@ -322,13 +309,12 @@ async fn multiple_errors_after_sleep(fusion_disabled: bool) -> Result<()> {
                 select request {{
                     1 | 3 | 5 => {{
                         let r = {form} request {{
-                            do {{
-                                catch(e) {{ println(e ~ "cleanup [request]"); e? }};
+                            try {{
                                 select request {{
                                     1 | 3 => {{ error(`First)?; error(`Second)?; request }},
                                     _ => request
                                 }}
-                            }}
+                            }} with(e) {{ println("cleanup [request]"); e? }}
                         }};
                         done <- r
                     }},
@@ -341,7 +327,7 @@ async fn multiple_errors_after_sleep(fusion_disabled: bool) -> Result<()> {
         assert_eq!(as_i64s(&values), [5], "{form}\n{out}");
         assert_eq!(
             out.trim(),
-            "cleanup 1\ncaught First\ncleanup 1\ncaught Second\ncleanup 3\ncaught First\ncleanup 3\ncaught Second",
+            "cleanup 1\ncaught First\ncleanup 3\ncaught First",
             "{form}"
         );
     }
@@ -357,33 +343,27 @@ async fn error_payloads(fusion_disabled: bool) -> Result<()> {
                 1 => {{ error(`Oops(v))?; error(`Oops(v + 10))?; v }},
                 _ => v
             }};
-            catch(e) println("caught [(e.0).error]");
+            catch(e) select (e.0).error {{ `Oops(n) => println("caught [n]") }};
             seqq request {{
-                do {{
-                    catch(e) {{
-                        println(e ~ "cleanup [request] [(e.0).error]");
-                        e?
-                    }};
-                    bad(request)
+                try {{ bad(request) }} with(e) {{
+                    select (e.0).error {{ `Oops(n) => println("cleanup [request] [n]") }};
+                    e?
                 }}
             }}
         }}"#
     );
     let (values, out) = run_delta(&code, fusion_disabled).await?;
     assert_eq!(as_i64s(&values), [2, 3], "{out}");
-    assert_eq!(
-        out.trim(),
-        "cleanup 1 `Oops(1)\ncaught [\"Oops\", 1]\ncleanup 1 `Oops(11)\ncaught [\"Oops\", 11]"
-    );
+    assert_eq!(out.trim(), "cleanup 1 1\ncaught 1");
     Ok(())
 }
 
 async fn nested_handler_choices(fusion_disabled: bool) -> Result<()> {
     for rethrow in [false, true] {
         let handler = if rethrow {
-            "select (e.0).error { `First => null, `Second => e? }"
+            "select (e.0).error { `First => e?, `Second => request }"
         } else {
-            "null"
+            "request"
         };
         let outer =
             if rethrow { "catch(e) println(\"caught [(e.0).error]\");" } else { "" };
@@ -393,26 +373,19 @@ async fn nested_handler_choices(fusion_disabled: bool) -> Result<()> {
                 let request = select step {{ 1 | 2 | 3 => step, _ => never() }};
                 {outer}
                 seqq request {{
-                    do {{
-                        {{
-                            catch(e) {{ println(e ~ "local [(e.0).error]"); {handler} }};
-                            select request {{
-                                1 => {{ error(`First)?; error(`Second)?; request }},
-                                _ => request
-                            }}
+                    try {{
+                        select request {{
+                            1 => {{ error(`First)?; error(`Second)?; request }},
+                            _ => request
                         }}
-                    }}
+                    }} with(e) {{ println("local [(e.0).error]"); {handler} }}
                 }}
             }}"#
         );
         let (values, out) = run_delta(&code, fusion_disabled).await?;
         let expected_values: &[i64] = if rethrow { &[2, 3] } else { &[1, 2, 3] };
         assert_eq!(as_i64s(&values), expected_values, "{handler}\n{out}");
-        let expected = if rethrow {
-            "local First\nlocal Second\ncaught Second"
-        } else {
-            "local First\nlocal Second"
-        };
+        let expected = if rethrow { "local First\ncaught First" } else { "local First" };
         assert_eq!(out.trim(), expected, "{handler}");
     }
     Ok(())
@@ -434,13 +407,14 @@ macro_rules! modes {
 
 async fn seq_statement_refusals() -> Result<()> {
     for (src, needle) in [
-        ("seq { catch(e) e; 1 }", "catch is not a seq statement"),
-        ("seqq { catch(e) e; 1 }", "catch is not a seq statement"),
-        ("seq { 1; catch(e) e }", "catch is not a seq statement"),
+        ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
+        ("seqq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
+        ("seq { 1; catch(e) e }", "catch is not allowed inside a seq"),
         ("seq { { let x = 1; x } }", "a block is not a seq statement"),
         ("seqq { { let x = 1; x }; 2 }", "a block is not a seq statement"),
-        ("seq { do { catch(e) e } }", "catch cannot be the last statement of do"),
-        ("seq { do { 1; catch(e) e } }", "catch cannot be the last statement of do"),
+        ("seq { do { catch(e) e } }", "catch is not allowed inside a seq"),
+        ("seq { do { 1; catch(e) e } }", "catch is not allowed inside a seq"),
+        ("seq { let x = { catch(e) null; 1 }; x }", "catch is not allowed inside a seq"),
     ] {
         let r = eval(src, crate::TEST_REGISTER).await;
         let msg = match &r {

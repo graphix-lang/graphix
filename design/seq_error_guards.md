@@ -69,7 +69,7 @@ Ordinary `?` checks and warnings are unchanged.
 `stdlib/graphix-tests/src/lang/seq_errors.rs` exercises ordinary and do
 continuations, connect RHSs, until conditions, final outputs, queue credits,
 calls-only failures, delayed failures, recursive calls, nested sequences,
-handler isolation, wrapping and do-body catches, and restart after failure in both engines.
+handler isolation, `try … with` recovery and cleanup, and restart after failure in both engines (`seq_try.rs` holds the try pins).
 Multiple-error cases check ordering, identical errors, payloads, captured
 request identity, recursive-frame delivery, nested rethrows, local
 swallowing, sleep/restart, and later queued requests.

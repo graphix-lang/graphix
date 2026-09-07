@@ -29,6 +29,14 @@ fn typ_echain(param: Type) -> Type {
     ))
 }
 
+/// The fields of `ErrChain<'a>` in a structurally typed world: a struct
+/// with exactly these names IS the chain.
+fn is_echain_shape(fields: &[(ArcStr, Type)]) -> bool {
+    const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
+    fields.len() == NAMES.len()
+        && NAMES.iter().all(|n| fields.iter().any(|(f, _)| f.as_str() == *n))
+}
+
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     static ERRCHAIN: LazyLock<Type> = LazyLock::new(|| typ_echain(Type::empty_tvar()));
     let pos: Value =
@@ -59,6 +67,9 @@ pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub handler: Node<R, E>,
     pub(crate) seq_abort: Option<SeqAbort<R, E>>,
+    /// A seq `try`'s capture cell (§7.9): receives the first error of
+    /// each failure and the union of this handler's inferred throws.
+    capture: Option<BindId>,
     own_handler: ErrorHandler,
     received: u64,
     last_cycle: Option<u64>,
@@ -115,11 +126,22 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 })
             })
             .transpose()?;
+        let capture = match &c.seq_capture {
+            None => None,
+            Some(name) => {
+                let path = ModPath::from([name.as_str()]);
+                match ctx.env.lookup_bind(&scope.lexical, &path)? {
+                    Some((_, b)) => Some(b.id),
+                    None => bail!("BUG: seq capture cell {name} is not bound"),
+                }
+            }
+        };
         ctx.rt.ref_var(bind_id, top_id);
         let node = Node::new(Self {
             spec,
             handler,
             seq_abort,
+            capture,
             own_handler: covered.dynamic.handler().unwrap(),
             received: 0,
             last_cycle: None,
@@ -137,13 +159,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let _ = self.handler.update(ctx, event);
         let cycle = ctx.rt.cycle();
-        if self.last_cycle != Some(cycle)
-            && matches!(super::read_var(ctx, event, &self.bind_id),
-                Some(super::VarRead::Delivered(tv)) if tv.tag().is_fired())
-        {
+        let first = self.seq_abort.as_ref().is_some_and(|a| !a.pending);
+        let delivered = match super::read_var(ctx, event, &self.bind_id) {
+            Some(super::VarRead::Delivered(tv))
+                if self.last_cycle != Some(cycle) && tv.tag().is_fired() =>
+            {
+                Some((first && self.capture.is_some()).then(|| tv.value_cloned()))
+            }
+            _ => None,
+        };
+        if let Some(captured) = delivered {
             self.last_cycle = Some(cycle);
             self.received = self.received.wrapping_add(1);
             self.own_handler.handled();
+            if let (Some(cap), Some(v)) = (self.capture, captured) {
+                ctx.rt.set_var(cap, v);
+            }
             if let Some(abort) = &mut self.seq_abort {
                 abort.pending = true;
             }
@@ -211,6 +242,40 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         wrap!(self.handler, self.handler.typecheck0(ctx))?;
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck0(ctx))?;
+        }
+        // The capture cell's type is the union of every covering
+        // handler's throws; a handler whose region cannot throw (a
+        // ⊥ bind) contributes nothing, so the cell is exact.
+        if let Some(cap) = self.capture {
+            let etyp = ctx
+                .env
+                .by_id
+                .get(&self.bind_id)
+                .map(|b| b.typ.clone())
+                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+            let bind = ctx
+                .env
+                .by_id
+                .get(&cap)
+                .ok_or_else(|| anyhow!("BUG: seq capture cell vanished"))?;
+            let Type::TVar(tv) = &bind.typ else {
+                bail!("BUG: seq capture cell is not a cell")
+            };
+            // The bind is a (frozen) cell: union its CONTENT, so two
+            // arms' errors merge the way two `?` under one catch do.
+            let etyp = match &etyp {
+                Type::TVar(b) => b.read().typ.read().typ.clone().unwrap_or(Type::Bottom),
+                t => t.clone(),
+            };
+            let joined = {
+                let tv = tv.read();
+                let cell = tv.typ.read();
+                match &cell.typ {
+                    None => etyp.clone(),
+                    Some(t) => Type::union(&ctx.env, &[t, &etyp])?,
+                }
+            };
+            tv.read().typ.write().typ = Some(joined);
         }
         Ok(())
     }
@@ -475,8 +540,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     {
                         Ok(etyp.clone())
                     }
+                    // A caught error's type arrives EXPANDED through a
+                    // call site's throws (the alias-expansion note in
+                    // CLAUDE.md); structurally it is the same chain, and
+                    // `wrap_error` chains the value rather than nesting
+                    // it, so the type must not nest either.
+                    Some(Type::Struct(fields)) if is_echain_shape(fields) => {
+                        Ok(etyp.clone())
+                    }
                     Some(et) => {
-                        Ok(Type::Error(Arc::new(typ_echain(et.clone()))))
+                        // The chain may also arrive as a Ref resolved in
+                        // another scope (a callee's throws): expand it.
+                        let expanded = match et {
+                            Type::Ref(_) => Some(et.lookup_ref(&ctx.env)?),
+                            _ => None,
+                        };
+                        let chain = matches!(
+                            expanded.as_ref().unwrap_or(et),
+                            Type::Struct(fields) if is_echain_shape(fields)
+                        );
+                        if chain {
+                            Ok(etyp.clone())
+                        } else {
+                            Ok(Type::Error(Arc::new(typ_echain(et.clone()))))
+                        }
                     }
                 }),
                 Some(Type::Set(elts)) => {
@@ -505,6 +592,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         }
         let err = Type::Primitive(Typ::Error.into());
         let rtyp = self.n.typ().diff(&ctx.env, &err)?;
+        // A `?` over a type with no non-error member never produces: it
+        // is bottom, which a select absorbs, not an empty union, which
+        // no pattern could match (a seq with body ending in `e?`).
+        let rtyp = if rtyp.is_uninhabited() { Type::Bottom } else { rtyp };
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         if let Some(handler) = &self.handler {
             let (id, _) = handler.id();

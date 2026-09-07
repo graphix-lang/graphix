@@ -796,6 +796,7 @@ macro_rules! catch_stmt {
                     constraint,
                     handler: Arc::new(handler),
                     seq_abort: None,
+                    seq_capture: None,
                 }))
                 .to_expr_nopos()
             },
@@ -1965,11 +1966,22 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Qop(e0), ExprKind::Qop(e1)) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),
         (ExprKind::Catch(c0), ExprKind::Catch(c1)) => {
-            let CatchExpr { bind: b0, constraint: c0, handler: h0, seq_abort: a0 } =
-                &**c0;
-            let CatchExpr { bind: b1, constraint: c1, handler: h1, seq_abort: a1 } =
-                &**c1;
+            let CatchExpr {
+                bind: b0,
+                constraint: c0,
+                handler: h0,
+                seq_abort: a0,
+                seq_capture: s0,
+            } = &**c0;
+            let CatchExpr {
+                bind: b1,
+                constraint: c1,
+                handler: h1,
+                seq_abort: a1,
+                seq_capture: s1,
+            } = &**c1;
             b0 == b1
+                && s0 == s1
                 && check_type_opt(c0, c1)
                 && check(h0, h1)
                 && match (a0, a1) {
@@ -2121,6 +2133,14 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Until(a), ExprKind::Until(b)) => check(a, b),
         (ExprKind::SeqDo { body: a }, ExprKind::SeqDo { body: b }) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| check(x, y))
+        }
+        (ExprKind::TryWith(a), ExprKind::TryWith(b)) => {
+            a.bind == b.bind
+                && a.constraint == b.constraint
+                && a.body.len() == b.body.len()
+                && a.body.iter().zip(b.body.iter()).all(|(x, y)| check(x, y))
+                && a.handler.len() == b.handler.len()
+                && a.handler.iter().zip(b.handler.iter()).all(|(x, y)| check(x, y))
         }
         (_, _) => false,
     }

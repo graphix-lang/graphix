@@ -776,6 +776,7 @@ module.exports = grammar({
       $.apply,
       $.select,
       $.seq_block,
+      $.try_with,
       $.any,
       $.cast,
       $.never,
@@ -885,15 +886,35 @@ module.exports = grammar({
         $.reference,
       )),
       '{',
-      seq(
-        repeat(seq($._seq_item, ';')),
-        $._seq_item,
-        optional(';'),
-      ),
+      $._seq_items,
       '}',
     ),
 
+    _seq_items: $ => seq(
+      repeat(seq($._seq_item, ';')),
+      $._seq_item,
+      optional(';'),
+    ),
+
     _seq_item: $ => choice($.until, $.seq_do, $._expression),
+
+    // `try { stmts } with(e[: T]) { stmts }` — a seq statement
+    // (design/seq_blocks.md §7.9); parsed as an expression so
+    // `let x = try .. with ..` works, refused elsewhere by the compiler.
+    try_with: $ => seq(
+      'try',
+      '{',
+      $._seq_items,
+      '}',
+      'with',
+      '(',
+      field('binding', choice('_', $._binding_name)),
+      optional(seq(':', $._type)),
+      ')',
+      '{',
+      $._seq_items,
+      '}',
+    ),
 
     until: $ => seq('until', $._expression),
 

@@ -354,6 +354,21 @@ pub struct CatchExpr {
     pub handler: Arc<Expr>,
     /// Compiler-only: this catch unconditionally rethrows before aborting.
     pub seq_abort: Option<Arc<Expr>>,
+    /// Compiler-only: a seq `try`'s per-arm handler (§7.9). The first
+    /// error delivered per failure is written to this cell, and the
+    /// handler's inferred throws are unioned into the cell's type.
+    pub seq_capture: Option<ArcStr>,
+}
+
+/// `try { stmts } with(e[: T]) { stmts }` — a seq statement: an
+/// error-triggered branch (`design/seq_blocks.md` §7.9).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct TryWithExpr {
+    pub body: Arc<[Expr]>,
+    pub bind: ArcStr,
+    pub constraint: Option<Type>,
+    pub handler: Arc<[Expr]>,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -494,6 +509,9 @@ pub enum ExprKind {
     SeqDo {
         body: Arc<[Expr]>,
     },
+    /// `try { stmts } with(e) { stmts }` — legal only as a seq step
+    /// (`design/seq_blocks.md` §7.9).
+    TryWith(Arc<TryWithExpr>),
     Qop(Arc<Expr>),
     /// Compiler-generated forwarding; a nonthrowing region supplies bottom.
     Rethrow(Arc<Expr>),
@@ -977,6 +995,10 @@ impl Expr {
             }
             ExprKind::Until(e) => e.fold(init, f),
             ExprKind::SeqDo { body } => body.iter().fold(init, |init, e| e.fold(init, f)),
+            ExprKind::TryWith(t) => {
+                let init = t.body.iter().fold(init, |init, e| e.fold(init, f));
+                t.handler.iter().fold(init, |init, e| e.fold(init, f))
+            }
             ExprKind::Catch(c) => {
                 let init = c.handler.fold(init, f);
                 match &c.seq_abort {

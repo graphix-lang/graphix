@@ -54,7 +54,7 @@ ordinary activation behavior.
 This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as
 handles, not copies of their contents. Calls inside `until` conditions and
-`catch` handlers retain their ordinary reactive behavior.
+a `with` body's steps are steps like any other.
 
 ## Captured inputs
 
@@ -91,25 +91,64 @@ another with an old count. Taking `&state` refers to the original state.
 Keep persistent effects such as subscriptions and `tui::suspend` outside
 the block; steps can update their inputs and wait for their responses.
 
+## Errors
+
 A thrown error aborts the current request, resets the sequence, and
 rethrows to the enclosing handler. It is not a successful block output.
-A seq-toplevel `catch` or `{ ... }` is a compile error: wrap the seq
-for cleanup, and put ordinary Graphix (including `catch`) in
-`do { ... }`. If a run raises several errors, each is rethrown. The
-sequence resets and releases the queue only once, after those
-deliveries, keeping the failed request's captured inputs in place.
-This does not wait for asynchronous work started by an enclosing
-handler. Sample that handler's side-effect arguments on the error, for
-example `println(e ~ "failed [request]")`, so later captured-value
-changes do not reissue the effect.
+If a run raises several errors, each is rethrown. The sequence resets
+and releases the queue only once, after those deliveries, keeping the
+failed request's captured inputs in place. This does not wait for
+asynchronous work started by an enclosing handler. Sample that
+handler's side-effect arguments on the error, for example
+`println(e ~ "failed [request]")`, so later captured-value changes do
+not reissue the effect.
+
+`catch` is not allowed anywhere inside a seq body. A catch is an
+install: it can observe an error but it cannot produce the value the
+next step is waiting for, so inside a sequence it could only rethrow
+or stall the run. Error handling inside a sequence is control flow:
+
+```graphix
+seq req {
+  let code = try {
+    let child = sys::process::spawn(options(req))?;
+    let status = sys::process::wait(child.proc)?;
+    status.code
+  } with(e) {
+    toast <- failed(e);
+    -1
+  };
+  report(code)
+}
+```
+
+`try { steps } with(e) { steps }` is a seq statement. An error raised
+anywhere in the try body, by a `?`, by a function the body calls, or
+inside a fused region, transfers control to the with body's first step
+with `e` bound to the first error of the failure (a step that raises
+several errors in one cycle delivers only the first; the rest are
+consumed). The with body's last step continues to the statement after
+the `try`. The statement's value is whichever body ran, so
+`let x = try { .. } with(e) { .. }`, `x <- try { .. } with(_) { .. }`
+and a bare `try` as a statement or as the block's last expression all
+work. The with body's value must fit the try body's type; annotate the
+let to recover into a wider one, `let x: [i64, null] = try { f()? }
+with(_) { null }`.
+
+An error raised in the with body goes to the enclosing `try`, else to
+the sequence, which aborts as usual. Cleanup that still fails the run
+is therefore `with(e) { cleanup; e? }`, and the error reaches the
+handler around the seq exactly once. A let bound in the try body is not
+visible after the `try`; `e` is visible only in the with body;
+`with(e: T)` ascribes `T` to `e` and requires it to cover everything the
+body can throw. `try` is a seq statement: it is refused inside `do`
+and outside a seq.
 
 An error reaching the sequence's handler takes precedence over a value
 produced by the same step. The failing step cannot publish a result or
 start subsequent statements, including subsequent statements within `do`.
 This is not rollback: effects already performed inside an ordinary
-expression remain performed. An error handled by a `catch` inside
-`do { ... }`, without rethrowing to the sequence, does not abort the
-run.
+expression remain performed.
 
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
