@@ -106,7 +106,9 @@ not reissue the effect.
 `catch` is not allowed anywhere inside a seq body. A catch is an
 install: it can observe an error but it cannot produce the value the
 next step is waiting for, so inside a sequence it could only rethrow
-or stall the run. Error handling inside a sequence is control flow:
+or stall the run. (A lambda literal is its own scope and may contain
+one: inside a function you are back in ordinary Graphix.) Error
+handling inside a sequence is control flow:
 
 ```graphix
 seq req {

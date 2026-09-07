@@ -1254,7 +1254,8 @@ the rules.
   the FIRST error into the with body's `e` cell and unions its inferred
   throws into the cell's type (exact: a can't-throw arm contributes
   ⊥). `catch` is refused anywhere in a seq body (`refuse_catch`, a
-  `fold`; lambda literals included). Seq level only (refused in
+  `fold`; lambda literals and their defaults are exempt — a function
+  is ordinary Graphix again, Eric 2026-09-07). Seq level only (refused in
   `do`). A call-free `?` in a step is sampled on the entry event
   (`Qop(pc ~! x)`, R2 applied to `?`) so a carried error raises at
   every entry. A `?` whose residual is uninhabited types Bottom (a

@@ -5,6 +5,7 @@
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
 use graphix_package_core::testing::eval;
+use netidx_value::Value;
 
 const CLOCK: &str = r#"
     let step = 0;
@@ -249,10 +250,6 @@ async fn refusals() -> Result<()> {
         ("seq { do { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
         ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         (
-            "seq { let f = |x| { catch(e) null; x }; f(1) }",
-            "catch is not allowed inside a seq",
-        ),
-        (
             "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { do { catch(e) println(e); bad(1)? } } }",
             "catch is not allowed inside a seq",
         ),
@@ -283,6 +280,20 @@ async fn refusals() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn refusals_interp() -> Result<()> {
     refusals().await
+}
+
+// A lambda literal is its own dynamic scope: a catch inside it is
+// ordinary Graphix, not a seq statement, wherever the lambda sits.
+#[tokio::test(flavor = "current_thread")]
+async fn lambda_catch_is_ordinary() -> Result<()> {
+    for src in [
+        "seq { let f = |x| { catch(e) null; x }; f(1) }",
+        "seq { let f = |x| { let g = |y| { catch(e) null; y }; g(x) }; f(1) }",
+    ] {
+        let (v, _) = eval(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, Value::I64(1), "{src}");
+    }
+    Ok(())
 }
 
 macro_rules! modes {

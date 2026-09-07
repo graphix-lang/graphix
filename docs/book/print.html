@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2cd4734e.js";
+            window.path_to_searchindex_js = "searchindex-83e55e60.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2080,7 +2080,9 @@ not reissue the effect.</p>
 <p><code>catch</code> is not allowed anywhere inside a seq body. A catch is an
 install: it can observe an error but it cannot produce the value the
 next step is waiting for, so inside a sequence it could only rethrow
-or stall the run. Error handling inside a sequence is control flow:</p>
+or stall the run. (A lambda literal is its own scope and may contain
+one: inside a function you are back in ordinary Graphix.) Error
+handling inside a sequence is control flow:</p>
 <pre><code class="language-graphix">seq req {
   let code = try {
     let child = sys::process::spawn(options(req))?;

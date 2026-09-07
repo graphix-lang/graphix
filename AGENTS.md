@@ -393,8 +393,9 @@ async completion or connect. No trigger = once at init. A trigger
 while a run is in progress is dropped. `until e` waits until a bool
 level is true. `?` aborts the run; the generated handler resets and
 rethrows. `catch` is refused ANYWHERE in a seq body (an install cannot
-produce the value the next step waits for); a bare `{ ... }` statement
-is refused too. Error handling inside a seq is
+produce the value the next step waits for) except inside a lambda
+literal, which is its own scope; a bare `{ ... }` statement is refused
+too. Error handling inside a seq is
 `try { steps } with(e[: T]) { steps }`: an error anywhere in the try
 body (a `?`, a callee's throw) jumps to the with body with `e` = the
 FIRST error; the with body's last step continues after the try; its

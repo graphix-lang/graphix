@@ -338,8 +338,10 @@ stmt   := let pat = expr ;
 ```
 
 `catch` is refused anywhere in a seq body — as a statement, inside
-`do`, or nested in a step's expression; a lambda literal's body is its
-own dynamic scope and is exempt. A bare `{ ... }` statement is refused;
+`do`, or nested in a step's expression; a lambda literal's body (and
+its defaults) is its own dynamic scope and is exempt (Eric: "as soon
+as you introduce a lambda you're basically back in graphix"). A bare
+`{ ... }` statement is refused;
 `do { ... }` groups statements. Error handling inside a sequence is
 `try … with` (§7.9); a wrapper `catch` around the seq is ordinary
 Graphix and sees an aborted run's error.
@@ -625,8 +627,8 @@ body raised, the with body's. `try`/`with` are already reserved words;
 `try` leads, so there is no clash with `{s with ..}`. Seq level only:
 `try` inside `do` is refused, like `until`. `catch` is refused anywhere
 in a seq body — as a statement, inside `do`, or nested in a step's
-expression (a lambda literal's body is its own dynamic scope and is not
-part of the sequence). No `finally`: success cleanup is the next
+expression; a lambda literal's body is its own dynamic scope, not part
+of the sequence, and is exempt. No `finally`: success cleanup is the next
 statement, failure cleanup is the with body.
 
 ```graphix
@@ -799,11 +801,12 @@ parentheses stay.
 - `value_forms` — a let before the try read in the with body; the
   connect form with `with(_)`; a bare try mid-sequence; a bare try as
   the value.
+- `lambda_catch_is_ordinary` — a lambda literal inside a seq body may
+  carry its own `catch`, nested lambdas included.
 - `seqq_credit` — a recovered request releases the next at completion,
   an aborting with body at the reset.
 - `refusals` — `try` in `do` (bare and as a let value), `catch` as a
-  statement, in `do`, in a nested block and in a lambda literal, the
-  R8 witness, `try` outside a seq and nested in an expression, a
+  statement, in `do` and in a nested block, the R8 witness, `try` outside a seq and nested in an expression, a
   try-body let read after the try, `e` read after the with, a let
   annotation the bodies do not fit, a `with(e: T)` that does not cover
   the body's throws.

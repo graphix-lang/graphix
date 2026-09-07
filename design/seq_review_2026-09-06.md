@@ -436,17 +436,32 @@ selection — exactly the path a pure derivation of carried cells
 legitimately completes through. The timer is re-issued (the presence
 select's `once` cleared on sleep) but its fire is never waited for.
 
+A second instance, found the same day pinning the lambda exemption:
+`let f = |v| { let r = never(); catch(e) r <- e ~ -2; r <- bad(v)?; r };
+f(request)` as a step gives `[-2, -2, 2]` for requests 1, 2, 3 — each
+run completes on the PREVIOUS run's `r`. The lambda instance is
+retained across runs, `r` is per-instance state, and at re-issue the
+body's value is the standing `r` a cycle before the new write lands.
+Same mechanism: a present-but-stale production at re-entry is taken as
+the step's completion.
+
 The same tail written as a call, `sys::time::after_idle(duration:2.ms, x)`,
 is correct, because the issue atom snapshots `x` at entry and an
 async call presents bottom until its new result. So the hazard is
 specific to a `~` whose RHS is a level and whose LHS is the step's
 wait: the step's value is present before the wait completes. The
 guard cannot tell the two stale-present cases apart by tag alone.
-Candidates: the lowering could rewrite a top-level `a ~ b` step to
-`a ~! b` (no bank, no resident ride — the strict form is the one the
-issue atom already uses), or the `~` node's resident could be excluded
-from the wake re-present inside a seq arm. Eric's call; the pin is the
-program above with `[0, 2, 3]` expected.
+The tag cannot decide it: a level read as it stands at entry (R2, to
+be accepted) and a previous run's answer (to be rejected) are both
+present-stale. Requiring a FIRED production for call-containing steps
+would fix both witnesses but stall a step like `f(x)` whose body
+returns a level the call does not fire. Candidates that stay inside
+the lowering: rewrite a top-level `a ~ b` step to `a ~! b` (covers the
+first witness only), or give the presence select's `once` a per-entry
+generation so a production older than the entry is not admitted
+(covers both, if the runtime can stamp productions). Eric's call; the
+pins are the two programs above.
+
 
 ## Suggested order
 

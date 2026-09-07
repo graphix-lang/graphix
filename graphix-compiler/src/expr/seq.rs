@@ -184,10 +184,33 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
 /// `catch` is refused anywhere in a seq body (design/seq_blocks.md R7):
 /// an install can observe an error but cannot produce the value the
 /// next step waits for, so inside a sequence it can only rethrow or
-/// stall. Lambda literals are walked too — hoist the function.
+/// stall. A lambda literal is its own dynamic scope — ordinary Graphix
+/// again — so its body and defaults are exempt.
 fn refuse_catch(e: &Expr) -> Result<()> {
+    let in_lambda: LPooled<AHashSet<ExprId>> =
+        e.fold(LPooled::take(), &mut |mut set, x| {
+            if let ExprKind::Lambda(l) = &x.kind {
+                let mut mark = |sub: &Expr| {
+                    sub.fold((), &mut |(), y| {
+                        set.insert(y.id);
+                    })
+                };
+                if let Either::Left(body) = &l.body {
+                    mark(body);
+                }
+                for a in l.args.iter() {
+                    if let Some(Some(default)) = &a.labeled {
+                        mark(default);
+                    }
+                }
+            }
+            set
+        });
     let found = e.fold(None, &mut |found: Option<Expr>, x| {
-        found.or_else(|| matches!(x.kind, ExprKind::Catch(_)).then(|| x.clone()))
+        found.or_else(|| {
+            (matches!(x.kind, ExprKind::Catch(_)) && !in_lambda.contains(&x.id))
+                .then(|| x.clone())
+        })
     });
     match found {
         None => Ok(()),
