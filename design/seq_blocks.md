@@ -79,7 +79,7 @@ file: `local.gx` 1,300 lines, 13 seeds, 21 catch blocks, 74 samples.
 ## 2. What it looks like
 
 ```graphix
-let privileged = |req: PrivReq| seq req {
+let privileged = |req: PrivReq| {
   catch(e) {
     select (e.0).error {
       `TerminalError(m) | `ProcessError(m) =>
@@ -88,23 +88,25 @@ let privileged = |req: PrivReq| seq req {
     };
     suspended <- false
   };
-  let cmd = escalate_command(req.argv, req)?;
-  suspended <- true;
-  until released;
-  println("\nAdministrator privileges are needed to [req.what].");
-  let child = sys::process::spawn(sys::process::options(#args: cmd.args, cmd.program))?;
-  let status = sys::process::wait(child.proc)?;
-  suspended <- false;
-  let code = select status.code { null as _ => -1, c => c };
-  select req.then {
-    `VerifyService({ name, for_user }) => verify_req <- { name, for_user, code },
-    `UninstallAgain(remove_ca) => run <- `UninstallWith(remove_ca),
-    `Nothing => select code {
-      0 => refresh <- code,
-      c => toast <- { title: "The privileged step failed", lines: ["It exited with status [c]."], error: true }
-    }
-  };
-  code
+  seq req {
+    let cmd = escalate_command(req.argv, req)?;
+    suspended <- true;
+    until released;
+    println("\nAdministrator privileges are needed to [req.what].");
+    let child = sys::process::spawn(sys::process::options(#args: cmd.args, cmd.program))?;
+    let status = sys::process::wait(child.proc)?;
+    suspended <- false;
+    let code = select status.code { null as _ => -1, c => c };
+    select req.then {
+      `VerifyService({ name, for_user }) => verify_req <- { name, for_user, code },
+      `UninstallAgain(remove_ca) => run <- `UninstallWith(remove_ca),
+      `Nothing => select code {
+        0 => refresh <- code,
+        c => toast <- { title: "The privileged step failed", lines: ["It exited with status [c]."], error: true }
+      }
+    };
+    code
+  }
 };
 let priv_exit = privileged(priv_req);
 ```
@@ -331,8 +333,10 @@ stmt   := let pat = expr ;
         | if expr { stmt* } [else { stmt* }] ;        // sugar over select on bool
         | loop { stmt* } | while expr { stmt* } | for pat in expr { stmt* }
         | break [expr] ; | continue ;
-        | catch(e) expr ;                // at the top of the block only (§7.8)
 ```
+
+A seq-toplevel `catch` or `{ ... }` is a compile error. Cleanup wraps
+the seq; grouped ordinary Graphix (including `catch`) lives in `do { ... }`.
 
 `seq { .. }` without a trigger runs once at init. `if` is already a
 reserved word. The keyword reclaims the integer-sequence builtin (§11).
@@ -394,11 +398,12 @@ Accumulators are captured variables written as steps (`total <- total
 + x`), read by the next iteration.
 
 **R7 — A `?` aborts the run.** The lowered block installs ONE handler
-outermost: it runs the user's cleanup (the block's own `catch`, if
-any), resets the step variable to idle, and rethrows to the enclosing
-handler. The block's own catch cannot swallow an error and continue; to handle a
-failure inside the ceremony, match the Result in a select step instead
-of writing `?`.
+outermost: it resets the step variable to idle and rethrows to the
+enclosing handler. There is no seq-statement `catch`. Cleanup wraps the
+seq; a `catch` inside `do { ... }` is ordinary Graphix (it covers later
+do-statements, and a rethrow reaches the sequence's handler). To handle
+a failure without aborting the ceremony, match the Result in a step
+instead of writing `?`.
 
 **R8 — The value.** The block's value is its last expression's, fired
 once per completed run, stale between runs, bottom before the first
@@ -435,7 +440,7 @@ inspectable, which is the debugging story.
   let pc = `Idle;                       // [`Idle, `A1, `A2, ..]
   let x_c = never();                    // one cell per let read across arms
   let idle = select pc { `Idle => true, _ => false };
-  catch(e) { <user cleanup>; pc <- e ~ `Idle; e? };
+  catch(e) { pc <- `Idle; e? };
   let t = filter(<trigger>, |x| x ~ idle);  // R1: dropped while running
   pc <- t ~ `A1;
   select pc {
@@ -557,16 +562,21 @@ drop). §8 states what this does and does not give.
 
 ### 7.8 Errors
 
-The user's `catch` is allowed only at the top of the block and it is
-cleanup, not a handler: the lowered machine has one handler, outermost,
-whose per-error body is the cleanup and the rethrow. Its separate abort
-action resets the PC once all the run's errors have been delivered (and
-returns one queue credit for `seqq`). Handler-side
-`?` resolves to the predecessor, so the enclosing block's catch sees
-the error as it would from a plain block. Every sequence installs this
-handler, including sequences whose errors arise only through calls.
-The generated rethrow forwards the inferred error type; a nonthrowing
-sequence does not acquire a throws type.
+A seq-toplevel `catch` is a compile error: as a seq statement it would
+abort the run (the machine's handler), and inside `{ ... }` it would
+not, and that split is not worth the surface. Wrap the seq for cleanup.
+A `catch` inside `do { ... }` is ordinary Graphix — an install covering
+later do-statements, not a value-gated step (it never produces, so it
+cannot be last). A rethrow from it reaches the sequence's generated
+handler; a swallow does not, and a later do-statement that bottoms
+stalls that statement the same way `never()` does.
+
+The lowered machine has one handler, outermost, whose body is the
+rethrow. Its separate abort action resets the PC once all the run's
+errors have been delivered (and returns one queue credit for `seqq`).
+Every sequence installs this handler, including sequences whose errors
+arise only through calls. The generated rethrow forwards the inferred
+error type; a nonthrowing sequence does not acquire a throws type.
 
 Each step value, connect RHS, and `until` condition passes through a
 completion guard before its continuation. Each statement within `do`
@@ -577,10 +587,6 @@ Failure stays latched until the guard sleeps. Thus no success transition,
 carried value, or block output is queued for a failed step; the handler's
 reset does not compete with a queued advance. See
 [seq_error_guards.md](seq_error_guards.md) for the runtime and JIT boundary.
-
-A mid-block catch (covering
-only later steps) would have to be duplicated into every later arm;
-not in v1.
 
 ## 8. Costs and limits
 
@@ -633,8 +639,9 @@ machine — the round-trip test covers the lowering's output.
    tree-sitter `seq_block`. No `Stmt` enum — body is `[Expr]`. Proptest
    generator not yet (Until is not a top-level expr).
 2. The desugar (`expr/seq.rs`): DONE for lets, connects, expression
-   steps, `until`, one catch at the top, `?` abort. One arm per step.
-   `--expand` not yet.
+   steps, `until`, `do`, `?` abort. One arm per step. A seq-toplevel
+   `catch` or `{ ... }` is refused; `catch` inside `do` is an ordinary
+   install. `--expand` not yet.
 3. Pins: atoms (go/no-go) plus surface `seq_value` / `seq_let_then_use`
    / `seq_trigger_and_until` / `seq_busy_drops` / `seq_qop_aborts`.
    Branch/loop pins wait on if/loops.
@@ -661,7 +668,6 @@ machine — the round-trip test covers the lowering's output.
 - **Nested `seq`** as a statement (a sub-machine triggered by the
   entry) — falls out of R3 and R8 if the inner block's trigger is the
   outer entry, but a lambda call is the same thing; v2.
-- **Mid-block `catch`** (§7.8).
 - **`until`** as sugar or as a documented select spelling.
 - **The trigger snapshot** (R1's last sentence): needed, or is the
   one-cycle race between the trigger's delivery and the first arm's

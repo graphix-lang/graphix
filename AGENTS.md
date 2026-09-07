@@ -391,15 +391,17 @@ computation). First matching arm wins.
 `seq [trigger] { stmts }` runs the statements in order, one step per
 async completion or connect. No trigger = once at init. A trigger
 while a run is in progress is dropped. `until e` waits until a bool
-level is true. `?` aborts the run (the block's `catch`, if any, is
-cleanup; the error rethrows). Levels (`tui::suspend`, publish, …)
-stay outside the block and are written from steps.
+level is true. `?` aborts the run; the generated handler resets and
+rethrows. A seq-toplevel `catch` or `{ ... }` is a compile error —
+wrap the seq, or put ordinary Graphix (including `catch`) in
+`do { ... }`. Levels (`tui::suspend`, publish, …) stay outside the
+block and are written from steps.
 
 Calls in `seq`/`seqq` wait for all explicit arguments, snapshot them
 together with `~!`, and issue once per entry. Bottom at entry clears a
 previous snapshot; input changes after issuance do not interrupt the
 pending result. Function bodies, reference contents, `until` conditions,
-and cleanup handlers keep their reactive clocks. `~!` tracks current
+and `catch` handlers keep their reactive clocks. `~!` tracks current
 bottom: a valid trigger sampling bottom emits fresh bottom and banks
 nothing; RHS recovery alone does not fire. See `design/seq_blocks.md` §7.3.
 
@@ -425,7 +427,7 @@ seq result {
 expression. The integer-sequence builtin is `range(i, j)`. A step that
 is `never()` stalls the run (later triggers busy-drop); skip with
 `_ => null`. Ceremony handlers that swallow after a toast wrap seq in
-an outer `catch` — seq's own catch resets and rethrows.
+an outer `catch` — the generated handler resets and rethrows.
 
 ### Sample Operator (`~`)
 

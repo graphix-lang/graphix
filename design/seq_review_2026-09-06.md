@@ -32,7 +32,7 @@ timeout -k 2 40 ~/tmp/target/debug/graphix --no-fusion repro.gx
 | trigger-name shadowing kills the machine | **fixed** — pins in `lang/seq_shadow.rs` |
 | `expr_may_throw` is syntactic: no handler for a callee-thrown error | **fixed** |
 | …a user catch + no syntactic `?` swallows | **fixed** |
-| …a user handler that rethrows delivers twice | **open (R2)** |
+| …a user handler that rethrows delivers twice | **closed (R2)** — seq-toplevel `catch` is refused; `catch` inside `do` is ordinary |
 | the machine calls bare `filter` | **open (R3)** |
 | `until` as the last step is a silent bottom | **open (R4)** |
 | `until` inside `do` / nested `do` dead code | **partly open (R5)** |
@@ -106,7 +106,20 @@ Aside, not the same bug: a 2000-**step** `seq` body (no `do`) does not
 abort, but `--check` does not finish in 180s. That is a scaling
 question about the arm count and the `pc` type, not a stack question.
 
-## R2 — P1: a cleanup handler that rethrows delivers twice
+## R2 — closed: seq-toplevel `catch` is refused
+
+The double delivery was a seq-toplevel `catch` inlined into the same
+node as the machine's `Rethrow`. A seq-statement `catch` would abort
+the run; the same `catch` inside `{ ... }` would not. That split is
+not worth the surface. Seq-toplevel `catch` and `{ ... }` are compile
+errors. Cleanup wraps the seq. Grouped ordinary Graphix, including
+`catch`, lives in `do { ... }`: the catch is an install covering later
+do-statements, not a value-gated step, and a rethrow reaches the
+generated handler once.
+
+Original write-up follows.
+
+## R2 (original) — P1: a cleanup handler that rethrows delivers twice
 
 Location: [seq.rs:147](../graphix-compiler/src/expr/seq.rs#L147). The
 generated handler body is `[user handler (if any), Rethrow(e)]`, and the
@@ -264,12 +277,10 @@ real second consumer, which is what clears the abstraction bar.
 
 1. **R1.** An abort is the worst outcome available and the fix is two
    `ensure_sufficient` wrappers.
-2. **R2.** A wrong error count is a correctness bug in the construct's
-   own error discipline, and it is invisible to the suite.
+2. **R2.** Closed: seq-toplevel `catch` / `{ ... }` refused.
 3. **R3** and **R4** — both small, both user-visible as confusing
    failures in generated code.
 4. **R5**, then **R6**/**R7** as cleanup.
 
-Each of R1–R4 is a short `run!` fixture; R2 in particular should be
-pinned in `lang/seq_errors.rs` next to `nested_handler_choices`, since
-the two differ only by a pair of braces.
+Each of R1–R4 is a short `run!` fixture. R2 is pinned by
+`seq_statement_refusals` and by `nested_handler_choices` using `do`.

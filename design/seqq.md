@@ -10,7 +10,7 @@ Every trigger samples one tuple, not separate queues of independently
 updating captures. One initial release credit starts the first request;
 each successful block output returns one credit. An abort resets the
 machine and returns one credit after all the run's errors have reached
-cleanup and been rethrown. Multiple errors cannot release extra requests;
+the sequence's handler and been rethrown. Multiple errors cannot release extra requests;
 captures remain pinned throughout their delivery. Neither a standing
 output nor an intermediate step releases a request.
 

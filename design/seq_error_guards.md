@@ -19,7 +19,7 @@ an error increments that count along the dynamic parent chain; processing
 its catch delivery decrements it. A rethrow raises its new delivery before
 the original delivery is acknowledged, so the containing sequence never
 sees a false gap while errors are moving outward. This works through both
-sequence cleanup handlers and ordinary catches that may swallow or rethrow.
+the sequence's generated handler and ordinary catches that may swallow or rethrow.
 
 The interpreter marks a raise before calling `deliver_error`. A compiled
 `?` marks it before appending to the kernel's delivery queue. Delivery
@@ -47,7 +47,7 @@ complete; if they rethrow to the sequence, the guard latches failure.
 
 Consequently, a failed step cannot schedule the next PC, write its carried
 let values, issue a generated connect, or publish the block result. A
-failed seqq request does not return a success credit. Cleanup, reset, and
+failed seqq request does not return a success credit. Reset and
 rethrow remain in the generated handler.
 
 The guard is a fusion boundary; its child still fuses normally. The
@@ -61,8 +61,7 @@ Both sequence forms install their own handler unconditionally. Syntactic
 inspection cannot establish whether a function call throws. The internal
 `Rethrow` forwards the catch variable's inferred type and permits bottom
 when the region cannot throw. Its input is already a caught error, so its
-type is forwarded without adding another `ErrChain`, including when
-cleanup's pattern matching has expanded that alias to a structural type.
+type is forwarded without adding another `ErrChain`.
 Ordinary `?` checks and warnings are unchanged.
 
 ## Regression coverage
@@ -70,14 +69,14 @@ Ordinary `?` checks and warnings are unchanged.
 `stdlib/graphix-tests/src/lang/seq_errors.rs` exercises ordinary and do
 continuations, connect RHSs, until conditions, final outputs, queue credits,
 calls-only failures, delayed failures, recursive calls, nested sequences,
-handler isolation, cleanup, and restart after failure in both engines.
+handler isolation, wrapping and do-body catches, and restart after failure in both engines.
 Multiple-error cases check ordering, identical errors, payloads, captured
 request identity, recursive-frame delivery, nested rethrows, local
 swallowing, sleep/restart, and later queued requests.
 
 ## Multiple errors from one step
 
-Cleanup and rethrow run for every error. PC reset and the seqq abort credit
+Rethrow runs for every error that reaches the sequence's handler. PC reset and the seqq abort credit
 run only after the sequence's handler has received all its raised errors.
 For requests 1, 2, and 3, the function below reports both errors, fails
 request 1, and allows requests 2 and 3 to complete:
@@ -103,9 +102,9 @@ The nested-error count keeps the outer handler from declaring its run
 drained after only the first inner rethrow. Guards keep the nested
 handler subtree live while those deliveries remain outstanding. The
 outer request and its captures stay pinned until every error has been
-offered to cleanup and forwarded. Cleanup remains an ordinary reactive
-expression: this does not wait for arbitrary asynchronous cleanup to
-complete.
+offered to the sequence's handler and forwarded. An enclosing catch
+remains an ordinary reactive expression: this does not wait for
+arbitrary asynchronous work it starts.
 
 The extra accounting uses the existing handler allocation and inline
 catch state, not per-error allocations or a second error queue. Ordinary

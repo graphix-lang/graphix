@@ -91,23 +91,25 @@ another with an old count. Taking `&state` refers to the original state.
 Keep persistent effects such as subscriptions and `tui::suspend` outside
 the block; steps can update their inputs and wait for their responses.
 
-A thrown error aborts the current request, runs the block's `catch` handler
-if present, resets the sequence, and releases the next request. The error
-is rethrown to the enclosing handler; it is not a successful block output.
-If a run raises several errors, each reaches cleanup and is rethrown. The
-sequence resets and releases the queue only once, after those deliveries,
-keeping the failed request's captured inputs in place for cleanup. This
-does not wait for asynchronous work started by the cleanup handler.
-Like an ordinary `catch`, cleanup remains reactive. Sample its side-effect
-arguments on the error, for example `println(e ~ "failed [request]")`,
-so later captured-value changes do not reissue the effect.
+A thrown error aborts the current request, resets the sequence, and
+rethrows to the enclosing handler. It is not a successful block output.
+A seq-toplevel `catch` or `{ ... }` is a compile error: wrap the seq
+for cleanup, and put ordinary Graphix (including `catch`) in
+`do { ... }`. If a run raises several errors, each is rethrown. The
+sequence resets and releases the queue only once, after those
+deliveries, keeping the failed request's captured inputs in place.
+This does not wait for asynchronous work started by an enclosing
+handler. Sample that handler's side-effect arguments on the error, for
+example `println(e ~ "failed [request]")`, so later captured-value
+changes do not reissue the effect.
 
 An error reaching the sequence's handler takes precedence over a value
 produced by the same step. The failing step cannot publish a result or
 start subsequent statements, including subsequent statements within `do`.
 This is not rollback: effects already performed inside an ordinary
-expression remain performed. An error handled by a nested ordinary
-`catch`, without rethrowing to the sequence, does not abort the run.
+expression remain performed. An error handled by a `catch` inside
+`do { ... }`, without rethrowing to the sequence, does not abort the
+run.
 
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.

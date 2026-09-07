@@ -1238,8 +1238,9 @@ the rules.
   `if`/loops held): `seq [trigger] { stmt* [expr] }` desugars to a
   pc machine (Idle/S0..Sn, `filter` busy-drop, presence select + free
   `pc` read per step). Lets become cells; `until e` waits on a bool
-  level; one catch at the top is cleanup + reset + rethrow; `?` aborts
-  the run. No trigger = run at init. A bare-variable trigger is
+  level; the generated handler resets and rethrows; a seq-toplevel
+  `catch` or `{ ... }` is refused (`catch` inside `do` is ordinary);
+  `?` aborts the run. No trigger = run at init. A bare-variable trigger is
   snapshotted. `until` is reserved and legal only as a seq step. The
   integer builtin is `range(i, j)`. `do { stmts }` is several statements
   as one arm (lets inside, connects pc-sampled). Pins: `lang/seq.rs`

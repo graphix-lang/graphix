@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ba799024.js";
+            window.path_to_searchindex_js = "../searchindex-a8964019.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -245,22 +245,24 @@ written directly by the block also remains live when read, so queued
 another with an old count. Taking <code>&amp;state</code> refers to the original state.</p>
 <p>Keep persistent effects such as subscriptions and <code>tui::suspend</code> outside
 the block; steps can update their inputs and wait for their responses.</p>
-<p>A thrown error aborts the current request, runs the block’s <code>catch</code> handler
-if present, resets the sequence, and releases the next request. The error
-is rethrown to the enclosing handler; it is not a successful block output.
-If a run raises several errors, each reaches cleanup and is rethrown. The
-sequence resets and releases the queue only once, after those deliveries,
-keeping the failed request’s captured inputs in place for cleanup. This
-does not wait for asynchronous work started by the cleanup handler.
-Like an ordinary <code>catch</code>, cleanup remains reactive. Sample its side-effect
-arguments on the error, for example <code>println(e ~ "failed [request]")</code>,
-so later captured-value changes do not reissue the effect.</p>
+<p>A thrown error aborts the current request, resets the sequence, and
+rethrows to the enclosing handler. It is not a successful block output.
+A seq-toplevel <code>catch</code> or <code>{ ... }</code> is a compile error: wrap the seq
+for cleanup, and put ordinary Graphix (including <code>catch</code>) in
+<code>do { ... }</code>. If a run raises several errors, each is rethrown. The
+sequence resets and releases the queue only once, after those
+deliveries, keeping the failed request’s captured inputs in place.
+This does not wait for asynchronous work started by an enclosing
+handler. Sample that handler’s side-effect arguments on the error, for
+example <code>println(e ~ "failed [request]")</code>, so later captured-value
+changes do not reissue the effect.</p>
 <p>An error reaching the sequence’s handler takes precedence over a value
 produced by the same step. The failing step cannot publish a result or
 start subsequent statements, including subsequent statements within <code>do</code>.
 This is not rollback: effects already performed inside an ordinary
-expression remain performed. An error handled by a nested ordinary
-<code>catch</code>, without rethrowing to the sequence, does not abort the run.</p>
+expression remain performed. An error handled by a <code>catch</code> inside
+<code>do { ... }</code>, without rethrowing to the sequence, does not abort the
+run.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression discards pending queued work, following

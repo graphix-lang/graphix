@@ -1,8 +1,10 @@
 //! AST-to-AST lowering of `seq` (`design/seq_blocks.md` §7).
 //!
-//! Straight-line only: lets, connects, expression steps, `until`, one
-//! catch at the top. Each step is its own arm; calls consume one strict
-//! argument snapshot per entry.
+//! Straight-line only: lets, connects, expression steps, `until`, `do`.
+//! A seq-toplevel `catch` or `{ ... }` is refused — wrap the seq, or
+//! group ordinary Graphix (including `catch`) inside `do { ... }`. The
+//! machine installs one handler that resets and rethrows. Each step is
+//! its own arm; calls consume one strict argument snapshot per entry.
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
@@ -60,23 +62,23 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
         return Err(anyhow!("a seq block must contain at least one step")
             .context(ErrorContext(spec.clone())));
     }
-    let mut catch: Option<Arc<CatchExpr>> = None;
     let mut steps: Vec<&Expr> = Vec::new();
     for e in body.iter() {
         match &e.kind {
-            ExprKind::Catch(c) if steps.is_empty() => {
-                if catch.is_some() {
-                    return Err(anyhow!("a seq block has one catch, at the top")
-                        .context(ErrorContext(e.clone())));
-                }
-                catch = Some(c.clone());
-            }
             ExprKind::Catch(_) => {
-                return Err(anyhow!("a seq catch must be the first statement")
-                    .context(ErrorContext(e.clone())));
+                return Err(anyhow!(
+                    "catch is not a seq statement; write it around the seq, or inside do {{ ... }}"
+                )
+                .context(ErrorContext(e.clone())));
+            }
+            ExprKind::Do { .. } => {
+                return Err(anyhow!(
+                    "a block is not a seq statement; use do {{ ... }} to group statements"
+                )
+                .context(ErrorContext(e.clone())));
             }
             ExprKind::NoOp => (),
-            ExprKind::Until(_) | ExprKind::Bind(_) | _ => steps.push(e),
+            _ => steps.push(e),
         }
     }
     if steps.is_empty() {
@@ -129,28 +131,19 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     if let Some((n, _)) = trigger_bind {
         visible.insert(n, ArcStr::from(trig_cell.as_str()));
     }
-    let err_bind =
-        catch.as_ref().map(|c| c.bind.clone()).unwrap_or_else(|| ArcStr::from("e"));
+    let err_bind = ArcStr::from("e");
     let catch_node = {
         let reset = connect(pos, pc.as_str(), variant(pos, "Idle"));
-        let mut handler_map = visible.clone();
-        handler_map.remove(&err_bind);
-        let user = catch.as_ref().map(|c| rewrite(&c.handler, &handler_map));
-        let mut handler_body = Vec::new();
-        if let Some(h) = user {
-            handler_body.push(h);
-        }
         let mut abort_body = vec![reset];
         if let Some(clock) = abort_clock {
             abort_body.push(connect(pos, clock, boolean(pos, true)));
         }
-        handler_body.push(
-            ExprKind::Rethrow(Arc::new(r#ref(pos, err_bind.as_str()))).to_expr(pos),
-        );
         ExprKind::Catch(Arc::new(CatchExpr {
-            bind: err_bind,
-            constraint: catch.as_ref().and_then(|c| c.constraint.clone()),
-            handler: Arc::new(block(pos, handler_body)),
+            bind: err_bind.clone(),
+            constraint: None,
+            handler: Arc::new(
+                ExprKind::Rethrow(Arc::new(r#ref(pos, err_bind.as_str()))).to_expr(pos),
+            ),
             seq_abort: Some(Arc::new(block(pos, abort_body))),
         }))
         .to_expr(pos)
@@ -551,10 +544,30 @@ fn lower_do_stmts_inner(
             Err(anyhow!("until is not a do statement")
                 .context(ErrorContext(head.clone())))
         }
-        ExprKind::Catch(_) => Err(anyhow!(
-            "a seq catch must be the first statement of the seq, not inside do"
-        )
-        .context(ErrorContext(head.clone()))),
+        ExprKind::Catch(c) => {
+            if rest_empty {
+                return Err(anyhow!("catch cannot be the last statement of do")
+                    .context(ErrorContext(head.clone())));
+            }
+            let mut handler_map = visible.clone();
+            handler_map.remove(&c.bind);
+            let handler = rewrite(&c.handler, &handler_map);
+            let rest =
+                lower_do_stmts(rest, pc, next, last_step, result, vname, visible, cells)?;
+            Ok(block(
+                pos,
+                vec![
+                    ExprKind::Catch(Arc::new(CatchExpr {
+                        bind: c.bind.clone(),
+                        constraint: c.constraint.clone(),
+                        handler: Arc::new(handler),
+                        seq_abort: None,
+                    }))
+                    .to_expr(pos),
+                    rest,
+                ],
+            ))
+        }
         ExprKind::SeqDo { body } => {
             let mut flat: Vec<Expr> = body.iter().cloned().collect();
             flat.extend(rest.iter().cloned());
