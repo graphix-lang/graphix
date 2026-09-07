@@ -582,10 +582,10 @@ drop). §8 states what this does and does not give.
 
 `catch` is refused anywhere in a seq body (§5; the reasons are R7 and
 §7.9). Two forms were tried and withdrawn: a seq-toplevel `catch` as
-cleanup (its rethrow was delivered twice, review R2) and an ordinary
-`catch` inside `do` (a swallow wedged the machine: the failed statement
-never produces, and the completion guard keyed on the user's handler
-never released, review R8). Cleanup wraps the seq; recovery and
+cleanup (its rethrow was delivered twice) and an ordinary `catch`
+inside `do` (a swallow wedged the machine: the failed statement never
+produces, and the completion guard keyed on the user's handler never
+released). Cleanup wraps the seq; recovery and
 cleanup-then-abort are `try … with` (§7.9).
 
 The lowered machine has one handler, outermost, whose body is the
