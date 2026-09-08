@@ -268,7 +268,10 @@ duration:1.0s  duration:500.ms  duration:100.ns
 ==  !=                            // equality
 &&                                // logical and
 ||                                // logical or
-~                                 // sample (lowest binary)
+~  ~!                             // sample (lowest binary): `e ~ v` is v at each
+                                  // fire of e, BANKING a trigger that finds v absent
+                                  // (paid at v's first value); `e ~! v` is the STRICT
+                                  // sample — bottom when v is bottom, never counts
 ```
 
 Unchecked operators (`+`, `-`, `*`, `/`, `%`) log errors and return bottom on failure (e.g. overflow, div-by-zero).
@@ -386,59 +389,6 @@ select val {
 **Key**: unselected arms are put to sleep (subscriptions paused, no
 computation). First matching arm wins.
 
-### Seq — Straight-line ceremonies
-
-`seq [trigger] { stmts }` runs the statements in order, one step per
-async completion or connect. No trigger = once at init. A trigger
-while a run is in progress is dropped. `until e` waits until a bool
-level is true. `?` aborts the run; the generated handler resets and
-rethrows. `catch` is refused ANYWHERE in a seq body (an install cannot
-produce the value the next step waits for) except inside a lambda
-literal, which is its own scope; a bare `{ ... }` statement is refused
-too. Error handling inside a seq is
-`try { steps } with(e[: T]) { steps }`: an error anywhere in the try
-body (a `?`, a callee's throw) jumps to the with body with `e` = the
-FIRST error; the with body's last step continues after the try; its
-value is the statement's (`let x = try .. with(e) { default }`,
-`x <- try ..`, bare). A `?` in the with body aborts the run
-(`with(e) { cleanup; e? }`); an enclosing `try` catches it first.
-Seq level only (refused in `do`); the with value must fit the try
-body's type (annotate the let for a union). Levels (`tui::suspend`,
-publish, …) stay outside the block and are written from steps.
-
-Calls in `seq`/`seqq` wait for all explicit arguments, snapshot them
-together with `~!`, and issue once per entry. Bottom at entry clears a
-previous snapshot; input changes after issuance do not interrupt the
-pending result. Function bodies, reference contents and `until`
-conditions keep their reactive clocks. `~!` tracks current
-bottom: a valid trigger sampling bottom emits fresh bottom and banks
-nothing; RHS recovery alone does not fire. See `design/seq_blocks.md` §7.3.
-
-`do { stmts }` is several statements as one step: waits, then issues
-together, gating implicit. A let can sit inside.
-
-```graphix
-let y = seq go {
-  until ready;
-  9
-}
-
-seq result {
-  do {
-    let r = result?;
-    toast <- { title: "Done", lines: ["ok"], error: false };
-    load <- `Queue
-  }
-}
-```
-
-`if` and loops are not seq steps yet. Nested `select` is an ordinary
-expression. The integer-sequence builtin is `range(i, j)`. A step that
-is `never()` stalls the run (later triggers busy-drop); skip with
-`_ => null`. A ceremony that toasts and continues is
-`try { .. } with(e) { toast <- ..; default }`; one that toasts and
-fails wraps the seq in a `catch`, or ends its with body with `e?`.
-
 ### Sample Operator (`~`)
 
 Returns right side's value when left side produces an event.
@@ -494,7 +444,7 @@ error(`NotFound("missing"))?
   another_op()?
 }
 
-// catch(e: T) ascribes T to e; T must still cover every thrown error.
+// catch(e: T) expr checks T against the union of coverable errors.
 // A second catch in a block shadows the first below it; a handler's
 // own ? rethrows to the PREVIOUS catch (or the next one out).
 
@@ -675,7 +625,14 @@ fn<'s: Read + Write>(s: 's) -> null      // `+` joins bounds
 `filter_err(v)`, `count(v)`, `once(v)`, `uniq(v)`, `sum(v)`,
 `product(v)`, `min(v)`, `max(v)`, `mean(v)`, `and(a,b)`, `or(a,b)`,
 `all(v)`, `queue(v)`, `hold(v)`, `take(n,v)`, `skip(n,v)`,
-`throttle(dur,v)`, `never()`, `range(start,end)`
+`throttle(dur,v)`, `seq(start,end)`; `never()` / `never<T>(args…)` is
+SYNTAX, not a function (typed bottom, or `T`)
+
+**opt** (core, over `['a, null]`): `is_some`, `is_none`, `or_never`
+(null → never: `f(opt::or_never(x ~ maybe))` REPLACES the ladder
+`select x ~ maybe { null as _ => never(), v => f(v) }`), `or_default`,
+`or`, `and`, `xor`, `ok_or`, `ok_or_else`, `or_else`, `zip`, `unzip`,
+`map`, `flat_map`, `filter`, `contains`, `is_some_and`, `is_none_or`
 
 **array**: `map`, `filter`, `filter_map`, `fold`, `flatten`, `find`,
 `find_map`, `concat`, `push`, `push_front`, `window(#n, trigger, val)`,
@@ -692,7 +649,9 @@ fn<'s: Read + Write>(s: 's) -> null      // `+` joins bounds
 
 **rand**: `rand`, `pick`, `shuffle`
 
-**sys::time**: `timer(timeout, repeat)`, `now()`
+**sys::time**: `timer(timeout, repeat)` (timeout `[duration, Number, null]`:
+NULL STOPS THE TIMER — a level effect exists while its key is present),
+`after_idle(timeout, v)`, `now()`
 
 **sys::io** (traits — `use sys::io::{Read, Write, Close, Lines}`):
 `Read::{read, read_exact, read_all}`, `Lines::{lines, lines_batched}`,
@@ -714,7 +673,9 @@ xls parse `bytes`/`string`: `json::read(Read::read_all(f)?)`.
 
 **sys::tls**: TLS socket operations
 
-**sys::net**: Netidx `subscribe`, `publish`
+**sys::net**: Netidx `subscribe(path)`, `publish(path, v)`, `rpc`, `list`,
+`write` — the path is `[string, null]` and NULL TEARS THE EFFECT DOWN
+(unsubscribe/unpublish); an arm never pauses them (2026-09-03)
 
 **http**: HTTP client/server operations
 
@@ -850,6 +811,12 @@ select x {
   value until the next update round.
 - `~` is required in callbacks to sample current state at event time.
   Without it, the callback captures the initial value.
+- A `<-` inside a select arm fires when its RHS fires: a CONSTANT RHS
+  (`\`Enter => screen <- \`Pick`) fires once when the arm becomes
+  selected and not on a same-arm re-match — a trigger on the
+  selection changing (an "on entering this state" write); a handler
+  that must act on every event samples it (`screen <- ev ~ \`Pick`).
+  No lint (Eric 2026-09-03): both are tools.
 - Tuples need 2+ elements: `(x)` is just grouping, not a 1-tuple.
 - Blocks need 2+ elements: {x + 1} is a syntax error.
 - Union types use `[]`: `[i64, null]` is "i64 or null", NOT an array.
@@ -858,7 +825,12 @@ select x {
 - Struct literal `{x, y}` is shorthand for `{x: x, y: y}`.
 - Functional update: `{s with field: new_val}` — copies struct with changes.
 - `select` must be exhaustive (cover all cases) with no dead arms.
-- `never()` returns a value that never arrives — used to stop reactive loops.
+- `never()` is a value that never arrives (syntax, not a function; the
+  args stay live and are consumed). Bare it types as bottom, which a
+  select absorbs, and a `let` over a bare `never()` takes its type
+  from its writers (`let res = never(); res <- v`); `never<T>()` when
+  nothing else fixes the type (a field, an argument, a `let` nothing
+  writes).
 - you must escape square brackets in string literals "[name] must be between \[0, 1\]"
 - literal syntax for non i64, f64, string literals, is typ:value, e.g. u8:100, f32:3.14
 - Primitive type names (`duration`, `string`, `i64`, ...) are legal
@@ -881,7 +853,12 @@ select x {
   subtree). `mod`/`use` position carries no visibility meaning.
 - if you want to sequence the execution of a function, use ~ on it's arguments,
   not on the whole function. e.g. f(trigger ~ x) to prevent f from executing until
-  trigger has happened.
+  trigger has happened. A call fires when ANY argument fires, so for an EFFECT
+  with several inputs sample the WHOLE input value on the trigger, never one
+  argument of it: `spawn(go ~ options(#args: a, prog))`, not
+  `spawn(options(#args: a, go ~ prog))` — the second re-issues the spawn when
+  `a` fires on its own (the admin handoff bug, 2026-09-03). Sampling one
+  argument is right only when the others cannot fire independently.
 - calling a sync variadic builtin with no positional arguments is a compile
   error (`str::concat()`, `str::join(#sep: ",")`, `sum()`, ...) — the node has
   no data inputs so it could never fire. Use `never()` for a value that
@@ -1287,33 +1264,60 @@ Types are structural - compatibility is based on structure, not names. Type infe
 Built-ins implement the `BuiltIn<R, E>` trait:
 - `NAME`: Function name constant
 - `init()`: Returns initialization function
-- `EFFECT` (default `Async`): sync/async classification — `Sync` iff every
-  output appears on the same cycle as its trigger (fusion boundary otherwise)
-- `STATELESS` (default `false`): declare `true` iff an invocation's result
-  depends only on its arguments, never on prior invocations of the same
-  instance — no cross-invocation state (`count`/`sum`/`min`/`uniq`/`once`
-  accumulate or remember). Effects do NOT matter (`print`/`log`/`exit`
-  are stateless — each invocation emits once whichever instance runs
-  it), and internal memos/scratch buffers are fine. Only consulted for
-  `Sync` builtins, by the TAIL-LOOP COLLAPSE GATE
-  (`analysis::lambda_is_stateless`, `design/recursive_activations.md`
-  §2, 2026-08-24): a tail-recursive body reuses ONE activation across
-  its iterations only when every builtin it reaches is stateless;
-  otherwise each iteration owns an activation like a collection slot.
-  A wrong `true` is a semantics bug (iterations would share
-  per-iteration state), a wrong `false` only costs the loop.
-- `SLEEP_RESTARTS` (default `false`): declare `true` iff `sleep()` CLEARS
-  semantic state — the arm-rewake RESTART builtins
-  (`once`/`take`/`skip`/`hold`/`uniq`/`count`). Consulted by the fusion
-  interior-sleep gate (P7): kernels have no per-arm sleep initiator, so
-  such a builtin's DynCall (or a call to a callee kernel transitively
-  containing one) refuses to emit inside a fused select arm and the
-  region de-fuses. Deliberately NOT `!STATELESS` (dbg/log are
-  effectful-but-sleep-inert and stay arm-fusable). A wrong `false` is a
-  semantics bug; a wrong `true` only costs fusion coverage. All three
-  consts are pulled through `EvalCached`/`CachedArgs` and recorded per
-  name as `BuiltinFacts` (`ctx.builtin_effect`/`ctx.builtin_stateless`/
-  `ctx.builtin_sleep_restarts`).
+- `EFFECT` (default `Effect::Async`, consolidated 2026-09-02 — Eric:
+  "make it easy to classify, and force awareness of `FastCall`"): the
+  builtin's ONE classification, `Effect::{Async, Sync,
+  Stateless(Option<FastCall>)}` (`effects.rs`, re-exported at the
+  root). `Async`: output may land on a later cycle than its trigger,
+  autonomously, or never. `Sync`: same-cycle, but the instance keeps
+  cross-invocation state (`count`/`sum`/`min`/`uniq`/`once`/`take`/
+  `skip`/`hold`/`window`/`group`/`and`/`or` accumulate or remember)
+  or its result depends on WHICH args were delivered (the
+  partial-delivery producers: opt's `or`/`and`/`contains`/
+  `or_default`/`ok_or`/`zip`, `filter_err`, `divide`). `Stateless(f)`:
+  same-cycle and a pure function of its args — no cross-invocation
+  state; internal memos/scratch buffers fine; effects fine (`print`/
+  `log`/`exit`/`now` emit once whichever instance runs them). It is
+  consulted by the TAIL-LOOP COLLAPSE GATE (`analysis::
+  lambda_is_stateless`, `design/recursive_activations.md` §2): a
+  tail-recursive body reuses ONE activation across its iterations only
+  when every builtin it reaches is stateless; a wrong `Stateless` is a
+  semantics bug (iterations would share per-iteration state), a wrong
+  `Sync` only costs the loop. The payload is the direct-call entry the
+  JIT uses at every fused site, `FastCall::{Plain(fn(&[Value]) ->
+  Option<Value>), Typed(fn(&Env, &Type, &[Value]) -> Option<Value>)}`,
+  or `None` for a builtin that can never be one — an effect (a kernel
+  is a pure function of its inputs and may re-evaluate) or a
+  partial-delivery producer (a fast fn sees EVERY arg present). Under
+  strict fusion a builtin fuses iff it carries a fast fn; everything
+  else node-walks, and the invalid combinations are unrepresentable
+  (the old `STATELESS`/`SLEEP_RESTARTS`/`FASTCALL`/`FASTCALL_TYPED`
+  consts and `register_builtin`'s refusals are gone; `SLEEP_RESTARTS`
+  had no reader since the strict flip — the restart builtins clear
+  their latches in their own `sleep()`). The fast fn: the site stores
+  the args' (disc, payload) pairs in a STACK slot and the trampoline
+  views it as `&[Value]`; the kernel's arg discs decide the tag (a
+  tainted arg bottoms the call without invoking the fn; all-stale args
+  make the result stale; `None` is this cycle's bottom), through
+  `graphix_fastcall`; `eval` delegates to the same fn through
+  `graphix_package_core::fast_eval` (one implementation). A LABELED
+  DEFAULT the call left unwritten marshals the CallSite's own compiled
+  default node (`MarshalArg::Default`) — `sort(a)`, `escape(s)`,
+  `hbs::render(t, d)` fuse in their common spelling. `Typed` is for a
+  result DIRECTED by its return type: the site calls it with its
+  resolved `CallSite::typ()` baked beside the fn pointer under the
+  kernel's env loan (`graphix_typedcall`; `str::parse` casts to its
+  `'b` target this way, and the non-inline `cast<T>(x)` pseudo-site is
+  the same dispatch with `cast_typed`). A CONFIGURATION a fast fn
+  compiles from its args (a regex, an escape table, a template
+  registry) lives in a bounded thread-local `FastMemo` keyed by the
+  configuring values — a cache, never state. The stdlib is opted in
+  broadly (~110 pure builtins across core, array, map, list, str, re,
+  hbs, sys::time, sys paths, the json/toml/pack writers); what is left
+  is out by rule: the partial-delivery producers, the stateful family,
+  the lambda-taking HOFs, effects, and json/toml/pack `read` (async by
+  design). The facts are recorded per name as `BuiltinFacts` (`ctx.
+  builtin_effect`/`builtin_stateless`/`builtin_fastcall`).
 
 The function's type is declared in the `.gx` file where the builtin is
 bound — all arguments and the return type must have type annotations.
@@ -1503,6 +1507,24 @@ thread-local instead, and every parser entry point runs through
 `grow::parsing`, which reports the real reason. Set the flag
 (`note_refused`) from any new refusal site.
 
+**Parse errors report the FURTHEST point reached** (2026-09-03, ledger
+1 of the admin campaign): combine reports a failed statement at
+whichever alternative failed last and `attempt` resets the input on
+the way out, so three different mistakes on line 5 of a select arm all
+reported ``Unexpected ` ` `` at line 2 (the space after `select`).
+Every `GrowStack` knot now records its input position (on success
+too — the combinator right after a knot, the `]` an interpolation
+expects, is seen by no knot) and `grow::parsing` reports the furthest
+one with the SOURCE LINE and a caret; combine's own message is kept
+only when it failed there too. Site notes ride the same reporter
+(`grow::note_reason(pos, span, reason)`): a reserved word in a name
+position (span = the word — it explains a failure only inside that
+word, since `true` in `let x = true +;` was probed as a name and
+parsed as a literal), a `[` that opens no `[expr]` in a string, a
+`duration:` unit netidx does not know (`min` parses as `m`+`in`), and
+`///` in a `.gx`. Pins: `parser/test.rs` `parse_errors_report_the_
+furthest_point`, `reserved_word_as_a_name_is_named`.
+
 Nesting costs the compiler ~326KB of RSS and ~7ms per level at
 opt-level 0 (~5x less optimized), so the limit also bounds how much a
 small hostile input can amplify: 1000 knots is ~330 levels of
@@ -1613,18 +1635,21 @@ The trace facility solves a critical problem: the compiler typechecks the entire
 - `GXDBG_CS=1` — print every CallSite dispatch (spec, bound-this-
   cycle, apply kind lambda/builtin, any-arg-fired). The tool for
   "does this call dispatch and to what".
-- `GXDBG_DYNC=1` — print every `graphix_dyncall` dispatch (fn index,
-  site id, taint/stale masks, each arg's raw (disc, payload) words —
-  transmute_copy, no deref, so safe on a corrupt Value). The tool for
-  "what did the CLIF marshal actually hand this dispatch" — located
-  the 5b dispatch-boundary corruption (a present bottom passed
-  through as Value::Null, whose uninit payload word the typed call
-  site adopted as an ArcStr) in one run.
+- `GXDBG_DYNC=1` — print every fastcall/castcall trampoline dispatch
+  (arg count, taint/stale masks, the resulting tag). The tool for
+  "what did the CLIF marshal actually hand this call".
 - `GRAPHIX_DBG_TVAL=1` — print every `TVal` render step (deref'd type
   + naked value) as the typed printer walks. The tool for "why did
   this value print in this form" — found the union-member selection
   picking the never() arm's ⊥-settled cell over the concrete member
   (jul19f divergence_000000, the interp-vs-jit tuple-render split).
+- `GXDBG_TYPEREF=1` — on every "undefined type" refusal, print the
+  ref's name+scope and every `env.typedefs` scope holding that name
+  (`TYPEREF-MISS`). The tool for "is this a scope-path mismatch or is
+  the typedef GONE from the env" — one run split exactly that for the
+  private-type-union-member recurrence of module-system finding 1
+  (the typedef was gone: the instance body typechecked under the
+  caller's env; 2026-08-31).
 - `GXDBG_LETBIND=1` — print every `let` binding's publication decision
   (`LETBIND`: spec pos, production tag, whether the binding has ever
   published, frame depth, wake-hold, publishing y/n). The tool for
@@ -1752,7 +1777,16 @@ key on and takes the innermost active instance, as before. Pins:
 `user_hof_nested`/`nested_mixed_types` (all `Jit`),
 `lang/functions.rs` `cps_wrapper_recursion`. Any special-casing of
 collection intrinsics here is the wrong fix — it stops working the day
-`fold` is written in Graphix.
+`fold` is written in Graphix. **An instantiation SNAPSHOTS its def's
+`LambdaIds`** (`LambdaIds::instantiate`, from `FnType::reset_tvars_int`,
+which is unconditional for fn types): a new node with the def's `own`
+and a one-way copy of its links, so def-body facts carry (a returned
+lambda still resolves — `returned_lambda_resolves`) while a site's
+inflows land on the site's copy. Sharing the node made the def's param
+cell a hub every retained instance's callback linked into: `ids()` was
+O(instances) per lazy bind (a nested HOF in a callback was quadratic on
+the node-walk) and a site could not resolve its own callback
+(`hof_nested_map_json_read` was pinned as a "limitation").
 
 ### Collection intrinsics (MapQ/FoldQ as compiler nodes)
 
@@ -1803,6 +1837,43 @@ netidx `Type`; `PrimType` is the closed register-scalar set.
 differential fuzzer enforces bit-for-bit agreement, and a divergence is
 at least as likely a JIT bug as a node-walk one: adjudicate against the
 INTENDED semantics, never by trusting either engine.
+
+**STRICT FUSION** (Eric's ruling 2026-09-01, `design/strict_fusion.md`
+— "complexity needs to pay rent"; flipped `fa08136a`, the stateful
+machinery deleted the same day): fusion admits PURE COMPUTATION ONLY.
+A builtin fuses iff its `Effect::Stateless` carries a `FastCall` (a
+direct trampoline call on a stack buffer of borrowed `Value`s; the
+typed form also gets the site's resolved return type under the
+kernel's env loan); the non-inline `cast<T>(x)` is a typed site
+whose fn is `cast_typed` — the interp's exact `cast_value`. A `?`
+fuses WITH OR WITHOUT a covering `catch`
+(Eric 2026-09-01: a cliff that depends on whether a catch is in
+scope is the worst kind for predictable performance): the kernel
+never writes the handler's variable — a failing handler-ful `?`
+RAISES its error onto the invocation's delivery queue
+(`graphix_qop_raise`, `QOP_RAISES`) and `Kernel::update` drains it
+after the run, in execution order, through `deliver_error`, the
+one handler path `Qop::update` also uses (same-top Vacant-insert,
+cross-top `set_var`, in-frame `frame_outbox` parking). A kernel is
+thus a pure function of its inputs to (result, deliveries).
+Everything else — a builtin without a fast fn (stateful, effectful,
+seam-gated), `connect` — refuses emission and node-walks,
+transitively through callees. There is NO DynCall
+dispatcher, no inner Apply inside a kernel, no per-site identity, no
+selection memory, no arm-lift, no wake hint; a kernel's only
+cross-invocation memory is the firing boundary (prev-length words
+for exact HOF resize detection, first-call words for a callee's init
+view, the per-call-site blocks and per-activation trees that give
+those words per-slot/per-activation multiplicity) — no replay
+caches, so `Kernel::reset_replay` is a no-op. The runtime loans a
+kernel invocation exactly four things through scoped thread-locals:
+`KERNEL_ABORT`, `KERNEL_ENV`, `QOP_RAISES` and the core-trait value
+hooks. Measured at the flip: 94% of
+kernels kept, benches flat, every bench program still fuses fully.
+The follow-on calls: pure selects fuse; grow the fast-fn set
+maximally (done 2026-09-02 — see the `EFFECT` entry above for the
+converted set and the by-rule remainder); `#[native]` is THE
+advertised performance model.
 
 ### Semantics both engines implement
 
@@ -1884,7 +1955,7 @@ INTENDED semantics, never by trusting either engine.
   activation per level, a STATELESS tail loop is one activation reusing
   its one state, collection slots are activations. A tail loop collapses
   to one activation only when the body is stateless
-  (`analysis::lambda_is_stateless`, the `STATELESS` builtin const).
+  (`analysis::lambda_is_stateless`, `Effect::Stateless`).
 - **Recursion** (`design/recursive_activations.md`,
   `design/atomic_recursion.md`): activations ARE collection slots.
   Instances are retained unconditionally (no park, no budget — "you
@@ -1907,20 +1978,85 @@ INTENDED semantics, never by trusting either engine.
 - **Sleep is PAUSE, not reset** (Eric 2026-07-31): value-channel state
   survives an arm's sleep — `Held` residents at the three ride sites
   (select scrutinee, pattern guard, `~`'s arg), `CachedVals` staging,
-  collection slot values, the kernel's interior-bottom taint caches
-  (replay words, owned value pairs) — so a re-selected arm whose fresh
-  computation bottoms rides its history. Slot CHAINS (`SiteAnchor`:
-  selection memory, nested prev-length words, in-loop DynCall site
-  identity) are semantic per-position state and survive frames as well
-  as sleep; only `reset_replay` (frames) clears replay caches and only
-  `Drop`/truncation frees chains. An arm's WAKE resumes it: a `let` that
+  collection slot values — so a re-selected arm whose fresh
+  computation bottoms rides its history. A kernel's slot CHAINS
+  (`SiteAnchor`: nested prev-length words, in-loop call-site blocks)
+  are semantic per-position state and survive frames as well as
+  sleep; only `Drop`/truncation frees them. An arm's WAKE resumes it: a `let` that
   is a `<-` target and holds a value is not reseeded by its re-fired
   initializer (`Event::wake_init`). A producer materializes its value
   channel on its first production whatever the tag (`Bind` publishes a
   quiet first production; `CachedArgs` runs `eval` once from the
-  phantom). The RESTART builtins (`once`/`take`/`skip`/`uniq`/`hold`/
-  `count`, `SLEEP_RESTARTS`) clear on sleep; a select whose arm reaches
-  one de-fuses (kernels have no per-arm sleep initiator). Pins:
+  phantom). **WAKE CATCH-UP** (`design/wake_catchup.md`, Eric
+  2026-09-01, subsuming the 08-31 present-but-stale ruling): *a
+  reselected arm always recomputes from the world as it stands; the
+  only events it re-raises are the fires no selected reader saw,
+  once, at their current value.* Three mechanisms: (1) each select
+  keeps one fire bit per ARM-BODY input (free refs, refreshed at
+  deselect; guards, the scrutinee and PATTERN BINDS excluded — this
+  select's own AND every enclosing select's: a pattern bind is a
+  facet of its arm's scrutinee delivery, which that arm's match
+  consumed, so `k` beside `ev@ \`Key(k)` is never re-raised at a
+  nested flip after the `ev` reader handled the key — 2026-09-02,
+  `Bind::pattern`, `select_sibling_binds_spent`; a destructuring
+  LET's siblings are one tracked input instead — `Bind::facet`, the
+  bits keyed by the group's representative, the catch-up delivered
+  to every sibling the arm reads — `let_sibling_binds_spent`), set on sound
+  fires — even with no arm selected — and CONSUMED by whichever arm
+  evaluation reads the input; an unconsumed bit delivers at wake as
+  ONE catch-up FIRED at the current standing value (conflation;
+  `queue` is lossless), injected into the event scoped to the arm's
+  evaluation; (2) the first update after a node's sleep FORCES
+  recompute — SLEEP STATE IS LOCAL (no ExecCtx globals — the
+  parallel-compile/parallel-evaluator discipline, Eric 2026-09-01):
+  every skip-owning node/Apply owns a `slept` bit its `sleep()` sets
+  and its next update takes (the `dense_gate!` structs
+  macro-enforced, the op macros, StringInterpolate, MapQ, Bind,
+  CallSite, GXLambda, CachedArgs, Kernel itself — a kernel is a
+  node — and Select, whose wake RE-MATCHES against the present
+  scrutinee: a selection retained across the sleep was made against
+  a value that may have moved while no reader was awake, e.g. an
+  arm-local `<-` counter — `select-wake-rematch-sep2026`, sep01c
+  ryouko) — and the value channel re-reaches the store (Bind quiet
+  re-publish, CallSite arg refresh, GXLambda formal re-seed, MapQ
+  rebuild); (3) tags stay
+  honest — the wake view reads standing entries STALE (a standing
+  value is a PAST event; delivering it Fired phantom-submitted the
+  admin pump's password modal), and a STATELESS builtin's eval
+  re-runs from the present stale slots at wake (`CachedArgs`
+  consumes its own `slept` bit) while a stateful one retags — its
+  resident IS its state and its edge catch-up arrives as a tracked
+  fire. Kernel: the select's forced init view (`event.init` under
+  `wake_init`) is what makes a kernel in a re-selected arm run
+  instead of riding its resident; wire slot 0 bit 2 = WAKE (the
+  arm's `wake_init` or the kernel's own slept bit), and genuine init
+  = `bit0 & !bit2` gates the fastcall stale-mask suppression, so a
+  wake delivers standing args STALE and the trampoline produces the
+  stateless re-eval's STALE result. Kernels carry NO fire bits and
+  need none — a stateful builtin never fuses, so the interp select's
+  tracker, which injects THROUGH the kernel boundary, is always the
+  mechanism where it matters. Things BORN at init (constants, own
+  first productions) still fire; only genuine init upgrades standing
+  reads; frames are excluded entirely (`wake_recompute()` is depth-0
+  only — the frame-formal FIRED overlay seed survives). Companions: a
+  present scrutinee with NO retained selection still routes (depth-0
+  first consult; the guard-flip wake keeps its aug03 FIRED), `ByRef`
+  seeds its cell stale. THE BIRTH RULE (aug31f ryouko 01): a
+  labeled DEFAULT is born with the binding — the interp's bound
+  dispatch seeds default args FIRED, and a config memo (`escape_fn!`)
+  survives sleep; both
+  engines broke together at 9b2e7231 (the metamorphic blind spot) —
+  `findings/default-arg-birth-sep2026/`. sys::net level effects
+  (Subscribe/Publish/PublishRpc) tear down in `sleep()` and
+  re-establish from PRESENT args on their own slept bits
+  (`net_{subscribe,publish}_arm_rewake`). Pins: `findings/wake-catchup-sep2026/00–06`
+  (Eric's 43/2/21/62 table, shared-input spent, sequential wakers,
+  conflation, `~` catch-up, the no-arm window, nested composition),
+  `dyncall-arm-init-stale-aug2026` (re-adjudicated in place),
+  `lib_tests/callable.rs` `arm_wake_delivers_standing_args_stale`.
+  The RESTART builtins (`once`/`take`/`skip`/`uniq`/`hold`/
+  `count`) clear on sleep in their own `sleep()` (stateful, so never
+  fused). Pins:
   `findings/{sleep-preserves-caches-jul2026,arm-local-bind-aug2026,
   sleep-restart-gate-aug2026}/`.
 - **THE QUIET FLAG**: a re-derivation inside a quiet frame
@@ -1930,45 +2066,45 @@ INTENDED semantics, never by trusting either engine.
   not re-primed; becoming-selected grants no init view in a frame. Wire
   slot 0 is a context word (bit 0 init, bit 1 quiet — set by the wrapper
   from the interp frame, by a tail-loop body for itself, inherited by
-  callees). Three kernel mechanisms manufactured a false init view and
-  are fixed (slot `fired` reset on sleep; the fused select's `woke`
-  word; per-frame freeing of in-loop site identity). The symptom to
-  recognize: a `let rec` chain re-derived by an input that is NOT
+  callees; bit 2 wake). The symptom to recognize: a `let rec` chain re-derived by an input that is NOT
   consumed (read only by a structure-failed arm's guard) fires on the
   JIT every delivery and once on the interp. Pins:
   `findings/quiet-frame-init-view-aug2026/`.
-- **DynCall SITE IDENTITY** (`design/kernel_instance_state.md`): a
-  compiled callee's interior builtin is one `graphix_dyncall`
-  instruction reached from many emit sites, so each site claims an
-  identity word (region root: instance word; callee root: per-call-site
-  block word; inside a scaffold loop: a per-slot chain leaf) and the
-  dispatcher keys a full inner `Apply` per minted id — cache AND builtin
-  state per site, like the interp's per-CallSite instances. Key 0 (no
-  identity) remains only for qop-deliver and a callee site reached with
-  a null site block. A self-call roots a lazily grown per-ACTIVATION
-  block tree (`graphix_site_child_block`, one root per self-call site).
-  Callee kernels define in TOPOLOGICAL order over the recorded call
-  edges (a callee defined after its caller would run below a recursion
-  with no interior memory). Pins: `dyncall_site_identity_state`,
-  `findings/{dyncall-site-identity-jul2026,
-  recursive-activation-blocks-aug2026}/`.
+- **KERNEL INTERIOR MEMORY** (`design/kernel_instance_state.md`): a
+  root body claims per-INSTANCE state words (wire slot 1); a callee
+  body claims per-CALL-SITE block words (wire slot 2, `SiteLayout`)
+  that each caller supplies from its own storage — static words at a
+  root call site, a per-slot chain leaf (`SiteAnchor`,
+  `graphix_slot_state_table/blocks`) inside a scaffold loop, and for a
+  self-call a lazily grown per-ACTIVATION block tree
+  (`graphix_site_child_block`, one root per self-call site; unreached
+  activations are reclaimed after each run — the shrink=delete twin).
+  The words hold only prev-length words (exact resize detection) and
+  first-call words (a callee's init view on its first call ever),
+  so one compiled body gets the interp's per-slot/per-activation
+  multiplicity for exactly the state that decides FIRING. Callee
+  kernels define in TOPOLOGICAL order over the recorded call edges (a
+  callee defined after its caller would run below a recursion with no
+  interior memory). Pins:
+  `findings/recursive-activation-blocks-aug2026/`.
 - **Guards in kernels** tick per invocation via a PROLOGUE in
   `emit_select_arms` (the interp ticks every arm's guard every cycle);
   schedule-free guards (pure never-bottom fns of the arm's own binds)
-  stay lazy in the chain. A fused DynCall delivers non-fired args as
-  `TagValue::stale` — never absence, never `fired` (`rand` would
-  re-randomize). Tag-blind builtins (`printfn!`, `now`) gate on presence
-  by design.
+  stay lazy in the chain.
 - **Per-cycle firing (the STALE bit)**: a kernel output fires only when
-  an input feeding it fired; a lifted `<-`-target counter is threaded in
-  as a kernel input so reactive counters fuse. Collection loops fire by
+  an input feeding it fired. Collection loops fire by
   `scaffold::SlotFlags`: per-slot discs fold into a slots word and a
   prev-length word gives exact resize detection — fires iff resized ∨ a
   slot fired ∨ the source fired empty; a same-length refresh with a
-  quiet body does not fire. Callee bodies keep per-call-site state
-  blocks (wire slot 2, `SiteLayout`) for site identity, first-dispatch
-  init words and prev-len words — never select firing memory. Residue:
-  arm-lifted connects in loops/callees de-fuse (coverage).
+  quiet body does not fire. Fold included (2026-08-31): each body
+  evaluation's STALE folds into the slots word (`fold_stale` — a
+  mid-chain slot consuming a fired acc fires the fold even when a later
+  acc-ignoring arm leaves the final carry stale) and the acc carry is
+  one more firing source (it alone covers the empty-source chain);
+  TAINT rides the carry only — consumption decides, an acc-ignoring
+  callback recovers (`fold-midchain-fired-aug2026`). Callee bodies keep
+  per-call-site state blocks (wire slot 2, `SiteLayout`) for
+  first-call words and prev-len words — never select firing memory.
 - **Collection HOFs** (`design/collection_intrinsics.md`): MapQ/FoldQ
   are compiler-owned nodes (`node/collection.rs`) — the canonical
   per-slot interpreters — and `GXLambda::emit_clif` inline-emits a
@@ -2043,14 +2179,35 @@ INTENDED semantics, never by trusting either engine.
   wake-ups key on `(BindId, fusion.top_id)`; clone types out of
   `with_deref` before recursing; dead statements eliminate at emit only
   when the statement subtree is effect-free, and a statement binds
-  whatever its subtree binds. The Value-shape DynCall return folds
+  whatever its subtree binds. The Value-shape call return folds
   `tagbits` like every other shape. Kernel cache keys carry the
   instance body's catch coverage and a resolution FINGERPRINT (same
   types + different callbacks ⇒ two kernels). Sig-less modules refuse
   emission. `freeze_for_abi_normalized` never normalizes shared tvar
   cells (`check_mode_parity` pins mode-identical `--check`), and a pass
   the fusion gate owns must never change what the typechecker sees
-  (`Env::seed_typedef_refs` runs in both modes).
+  (`Env::seed_typedef_refs` runs in both modes). OWNED SELECT-ARM
+  BINDS DROP AT EVERY ARM EXIT (2026-08-31): the non-scalar pattern
+  binds (`PayloadValue`/`ListHead`/`ListTail` clones) drop on the
+  value-position taken path, the guard-false, tainted-take and undet
+  edges, and the guard prologue (`emit_scope_drops` before each
+  truncate) — they leaked ~55-80MB/s on hot fused selects for the two
+  days they existed (found by RSS probing during or-pattern P3 recon;
+  `valgrind --max-threads=4096` names the class — tokio's blocking
+  pool exceeds valgrind's default thread cap). Tail position was
+  already safe (`emit_kernel_return`'s whole-env drop; the tail-rebind
+  epilogue's above-param-mark sweep). Pinned by the `leakcheck`
+  witnesses `select-payload-bind`/`select-list-binds` — run leakcheck
+  whenever a change adds a new owned-local class. A BOTTOM IS A
+  PRODUCTION (2026-09-06): its STALE bit follows the same trigger fold
+  as a value, so `nodes::emit_bottom_placeholder` takes the governing
+  discs and folds them itself — `&[]` only where the run is being torn
+  down (the interrupt / stack-budget abort). The ABSENT-delivery
+  placeholders (`select::placeholder_for_kind`, `mask_unmatched`) are
+  standing by construction instead: a delivery that never happened is
+  never an event, so it has no trigger to follow. Leaving the fold to
+  the caller is what let the tail-position select re-fire a standing
+  bottom every cycle (`standing-bottom-refire-sep2026`).
 
 ### Coverage (current)
 
@@ -2061,11 +2218,18 @@ logical/cast/checked-arith, every producer and accessor, `?`/`$`, all
 eight array HOFs as native loops over scalar/composite/String/value
 elements (HOF-of-HOF and same-HOF nesting fuse as one multi-loop kernel;
 fold accumulators may be composite or string), `select` structural
-destructuring with scalar leaf binds, `connect` of any RHS shape
-including lifted composite/string accumulators, every Sync builtin via
-DynCall, cross-kernel lambda calls (recursive self-calls: tail →
-rebind-and-jump, non-tail → native recursion), trait default bodies and
-fn-formal forwarding/capture.
+destructuring with scalar leaf binds and non-scalar variant payload
+binds (the slot clones out as an owned local of its ABI kind,
+2026-08-30 — a recursive type's payload is an opaque value leaf),
+tail loops carrying ANY kernel param kind (Value pairs and Strings
+rebind via the clone/drop protocol; `structural_tail_loop` admits
+every kernel-encodable carried kind, so `lfold_rec` fuses and the
+hand List fold beats the intrinsic at 100k), every fast-fn builtin
+and non-inline cast via the direct trampolines, cross-kernel lambda
+calls (recursive self-calls: tail → rebind-and-jump, non-tail → native
+recursion), trait default bodies and fn-formal forwarding/capture. (The
+annotation census predates the strict flip; connects and non-fastcall
+builtins node-walk by rule now.)
 
 Fusion descends through Module/Block/Bind/CallSite/Catch/Lambda/Select
 (scrutinee, guards and each arm body get their own region passes) and
@@ -2078,10 +2242,10 @@ cross-cycle nodes (`~`, `Any`, `Catch`'s handler read), and non-register-
 encodable types (`decimal`, `Fn`, `Ref`, unbound tvars). The missed-
 fusion residue, each pinned by a `#[native]` de-fuse test or an ASPIRE
 comment: select residue (whole-composite/`@`/named-rest binds, nested
-non-scalar variant payloads, owned scrutinees in tail position);
-union-self trait dispatch and abstract patterns in select; arm-lifted
-connects in loops/callees; loop-carried Value rebinds (`lfold_rec`);
-String-returning cross-kernel callees; non-scalar string-interp parts;
+patterns INSIDE a variant payload, owned scrutinees in tail position);
+union-self trait dispatch and abstract patterns in select;
+union-typed cross-kernel returns
+(`rec_block_multi_member_collapses`); non-scalar string-interp parts;
 dynamic map literals; `array::group`; ByRef/Deref; decimal arith. The
 intrinsics-deletion endgame is measured in `bench/collection/README.md`.
 
@@ -2092,12 +2256,163 @@ would resurrect the GIR vocabulary tax (`node_shape.rs`).
 
 ### Design documents
 
+**Mux-select WITHDRAWN 2026-09-04** (`design/pure_dataflow_plan.md`):
+always-update impure arms and deleting sleep did not simplify the
+engine (sparse delivery died on the JIT; `seq` lost exit actions).
+Sleep is pause again. Keepers from that arc: `~!` (strict sample, no
+bank); a pure non-recursive arm skips `sleep` (nothing to pause) and
+is not updated while untaken. A `<-`, a catch, a sample, an `any`, or
+a stateful/async callee is not pure — those arms still sleep. The
+write rule (compiler-sampled `<-` in an arm) was withdrawn: sometimes
+you want a write on every scrutinee fire and sometimes you do not,
+and `~` is how you choose. Straight-line `seq` is built (2026-09-04,
+`if`/loops held): AST-to-AST pc machine, `range` for the old `seq(i,j)`
+builtin; `do { }` is one seq arm (lets inside, pc-sampled connects).
+The admin TUI port uses surface `seq`/`do` for every multi-step
+ceremony (`design/seq_blocks.md`).
+
 `design/README.md` is the index (built / proposed / superseded). The
 docs hold the rationale and the as-built records; this file holds only
 the rules.
 
 ## Language features (current)
 
+- **`~!` and skip-sleep** (2026-09-04, keepers from the withdrawn
+  mux-select arc): `e ~! v` is `v` at each fire of `e` and bottom with
+  no bank when `v` is bottom; `~` still banks. A connect writes when
+  its RHS fires. Sample the event when a write should run on every
+  delivery into the arm; a constant RHS fires when the constant does
+  (init, or the arm's wake). A pure non-recursive arm skips `sleep`
+  (nothing to pause) and is not updated while untaken; a `<-` is not
+  pure, so a write arm still sleeps.
+- **`never<T>()` is syntax** (2026-09-02, ledger 2 of the admin-TUI
+  findings): `ExprKind::Never { typ, args }` → `node::Never`, typed
+  bottom bare or the spelled `T` (scoped at compile), args updated and
+  consumed, never produces (`NodeView::Never`, ASYNC like `any`, no
+  emit). A builtin's call-site cell bound to bottom only at static
+  resolution — after a select had unioned its arms in typecheck0 — so
+  nested never() arms typed as free cells and forced annotations; the
+  companion `union_int` fix derefs a BOUND cell to its binding. The
+  connect-seed idiom (`let res = never(); res <- v`) lives in the
+  binding now: an unannotated `let` over a ⊥ initializer seeds a fresh
+  cell its writers refine, settled to ⊥ by `Bind::typecheck1` if
+  nobody does. `never` is a reserved word; the core builtin is gone.
+  Pins: `lang/select.rs` `never_*`, parser `never_parses`.
+- **`seq` blocks** (`design/seq_blocks.md`, straight-line 2026-09-04;
+  `if`/loops held): `seq [trigger] { stmt* [expr] }` desugars to a
+  pc machine (Idle/S0..Sn, `filter` busy-drop, presence select + free
+  `pc` read per step). Lets become cells; `until e` waits on a bool
+  level; the generated handler resets and rethrows; a seq-toplevel
+  `catch` or `{ ... }` is refused (`catch` inside `do` is ordinary);
+  `?` aborts the run. No trigger = run at init. A bare-variable trigger is
+  snapshotted. `until` is reserved and legal only as a seq step. The
+  integer builtin is `range(i, j)`. `do { stmts }` is several statements
+  as one arm (lets inside, connects pc-sampled). Pins: `lang/seq.rs`
+  `seq_do_*`. The admin TUI port uses seq/`do` for every multi-step
+  ceremony. `never()` in a step stalls the run. **`try { .. }
+  with(e[: T]) { .. }`** (2026-09-07, `design/seq_blocks.md` §7.9,
+  R11) is seq's error handling: an error-triggered BRANCH — try-body
+  and with-body statements are arms; each try-body arm carries a
+  generated `Catch` whose `seq_abort` jumps to the with body's entry
+  after the failed step's errors drain and whose `seq_capture` writes
+  the FIRST error into the with body's `e` cell and unions its inferred
+  throws into the cell's type (exact: a can't-throw arm contributes
+  ⊥). `catch` is refused anywhere in a seq body (`refuse_catch`, a
+  `fold`; lambda literals and their defaults are exempt — a function
+  is ordinary Graphix again, Eric 2026-09-07). Seq level only (refused in
+  `do`). A call-free `?` in a step is sampled on the entry event
+  (`Qop(pc ~! x)`, R2 applied to `?`) so a carried error raises at
+  every entry. A `?` whose residual is uninhabited types Bottom (a
+  with body ending in `e?`). Value: both tails write the statement's
+  cell; the with value must fit the try body's type (annotated lets
+  pass their annotation to the carried cell). Pins: `lang/seq_try.rs`.
+- **Place references** (`design/place_references.md`, 2026-09-02,
+  Eric: "not having this changed the way you wrote an API in tui;
+  that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
+  and chains over a variable (or a `*r`) are PLACES — the root
+  binding plus a path — typed as a reference to the ELEMENT (the
+  access's type minus its error, as `$` types). `*r` reads the root
+  through the path; `*r <- v` PATCHES the root: the write is queued as
+  (path, value) and resolved against the root's value AT DELIVERY
+  (`push_var_event!`), so two patches to one root in one cycle land
+  in order on each other's result, never on a stale whole. A dynamic
+  key (`&vals[focus]`) is a moving reference: it re-fires its readers
+  when the key moves and writes where it points. A missing place
+  bottoms a read (warned) and drops a write (logged). Plain `&x` is
+  unchanged (cell + byref chain, `Value::U64(cell)` on the wire; a
+  place cell still mirrors the element so embedders keep reading it);
+  `Rt::{patch_var, set_ref_path, ref_path, clear_ref_path}`,
+  `node::place::{Step, Path, VarUpdate, read_path, write_path}`.
+  References still de-fuse. The admin TUI's `tui::form` edits its
+  focused editor through `line_edit::handle(&vals[i], e)`. Pins:
+  `lang/byref.rs` `place_*`.
+- **Native List, phase A** (`design/list_native.md`, 2026-08-31):
+  `List<'a>` is a compiler-known constructor like `Array` —
+  `Type::List`, reserved type name (in RESERVED beside `Array`/`Map`
+  since 2026-08-31 — a user typedef of the name refuses at parse; the
+  tui widget state type renamed `List` -> `ListBox` for it, tag
+  `` `List `` and the Rust side unchanged), covariant element, no
+  primitive-bit relation, `AbiKind::Value` at the kernel boundary.
+  Variant TAGS are backtick-namespaced, NOT type names: a reserved
+  word is a legal tag in expression, type and pattern position alike
+  (the pattern parser used to refuse what the other two accepted —
+  fixed 2026-08-31, pinned in `list_is_a_reserved_type_name`).
+  The rep is PRIVATE to `node/collection.rs::list`: cons =
+  `ValArray([head, tail])`, nil = the static EMPTY array clone,
+  discriminant = length. The Collection impl lives in CORE (intrinsic
+  markers; len derives from fold). TVal prints `[<1, 2>]`; the wire
+  and naked echo stay structural (nested 2-arrays). Phase B: `[<1,
+  2>]` literals (ExprKind::List; the JIT emits the tuple relay +
+  `graphix_valarray_into_list`) and list-slice patterns as a FLAVOR
+  on the slice machinery (`list: bool` on the AST, `SliceKind` on the
+  node): `[<>]`, exact, `[<h, rest..>]` with rest binding the TAIL
+  O(1); the SUFFIX form is refused (front is O(n)); length-ladder
+  coverage carries over (array_members also collects List members).
+  Grammar rules: a bare `>` immediately before `]` is the literal
+  closer (never the comparison); tree-sitter spells the delimiters
+  `'['`+immediate`'<'` / `'>'`+immediate`']'` (a 2-char token
+  shadowed `[` in value-strings). B3: list patterns FUSE over a
+  Value-kind scrutinee (`graphix_list_match` + kind-safe
+  `graphix_list_get_*`/`graphix_list_tail` — the rest bind rides the
+  Value tail rebind), so the `[<>]`/`[<h, t..>]` ladder is a native
+  loop: `lfold_rec` beats the list intrinsic at 100k. Nested element
+  patterns and `@`-binds on list arms de-fuse (coverage).
+
+- **Or-patterns** (`design/or_patterns.md`, ruled+built 2026-08-31,
+  orthodox): `p1 | p2 | …` in select arms and every bracketed element
+  position; top-level or-patterns are SELECT-ARM-ONLY (`let`/lambda
+  params refuse — the lambda arg list is `|`-delimited); `@`-captures
+  are per-alternative (no pattern parens) and type as the UNION of
+  their alternatives' narrowed types (Eric 2026-08-31 — Graphix
+  narrows captures where Rust binds at the enum type, so exact
+  equality refused the keymap idiom ``kk@ `Up | kk@ `Char("k")``; the
+  capture is the whole matched value, the union is exact; pins
+  `or_capture_union`/`or_payload_unequal_rejected`).
+  Alternatives try left to right, first structural match binds; every
+  alternative binds the SAME names, PAYLOAD binds at EXACTLY EQUAL
+  types (BindIds are
+  shared — alternative 0 allocates via `BindMode::Record`, the rest
+  `Reuse` and bind nothing in the env; open cells unify at the reused
+  leaf, concrete payload mismatches err, captures widen); ONE guard
+  per arm covers the whole
+  alternation. Coverage is per coverage ATOM (`arm_atoms`): an or-arm
+  claims once per alternative against its own member of the raw
+  inferred Set (`true | false` completes bool, `[] | [_, ..]` feeds
+  the length ladder — the bound ladder spelling is ill-typed first by
+  same-binds). Dead ALTERNATIVES are errors like dead arms (duplicate,
+  post-wildcard, range-covered, type-dead vs the residual scrutinee).
+  JIT (P3, same day): or-arms emit natively — `emit_or_chain` runs
+  the alternatives' structure conditions left to right (each via the
+  extracted `emit_structure_cond` against its member of the raw Set),
+  the first match's binds forward through ONE done block's params to
+  the shared BindIds (layout mismatches Err = de-fuse, never
+  miscompile); the guard prologue reuses the chain with a tainted
+  drop-safe placeholder feed on no-match; the arm's env mark precedes
+  the chain so the arm-exit scope drops cover the chain's owned binds.
+  Explicit type predicates on or-arms refuse; per-alternative residue
+  = the single-arm vocabulary. Pins: `lang/select.rs` `or_*`
+  (`or_native`/`or_owned_binds`/`or_guard_prologue` are the
+  `#[native]` P3 pins), parser `or_patterns_parse`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>` (only as a whole typedef body) has identity
   `AbstractId::of(scope, name)` (a path-derived v5 UUID, minted at
@@ -2112,7 +2427,10 @@ the rules.
   path-derived UUIDs (`abstract_wrapper!`, `impl_abstract_arc!`'s
   `= "pkg::mod::Type"` form), which is what makes a type test exact and
   trait dispatch over a union of them work. Abstract patterns de-fuse
-  the select (coverage).
+  the select (coverage). Diagnostics: `Type::Abstract` carries only the
+  id, so Display consults a process-global `AbstractId → name` registry
+  filled at `AbstractId::of` (2026-08-31 — errors print `Box`, not the
+  word "abstract").
 - **Traits v1** (`design/traits.md` §11–13): `trait T { val m: fn(self,
   ..) -> R [= default]; .. }`, `impl[<'a: C>] T for Target { let m = .. }`,
   `impl T for X;` in a gxi (the entry of record — the module's own impl
@@ -2126,7 +2444,17 @@ the rules.
   package, anything else only in the trait's package, never a union, one
   impl per head. Constructor traits (`trait Collection`, the `'_` hole,
   `|c: Collection|` sugar) dispatch by decomposition on the receiver's
-  outermost form. Core `Eq`/`Ord`/`Display` ride the VALUE through
+  outermost form. A constructor APPLICATION (`self<'b>`, `Type::App`)
+  whose constructor has bound IS its filled type: `with_deref` fills it
+  (`Type::app_filled`), so `is_a`, `cast`, the select coverage check,
+  the typed printer and `kernel_abi` all see `Array<'b>`, never an
+  `App` (2026-08-30 — before this, `select` over a trait-returned
+  collection was refused as uncovered and the printer logged
+  "type Array<'b: i64> does not match value"). In `contains` a cell
+  bound to a reference — a filled application included — meets a
+  reference on the other side BY NAME (`Type::ref_behind`) ahead of
+  the expansion arm. Only an OPEN constructor stays an application,
+  and consumers treat it like an open cell. Core `Eq`/`Ord`/`Display` ride the VALUE through
   netidx's abstract vtable (map keys, sort, min/max, uniq, operators,
   printers — both engines); only abstract types may implement them
   outside core; a bottoming impl resolves per key like NaN. A core-trait
@@ -2158,6 +2486,17 @@ the rules.
   `restore_lexical_env`) so instance-side resolution consults the
   DEFINING module's table. `use` compiles to Nop. The widget-module
   `{self, *}` idiom is the one blessed glob in exemplar code.
+  DECLARATIONS ARE STATEMENT-POSITION-ONLY (2026-08-31): `use`, static
+  `mod`, `type`, `trait` and `impl` refuse in value position (a `let`
+  RHS, a call arg, a block's value slot, a select arm body) — they are
+  ⊥-typed with a phantom value channel, and a value-position one let a
+  connect route runtime values through a ⊥ binding (aug27a `use`,
+  aug31e `type`). The companion typing fix: contains' (Bottom, TVar)
+  arm derefs a BOUND cell (⊥ ⊇ Array refuses) instead of answering
+  true — a value-position CONNECT (`let x = y <- e`) is legal by
+  design, so the arm is load-bearing, not redundant
+  (`bottom-connect-target-aug2026`). A dynamic `mod` stays an
+  expression (real `[error, null]` value).
 - **Comments** are legal only above an expression, a select arm's
   pattern, an impl method, or a struct-literal field (`parser::decorate`
   attaches them; the printers hoist them back); interior, trailing and
@@ -2167,6 +2506,44 @@ the rules.
   an unbound rhs member is residue, never covered by a concrete lhs
   member. A select's type is the union of its arm types; a free `'b` arm
   beside an `i64` arm is not inferred to `i64` — annotate.
+- **Bool literals pool per position inside composite patterns**
+  (2026-09-02, ledger 14 of the admin campaign): arms whose only
+  refutable leaves are bool literals are grouped by SHAPE (tuple
+  arity / variant tag+arity / struct fields) in `select.rs`'s
+  `LiteralPool`; a group covers the scrutinee's member of that shape
+  once its literal vectors cover every assignment of the positions
+  any arm tests (a bind or `_` matches both), and the dead-arm walk
+  subtracts the same member — `(true, true) | (true, false) |
+  (false, _)` covers `(bool, bool)`, `` `Join(true) `` + `` `Join(false) ``
+  cover `` `Join(bool) ``, a wildcard behind either is dead. Two more
+  from the same night: `Type::could_match` has a function arm (a
+  select over `[fn(..), null]` used to refuse its bind arm — ledger
+  11), and a reserved word in a name position reports itself
+  ("note: at line: L, column: C: `ok` is a reserved word…",
+  `grow::note_reason`, reported when the failure lies on that line or
+  before it — ledger 1's reserved-word half).
+- **Set coverage distributes over product heads** (2026-08-31, the
+  admin-TUI panel screens): when the `(Set, t)` single-member and prim
+  walks both refuse, same-shaped members (variant tag+arity / tuple
+  arity / struct fields) pool ONE argument position — every candidate
+  must cover every other position in full, and the pooled position's
+  union must cover the member's (`contains::set_covers_by_distribution`)
+  — so `` [`P(A), `P(B)] ⊇ `P([A, B]) `` and the nested-variant select
+  ladder is exhaustive. Pure probe, cell-free scrutinee side only,
+  commits nothing. A probe IN PROGRESS for the same scrutinee ref
+  claims nothing on re-entry (`RefHist::distributing`, 2026-09-03):
+  the probe re-expands a recursive alias through `lookup_ref` with no
+  memo of its own, and the Ref×Ref cycle memo is dropped once the
+  direct walk fails, so a mismatched `Error<ErrChain<..>>` connect
+  re-asked the `cause`-field question one level deeper forever (hz0
+  sep02a: hangs, a stack-budget abort, an OOM — all at compile time;
+  `errchain-distribution-loop-sep2026`). The dual fix: `union`'s Variant×Variant arm merges
+  component-wise only when ≤1 position differs (`union_identical` per
+  slot) — the arity≥2 rectangle collapse (`` `P(A,X) ∪ `P(B,Y) `` →
+  `` `P([A,B],[X,Y]) ``) invented the off-diagonal and select coverage
+  accepted arm sets with a runtime hole. Pins:
+  `lang/select.rs` `select_variant_union_*`,
+  `select_tuple_union_member_exhausts`.
 
 ## Stdlib package notes
 
@@ -2209,7 +2586,61 @@ is secondary** (Eric). No workarounds: an awkward idiom, slow compile,
 bad diagnostic or missing capability means stop, log a finding, fix it
 here (or consciously accept it), then continue — never move decision or
 presentation logic into the package's Rust layer because Graphix was
-painful. Measure `--check` time at every size milestone. State: paused
-at Phase D since 2026-08-21 (its finding 1 produced the module system);
-open prerequisites: terminal suspend/resume for `sudo`/`$EDITOR`
-handoff; reserved-word parse diagnostics at package scale.
+painful. Measure `--check` time at every size milestone. State: Phase D
+in progress — the remote tab is complete (landing, connect, the panel
+menu, seven panels, the change-password route) and the Local tab's
+first slice landed 2026-09-02: `tui::panels` (the panel machinery
+over any `Target`, opened on the menu or straight on the roster /
+this host's permissions — the remote tab is landing + connect +
+panels), `tui::local` (detection over both config roots, the action
+list, the status card with the glyph, per-slot background sync and
+credential probes, the in-process lifecycle ceremonies: renew,
+update, backup, the four local-CA ops), `tui::app` (both tabs under
+one pump; `Tab`/`q` global behind the tab's own keys; `q` needs
+`tui::exit`, added the same day), and `tui::services` (this host's
+activation units: list/control, create/edit through an in-TUI form
+over the whole unit file, delete), and phase 4 the same evening:
+install/join/add_parent/restore_stage+finish/uninstall ceremonies
+(the teardown's CA chooser and the parent picker in Graphix;
+`install_service` does user scope in-process), and phase E the same
+night: `tui::suspend(suspended: bool)` — a LEVEL (Eric: the
+dataflow-native shape; two token/run-it-yourself cuts died first):
+while true the display drops its crossterm reader and restores the
+terminal, the result is the display's actual state, the program runs
+its child through `sys::process` with inherited stdio on the release
+and clears the level with the exit; draws pause while the runner
+holds a suspension and updates keep applying — a runner blocked in
+its select arm would deadlock the shell loop; the runner's
+stop+suspend control is one libstate entry whose suspend receiver is
+parked until a display takes it; the site holds the resume signal and
+its drop resumes) plus
+`netidx_admin::privileged` (the become-root decision lives in a shell
+wrapper the CHILD runs, so sudo's prompt lands on the released
+terminal). Needs lab validation on a real terminal. The RELEASE MEASUREMENT is
+done (2026-09-03, 5,434 lines): registration 93ms, app-main compile
+455ms (228ms with fusion off — 324 of 1,286 kernel attempts fuse,
+and a failed attempt costs a compile), first frame 584ms; a
+role-menu key p50 3.2ms, a text key 0.17ms, a render 0.12ms
+(`milestone_timing`/`milestone_latency`, ignored, run by hand in
+both profiles). Follow-ups: a cheap fusion pre-gate for the
+decidable refusals; a profile of the role-menu key. Then: full lab
+validation, the parity review;
+the ratatui TUI is deleted only after all of that (Eric). Seq conversion
+of the port's multi-step ceremonies landed 2026-09-04 (local lifecycle,
+panel actions, services, landing save/discover, remote connect); a seq
+let's fire is only live in the next step — later `t ~` on it does not
+write (ledger 16). Facts from
+the slice: a constant-RHS connect in a
+select arm fires once per selection (organic firing — Eric 2026-09-03:
+that is the trigger on the selection changing, a tool, not a lint;
+handlers sample the event; the select chapter's "Writing From an
+Arm");
+bool literals do not pool inside payload/tuple positions (nested
+selects; ledger 14); a variant arm with a payload pattern never
+narrowed the arms after it — `Type::diff` compared payloads with
+`==` against the pattern's bind cells — fixed (`same_resolved`,
+pins `variant_*payload_arm_narrows`). The
+open-items ledger is the top section of
+`../netidx/design/graphix-admin-findings.md`. Open prerequisites: terminal
+suspend/resume for `sudo`/`$EDITOR` handoff (phase E); reserved-word
+parse diagnostics at package scale.
