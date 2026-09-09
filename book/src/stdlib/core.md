@@ -89,7 +89,7 @@ val take: fn(#n:Any, x: 'a) -> 'a;
 val skip: fn(#n:Any, x: 'a) -> 'a;
 
 /// range will update j - i times, starting at i and ending at j - 1
-val range: fn(i: i64, j: i64) -> Result<i64, `SeqError(string)>;
+val range: fn(i: i64, j: i64) -> Result<i64, `RangeError(string)>;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -> bool;

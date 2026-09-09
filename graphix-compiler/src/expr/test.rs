@@ -841,6 +841,50 @@ macro_rules! any {
     };
 }
 
+macro_rules! until_stmt {
+    ($inner:expr) => {
+        $inner.prop_map(|e| ExprKind::Until(Arc::new(e)).to_expr_nopos())
+    };
+}
+
+// A seq statement: `until`, `do { until | expr }`, `try { .. }
+// with(e[: T]) { .. }`, or an expression. Only legal in seq bodies
+// (and try/with bodies), which is where the generator places them.
+macro_rules! seq_item {
+    ($inner:expr) => {
+        prop_oneof![
+            until_stmt!($inner.clone()),
+            collection::vec(
+                prop_oneof![until_stmt!($inner.clone()), $inner.clone()],
+                1..4
+            )
+            .prop_map(|body| ExprKind::SeqDo { body: Arc::from(body) }.to_expr_nopos()),
+            (
+                collection::vec(
+                    prop_oneof![until_stmt!($inner.clone()), $inner.clone()],
+                    1..4
+                ),
+                prop_oneof![Just(ArcStr::from("_")), random_fname()],
+                option::of(typexp()),
+                collection::vec(
+                    prop_oneof![until_stmt!($inner.clone()), $inner.clone()],
+                    1..4
+                ),
+            )
+                .prop_map(|(body, bind, constraint, handler)| {
+                    ExprKind::TryWith(Arc::new(TryWithExpr {
+                        body: Arc::from(body),
+                        bind,
+                        constraint,
+                        handler: Arc::from(handler),
+                    }))
+                    .to_expr_nopos()
+                }),
+            $inner
+        ]
+    };
+}
+
 macro_rules! do_block {
     ($inner:expr) => {
         (
@@ -1439,7 +1483,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             (
                 any::<bool>(),
                 option::of(reference()),
-                collection::vec(inner.clone(), 1..5),
+                collection::vec(seq_item!(inner.clone()), 1..5),
             )
                 .prop_map(|(queued, trigger, body)| ExprKind::Seq {
                     queued,
@@ -2136,7 +2180,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         }
         (ExprKind::TryWith(a), ExprKind::TryWith(b)) => {
             a.bind == b.bind
-                && a.constraint == b.constraint
+                && check_type_opt(&a.constraint, &b.constraint)
                 && a.body.len() == b.body.len()
                 && a.body.iter().zip(b.body.iter()).all(|(x, y)| check(x, y))
                 && a.handler.len() == b.handler.len()

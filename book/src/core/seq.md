@@ -94,6 +94,11 @@ source reference variable subsequently points somewhere else.
 `until ready` observes the live condition, rather than a queued copy of it.
 It has no value, so it cannot be the last statement where the value is used
 (the end of a `seq`, or of a `try` or `with` body bound by a `let`).
+
+`graphix --expand file.gx` checks the file and prints each sequence's
+lowered program: the step variable, one select arm per step, and the
+cells that carry `let` values between steps. It is the tool for seeing
+exactly which event a step is waiting on.
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 `count <- count + 1` operations can accumulate rather than overwrite one

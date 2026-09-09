@@ -101,6 +101,9 @@ pub enum CFlag {
     /// instead of erroring, the way `let` re-binding already does.
     /// File modules keep the strict rules.
     ReplaceImports,
+    /// Print each `seq`'s lowered machine to stdout as it is compiled
+    /// (`graphix --expand`): the source position, then the program.
+    ExpandSeq,
 }
 
 /// Runtime control signals shared between a runtime handle and the

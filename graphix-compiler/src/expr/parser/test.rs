@@ -2351,6 +2351,7 @@ fn try_with_parses() {
         "seq { try { 1 } with(e) { 2 } }",
         "seq { try { f()? } with(e: Error<`E>) { println(e); 0 } }",
         "seq { let x = try { let b = 1; b } with(_) { 0 }; x }",
+        "seq { let x = try { f()? } with(_: Error<`E>) { 0 }; x }",
         "seq { x <- try { 1 } with(e) { e? } }",
         "seq go { try { try { 1 } with(e) { e? } } with(e) { 2 } }",
         "seq { try { do { 1; 2 } } with(e) { until ready; 3 } }",

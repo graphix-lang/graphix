@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3f404943.js";
+            window.path_to_searchindex_js = "../searchindex-682fa164.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -248,7 +248,11 @@ source reference variable subsequently points somewhere else.</p>
 <h2 id="live-state-and-waits"><a class="header" href="#live-state-and-waits">Live state and waits</a></h2>
 <p><code>until ready</code> observes the live condition, rather than a queued copy of it.
 It has no value, so it cannot be the last statement where the value is used
-(the end of a <code>seq</code>, or of a <code>try</code> or <code>with</code> body bound by a <code>let</code>).
+(the end of a <code>seq</code>, or of a <code>try</code> or <code>with</code> body bound by a <code>let</code>).</p>
+<p><code>graphix --expand file.gx</code> checks the file and prints each sequence’s
+lowered program: the step variable, one select arm per step, and the
+cells that carry <code>let</code> values between steps. It is the tool for seeing
+exactly which event a step is waiting on.
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 <code>count &lt;- count + 1</code> operations can accumulate rather than overwrite one

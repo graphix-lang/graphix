@@ -1853,7 +1853,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                     // (seq(i64::MIN, 4) wedged its evaluator past every
                     // deadline — soak jul06g). i128: j - i overflows
                     // i64 for exactly the ranges being rejected.
-                    let e = literal!("SeqError");
+                    let e = literal!("RangeError");
                     if *j as i128 - *i as i128
                         > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
                     {
@@ -1870,7 +1870,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                     }
                 }
                 _ => {
-                    let e = literal!("SeqError");
+                    let e = literal!("RangeError");
                     Some(err!(e, "invalid args i must be <= j"))
                 }
             };

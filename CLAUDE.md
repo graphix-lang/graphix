@@ -349,11 +349,13 @@ Some examples are code snippets that reference undefined variables and are meant
 
 ## Development Notes
 
-- Dev builds are UNOPTIMIZED (opt-level=0, no LTO) since 2026-08-10 —
-  roughly half the clean build time of the old opt-level="s"/lto="thin"
-  profile. What used to force optimization was stack: unoptimized frames
-  are ~6x their optimized size (~420KB per `expr` parse nesting level,
-  so a 2MB thread parsed 5 levels). See "Stack discipline" below.
+- Dev builds are `opt-level = "s"`, no LTO, no debug info (Eric,
+  2026-08-27: the full test suite's compile + run went from 8m to 6m
+  against the fully unoptimized profile used 2026-08-10..27). What used
+  to force optimization was stack: unoptimized frames are ~6x their
+  optimized size (~420KB per `expr` parse nesting level, so a 2MB
+  thread parsed 5 levels); the guards in "Stack discipline" below are
+  what make the profile a free choice.
 - Release builds use full optimization (opt-level=3, codegen-units=1, lto=true)
 - Rust edition 2024 is used throughout
 - The project uses `triomphe::Arc` instead of `std::sync::Arc` for better performance
@@ -1272,7 +1274,9 @@ the rules.
   absent); a nullary call is a level. Casualty by rule: `|v| k` (a
   standing level the call does not derive from its arg) never fires
   again, so the run stalls — `|v| v ~ k`. Pin: `lang/seq.rs`
-  `reentry_fired_only`.
+  `reentry_fired_only`. `graphix --expand f.gx` prints each seq's
+  lowered machine (check mode; `CFlag::ExpandSeq`). `until` where the
+  statement's value is used is refused; `range` throws `` `RangeError ``.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`

@@ -15,7 +15,7 @@ use crate::{
     CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
     expr::{
         ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
-        StructWithExpr,
+        StructWithExpr, print::PrettyDisplay,
     },
     node::{
         ExplicitParens, Nop,
@@ -318,6 +318,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Seq { .. } => {
             let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
+            if flags.contains(CFlag::ExpandSeq) {
+                println!("// seq at {}\n{}\n", spec.pos, lowered.to_string_pretty(80));
+            }
             compile(ctx, flags, lowered, scope, top_id)
         }
         ExprKind::Until(_) => {

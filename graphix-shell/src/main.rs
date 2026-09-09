@@ -193,6 +193,9 @@ struct Params {
     /// type checks.
     #[arg(long = "check")]
     check: bool,
+    /// check the program and print each seq's lowered machine
+    #[arg(long = "expand")]
+    expand: bool,
     /// run the program in the specified file instead of starting the REPL
     file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,
@@ -365,7 +368,8 @@ fn tokio_main(
             );
             shell = shell.resolver_factories(factories);
         }
-        if p.file.is_none() && p.check {
+        let check = p.check || p.expand;
+        if p.file.is_none() && check {
             bail!("check mode requires a file to check")
         }
         if let Some(f) = &p.file {
@@ -406,12 +410,15 @@ fn tokio_main(
                     Source::File(path)
                 }
             };
-            let mode = if p.check { Mode::Check(source) } else { Mode::Script(source) };
+            let mode = if check { Mode::Check(source) } else { Mode::Script(source) };
             shell = shell.mode(mode);
         }
         let (mut enable, disable) = RawFlag::as_flags(&p.warn);
         if p.no_fusion {
             enable.insert(CFlag::FusionDisabled);
+        }
+        if p.expand {
+            enable.insert(CFlag::ExpandSeq);
         }
         shell
             .enable_flags(enable)

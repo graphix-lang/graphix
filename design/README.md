@@ -36,14 +36,17 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | `queue_fn.md` | `queuefn` |
 | `catch.md` | `catch(e) expr` installs a handler; not control flow |
 | `lpool_audit_2026_07.md` | pooled-allocation audit; applied |
-| `seq_blocks.md` | `seq` blocks: a `select` the compiler writes; straight-line built 2026-09-04 (`if`/loops held) |
+| `seq_blocks.md` | `seq` blocks: a `select` the compiler writes; straight-line built 2026-09-04 (`if`/loops held); `try … with` §7.9 (2026-09-07); the completion rule under R3 (2026-09-09) |
+| `seqq.md` | `seqq`: the seq machine behind one FIFO queue; what a queue entry captures and what stays live |
+| `seq_error_guards.md` | the runtime side of seq errors: handler generations, `SeqGuard`, the JIT boundary |
+| `async_sleep_outputs.md` | async builtins clear their output on sleep (a restarted activation has no completion yet); the audit by wrapper family |
+| `place_references.md` | `&a[i]`, `&s.f`, `&t.0`, `&m{k}`: places as root + path, patched at delivery (built 2026-09-02) |
 
 ## Proposed, not built
 
 | doc | what |
 |---|---|
 | `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
-| `seq_blocks.md` | `seq` blocks: sequencing across cycles — a `select` the compiler writes; straight-line built 2026-09-04 (`if`/loops held); atoms + surface pins in `lang/seq.rs`; privileged handoff in the port is surface `seq` |
 | `levels_and_events.md` | levels vs events as a KIND — revised same day (§0): async results are LEVELS (retention is the feature), only occurrences lack a standing value, the tracker stays; `~` waits on every absence; residual = a compile error for occurrence-as-state + pure event selects; proposed 2026-09-03, go/no-go = a throwaway kind checker's counts |
 | `pure_dataflow_plan.md` | A (mux-select) and B (sparse delivery) WITHDRAWN 2026-09-04; sleep is pause; keepers `~!` / skip-sleep on pure arms; write rule withdrawn; `seq` (C) next as the sleep-era `pc` machine |
 | `pure_select.md` | select arms are PURE, sleep disappears (Eric's alternative, 2026-09-03): impure code in an arm is sugar for a hoisted, arm-gated form (a gated level is born at entry, a gated occurrence is not); level effects follow presence; deletes wake catch-up, Held, the restart contracts, 115 sleep impls; §11 = Eric's always-update variant (preferred: pure arms lazy, impure arms always on, `null`-keyed effects, no hoist); §12 = is dense bottom still necessary; §13 = seq becomes a `~` chain, the port is already written in this discipline; go/no-go = the counts over the port |
@@ -73,4 +76,4 @@ current rules; the design docs hold the *why* and the *how it got here*.
 | doc | what |
 |---|---|
 | `seq_review_2026-09-04.md` | the seq + netidx-admin CR: F1-Fn with dispositions |
-| `seq_review_2026-09-06.md` | re-check of the 2026-09-05 review at `c46fd6c1`: what closed, what remains (R1-R7) |
+| `seq_review_2026-09-06.md` | re-check of the 2026-09-05 review at `c46fd6c1`; all items closed 2026-09-09 (R10 the completion rule, R3-R7 cleanups, `--expand`) |

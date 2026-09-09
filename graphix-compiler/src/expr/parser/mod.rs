@@ -1185,8 +1185,10 @@ where
             sptoken(')'),
             (
                 spaces().with(choice((
-                    attempt(token('_').skip(look_ahead(sptoken(')'))))
-                        .map(|_| ArcStr::from("_")),
+                    attempt(
+                        token('_').skip(look_ahead(choice((sptoken(')'), sptoken(':'))))),
+                    )
+                    .map(|_| ArcStr::from("_")),
                     fname(),
                 ))),
                 spaces().with(optional(token(':').with(typ()))),

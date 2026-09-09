@@ -459,8 +459,10 @@ An AST-to-AST desugar (`expr/seq_desugar.rs`, the precedent is the sync
 subset's P1 desugar, which validated "no new node types; both
 evaluators inherit the semantics from one spec"). Positions carry from
 each statement to the nodes it lowers to, so a type error names the
-step. `graphix --expand` prints the lowered program: the machine is
-inspectable, which is the debugging story.
+step. `graphix --expand file.gx` checks the file and prints each seq's
+lowered machine (source position, then the pretty-printed program; the
+completion guards are compiler-only nodes and print as their operand):
+the machine is inspectable, which is the debugging story.
 
 ### 7.1 The skeleton
 
@@ -867,8 +869,10 @@ block's type is its last expression's. Every lowered node carries its
 source statement's position, so a type error inside a step reads like
 the same error in a plain block. A statement that is neither an
 effect nor a derivation of anything (a bare constant) is a warning.
-The desugared program must print (`--expand`) and re-parse to the same
-machine — the round-trip test covers the lowering's output.
+The desugared program prints (`--expand`); the guards are the one
+thing the print loses, so re-parsing it gives the machine without its
+error boundaries. The parser/printer round trip covers the surface
+forms (`until`, `do`, `try … with` are generated inside seq bodies).
 
 ## 10. Plan
 
@@ -891,7 +895,7 @@ machine — the round-trip test covers the lowering's output.
    steps, `until`, `do`, `?` abort. One arm per step. A seq-toplevel
    `catch` or `{ ... }` is refused; `catch` inside `do` is still an
    ordinary install in the tree (to be refused with item 6).
-   `--expand` not yet.
+   `--expand` built 2026-09-09 (review R7).
 3. Pins: atoms (go/no-go) plus surface `seq_value` / `seq_let_then_use`
    / `seq_trigger_and_until` / `seq_busy_drops` / `seq_qop_aborts`.
    Branch/loop pins wait on if/loops.
