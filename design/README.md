@@ -34,6 +34,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 |---|---|
 | `final_jit_architecture.md` | `Expr → node graph → CLIF`; one IR, two evaluators |
 | `distributed_jit.md` | `emit_clif`/`fuse` per node; the emit contracts |
+| `jit_startup.md` | startup profiles, early rejection, and block liveness costs |
 | `strict_fusion.md` | fusion is pure computation + fast fns only; what was deleted and why |
 | `unified_value_abi.md` | the (disc, payload) Value ABI across the JIT boundary |
 

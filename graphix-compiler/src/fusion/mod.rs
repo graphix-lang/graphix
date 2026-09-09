@@ -4,8 +4,8 @@
 //! Code generation is distributed: each node's `Update::emit_clif` /
 //! `Apply::emit_clif` emits its own CLIF and [`fuse`] drives the
 //! `Update::fuse` recursion. This module supplies the shared mechanics:
-//! [`try_fuse`] (the whole-subtree compile attempt — "is it fusable"
-//! IS the compile attempt), [`fuse`] (the child-visit protocol),
+//! [`try_fuse`] (early effect rejection and whole-subtree compilation),
+//! [`fuse`] (the child-visit protocol),
 //! [`lowering`] (discovery and signature derivation) and [`builder`]
 //! (the runtime [`builder::FusedKernel`] carrier).
 
@@ -29,6 +29,7 @@ use crate::{
     },
     node,
     node::genn,
+    perfdbg,
     typ::{FnType, Type},
 };
 use poolshark::local::LPooled;
@@ -94,11 +95,12 @@ pub(crate) fn blocker(spec: &Expr, reason: compact_str::CompactString) -> anyhow
 /// if not why".
 #[derive(Debug, Clone, Default)]
 pub struct FusionStats {
-    /// `try_fuse` attempts that passed the cheap gates (identity,
-    /// return-type) and reached the compile attempt.
+    /// `try_fuse` attempts that passed the identity and return-type gates.
     pub attempted: usize,
     /// Regions that compiled and were spliced in.
     pub fused: usize,
+    /// Attempts rejected during discovery, before input collection or emission.
+    pub rejected_before_emit: usize,
     /// Per-failure source identity and compile error. Compile-time only;
     /// bounded by program size.
     pub failed: Vec<FusionFailure>,
@@ -773,8 +775,8 @@ pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
 ///
 /// `Ok(Some(replacement))`: a [`FusedKernel`] node the caller swaps in.
 /// `Ok(None)`: the root type has no kernel representation, the subtree
-/// is an identity passthrough, or some node does not emit CLIF. "Is it
-/// fusable" IS the compile attempt; there is no separate analysis.
+/// is an identity passthrough, or some node does not emit CLIF.
+/// Discovery rejects known effects; emission validates the remaining shapes.
 pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
@@ -784,6 +786,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     if region_is_identity(node) {
         return Ok(None);
     }
+    let phase = perfdbg::span(&perfdbg::FUSION_RETURN_NS);
     let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
         if crate::dbgenv::gxdbg_freeze_ret() {
             crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
@@ -794,7 +797,19 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         }
         return Ok(None);
     };
+    drop(phase);
     ctx.fusion.stats.attempted += 1;
+    let phase = perfdbg::span(&perfdbg::FUSION_BUILTINS_NS);
+    // `apply_sites` lets `CallSite::emit_clif` lower a registered site
+    // to a direct call.
+    let mut discovery = lowering::BuiltinCallDiscovery::default();
+    if let Err(blocker) = lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery)
+    {
+        ctx.fusion.stats.rejected_before_emit += 1;
+        return refuse(ctx, &blocker.spec, blocker.reason);
+    }
+    drop(phase);
+    let phase = perfdbg::span(&perfdbg::FUSION_INPUTS_NS);
     let inputs = collect_region_inputs(&**node, ctx);
     if let Some(name) = non_scalar_basename_collision(&inputs) {
         return refuse(
@@ -806,14 +821,13 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             ),
         );
     }
-    // `apply_sites` lets `CallSite::emit_clif` lower a registered site
-    // to a direct call.
-    let mut discovery = lowering::BuiltinCallDiscovery::default();
-    lowering::walk_node_for_builtin_calls::<R, E>(node, ctx, &mut discovery);
+    drop(phase);
+    let phase = perfdbg::span(&perfdbg::FUSION_CALLEES_NS);
     // Callee kernels build before the jit lock is taken:
     // `build_lambda_kernel` needs `&mut ExecCtx`.
     let (lambda_sites, lambda_callees, callee_bodies, region_decorated) =
         discover_lambda_calls(node, ctx);
+    drop(phase);
     let source_id = node.spec().id;
     let (sig, _arg_types) = match sig_from_inputs(
         arcstr::ArcStr::from(
@@ -846,6 +860,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             &ctx.env,
         )
     };
+    let phase = perfdbg::span(&perfdbg::FUSION_EMIT_NS);
     let mut result = build(ctx);
     // An exhausted arena retires the whole active `Jit` (its kernels
     // stay mapped) and the build retries once in a fresh module; the
@@ -879,6 +894,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             }
         }
     }
+    drop(phase);
     let wrapped = match result {
         Ok(w) => std::sync::Arc::new(w),
         Err(e) => {
@@ -981,6 +997,9 @@ pub(crate) fn non_scalar_basename_collision(
 /// since an abstract-typed return carries Refs the env-free freeze rejects.
 pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     use kernel_abi::AbiKind;
+    if typ.with_deref(|t| matches!(t, Some(Type::Fn(_) | Type::ByRef(_)))) {
+        return None;
+    }
     if crate::dbgenv::graphix_dbg_freeze() {
         let d = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             compact_str::format_compact!("{typ}")

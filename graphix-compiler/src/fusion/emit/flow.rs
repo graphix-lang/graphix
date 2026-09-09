@@ -15,6 +15,8 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
+use nohash::IntSet;
+use poolshark::local::LPooled;
 
 use super::{
     abi::{
@@ -74,6 +76,22 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
     }
     let mark = cx.env.mark();
     let last = children.len() - 1;
+    let mut needed: LPooled<IntSet<BindId>> = LPooled::take();
+    let mut live: LPooled<Vec<bool>> = LPooled::take();
+    live.resize(children.len(), false);
+    for (i, child) in children.iter().enumerate().rev() {
+        let mut refs = Refs::default();
+        child.refs(&mut refs);
+        refs.with_bound(|id| live[i] |= needed.contains(&id));
+        refs.with_refs(|id| {
+            needed.insert(id);
+        });
+        fusion::for_each_node(child, &mut |n| {
+            if let NodeView::Connect(c) = n.view() {
+                needed.insert(c.id);
+            }
+        });
+    }
     for (i, child) in children.iter().enumerate() {
         if i == last {
             let tail_cv = child.emit_clif(cx)?;
@@ -110,40 +128,7 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
             cx.env.truncate(mark);
             return Ok(result);
         }
-        // Dead-statement elimination: a non-tail statement is dead iff no
-        // later sibling or the tail references an id its subtree binds and
-        // the subtree is effect-free. A dead bottom would poison the kernel.
-        let mut bound = Refs::default();
-        child.refs(&mut bound);
-        let mut suffix = Refs::default();
-        for later in &children[i + 1..] {
-            later.refs(&mut suffix);
-        }
-        let mut alive = false;
-        bound.with_bound(|id| {
-            if suffix.is_refed(id) {
-                alive = true;
-            }
-        });
-        // A connect target is not a read in `Refs`; a write-only `let` is
-        // the target's seed and must survive.
-        if !alive {
-            for later in &children[i + 1..] {
-                fusion::for_each_node(later, &mut |n| {
-                    if let NodeView::Connect(c) = n.view() {
-                        bound.with_bound(|id| {
-                            if id == c.id {
-                                alive = true;
-                            }
-                        });
-                    }
-                });
-                if alive {
-                    break;
-                }
-            }
-        }
-        if !alive && stmt_subtree_effect_free(child) {
+        if !live[i] && stmt_subtree_effect_free(child) {
             continue;
         }
         emit_block_stmt(cx, child)?;

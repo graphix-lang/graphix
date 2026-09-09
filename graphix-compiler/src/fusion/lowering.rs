@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
-        self,
+        self, FusionBlocker,
         kernel_abi::{
             self, AbiKind, KernelSig, Seen, abi_kind, freeze_for_abi_normalized,
             scalar_prim,
@@ -102,21 +102,48 @@ pub struct BuiltinCallDiscovery {
 /// Discover the fusable call sites in a subtree: every `CallSite` on a
 /// builtin with a fast fn and every non-inline `cast<T>(x)`. Descent
 /// is [`fusion::for_each_emitted_node`], so collection callbacks are
-/// included and ordinary lambda bodies are not. A site that cannot be
-/// lowered is omitted; emission then fails on it and the subtree
-/// node-walks.
-pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
+/// included and ordinary lambda bodies are not. Effects reject the
+/// region immediately. Other unsupported sites are omitted and checked
+/// by emission.
+pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
-) {
-    fusion::for_each_emitted_node(node, &mut |n| match n.view() {
-        NodeView::CallSite(cs) => {
-            try_register_builtin_call_from_callsite(cs, ctx, out);
+) -> Result<(), FusionBlocker> {
+    let mut failure = None;
+    fusion::for_each_emitted_node(node, &mut |n| {
+        if failure.is_some() {
+            return;
         }
-        NodeView::TypeCast(tc) => try_register_cast(tc, out),
-        _ => {}
+        let reason = match n.view() {
+            NodeView::CallSite(cs) => {
+                failure = try_register_builtin_call_from_callsite(cs, ctx, out);
+                return;
+            }
+            NodeView::TypeCast(tc) => {
+                try_register_cast(tc, out);
+                return;
+            }
+            NodeView::Connect(_) | NodeView::ConnectDeref(_) => "connect is an effect",
+            NodeView::Catch(_) => "catch installs an error handler",
+            NodeView::SeqGuard(_) => "sequence guard keeps cross-cycle state",
+            NodeView::Sample(_) if std::ptr::eq(n, node) => {
+                "sample keeps cross-cycle state"
+            }
+            NodeView::Any(_) if std::ptr::eq(n, node) => {
+                "any depends on partial argument delivery"
+            }
+            NodeView::ByRef(_) | NodeView::Deref(_) if std::ptr::eq(n, node) => {
+                "references require the node-walk"
+            }
+            _ => return,
+        };
+        failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
+    match failure {
+        Some(failure) => Err(failure),
+        None => Ok(()),
+    }
 }
 
 /// Register a cast that is not emitted inline. The inline test here
@@ -153,30 +180,36 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
-) {
+) -> Option<FusionBlocker> {
     let apply_expr = cs.spec();
     let a = match &apply_expr.kind {
         ExprKind::Apply(a) => a,
-        _ => return,
+        _ => return None,
     };
     let path = match &a.function.kind {
         ExprKind::Ref { name } => name,
-        _ => return,
+        _ => return None,
     };
     // The CallSite's own scope, so a call inside a nested lambda body
     // resolves in its module, not the region root's.
     let (_, bind) = match ctx.env.lookup_bind(&cs.scope().lexical, path).ok().flatten() {
         Some(b) => b,
-        None => return,
+        None => return None,
     };
     let key = (bind.scope.clone(), bind.name.clone());
     let info = match ctx.builtin_bindings.get(&key) {
         Some(i) => i.clone(),
-        None => return,
+        None => return None,
     };
-    if !ctx.builtin_effect(info.name.as_str()).is_sync() {
-        return;
-    }
+    let fastcall = match ctx.builtin_fastcall(info.name.as_str()) {
+        Some(fastcall) => fastcall,
+        None => {
+            return Some(FusionBlocker {
+                spec: apply_expr.clone(),
+                reason: "builtin has no fast-call entry".into(),
+            });
+        }
+    };
     // `cs.ftype()` is `None` when typecheck did not reach this site;
     // the binding's generic FnType then usually fails to freeze.
     let fn_type: std::sync::Arc<FnType> = match cs.ftype() {
@@ -206,7 +239,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             FnArgKind::Positional { .. } => {
                 let (pos_idx, call_idx) = match pos_iter.next() {
                     Some(p) => p,
-                    None => return,
+                    None => return None,
                 };
                 let arg_typ = cs
                     .arg_positional(pos_idx)
@@ -214,7 +247,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     .unwrap_or_else(|| fa.typ.clone());
                 let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
                     Some(t) => t,
-                    None => return,
+                    None => return None,
                 };
                 arg_types.push(kt);
                 marshal_args.push(MarshalArg::Call(*call_idx));
@@ -231,15 +264,15 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     ),
                     None => {
                         if !*has_default {
-                            return;
+                            return None;
                         }
-                        let Some(n) = cs.arg_named(name) else { return };
+                        let Some(n) = cs.arg_named(name) else { return None };
                         (MarshalArg::Default(name.clone()), n.typ().clone())
                     }
                 };
                 let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
                     Some(t) => t,
-                    None => return,
+                    None => return None,
                 };
                 arg_types.push(kt);
                 marshal_args.push(source);
@@ -249,7 +282,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     let remaining: smallvec::SmallVec<[_; 8]> = pos_iter.collect();
     if !remaining.is_empty() {
         if fn_type.vargs.is_none() {
-            return;
+            return None;
         }
         for (pos_idx, call_idx) in remaining {
             let arg_typ = cs
@@ -258,39 +291,39 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 .or_else(|| fn_type.vargs.as_ref().and_then(|t| t.deref_cloned()));
             let arg_typ = match arg_typ {
                 Some(t) => t,
-                None => return,
+                None => return None,
             };
             let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
                 Some(t) => t,
-                None => return,
+                None => return None,
             };
             arg_types.push(kt);
             marshal_args.push(MarshalArg::Call(*call_idx));
         }
     }
     if !call_labeled.is_empty() {
-        return;
+        return None;
     }
     let ret_typ = cs.typ().clone();
     let return_type = match kernel_abi::freeze_for_abi_normalized(&ret_typ) {
         Some(t) => t,
-        None => return,
+        None => return None,
     };
     if !arg_types.iter().all(|t| is_call_arg_supported(t)) {
-        return;
+        return None;
     }
     if !is_call_return_supported(&return_type) {
-        return;
+        return None;
     }
-    let dispatch = match ctx.builtin_fastcall(info.name.as_str()) {
-        Some(crate::FastCall::Plain(f)) => SiteDispatch::Fast(f),
-        Some(crate::FastCall::Typed(f)) => SiteDispatch::Typed(f, ret_typ),
-        None => return,
+    let dispatch = match fastcall {
+        crate::FastCall::Plain(f) => SiteDispatch::Fast(f),
+        crate::FastCall::Typed(f) => SiteDispatch::Typed(f, ret_typ),
     };
     out.apply_sites.insert(
         apply_id,
         BuiltinCallSiteInfo { marshal_args, arg_types, return_type, dispatch },
     );
+    None
 }
 
 /// The bare identifier of a single-level path; a kernel reads a `Ref`
@@ -849,6 +882,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
         return Some(cached);
     }
+    let mut discovery = BuiltinCallDiscovery::default();
+    walk_node_for_builtin_calls(g.body(), ec, &mut discovery).ok()?;
     // Kernel names are module-wide, so each coverage variant needs its
     // own symbol; the suffix is deterministic in compile order.
     let variant = {
@@ -1033,8 +1068,6 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     sig.has_tail_loop = has_tail;
     sig.skipped_args = skipped_args;
     sig.tail_invariant = tail_invariant;
-    let mut discovery = BuiltinCallDiscovery::default();
-    walk_node_for_builtin_calls(g.body(), ec, &mut discovery);
     if crate::dbgenv::graphix_dbg_kernels() {
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             eprintln!(

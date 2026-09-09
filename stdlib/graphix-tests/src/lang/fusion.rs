@@ -1344,3 +1344,52 @@ async fn load_just_bind_no_output() -> Result<()> {
     ctx.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn effect_rejection_preserves_native_children() -> Result<()> {
+    for code in [
+        "{ let x = 1; let c = count(x); #[native] c + 1 }",
+        "{ let f = |x: i64| { let c = count(x); #[native] c + 1 }; f(1) }",
+        "{ let x = 1; let r = &x; let v = *r; #[native] v + 1 }",
+    ] {
+        let (tx, _rx) = mpsc::channel(10);
+        let ctx = init(tx).await?;
+        let before = ctx.rt.fusion_stats().await?;
+        ctx.rt.compile(ArcStr::from(code)).await?;
+        let stats = ctx.rt.fusion_stats().await?;
+        assert!(
+            stats.rejected_before_emit > before.rejected_before_emit,
+            "{code}: {stats:?}"
+        );
+        assert!(stats.fused > before.fused, "{code}: {stats:?}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn effect_rejection_reports_native_blocker() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    let error = ctx
+        .rt
+        .compile(arcstr::literal!("#[native] count(1)"))
+        .await
+        .expect_err("stateful builtin must reject #[native]");
+    let message = format!("{error:#}");
+    assert!(message.contains("count(1)"), "{message}");
+    assert!(message.contains("fast-call entry"), "{message}");
+    ctx.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_block_discards_unused_reference() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    ctx.rt
+        .compile(arcstr::literal!("#[native] { let x = 1; let unused = &x; x + 1 }"))
+        .await?;
+    ctx.shutdown().await;
+    Ok(())
+}

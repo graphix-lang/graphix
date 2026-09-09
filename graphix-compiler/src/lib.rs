@@ -1767,8 +1767,12 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     ctx.env.seed_typedef_refs();
     if ctx.fusion.enabled {
         let st = Instant::now();
+        let before = perfdbg::enabled().then(perfdbg::fusion_snapshot);
         fusion::fuse(node, ctx)?;
         info!("fusion time {:?}", st.elapsed());
+        if let Some(before) = before {
+            perfdbg::report_fusion(before, st.elapsed());
+        }
     }
     Ok(())
 }

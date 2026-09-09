@@ -54,9 +54,19 @@ than a central region planner, where a non-emittable root lost the
 whole region. Case-specific logic lives with the case: collection
 nodes emit their loops and keep the interpreted slot graph when
 emission fails; callee-kernel handling lives with `CallSite` and the
-lambda `Apply`. "Is it fusable" IS the compile attempt — there is no
-separate analysis to drift out of sync with the emitter. The
-`ctx.fusion.enabled` check runs once in `compile()`, not per recursion.
+lambda `Apply`. Builtin discovery rejects known effects before input
+collection and emission. It also checks for a builtin's fast-call entry
+before freezing its argument types. Emission remains the authority for
+all other supported shapes; admission does not duplicate those checks.
+The `ctx.fusion.enabled` check runs once in `compile()`, not per recursion.
+
+Block liveness uses a backward pass over the statements, accumulating
+later reads and connect targets. A statement can be discarded only if
+none of its bindings are needed later and it is effect-free. Each
+statement's references are collected once per block emission.
+
+Startup measurements and the profiling interface are described in
+[`jit_startup.md`](jit_startup.md).
 
 `emit_clif` takes no `&mut ExecCtx`: emission runs inside the jit lock.
 Everything needing the context (callee kernel cache, capture lookup)
