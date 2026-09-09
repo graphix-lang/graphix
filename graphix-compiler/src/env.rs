@@ -6,6 +6,7 @@ use crate::{
         SigImplLink, TypeRefSite,
     },
     mod_root,
+    profile::{self, Phase},
     typ::{AbstractId, FnType, TVar, TraitId, Type},
 };
 use ahash::{AHashMap, AHashSet};
@@ -1333,6 +1334,7 @@ impl Env {
     /// (`TypeRef::expand_cell`). Must run after typecheck, when every
     /// name's final target is registered.
     pub fn seed_typedef_refs(&self) {
+        let _profile = profile::phase(Phase::SeedTypes);
         for (_, defs) in self.typedefs.into_iter() {
             for (_, td) in defs.into_iter() {
                 td.typ.seed_refs(self);

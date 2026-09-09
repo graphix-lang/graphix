@@ -11,6 +11,7 @@ use crate::{
         lowering::MarshalArg,
     },
     node::lambda::LambdaDef,
+    profile::{self, Phase},
     typ::{FnArgKind, FnType, TVar, Type},
     wrap,
 };
@@ -111,6 +112,7 @@ fn finalize_lambda<R: Rt, E: UserEvent>(
     resolved: &FnType,
     spec: &TArc<Expr>,
 ) -> Result<()> {
+    let _profile = profile::phase(Phase::LambdaFinalize);
     if let Some(val) = ctx.lambda_defs.get(&id).cloned() {
         let ldef = val
             .downcast_ref::<LambdaDef<R, E>>()
@@ -636,6 +638,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
     ) -> Result<(Box<dyn Apply<R, E>>, FnType)> {
+        let _profile = profile::phase(Phase::StaticBind);
         self.prepare_bind(ctx, scope, flags, f, |_, _| {})?;
         if self.ftype.is_none() {
             bail!("statically resolving an untyped call site: {}", self.spec)

@@ -15,6 +15,7 @@ use crate::{
         Decorations, Expr, ExprId, ExprKind, Origin, Sig, VfsEntry, get_origin,
         swap_origin,
     },
+    profile::{self, Phase},
     typ::{AbstractId, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
 };
 use anyhow::{Result, bail};
@@ -218,6 +219,7 @@ pub fn pack_module(exprs: &[Expr]) -> Result<Bytes> {
 /// every node's `ori` to `ori` and minting fresh ids. `bytes` must come from
 /// [`pack_module`] in the same compiler build.
 pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> {
+    let _profile = profile::phase(Phase::Decode);
     check_magic(&mut bytes)?;
     let _unit = DecodeUnit::new(ori);
     let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
@@ -238,6 +240,7 @@ pub fn pack_sig(sig: &Sig) -> Result<Bytes> {
 
 /// Deserialize a module interface signature from a packed blob.
 pub fn unpack_sig(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Sig> {
+    let _profile = profile::phase(Phase::Decode);
     check_magic(&mut bytes)?;
     let _unit = DecodeUnit::new(ori);
     Sig::decode(&mut bytes).map_err(map_err)

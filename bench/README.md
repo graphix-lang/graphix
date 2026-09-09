@@ -178,3 +178,10 @@ found a real fusion value divergence on its first run (the checksum
 came out exactly 2x under fusion — a name-keyed clone_rebind bug,
 fixed 2026-07-02; see graphix-fuzz/findings/audit-jul2026/03), which
 is exactly the kind of finding it exists to surface.
+
+For compiler startup profiling, run a workload with `GRAPHIX_PROFILE=1`,
+capture stderr, then use `python3 bench/profile.py profile.log` (or
+`--json`). The reader reports call counts, exclusive and inclusive phase
+times, and failed-emission costs, and verifies the exclusive totals.
+See [the startup measurements](../design/jit_startup.md#full-compiler-profiling)
+for the admin workload and measurement boundaries.

@@ -10,6 +10,7 @@ use crate::{
     node::{
         callsite::CallSite, collection::CollectionIntrinsic, pattern::StructPatternNode,
     },
+    profile::{self, Phase},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
     wrap,
 };
@@ -487,6 +488,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         ctx: &mut ExecCtx<R, E>,
         args: &mut [Node<R, E>],
     ) -> Result<()> {
+        let _profile = profile::phase(Phase::InstanceCheck);
         for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
             wrap!(arg, arg.typecheck0(ctx))?;
             wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
@@ -681,7 +683,9 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             }
             argpats.push(pattern);
         }
+        let p = profile::phase(Phase::InstanceGraph);
         let body = build_body(ctx, &argpats)?;
+        drop(p);
         Ok(Self {
             slept: WakeBit::default(),
             id,

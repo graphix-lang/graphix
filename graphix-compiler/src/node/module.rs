@@ -12,6 +12,7 @@ use crate::{
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     node::{Nop, bind::Bind, traits},
+    profile::{self, Phase},
     typ::{AbstractId, Type},
     wrap,
 };
@@ -230,6 +231,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     sig: &Sig,
     nodes: &[Node<R, E>],
 ) -> Result<()> {
+    let _profile = profile::phase(Phase::ModuleSignature);
     let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
@@ -563,6 +565,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 exprs.iter(),
             )
             .map(|(n, c)| (Vec::from(n), c))?;
+            let _profile = profile::phase(Phase::ModuleCheck);
             // catches last, innermost-first (see `Block::typecheck0`)
             let mut catch = catches.iter().copied().peekable();
             for (i, n) in nodes.iter_mut().enumerate() {

@@ -16,6 +16,7 @@ use crate::{
         callsite::{ArgKey, CallSite},
         lambda::{GXLambda, LambdaDef},
     },
+    profile::{self, Phase},
 };
 use ahash::AHashSet;
 use anyhow::Result;
@@ -39,6 +40,7 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
     seed: Option<&'a GXLambda<R, E>>,
 ) -> StaticCallGraph<'a, R, E> {
+    let _profile = profile::phase(Phase::CallGraph);
     let mut instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>> =
         LPooled::take();
     let mut edges: LPooled<Vec<StaticEdge<'a, R, E>>> = LPooled::take();
@@ -162,6 +164,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> Result<()> {
+    let _profile = profile::phase(Phase::Analysis);
     let graph = collect_static_graph(root, None);
     let sites = collect_resolved_sites(root);
     infer_effects(&sites, ctx);
@@ -256,6 +259,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     self_bind: Option<BindId>,
     ctx: &ExecCtx<R, E>,
 ) {
+    let _profile = profile::phase(Phase::Analysis);
     let graph = collect_static_graph(g.body(), Some(g));
     let mut sites = collect_resolved_sites(g.body());
     if let Some(sb) = self_bind {
@@ -270,6 +274,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
 fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
 ) -> LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> {
+    let _profile = profile::phase(Phase::ResolvedSites);
     let mut seen: LPooled<IntSet<LambdaId>> = LPooled::take();
     let mut sites: LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> = LPooled::take();
     let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
@@ -297,6 +302,7 @@ fn infer_effects<R: Rt, E: UserEvent>(
     sites: &[(&GXLambda<R, E>, BindId)],
     ctx: &ExecCtx<R, E>,
 ) {
+    let _profile = profile::phase(Phase::Effects);
     // The (callee, self_bind) pairs double as a back-edge table: a
     // dynamically-bound recursive callee can be analyzed before its
     // self-call is in `ctx.bind_to_lambda`.
@@ -309,6 +315,7 @@ fn infer_effects<R: Rt, E: UserEvent>(
     let mut eff: LPooled<IntMap<LambdaId, LambdaFacts>> =
         bodies.keys().map(|id| (*id, LambdaFacts::PURE)).collect();
     loop {
+        let _profile = profile::phase(Phase::EffectRound);
         let mut changed = false;
         for (lid, body) in &*bodies {
             let e = body_facts(body, &eff, &self_ids, ctx);
@@ -360,12 +367,14 @@ fn body_facts<R: Rt, E: UserEvent>(
     self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> LambdaFacts {
+    let p = profile::phase(Phase::EffectRefs);
     let mut refs = crate::Refs::default();
     body.refs(&mut refs);
     let mut local: LPooled<IntSet<BindId>> = LPooled::take();
     refs.with_bound(|id| {
         local.insert(id);
     });
+    drop(p);
     let mut acc = LambdaFacts::PURE;
     fusion::for_each_node(body, &mut |n| {
         let e = node_facts(n, eff, self_ids, &local, ctx);
@@ -524,6 +533,7 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &ExecCtx<R, E>,
 ) {
+    let _profile = profile::phase(Phase::Recursion);
     let (components, cyclic, component_sizes) = strongly_connected(graph);
     let mut self_info: LPooled<IntMap<LambdaInstanceId, Option<BindId>>> =
         LPooled::take();

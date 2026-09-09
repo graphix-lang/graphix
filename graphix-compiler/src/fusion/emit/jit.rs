@@ -13,6 +13,7 @@ use crate::{
         kernel_abi::{self, AbiParamKind, AbiReturn, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
+    profile::{self, Phase},
 };
 use anyhow::{Context as AnyContext, Result, anyhow};
 use arcstr::ArcStr;
@@ -52,6 +53,7 @@ pub struct JitCtx {
 
 impl JitCtx {
     pub fn new() -> Result<Self> {
+        let _profile = profile::phase(Phase::JitInit);
         let mut flag_builder = settings::builder();
         // cranelift-jit requires PIC off.
         flag_builder.set("opt_level", "speed").context("set opt_level")?;
@@ -317,6 +319,7 @@ fn compile_kernel_with_callees_impl(
     callees: &[(usize, std::sync::Arc<KernelSig>)],
     emitters: &BTreeMap<usize, BodySource>,
 ) -> Result<WrappedKernel> {
+    let mut build_profile = profile::phase(Phase::JitBuild);
     let mut to_define: poolshark::local::LPooled<
         Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     > = poolshark::local::LPooled::take();
@@ -331,6 +334,7 @@ fn compile_kernel_with_callees_impl(
         &mut defined,
     );
     if r.is_err() {
+        profile::failed(&mut build_profile);
         // Evict the fresh entries (a stale one would hand out an undefined
         // FuncId) and trap-stub every declared-but-undefined body: the next
         // `finalize_definitions` panics on an undefined Local symbol.
@@ -370,6 +374,7 @@ fn define_stub_body(jit: &mut JitCtx, fid: FuncId, sig: &Signature) -> Result<()
         b.ins().trap(TrapCode::user(1).expect("valid user trap code"));
         b.finalize();
     }
+    let _backend_profile = profile::phase(Phase::BackendStub);
     jit.module
         .define_function(fid, &mut jit.func_ctx)
         .context("define_function (abandon stub)")?;
@@ -522,10 +527,12 @@ fn compile_kernel_with_callees_inner(
     }
     // Phase 3: the parent's wrapper, then finalize.
     let wrapper_id = define_wrapper(&mut jit.ctx, kernel, parent_entry.0)?;
+    let finalize_profile = profile::phase(Phase::Finalize);
     jit.ctx
         .module
         .finalize_definitions()
         .context("finalize_definitions (per-context jit)")?;
+    drop(finalize_profile);
     let wrapper_fn_ptr = jit.ctx.module.get_finalized_function(wrapper_id);
     // The code and its string tables are owned by `jit.by_kernel`; the
     // parent's state footprint comes from its cache entry so a cached
@@ -663,6 +670,7 @@ fn define_spill_thunk(
     }
     b.ins().return_(&[]);
     b.finalize();
+    let _backend_profile = profile::phase(Phase::BackendSpill);
     jit.module
         .define_function(thunk_id, &mut jit.func_ctx)
         .context("define_function (spill thunk)")
@@ -678,6 +686,7 @@ fn define_kernel_body(
     body_emitter: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
 ) -> Result<DefinedBody> {
+    let mut clif_profile = profile::phase(Phase::Clif);
     let self_ptr = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_ptr).map(|(_, e)| e.clone()).ok_or_else(
@@ -763,20 +772,23 @@ fn define_kernel_body(
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
-        let (state_words, slot_table_words, state_self_blocks, site_layout) =
-            compile_into_function(
-                &mut builder,
-                kernel,
-                &callee_refs,
-                self_thunk,
-                &helper_refs,
-                &lazy_strings,
-                &lazy_values,
-                &lazy_value_owners,
-                body_emitter,
-                callee_layouts,
-                &lazy_site_leaves,
-            )?;
+        let emitted = compile_into_function(
+            &mut builder,
+            kernel,
+            &callee_refs,
+            self_thunk,
+            &helper_refs,
+            &lazy_strings,
+            &lazy_values,
+            &lazy_value_owners,
+            body_emitter,
+            callee_layouts,
+            &lazy_site_leaves,
+        );
+        if emitted.is_err() {
+            profile::failed(&mut clif_profile);
+        }
+        let (state_words, slot_table_words, state_self_blocks, site_layout) = emitted?;
         builder.finalize();
         maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
         (
@@ -790,9 +802,12 @@ fn define_kernel_body(
             lazy_site_leaves.into_inner(),
         )
     };
+    drop(clif_profile);
+    let backend_profile = profile::phase(Phase::BackendBody);
     jit.module
         .define_function(func_id, &mut jit.func_ctx)
         .context("define_function (shared body)")?;
+    drop(backend_profile);
     if let Some(tid) = self_thunk_id {
         define_spill_thunk(jit, tid, func_id, &kernel_sig)?;
     }
@@ -933,6 +948,7 @@ fn define_wrapper_body(
     }
     maybe_dump_clif(&jit.func_ctx.func, symbol);
 
+    let _backend_profile = profile::phase(Phase::BackendWrapper);
     jit.module
         .define_function(wrapper_id, &mut jit.func_ctx)
         .context("define_function (wrapper)")?;

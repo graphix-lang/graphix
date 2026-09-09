@@ -22,12 +22,14 @@ pub mod ide;
 pub mod node;
 pub mod node_shape;
 pub mod perfdbg;
+pub(crate) mod profile;
 pub(crate) mod stack;
 pub use stack::set_stack_budget;
 pub mod tval;
 pub mod typ;
 
 use compact_str::CompactString;
+use profile::Phase;
 // Packages implementing `Apply::emit_clif` take cranelift through the
 // compiler, so they stay in version lockstep with the JIT.
 pub use cranelift_codegen;
@@ -1755,20 +1757,28 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     node: &mut Node<R, E>,
 ) -> Result<()> {
     let st = Instant::now();
+    let p = profile::phase(Phase::Typecheck0);
     node.typecheck0(ctx)?;
+    drop(p);
+    let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
         ctx.pending_settles.clear();
         ctx.pending_settles.push(Vec::new());
         return Err(e);
     }
+    drop(p);
+    let p = profile::phase(Phase::Settle);
     drain_pending_settles(ctx)?;
+    drop(p);
     info!("typecheck time {:?}", st.elapsed());
     analysis::analyze(node, ctx)?;
     ctx.env.seed_typedef_refs();
     if ctx.fusion.enabled {
         let st = Instant::now();
         let before = perfdbg::enabled().then(perfdbg::fusion_snapshot);
+        let p = profile::phase(Phase::Fusion);
         fusion::fuse(node, ctx)?;
+        drop(p);
         info!("fusion time {:?}", st.elapsed());
         if let Some(before) = before {
             perfdbg::report_fusion(before, st.elapsed());
@@ -1802,6 +1812,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<(Node<R, E>, Scope)> {
+    let _profile = profile::phase(Phase::Compile);
     // Fusion also runs in check/lsp runtimes: `#[native]` needs it to
     // verify its contract, and a malformed input only de-fuses.
     ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
@@ -1816,6 +1827,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     ctx.fusion.top_id = Some(top_id);
     let env = ctx.env.clone();
     let st = Instant::now();
+    let build_profile = profile::phase(Phase::BuildGraph);
     let compiled = match &spec.kind {
         expr::ExprKind::Catch(c) => {
             let c = c.clone();
@@ -1852,6 +1864,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             compiler::compile(ctx, flags, spec, scope, top_id).map(|n| (n, scope.clone()))
         }
     };
+    drop(build_profile);
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
         Err(e) => {

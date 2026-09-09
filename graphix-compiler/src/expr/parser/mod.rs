@@ -4,6 +4,7 @@ use crate::{
         ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
         TryWithExpr, set_origin,
     },
+    profile::{self, Phase},
     typ::{FnType, Type},
 };
 use ahash::AHashSet;
@@ -1217,6 +1218,7 @@ parser! {
 
 /// Parse one or more expressions followed by optional whitespace and eof.
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
+    let _profile = profile::phase(Phase::Parse);
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
@@ -1239,6 +1241,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 
 /// Parse one or more signature items followed by optional whitespace and eof.
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
+    let _profile = profile::phase(Phase::Parse);
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<SigItem>> = grow::parsing(&ori.text, || {
@@ -1261,6 +1264,7 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
 
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
+    let _profile = profile::phase(Phase::Parse);
     grow::parsing(s, || {
         expr()
             .skip(spaces())

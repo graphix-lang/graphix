@@ -8,6 +8,7 @@
 
 use crate::{
     BindId,
+    profile::{self, Phase},
     typ::{Type, TypeRef},
 };
 use arcstr::ArcStr;
@@ -375,6 +376,7 @@ const MAX_FREEZE_EXPANSIONS: usize = 256;
 /// payload structure refuse the leaf per node. Non-regular recursion
 /// is cut by [`MAX_FREEZE_EXPANSIONS`]; structural depth is unbounded.
 pub fn freeze_for_abi(t: &Type) -> Option<Type> {
+    let _profile = profile::phase(Phase::Freeze);
     freeze_for_abi_d(t, None)
 }
 
@@ -564,7 +566,12 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// never `t`: `normalize` writes bindings back into shared TVar cells,
 /// and attempting fusion must not change the program's static types.
 pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
-    freeze_for_abi(t).or_else(|| freeze_for_abi(&t.resolve_tvars().normalize()))
+    freeze_for_abi(t).or_else(|| {
+        let p = profile::phase(Phase::Normalize);
+        let normalized = t.resolve_tvars().normalize();
+        drop(p);
+        freeze_for_abi(&normalized)
+    })
 }
 
 /// The frozen success type `T` of a [`AbiKind::Nullable`] shape
