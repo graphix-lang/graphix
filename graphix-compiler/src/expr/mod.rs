@@ -883,160 +883,325 @@ impl Expr {
     }
 
     fn fold_inner<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
-        let init = f(init, self);
-        match &self.kind {
-            ExprKind::Constant(_)
-            | ExprKind::NoOp
-            | ExprKind::Use { .. }
-            | ExprKind::Ref { name: _ }
-            | ExprKind::TypeDef(_) => init,
-            ExprKind::ExplicitParens(e) => e.fold(init, f),
-            ExprKind::StructRef { source, field: _ }
-            | ExprKind::TupleRef { source, field: _ } => source.fold(init, f),
+        let mut acc = Some(f(init, self));
+        self.for_each_child(&mut |c| {
+            let v = acc.take().unwrap();
+            acc = Some(c.fold(v, f));
+        });
+        acc.unwrap()
+    }
 
-            ExprKind::Map { args } => args.iter().fold(init, |init, (k, v)| {
-                let init = k.fold(init, f);
-                v.fold(init, f)
+    /// Visit each direct sub-expression, in the one canonical order
+    /// (`fold` and `map_children` share it): the fuzzer's preorder
+    /// indices and the seq rewrite are built on it, so a new `ExprKind`
+    /// child is added here and nowhere else.
+    pub fn for_each_child(&self, f: &mut impl FnMut(&Expr)) {
+        use ExprKind::*;
+        match &self.kind {
+            NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) => (),
+            Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
+                exprs.iter().for_each(|e| f(e))
+            }
+            Module { value: ModuleKind::Dynamic { source, .. }, .. } => f(source),
+            Module { value: ModuleKind::Unresolved { .. }, .. } => (),
+            ExplicitParens(x)
+            | Qop(x)
+            | Rethrow(x)
+            | SeqGuard(x)
+            | OrNever(x)
+            | ByRef(x)
+            | Deref(x)
+            | Neg(x)
+            | Until(x)
+            | Not { expr: x }
+            | Construct { arg: x, .. }
+            | TypeCast { expr: x, .. }
+            | Connect { value: x, .. }
+            | StructRef { source: x, .. }
+            | TupleRef { source: x, .. } => f(x),
+            Do { exprs: xs }
+            | StringInterpolate { args: xs }
+            | Any { args: xs }
+            | Never { args: xs, .. }
+            | Array { args: xs }
+            | List { args: xs }
+            | Tuple { args: xs }
+            | Variant { args: xs, .. }
+            | SeqDo { body: xs } => xs.iter().for_each(|e| f(e)),
+            Bind(b) => f(&b.value),
+            ArrayRef { source, i } => {
+                f(source);
+                f(i);
+            }
+            ArraySlice { source, start, end } => {
+                f(source);
+                start.iter().for_each(|e| f(e));
+                end.iter().for_each(|e| f(e));
+            }
+            MapRef { source, key } => {
+                f(source);
+                f(key);
+            }
+            Map { args } => args.iter().for_each(|(k, v)| {
+                f(k);
+                f(v);
             }),
-            ExprKind::MapRef { source, key } => {
-                let init = source.fold(init, f);
-                key.fold(init, f)
+            Struct(StructExpr { args }) => args.iter().for_each(|(_, e)| f(e)),
+            StructWith(StructWithExpr { source, replace }) => {
+                f(source);
+                replace.iter().for_each(|(_, e)| f(e));
             }
-            ExprKind::Module {
-                name: _,
-                value: ModuleKind::Resolved { exprs, sig: _, from_interface: _ },
-            } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
-            ExprKind::Module {
-                name: _,
-                value: ModuleKind::Dynamic { sandbox: _, sig: _, source },
-            } => source.fold(init, f),
-            ExprKind::Module {
-                name: _,
-                value: ModuleKind::Unresolved { from_interface: _ },
-            } => init,
-            ExprKind::Do { exprs } => exprs.iter().fold(init, |init, e| e.fold(init, f)),
-            ExprKind::Bind(b) => b.value.fold(init, f),
-            ExprKind::StructWith(StructWithExpr { source, replace }) => {
-                let init = source.fold(init, f);
-                replace.iter().fold(init, |init, (_, e)| e.fold(init, f))
+            Apply(ApplyExpr { function, args }) => {
+                f(function);
+                args.iter().for_each(|(_, e)| f(e));
             }
-            ExprKind::Connect { name: _, value, deref: _ } => value.fold(init, f),
-            ExprKind::Lambda(l) => {
-                // Fold labeled-arg DEFAULT expressions (`#x = expr`) — they
-                // are real sub-expressions that can reference captures, so a
-                // complete tree walk must visit them. Then the body.
-                let init = l.args.iter().fold(init, |init, a| match &a.labeled {
-                    Some(Some(default)) => default.fold(init, f),
-                    _ => init,
-                });
-                match &l.body {
-                    Either::Left(e) => e.fold(init, f),
-                    Either::Right(_) => init,
+            Lambda(l) => {
+                for a in l.args.iter() {
+                    if let Some(Some(d)) = &a.labeled {
+                        f(d);
+                    }
+                }
+                if let Either::Left(b) = &l.body {
+                    f(b);
                 }
             }
-            ExprKind::TypeCast { expr, typ: _ } => expr.fold(init, f),
-            ExprKind::Never { typ: _, args } => {
-                args.iter().fold(init, |init, e| e.fold(init, f))
+            Trait(t) => {
+                t.methods.iter().for_each(|m| m.default.iter().for_each(|e| f(e)))
             }
-            ExprKind::Apply(ApplyExpr { args, function }) => {
-                let init = function.fold(init, f);
-                args.iter().fold(init, |init, (_, e)| e.fold(init, f))
+            Impl(im) => im.methods.iter().for_each(|e| f(e)),
+            Select(SelectExpr { arg, arms }) => {
+                f(arg);
+                for (p, e) in arms.iter() {
+                    p.guard.iter().for_each(|g| f(g));
+                    f(e);
+                }
             }
-            ExprKind::Any { args }
-            | ExprKind::Array { args }
-            | ExprKind::List { args }
-            | ExprKind::Tuple { args }
-            | ExprKind::Variant { tag: _, args }
-            | ExprKind::StringInterpolate { args } => {
-                args.iter().fold(init, |init, e| e.fold(init, f))
+            Catch(c) => {
+                f(&c.handler);
+                c.seq_abort.iter().for_each(|e| f(e));
             }
-            ExprKind::Construct { name: _, arg } => arg.fold(init, f),
-            ExprKind::Trait(t) => {
-                t.methods.iter().fold(init, |init, m| match &m.default {
-                    Some(e) => e.fold(init, f),
-                    None => init,
+            Seq { trigger, body, .. } => {
+                trigger.iter().for_each(|t| f(t));
+                body.iter().for_each(|e| f(e));
+            }
+            TryWith(t) => {
+                t.body.iter().for_each(|e| f(e));
+                t.handler.iter().for_each(|e| f(e));
+            }
+            Eq { lhs, rhs }
+            | Ne { lhs, rhs }
+            | Lt { lhs, rhs }
+            | Gt { lhs, rhs }
+            | Lte { lhs, rhs }
+            | Gte { lhs, rhs }
+            | And { lhs, rhs }
+            | Or { lhs, rhs }
+            | Add { lhs, rhs }
+            | CheckedAdd { lhs, rhs }
+            | Sub { lhs, rhs }
+            | CheckedSub { lhs, rhs }
+            | Mul { lhs, rhs }
+            | CheckedMul { lhs, rhs }
+            | Div { lhs, rhs }
+            | CheckedDiv { lhs, rhs }
+            | Mod { lhs, rhs }
+            | CheckedMod { lhs, rhs }
+            | Sample { lhs, rhs }
+            | StrictSample { lhs, rhs } => {
+                f(lhs);
+                f(rhs);
+            }
+        }
+    }
+
+    /// This node rebuilt with each direct sub-expression replaced by
+    /// `f(child)`, in `for_each_child`'s order: a fresh id, everything
+    /// else kept. A transform keeps only the arms it changes and sends
+    /// the rest here.
+    pub fn map_children(&self, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
+        use ExprKind::*;
+        let a = |f: &mut dyn FnMut(&Expr) -> Expr, x: &Arc<Expr>| Arc::new(f(x));
+        let xs = |f: &mut dyn FnMut(&Expr) -> Expr, xs: &Arc<[Expr]>| {
+            Arc::from_iter(xs.iter().map(|x| f(x)))
+        };
+        let kind = match &self.kind {
+            NoOp
+            | Constant(_)
+            | Use { .. }
+            | Ref { .. }
+            | TypeDef(_)
+            | Module { value: ModuleKind::Unresolved { .. }, .. } => self.kind.clone(),
+            Module {
+                name,
+                value: ModuleKind::Resolved { exprs, sig, from_interface },
+            } => Module {
+                name: name.clone(),
+                value: ModuleKind::Resolved {
+                    exprs: xs(f, exprs),
+                    sig: sig.clone(),
+                    from_interface: *from_interface,
+                },
+            },
+            Module { name, value: ModuleKind::Dynamic { sandbox, sig, source } } => {
+                Module {
+                    name: name.clone(),
+                    value: ModuleKind::Dynamic {
+                        sandbox: sandbox.clone(),
+                        sig: sig.clone(),
+                        source: a(f, source),
+                    },
+                }
+            }
+            ExplicitParens(x) => ExplicitParens(a(f, x)),
+            Qop(x) => Qop(a(f, x)),
+            Rethrow(x) => Rethrow(a(f, x)),
+            SeqGuard(x) => SeqGuard(a(f, x)),
+            OrNever(x) => OrNever(a(f, x)),
+            ByRef(x) => ByRef(a(f, x)),
+            Deref(x) => Deref(a(f, x)),
+            Neg(x) => Neg(a(f, x)),
+            Until(x) => Until(a(f, x)),
+            Not { expr } => Not { expr: a(f, expr) },
+            Construct { name, arg } => Construct { name: name.clone(), arg: a(f, arg) },
+            TypeCast { expr, typ } => TypeCast { expr: a(f, expr), typ: typ.clone() },
+            Connect { name, value, deref } => {
+                Connect { name: name.clone(), value: a(f, value), deref: *deref }
+            }
+            StructRef { source, field } => {
+                StructRef { source: a(f, source), field: field.clone() }
+            }
+            TupleRef { source, field } => {
+                TupleRef { source: a(f, source), field: *field }
+            }
+            Do { exprs } => Do { exprs: xs(f, exprs) },
+            StringInterpolate { args } => StringInterpolate { args: xs(f, args) },
+            Any { args } => Any { args: xs(f, args) },
+            Never { typ, args } => Never { typ: typ.clone(), args: xs(f, args) },
+            Array { args } => Array { args: xs(f, args) },
+            List { args } => List { args: xs(f, args) },
+            Tuple { args } => Tuple { args: xs(f, args) },
+            Variant { tag, args } => Variant { tag: tag.clone(), args: xs(f, args) },
+            SeqDo { body } => SeqDo { body: xs(f, body) },
+            Bind(b) => Bind(Arc::new(BindExpr {
+                rec: b.rec,
+                pattern: b.pattern.clone(),
+                typ: b.typ.clone(),
+                value: f(&b.value),
+            })),
+            ArrayRef { source, i } => ArrayRef { source: a(f, source), i: a(f, i) },
+            ArraySlice { source, start, end } => ArraySlice {
+                source: a(f, source),
+                start: start.as_ref().map(|e| a(f, e)),
+                end: end.as_ref().map(|e| a(f, e)),
+            },
+            MapRef { source, key } => MapRef { source: a(f, source), key: a(f, key) },
+            Map { args } => {
+                Map { args: Arc::from_iter(args.iter().map(|(k, v)| (f(k), f(v)))) }
+            }
+            Struct(StructExpr { args }) => Struct(StructExpr {
+                args: Arc::from_iter(args.iter().map(|(n, e)| (n.clone(), f(e)))),
+            }),
+            StructWith(StructWithExpr { source, replace }) => {
+                StructWith(StructWithExpr {
+                    source: a(f, source),
+                    replace: Arc::from_iter(
+                        replace.iter().map(|(n, e)| (n.clone(), f(e))),
+                    ),
                 })
             }
-            ExprKind::Impl(im) => im.methods.iter().fold(init, |init, e| e.fold(init, f)),
-            ExprKind::ArrayRef { source, i } => {
-                let init = source.fold(init, f);
-                i.fold(init, f)
-            }
-            ExprKind::ArraySlice { source, start, end } => {
-                let init = source.fold(init, f);
-                let init = match start {
-                    None => init,
-                    Some(e) => e.fold(init, f),
-                };
-                match end {
-                    None => init,
-                    Some(e) => e.fold(init, f),
-                }
-            }
-            ExprKind::Struct(StructExpr { args }) => {
-                args.iter().fold(init, |init, (_, e)| e.fold(init, f))
-            }
-            ExprKind::Select(SelectExpr { arg, arms }) => {
-                let init = arg.fold(init, f);
-                arms.iter().fold(init, |init, (p, e)| {
-                    let init = match p.guard.as_ref() {
-                        None => init,
-                        Some(g) => g.fold(init, f),
-                    };
-                    e.fold(init, f)
-                })
-            }
-            ExprKind::Seq { trigger, body, .. } => {
-                let init = match trigger {
-                    Some(t) => t.fold(init, f),
-                    None => init,
-                };
-                body.iter().fold(init, |init, e| e.fold(init, f))
-            }
-            ExprKind::Until(e) => e.fold(init, f),
-            ExprKind::SeqDo { body } => body.iter().fold(init, |init, e| e.fold(init, f)),
-            ExprKind::TryWith(t) => {
-                let init = t.body.iter().fold(init, |init, e| e.fold(init, f));
-                t.handler.iter().fold(init, |init, e| e.fold(init, f))
-            }
-            ExprKind::Catch(c) => {
-                let init = c.handler.fold(init, f);
-                match &c.seq_abort {
-                    Some(e) => e.fold(init, f),
-                    None => init,
-                }
-            }
-            ExprKind::Qop(e)
-            | ExprKind::Rethrow(e)
-            | ExprKind::SeqGuard(e)
-            | ExprKind::OrNever(e)
-            | ExprKind::ByRef(e)
-            | ExprKind::Deref(e)
-            | ExprKind::Neg(e)
-            | ExprKind::Not { expr: e } => e.fold(init, f),
-            ExprKind::Add { lhs, rhs }
-            | ExprKind::CheckedAdd { lhs, rhs }
-            | ExprKind::Sub { lhs, rhs }
-            | ExprKind::CheckedSub { lhs, rhs }
-            | ExprKind::Mul { lhs, rhs }
-            | ExprKind::CheckedMul { lhs, rhs }
-            | ExprKind::Div { lhs, rhs }
-            | ExprKind::CheckedDiv { lhs, rhs }
-            | ExprKind::Mod { lhs, rhs }
-            | ExprKind::CheckedMod { lhs, rhs }
-            | ExprKind::And { lhs, rhs }
-            | ExprKind::Or { lhs, rhs }
-            | ExprKind::Eq { lhs, rhs }
-            | ExprKind::Ne { lhs, rhs }
-            | ExprKind::Gt { lhs, rhs }
-            | ExprKind::Lt { lhs, rhs }
-            | ExprKind::Gte { lhs, rhs }
-            | ExprKind::Lte { lhs, rhs }
-            | ExprKind::Sample { lhs, rhs }
-            | ExprKind::StrictSample { lhs, rhs } => {
-                let init = lhs.fold(init, f);
-                rhs.fold(init, f)
-            }
+            Apply(ApplyExpr { function, args }) => Apply(ApplyExpr {
+                function: a(f, function),
+                args: Arc::from_iter(args.iter().map(|(n, e)| (n.clone(), f(e)))),
+            }),
+            Lambda(l) => Lambda(Arc::new(LambdaExpr {
+                args: Arc::from_iter(l.args.iter().map(|arg| Arg {
+                    labeled: match &arg.labeled {
+                        Some(Some(d)) => Some(Some(f(d))),
+                        other => other.clone(),
+                    },
+                    pattern: arg.pattern.clone(),
+                    constraint: arg.constraint.clone(),
+                    pos: arg.pos,
+                })),
+                vargs: l.vargs.clone(),
+                rtype: l.rtype.clone(),
+                constraints: l.constraints.clone(),
+                throws: l.throws.clone(),
+                body: match &l.body {
+                    Either::Left(b) => Either::Left(f(b)),
+                    Either::Right(s) => Either::Right(s.clone()),
+                },
+            })),
+            Trait(t) => Trait(Arc::new(TraitExpr {
+                name: t.name.clone(),
+                methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
+                    doc: m.doc.clone(),
+                    name: m.name.clone(),
+                    typ: m.typ.clone(),
+                    self_index: m.self_index,
+                    default: m.default.as_ref().map(|e| f(e)),
+                })),
+            })),
+            Impl(im) => Impl(Arc::new(ImplExpr {
+                trait_name: im.trait_name.clone(),
+                params: im.params.clone(),
+                constraints: im.constraints.clone(),
+                target: im.target.clone(),
+                methods: xs(f, &im.methods),
+            })),
+            Select(SelectExpr { arg, arms }) => Select(SelectExpr {
+                arg: a(f, arg),
+                arms: Arc::from_iter(arms.iter().map(|(p, e)| {
+                    let mut p = p.clone();
+                    p.guard = p.guard.as_ref().map(|g| f(g));
+                    (p, f(e))
+                })),
+            }),
+            Catch(c) => Catch(Arc::new(CatchExpr {
+                bind: c.bind.clone(),
+                constraint: c.constraint.clone(),
+                handler: a(f, &c.handler),
+                seq_abort: c.seq_abort.as_ref().map(|e| a(f, e)),
+                seq_capture: c.seq_capture.clone(),
+            })),
+            Seq { queued, trigger, body } => Seq {
+                queued: *queued,
+                trigger: trigger.as_ref().map(|t| a(f, t)),
+                body: xs(f, body),
+            },
+            TryWith(t) => TryWith(Arc::new(TryWithExpr {
+                body: xs(f, &t.body),
+                bind: t.bind.clone(),
+                constraint: t.constraint.clone(),
+                handler: xs(f, &t.handler),
+            })),
+            Eq { lhs, rhs } => Eq { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Ne { lhs, rhs } => Ne { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Lt { lhs, rhs } => Lt { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Gt { lhs, rhs } => Gt { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Lte { lhs, rhs } => Lte { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Gte { lhs, rhs } => Gte { lhs: a(f, lhs), rhs: a(f, rhs) },
+            And { lhs, rhs } => And { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Or { lhs, rhs } => Or { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Add { lhs, rhs } => Add { lhs: a(f, lhs), rhs: a(f, rhs) },
+            CheckedAdd { lhs, rhs } => CheckedAdd { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Sub { lhs, rhs } => Sub { lhs: a(f, lhs), rhs: a(f, rhs) },
+            CheckedSub { lhs, rhs } => CheckedSub { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Mul { lhs, rhs } => Mul { lhs: a(f, lhs), rhs: a(f, rhs) },
+            CheckedMul { lhs, rhs } => CheckedMul { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Div { lhs, rhs } => Div { lhs: a(f, lhs), rhs: a(f, rhs) },
+            CheckedDiv { lhs, rhs } => CheckedDiv { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Mod { lhs, rhs } => Mod { lhs: a(f, lhs), rhs: a(f, rhs) },
+            CheckedMod { lhs, rhs } => CheckedMod { lhs: a(f, lhs), rhs: a(f, rhs) },
+            Sample { lhs, rhs } => Sample { lhs: a(f, lhs), rhs: a(f, rhs) },
+            StrictSample { lhs, rhs } => StrictSample { lhs: a(f, lhs), rhs: a(f, rhs) },
+        };
+        Expr {
+            id: ExprId::new(),
+            ori: self.ori.clone(),
+            pos: self.pos,
+            kind,
+            dec: self.dec.clone(),
         }
     }
 }

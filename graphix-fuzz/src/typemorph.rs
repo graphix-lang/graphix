@@ -203,10 +203,6 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let mut uses = 0usize;
             let mut ok = true;
             for later in &stmts[si + 1..] {
-                // Exhaustive fold, not mutate::preorder — see
-                // `stmt_names`: a use hidden in a select guard made
-                // this analysis under-count and inline away a live
-                // binding.
                 later.fold((), &mut |(), n| match &n.kind {
                     ExprKind::Ref { name } if name.to_string() == nm => uses += 1,
                     ExprKind::Connect { name, .. } if name.to_string() == nm => {
@@ -344,7 +340,7 @@ fn sample<T: Copy>(sites: &[T], cap: usize) -> Vec<T> {
 /// Lambda literals in ARGUMENT position of an Apply reachable from the
 /// statement root without crossing a scope-introducing node. `idx`
 /// enters as the node's own preorder index and tracks
-/// [`mutate::for_each_child`]'s exact order, so the reported index is
+/// `Expr::for_each_child`'s exact order, so the reported index is
 /// the lambda node in [`mutate::replace`]'s address space.
 fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut(usize)) {
     let at_apply = !blocked && matches!(e.kind, ExprKind::Apply(_));
@@ -360,7 +356,7 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
                 | ExprKind::TryWith(_)
         );
     *idx += 1;
-    mutate::for_each_child(e, &mut |c| {
+    e.for_each_child(&mut |c| {
         if at_apply && matches!(c.kind, ExprKind::Lambda(_)) {
             f(*idx);
         }
@@ -394,13 +390,6 @@ fn stmt_names(e: &Expr) -> StmtNames {
     };
     let mut refs = HashSet::new();
     let mut connects = false;
-    // Analyses walk with the compiler's EXHAUSTIVE fold, not
-    // `mutate::preorder`: mutate's walker is deliberately narrower
-    // (select GUARDS among the skips), and a dependency visible only
-    // in a guard made stmt-permute swap a def past its use — the
-    // first corpus sweep's "m not defined" family. Rebuilds still
-    // address mutate's space; a guard-only site is simply not
-    // addressable there, which fails SAFE (the transform skips).
     e.fold((), &mut |(), n| match &n.kind {
         ExprKind::Ref { name } => {
             // The full spelling AND the leading segment: a statement
@@ -478,7 +467,7 @@ fn leaks_binds(e: &Expr) -> bool {
         ExprKind::Select(s) => leaks_binds(&s.arg),
         _ => {
             let mut found = false;
-            mutate::for_each_child(e, &mut |c| found = found || leaks_binds(c));
+            e.for_each_child(&mut |c| found = found || leaks_binds(c));
             found
         }
     }
@@ -556,10 +545,9 @@ mod test {
 
     #[test]
     fn guard_refs_are_dependencies() {
-        // `m`'s ONLY use is inside a select GUARD — mutate's walker
-        // skips guards, and the first corpus sweep's stmt-permute
-        // swapped the def past the use ("m not defined"). The witness
-        // shape from quiet-frame-init-view-aug2026/05.
+        // `m`'s ONLY use is inside a select GUARD: a dependency for
+        // stmt-permute, and an addressable single use for let-inline
+        // (the witness shape from quiet-frame-init-view-aug2026/05).
         let body = "{ let m = i64:1; let rec f = |n: i64| -> i64 \
                     select n { i64:0 if m == i64:0 => i64:1, i64:0 => i64:2, _ => f(n - i64:1) }; \
                     f(i64:2) }";
@@ -568,9 +556,16 @@ mod test {
             probes.iter().all(|p| p.kind != TmKind::StmtPermute || p.site != 0),
             "must not swap a def past a guard-only use"
         );
+        let inlined: Vec<_> = probes
+            .iter()
+            .filter(|p| p.kind == TmKind::LetInline && p.site == 0)
+            .collect();
+        assert_eq!(inlined.len(), 1, "one inline of the guard use");
         assert!(
-            probes.iter().all(|p| p.kind != TmKind::LetInline || p.site != 0),
-            "must not inline a binding whose use hides in a guard"
+            inlined[0].body.contains("i64:1 == i64:0")
+                && !inlined[0].body.contains("let m"),
+            "the guard use takes the value: {}",
+            inlined[0].body
         );
     }
 

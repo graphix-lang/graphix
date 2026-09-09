@@ -17,11 +17,9 @@
 //! Determinism: a seeded xorshift RNG, so any run replays from its seed.
 
 use graphix_compiler::expr::{
-    ApplyExpr, BindExpr, CatchExpr, Expr, ExprKind, Origin, SelectExpr, StructExpr,
-    StructWithExpr, StructurePattern, TryWithExpr,
+    BindExpr, Expr, ExprKind, Origin, StructurePattern,
     parser::{self, parse_one},
 };
-use netidx::utils::Either;
 use netidx_value::Value;
 use triomphe::Arc;
 
@@ -55,15 +53,9 @@ fn aslice(v: Vec<Expr>) -> Arc<[Expr]> {
     Arc::from_iter(v)
 }
 
-// ── canonical child enumeration ──
-// `collect_preorder` and `replace_at` MUST visit children in the same
-// order so a preorder index means the same node to both. Both follow the
-// field order below; the complex sub-structs descend into their `Expr`
-// fields (Lambda arg defaults are intentionally skipped — rare, fiddly).
-
 fn collect_preorder(e: &Expr, out: &mut Vec<Expr>) {
     out.push(e.clone());
-    for_each_child(e, &mut |c| collect_preorder(c, out));
+    e.for_each_child(&mut |c| collect_preorder(c, out));
 }
 
 /// The canonical preorder as a flat clone list — index `i` here is the
@@ -75,152 +67,10 @@ pub(crate) fn preorder(e: &Expr) -> Vec<Expr> {
     out
 }
 
-pub(crate) fn for_each_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
-    use ExprKind::*;
-    match &e.kind {
-        NoOp
-        | Constant(_)
-        | Use { .. }
-        | Ref { .. }
-        | TypeDef(_)
-        | Trait(_)
-        | Impl(_)
-        | Module { .. } => {}
-        ExplicitParens(x)
-        | Qop(x)
-        | Rethrow(x)
-        | SeqGuard(x)
-        | OrNever(x)
-        | ByRef(x)
-        | Deref(x)
-        | Neg(x)
-        | Not { expr: x }
-        | Construct { arg: x, .. }
-        | TypeCast { expr: x, .. } => f(x),
-        Do { exprs }
-        | StringInterpolate { args: exprs }
-        | Any { args: exprs }
-        | Never { args: exprs, .. }
-        | Array { args: exprs }
-        | List { args: exprs }
-        | Tuple { args: exprs }
-        | Variant { args: exprs, .. } => {
-            for c in exprs.iter() {
-                f(c);
-            }
-        }
-        Bind(b) => f(&b.value),
-        Connect { value, .. } => f(value),
-        StructRef { source, .. } | TupleRef { source, .. } => f(source),
-        ArrayRef { source, i } => {
-            f(source);
-            f(i);
-        }
-        ArraySlice { source, start, end } => {
-            f(source);
-            if let Some(s) = start {
-                f(s);
-            }
-            if let Some(en) = end {
-                f(en);
-            }
-        }
-        MapRef { source, key } => {
-            f(source);
-            f(key);
-        }
-        Map { args } => {
-            for (k, v) in args.iter() {
-                f(k);
-                f(v);
-            }
-        }
-        Struct(s) => {
-            for (_, v) in s.args.iter() {
-                f(v);
-            }
-        }
-        StructWith(sw) => {
-            f(&sw.source);
-            for (_, v) in sw.replace.iter() {
-                f(v);
-            }
-        }
-        Apply(a) => {
-            f(&a.function);
-            for (_, v) in a.args.iter() {
-                f(v);
-            }
-        }
-        Select(s) => {
-            f(&s.arg);
-            for (_, body) in s.arms.iter() {
-                f(body);
-            }
-        }
-        Catch(c) => {
-            f(&c.handler);
-            if let Some(e) = &c.seq_abort {
-                f(e);
-            }
-        }
-        Until(x) => f(x),
-        SeqDo { body } => {
-            for e in body.iter() {
-                f(e);
-            }
-        }
-        TryWith(t) => {
-            for e in t.body.iter() {
-                f(e);
-            }
-            for e in t.handler.iter() {
-                f(e);
-            }
-        }
-        Seq { trigger, body, .. } => {
-            if let Some(t) = trigger {
-                f(t);
-            }
-            for e in body.iter() {
-                f(e);
-            }
-        }
-        Lambda(l) => {
-            if let Either::Left(body) = &l.body {
-                f(body);
-            }
-        }
-        Eq { lhs, rhs }
-        | Ne { lhs, rhs }
-        | Lt { lhs, rhs }
-        | Gt { lhs, rhs }
-        | Lte { lhs, rhs }
-        | Gte { lhs, rhs }
-        | And { lhs, rhs }
-        | Or { lhs, rhs }
-        | Add { lhs, rhs }
-        | CheckedAdd { lhs, rhs }
-        | Sub { lhs, rhs }
-        | CheckedSub { lhs, rhs }
-        | Mul { lhs, rhs }
-        | CheckedMul { lhs, rhs }
-        | Div { lhs, rhs }
-        | CheckedDiv { lhs, rhs }
-        | Mod { lhs, rhs }
-        | CheckedMod { lhs, rhs }
-        | Sample { lhs, rhs }
-        | StrictSample { lhs, rhs } => {
-            f(lhs);
-            f(rhs);
-        }
-    }
-}
-
 /// Total number of nodes (preorder), so a target index can be chosen.
 fn count(e: &Expr) -> usize {
     let mut n = 1;
-    for_each_child(e, &mut |c| n += count(c));
+    e.for_each_child(&mut |c| n += count(c));
     n
 }
 
@@ -232,162 +82,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
     if here == target {
         return repl.clone();
     }
-    // Direct recursive calls via macros — closures can't both hold the
-    // `&mut ctr` borrow. Deref coercion lets `r!`/`ra!` accept either
-    // `&Expr` or `&Arc<Expr>`.
-    macro_rules! r {
-        ($c:expr) => {
-            replace_at($c, target, ctr, repl)
-        };
-    }
-    macro_rules! ra {
-        ($c:expr) => {
-            Arc::new(replace_at($c, target, ctr, repl))
-        };
-    }
-    use ExprKind::*;
-    let kind = match &e.kind {
-        NoOp
-        | Constant(_)
-        | Use { .. }
-        | Ref { .. }
-        | TypeDef(_)
-        | Trait(_)
-        | Impl(_)
-        | Module { .. } => e.kind.clone(),
-        ExplicitParens(x) => ExplicitParens(ra!(x)),
-        Qop(x) => Qop(ra!(x)),
-        Rethrow(x) => Rethrow(ra!(x)),
-        SeqGuard(x) => SeqGuard(ra!(x)),
-        OrNever(x) => OrNever(ra!(x)),
-        ByRef(x) => ByRef(ra!(x)),
-        Deref(x) => Deref(ra!(x)),
-        Neg(x) => Neg(ra!(x)),
-        Not { expr } => Not { expr: ra!(expr) },
-        TypeCast { expr, typ } => TypeCast { expr: ra!(expr), typ: typ.clone() },
-        Construct { name, arg } => Construct { name: name.clone(), arg: ra!(arg) },
-        Do { exprs } => Do { exprs: aslice(exprs.iter().map(|c| r!(c)).collect()) },
-        StringInterpolate { args } => {
-            StringInterpolate { args: aslice(args.iter().map(|c| r!(c)).collect()) }
-        }
-        Any { args } => Any { args: aslice(args.iter().map(|c| r!(c)).collect()) },
-        Never { typ, args } => {
-            Never { typ: typ.clone(), args: aslice(args.iter().map(|c| r!(c)).collect()) }
-        }
-        Array { args } => Array { args: aslice(args.iter().map(|c| r!(c)).collect()) },
-        List { args } => List { args: aslice(args.iter().map(|c| r!(c)).collect()) },
-        Tuple { args } => Tuple { args: aslice(args.iter().map(|c| r!(c)).collect()) },
-        Variant { tag, args } => Variant {
-            tag: tag.clone(),
-            args: aslice(args.iter().map(|c| r!(c)).collect()),
-        },
-        Bind(b) => Bind(Arc::new(BindExpr {
-            rec: b.rec,
-            pattern: b.pattern.clone(),
-            typ: b.typ.clone(),
-            value: r!(&b.value),
-        })),
-        Connect { name, value, deref } => {
-            Connect { name: name.clone(), value: ra!(value), deref: *deref }
-        }
-        StructRef { source, field } => {
-            StructRef { source: ra!(source), field: field.clone() }
-        }
-        TupleRef { source, field } => TupleRef { source: ra!(source), field: *field },
-        ArrayRef { source, i } => ArrayRef { source: ra!(source), i: ra!(i) },
-        ArraySlice { source, start, end } => ArraySlice {
-            source: ra!(source),
-            start: start.as_ref().map(|s| ra!(s)),
-            end: end.as_ref().map(|s| ra!(s)),
-        },
-        MapRef { source, key } => MapRef { source: ra!(source), key: ra!(key) },
-        Map { args } => Map {
-            args: args.iter().map(|(k, v)| (r!(k), r!(v))).collect::<Vec<_>>().into(),
-        },
-        Struct(s) => Struct(StructExpr {
-            args: s
-                .args
-                .iter()
-                .map(|(n, v)| (n.clone(), r!(v)))
-                .collect::<Vec<_>>()
-                .into(),
-        }),
-        StructWith(sw) => StructWith(StructWithExpr {
-            source: ra!(&sw.source),
-            replace: sw
-                .replace
-                .iter()
-                .map(|(n, v)| (n.clone(), r!(v)))
-                .collect::<Vec<_>>()
-                .into(),
-        }),
-        Apply(a) => Apply(ApplyExpr {
-            function: ra!(&a.function),
-            args: a
-                .args
-                .iter()
-                .map(|(n, v)| (n.clone(), r!(v)))
-                .collect::<Vec<_>>()
-                .into(),
-        }),
-        Select(s) => Select(SelectExpr {
-            arg: ra!(&s.arg),
-            arms: s
-                .arms
-                .iter()
-                .map(|(p, b)| (p.clone(), r!(b)))
-                .collect::<Vec<_>>()
-                .into(),
-        }),
-        Catch(c) => Catch(Arc::new(CatchExpr {
-            bind: c.bind.clone(),
-            constraint: c.constraint.clone(),
-            handler: ra!(&c.handler),
-            seq_abort: c.seq_abort.as_ref().map(|e| ra!(e)),
-            seq_capture: c.seq_capture.clone(),
-        })),
-        Until(x) => Until(ra!(x)),
-        SeqDo { body } => SeqDo { body: aslice(body.iter().map(|c| r!(c)).collect()) },
-        TryWith(t) => TryWith(Arc::new(TryWithExpr {
-            body: aslice(t.body.iter().map(|c| r!(c)).collect()),
-            bind: t.bind.clone(),
-            constraint: t.constraint.clone(),
-            handler: aslice(t.handler.iter().map(|c| r!(c)).collect()),
-        })),
-        Seq { queued, trigger, body } => Seq {
-            queued: *queued,
-            trigger: trigger.as_ref().map(|t| ra!(t)),
-            body: aslice(body.iter().map(|c| r!(c)).collect()),
-        },
-        Lambda(l) => {
-            let mut nl = (**l).clone();
-            if let Either::Left(body) = &l.body {
-                nl.body = Either::Left(r!(body));
-            }
-            Lambda(Arc::new(nl))
-        }
-        Eq { lhs, rhs } => Eq { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Ne { lhs, rhs } => Ne { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Lt { lhs, rhs } => Lt { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Gt { lhs, rhs } => Gt { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Lte { lhs, rhs } => Lte { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Gte { lhs, rhs } => Gte { lhs: ra!(lhs), rhs: ra!(rhs) },
-        And { lhs, rhs } => And { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Or { lhs, rhs } => Or { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Add { lhs, rhs } => Add { lhs: ra!(lhs), rhs: ra!(rhs) },
-        CheckedAdd { lhs, rhs } => CheckedAdd { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Sub { lhs, rhs } => Sub { lhs: ra!(lhs), rhs: ra!(rhs) },
-        CheckedSub { lhs, rhs } => CheckedSub { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Mul { lhs, rhs } => Mul { lhs: ra!(lhs), rhs: ra!(rhs) },
-        CheckedMul { lhs, rhs } => CheckedMul { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Div { lhs, rhs } => Div { lhs: ra!(lhs), rhs: ra!(rhs) },
-        CheckedDiv { lhs, rhs } => CheckedDiv { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Mod { lhs, rhs } => Mod { lhs: ra!(lhs), rhs: ra!(rhs) },
-        CheckedMod { lhs, rhs } => CheckedMod { lhs: ra!(lhs), rhs: ra!(rhs) },
-        Sample { lhs, rhs } => Sample { lhs: ra!(lhs), rhs: ra!(rhs) },
-        StrictSample { lhs, rhs } => StrictSample { lhs: ra!(lhs), rhs: ra!(rhs) },
-    };
-    Expr::new(kind, e.pos)
+    e.map_children(&mut |c| replace_at(c, target, ctr, repl))
 }
 
 fn binop_kind(name: &str, lhs: Arc<Expr>, rhs: Arc<Expr>) -> ExprKind {
@@ -777,14 +472,14 @@ pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
             *interesting = true;
         }
         let mut arity = 0usize;
-        for_each_child(e, &mut |_| arity += 1);
+        e.for_each_child(&mut |_| arity += 1);
         let mut h = ahash::AHasher::default();
         std::mem::discriminant(&e.kind).hash(&mut h);
         arity.hash(&mut h);
         // Multiset sum: order-independent, so a pure statement shuffle
         // isn't "novel" — only new construct/arity combinations are.
         *sig = sig.wrapping_add(h.finish());
-        for_each_child(e, &mut |c| walk(c, sig, nodes, interesting));
+        e.for_each_child(&mut |c| walk(c, sig, nodes, interesting));
     }
     walk(&e, &mut sig, &mut nodes, &mut interesting);
     Some((sig, nodes, interesting))
@@ -848,7 +543,7 @@ fn size_at(e: &Expr, out: &mut Vec<usize>) -> usize {
     let here = out.len();
     out.push(0);
     let mut n = 1;
-    for_each_child(e, &mut |c| n += size_at(c, out));
+    e.for_each_child(&mut |c| n += size_at(c, out));
     out[here] = n;
     n
 }
@@ -872,7 +567,7 @@ pub fn reductions_all(prog: &Expr) -> Vec<Vec<Expr>> {
         .iter()
         .map(|node| {
             let mut out = Vec::new();
-            for_each_child(node, &mut |c| out.push(c.clone()));
+            node.for_each_child(&mut |c| out.push(c.clone()));
             for v in [Value::I64(0), Value::F64(0.0), Value::Bool(true), Value::Null] {
                 out.push(Expr::new(ExprKind::Constant(v), node.pos));
             }
@@ -908,7 +603,7 @@ fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>
     if let ExprKind::Do { exprs } = &e.kind
         && exprs.len() >= 2
     {
-        // `for_each_child` visits a block's statements in order, so
+        // `Expr::for_each_child` visits a block's statements in order, so
         // their preorder indices run consecutively from `here + 1`.
         let mut idx = here + 1;
         for (pos, c) in exprs.iter().enumerate() {
@@ -916,7 +611,7 @@ fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>
             idx += count(c);
         }
     }
-    for_each_child(e, &mut |c| statements_at(c, ctr, out));
+    e.for_each_child(&mut |c| statements_at(c, ctr, out));
 }
 
 /// Drop the statement at `pos` from the block at preorder index `at`.

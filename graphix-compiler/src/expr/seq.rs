@@ -1100,9 +1100,6 @@ fn rewrite_with_inner(
             }
             ExprKind::Seq { queued: *queued, trigger, body: Arc::from(out) }
         }
-        ExprKind::ExplicitParens(x) => {
-            ExprKind::ExplicitParens(Arc::new(rewrite(x, map)))
-        }
         ExprKind::Qop(x) => {
             let x = rewrite(x, map);
             match mode {
@@ -1120,20 +1117,8 @@ fn rewrite_with_inner(
                 _ => ExprKind::Qop(Arc::new(x)),
             }
         }
-        ExprKind::Rethrow(x) => ExprKind::Rethrow(Arc::new(rewrite(x, map))),
-        ExprKind::SeqGuard(x) => ExprKind::SeqGuard(Arc::new(rewrite(x, map))),
-        ExprKind::OrNever(x) => ExprKind::OrNever(Arc::new(rewrite(x, map))),
         ExprKind::ByRef(x) => {
             ExprKind::ByRef(Arc::new(rewrite_with(x, map, mode.deferred())))
-        }
-        ExprKind::Deref(x) => ExprKind::Deref(Arc::new(rewrite(x, map))),
-        ExprKind::Neg(x) => ExprKind::Neg(Arc::new(rewrite(x, map))),
-        ExprKind::Not { expr } => ExprKind::Not { expr: Arc::new(rewrite(expr, map)) },
-        ExprKind::TypeCast { expr, typ } => {
-            ExprKind::TypeCast { expr: Arc::new(rewrite(expr, map)), typ: typ.clone() }
-        }
-        ExprKind::Construct { name, arg } => {
-            ExprKind::Construct { name: name.clone(), arg: Arc::new(rewrite(arg, map)) }
         }
         ExprKind::Do { exprs } => {
             let mut inner = map.clone();
@@ -1148,77 +1133,6 @@ fn rewrite_with_inner(
             }
             ExprKind::Do { exprs: Arc::from(out) }
         }
-        ExprKind::StringInterpolate { args } => ExprKind::StringInterpolate {
-            args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))),
-        },
-        ExprKind::Any { args } => {
-            ExprKind::Any { args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))) }
-        }
-        ExprKind::Never { typ, args } => ExprKind::Never {
-            typ: typ.clone(),
-            args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))),
-        },
-        ExprKind::Array { args } => {
-            ExprKind::Array { args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))) }
-        }
-        ExprKind::List { args } => {
-            ExprKind::List { args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))) }
-        }
-        ExprKind::Tuple { args } => {
-            ExprKind::Tuple { args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))) }
-        }
-        ExprKind::Variant { tag, args } => ExprKind::Variant {
-            tag: tag.clone(),
-            args: Arc::from_iter(args.iter().map(|x| rewrite(x, map))),
-        },
-        ExprKind::Bind(b) => ExprKind::Bind(Arc::new(BindExpr {
-            rec: b.rec,
-            pattern: b.pattern.clone(),
-            typ: b.typ.clone(),
-            value: if b.rec {
-                let mut inner = map.clone();
-                shadow_step(e, &mut inner);
-                rewrite(&b.value, &inner)
-            } else {
-                rewrite(&b.value, map)
-            },
-        })),
-        ExprKind::StructRef { source, field } => ExprKind::StructRef {
-            source: Arc::new(rewrite(source, map)),
-            field: field.clone(),
-        },
-        ExprKind::TupleRef { source, field } => {
-            ExprKind::TupleRef { source: Arc::new(rewrite(source, map)), field: *field }
-        }
-        ExprKind::ArrayRef { source, i } => ExprKind::ArrayRef {
-            source: Arc::new(rewrite(source, map)),
-            i: Arc::new(rewrite(i, map)),
-        },
-        ExprKind::ArraySlice { source, start, end } => ExprKind::ArraySlice {
-            source: Arc::new(rewrite(source, map)),
-            start: start.as_ref().map(|s| Arc::new(rewrite(s, map))),
-            end: end.as_ref().map(|s| Arc::new(rewrite(s, map))),
-        },
-        ExprKind::MapRef { source, key } => ExprKind::MapRef {
-            source: Arc::new(rewrite(source, map)),
-            key: Arc::new(rewrite(key, map)),
-        },
-        ExprKind::Map { args } => ExprKind::Map {
-            args: Arc::from_iter(
-                args.iter().map(|(k, v)| (rewrite(k, map), rewrite(v, map))),
-            ),
-        },
-        ExprKind::Struct(s) => ExprKind::Struct(super::StructExpr {
-            args: Arc::from_iter(
-                s.args.iter().map(|(n, v)| (n.clone(), rewrite(v, map))),
-            ),
-        }),
-        ExprKind::StructWith(sw) => ExprKind::StructWith(super::StructWithExpr {
-            source: Arc::new(rewrite(&sw.source, map)),
-            replace: Arc::from_iter(
-                sw.replace.iter().map(|(n, v)| (n.clone(), rewrite(v, map))),
-            ),
-        }),
         ExprKind::Apply(a) => {
             let call = ApplyExpr {
                 function: Arc::new(rewrite(&a.function, map)),
@@ -1293,93 +1207,7 @@ fn rewrite_with_inner(
                 body,
             }))
         }
-        ExprKind::Eq { lhs, rhs } => ExprKind::Eq {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Ne { lhs, rhs } => ExprKind::Ne {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Lt { lhs, rhs } => ExprKind::Lt {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Gt { lhs, rhs } => ExprKind::Gt {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Lte { lhs, rhs } => ExprKind::Lte {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Gte { lhs, rhs } => ExprKind::Gte {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::And { lhs, rhs } => ExprKind::And {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Or { lhs, rhs } => ExprKind::Or {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Add { lhs, rhs } => ExprKind::Add {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::CheckedAdd { lhs, rhs } => ExprKind::CheckedAdd {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Sub { lhs, rhs } => ExprKind::Sub {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::CheckedSub { lhs, rhs } => ExprKind::CheckedSub {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Mul { lhs, rhs } => ExprKind::Mul {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::CheckedMul { lhs, rhs } => ExprKind::CheckedMul {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Div { lhs, rhs } => ExprKind::Div {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::CheckedDiv { lhs, rhs } => ExprKind::CheckedDiv {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Mod { lhs, rhs } => ExprKind::Mod {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::CheckedMod { lhs, rhs } => ExprKind::CheckedMod {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::Sample { lhs, rhs } => ExprKind::Sample {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::StrictSample { lhs, rhs } => ExprKind::StrictSample {
-            lhs: Arc::new(rewrite(lhs, map)),
-            rhs: Arc::new(rewrite(rhs, map)),
-        },
-        ExprKind::NoOp
-        | ExprKind::Constant(_)
-        | ExprKind::Use { .. }
-        | ExprKind::TypeDef(_)
-        | ExprKind::Trait(_)
-        | ExprKind::Impl(_)
-        | ExprKind::Module { .. } => e.kind.clone(),
+        _ => return e.map_children(&mut |c| rewrite(c, map)),
     };
     Expr {
         id: super::ExprId::new(),
