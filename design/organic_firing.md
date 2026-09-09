@@ -1,158 +1,82 @@
-# Organic Firing — the fired-plane simplification
+# Organic Firing
 
-Status: RULED by Eric 2026-08-14 and BUILT the same day — P0 red
-fixtures 27d846ba, P1 interp flip 9be11267 (desync enumeration in the
-commit message: 17 suite + 4 corpus flips, all mapped), P2 kernel flip
-0d8a561c + sweep 6c0fcbe9, P3 re-bless c980f3db+ (corpus 340/0,
-graphix-tests 1949/0, workspace green). P4 (fresh-clock fleet soak)
-remains. The conversation arc: the const-terminal witness → "option 4
-is change the semantics" → fired-args recursion → fire-on-discriminant
-selects → the CSP framing ("simplest fastest implementation, simplest
-defensible semantics; we're still at day 0") → this doc.
-
-Supersedes (fired plane only — the bottom/ride axis is untouched):
-- THE STRICT SELECT RULE (2026-08-06) and its scrutinee/guard-quiet
-  clauses
-- The per-slot loop-select firing rule (2026-07-15, "an arm fires once
-  when it becomes selected...")
-- The guard-disc non-folding rule (2026-08-07 arc, item 1)
-- The recursion ruling's "a pure function re-applied to unchanged
-  inputs is not an event" clause (2026-08-13); its structure rulings
-  (unconditional retention, no park) stand
-- tail-zero-iteration quiet (cceb0809, 2026-08-13)
-- The derivation-changed machinery as semantics (kernel memo + wire
-  slot 3 damping + the interp's aug13h entry-args memo)
+Status: built 2026-08-14
+Pins: `stdlib/graphix-tests/src/lang/organic_deltas.rs` (one fixture per ruled delta below); `graphix-fuzz/findings/quiet-frame-init-view-aug2026/`, `fold-midchain-fired-aug2026/`, `standing-bottom-refire-sep2026/`
 
 ## The rule
 
 **A node fires iff a consumed input fires.** Sources fire when they
-produce. Constants fire once. Cadence is shaped explicitly — `uniq`,
-`filter`, `~`, `once`/`take`/`skip` — and the compiler NEVER stores a
-previous value or selection to decide a tag.
+produce. Constants fire once, at init. Cadence is shaped explicitly —
+`uniq`, `filter`, `~`, `once`/`take`/`skip` — and the compiler never
+stores a previous value or a previous selection to decide a tag.
 
-Consequences, spelled out:
+Consequences:
 
-- **Select**: emits whenever any of its inputs fire — the scrutinee, a
-  guard dependency, or the taken arm's production. The emission is the
-  taken arm's current resident: Fired if it holds a value, FreshBottom
-  if it is bottom (op-consistency: an op with a standing-bottom operand
-  also mints FreshBottom when triggered). Same-arm re-matches emit.
-  Selection memory survives ONLY for sleep/wake routing (a resource
-  concern, no longer a firing concern). Becoming-selected is subsumed:
-  a selection change implies a fired input, so the wake emission is
-  just the ordinary emission.
-- **Calls** (recursive and not): fire organically — the body's selects
+- **Select** emits whenever a consumed input fires — a scrutinee
+  delivery, a CONSULTED guard's production, or the taken arm's own
+  production (`own_sound`/`own_anyfire` in `node/select.rs`; the kernel
+  folds the scrutinee and prologue-guard bits at every merge). The
+  emission is the taken arm's current production: Fired if it holds a
+  value, FreshBottom if it is bottom. Same-arm re-matches emit.
+  Becoming-selected is not a separate event: a selection change implies
+  a fired input, so the wake emission is the ordinary emission.
+  Selection memory survives only for sleep/wake routing.
+- **Calls**, recursive or not, fire organically: the body's selects
   fire per delivery, so the body produces per delivery, so the call
-  fires per delivery. No force-fire, no memo. Recursion fires like the
-  hand-inlined chain, and BOTH fire per delivery: chain-equivalence
-  holds again, with no machinery.
-- **Tail spine**: the scrutinee fold IS the general rule now. The
-  tail/non-tail cadence asymmetry (`f(n/2)` fired 4×, `0 + f(n/2)`
-  fired 1×) dies.
-- **Collection HOFs**: unchanged — the SlotFlags rule (fires iff
-  resized ∨ a slot fired ∨ source fired empty) is already
-  delivery-based and consistent.
+  fires per delivery. Recursion fires exactly like the hand-inlined
+  chain, with no extra machinery; the tail and non-tail forms of one
+  function have the same cadence.
+- **Collection HOFs** fire by `scaffold::SlotFlags` — iff resized, or a
+  slot fired, or the source fired empty — which is already
+  delivery-based.
 
-## The philosophy (Eric, 2026-08-14)
+## Why
 
-The project is one big constraint satisfaction problem: the simplest,
+The project is one constraint-satisfaction problem: the simplest,
 fastest implementation with the simplest user-facing semantics we can
-defend. `uniq` is the combinator for gating firing on value
-uniqueness; the compiler must never do it implicitly. The
-implementation difficulty of the old rules was evidence against them —
-the exact fix for the old semantics required mirroring the interp's
-retained-instance tree into kernel state just to compute a tag bit.
-Under the new rule, no node in the language compares a stored previous
-value or selection: firing is fully organic. Test churn and soak-clock
-resets are accepted costs ("long term we're still at day 0") — but
-every flipped expectation must be ENUMERATED and mapped to the ruled
-delta list below; unaudited churn is the cost we refuse.
+defend (Eric, 2026-08-14). Gating a fire on value identity is what
+`uniq` is for; the compiler must never do it implicitly. The
+implementation difficulty of the previous rules was evidence against
+them: reproducing "fire only when the selection or value changed" in a
+kernel required mirroring the interpreter's retained-instance tree into
+kernel state just to compute one tag bit. Under this rule no node in
+the language compares a stored previous value or selection, and the
+tail/non-tail cadence asymmetry (`f(n/2)` firing four times where
+`0 + f(n/2)` fired once) disappears because the scrutinee fold IS the
+general rule.
 
-## What dies (deletion inventory)
+Rejected:
 
-Kernel:
-- The select claims on the identity algebra: per-select state words,
-  the per-slot directory chains (`graphix_slot_state_table`,
-  `own_levels`, anchor/leaf recursive frees,
-  `WrappedKernel::slot_table_words`) — the chains exist only for
-  select memory; loop DynCall sites use the key-0 bucket. Site blocks
-  survive for DynCall identity only.
-- Becoming-selected detection and dampening, woke-forced-FIRED,
-  wake-without-refill, the null-site-block quiet read.
-- The "no selection memory available → de-fuse" class (coverage goes
-  UP).
-- `tail_scrut_stale`/`tail_scrut_fired` as special channels; the
-  cceb0809 damp.
-- The recursion machinery: the per-site scalar-formal memo, wire slot
-  3 forwarding/damping.
-- The guard-disc non-folding discipline: guard input discs now fold
-  into the emission tag. (Implementation option: keep lazy guard VALUE
-  evaluation and fold only the guard-input DISCS — the tag needs "did
-  a guard input fire", an OR over discs, not the guard bodies. If that
-  keeps the schedule-free carve-out observationally equivalent, it
-  stays as pure optimization; if not, prologue everywhere and delete
-  the carve-out.)
+- **Fire on selection change only** (the strict-select rule): a
+  same-arm re-match on a fired scrutinee was quiet, which needed a
+  stored selection to decide the tag and made recursion fire
+  differently from its inlined chain.
+- **A pure function re-applied to unchanged inputs is not an event**
+  (memoised call arguments): an implicit `uniq` at every call site, and
+  the memo had to be reproduced per activation in kernels.
+- **Guard fires do not count as inputs**: a guard-driven re-selection
+  is a consumed input like any other; excluding it left the select's
+  tag disagreeing with its own routing.
 
-Interp:
-- Select's emission logic collapses to: tick guards, match (cached or
-  fresh scrutinee), swap sleep/wake on selection change, emit iff any
-  input triggered or the arm produced.
-- The aug13h entry-args memo on GXLambda (the kernel memo's twin).
-- The becoming-selected/wake-refill special emission path (merges into
-  the ordinary path).
+## The ruled deltas
 
-## What stays (the bottom/ride axis — untouched)
+Observable consequences ruled intended in advance; the numbers are
+what `organic_deltas.rs` cites.
 
-- The scrutinee ride (aug06ghz0), the guard ride, `emit_scrut_ride`,
-  the select-miss STALE inheritance (a627b13d): forced by selection
-  continuity — you cannot re-match against a bottom.
-- The standing-bottoms-never-refire genus, Q1 bottom-propagates, the
-  fired×bottom tag algebra, dense delivery R1–R3 wholesale.
-- Sleep-is-pause, the SLEEP_RESTARTS interior-sleep gate (about the
-  interp's arm sleep, not firing).
-- The recursion STRUCTURE rulings: unconditional transient retention,
-  no park. (Depth trips delivered FreshBottom until 2026-08-24; there
-  is no depth limit now — `recursive_activations.md` §4b.)
-- DynCall site identity (jul23f) — the state channel survives for it.
-
-## Ruled deltas (each becomes a red→green fixture; the re-bless key)
-
-1. Select scrutinee re-fire, same arm → EMITS (was quiet).
-2. Guard-dep fire, selection unchanged → EMITS (was quiet).
-3. The gating-select idiom (`select enabled {true => data, _ =>
-   never()}`) becomes a sampler of its arm per `enabled` delivery;
-   `uniq(enabled)` is the documented remedy. Book/examples need a
-   chattiness pass.
+1. A scrutinee re-fire that re-matches the same arm EMITS.
+2. A consulted guard's dependency firing with the selection unchanged
+   EMITS.
+3. The gating idiom `select enabled { true => data, _ => never() }`
+   samples its arm on every `enabled` delivery; `uniq(enabled)` is the
+   remedy when the level is what is wanted.
 4. A select whose taken arm is `never()`/bottom emits FreshBottom per
-   fired input (was quiet; consistent with ops).
-5. Recursive call on fired-same-value args fires:
-   `recursion-fires-like-chain/00` flips ([1,2,2] → 3 fires).
-6. Tail same-args re-dispatch fires at any iteration count:
-   `tail-zero-iteration-quiet/00` and `/01` flip (the aug13h count
-   becomes 4, not 2).
-7. The const-terminal witnesses (`fuzz/known-kernel-gaps/`): the
-   kernel was right; both move to `findings/` as agreement pins and
-   the known-kernel-gaps dir empties.
-8. Downstream cadence of `count`/`once`/effects over selects increases
-   correspondingly (they observe honest deliveries).
-9. `~` remains the sampling construct; `select t { _ => v }` is again
-   ALSO a sampler — no longer an error of intent, just redundant.
-
-## Migration protocol (one combined change, 5b/5c discipline)
-
-- P0: red fixtures for every delta above (verified to diverge/flip as
-  predicted on the pre-change tree); stop the running soak lanes when
-  implementation starts (old-semantics findings become noise; the
-  bottom-axis coverage resumes with the new tree).
-- P1: interp flip (select emission + tail memo deletion + lambda.rs
-  simplification). Gate: the differential oracle runs interp-new vs
-  kernel-old EXPECTING divergences — every one must map to the delta
-  list; off-list = stop the line.
-- P2: kernel flip (select emitter deletions, state-channel pruning,
-  rec memo/damp deletion, tail channel deletion). Gate: divergence
-  diff returns to ∅.
-- P3: re-bless — regress corpus + graphix-tests + FuseExpect churn
-  (the dead de-fuse class flips None→Jit) + CLAUDE.md rules rewrite +
-  the examples chattiness pass. Every changed expectation cites a
-  delta number.
-- P4: fleet soak on the new tree; the clean-days clock restarts.
+   fired input (consistent with an op whose operand is a standing
+   bottom).
+5. A recursive call whose arguments fire at their previous value fires.
+6. A tail re-dispatch with unchanged arguments fires at any iteration
+   count, including zero.
+7. A constant-terminal recursion fires per delivery on both engines.
+8. The downstream cadence of `count`/`once`/effects over selects rises
+   correspondingly — they observe honest deliveries.
+9. `~` remains the sampling construct; `select t { _ => v }` is also a
+   sampler, redundant rather than wrong.

@@ -489,7 +489,7 @@ async fn do_trailing_semicolon_jit() -> Result<()> {
     do_trailing_semicolon(false).await
 }
 
-// R10 (design/seq_review_2026-09-06.md): a step completes on a FIRED
+// The completion rule (design/seq_blocks.md): a step completes on a FIRED
 // production after its entry, never on a standing value. A call is
 // re-issued at entry and its own fire is the answer; a level is fired
 // at entry as it stands (R2) and tracked if absent. Each fixture runs

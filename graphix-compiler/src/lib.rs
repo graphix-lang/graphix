@@ -1861,7 +1861,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// placeholders instead of the logged None) gate on this so
     /// reactive-land semantics are untouched. A counter, not a bool:
     /// frames nest. The per-value fired/taint channels themselves ride
-    /// [`TagValue`] — see `design/replay_frames.md` v2.
+    /// [`TagValue`] — see `design/dense_delivery.md`.
     pub(crate) frame_depth: u32,
     /// The REAL `event.init` of the dispatch whose evaluation frames
     /// are currently running (frames FORCE `event.init` for

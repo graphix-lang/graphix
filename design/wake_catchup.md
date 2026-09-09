@@ -1,415 +1,225 @@
-# Wake catch-up — tracked fires + forced recompute at arm wake
+# Wake catch-up
 
-> Status note (2026-09-01, evening): the kernel-side passages below
-> (DynCall sites, `DispatcherState::woke`, the wake hint, the birth
-> view at a DynCall slot) describe machinery deleted under strict
-> fusion (`design/strict_fusion.md`); the interp mechanisms and the
-> ruling are current. A kernel in a reselected arm recomputes through
-> the select's forced init view, and its own `slept` bit sets wire
-> bit 2 for the fastcall stale-mask suppression.
-
-Status: RULED by Eric 2026-09-01, BUILT the same day (both engines;
-as-built record at the end — one design deviation: the kernel carries
-NO mask words, see §as-built). Gates at build time: the 8-pin
-`findings/wake-catchup-sep2026/` corpus + the re-adjudicated
-`dyncall-arm-init-stale-aug2026` pin, full findings regress,
-graphix-tests. FLEET SOAK REQUIRED before this is called landed.
-
-Originally: RULED by Eric 2026-09-01, NOT BUILT. The conversation arc: the
-aug31e corpus regression (`dyncall-arm-init-stale-aug2026/00` diverging
-after the wake-delivers-present-but-stale commits) → stateless-re-eval
-proposal → the `subscribe` hole → value-diff proposal → rejected
-("the same value fired can carry just as much meaning as a differing
-value") → "reselection is the clock" → the modal collision → per-input
-tracked fire bits with once-per-select consumption → the `publish`
-probe (forced recompute is required, tracking alone is not enough) →
-the 43/2/21/62 table → the mechanics (the op-node ride-skip, the
-`CachedArgs` wrapper, node-local slept bits). Supersedes the aug08b
-arm-init fired view as semantics; REFINES, does not revert, the
-present-but-stale ruling (9b2e7231/a4f69e8e).
+Status: built 2026-09-01
+Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_sibling_binds_spent`)
+Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
 ## The hole
 
-**Sleep is what breaks the ride-skip's invariant.** Under dense
-delivery a node skips recomputation when no consumed input triggers
-(`op.rs` R1: `if !(trig || resident_bottom || framed) { ride }`),
-which is sound because an AWAKE node's stale input value cannot differ
-from what its resident was computed from — values change only by
-firing, and an awake node saw every fire. A sleeping arm does not.
-While it sleeps, its inputs' values drift behind its back; its first
-update after wake delivers present values under stale tags, the skip
-takes, and the arm surfaces a product computed from a world that no
-longer exists.
+Sleep breaks the ride-skip's invariant. Under dense delivery a node
+skips recomputation when no consumed input triggers (R1), which is
+sound because an AWAKE node's stale input cannot differ from what its
+resident was computed from — values change only by firing, and an
+awake node saw every fire. A sleeping arm did not. While it sleeps its
+inputs drift behind its back; its first update after wake delivers
+present values under stale tags, the skip takes, and the arm surfaces a
+product of a world that no longer exists.
 
-This is why the seam flip-flopped for a month, each fix moving which
-engine was wrong because the semantics was genuinely unruled:
-
-- `dyncall-loop-stale-ride`, then aug08b (`dyncall-arm-init-stale-
-  aug2026`): the JIT rode a pre-sleep product, the interp recomputed →
-  the kernel's arm-init was forced to deliver everything FIRED.
-- 9b2e7231 (the admin-TUI phantom submit): a fired wake delivery
-  re-raised a consumed Enter into a freshly woken modal arm → wake
-  reads went present-but-stale. Correct for edges — but now the
-  INTERP rode (nothing fired, `CachedArgs` never re-evals) while the
-  kernel still recomputed: the same pin diverged with the engines
-  swapped. From the user's point of view the ride is wrong (Eric):
-  the arm displays data derived from values the whole graph has moved
-  past.
-
-The two eras were each half right. Fired-at-wake has correct values
-and re-raises events; stale-at-wake re-raises nothing and shows stale
-values. The rule below separates the two channels.
+The two obvious fixes are each half right. Delivering everything FIRED
+at wake gives correct values but re-raises consumed events (a modal arm
+re-submitting the Enter that opened it). Delivering everything stale
+re-raises nothing and shows stale values (`select cond { true => in0 +
+1, false => in0 + 42 }` showing 43 after `in0` moved to 20). The rule
+separates the two channels.
 
 ## The rule (Eric, 2026-09-01)
 
 1. **Every select tracks one fire bit per arm input** — the union of
-   its arm BODIES' free refs (binds defined outside the arm; pattern
-   binds and arm locals are internal). Bits are set when a tracked
-   input fires, and the tracking runs whatever the selection state,
-   including no-arm-selected windows (bottom scrutinee, init-phantom
-   guards). Bits OR-accumulate: there is no event queue — a bit plus
-   the bind's current standing value, so N fires during a sleep
-   conflate to ONE catch-up fire at the latest value (`queue` stays
-   the lossless tool).
-2. **Cached fire state is consumed by evaluation.** Whichever arm
-   evaluation reads an input clears its bit — the live selected arm
-   consuming same-cycle as the degenerate case (awake behavior is
-   unchanged by construction), a woken arm consuming at catch-up.
-   Delivery is consumption whether or not the arm's interior does
-   anything with it (a `~` gate dropping it does not un-consume it).
-   An arm that doesn't read an input leaves its bit standing for a
-   future waker; two sleeping readers wake in sequence → the first
-   consumes, the second reads stale. **At most once per select.**
+   its arm bodies' free refs (binds defined outside the arm). Bits are
+   set when a tracked input fires soundly, whatever the selection
+   state, including no-arm windows (bottom scrutinee, undecidable
+   guards). Bits OR-accumulate: N fires during a sleep conflate to ONE
+   catch-up at the latest standing value (`queue` is the lossless
+   tool).
+2. **Fire state is consumed by evaluation.** Whichever arm evaluation
+   reads an input clears its bit — the live selected arm same-cycle as
+   the degenerate case, a woken arm at catch-up. Delivery is
+   consumption whether or not the arm's interior does anything with it.
+   An arm that does not read an input leaves its bit for a future
+   waker; two sleeping readers waking in sequence → the first consumes,
+   the second reads stale. At most once per select.
 3. **A woken node's first update recomputes from present values.**
-   `sleep()` already reaches every node in the arm (through
-   `CallSite` into instantiated callee bodies), so each node sets a
-   local `slept` bit there and its next update refuses the ride-skip,
-   recomputing from its children's present values and clearing the
-   bit. No global flag, no event plumbing — the bit is definitionally
-   co-extensive with the soundness hole: a node that never sleeps
-   never drifts and never pays.
-4. **Tags stay honest.** A tracked bit delivers FIRED (conflated to
-   the current standing value); everything else delivers
-   present-but-stale; recomputed products tag by the OR of their
-   inputs' fired bits. So edge consumers (`~`, connects,
-   accumulators, callback dispatch) tick exactly for the events no
-   selected reader saw — once — and nothing consumed is ever
-   re-raised. Eval re-runs at wake only where it is a pure function
-   of its argument slots (§ mechanics).
+   `sleep()` reaches every node in the arm (through `CallSite` into
+   instantiated callee bodies); each node sets a local `slept` bit
+   there and its next update refuses the ride-skip. The bit is
+   co-extensive with the hole: a node that never sleeps never drifts
+   and never pays.
+4. **Tags stay honest.** A tracked bit delivers FIRED at the current
+   standing value; everything else delivers present-but-stale;
+   recomputed products tag by the join of their inputs. Edge consumers
+   (`~`, connects, accumulators, callback dispatch) tick exactly for
+   the events no selected reader saw, once, and nothing consumed is
+   ever re-raised.
 
-The invariant, user-facing: **a select's output is always a function
-of the present world; events influence it exactly once.**
+The invariant: **a select's output is always a function of the present
+world; events influence it exactly once.**
 
-Out of scope, unchanged: the scrutinee and guards (their own consult
-machinery — the aug03 guard-flip FIRED, the stale-first-consult
-routing, a4f69e8e); the bottom-scrutinee bottom-out rule; SLEEP_RESTARTS
-builtins (restart on sleep as today). Nesting needs no extra
-machinery: an arm's ref set includes everything under it, so a select
-sleeping inside an outer arm has its missed window covered by the
-OUTER select's bits; the wake evaluation carries the tags down, the
-inner select routes and consumes with them, and its own tracking
-resumes.
+Outside the mechanism: the scrutinee and guards (their own consult
+machinery); pattern binds of THIS select and of every enclosing select
+— a pattern bind is a facet of its arm's scrutinee delivery, which that
+arm's match consumed, so `k` beside ``ev@ `Key(k)`` is never re-raised
+at a nested flip after the `ev` reader handled the key. A destructuring
+`let`'s siblings ARE tracked, as one input: a `let` bind is a real
+input whose catch-up is wanted, but its siblings are one delivery.
+Nesting needs nothing extra: an outer arm's ref set includes everything
+under it, so an inner select's missed window is covered by the outer
+bits; the wake evaluation carries the tags down and the inner select
+routes and consumes with them.
 
 ## Worked examples
 
-**Eric's table** — `select cond { true => in0 + 1, false => in0 + 42 }`,
-`in0` init 1, `cond` init false:
+`select cond { true => in0 + 1, false => in0 + 42 }`, `in0` init 1,
+`cond` init false:
 
 | event | woken arm sees | output |
 |---|---|---|
 | init | everything fires (genuine init) | 43 |
-| cond→true | `in0` bit consumed at init by false arm → stale 1; recompute | 2 |
+| cond→true | `in0` bit consumed at init by the false arm → stale 1; recompute | 2 |
 | in0→20 | live fired delivery | 21 |
-| cond→false | bit consumed by true arm → stale 20; recompute | **62, never 43** |
+| cond→false | bit consumed by the true arm → stale 20; recompute | 62, never 43 |
 
-43 at the last step is the ride — the answer this rule exists to
-forbid. Note step 2: nothing in the arm fired, yet the select emits —
-organically, because the consulted scrutinee fired.
+Step 2 emits although nothing in the arm fired — organically, because
+the consulted scrutinee fired.
 
-**The modal** (`lib_tests/callable.rs`
-`arm_wake_delivers_standing_args_stale`): `e = "x"` fired while `` `A ``
-was selected and `` `A `` reads `e` (`e ~ 1`) — bit consumed. `` `B ``
-wakes with `e` stale, `t ~ (submitted + 1)` does not tick, no phantom
-submit. The 9b2e7231 ruling stands.
+**The modal**: `e = "x"` fired while `` `A `` was selected and `` `A ``
+reads `e` — bit consumed. `` `B `` wakes with `e` stale, `t ~ (submitted
++ 1)` does not tick, no phantom submit.
 
-**The fork witness** (`dyncall-arm-init-stale-aug2026/00`): `in1`
-fired while the OTHER arm (`[0, 1]`, which does not read `in1`) was
-selected — bit survives — so the woken map arm catches up with a
-genuine fire: `1, 0, 1, 1` on BOTH engines. The pin re-points from
-divergence to agreement.
+**The fork**: `in1` fired while the OTHER arm, which does not read it,
+was selected — the bit survives, so the woken arm catches up with a
+genuine fire.
 
-**Shared-input effect** — `select cond { true => publish(p1, v),
-false => publish(p2, v) }`: `v` is read by both arms, so its fires
-are always consumed by whichever arm is awake; the woken arm gets
-ZERO catch-up fires. Value correctness cannot come from fires here —
-this is the probe that proved tracking alone insufficient. Forced
-recompute republishes `p2` at the present `v`; a pure Graphix
-function in place of `publish` recomputes identically (tag-blindness
-stops being a lucky accident — a pure function's value derivation
-depends on values, not tags, by construction). The sleeping arm's
-STANDING publication (sleep is pause, not teardown, so `p1` stays
-published) is a separate publish/sleep-contract question, noted, not
-ruled here.
+**Shared-input effect** — `select cond { true => publish(p1, v), false
+=> publish(p2, v) }`: both arms read `v`, so its fires are always
+consumed by whichever arm is awake and the woken arm gets ZERO catch-up
+fires. Value correctness cannot come from fires here — tracking alone
+is insufficient; the forced recompute republishes `p2` at the present
+`v`, and a pure function in place of `publish` recomputes identically.
 
 ## Rejected alternatives
 
-- **Ride is the rule** (uniform stale, no recompute — the interp's
-  post-9b2e7231 accident): user-visible staleness; 43 instead of 62;
-  `subscribe` stuck on a path the graph moved past.
-- **Fire everything at wake** (aug08b): the fired bit IS the edge
-  semantics — this re-raises consumed events (the modal), or demands
-  a distinguishable "soft fire" that every edge consumer and every
-  future builtin author must learn to ignore, the tag-blind ones by
-  definition can't, an open-set tax versus the closed set of skip
-  sites we own.
+- **Ride is the rule** (uniform stale, no recompute): user-visible
+  staleness — 43 instead of 62, a `subscribe` stuck on a path the graph
+  moved past.
+- **Fire everything at wake**: re-raises consumed events, or demands a
+  distinguishable "soft fire" every edge consumer and every future
+  builtin author must learn to ignore — an open-set tax against the
+  closed set of skip sites we own.
 - **Value-diff gating** (re-eval iff a stale value differs from the
-  cached copy): an invisible `uniq` at every wake seam; "the same
-  value fired can carry just as much meaning as a differing value."
-- **Stateless-only re-eval**: `subscribe` is stateful and stays on
-  the wrong path; `print` is STATELESS and would be mis-framed as a
-  flaw. Statelessness is the wrong axis — the right question is which
-  fires the arm missed, and that cannot be reconstructed at wake, so
-  it must be tracked.
-- **Per-arm independent tracking** (each arm catches up on everything
-  it missed): re-phantoms the modal — `e` fired during `` `B ``'s
-  sleep, so `` `B `` would catch it up even though `` `A `` consumed it.
-  Consumption must be per select, not per arm.
-- **Traditional always-computing dataflow** (no firing at all — the
-  graph always computes, consumers pull): the compiler gets much
-  simpler, and input is tolerable (read bottom until something
-  happens), but OUTPUT is a nightmare — the naive `print(42)` prints
-  forever, and the whole graph is a busy loop doing useless work.
-  Edge-triggered semantics with this one bounded repair at the sleep
-  seam is the better trade (Eric, 2026-09-01).
+  cached copy): an invisible `uniq` at every wake seam; "the same value
+  fired can carry just as much meaning as a differing value."
+- **Stateless-only re-eval**: `subscribe` is stateful and stays on the
+  wrong path; statelessness is the wrong axis. The question is which
+  fires the arm missed, and that cannot be reconstructed at wake, so it
+  must be tracked.
+- **Per-arm independent tracking**: re-phantoms the modal — `e` fired
+  during `` `B ``'s sleep, so `` `B `` would catch it up although `` `A ``
+  consumed it. Consumption is per select.
+- **Always-computing dataflow** (no firing; consumers pull): a much
+  simpler compiler, tolerable on input, a nightmare on output — the
+  naive `print(42)` prints forever and the graph is a busy loop.
+- **No sleep at all** (the pure-select and mux-select proposals,
+  2026-09-03/04: pure arms lazy, impure arms always on, effects keyed
+  on presence): sparse delivery died on the JIT and `seq` lost its exit
+  actions; the engine did not get simpler. Sleep is pause. The keeper:
+  a pure non-recursive arm skips `sleep` (nothing to pause) and is not
+  updated while untaken (`Select::sleep_on_deselect`); a `<-`, a catch,
+  a sample, an `any`, or a stateful/async callee makes an arm impure,
+  and impure arms still sleep.
 
 ## Mechanics
 
-### Interp
+### The tracker (`node/select.rs`, `TrackedFires`)
 
-- **`node/select.rs`**: the tracked set derives from the arms'
-  `Refs` at compile time (referenced minus bound-within-arm). The
-  select registers wake interest in the tracked BindIds so fires
-  reach its tracker even while every reading arm sleeps — sleep's "no
-  computation" is preserved (a bit set is O(1), no arm node runs);
-  "subscriptions paused" now excludes this one standing interest per
-  tracked bind. Bits live beside selection memory: semantic state,
-  survives sleep, cleared only by consumption. After each cycle's arm
-  evaluation, clear bits ∩ the taken arm's read set. Note the bits
-  only ever record fires that HAPPENED in the awake graph: a sleeping
-  async producer (a paused `subscribe`) produces nothing, so there is
-  nothing to catch up — it resumes producing on wake as today.
-- **Wake delivery**: per-input tags replace the uniform stale view —
-  bit set → FIRED at the current standing value; clear → STALE.
-- **The ride-skip** (`op.rs` and the other resident skips): a fourth
-  disjunct, `self.slept`, set in `sleep()`, cleared on the recompute.
-  The recompute path already reads present child values
-  (`op.rs:130`); frames prove the pattern — `frame_depth > 0` has
-  forced recomputation through stale values since dense delivery.
-- **The builtin wrapper** (`CachedArgs::update_inner`,
-  package-core): `Apply::sleep` sets the bit. `CachedVals` already
-  refreshes slot VALUES on stale deliveries (lib.rs:404); on the
-  first post-sleep update with an all-stale production:
-  `STATELESS = true` → re-run eval from the refreshed slots, result
-  STALE — extending the existing phantom rule
-  (`arm-local-bind-aug2026/03`, "a value rule and not a firing one")
-  from first-production to wake. `STATELESS = false` → today's
-  retag: an accumulator's resident IS its state, already the correct
-  present value; its edge catch-up arrives separately as a tracked
-  FIRED through the normal eval path, added exactly once. This is
-  STATELESS's real meaning here: "eval is a pure function of the
-  slots, safe to re-run for value derivation" — audit the ~90
-  declarations against that reading (FASTCALL already demanded a
-  compatible one). The async wrapper gets the same wake dispatch
-  (tag-blind level reconcile: `publish`, `subscribe`).
+- `per_arm`: each arm body's free refs (`Refs` referenced minus bound
+  within the arm, minus pattern binds — `Env::is_pattern_bind`, marked
+  at `Select::compile` for each arm's structure-predicate ids), keyed
+  by the input they are tracked under (`Env::facet_of` maps a
+  destructuring `let`'s siblings to the group's representative).
+  Computed from compile-time refs at first update and REFRESHED AT
+  EACH DESELECT — compile-time refs cannot see through a lambda literal
+  into an instantiated body; deselect-time refs can.
+- `pending`: sound fires no arm evaluation has consumed. `observe`
+  records this cycle's fires before any routing or early return;
+  `deliver` injects the unconsumed bits an arm reads into
+  `event.variables` as FIRED entries at the standing value, scoped to
+  exactly that arm's evaluation (`restore` afterwards), and clears
+  them. Semantic state: survives sleep and `reset_replay`; frames are
+  excluded (a framed pass runs against private maps — loop plumbing,
+  not the reactive world). The bits record only fires that HAPPENED in
+  the awake graph; a paused async producer produces nothing to catch
+  up and resumes on wake.
 
-### Kernel
+### Sleep state is local
 
-- **Mask words in select state**: OR-in the invocation's fired discs
-  for tracked inputs before the chain runs; clear the taken arm's
-  read set after its evaluation. Semantic state like selection
-  memory — survives sleep, never reset by frames.
-- **Arm wake**: per-input discs from the mask words replace the
-  aug08b blanket stale-mask suppression, which dies. Pure emitted ops
-  compute-always — the forced recompute is free.
-- **DynCall**: the site's state block takes the slept treatment keyed
-  on selection change; the inner `Apply` behind the dispatcher shares
-  the wrapper implementation above — one implementation, both
-  engines. This also closes the standing kernel hole where a fused
-  stateful builtin (`sum` in an arm) re-accumulates at wake off the
-  fired arm-init view.
-- A shape that cannot carry its mask words de-fuses. A fusion bug may
-  lose fusion, never produce a wrong answer.
-- The uncommitted seam A/B patches (the `emit_ref_node` honest disc,
-  the raw-init stale-mask keying) are partially superseded —
-  re-derive both under this doc during implementation.
+State lives in nodes, never in an `ExecCtx` field (parallel
+module-level compilation is coming and a parallel evaluator must stay
+possible, so nothing may end up behind a lock). Every skip-owning
+node/Apply owns a `slept: bool` its own `sleep()` sets and its next
+depth-0 update takes: the `dense_gate!` structs (the macro takes
+`$self.slept`, so the field is macro-enforced), the op macros,
+StringInterpolate, MapQ, Bind, CallSite, GXLambda, `CachedArgs`,
+`Kernel` (a kernel is a node), and Select. `Node` stays a bare 16-byte
+newtype; the bools hide in struct padding. Nodes that recompute
+unconditionally need none; `Any` and `~` ride correctly — they ARE
+edge state; `Constant` fires at wake as at init.
+
+A woken Select RE-MATCHES against the present scrutinee: a selection
+retained across the sleep was made against a value that may have moved
+while no reader was awake (an arm-local `<-` counter has no tracked
+fire, since arm locals are not arm-body inputs).
+
+### The value channel re-reaches the store
+
+A wake's recomputed STALE values must be republished or readers
+downstream of a publish seam still ride: `Bind::update` re-publishes a
+quiet wake production (`<-` targets holding a value are still held
+back — sleep is pause), `CallSite` refreshes its arg ids' standing
+entries, `GXLambda` re-seeds its formals, MapQ rebuilds its collection
+from the refreshed slots.
+
+### The builtin wrapper (`CachedArgs`, package-core)
+
+The slots are refreshed to the present values on every delivery. On
+the first post-sleep update with an all-stale production a `Stateless`
+builtin re-runs `eval` from the slots, result STALE (the phantom
+first-production value rule extended to wake); a stateful one retags —
+its resident IS its state, already the correct present value, and its
+edge catch-up arrives separately as a tracked FIRED through the normal
+path, added exactly once. A configuration memo (`FastMemo`) survives
+sleep: it is a pure function of the config argument, and clearing it
+would demand a fired re-delivery no wake provides.
+
+### Kernels
+
+A kernel carries no fire bits and needs none: a stateful builtin never
+fuses, so every edge-consuming arm interior sits under an interpreter
+select whose tracker injects THROUGH the kernel boundary (an
+arm-position kernel's params read the injected fires). Pure arms
+recompute anyway — kernels compute always. What a kernel needs is the
+wake VIEW: wire slot 0 bit 2 = WAKE (the arm's `event.wake_init` or the
+kernel's own `slept` bit, depth 0 only); genuine init is `bit0 &
+!bit2` and is what gates the fastcall stale-mask suppression, so a wake
+delivers standing args STALE and the trampoline produces the stateless
+re-eval's STALE result. Frames are excluded on both engines: every wake
+predicate is depth-0 only, which keeps the frame-formal init-view seed
+intact.
+
+### The birth rule
+
+A LABELED DEFAULT is born with the binding: its one arrival is the
+fresh instance's first dispatch, not a past event some reader consumed.
+Present-but-stale alone left defaults permanently dark for instances
+born at a becoming-selected dispatch (a default reaches the callee only
+as a standing read, and a wake does not upgrade those): a fired-gated
+config channel never configured and the arm emitted nothing, on both
+engines identically — the metamorphic blind spot. The interpreter's
+bound dispatch seeds default args FIRED.
 
 ### What stays
 
-Present-but-stale for untracked standing reads; genuine init
-(`init && !wake_init`) still upgrades; constants fire at init only;
-the guard rules; `ByRef`'s stale seed; sleep-is-pause value retention
-(residents survive sleep — they are now REFRESHED at wake rather than
-surfaced); shrink-is-delete for recursion (a fresh activation has
-phantom residents and takes the ordinary first-production path, no
-interaction with slept bits).
-
-## Testing and rollout
-
-Pins (red→green, `run!` + schedule format): Eric's table verbatim
-(43/2/21/62); the modal pin stays green untouched; the fork witness
-re-pointed to agreement at `1,0,1,1`; the shared-input pure-function
-shape; sequential wakers (first consumes, second stale); the
-no-arm-selected accumulation window; `sum`-in-arm catch-up (added
-exactly once); `~`-in-arm catch-up tick. Then the full gates (bare
-`cargo test` at the root, release `regress` + `selfcheck` +
-`detcheck`), leakcheck if the select grows owned state (mask words
-are scalars — should not), and a FLEET SOAK before this is called
-landed — gates are not the fuzzer, and this is exactly the class of
-change the differential oracle exists for. The soak folds into the
-blocked aug31f deploy: the fleet goes out on the tree that implements
-this and hammers it.
-
-## As built (2026-09-01, same day)
-
-The rule stack landed as ruled; the pins live in
-`findings/wake-catchup-sep2026/00–06` (the table, shared-input spent,
-sequential wakers, conflation, `~` catch-up, the no-arm window,
-nested composition), all AGREE with the ruled traces, and
-`dyncall-arm-init-stale-aug2026/00` is re-adjudicated in place
-(header updated). Mechanism deltas discovered during the build:
-
-- **Sleep state is LOCAL — no ExecCtx globals** (Eric's directive,
-  same day, superseding the first build's `Node`-funnel bit +
-  `ExecCtx::woke` handoff): parallel module-level compilation is
-  coming and a parallel evaluator must stay possible, so state lives
-  in nodes, never in a ctx field that ends up behind a lock. Every
-  skip-owning node/Apply owns a `slept: bool` its own `sleep()` sets
-  and its next update takes: the ten `dense_gate!` structs (the macro
-  takes `$self.slept`, so the field is macro-enforced), the three
-  op.rs binary-op macros, StringInterpolate, MapQ, Bind, CallSite,
-  GXLambda, `CachedArgs`, `Kernel` itself (a kernel is a node), and
-  Select — whose wake RE-MATCHES against the present scrutinee: a
-  selection retained across the sleep was made against a value that
-  may have moved while no reader was awake (an arm-local `<-` counter
-  has no tracked fire, since arm-local binds are not arm-body inputs;
-  `select-wake-rematch-sep2026`, sep01c ryouko, found the day the
-  kernel side was deleted and the kernel was right). `Node` stays a
-  bare 16-byte newtype; the per-impl bools mostly hide in struct
-  padding.
-  `Not`/`Neg`/`TypeCast`/`Block`/`StructRef`/`Construct` already
-  recompute unconditionally; `Any` and `~` ride correctly (they ARE
-  edge state); `Constant` keeps its fires-at-wake behavior (both
-  engines agreed on it before and after). The select tracker is one
-  `pending` set + per-arm free-ref read sets (`Refs` minus pattern
-  binds), REFRESHED AT EACH DESELECT — compile-time refs cannot see
-  through a lambda literal into an instantiated body, deselect-time
-  refs can. Catch-up delivery is an `event.variables` injection
-  scoped to exactly the arm's evaluation.
-- **Value-channel refresh seams the ruling implied but the doc
-  didn't name**: a wake's recomputed STALE values must re-reach the
-  store, or readers downstream of a publish seam still ride —
-  `Bind::update` re-publishes a quiet wake production (`<-` targets
-  still held back), `CallSite::update_call` refreshes its arg ids'
-  standing entries, `GXLambda::update` re-seeds formals, and MapQ
-  rebuilds its collection from the refreshed slots (FoldQ's acc
-  chain already flowed through the stale channel).
-- **Kernel: NO mask words** (the one design deviation). Wire slot 0
-  grew bit 2 (WAKE = `event.wake_init` ∨ the kernel node's own woke,
-  depth 0 only); the DynCall stale-mask suppression keys on
-  `bit0 & !bit2` (genuine init); `DynCallSlot::dispatch`'s
-  first-dispatch arrival upgrade is likewise genuine-only (a first
-  dispatch AT A WAKE reads standing args stale — R2's rule at the
-  site seam; pin 02's kernel `count` re-counted through both of
-  these). The wake view is PER-DISPATCH DATA end to end: the kernel's
-  own slept bit rides `DispatcherState::woke`, the in-kernel arm-flip
-  hint (`graphix_wake_hint` — the one wake no `sleep()` call can
-  deliver, because a fused arm's deselection is a branch not taken)
-  is folded in by `dispatch_typed`, the result passes to
-  `DynCallSlot::dispatch` as a parameter, and crosses into the inner
-  `Apply` — which has no parameter slot — through the dispatch-scoped
-  thread-local `dyncall_wake()` (per-thread by construction, so
-  parallel-evaluator-safe). The shared `CachedArgs` wrapper consumes
-  `self.slept || dyncall_wake()` — the ONE implementation of the
-  STATELESS wake re-eval on both engines. What replaces the mask words: pure
-  arms recompute anyway (kernels compute-always), and every
-  edge-consuming arm interior either de-fuses or sits under an
-  interp select whose tracker injects THROUGH the kernel boundary
-  (an arm-position kernel's params read the injected fires — pin 06
-  proves the composition). The enforcement is the WIDENED interior
-  gate: `has_restart_reach` (sleep-restarting, refused in ANY arm
-  extent — P7 as before) now has a companion `has_stateful_reach`
-  (stateful non-restart, refused in VALUE-POSITION arm extents
-  only, transitively through callees and self back-edges).
-  Tail-position arms are exempt — they wake only through
-  frames/activations, where the mechanism is excluded (frames
-  guard every wake predicate: `wake_recompute()` is depth-0 only,
-  which is also what keeps the frame-formal-init-view FIRED overlay
-  seed intact) and per-activation site blocks are the correct twin
-  (`tail_stateful_scalar` keeps fusing).
-- **THE BIRTH RULE** (aug31f ryouko finding 01, hours into the soak):
-  a LABELED DEFAULT is born with the binding — its one arrival is the
-  fresh instance's first dispatch, not a past event some reader
-  consumed. The present-but-stale ruling alone left defaults
-  permanently dark for instances born at a becoming-selected dispatch
-  (a default reaches the callee only as a standing read, and the wake
-  view no longer upgrades those): `str::escape`'s fired-gated config
-  channel never configured and the arm emitted nothing — on BOTH
-  engines, identically, from 9b2e7231 until this fix (the metamorphic
-  blind spot: the differential oracle saw agreement). Three seams:
-  the interp CallSite's bound dispatch seeds default args FIRED
-  (cycle-scoped, any depth); `DynCallSlot`'s first dispatch is a
-  BIRTH view — `event.wake_init` cleared so the slot's default nodes
-  read their standing sources fresh, while marshalled args keep their
-  honest Delivered side-channel tags (pin 02 unthreatened); and
-  `escape_fn!`'s config memo now survives sleep (sleep is pause — the
-  memo is a pure function of the config arg, and clearing it demanded
-  a fired re-delivery no wake provides). Pins:
-  `findings/default-arg-birth-sep2026/00–01`.
-- **Coverage residue**: stateful (non-restart) builtins —
-  `sum`/`max`/`min`/`mean`/`product`-class — inside VALUE-position
-  select arms de-fuse the region. In-kernel mask words (this doc's
-  original mechanism) remain the path to reclaiming that coverage
-  if it ever matters; the semantics would be unchanged.
-
-## Addendum (2026-09-02): pattern binds of enclosing selects are outside the tracker
-
-The admin TUI's landing screen found a hole in the as-built tracker.
-The tab's handler is `select e { ev@ \`Key(k) => select k.kind {
-\`Press => select screen { \`Landing => land.handle(ev), \`Connect =>
-connect_keys(k), … } } }`. Enter on the landing arm requested a
-connect; the tab switched `screen` to `Connect`; the inner select's
-first consult of the `Connect` arm dispatched `connect_keys(k)` with
-`k` FIRED — the connect form's Enter fired with no keypress, and a
-second connect started without the glyph. The tracker excluded only
-the select's OWN pattern binds; to the inner `select screen`, the
-outer arm's `ev` and `k` were two free inputs, the `Landing` arm had
-consumed `ev` but not `k`, and the flip delivered `k` as an unseen
-fire.
-
-`ev` and `k` are one delivery destructured two ways, and the outer
-arm's match is what consumed it. The rule: pattern binds of ANY
-select — this one's and every enclosing one's — are outside the
-mechanism. Built as `Bind::pattern` (marked at `Select::compile` for
-each arm's structure-predicate ids) and a filter in
-`TrackedFires::arm_refs`. In-language pins: `select_sibling_binds_spent`
-(lang/select.rs, both engines) and the callable-layer
-`callable_body_flip_reads_standing_key_stale`; the widget-level twin
-lives in the admin package's landing test. Found through six probes
-narrowing from the widget seam: the same shape passed in-language
-with a bare formal, a plain callee, and a late-bound callee, and
-failed only when an arm read the whole-value capture while a sibling
-arm read the payload bind. `let`-destructured siblings (`let (a, b) =
-pair`) have the analogous facet relation and got their own treatment
-the same day (the admin TUI ledger's item 4): they are NOT excluded —
-a `let` bind is a real input, and its catch-up at wake is wanted —
-but tracked as ONE input: `Bind::facet` names the destructuring's
-representative bind, `TrackedFires` keys its bits by it, and a
-consumed bit delivers the catch-up to every sibling the arm reads.
-Pin: `let_sibling_binds_spent`.
-
-A second fact from the same hunt, unrelated to the rule: the
-runtime's `compile_callable` built its call site and updated it
-without the compile pipeline — no typecheck0/1, no analysis, no
-fusion (the interface predates typecheck1). It runs `check_and_fuse`
-now, the extracted tail of `compile_stmt`; nothing skips
-typechecking.
+Present-but-stale for untracked standing reads; genuine init upgrades;
+constants fire at init only; the guard rules; `ByRef`'s stale seed;
+residents survive sleep and are REFRESHED at wake rather than surfaced;
+shrink-is-delete for recursion (a fresh activation has phantom
+residents and takes the ordinary first-production path).

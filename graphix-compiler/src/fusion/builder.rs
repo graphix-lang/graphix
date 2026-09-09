@@ -87,9 +87,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // output flip): Fired/Stale results carry their in-band tag, a
         // bottomed result is the shared FreshBottom/StaleBottom, a
         // quiet poll rides the resident. Forward it — Kernel's
-        // resident IS this node's return slot, and the old depth-0
-        // fired-only filter (replay_frames Ruling A.2) is REPEALED:
-        // dense consumers read staleness and bottomness off the tag.
+        // resident IS this node's return slot; dense consumers read
+        // staleness and bottomness off the tag.
         let res = self.inner.update(ctx, &mut self.feeders, event);
         // TAKE (Kernel::update only peeked — its production decision
         // left the flag for this diagnostic).

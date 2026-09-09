@@ -2497,7 +2497,7 @@ fn schedule_reductions(s: &schedule::Schedule) -> Vec<schedule::Schedule> {
 /// surfaces fast (crash / value mismatch), and a legitimately-bottom
 /// program just confirms "still all-Timeout" quickly.
 // ─── typemorph: metamorphic typecheck probes ───
-// (typemorph.rs holds the transforms; design/typecheck_fuzzing.md P1)
+// (typemorph.rs holds the transforms; design/graphix_fuzz.md)
 
 /// Verdict of one acceptance check (`--check` semantics: compile +
 /// typecheck + analyze, never execute).

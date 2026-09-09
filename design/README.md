@@ -1,79 +1,67 @@
-# design/ — index
+# Design documents
 
-One line per document, grouped by state. Each doc's own header carries
-its status; this index is the map. "Built" means the tree implements it
-and the doc holds the rationale plus as-built records; "superseded" docs
-are kept as history and say what replaced them. CLAUDE.md summarizes the
-current rules; the design docs hold the *why* and the *how it got here*.
+Design as built. Every document here describes a rule the tree
+implements today and why; when a design changes, its document is
+rewritten in place. Proposals that were withdrawn and records of past
+arcs are in `git log`, not here. Each document opens with `Status:`
+(built date or current principle), `Pins:` (the tests and findings that
+hold it) and, where it absorbed an older document, `Supersedes:`.
 
-## Built and current
+## Firing and delivery
 
-| doc | what |
+| doc | rule |
+|---|---|
+| `representable_bottom.md` | bottom is a value with a taint channel; the bottom-scrutinee and consulted-guard rules |
+| `dense_delivery.md` | `TagValue` every cycle; the fired×bottom algebra; store and overlays; frames |
+| `organic_firing.md` | a node fires iff a consumed input fires; the numbered deltas |
+| `wake_catchup.md` | sleep is pause; a reselected arm recomputes from the present and re-raises only unseen fires, once |
+| `activation_state.md` | held state never decides bottomness; state multiplicity = activation multiplicity |
+| `async_sleep_outputs.md` | async builtins clear their output on sleep |
+
+## Recursion and collections
+
+| doc | rule |
+|---|---|
+| `atomic_recursion.md` | evaluation is atomic within a cycle; containment is the cooperative interrupt |
+| `recursive_activations.md` | activations are collection slots; shrink = delete; no depth limit; `trait Collection` |
+| `kernel_instance_state.md` | per-instance / per-call-site / per-activation kernel words for firing exactness |
+| `collection_intrinsics.md` | MapQ/FoldQ as compiler nodes; inline CLIF loops |
+| `queue_fn.md` | `queuefn` |
+
+## Fusion and the JIT
+
+| doc | rule |
 |---|---|
 | `final_jit_architecture.md` | `Expr → node graph → CLIF`; one IR, two evaluators |
-| `distributed_jit.md` | GIR removed; `emit_clif`/`fuse` per node; the emit contracts |
-| `representable_bottom.md` | bottom as a value; the taint channel |
-| `dense_delivery.md` | `TagValue` every cycle; fired×bottom algebra; consumer caches gone |
-| `organic_firing.md` | a node fires iff a consumed input fires |
-| `wake_catchup.md` | select wake: tracked per-input fire bits (once-per-select consumption) + forced recompute from present values; edges deliver exactly once |
-| `activation_state.md` | bottom-out rule; state multiplicity = activation multiplicity |
-| `atomic_recursion.md` | evaluation is atomic within a cycle; containment outside the language |
-| `recursive_activations.md` | activations are collection slots; no depth limit; `trait Collection` with the `'_` hole; P2b measurements |
-| `collection_intrinsics.md` | MapQ/FoldQ as compiler nodes; inline CLIF loops |
-| `kernel_instance_state.md` | per-instance/per-call-site kernel state (the DynCall site-identity half is deleted — strict fusion) |
+| `distributed_jit.md` | `emit_clif`/`fuse` per node; the emit contracts |
+| `strict_fusion.md` | fusion is pure computation + fast fns only; what was deleted and why |
 | `unified_value_abi.md` | the (disc, payload) Value ABI across the JIT boundary |
+
+## Types
+
+| doc | rule |
+|---|---|
+| `tvar_constraints.md` | cell constraints are the only constraint store |
 | `env_independent_typerefs.md` | `TypeRef` resolution cells; name-compressed instance signatures |
-| `type_operation_scaling.md` | COW/DAG walks + memos for every core type operation |
+| `type_operation_scaling.md` | memoized DAG walks for every core type operation |
 | `type_copy_discipline.md` | principle: justify every deep type copy |
-| `tvar_constraints.md` | cell constraints are the only constraint store (phase C) |
-| `nominal_abstract_types.md` | `type T = Abstract<rep>`; nominal identity; constructor/payload/pattern |
-| `traits.md` | traits v1 (§11), core `Eq`/`Ord`/`Display` (§12), io traits (§13) |
+| `nominal_abstract_types.md` | `type T = Abstract<rep>`; nominal identity |
+| `traits.md` | traits v1, the core `Eq`/`Ord`/`Display`, the io traits |
+| `list_native.md` | native List: `Type::List`, literals, patterns, the fused ladder |
+| `or_patterns.md` | `p1 \| p2` in select arms and element positions |
+
+## Language
+
+| doc | rule |
+|---|---|
 | `module_system.md` | Rust-2018-style `use`; `self`/`super`/`package` roots |
-| `list_native.md` | native List: slim 2-slot cons, `Type::List`, `[<1, 2>]` literals + list patterns, B3 fused ladder |
-| `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
-| `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, callable routes, twins, HDD |
-| `typecheck_fuzzing.md` | the acceptance-plane (typemorph) lane |
-| `queue_fn.md` | `queuefn` |
 | `catch.md` | `catch(e) expr` installs a handler; not control flow |
-| `lpool_audit_2026_07.md` | pooled-allocation audit; applied |
-| `seq_blocks.md` | `seq` blocks: a `select` the compiler writes; straight-line built 2026-09-04 (`if`/loops held); `try … with` §7.9 (2026-09-07); the completion rule under R3 (2026-09-09) |
-| `seqq.md` | `seqq`: the seq machine behind one FIFO queue; what a queue entry captures and what stays live |
-| `seq_error_guards.md` | the runtime side of seq errors: handler generations, `SeqGuard`, the JIT boundary |
-| `async_sleep_outputs.md` | async builtins clear their output on sleep (a restarted activation has no completion yet); the audit by wrapper family |
-| `place_references.md` | `&a[i]`, `&s.f`, `&t.0`, `&m{k}`: places as root + path, patched at delivery (built 2026-09-02) |
+| `place_references.md` | `&a[i]`, `&s.f`, `&t.0`, `&m{k}` as root + path |
+| `seq_blocks.md` | `seq`/`seqq`: the pc machine, `until`, `do`, `try … with`, the completion rule, the error guards |
 
-## Proposed, not built
+## Infrastructure
 
-| doc | what |
+| doc | rule |
 |---|---|
-| `or_patterns.md` | or-patterns `p1 \| p2` — orthodox semantics; select-arm-only top level (building 2026-08-31) |
-| `levels_and_events.md` | levels vs events as a KIND — revised same day (§0): async results are LEVELS (retention is the feature), only occurrences lack a standing value, the tracker stays; `~` waits on every absence; residual = a compile error for occurrence-as-state + pure event selects; proposed 2026-09-03, go/no-go = a throwaway kind checker's counts |
-| `pure_dataflow_plan.md` | A (mux-select) and B (sparse delivery) WITHDRAWN 2026-09-04; sleep is pause; keepers `~!` / skip-sleep on pure arms; write rule withdrawn; `seq` (C) next as the sleep-era `pc` machine |
-| `pure_select.md` | select arms are PURE, sleep disappears (Eric's alternative, 2026-09-03): impure code in an arm is sugar for a hoisted, arm-gated form (a gated level is born at entry, a gated occurrence is not); level effects follow presence; deletes wake catch-up, Held, the restart contracts, 115 sleep impls; §11 = Eric's always-update variant (preferred: pure arms lazy, impure arms always on, `null`-keyed effects, no hoist); §12 = is dense bottom still necessary; §13 = seq becomes a `~` chain, the port is already written in this discipline; go/no-go = the counts over the port |
-| `strict_fusion.md` | RULED + BUILT 2026-09-01: fusion is pure+fastcall only; the stateful-kernel machinery is deleted (the record of what went) |
-| `fusion_lowering_split.md` | split `try_fuse` into analysis + lowering (legibility) |
-| `interp_lazy_bind_cost.md` | partial: what remains of the interp's per-activation cost (see header) |
-
-## Superseded (history)
-
-| doc | replaced by |
-|---|---|
-| `replay_frames.md` | `dense_delivery.md` (its `reset_replay` classification + frames survive) |
-| `transient_recursion.md` | the 2026-08-13 retention ruling; `recursive_activations.md` |
-| `sync_subset.md`, `sync_control.md`, `value_returning_loops.md` | `collection_intrinsics.md` |
-| `impure_hof_fusion.md`, `composite_hof_fusion.md`, `clone_rebind_testing.md` | `collection_intrinsics.md` |
-| `interfaces.md` | `traits.md` / `trait Collection` |
-| `code_review_2026_07_19.md` | a point-in-time review record |
-
-## Status snapshots
-
-| doc | when |
-|---|---|
-| `status_2026-08-30.md` | whole-project assessment at the end of the recursion/traits/select arc |
-
-## Review records
-
-| doc | what |
-|---|---|
-| `seq_review_2026-09-04.md` | the seq + netidx-admin CR: F1-Fn with dispositions |
-| `seq_review_2026-09-06.md` | re-check of the 2026-09-05 review at `c46fd6c1`; all items closed 2026-09-09 (R10 the completion rule, R3-R7 cleanups, `--expand`) |
+| `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
+| `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |

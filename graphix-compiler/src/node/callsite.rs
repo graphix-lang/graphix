@@ -1999,12 +1999,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 Some(res)
             }
         };
-        // Under dense delivery stale and bottom productions are
-        // first-class currency at every depth — the old depth-0
-        // fired-only escape filter (replay_frames Ruling A.2, the
-        // jul10h-000007 protection) is repealed: tag-aware consumers
-        // (P4's seam_tick families — array::group among them) gate on
-        // firedness themselves.
+        // Stale and bottom productions are first-class currency at
+        // every depth: tag-aware consumers gate on firedness themselves.
         if crate::dbgenv::gxdbg_cs() {
             // Result-tag companion to the pre-dispatch CS line above —
             // localized the tail-loop tag derivation and the fd0 stale

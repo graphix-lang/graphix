@@ -388,8 +388,7 @@ const LIST_MAP: &str = r#"
 
 // `list::map` over `list::from_array([1,2,3])` with `|x| x*2` now fuses
 // PER-SLOT: the list HOF doesn't batch-loop, so its callback dispatches
-// through `fuse_callsite` → a shared-kernel `FusedKernel` per element
-// (design/impure_hof_fusion.md, Phase 1).
+// through `fuse_callsite` → a shared-kernel `FusedKernel` per element.
 run!(list_map, LIST_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {

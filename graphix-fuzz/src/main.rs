@@ -777,7 +777,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // The acceptance-plane gate (design/typecheck_fuzzing.md):
+        // The acceptance-plane gate (design/graphix_fuzz.md, typemorph):
         // corpus + n generated subjects, every applicable transform
         // probed per subject, flips confirmed in a fresh process.
         Some("typemorph-scan") => {
@@ -855,8 +855,7 @@ async fn main() -> Result<()> {
         // leaves the completed prefix on record for the parent's
         // individual-re-run fallback). One warmed runtime pair serves
         // the whole batch — the per-subject stdlib-compile constant is
-        // the fleet throughput bound (design/interp_lazy_bind_cost.md,
-        // the actual-soak profile).
+        // the fleet throughput bound.
         Some("check-batch") => {
             use std::io::Write;
             let verdict_path = args

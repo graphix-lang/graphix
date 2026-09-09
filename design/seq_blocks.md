@@ -1,81 +1,38 @@
 # `seq` blocks: sequencing across cycles
 
-Status: **straight-line built** (2026-09-04). `if`/loops held.
-`try … with` ruled and built 2026-09-07 (§7.9, R11). Origin: the post-port
-assessment of the netidx-admin rewrite (5,434 lines of Graphix). Eric:
-"we actually wrote a sync language subset at one point and concluded it
-was a total disaster and the sync language subset was Rust" — the
-design below is deliberately not that (§3), and it grew in the same
-conversation from a plain step sequence to branches and loops (Eric:
-"you can already loop with select, and if should be possible to add as
-well") and to progress reporting through captured variables (Eric:
-"why couldn't it `progress <- 0, ..., progress <- 1` where progress is
-a capture?").
+Status: built 2026-09-07 (straight-line, `do`, `until`, `try … with`,
+`seqq`; `if`/loops inside a seq are not built).
+Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow}.rs`,
+`lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
+`graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
+`seq_do_statement_list_is_capped`), `expr/seq.rs` unit tests
+(`do_body_over_limit_is_a_compile_error`).
+Supersedes: pure_select, pure_dataflow_plan, levels_and_events,
+seq_review_2026-09-04, seq_review_2026-09-06.
 
-The one-line version: **a `seq` block is a `select` the compiler
-writes.** Every ceremony in the port is a hand-written state machine
-over a step variable — `select` over it, `<-` advancing it, `~` gating
-each step, `never<T>()` seeds carrying values between steps, a catch
-per block routing failures. The construct lowers a statement list to
-exactly that machine, with the sampling discipline applied
-mechanically, so the source reads in execution order. It adds no
-evaluation model: every step is an ordinary reactive expression, and
-the cycle boundary is the yield point.
+**A `seq` block is a `select` the compiler writes.** Every multi-step
+ceremony in a reactive program is a hand-written state machine over a
+step variable: `select` over it, `<-` advancing it, `~` gating each
+step, `never<T>()` seeds carrying values between steps, a catch per
+block routing failures. `seq` lowers a statement list to exactly that
+machine with the sampling discipline applied mechanically, so the
+source reads in execution order. It adds no evaluation model: every
+step is an ordinary reactive expression and the cycle boundary is the
+yield point.
 
 ## 1. The problem
 
-Real programs have sequential parts. In the port they are the
-lifecycle ceremonies (install, join, add-parent, restore in two
-stages, uninstall, the privileged handoff), the change-password route,
-and the landing's connect flow. Each is "issue an async operation,
-wait for its result, branch on it, write some UI state, issue the
-next", and each came out as a chain of gated connects that the reader
-has to re-sequence in their head. The privileged handoff as it stands
-(`local.gx`, abridged):
-
-```graphix
-let priv_req = never<{ what: string, argv: Array<string>, then: Then }>();
-let priv_cmd = escalate_command(priv_req.argv, priv_req);
-let suspended = false;
-let priv_exit = never<i64>();
-{
-  catch(e) {
-    select (e.0).error { ... => toast <- ..., a => fail("...", a) };
-    suspended <- e ~ false
-  };
-  let cmd = priv_cmd?;
-  suspended <- cmd ~ true;
-  let released = tui::suspend(suspended)?;
-  let go = select released { true => released, false => never() };
-  println(go ~ "\nAdministrator privileges are needed to [priv_req.what].");
-  let child = sys::process::spawn(sys::process::options(#args: cmd.args, go ~ cmd.program))?;
-  let status = sys::process::wait(child.proc)?;
-  suspended <- status ~ false;
-  priv_exit <- select status.code { null as _ => -1, c => c }
-};
-select priv_exit ~ priv_req.then { ... }
-```
-
-Four things the reader reconstructs, and the author gets wrong:
-
-1. **The order.** It is the order of the block only by convention;
-   nothing enforces that `spawn` waits for the release except the
-   `go ~` on its program argument, and a missing `~` is a program that
-   runs the child before the terminal is released.
-2. **The later-bound locals.** `priv_req`, `priv_exit`, `svc_ok`,
-   `verify_req` are `never<T>()` seeds: variables whose only purpose is
-   to carry a value from one step to a step that a different block
-   reads. Thirteen of them in `local.gx` alone.
-3. **The sampling.** Every step's arguments are gated on the previous
-   step's value (`cmd ~ true`, `status ~ false`, `go ~ cmd.program`),
-   by hand, per argument. The port has 262 `~` across 4,162 lines and
-   the ceremonies are the densest users.
-4. **The error routing.** A catch per block, each resetting whatever
-   state the block's steps had set (`suspended <- e ~ false`), with
-   the reset duplicated per block.
-
-The pattern is a state machine written longhand. The line counts by
-file: `local.gx` 1,300 lines, 13 seeds, 21 catch blocks, 74 samples.
+The port of the netidx-admin TUI (5,434 lines) had a dozen ceremonies
+of the form "issue an async operation, wait for its result, branch,
+write some UI state, issue the next". Each came out as a chain of
+gated connects the reader has to re-sequence in their head, wrong in
+the same four ways: the ORDER is enforced only by a per-argument `~`
+(a missing one runs the child before the terminal is released);
+later-bound locals are `never<T>()` seeds carrying a value to a step
+in another block (thirteen in `local.gx` alone); the SAMPLING is by
+hand, per argument (262 `~` across 4,162 lines, densest in the
+ceremonies); and the error routing is a catch per block, each
+resetting the block's state, duplicated per block.
 
 ## 2. What it looks like
 
@@ -113,401 +70,182 @@ let priv_exit = privileged(priv_req);
 ```
 
 `suspended` and `released` stay outside: `tui::suspend(suspended)` is
-a LEVEL and a level lives at module scope, driven by a variable the
-steps write (§8). Progress, toasts, focus and the exit level are all
-written the same way — a seq block is an ordered issuer of effects that
+a LEVEL, and a level lives at module scope driven by a variable the
+steps write (§6). A seq block is an ordered issuer of effects that
 waits between them, not primarily a value producer.
-
-A poll loop:
-
-```graphix
-seq go {
-  let st = loop {
-    select status(target) {
-      `Ready(r) => break r,
-      `Pending => sys::time::timer(duration:1.s, false)
-    }
-  };
-  ...
-}
-```
 
 ## 3. Not the sync subset
 
-`design/sync_subset.md` (2026-07-09, removed 07-13) proposed
-`sync { let mut ..; for v in a { .. } }`: sequential semantics WITHIN a
-cycle — mutation, loops that run to completion inside one evaluation,
-`for` desugared to a fold, an elaboration ladder deciding per call site
-whether the block became one kernel or per-element slots. It converged
-on being a second language, and a second language inside Graphix
-converges on Rust, which the project already has as its computation
-leaf. The collection intrinsics replaced it.
+An earlier design (`sync { let mut ..; for v in a { .. } }`, removed
+2026-07) proposed sequential semantics WITHIN a cycle: mutation, loops
+that run to completion inside one evaluation, an elaboration ladder
+deciding per call site whether the block became one kernel or
+per-element slots. It converged on being a second language, and a
+second language inside Graphix converges on Rust, which the project
+already has as its computation leaf. Eric: "we actually wrote a sync
+language subset at one point and concluded it was a total disaster and
+the sync language subset was Rust." The collection intrinsics replaced
+it.
 
 `seq` is the other axis. Nothing inside a seq block runs sequentially
-within a cycle: each step is a live reactive expression, and "next"
+within a cycle: each step is a live reactive expression and "next"
 means "the cycle after this one produced". There is no mutation
-(bindings are ordinary lets; cross-step values ride variables), no
-within-cycle loop (an iteration is a re-selection, one per cycle at
-least), and nothing a kernel needs to know (a seq block is `Async` by
-construction; its steps' interiors fuse or not exactly as today). It
-is the Rust `async fn` move, not the Rust `fn` move: Rust did not add a
-second evaluation model for async either, it lowers the function to
-the state machine you would write by hand, and the win is that the
-source reads in execution order while the semantics stay the
-machine's. The compute loops stay where they are: `let rec`, the HOFs,
-`#[native]`.
+(cross-step values ride variables), no within-cycle loop, and nothing
+a kernel needs to know (a seq block is `Async` by construction; a
+step's sync interior fuses exactly as it would anywhere). It is the
+Rust `async fn` move: no second evaluation model, the function lowers
+to the state machine you would write by hand, and the win is that the
+source reads in execution order while the semantics stay the machine's.
 
-## 4. The semantics underneath
-
-This section is here because the construct and the language's firing
-semantics are intertwined both ways (Eric, 2026-09-03): the lowering
-depends on the semantics as they stand, and the construct may absorb
-some of the complexity a program otherwise meets bare. So: what
-bothers me about the semantics, root causes before symptoms, then the
-semantics I would want, then what each has to do with `seq`.
-
-### 4.1 What is hard, and why
-
-It is not `select`. `select` is where the difficulties meet, because
-it is the one place arms sleep and wake, but its rules are symptoms.
-The roots, in the order I would rank them:
-
-1. **The event channel is implicit.** Every expression carries two
-   things, a value (present, absent, standing) and an event (fired
-   this cycle), and the surface shows only the value. The event
-   channel is what decides when a connect writes, when an effect
-   issues and when a callback runs, and programs steer it with `~`,
-   `uniq`, `filter`, `once`, `hold`, `queue`, the structure of a
-   select, and the constant-versus-sampled distinction in a connect's
-   right-hand side. `~` alone does three jobs: sequence a call
-   (`f(t ~ x)`), sample state at an event (`c ~ counter`), and gate a
-   constant (`t ~ \`Pick`). The deeper form of the same thing: a
-   LEVEL (a value with a present; a reader wants the current one) and
-   an EVENT (a fire that matters once; a reader must not miss it) are
-   the same kind of thing in the language, and the wake catch-up
-   design (`design/wake_catchup.md`) exists to reconcile them after
-   the fact: events that fired while an arm slept are re-raised, once,
-   conflated, while levels are read as they stand. Eric's 43/2/21/62
-   table is the cost of deciding case by case what a mixed thing is.
-
-2. **Bottom is several things.** Never produced; dropped this cycle
-   (`filter`, `never()`, a `$`); an async result not yet arrived; a
-   standing bottom after a value. The engine's fired-by-bottom algebra
-   is principled, but the distinctions leak: `~` holds a trigger's
-   debt if its right-hand side has NEVER materialized and pays it as a
-   fresh bottom if the side has materialized before (§7.3 is a
-   workaround for exactly this — a step that waited on its first run
-   stalls on its second); a bottom read stalls silently, with no way
-   to tell "not yet" from "never"; a bottom scrutinee bottoms a
-   select whose taken arm was an active producer (ruled; `hold` is the
-   tool; still a trap the reader has to know).
-
-3. **Init and wake are special cycles.** Constants fire at init and
-   never again, so a constant write in an arm fires once per selection
-   (a tool, per the ruling, and also the reason a `println` in an arm
-   runs on the first selection only); a guard that has never produced
-   makes the select undecidable at init (the init-phantom); a woken
-   arm forces a recompute, reads standing values stale, re-matches its
-   scrutinee, and receives conflated catch-up fires; the kernel wire
-   distinguishes genuine init from wake by a bit. Each rule is right in
-   isolation. Together they mean a program's first cycle and an arm's
-   re-selection follow rules its tenth cycle does not.
-
-4. **`select`'s own rules** are where the three above surface: the
-   consulted-guard rule, bottom-out, own-firing through a retained
-   selection, pattern binds as facets of the scrutinee delivery and
-   therefore excluded from catch-up (§7.2 leans on this), the once-
-   per-selection constant write. A user who knows 1–3 predicts them;
-   one who does not meets them one at a time.
-
-5. **Three failure channels.** A bottom (silent, the unchecked
-   operators, `$`), an in-band `Error` value (typed, matched), and a
-   thrown error (`?` to the nearest installed handler along the call
-   chain). Which channel a builtin uses is convention ("hot operators
-   log and bottom; rare stdlib functions return a catchable Error").
-   A reader has to know all three and the convention.
-
-6. **Variables are queues of writes**, one delivery per cycle, in
-   write order; a second write to a variable already delivered this
-   cycle is re-queued for the next (`push_var_event!`). This is a
-   clean rule and nobody states it. It matters here: a step variable
-   written by a transition and by the abort in the same cycle is two
-   deliveries, and the lowering has to make the abort's win.
-
-7. **State multiplicity.** A stateful builtin (`count`, `once`) inside
-   a lambda, a callback, an arm or a recursion is per instance, per
-   slot, per activation — principled (`design/activation_state.md`)
-   and hard to explain; smaller than the rest.
-
-The typing subtleties of the last month (coverage distribution, the
-union rectangle, never-typing) are second order next to these: they
-produce compile errors, not surprises at runtime.
-
-### 4.2 The semantics I would want
-
-Stated as principles, each with the rule it would replace.
-
-- **P1 — Levels and events are different kinds, and the reader can
-  tell which is which.** A binding is a level: reading it yields the
-  present value and never history. An event is a fire consumed
-  exactly once; `queue` makes a stream of them lossless; `hold` turns
-  an event into a level; `~` samples a level on an event, and that is
-  its one job. Conversion is always explicit. With this, wake catch-up
-  is not a table: levels need none (read the present) and events need
-  a queue, and the conflation rule (deliver an unconsumed fire once at
-  the current value) disappears, because a conflated event is a level
-  read. The language already gropes toward it: `Any` is the de facto
-  event type in every trigger parameter (`|t: Any|`, `#trig: Any`), and
-  the sibling-bind ruling (a pattern bind is a facet of a delivery,
-  not an event) is P1 applied to one case. The full kind model — the
-  rules, the witnesses replayed, what it deletes and what it costs —
-  is `levels_and_events.md`.
-- **P2 — One bottom.** Bottom means absent: no event, and no memory of
-  ever having been present. No program-visible construct behaves
-  differently because a bottom was once a value. `~`'s debt is the
-  violation: either drop when the level is absent, or wait for it
-  consistently.
-- **P3 — Effects issue on events; derivations follow levels.** A pure
-  expression is a live derivation of its inputs. An effect (an async
-  call, a connect, a print) is issued by an event and not re-issued
-  by a level changing. Organic firing already says this; what it lacks
-  is a way to say which inputs are events.
-- **P4 — No special cycles.** Init is one event, program start;
-  constants are levels (present from birth, never firing); an effect
-  at top level issues on the start event; a wake is not an event.
-  Under P4 the constant write in an arm does nothing, and "on entering
-  this state" is written `cursor <- s ~ 0` with `s` the entry event,
-  which is what the lowering writes anyway (§7.6). The tool survives,
-  spelled.
-- **P5 — Variables are queues.** Already true (4.1 item 6); write it
-  down, and say what two writes in one cycle mean.
-
-Not on the list, because I would keep them: organic firing as the
-core rule; sleep as pause; activation multiplicity; catch as a handler
-rather than control flow; bottom scrutinee ⇒ bottom select (under P2
-it is "an absent level decides nothing", which is right); the
-consulted-guard rule (a guard is a level; absent is undecidable).
-
-### 4.3 What this has to do with `seq`
-
-A `seq` block is P1–P4 applied to one program class by construction.
-Its trigger is an event, consumed once per run (R1). Its inputs are
-levels, read as they stand at a step's entry (R2). Its effects issue
-on the entry event and never on a level moving (R2, R3). It has no
-special cycles: entry IS an event, whether first, re-entry, or a
-loop's back-edge, so a step behaves the same on every run (R2, §7.2).
-Where the language's rules leak through the lowering, an atom absorbs
-the leak, and each atom is priced by the principle it stands in for:
-
-| leak | today's rule | the atom | under the principle |
-|---|---|---|---|
-| a step's input absent at entry | `~` debt asymmetry (P2) | the presence select, §7.3 | `f(pc ~ x)` waits or drops, consistently |
-| the entry must reach a nested watch | pattern binds excluded from catch-up; a scrutinee's own variable maybe (P1) | a sibling `entered` variable, §7.2 | the entry is an event; the watch queues it |
-| a retrigger while running | `~` holds one pending trigger (P1) | `filter` as the busy gate, §7.1 | the policy is a choice between `queue` and drop |
-| a transition on a same-arm re-match | constants fire per selection (P4) | never write a constant RHS, §7.6 | nothing to avoid: constants never fire |
-| two writes to the step variable | variables are queues (P5) | the abort must deliver last | the same, stated |
-
-Two consequences. First, the construct can be built on today's
-semantics: every atom is expressible, and step 0 of the plan is the
-proof. Second, the atoms are the measurement of what the language's
-rules cost a program that wants sequential meaning: if P1–P4 were
-adopted language-wide, the lowering would shrink to `f(pc ~ x)` and
-`pc <- pc ~ \`Next`, and the same simplification would reach every
-hand-written machine that does not use `seq`. That is the sense in
-which `seq` mitigates the complexity: it is a pilot of the semantics
-under P1–P4 in the class of programs that suffers most, and if it
-reads right there, the principles have earned a hearing for the
-language as a whole. The book test from the assessment stands: if the
-rules of §4.2 cannot be written in five pages a newcomer can hold, the
-model is still too subtle.
-
-## 5. Syntax
+## 4. Syntax
 
 ```
-seq [trigger] { stmt* [expr] }
+seq  [trigger] { stmt* [expr] }
+seqq [trigger] { stmt* [expr] }          // queued form, §8
 
-stmt   := let pat = expr ;
-        | do { stmt* [expr] } ;          // one arm: waits then issues together
-        | expr ;                         // an effect, a watch, a derivation
-        | until expr ;                   // sugar: select expr { true => null, false => never() }
-        | select expr { pat [if g] => body, ... } ;   // body = { stmt* [expr] } or expr
-        | if expr { stmt* } [else { stmt* }] ;        // sugar over select on bool
-        | loop { stmt* } | while expr { stmt* } | for pat in expr { stmt* }
-        | break [expr] ; | continue ;
-        | try { stmt* [expr] } with(e[: T]) { stmt* [expr] } ;   // §7.9, R11; seq level only
+stmt := let pat = expr ;
+      | do { stmt* [expr] } ;            // several statements as ONE arm
+      | expr ;                           // an effect, a watch, a derivation
+      | until expr ;                     // wait for a bool level to be true
+      | try { stmt* [expr] } with(e[: T]) { stmt* [expr] } ;   // §7
 ```
 
-`catch` is refused anywhere in a seq body — as a statement, inside
-`do`, or nested in a step's expression; a lambda literal's body (and
-its defaults) is its own dynamic scope and is exempt (Eric: "as soon
-as you introduce a lambda you're basically back in graphix"). A bare
-`{ ... }` statement is refused;
-`do { ... }` groups statements. Error handling inside a sequence is
-`try … with` (§7.9); a wrapper `catch` around the seq is ordinary
-Graphix and sees an aborted run's error.
+`seq { .. }` without a trigger runs once at init. A bare `{ ... }`
+statement is refused (`do` groups statements); `let rec` is not a
+step. `catch` is refused anywhere in a seq body — as a statement,
+inside `do`, or nested in a step's expression; a lambda literal's body
+and its defaults are exempt, because a function is its own dynamic
+scope and its own firing world ("as soon as you introduce a lambda
+you're basically back in graphix"). `seq`, `seqq`, `until`, `do`,
+`try` and `with` are reserved words; the old integer-sequence builtin
+`seq(i, j)` is `range(i, j)`.
 
-`seq { .. }` without a trigger runs once at init. `if` is already a
-reserved word. The keyword reclaims the integer-sequence builtin (§11).
+`if`, loops, `break`/`continue` and a `select` whose arms are step
+lists are not built; a `select` inside a seq is an ordinary expression
+step.
 
-## 6. Semantics
+## 5. Semantics
 
-Numbered so fixtures can cite them.
+**Run.** A run starts when the trigger fires while no run is in
+progress; a trigger during a run is dropped (`seqq` queues instead,
+§8). A bare-variable trigger is snapshotted: the body's reads of that
+name see the value the run started with.
 
-`seqq` is the queued form described in [seqq.md](seqq.md). It captures
-request inputs at enqueue time instead of R2's step-entry sampling;
-`seq` retains its existing busy-drop behavior.
-
-**R1 — Run.** A run starts when the trigger fires while no run is in
-progress; a trigger during a run is dropped (the busy policy; §11 for
-restart/queue). If the trigger is a bare variable, the body's reads of
-that name see the value the run started with.
-
-**R2 — Steps evaluate in order, once per entry.** A step's leaves —
+**Steps evaluate in order, once per entry.** A step's leaves —
 constants and reads of variables outside the step — are taken as they
-stand when the step is reached, and the step's effects are issued
-exactly once per reaching. Nothing in a passed step re-fires: its arm
-is asleep. This is `f(trigger ~ x)` applied mechanically, and it is the
-rule the hand-written ceremonies get wrong.
+stand when the step is reached, and its effects are issued exactly
+once per reaching. A passed step's arm is asleep and nothing in it
+re-fires. This is `f(trigger ~ x)` applied mechanically, the rule the
+hand-written ceremonies get wrong.
 
-**R3 — Calls acknowledge completion with a production.** An effectful
-call completes on its first non-bottom fired production for that
-invocation. `print`, `println`, and `log` emit `null` after processing
-each message, including repeated identical messages. An asynchronous
-call emits its result or acknowledgement when the operation completes,
-not merely when its arguments arrive. Bottom means no completion;
-`never()` needs no special treatment. Third-party effects without a
-completion event cannot be waited on by `seq` without adapting their
-API. A connect completes at issue; its write lands next cycle.
-A pure step is a derivation: it completes when its value is present,
-and it stays live while its arm is active (that is what lets
-`until released` wait for a level to flip). Completion is a FIRED
-production after the step's entry (R10, 2026-09-09): a value standing
-at entry is the previous run's answer — a `~`'s held resident, a
-lambda instance's own cell, both re-presented at wake because sleep
-is pause — and the guard holds bottom until the step fires. A call is
-re-issued at entry and its own fire is the answer (the guard sits on
-the issued call, inside the snapshot select, which fires at entry
-carrying the call's resident); a level is fired at entry as it stands
-(`any(pc ~! e, e)`), and waited for if absent. A lambda that returns a
-standing level it does not derive from its argument produces no fire
-when re-called, in a seq as anywhere else: the run never completes,
-and `|v| v ~ k` is the spelling. Consecutive same-cycle
-steps coalesce into one arm; an async completion and every connect
-end an arm (§7.4). `do { … }` is the override: several statements,
-one arm, connects pc-sampled, lets inside.
+**Completion is a FIRED production after the step's entry.** A value
+standing at entry is the previous run's answer — a `~`'s held
+resident, a lambda instance's own cell, both re-presented at wake
+because sleep is pause — and the completion guard holds bottom until
+the step fires. A call is re-issued at entry and its own fire is the
+answer. A level is fired at entry as it stands (`any(pc ~! e, e)`) and
+waited for if absent; `until` is the same shape over a bool. A
+connect completes at issue; its write lands next cycle. An async call
+completes when the operation completes, not when its arguments arrive;
+`print`/`println`/`log` emit `null` after each message, repeats
+included, which is what makes them waitable. Bottom means no
+completion, so `never()` in a step stalls the run and needs no special
+treatment; a third-party effect with no completion event cannot be
+waited on without adapting its API.
 
-**R4 — A `let` binds the step's first production for the rest of the
-run.** Later steps read it; a later ITERATION overwrites it before its
-readers run. Shadowing is sequential as in a block.
+The casualty of the rule: a lambda that returns a standing level it
+does not derive from its argument (`|v| k`) produces no fire when
+re-called, in a seq as anywhere else, so a step calling it never
+completes on the second run. `|v| v ~ k` is the spelling.
 
-**R5 — A `select` step branches once.** Its scrutinee is a step; the
-arm is chosen when it is present and does not switch mid-run; the
-arm's statements are steps; every arm's last step transitions to the
-statement after the select. In value position each arm's value is the
-select's. `if` is the bool special case.
+**A `let` binds the step's production for the rest of the run.**
+Later steps read it through a carried cell; shadowing is sequential as
+in a block.
 
-**R6 — A loop is a label and a back-edge.** The body's last step
-transitions to the label; `continue` does the same from anywhere in
-the body; `break v` writes the loop's value and transitions past it.
-`while c` is `loop { select c { false => break, true => null }; .. }`
-with the exit at the top;
-`for x in xs` is an index loop over `xs` taken at the loop's entry.
-An iteration re-enters arms; it never re-instantiates anything (§7.6).
-Accumulators are captured variables written as steps (`total <- total
-+ x`), read by the next iteration.
+**A `?` aborts the run, unless a `try` takes it.** The machine
+installs ONE handler outermost: it resets the step variable to idle
+and rethrows to the enclosing handler. An error raised inside a `try`
+body takes the with branch instead (§7). A wrapper `catch` around the
+seq is ordinary Graphix and sees an aborted run's error once.
 
-**R7 — A `?` aborts the run, unless a `try` takes it.** The lowered
-block installs ONE handler outermost: it resets the step variable to
-idle and rethrows to the enclosing handler. An error raised inside a
-`try` body — by a `?`, a callee's throw, or a fused `?` — takes the
-with branch instead (R11). `catch` is refused anywhere in a seq body:
-an install can observe an error but cannot produce the value the next
-step waits for, so inside a sequence it can only rethrow or stall
-(seq_review_2026-09-06.md R2, R8). Cleanup and recovery are
-`try … with`; a wrapper `catch` around the seq still sees an aborted
-run's error.
+**The value** is the last expression's, fired once per completed run,
+stale between runs, bottom before the first completion. A `seq` inside
+a lambda is a callable ceremony; a call to one from a step is itself an
+async step.
 
-**R8 — The value.** The block's value is its last expression's, fired
-once per completed run, stale between runs, bottom before the first
-completion. A `seq` inside a lambda is a callable ceremony; a call to
-one from a step is itself an async step and composes by R3.
-
-**R9 — Levels live outside.** A level effect (`tui::suspend`,
+**Levels live outside.** A level effect (`tui::suspend`,
 `sys::net::publish`, a subscription the ceremony watches) must not be a
-step: a passed step sleeps, and a slept level is torn down. Steps write
+step: a passed step sleeps and a slept level is torn down. Steps write
 the variable that drives the level and `until` waits for its response.
+The compiler cannot tell a level effect from a one-shot; the book has
+to say it.
 
-**R10 — Do blocks are `Async`.** The machine node-walks; each step's
-sync interior fuses as it would anywhere. `#[sync]` on a seq block is a
-compile error, `#[native]` inside a step means what it means today.
+**Seq blocks are `Async`.** The machine node-walks; each step's sync
+interior fuses as it would anywhere. `#[sync]` on a seq is a compile
+error.
 
-**R11 — `try … with` is an error-triggered branch.** Stated in full in
-§7.9: an error raised anywhere in the try body transfers control to the
-with body's first step with `e` bound to the first error; the with
-body's last step continues after the `try`; an error in the with body
-goes to the enclosing `try`, else to the machine; the statement's type
-is the union of the two bodies' last values.
+## 6. The lowering
 
-## 7. The lowering
+An AST-to-AST desugar (`expr/seq.rs`), so both engines inherit the
+semantics from one spec. Positions carry from each statement to the
+nodes it lowers to, so a type error names the step. `graphix --expand
+file.gx` checks the file and prints each seq's lowered machine, source
+position first: the machine is inspectable, which is the debugging
+story. The completion guards are compiler-only nodes and print as
+their operand, so re-parsing the expansion gives the machine without
+its error boundaries.
 
-> Under `pure_select.md` §11 (arms always updated, no sleep) this
-> lowering shrinks to a `~` chain with a busy flag and one catch — no
-> `pc` for a straight-line block; see `pure_select.md` §13.1. What
-> follows is the lowering on TODAY's semantics.
-
-An AST-to-AST desugar (`expr/seq_desugar.rs`, the precedent is the sync
-subset's P1 desugar, which validated "no new node types; both
-evaluators inherit the semantics from one spec"). Positions carry from
-each statement to the nodes it lowers to, so a type error names the
-step. `graphix --expand file.gx` checks the file and prints each seq's
-lowered machine (source position, then the pretty-printed program; the
-completion guards are compiler-only nodes and print as their operand):
-the machine is inspectable, which is the debugging story.
-
-### 7.1 The skeleton
+### 6.1 The skeleton
 
 ```graphix
 {
-  let pc = `Idle;                       // [`Idle, `A1, `A2, ..]
-  let x_c = never();                    // one cell per let read across arms
+  let pc: [`Idle, `S0, `S1, ..] = `Idle;
   let idle = select pc { `Idle => true, _ => false };
-  catch(e) { pc <- `Idle; e? };
-  let t = filter(<trigger>, |x| x ~ idle);  // R1: dropped while running
-  pc <- t ~ `A1;
+  let r = never();                          // the block's value
+  let x_c = never();                        // one cell per let read across arms
+  catch(e) { pc <- `Idle; e? };             // the machine's handler + abort action
+  let go = filter(<trigger>, |x| x ~ idle); // busy-drop
+  pc <- go ~ `S0;
   select pc {
     `Idle => never(),
-    `A1 => <arm 1>,
-    ...
-  }
+    `S0 => <arm 0>,
+    `S1 => <arm 1>,
+    ..
+  };
+  r
 }
 ```
 
-The cells need no annotations: the Bind ⊥-seed rule (2026-09-03)
-types an unannotated `let x = never()` from its writers. The busy gate
-is `filter`, not `t ~ select pc { .. }`: `~` holds a trigger's debt
+One arm per statement; labels are allocated as statements are lowered
+and the pc type is the set of every label. The cells need no
+annotations: an unannotated `let x = never()` takes its type from its
+writers, and a `let` annotation in the source passes to its cell (that
+is how a union-typed `try` value is spelled). The busy gate is
+`core::filter`, not `t ~ select pc { .. }`: `~` holds a trigger's debt
 until its RHS first materializes and then pays it, which is a queue of
-one, not a drop (§11 lists it as the `queue` policy).
+one, not a drop. The predicate must consume the trigger
+(`|x| x ~ idle`, not `|_| idle` — an unused parameter does not fire
+the lambda).
 
-### 7.2 The entry event
+### 6.2 The entry event
 
-Inside arm `Ak`, the step variable read as a free variable — `pc`
-itself — fires on every delivery into the arm: first entry, re-entry
-after another arm, and a same-arm re-delivery on a loop's back-edge.
-It is the one event every atom below samples on. It must be a free
-variable and not the arm's pattern bind, because a nested watch (§7.3)
-relies on the wake catch-up tracker re-raising it, and pattern binds
-are excluded from that tracker by design (`Bind::pattern`, 2026-09-02:
-a pattern bind is a facet of its arm's scrutinee delivery). Prototype
-2026-09-04 (`lang/seq.rs`): a free read of `pc` IS re-raised into the
-nested watch; a pattern bind of the outer scrutinee is not. No sibling
-`entered` variable. The busy predicate must consume the trigger
-(`filter(t, |x| x ~ idle)`, not `|_| idle` — an unused parameter does
-not fire the lambda).
+Inside an arm, the step variable read as a FREE variable — `pc`
+itself — fires on every delivery into the arm: first entry, re-entry,
+a same-arm re-delivery. It is the one event every atom below samples
+on. It must be a free read and not the arm's pattern bind, because a
+nested watch relies on wake catch-up re-raising it, and pattern binds
+are excluded from that tracker by design (a pattern bind is a facet of
+its arm's scrutinee delivery). The lowering never writes a constant
+RHS: a constant connect fires once per SELECTION and not on a same-arm
+re-match, so every transition (`pc <- pc ~ \`Sk`) and every carried
+write (`x_c <- pc ~ x`) is sampled on the entry event or on the step's
+completion, and both land in one batch so the next arm's entry samples
+the new values.
 
-### 7.3 The issue atom
+### 6.3 The issue atom
 
-A call with explicit inputs `x1..xn` lowers to this shape (names are
-unique per source call):
+A call with explicit arguments `x1..xn` lowers to one snapshot per
+entry:
 
 ```graphix
 {
@@ -519,134 +257,70 @@ unique per source call):
 ```
 
 The strict tuple includes the entry clock, so present standing inputs
-produce a fresh tuple on entry. `once` admits the first complete tuple
-and resets its admission flag on sleep. `any` merges simultaneous entry
-and readiness into one event. The entry event also reaches `~!` when an
-input is bottom: it clears the previous snapshot with fresh bottom,
-without banking a sample. Readiness supplies a new event when the
-missing inputs arrive. All arguments, including constants and labeled
-arguments, come from the same snapshot. Inline lambda arguments are
-always present and remain at the call site, sampled there with `pc ~!`
-on the same issue cycle. Moving them into the tuple would deprive their
-bodies of the call's contextual parameter types. If every argument is an
-inline lambda, the readiness value is `pc` alone rather than a tuple.
+produce a fresh tuple on entry; `~!` is the strict sample so an entry
+that finds an input bottom clears the previous snapshot without
+banking a trigger, and `once` supplies the readiness event when the
+missing inputs arrive (it resets its admission on sleep). All
+arguments, constants and labeled arguments included, come from one
+snapshot. Inline lambda arguments stay at the call site, sampled with
+`pc ~!` on the same cycle: moving them into the tuple would deprive
+their bodies of the call's contextual parameter types. A nullary call
+has nothing to re-issue and is a level read at entry.
 
-The presence select watches the snapshot, not live inputs. Once issued,
-a pending callee keeps running even if an input later becomes bottom;
-later input events cannot reissue it. Both `seq` and `seqq` use this
-lowering, including calls nested in expressions and `do`. Lambda
-bodies/defaults, reference contents, cleanup handlers, and `until`
-conditions keep their own reactive clocks. Nested sequences lower their
-own bodies. Calls without explicit arguments retain ordinary activation.
+The completion guard sits on the CALL inside the snapshot select, not
+outside it: the select fires at entry carrying the call's resident,
+and only the call's own fired production is this invocation's answer.
+The select watches the snapshot, not live inputs: once issued, a
+pending callee keeps running if an input later bottoms, and later
+input events cannot reissue it. Calls nested in expressions and in
+`do` lower the same way; lambda bodies and defaults, `until`
+conditions and reference contents keep their own reactive clocks.
 
-`~!` already tracks the current RHS tag as well as its held payload in
-both engines. A valid trigger sampling bottom produces fresh bottom;
-RHS recovery alone does not fire or pay a banked trigger. The direct-tag
-tests in `lib_tests/bottom.rs` pin this contract, including a forced-native
-consumer of the sampler's output. `lang/seq_calls.rs` pins issue cadence,
-delayed inputs, re-entry, and pending-result continuity.
+A call-free step and an `until` condition are `any(pc ~! e, e)`: fired
+at entry with the standing value, then tracked, so a level costs the
+completion rule nothing and a level that flips after entry is seen.
+A compound `e` is bound once so its nodes are not duplicated (a `?`
+inside it must raise once). A call-free `?` is therefore sampled on
+the entry event too, so a carried error raises at every entry rather
+than only when a catch-up fire happens to deliver it.
 
-### 7.4 Arms and chains
+### 6.4 Arms, `do`, `until`
 
-Steps chain inside an arm as an ordinary block: each step's inputs
-include the previous step's completion (its binding, or a hidden
-`let _k = e` for a bare expression step), so a watch sequences the
-effect after it and two pure lets in one arm are same-cycle dataflow
-with no cell in between. An arm ENDS after an async step (at its
-completion) and after every connect (its write lands next cycle, and a
-later step may read the written variable, directly or through a
-derivation the compiler cannot see, so the next step must start a
-cycle later). A same-cycle effect (`println`) does not end the arm.
+Each step ends an arm: its completion writes the carried cells and the
+transition. `do { … }` is several statements as one arm — lets inside,
+each statement's connect pc-sampled, each with its own completion
+boundary before its nested continuation; the statement list is capped
+at the parser's nesting limit because it lowers into nested selects.
+`until` is refused inside `do`, and refused where its value would be
+used: the last statement of a seq, or of a try or with body whose value
+is used, must be an expression.
 
-The transition is `pc <- done ~ `A(k+1)`, `done` being the arm's last
-completion; the cells of every let a later arm reads are written in
-the same cycle (`x_c <- x`), so both land in one batch and the next
-arm's entry samples the new values (`Sample::update` updates its
-argument before it samples).
-
-### 7.5 Branches
-
-A select step is an arm boundary: the scrutinee is the arm's last
-step; its transition writes the FIRST arm-label of the chosen
-alternative (`pc <- v ~ select v { pat1 => `B1, pat2 => `C1 }`, with
-the pattern binds re-established in the alternative's first arm from a
-cell). Each alternative's last arm transitions to the join label.
-
-### 7.6 Loops
-
-A label is an arm; the back-edge is a `pc` write of the label; a
-same-arm back-edge (a one-arm body) is a same-value write, which
-delivers like any write (`set_var` pushes unconditionally), so the
-entry event fires and the body issues again. `break v` writes the
-loop's cell and the after-label; `continue` writes the label. The
-lowering never writes a constant RHS: a constant connect fires once
-per SELECTION and not on a same-arm re-match (the select chapter's
-"Writing From an Arm"), so every transition is sampled on the entry
-event or on the step's completion.
-
-### 7.7 What sleep does for free
+### 6.5 What sleep does for free
 
 A passed arm sleeps, and sleep is pause: a timer step's pending timer
 is cancelled (`Timer::sleep` unrefs it), a `sys::net` level effect
-tears down, a process spawn is not cancelled (`kill_on_drop` is on
-drop). §8 states what this does and does not give.
+inside it tears down, a process spawn is not cancelled (`kill_on_drop`
+is on drop). There is no cancellation beyond that: a retrigger cannot
+stop an in-flight step, and a step that never completes stalls the run
+exactly as a hand-written machine does. Busy-drop is the default
+because a restart would deliver a stale production into a fresh run.
 
-### 7.8 Errors
+## 7. Errors
 
-`catch` is refused anywhere in a seq body (§5; the reasons are R7 and
-§7.9). Two forms were tried and withdrawn: a seq-toplevel `catch` as
-cleanup (its rethrow was delivered twice) and an ordinary `catch`
-inside `do` (a swallow wedged the machine: the failed statement never
-produces, and the completion guard keyed on the user's handler never
-released). Cleanup wraps the seq; recovery and
-cleanup-then-abort are `try … with` (§7.9).
+### 7.1 Why a branch, not a `catch`
 
-The lowered machine has one handler, outermost, whose body is the
-rethrow. Its separate abort action resets the PC once all the run's
-errors have been delivered (and returns one queue credit for `seqq`).
-Every sequence installs this handler, including sequences whose errors
-arise only through calls. The generated rethrow forwards the inferred
-error type; a nonthrowing sequence does not acquire a throws type.
+A `catch` is an install: it can observe an error, but it cannot
+produce the value the next step waits for, and it cannot say "the
+rest of the block does not run". Inside a sequence it can therefore
+only rethrow or stall. Both spellings were built and withdrawn: a
+seq-toplevel `catch` as cleanup delivered its rethrown error twice,
+and an ordinary `catch` inside `do` wedged the machine on a swallow
+(the failed statement never produces, so the completion guard keyed
+on the user's handler never released). Eric: "we're trying to adapt
+an event monitor (`catch`) to something that should be control flow."
+A sequence has a program counter, so its error handling is a branch.
 
-Each step value, connect RHS, and `until` condition passes through a
-completion guard before its continuation, and each issued call carries
-its own. Each statement within `do`
-has the same boundary. A guard records its handler's error generation
-on activation and rejects completion if that generation changes; it
-also holds bottom until the first fired production after activation
-(R3's re-entry rule), then passes everything so a `do`'s continuation
-keeps routing. Raises
-advance the generation immediately, before deferred delivery or cleanup.
-Failure stays latched until the guard sleeps. Thus no success transition,
-carried value, or block output is queued for a failed step; the handler's
-reset does not compete with a queued advance. See
-[seq_error_guards.md](seq_error_guards.md) for the runtime and JIT boundary.
-
-### 7.9 `try … with`
-
-Ruled 2026-09-07 (Eric): "we're trying to adapt an event monitor
-(`catch`) to something that should be control flow." The record is
-[seq_review_2026-09-06.md](seq_review_2026-09-06.md) R2 and R8: a
-seq-level `catch` as cleanup delivered a rethrown error twice, and the
-replacement, an ordinary `catch` inside `do`, wedged the machine on a
-swallow. Both are the same mismatch. A `catch` is an install: it can
-observe an error, but it cannot produce the value the next step waits
-for, and it cannot say "the rest of the block does not run". Inside a
-sequence it can therefore only rethrow or stall. A sequence has a
-program counter, so its error handling is a branch:
-
-```
-try { stmt* [expr] } with(e[: T]) { stmt* [expr] }
-```
-
-The statement's value is the try body's last expression, or, if the
-body raised, the with body's. `try`/`with` are already reserved words;
-`try` leads, so there is no clash with `{s with ..}`. Seq level only:
-`try` inside `do` is refused, like `until`. `catch` is refused anywhere
-in a seq body — as a statement, inside `do`, or nested in a step's
-expression; a lambda literal's body is its own dynamic scope, not part
-of the sequence, and is exempt. No `finally`: success cleanup is the next
-statement, failure cleanup is the with body.
+### 7.2 `try … with`
 
 ```graphix
 seq req {
@@ -663,274 +337,160 @@ seq req {
 }
 ```
 
-`code` is `[i64, null]` from the try body or `-1` from the with body;
-`report` runs either way. Cleanup-then-abort is `with(e) { cleanup; e? }`:
-the `?` in the with body reaches the enclosing `try`, else the machine,
-which resets and rethrows to the wrapper. There is no double delivery,
-because the `try` consumed the original.
+An error raised anywhere in the try body — a `?` in a step, a callee's
+throw, a fused `?` — transfers control to the with body's first step
+with `e` bound to the FIRST error of the failure; the with body's last
+step continues to the statement after the `try`. An error in the with
+body goes to the enclosing `try`, else to the machine (abort, reset,
+rethrow). Cleanup-then-abort is `with(e) { cleanup; e? }`; there is no
+double delivery because the try consumed the original. No `finally`:
+success cleanup is the next statement, failure cleanup is the with
+body. `with(_)` is accepted.
 
-**Why a handler, not a syntactic match on `?`.** Errors reach a region
-through the DYNAMIC scope, not the text. A callee's `?` resolves at its
-call site's handler, so `try { f(x) } with(e) { .. }` where `f` throws
-internally has no `?` in the try body at all, and a fused `?` raises
-through the same `ErrorHandler` as the interpreter's (`QopSite`, the
-kernel's delivery drain). The try body must therefore install a real
-`Catch` node whose dynamic scope covers exactly the try body's arms.
-The same fact is why the machine installs its handler unconditionally
-(§7.8, the `expr_may_throw` finding).
+The statement's value is the union of the two bodies' last values; a
+with body ending in `e?` has an uninhabited residual and types Bottom,
+so the union is the try body's type. `e` is typed as a `catch` bind is
+— the union of the try body's throws, as `Error<ErrChain<..>>` — and
+`with(e: T)` follows `catch(e: T)`'s rule: `T` must cover that union.
+A `let` inside either body is scoped to that body; `e` to the with
+body. Seq level only: `try` inside `do` is refused, like `until`.
 
-**R11 — `try … with` is an error-triggered branch.** The try body's
-statements are steps, and so are the with body's. An error raised in
-the try body at any depth — a `?` in a step, a callee's throw, a fused
-`?` — transfers control to the with body's first step with `e` bound to
-the first error of the failure. The with body's last step continues to
-the statement after the `try`. An error raised in the with body goes to
-the enclosing `try`, else to the machine (abort, reset, rethrow). A
-`let` inside either body is scoped to that body; `e` is scoped to the
-with body. The statement's type is the union of the two bodies' last
-values; a with body that ends in `e?` is bottom-typed, so the union is
-the try body's type. `e` is typed as a `catch` bind is — the union of
-the try body's throws, as `Error<ErrChain<..>>` — and `with(e: T)` is
-`catch(e: T)`'s ascription rule: `T` must cover that union.
+**Why a handler underneath, not a syntactic match on `?`.** Errors
+reach a region through the DYNAMIC scope, not the text. A callee's `?`
+resolves at its call site's handler, so `try { f(x) } with(e) { .. }`
+where `f` throws internally has no `?` in the try body at all, and a
+fused `?` raises through the same `ErrorHandler` as the interpreter's.
+The try body must install a real `Catch` node whose dynamic scope
+covers exactly its arms. The same fact is why the machine installs its
+own handler unconditionally: syntactic inspection cannot establish
+whether a call throws.
 
-**The lowering.** A try is a branch (§7.5) whose edge is an error
-instead of a value. Try-body arms `T1..Tm` and with-body arms `W1..Wn`
-are ordinary arms of the one select; both tails write the statement's
-cell (when the try is a `let` or the block's last expression) and
-transition to the join label `J`, the statement after. Each try-body
-arm carries a generated handler whose action is a JUMP. For the example
-above, one arm per statement:
+### 7.3 The lowering of `try`
 
-```graphix
-{
-  let pc = `Idle;            // [`Idle, `A1, `T1, `T2, `T3, `W1, `W2, `J1]
-  let cmd_c = never(); let child_c = never(); let status_c = never();
-  let code_c = never(); let e_c = never();
-  ...
-  catch(e) { pc <- `Idle; e? };                       // the machine's handler
-  select pc {
-    `Idle => never(),
-    `A1 => { <issue escalate_command>; cmd_c <- cmd; pc <- cmd ~ `T1 },
-    `T1 => {
-      catch(e) e_c <- once(e);                        // abort action: pc <- `W1
-      <issue spawn(cmd_c)>; child_c <- child; pc <- child ~ `T2
-    },
-    `T2 => {
-      catch(e) e_c <- once(e);                        // abort action: pc <- `W1
-      <issue wait(child_c.proc)>; status_c <- status; pc <- status ~ `T3
-    },
-    `T3 => {
-      catch(e) e_c <- once(e);                        // abort action: pc <- `W1
-      code_c <- pc ~ status_c.code; pc <- pc ~ `J1
-    },
-    `W1 => { toast <- pc ~ failed(e_c); pc <- pc ~ `W2 },
-    `W2 => { code_c <- pc ~ -1; pc <- pc ~ `J1 },
-    `J1 => { <issue report(code_c)>; r <- ..; pc <- .. ~ `Idle }
-  }
-}
-```
-
-The per-arm handler is the machine's `Catch` with a different abort
-action: the `seq_abort` slot already runs ONCE, after the failed step's
-errors have all been delivered (`received == generation` and no nested
-errors outstanding), under a forced init view so its constant label
-fires. Only the label changes: `` `W1 `` instead of `` `Idle ``. The
-capture is the `Catch` node's own (`CatchExpr::seq_capture`, the cell's
-name): at runtime it writes the first delivery of each failure (the
-delivery that flips `pending`) to the cell, and at typecheck it unions
-its bind's inferred throws into the cell's type — after its siblings,
-like every catch, so the union is exact and an arm that cannot throw
-contributes ⊥. (A handler-side write `e_c <- once(e)` was tried first
-and failed twice: the connect aliased the cell to the first arm's
-frozen bind cell, so a second arm's different error type — or a ⊥
-arm — was refused, and `once`'s return cell is unresolved when the
-with body typechecks.) Nothing is rethrown: the try consumed the error.
-
-Two more facts the build settled. A call-free `?` in a step is
-sampled on the entry event (`Qop(pc ~! x)`, R2 applied to `?`): the
-with body's `e?` reads a cell, and a stale error raised only when a
-catch-up fire happened to deliver it (a `println("[e.0]")` step before
-it consumed the fire and the rethrow never happened). And a `?` whose
-residual is uninhabited types Bottom rather than the empty union, so
-the continuation select absorbs it. The value cell is a plain carried
-cell: the try body's tail (lowered first) types it and the with body's
-value must fit; an annotated `let` passes its annotation to the cell,
-which is how a union is spelled.
-
-Three consequences of this shape:
-
-- **The guard is right by construction.** A step's completion guard
-  keys on the nearest handler (`SeqGuard::compile`); in a try-body arm
-  that is the jump handler, whose generation advances at the raise, so
-  the guard latches and no success transition, carried write or result
-  is queued for the failed step (§7.8's rule) — and unlike a user
-  `catch`, the nearest handler always LEAVES the region, so the latch is
-  never a wedge. R8's nearest-vs-machine question does not arise.
-- **Duplication is free.** The handler is per arm, but it is generated
-  and it is only a capture and a jump; the objection to duplicating a
-  mid-block `catch` was about user code and its effects. One `Catch`
-  node per try-body arm, updated per cycle as a phantom — the cost of a
-  try body that never fails.
-- **Sleep does the cleanup it always does.** After the jump the failed
-  arm sleeps: its pending timer is cancelled, a level effect inside it
-  tears down (§7.7). The with body then runs as ordinary steps.
+A try is a branch whose edge is an error instead of a value. Try-body
+arms and with-body arms are ordinary arms of the one select; both
+tails write the statement's cell and transition to the join label.
+Each try-body arm carries a generated `Catch` whose handler body is
+`never()` and whose `seq_abort` action is a JUMP (`pc <- \`W0` instead
+of the machine's `pc <- \`Idle`); its `seq_capture` names the `e`
+cell. At runtime the capture writes the first delivery of each failure
+to the cell; at typecheck it unions its bind's inferred throws into the
+cell's type after its siblings, so the union is exact and an arm that
+cannot throw contributes ⊥. (A handler-side write `e_c <- once(e)` was
+tried first and failed: the connect aliased the cell to the first
+arm's frozen bind cell, so a second arm's different error type was
+refused, and `once`'s return cell is unresolved when the with body
+typechecks.)
 
 Nesting composes by arm ownership: an arm carries the jump handler of
 the innermost `try` whose BODY contains its statement; a with-body arm
-therefore carries the enclosing try's handler, if any, and none
-otherwise, so an error in a with body reaches the enclosing try or the
-machine. A `try` inside a future `select`/loop body is the same: labels
-compose, and the join is the next statement of the enclosing body.
+carries the enclosing try's handler if any and none otherwise. The
+handler is per arm but it is only a capture and a jump — one phantom
+`Catch` node per try-body arm is the cost of a try body that never
+fails. After the jump the failed arm sleeps and gets sleep's cleanup.
 
-Multiple errors from one step (two `?` in one block both raise in the
-same cycle): the jump waits for the drain exactly as the machine's
-reset does, `e` is the first, the rest are consumed. This is the one
-place the construct differs from an exception system, and it is the
-reactive fact underneath: both `?` evaluated.
+### 7.4 Completion guards and the handler ledger
 
-`seqq`: a taken with branch is not an abort — the run continues and
-returns its credit at completion as usual; an abort from the with body
-is the machine's abort.
+`seq` requires two facts before accepting a step: its value fired after
+entry, and no error has escaped to the step's nearest handler. An
+ordinary reactive expression can raise an error and still produce a
+value; that value must not advance a failed sequence.
 
-Refused: `try` outside a seq; `try` inside `do`; `catch` anywhere in a
-seq body (message names `try … with` and the wrapper); an empty try
-body; `with` without `try`; `until` inside either body follows the
-existing rule (a seq statement, legal in both bodies since both are
-step lists).
+Each installed handler owns an error-generation counter
+(`ErrorHandler::generation`) and a count of errors pending in
+descendant handlers (`has_nested_errors`). A raise advances the
+generation and increments the pending count along the dynamic parent
+chain BEFORE delivery — the interpreter marks it before
+`deliver_error`, a compiled `?` before appending to the kernel's
+delivery queue — so frame outboxes and cross-top scheduling can delay
+the error value reaching the catch but never the guard observing the
+raise. Processing a catch delivery decrements the pending count; a
+rethrow raises its new delivery before acknowledging the original, so
+the sequence never sees a false gap while errors move outward. A
+nested ordinary catch inside a step can consume its own error without
+aborting the sequence.
 
-`with(_)` is accepted when the handler does not need the error; the
-parentheses stay.
+The lowering wraps each step expression, let initializer, connect RHS
+and `until` condition in a compiler-only `SeqGuard` (`node/error.rs`),
+and each issued call inside its snapshot select in another. The guard
+records its handler's generation on activation, holds bottom until the
+first FIRED production after activation, then passes every production
+(a `do`'s continuation must keep routing on stale cycles). A
+generation change produces bottom and latches failure until sleep; the
+failed child keeps updating only while nested catches still have
+pending errors to drain, its output suppressed. So a failed step cannot
+schedule the next pc, write its carried cells, issue a generated
+connect or publish the block result, and the handler's reset never
+competes with a queued advance. In a try-body arm the nearest handler
+is the jump handler, whose generation advances at the raise, and
+unlike a user `catch` it always LEAVES the region, so the latch is
+never a wedge. The guard is a fusion boundary; its child fuses
+normally, and there is no rollback of effects the child already
+performed.
 
-**Pins** (`lang/seq_try.rs`, both engines, `seq` and `seqq`):
+The machine's handler body is a compiler-only `Rethrow` over the
+existing `?` node: it forwards the catch bind's inferred error type
+without adding another `ErrChain`, and a sequence that throws nothing
+leaves that input bottom — it neither acquires a throws type nor
+raises an unhandled-error warning.
 
-- `recovers_value` — the with body supplies the value, the next
-  statement runs, the machine is idle for the next request.
-- `callee_throw` — the try body has no `?`; `bad` throws internally
-  (Eric's question: this is why it is a handler).
-- `cleanup_rethrow` — `with(e) { cleanup; e? }`: cleanup once, the
-  wrapper sees the error once, the machine resets, the next request
-  runs (R2's witness in its final spelling), with and without reading
-  `e` in the cleanup step.
-- `nested` — inner with rethrows to the outer with; outer recovers.
-- `multiple_errors` — three `?` in one step: with runs once, `e` is
-  the first, the wrapper sees nothing.
-- `async_step` — the failing step follows an async one.
-- `value_forms` — a let before the try read in the with body; the
-  connect form with `with(_)`; a bare try mid-sequence; a bare try as
-  the value.
-- `lambda_catch_is_ordinary` — a lambda literal inside a seq body may
-  carry its own `catch`, nested lambdas included.
-- `seqq_credit` — a recovered request releases the next at completion,
-  an aborting with body at the reset.
-- `refusals` — `try` in `do` (bare and as a let value), `catch` as a
-  statement, in `do` and in a nested block, the R8 witness, `try` outside a seq and nested in an expression, a
-  try-body let read after the try, `e` read after the with, a let
-  annotation the bodies do not fit, a `with(e: T)` that does not cover
-  the body's throws.
-- `expr/parser/test.rs` `try_with_parses` — round trips, empty bodies
-  refused, `try` refused as a name.
-- `lang/seq_errors.rs` — every former do-catch fixture in the try
-  spelling; `error_payloads` destructures the payload at both handlers
-  (R9).
+**Multiple errors from one step** (two `?` in one block both raise in
+the same cycle): the rethrow runs for every error that reaches the
+machine's handler, and the abort action runs ONCE, after the failed
+step's errors have all been delivered — the catch counts fresh
+deliveries (standing values and activation replay are not deliveries),
+marks an abort pending on the first, and fires `seq_abort` under a
+forced init view when the received count matches the handler's
+generation and no nested errors are outstanding. The counters span the
+handler's lifetime, so sleeping does not turn old deliveries into a
+fresh abort. For `try`, `e` is the first error and the rest are
+consumed. This is the one place the construct differs from an
+exception system, and it is the reactive fact underneath: both `?`
+evaluated.
 
-Not pinned: a `?` inside a fused region of a try body (the guard is a
-fusion boundary and the `?` raises through the same handler either
-way; the jit-mode runs of every fixture exercise whatever fuses).
+## 8. `seqq`: the queued form
 
-## 8. Costs and limits
+`seqq [trigger] { steps }` is the ordinary machine behind one FIFO
+queue; there is no separate evaluator. Requests are dropped by `seq`
+while a run is busy; `seqq` queues them, each with a snapshot of the
+body's captured inputs taken at enqueue time rather than at step entry.
 
-- **Cycles.** One per async completion, one per connect, one per
-  back-edge. A cycle is well under a millisecond in release (a text
-  key is 0.17ms end to end at 5.4k lines), so a six-step ceremony adds
-  about a millisecond to work that takes seconds.
-  A taken with branch (§7.9) costs the failed step's drain (one cycle
-  per extra error raised by that step) plus the jump.
-- **No cancellation.** A retrigger cannot cancel an in-flight step
-  beyond what sleep does (§7.7); the busy policy is the default because
-  restart would deliver a stale production into a fresh run. A step
-  that never completes (a watch on a level that never flips, an
-  operation that never answers) stalls the run, exactly as a
-  hand-written machine stalls today. A `timeout` policy is the honest
-  fix and is open (§11).
-- **No within-cycle iteration.** A loop whose body is all same-cycle
-  steps runs one iteration per cycle: the counter idiom, observable and
-  interruptible. Collapsing it into a within-cycle loop is possible
-  and is the sync subset arriving through the back door; not proposed.
-- **Levels outside** (R9). The compiler cannot tell a level effect from
-  a one-shot; the book has to say it, and `tui::suspend` is the worked
-  example.
-- **Fusion** is untouched (R10).
+The preamble (`desugar_queued`) identifies the body's free reads by a
+scoped rewrite over the current environment — nested binds, patterns
+and lambda parameters respected, qualified names included, trait
+method dispatchers left as static call targets — and projects them
+out: every trigger samples ONE tuple (the request plus its captures),
+never separate queues of independently updating captures. Each capture
+is `hold`-latched on activation so a standing input is present for the
+first request; before all captures have produced, the tuple is absent
+and the sample accumulates request debt, so the first complete tuple
+can satisfy several pending requests with the same snapshot — ordinary
+sample behaviour, deliberately inherited; exact arrival-time snapshots
+require initialized inputs. The body reads its captures as tuple
+projections of the dequeued request. `until` conditions, address-taking
+and variables the body itself writes stay LIVE (read-modify-write
+state must see its own writes across requests); direct write targets
+are never redirected into a snapshot, and a dereferenced write uses
+the queued reference handle.
 
-## 9. Typing and diagnostics
+The queue is `core::queue` clocked by a credit variable: one initial
+credit starts the first request; each block output returns one; an
+abort returns one after all the run's errors have reached the handler
+and been rethrown (multiple errors cannot release extra requests, and
+the captures stay pinned throughout delivery). Neither a standing
+output nor an intermediate step releases a request. The credit
+variable is separate from the activation latch, so sleep and wake
+cannot suppress the initial credit by preserving a connect target's
+old value. A taken `with` branch is not an abort: the run continues
+and returns its credit at completion; an abort from the with body is
+the machine's abort.
 
-The step variable's type is a generated variant; cells are seeded
-cells (Bind ⊥-seed); `break` values unify with the loop's binding; the
-block's type is its last expression's. Every lowered node carries its
-source statement's position, so a type error inside a step reads like
-the same error in a plain block. A statement that is neither an
-effect nor a derivation of anything (a bare constant) is a warning.
-The desugared program prints (`--expand`); the guards are the one
-thing the print loses, so re-parsing it gives the machine without its
-error boundaries. The parser/printer round trip covers the surface
-forms (`until`, `do`, `try … with` are generated inside seq bodies).
+## 9. Costs
 
-## 10. Plan
-
-0. **The go/no-go, before any parser work.** DONE 2026-09-04. Atoms
-   pinned in `lang/seq.rs` (both engines): free `pc` read wakes a
-   nested watch; pattern bind does not; presence select issues on a
-   second run; a bare `pc ~ x` issues nothing even on the first wait
-   (`never()` is a materialized bottom); busy-drop with `|x| x ~ idle`;
-   same-arm re-entry via a sampled write; `until` a level that flips
-   after entry. The privileged handoff in `local.gx` is the §7 machine
-   (levels hoisted: `tui::suspend(suspended)` lives beside the select,
-   not in a step). The machine is longer than the `~` chain it
-   replaced — it does not save typing. The keyword earns its keep only
-   as the surface in §2. Parser is unblocked.
-1. Parser + AST: DONE (straight-line). `ExprKind::Seq` / `Until`;
-   `seq`/`until` reserved; `seq(i, j)` renamed `range`; printer;
-   tree-sitter `seq_block`. No `Stmt` enum — body is `[Expr]`. Proptest
-   generator not yet (Until is not a top-level expr).
-2. The desugar (`expr/seq.rs`): DONE for lets, connects, expression
-   steps, `until`, `do`, `?` abort. One arm per step. A seq-toplevel
-   `catch` or `{ ... }` is refused; `catch` inside `do` is still an
-   ordinary install in the tree (to be refused with item 6).
-   `--expand` built 2026-09-09 (review R7).
-3. Pins: atoms (go/no-go) plus surface `seq_value` / `seq_let_then_use`
-   / `seq_trigger_and_until` / `seq_busy_drops` / `seq_qop_aborts`.
-   Branch/loop pins wait on if/loops.
-4. Port: privileged handoff in `local.gx` is surface `seq`. Other
-   ceremonies still chains.
-5. Book: a chapter beside `select`, with R9 and the counter-idiom
-   warning.
-6. `try … with` (§7.9, R11): DONE 2026-09-07 — parser + AST
-   (`ExprKind::TryWith`; printer; tree-sitter `try_with`), the desugar
-   (`Machine`: label allocator, `Sink` tail writes, `lower_try` with
-   the per-arm jump `Catch` and its `seq_capture`), `catch` refused
-   anywhere in a seq body, `try` refused in `do`, review R9 fixed
-   (`fix_echain_typ` recognizes the expanded chain). Pins:
-   `lang/seq_try.rs`; `lang/seq_errors.rs` rewritten to the try
-   spelling. Not yet: the port's toast ceremonies.
-
-## 11. Open questions
-
-- **The keyword** is `seq` (Eric, 2026-09-03: "that's what it actually
-  is"; `do` was the draft's name and collides with the block AST's
-  `ExprKind::Do`). The integer-sequence builtin `seq(i, j)` becomes
-  `range(i, j)` — about ten sites: the fuzz generator, three findings
-  fixtures, one example, one test, the embedding chapter — and `seq`
-  joins the reserved words. Nothing else in the tree uses the name.
-- **`if` generally.** If `if` becomes bool sugar over select inside seq
-  blocks it is hard to justify refusing it outside them. Decide once.
-- **Retrigger policies.** `seq` drops requests while busy; `seqq`
-  queues captured request tuples ([seqq.md](seqq.md)). `restart` needs the
-  stale-production guard (a run generation in the step variable) and a
-  cancellation story. `timeout(d)` aborts a stalled run through the
-  error path.
-- **Nested `seq`** as a statement (a sub-machine triggered by the
-  entry) — falls out of R3 and R8 if the inner block's trigger is the
-  outer entry, but a lambda call is the same thing; v2.
-- **`until`** as sugar or as a documented select spelling.
-- **The trigger snapshot** (R1's last sentence): needed, or is the
-  one-cycle race between the trigger's delivery and the first arm's
-  entry acceptable?
+One cycle per async completion and per connect; a cycle is well under
+a millisecond in release (a text key is 0.17ms end to end at 5.4k
+lines), so a six-step ceremony adds about a millisecond to work that
+takes seconds. A taken with branch costs the failed step's drain (one
+cycle per extra error that step raised) plus the jump. The machine is
+longer than the `~` chain it replaces — it does not save typing; the
+keyword earns its keep as the surface in §2.

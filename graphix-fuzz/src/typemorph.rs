@@ -1,4 +1,4 @@
-//! Metamorphic typecheck probes (`design/typecheck_fuzzing.md` P1):
+//! Metamorphic typecheck probes (`design/graphix_fuzz.md`, typemorph):
 //! take a program the checker ACCEPTS, apply an acceptance-preserving
 //! transform, and check acceptance again — a flip is a typechecker
 //! finding on the plane the differential oracle cannot see (a wrong

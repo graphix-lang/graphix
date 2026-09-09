@@ -92,7 +92,7 @@ const _: () = {
 // ─── TagValue: the tagged Value at the JIT↔runtime boundary ──────────
 //
 // Promoted to `crate::tval` when it became the interpreter's value
-// currency as well (design/replay_frames.md v2) — the tag byte is the
+// currency as well (design/dense_delivery.md) — the tag byte is the
 // same disc tag region the kernel uses, so the JIT↔interp seam is
 // representation-identity. Re-imported here for the helpers; the
 // layout checks above are what its transmutes rely on.

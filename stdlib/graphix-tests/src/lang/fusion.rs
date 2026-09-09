@@ -589,8 +589,7 @@ async fn call_arg_order_composite_then_scalar() -> Result<()> {
 /// the body, builds a shared kernel for it, and splices that kernel
 /// into each per-slot callback body at slot construction — fusing the
 /// calc while the Connect stays interpreted. Asserts both the value
-/// AND that the sync kernel JIT-ran (`inv > 0`). See
-/// design/impure_hof_fusion.md.
+/// AND that the sync kernel JIT-ran (`inv > 0`).
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_callback_splits() -> Result<()> {
@@ -659,7 +658,7 @@ async fn impure_hof_builtin_in_residue() -> Result<()> {
     Ok(())
 }
 
-// ─── clone_rebind equivalence matrix (design/clone_rebind_testing.md #1) ──
+// ─── clone_rebind equivalence matrix ──
 //
 // Each fixture forces a callback body through MapQ's per-slot CLONE path —
 // the `counter <- x` makes the callback async, so MapQ runs and the
@@ -1282,7 +1281,7 @@ async fn shadow_arm_binding_node_walk() -> Result<()> {
     }
 }
 
-// ─── env-accounting invariant (design/clone_rebind_testing.md #2) ─────
+// ─── env-accounting invariant ─────
 //
 // The clone↔delete symmetry nag: every per-slot grow mints bindings
 // (MapQ's `bind_variable("x")` + the cloned template's internal
@@ -1421,7 +1420,7 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     Ok(())
 }
 
-// ─── env-node-in-callback fixtures (design/clone_rebind_testing.md #3) ─
+// ─── env-node-in-callback fixtures ─
 //
 // The recompile-default `clone_rebind` (lib.rs) is the ONLY path that
 // `alias_variable`-pollutes the clone scope's name map (nag #1). It
@@ -1481,7 +1480,7 @@ async fn clone_byref_deref_capture() -> Result<()> {
     assert_i64s(&clone_map("let r = &k; *r + x").await?, &[4, 5, 6, 7])
 }
 
-// ─── proptest swarm (design/clone_rebind_testing.md #4) ───────────────
+// ─── proptest swarm ───────────────
 //
 // The ceiling test: generate random valid i64-valued callback bodies
 // over the element `x` and the capture `k`, and assert the CLONE path

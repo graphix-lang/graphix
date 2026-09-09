@@ -1,343 +1,195 @@
-# Per-kernel-instance state (the firing-exactness wire slot)
+# Per-kernel-instance state (the firing-exactness wire slots)
 
-Status (2026-09-01): the firing-exactness half is BUILT and current
-(prev-length words, first-call words, per-call-site blocks, per-slot
-chains, per-activation trees); the DynCall site-identity half this doc
-grew into (per-site inner Applies, identity words, the key-0 bucket)
-is DELETED under strict fusion — `design/strict_fusion.md` holds the
-record. Read the site-identity passages below as history.
-
-Status: BUILT (2026-07-03, same day as proposed). Motivated by the two
-firing residuals the trace oracle confirmed at fuzzer-v2 phase-2.3
-calibration; both are fixed and promoted to `findings/firing-jul2026/`
-(the trace-strength regress gate), with `run!` fixtures
-(`guarded_select_selection_memory`, `hof_const_body_prev_len`) pinning
-the count-observable forms. Two v1 scope notes vs the proposal below:
-claims are ROOT-BODY only (`BodyEmitter::allow_state` — a callee is
-reached from many call sites whose claims would alias; the per-callsite
-sub-buffer composition described below remains future work), and the
-select rule was corrected against the observed node-walk: the scrutinee
-term STAYS (a scrutinee fire re-emits even with a const arm — verified
-2026-07-03); selection memory refines only the GUARD term.
-
-**Extended 2026-07-15 with PER-SLOT state tables** (soak-jul14b fuzz
-divergence 000009; Eric's ruling: guarded selects can't de-fuse —
-"they're the only control flow in the language" — and the firing rule
-is "an arm fires once when it becomes selected, and if its body
-dependencies naturally cause it to fire"; his design sketch: MapQ
-keeps a slot per element, so the kernel needs "a similar structure to
-store the selected arm"). See the section at the end.
+Status: built 2026-07-03 (per-slot chains 2026-07-15, per-call-site
+blocks 2026-07-16, per-activation trees 2026-08); reduced to firing
+bookkeeping only by strict fusion 2026-09-01
+Pins: `lang/functions.rs` `hof_const_body_prev_len`,
+`lang/select.rs` `guarded_select_selection_memory`,
+`guarded_select_in_loop_selection_memory`,
+`lib_tests/lift.rs` `fused_recursion_sheds_unreached_blocks`,
+`findings/firing-jul2026/`, `findings/select-slot-memory-jul2026/`,
+`findings/recursive-activation-blocks-aug2026/`
 
 ## The problem
 
 A fused kernel is a pure function of its inputs — deliberately. But two
-node-walk firing rules are NOT functions of the current cycle's inputs;
+node-walk FIRING rules are not functions of the current cycle's inputs;
 they compare against the previous invocation:
 
-1. **HOF resize detection** (`firing_000007`). `MapQ::update` emits iff
-   `resized ∨ any slot pred emitted` (plus an unconditional emit when
-   the source fires while EMPTY). `resized` compares the source array's
-   length against the previous cycle's. The kernel's stateless
-   approximation — "source fired ∨ any slot body fired" — over-fires on
-   a same-length source event whose slot bodies are all quiet (a map
-   with a CONST callback body re-emits per source fire where the
-   node-walk emits once). Suppressing the source-fired term without
-   length memory would UNDER-fire instead: a shrink with an unchanged
-   prefix emits in the node-walk purely because of the resize — wrong
-   values, worse than duplicate fires.
+1. **HOF resize detection.** `MapQ::update` emits iff `resized ∨ any
+   slot fired` (plus an unconditional emit when the source fires while
+   EMPTY), and `resized` compares the source length against the
+   previous cycle's. A stateless approximation — "source fired ∨ any
+   slot body fired" — over-fires on a same-length source event whose
+   slot bodies are all quiet (a map with a constant callback body
+   re-emits per source fire where the node-walk emits once).
+   Suppressing the source-fired term without length memory would
+   UNDER-fire instead: a shrink with an unchanged prefix emits in the
+   node-walk purely because of the resize — wrong values, worse than
+   duplicate fires.
+2. **A callee's first-call init view.** The node-walk primes an
+   instance's first dispatch with a forced init view (`first_update`),
+   so a late first call — a fold callback whose loop had zero elements
+   until its source grew — still fires its constants and cached reads
+   once. One compiled callee body has no "first call" unless something
+   remembers it.
 
-2. **Guarded-select selection memory** (`firing_000005`). The node-walk
-   emits on a guard-only event only when the SELECTION (which arm is
-   taken) actually changes. The kernel's guard-feeder STALE fold fires
-   whenever a guard feeder fires — one duplicate emission per
-   guard-only cycle with an unchanged selection, and the init
-   off-by-one the finding pins (interp 4 / jit 5).
+Both need one word of memory that survives across kernel invocations
+and belongs to the kernel instance — never a value, never a selection.
+Under strict fusion (`strict_fusion.md`) this is the ONLY
+cross-invocation memory a kernel has: a select claims no word (a
+selection is derived fresh from the present scrutinee every
+invocation, organic firing), there is no replay cache, no DynCall site
+identity, no arm-lift re-seed. A kernel with `state_words == 0` and no
+site layout is bit-for-bit the pure function of its inputs.
 
-Both need one word of memory that survives across kernel invocations but
-belongs to the kernel instance. Each fused region gets fresh memory, just as
-each node instance owns its own state.
+## Zero means "no previous"
 
-## The design
+Every buffer described below is zero-initialized and every consumer
+stores `value + 1`, so a fresh buffer reads as "no previous
+observation" and init semantics fall out of the zeroing without
+touching the init flag:
 
-**One new leading wire slot.** The kernel ABI's cycle-context prefix
-(`kernel_abi::INIT_WIRE_SLOTS`, currently 1: the `event.init` flag)
-grows to 2: slot 1 carries `state: *mut u64` — a pointer to a small
-zero-initialized buffer owned by the caller, or null when the kernel
-claimed no state. Every kernel carries the slot (uniform ABI, same as
-the init flag); the pack sites and the wrapper→body forwarding already
-have a single source of truth to extend.
+- *prev-length word*: stores `len + 1`; `resized := word != len + 1`
+  (the first arrival counts as resized, which is also what makes
+  "source fires while empty" emit). The exact rule is `fires :=
+  resized ∨ any_slot_fired`, folded into the loop's STALE bit by
+  `SlotFlags` (`emit/scaffold.rs`). A TAINTED source skips the logical
+  resize — the node-walk saw no event — and the word is untouched.
+- *first-call word*: a cross-kernel call site forces the callee's init
+  flag when its word reads 0, records, and never again (the word is
+  shared across loop iterations at one site, exactly like the shared
+  instance). With no word available the callee sees the plain kernel
+  init flag.
 
-**Claiming words.** During emission, a site that needs memory claims
-the next index from a counter on the lower ctx and emits loads/stores
-at `state + 8*idx`. The final count lands in `KernelSig.state_words`.
-Claim sites are ordinary emission code — no new registry, no per-op
-vocabulary (this is a CONTEXT slot, not an IR).
+## The three identity coordinates
 
-**Ownership.** The spliced node (the kernel-callable's invocation site,
-where the slots are packed) allocates `Box<[u64]>` zeroed when
-`state_words > 0` and passes the pointer on every call. Every runtime Kernel
-owns its buffer; the immutable compiled artifact remains shared.
+The node-walk gives a HOF node an instance per region instance, per
+collection slot (an inner MapQ per outer slot), and per call site
+(every CallSite owns its own Apply). A prev-length word must have the
+same multiplicity or it aliases: two slots with different lengths
+sharing one word would thrash. The storage is one coordinate at a time,
+and a new emission context only has to say which coordinates it adds.
 
-**Zero means "no previous".** Every consumer stores `value + 1` so the
-zeroed initial state reads as "no previous observation", and init
-semantics fall out without touching the init flag:
+### Region instance: wire slot 1
 
-- *HOF prev-length word*: stores `len + 1`. `resized := word != len+1`
-  (so the first arrival — word 0 — counts as resized, which is also
-  what makes "source fires while EMPTY" emit). Exact firing rule:
-  `emit := resized ∨ any_slot_fired ∨ (source_fired ∧ len == 0)`.
-  The word updates on every kernel run that evaluates the HOF,
-  regardless of downstream taint — mirroring `MapQ`'s internal state,
-  which advances whether or not anything consumes the result.
-- *Select prev-arm word*: stores `arm_index + 1`. On a guard-only fire
-  (no scrutinee/arm-input fire), `emit := arm_index+1 != word`. The
-  first selection (word 0) always emits.
+The kernel ABI's leading cycle-context words (`CTX_WIRE_SLOTS`,
+`kernel_abi.rs`) carry in slot 1 `state: *mut u64`, a pointer to a
+zeroed `Box<[u64]>` owned by the runtime `Kernel` node (null when the
+kernel claimed none). A root-body emission site claims the next index
+from a counter (`BodyCx::claim_state_word`) and emits loads/stores at
+`state + 8*idx`; the final count is `KernelSig.state_words`. Claims are
+ordinary emission code — a context slot, not an IR. Only the region
+parent's ROOT body may claim: a callee is reached from arbitrarily many
+call sites whose claims would alias, and `claim_state_word` answers
+`None` there (and inside a scaffold loop, where one static word cannot
+hold per-slot memory). A caller that gets `None` MUST emit its
+stateless approximation.
 
-**What this is NOT.** Not a general mutable-state channel for user
-programs (`<-` remains the only cross-cycle mutation, via the lift),
-and not a second bottom/taint channel — the state words carry firing
-bookkeeping only, invisible to value semantics. A kernel with
-`state_words == 0` is bit-for-bit the pure function it is today.
+### Loop ordinal: per-slot chains behind one word
 
-## Ripple points
+A nested collection loop inside a scaffold loop is one HOF instance PER
+OUTER SLOT in the node-walk, so its prev-length word needs one word per
+ordinal. The table lives behind an ordinary claimed word: the enclosing
+loop's PREHEADER (which runs at `loop_depth == 0`, where a static claim
+is legal) claims one word per nested-loop site in its body and hands it
+to `graphix_slot_state_table(word, len, valid, own_levels, leaf)`. The
+word owns a boxed `Vec<u64>`, resized to the loop length with PREFIX
+RETENTION — shrink truncates, regrow re-creates fresh zeroed slots —
+the interpreted MapQ slot lifecycle. A tainted source skips the logical
+resize and grows only as an in-bounds guard.
 
-- `fusion/kernel_abi.rs`: `INIT_WIRE_SLOTS` 1→2 (rename or document
-  slot 1); `KernelSig.state_words`.
-- `fusion/kernel.rs`: pack site pushes the state pointer; the spliced
-  node owns the buffer.
-- `fusion/emit.rs`: wrapper→body forwarding of the new slot (the same
-  loops that forward the init flag); a `claim_state_word(cx) -> idx`
-  helper; the guarded-select consumer.
-- `fusion/scaffold.rs` + `stdlib/graphix-package-array`: `SlotFlags::
-  apply` grows the exact rule (needs the source len and fired bit —
-  both already in hand at the apply site).
-- Findings `firing_000005`/`firing_000007` flip to FIXED and promote
-  into `graphix-fuzz/findings/` (the trace-strength regress gate).
-- `run!` fixtures: const-body map over a reactive source (emit count),
-  shrink-with-unchanged-prefix (emit REQUIRED), guard-only unchanged
-  selection (quiet), guard-only changed selection (emits).
+The trick RECURSES for arbitrary nesting: a directory table's entry is
+itself an owning word for the next level. A site at depth D gets one
+static anchor word (`claim_state_word_loop_invariant`: a directory word
+is per-instance, its per-slot content lives in the heap structure), and
+each enclosing frame contributes one directory ensure sized by that
+frame's `len`, gated by that frame's source taint, indexed by that
+frame's current ordinal; the chain ends in a leaf table with one word
+per slot. Truncation at any level frees the dropped subtrees
+(`free_slot_chain`, shared with `Kernel::drop`); regrow re-creates
+fresh — ragged inner lengths for free. The chain is emitted at the
+nested preheader, once per enclosing iteration, so ensure calls follow
+the loop structure's natural cost. `BodyCx::open_slot_tables` pushes a
+`SlotTableFrame { depth, idx_var, tables }` (always, possibly empty);
+`slot_select_word(site)` answers `table + i*8` when the site is emitted
+at exactly the frame's depth; `close_slot_tables` pops after body
+emission. The claimed anchors are recorded on
+`WrappedKernel::slot_table_words` so `Kernel::drop` frees them;
+`sleep` never touches them (a slot chain is per-position semantic
+state and survives pause).
 
-## Testing
+### Call site: wire slot 2
 
-The trace oracle is the referee: both findings' raw shapes (no `count`
-instrumentation) must flip from ExtraFire divergence to agreement, the
-graphix-tests differential suite must stay green (the shrink under-fire
-hazard is a VALUE bug the `run!` fixtures would catch), and a
-reactive-generation soak (fuzzer-v2 phase 3) exercises the mechanism
-broadly once injection schedules land.
+One compiled callee body is shared across call sites where the
+node-walk instantiates per site. Slot 2 carries the per-call-site block
+pointer, uniform on every kernel signature:
 
-## Per-slot state tables (2026-07-15)
+- **The callee declares its layout.** A callee body claims from the
+  site channel: prev-length words at its root level take words directly
+  (`claim_site_word`), and its loop chains ANCHOR in the block
+  (`claim_site_anchor`). The count, anchors and the words rooting
+  per-activation trees are the kernel's `SiteLayout`, recorded at
+  definition. `to_define` is defined in REVERSE (deepest callees first,
+  parent last) so callers read their callees' layouts; a still-missing
+  layout IS the recursive back-edge discriminator and the call passes 0.
+- **The caller supplies the storage** (`emit_site_block`). At a root
+  call site: a contiguous run in the caller's own space — instance
+  words in a parent (the callee's anchors translate into the parent's
+  `slot_table_words`), site words in a callee (anchors translate into
+  ITS layout — the composition recurses through callee-of-callee). At
+  an in-loop call site: one block per slot coordinate, the leaf of an
+  owning chain over all open frames with `words` stride per slot — a
+  plain leaf when the callee has no anchors, else a `SiteLeaf`-described
+  block leaf (`graphix_slot_state_blocks`) whose in-block anchors the
+  resize helper and `free_slot_chain` walk recursively, so a callee with
+  a nested loop called from inside a loop frees exactly.
+- **Null-guards everywhere the base can be 0**: the wrapper packs 0 for
+  region parents, and recursive back-edges pass 0 (a fresh transient
+  activation in the node-walk — for a single-shot activation fresh
+  memory ≡ no memory). A consumer whose base is null branches to the
+  stateless approximation (`SelWord::Guarded`); a callee loop's chain
+  branches around its ensure calls.
 
-A guarded select inside a scaffold loop is one select PER SLOT in the
-node-walk (each MapQ/FoldQ slot's subgraph owns a Select instance with
-its own selection memory), so the static one-word claim is refused
-there and the guard term fell back to the unrefined feeder fold — one
-duplicate emission per guard-only cycle with an unchanged selection
-(soak-jul14b divergence 000009). The fix gives loop-body selects one
-word per slot without any ABI change:
+A region parent has no kernel caller, so the runtime `Kernel` supplies
+its own `site` block when the compiled body claimed site words.
 
-**The table lives BEHIND an ordinary claimed state word.** The loop
-emitters' PREHEADER runs at `loop_depth == 0`, where `claim_state_word`
-is legal — so the loop claims one static word per guarded-select site
-in its body and hands it to a new runtime helper,
-`graphix_slot_state_table(word, len, valid) -> *mut u64`. The word owns
-a boxed `Vec<u64>` (lazily created on first call); the helper resizes
-it to the loop length with PREFIX RETENTION — shrink truncates, regrow
-re-creates fresh zeroed slots — exactly the interpreted MapQ slot
-lifecycle, so retained slots keep their recorded selection and fresh
-slots read 0 ("no previous"). A TAINTED source skips the logical
-resize (the node-walk saw no event), growing only as an in-bounds
-guard — mirroring `SlotFlags::apply`'s prev-len word rule.
+### Activation: per-activation block trees
 
-**Wiring.** `guarded_select_sites(body)` (emit.rs) prewalks the loop's
-body tree for guarded-select `ExprId`s — the walk sees exactly the
-tree the loop emits inline (a nested collection HOF's callback body is
-behind its own lambda def, unreachable). Each collection op passes the
-sites into its scaffold emitter; the emitter's preheader calls
-`BodyCx::open_slot_tables` (claim + helper call per site, one
-`SlotTableFrame { depth, idx_var, tables }` pushed always — empty when
-claims are refused) and `close_slot_tables` pops after body emission.
-`emit_select_node`, on a refused static claim, consults the top frame
-via `BodyCx::slot_select_word(spec.id)`: an `ExprId` match AND
-`loop_depth == frame.depth` yields the address `table + i*8`, which
-the arm consumer (`emit_select_value_arm`) uses for the same
-compare-and-record it does at root level — including the selection-
-changed ARM INIT VIEW, so consts/seeds in a newly-selected arm
-re-deliver per slot.
+A self-call cannot use a statically carved block: activations at
+different depths are distinct instances with distinct histories, and a
+depth-indexed chain would alias them across cycles. Each self-call site
+owns a root word in the CALLER's block; `graphix_site_child_block(word,
+desc)` allocates the callee's block on first use (sized from the
+callee's `KernelSig::site_desc`, because a self-call's size is its own
+body's, unknown while that body is still emitting) and retains it —
+one `SelfBlock` per activation, self-similar since only self-calls take
+this path (mutual recursion de-fuses at the static call edge). Callee
+kernels define in topological order over the recorded call edges; a
+callee defined after its caller would run below a recursion with no
+interior memory.
 
-**Ownership.** The claimed words are recorded on
-`WrappedKernel::slot_table_words` (threaded like
-`replay_state_words`); the runtime `Kernel`'s `Drop` frees the boxed
-Vecs. Semantic state: `sleep`/`reset_replay` never touch them (same
-choice as the static select word).
+**Shrink = delete**, the JIT twin of the interp's activation delete
+(`recursive_activations.md` §2): each `Kernel` invocation bumps a
+generation and every reached activation block is stamped with it; after
+the run, if the reach count fell below the live tree size, the
+`state`/`site` `SelfBlock` trees are walked and every subtree not
+stamped current is freed, its source word nulled so `Kernel::drop`
+never double-frees. The walk is gated on the count (a stable or growing
+recursion pays only the counter) and written in safe Rust rather than
+emitted CLIF — the reclaim is transparent to the differential, so the
+pointer walk lives where ASAN can see it. Both tree walks
+(`free_self_block_tree` and the reclaim) are explicit worklists, per
+the stack discipline: they recurse one frame per activation otherwise,
+and depth is unbounded.
 
-**Arbitrary nesting depth (same day — Eric's review: "each loop that
-has a select in it needs its own set of slots").** The word-owns-a-Vec
-trick RECURSES: a directory table's entry is itself an owning word for
-the next level. A select at depth D gets one static ANCHOR word (a
-directory word is per-INSTANCE — its per-slot content lives in the
-heap structure — so `claim_state_word_loop_invariant`'s in-loop
-exemption applies), and its loop's preheader emits the chain: each
-enclosing frame contributes one directory ensure (sized by that
-frame's `len`, resize gated by that frame's source taint, indexed by
-that frame's current ordinal — the frame stack carries `len`/
-`src_disc`/`idx_var`), ending in the leaf table of selection words.
-`graphix_slot_state_table` takes `own_levels` (0 = leaf; k = entries
-own k−1-level subtrees): truncation at any level frees the dropped
-subtrees (`free_slot_chain`, shared with `Kernel::drop`, registration
-is `(word, own_levels)`), regrow re-creates fresh — the MapQ
-prefix-retention lifecycle applied per level, ragged inner lengths
-for free. The chain is emitted at the nested preheader, which runs
-once per enclosing iteration — ensure calls follow the loop
-structure's natural cost. The node-walk twin is the interpreted slot
-TREE (outer slot i owns an inner MapQ instance which owns per-slot
-selects) with u64s in place of subgraphs.
+## What this is not
 
-**Remaining residual: CALLEE bodies only** (`state_enabled == false` —
-a guarded select in a cross-kernel callee keeps the unrefined guard
-term: duplicate fire, never a wrong value). Fixing it is the
-per-callsite sub-buffer composition already noted above: the CALLER
-claims the anchor in its own space (static word, or an entry in its
-loop's slot chain) and passes the address through the cross-kernel
-ABI — an ABI touch the loop fix avoided, and the reason it's a
-separate change.
-
-**The arm-lift consumer stays static-only:** a lifted connect target's
-identity is per INSTANCE (state-word BindIds), so a per-slot word
-can't reproduce the re-seed; `has_arm_lift` in a loop still `Err`s the
-kernel (de-fuse), unchanged.
-
-Pinned by `run!` fixtures `guarded_select_in_loop_selection_memory`
-(guard-only unchanged selection is quiet), `guarded_select_per_slot_
-independence` (two slots with DIFFERENT stable selections stay quiet —
-a shared word would thrash), `guarded_select_slot_table_resize`
-(prefix retention + fresh-slot first-selection fire), the nested
-quartet `guarded_select_nested_loop_selection_memory` /
-`_nested_per_pair_independence` (per-(i,j) memory — flat sharing
-would thrash) / `_nested_ragged_resize` (directory grow + ragged
-inner lens) / `_triple_nested` (depth 3), and the promoted findings
-`findings/select-slot-memory-jul2026/` (02 is the nested shape).
-
-## Selection is semantic state in the interp too (ruled 2026-07-16)
-
-`Select::reset_replay` no longer clears `selected`. Eric's ruling: if
-a frame reset clears other state and re-evaluation derives a
-DIFFERENT selection, that's a selection change — fire (arm wake, init
-view); re-deriving the SAME selection is quiet. The old clear forced
-the full arm-wake path every frame pass, which was value-channel
-redelivery the frame discipline already provides (every pass runs
-under a forced init view with ALL external refs seeded — lambda.rs),
-and it re-seeded arm-local lifted targets on unchanged selections,
-contradicting the "fires once when it BECOMES selected" rule — and
-contradicting fused region kernels, whose selection words are
-semantic and survive `Kernel::reset_replay`. The firing half was
-already honest (the jul12a/jul12f trigger-derived tags); this aligns
-the wake/init-view half and dissolves the interp-vs-kernel frame
-seam.
-
-## Per-call-site state blocks (BUILT 2026-07-16 — the third identity coordinate)
-
-A select's node-walk instance identity has three coordinates: region
-instance (static word), loop ordinals (slot-table chains), and CALL
-SITES — the interp gives every CallSite its own Apply instance, hence
-its own select instances, but one compiled callee body is shared
-across call sites. As built:
-
-- **Wire slot 2** (`CTX_WIRE_SLOTS` 2→3): the per-call-site state
-  block pointer, uniform on every kernel signature. The wrapper packs
-  0 for region parents; `emit_lambda_call_node` passes the block
-  `emit_site_block` allocated from the CALLER's storage.
-- **The callee declares its layout.** A callee body (`site_enabled =
-  !allow_state`) claims from the site channel: selects at its root
-  level take words directly (`claim_site_word` → `SelWord::Guarded`),
-  and its loop-select chains ANCHOR in the block
-  (`claim_site_anchor`). The final count + anchor list is the
-  kernel's `SiteLayout`, recorded at definition — `to_define` is
-  defined in REVERSE (deepest callees first, parent last) so callers
-  read their callees' layouts; a still-missing layout IS the
-  recursive back-edge discriminator (self-calls, mutual cycles) and
-  the call passes 0.
-- **The caller supplies the storage.** Root call site: a contiguous
-  run in the caller's own space — instance words in a parent (the
-  callee's anchors translate into `slot_table_words`, so the existing
-  Drop frees its chains), site words in a callee (base null-guarded,
-  anchors translate into ITS layout — the recursion composes through
-  callee-of-callee). In-loop call site: one block per slot coordinate
-  — the leaf of an owning chain over ALL open frames with `words`
-  STRIDE per slot; a plain leaf when the callee has no anchors, else
-  a `SiteLeaf`-described block leaf (`graphix_slot_state_blocks`)
-  whose in-block anchors the resize helper and `free_slot_chain` walk
-  RECURSIVELY (`kernel_abi::SiteAnchor`/`SiteLeaf`; baked leaf
-  pointers live in the kernel cache's `_site_leaves` arena) — the
-  deep composition (callee-with-loop-select called from inside a
-  loop) frees exactly.
-- **Null-guards everywhere the base can be 0** (recursive back-edges:
-  fresh transient activation ≡ no memory for a single-shot
-  activation): a guarded select branches to the unrefined-guard/no-
-  init-view semantics; a callee loop's chain branches around the
-  ensure calls and hands its selects a 0 table.
-- **The tail emitter needed NOTHING**: tail-position arms terminate
-  individually and BOTH backends derive the loop-result tag from the
-  ENTRY (formal deliveries + captured inputs — lambda.rs / the kernel
-  return seam), which subsumes guard-feeder firing and selection
-  changes there; value-position selects inside recursive bodies go
-  through `emit_select_node` and pick up the site channel like any
-  callee select. Its arm-lift refusal stays (lift identity is per
-  instance).
-
-The identity algebra is CLOSED: any select in fused code is (region)
-× (loop-ordinal chain) × (call-site chain), each coordinate has its
-storage, and a new emission context must only say which coordinates
-it adds. The remaining select-ADJACENT item is arm-lifted connects in
-loops/callees — a fusion-coverage gap (they de-fuse; the node-walk is
-canonical and correct), not a firing residual. The shared first-call-
-ever word at in-loop call sites was AUDITED (late-created slot,
-const-bodied callee): traces agree — the resize firing path covers
-the new slot's delivery.
-
-## DynCall site identity (BUILT 2026-07-25 — the algebra applied to builtin instances)
-
-Soak jul23f (generate divergence_000000) surfaced the same identity
-question one layer down: a fused callee body is compiled ONCE, so an
-interior builtin call is one `graphix_dyncall` instruction → one
-`DynCallSlot` → one inner Apply shared by every logical call site,
-where the node-walk instantiates the callee body — interior builtin,
-`CachedArgs` and all — per callsite. Under the partial-args ruling
-(a taint-masked arg delivers ABSENCE and the cached slot rides its
-previous state) the ridden state could be ANOTHER site's history: the
-outer call of `{let f0 = |v| str::replace(#pat:.., #rep:.., v);
-f0(..bottom.. f0("xyz") ..)}` resurrected the inner call's "xyz".
-
-The fix reuses the select-identity channel wholesale:
-
-- Every DynCall emission site (`emit_dyncall_site_word`, emit/call.rs)
-  claims ONE identity word: region root → an instance state word
-  (redundant with the slot's own per-instance identity, but uniform);
-  callee root → a per-call-site block word (null-guarded, 0 on
-  recursive back-edges). `graphix_dyncall` carries the word's ADDRESS
-  as a 4th arg.
-- `dispatch_typed` lazily mints a nonzero id into a zero word
-  (global counter; the word's VALUE is the key, so freed/reused
-  storage reads 0 and mints fresh — the node-walk's fresh
-  per-position instance). `DynCallSlot.instances` keys a full
-  `SiteInstance` (Apply + lambda_ptr + fired) per id: cache AND any
-  builtin state get per-site identity. The eagerly pre-bound/
-  pre-inited Apply seeds the first mint.
-- Key 0 remains the shared legacy bucket, used by: scaffold-loop
-  sites (v1 — their per-slot semantics keep the documented init-mask
-  approximation from `design/collection_intrinsics.md`; a per-slot
-  identity chain via the slot-table machinery is the natural
-  follow-up and would also close the fold-acc-taint per-position
-  residual), recursive back-edges (null site block — cross-depth
-  rides within one recursion are a pre-existing residual), and
-  qop-deliver (stateless by construction).
-- `sleep`/`delete`/`refs` iterate the bucket AND all instances (the
-  C3 semantics). An id orphaned by a freed per-slot site block
-  lingers in `instances` until slot death — deferred (not leaked)
-  cleanup; the interp deletes at truncation. Documented v1 residual,
-  bounded by resize churn.
-
-Pinned by `dyncall_site_identity_state` (per-site builtin STATE:
-`mean` in a twice-called callee — shared would average both sites)
-and `findings/dyncall-site-identity-jul2026/` (the masked-absence
-cache ride).
+Not a mutable-state channel for user programs (`<-` is the only
+cross-cycle mutation, and a connect node-walks), not a second
+bottom/taint channel, and not selection memory. The words carry firing
+bookkeeping only, invisible to value semantics; `Kernel::reset_replay`
+is a no-op because there is nothing to reset. The former slot 3 (a
+derivation-changed bit) died with the organic-firing ruling — firing
+needs no recursion machinery — and the selection words, DynCall
+identity words and arm-lift re-seed died with strict fusion.
