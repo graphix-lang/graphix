@@ -92,6 +92,8 @@ source reference variable subsequently points somewhere else.
 ## Live state and waits
 
 `until ready` observes the live condition, rather than a queued copy of it.
+It has no value, so it cannot be the last statement where the value is used
+(the end of a `seq`, or of a `try` or `with` body bound by a `let`).
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 `count <- count + 1` operations can accumulate rather than overwrite one

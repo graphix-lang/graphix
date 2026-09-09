@@ -616,6 +616,13 @@ fn step_arm(
     let writes = || sink_writes(sink, pos, pc, result, vname, cells, visible);
     match &step.kind {
         ExprKind::Until(e) => {
+            if !sink.is_empty() {
+                return Err(anyhow!(
+                    "until has no value: the last statement of a seq, or of a try \
+                     or with body whose value is used, must be an expression"
+                )
+                .context(ErrorContext(step.clone())));
+            }
             let e = guard(entry_fire(rewrite(e, visible), pc));
             Ok(select(
                 pos,
@@ -803,11 +810,6 @@ fn lower_do_stmts_inner(
             "try is a seq statement, not a do statement; write it at the seq level"
         )
         .context(ErrorContext(head.clone()))),
-        ExprKind::SeqDo { body } => {
-            let mut flat: Vec<Expr> = body.iter().cloned().collect();
-            flat.extend(rest.iter().cloned());
-            lower_do_stmts(&flat, pc, next, sink, result, vname, visible, cells)
-        }
         ExprKind::Bind(b) => {
             let value = issue_expr(&b.value, visible, pc);
             let mut vis = visible.clone();
@@ -889,11 +891,7 @@ fn lambda_idle(pos: SourcePosition, idle: &str) -> Expr {
 }
 
 fn apply_filter(pos: SourcePosition, trig: Expr, pred: Expr) -> Expr {
-    ExprKind::Apply(ApplyExpr {
-        function: Arc::new(r#ref(pos, "filter")),
-        args: Arc::from(vec![(None, trig), (None, pred)]),
-    })
-    .to_expr(pos)
+    apply_core(pos, "filter", [(None, trig), (None, pred)])
 }
 
 fn simple_ref_name(e: &Expr) -> Option<ArcStr> {

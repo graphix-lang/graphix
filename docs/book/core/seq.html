@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-18175929.js";
+            window.path_to_searchindex_js = "../searchindex-3f404943.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -247,6 +247,8 @@ read inside that function.</p>
 source reference variable subsequently points somewhere else.</p>
 <h2 id="live-state-and-waits"><a class="header" href="#live-state-and-waits">Live state and waits</a></h2>
 <p><code>until ready</code> observes the live condition, rather than a queued copy of it.
+It has no value, so it cannot be the last statement where the value is used
+(the end of a <code>seq</code>, or of a <code>try</code> or <code>with</code> body bound by a <code>let</code>).
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 <code>count &lt;- count + 1</code> operations can accumulate rather than overwrite one

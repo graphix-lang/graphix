@@ -3,7 +3,7 @@
 
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
 // §7.2: a nested presence-watch samples a FREE read of `pc`. `pc`
@@ -579,4 +579,47 @@ async fn reentry_fired_only_interp() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn reentry_fired_only_jit() -> Result<()> {
     reentry_fired_only(false).await
+}
+
+// Review R3: the machine's generated calls name `core::` explicitly, so
+// a user binding called `filter` (or `once`, `hold`, `queue`) does not
+// capture them.
+const SEQ_SHADOWED_CORE_NAMES: &str = r#"
+{
+  let filter = 42;
+  let once = 1;
+  let out = 0;
+  seq { out <- once + filter };
+  select out { 0 => never(), n => n }
+}
+"#;
+
+run!(seq_shadowed_core_names, SEQ_SHADOWED_CORE_NAMES, |v: Result<&Value>| match v {
+    Ok(Value::I64(43)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Review R4: `until` has no value, so where the statement's value is
+// used it is refused instead of leaving the value permanently bottom.
+#[tokio::test(flavor = "current_thread")]
+async fn until_last_refused() -> Result<()> {
+    for src in [
+        "{ let go = true; seq go { let x = 1; until (x > 0) } }",
+        "{ let go = true; seq go { let y = try { until go } with(e) { 1 }; y } }",
+        "{ let go = true; seq go { let y = try { 1 } with(e) { until go }; y } }",
+    ] {
+        let msg = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => format!("{e:#}"),
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(msg.contains("until has no value"), "wrong refusal for {src}: {msg}");
+    }
+    // A bare try in the middle of a seq uses no value: until may end it.
+    let (v, _) = eval(
+        "{ let go = true; seq go { try { until go } with(e) { 1 }; 5 } }",
+        crate::TEST_REGISTER,
+    )
+    .await?;
+    assert_eq!(v, Value::I64(5));
+    Ok(())
 }
