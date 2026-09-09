@@ -488,3 +488,95 @@ async fn do_trailing_semicolon_interp() -> Result<()> {
 async fn do_trailing_semicolon_jit() -> Result<()> {
     do_trailing_semicolon(false).await
 }
+
+// R10 (design/seq_review_2026-09-06.md): a step completes on a FIRED
+// production after its entry, never on a standing value. A call is
+// re-issued at entry and its own fire is the answer; a level is fired
+// at entry as it stands (R2) and tracked if absent. Each fixture runs
+// three requests; a machine that accepts the previous run's resident
+// answers one behind.
+async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
+    use arcstr::format;
+
+    const CLOCK: &str = r#"
+        let step = 0;
+        step <- select step { n if n < 60 => n + 1, _ => never() };
+        let request = select step { 1 | 2 | 3 => step, _ => never() };
+    "#;
+    const BAD: &str =
+        "let bad = |v| -> [i64, Error<`Oops>] select v { 1 => error(`Oops), _ => v };";
+    let cases: [(&str, &str, Vec<i64>); 8] = [
+        // the `~` resident is re-presented at wake; the timer's fire is the answer
+        (
+            "held_sample",
+            "let x = try { bad(request)? } with(e) { 0 }; sys::time::timer(duration:2.ms, false) ~ x",
+            vec![0, 2, 3],
+        ),
+        // the instance's `r` is standing at re-dispatch; its write is the answer
+        (
+            "lambda_state",
+            "let f = |v| { let r = never(); catch(e) r <- e ~ -2; r <- bad(v)?; r }; f(request)",
+            vec![-2, 2, 3],
+        ),
+        // an async writer inside the lambda: bottom at dispatch, fired a cycle later
+        (
+            "lambda_writer",
+            "let g = |v| { let r = never(); r <- v * 2; r }; g(request)",
+            vec![2, 4, 6],
+        ),
+        // a level absent at the first entry is waited for, then read as it stands
+        (
+            "absent_level",
+            "let lvl = sys::time::timer(duration:20.ms, false) ~ 42; let q = request; let y = lvl; q * 100 + y",
+            vec![142, 242, 342],
+        ),
+        // a carried cell bound two steps earlier is standing at the reading step
+        ("old_cell", "let a = request; let b = request + 10; a", vec![1, 2, 3]),
+        (
+            "old_cell_in_do",
+            "let a = request; let b = request + 10; do { let c = b; a }",
+            vec![1, 2, 3],
+        ),
+        // `until` on a level: false then flipped for run 1, present-true after
+        (
+            "until_present",
+            "let flag = false; flag <- sys::time::timer(duration:20.ms, false) ~ true; until flag; request",
+            vec![1, 2, 3],
+        ),
+        // the effect helper: its `null` is born at each dispatch
+        (
+            "effect_null",
+            "let w = 0; let e = |v| { w <- v; null }; e(request); request",
+            vec![1, 2, 3],
+        ),
+    ];
+    for (name, body, expected) in cases {
+        let code = format!("{{ {CLOCK} {BAD} seqq request {{ {body} }} }}");
+        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), expected, "{name}\n{out}");
+    }
+    // A lambda whose result is a standing level it does not derive from
+    // its argument produces no fire when re-called, in a seq as anywhere
+    // else: the run never completes. Sampling the level on the argument
+    // is the spelling.
+    let stalls =
+        format!("{{ {CLOCK} let k = 7; let f = |v| k; seqq request {{ f(request) }} }}");
+    let (values, _) = run_delta(&stalls, fusion_disabled).await?;
+    assert!(values.len() <= 1, "{values:?}");
+    let sampled = format!(
+        "{{ {CLOCK} let k = 7; let f = |v| v ~ k; seqq request {{ f(request) }} }}"
+    );
+    let (values, _) = run_delta(&sampled, fusion_disabled).await?;
+    assert_eq!(as_i64s(&values), [7, 7, 7]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reentry_fired_only_interp() -> Result<()> {
+    reentry_fired_only(true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reentry_fired_only_jit() -> Result<()> {
+    reentry_fired_only(false).await
+}

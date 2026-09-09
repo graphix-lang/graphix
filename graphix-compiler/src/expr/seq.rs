@@ -187,6 +187,22 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
 /// stall. A lambda literal is its own dynamic scope — ordinary Graphix
 /// again — so its body and defaults are exempt.
 fn refuse_catch(e: &Expr) -> Result<()> {
+    match find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Catch(_))) {
+        None => Ok(()),
+        Some(c) => Err(anyhow!(
+            "catch is not allowed inside a seq: `?` aborts the run, \
+             `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
+             seq sees the abort"
+        )
+        .context(ErrorContext(c))),
+    }
+}
+
+/// The first node satisfying `pred` that is not inside a lambda
+/// literal's body or defaults: a function is its own dynamic scope and
+/// its own firing world, so a statement neither waits on a call inside
+/// one nor owns a catch inside one.
+fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> {
     let in_lambda: LPooled<AHashSet<ExprId>> =
         e.fold(LPooled::take(), &mut |mut set, x| {
             if let ExprKind::Lambda(l) = &x.kind {
@@ -206,21 +222,9 @@ fn refuse_catch(e: &Expr) -> Result<()> {
             }
             set
         });
-    let found = e.fold(None, &mut |found: Option<Expr>, x| {
-        found.or_else(|| {
-            (matches!(x.kind, ExprKind::Catch(_)) && !in_lambda.contains(&x.id))
-                .then(|| x.clone())
-        })
-    });
-    match found {
-        None => Ok(()),
-        Some(c) => Err(anyhow!(
-            "catch is not allowed inside a seq: `?` aborts the run, \
-             `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
-             seq sees the abort"
-        )
-        .context(ErrorContext(c))),
-    }
+    e.fold(None, &mut |found: Option<Expr>, x| {
+        found.or_else(|| (pred(x) && !in_lambda.contains(&x.id)).then(|| x.clone()))
+    })
 }
 
 /// What the tail of a statement list does with its value, in order:
@@ -612,7 +616,7 @@ fn step_arm(
     let writes = || sink_writes(sink, pos, pc, result, vname, cells, visible);
     match &step.kind {
         ExprKind::Until(e) => {
-            let e = guard(rewrite(e, visible));
+            let e = guard(entry_fire(rewrite(e, visible), pc));
             Ok(select(
                 pos,
                 e,
@@ -919,12 +923,43 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
     rewrite_with(e, map, Rewrite::Bindings)
 }
 
+/// A step's scrutinee. A step completes on a FIRED production after
+/// entry (the guard); a call is re-issued at entry and answers fired,
+/// while a level read as it stands (R2) is fired at entry here.
 fn issue_expr(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, pc: &str) -> Expr {
-    guard(rewrite_with(e, map, Rewrite::Issue(pc)))
+    let issued = has_call(e);
+    let e = rewrite_with(e, map, Rewrite::Issue(pc));
+    guard(if issued { e } else { entry_fire(e, pc) })
+}
+
+/// `e` fired at entry with its standing value, then tracked: `any(pc
+/// ~! e, e)`. A compound `e` is bound once so its nodes are not
+/// duplicated (a `?` inside it must raise once).
+fn entry_fire(e: Expr, pc: &str) -> Expr {
+    let pos = e.pos;
+    let at_entry = |v: Expr| {
+        ExprKind::StrictSample { lhs: Arc::new(r#ref(pos, pc)), rhs: Arc::new(v) }
+            .to_expr(pos)
+    };
+    let any =
+        |a: Expr, b: Expr| ExprKind::Any { args: Arc::from_iter([a, b]) }.to_expr(pos);
+    match &e.kind {
+        ExprKind::Ref { .. } | ExprKind::Constant(_) => any(at_entry(e.clone()), e),
+        _ => {
+            let v = format_compact!("seqv{}", e.id.inner());
+            block(
+                pos,
+                vec![
+                    let_bind(pos, &v, None, e),
+                    any(at_entry(r#ref(pos, &v)), r#ref(pos, &v)),
+                ],
+            )
+        }
+    }
 }
 
 fn has_call(e: &Expr) -> bool {
-    e.fold(false, &mut |acc, x| acc || matches!(x.kind, ExprKind::Apply(_)))
+    find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Apply(_))).is_some()
 }
 
 fn inline_lambda(mut e: &Expr) -> bool {
@@ -934,11 +969,17 @@ fn inline_lambda(mut e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Lambda(_))
 }
 
+/// One call issued per entry: the arguments are snapshotted on the
+/// entry event and the call is made over the snapshot. The guard sits
+/// on the call itself — the snapshot select fires at entry carrying
+/// the call's resident, and only the call's own fired production is
+/// this invocation's answer. A nullary call has nothing to re-issue;
+/// it is a level read at entry.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     if call.args.is_empty() {
         let mut expr = spec.clone();
         expr.kind = ExprKind::Apply(call);
-        return expr;
+        return entry_fire(expr, pc);
     }
     let pos = spec.pos;
     let input = format_compact!("seqargs{}", spec.id.inner());
@@ -984,7 +1025,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
         pos,
         vec![
             let_bind(pos, input.as_str(), None, input_tuple),
-            select(pos, snapshot, vec![(pat_bind(issued.as_str()), expr)]),
+            select(pos, snapshot, vec![(pat_bind(issued.as_str()), guard(expr))]),
         ],
     )
 }

@@ -380,7 +380,18 @@ completion event cannot be waited on by `seq` without adapting their
 API. A connect completes at issue; its write lands next cycle.
 A pure step is a derivation: it completes when its value is present,
 and it stays live while its arm is active (that is what lets
-`until released` wait for a level to flip). Consecutive same-cycle
+`until released` wait for a level to flip). Completion is a FIRED
+production after the step's entry (R10, 2026-09-09): a value standing
+at entry is the previous run's answer — a `~`'s held resident, a
+lambda instance's own cell, both re-presented at wake because sleep
+is pause — and the guard holds bottom until the step fires. A call is
+re-issued at entry and its own fire is the answer (the guard sits on
+the issued call, inside the snapshot select, which fires at entry
+carrying the call's resident); a level is fired at entry as it stands
+(`any(pc ~! e, e)`), and waited for if absent. A lambda that returns a
+standing level it does not derive from its argument produces no fire
+when re-called, in a seq as anywhere else: the run never completes,
+and `|v| v ~ k` is the spelling. Consecutive same-cycle
 steps coalesce into one arm; an async completion and every connect
 end an arm (§7.4). `do { … }` is the override: several statements,
 one arm, connects pc-sampled, lets inside.
@@ -596,9 +607,13 @@ arise only through calls. The generated rethrow forwards the inferred
 error type; a nonthrowing sequence does not acquire a throws type.
 
 Each step value, connect RHS, and `until` condition passes through a
-completion guard before its continuation. Each statement within `do`
+completion guard before its continuation, and each issued call carries
+its own. Each statement within `do`
 has the same boundary. A guard records its handler's error generation
-on activation and rejects completion if that generation changes. Raises
+on activation and rejects completion if that generation changes; it
+also holds bottom until the first fired production after activation
+(R3's re-entry rule), then passes everything so a `do`'s continuation
+keeps routing. Raises
 advance the generation immediately, before deferred delivery or cleanup.
 Failure stays latched until the guard sleeps. Thus no success transition,
 carried value, or block output is queued for a failed step; the handler's

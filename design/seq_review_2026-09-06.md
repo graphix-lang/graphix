@@ -1,7 +1,8 @@
 # Seq review — open items (2026-09-06, pruned 2026-09-07)
 
 What remains of the `seq` reviews of 2026-09-05/06. Closed items are
-gone; their record is `git log` and `seq_blocks.md` §7.9. Run a witness
+gone; their record is `git log`, `seq_blocks.md` §7.9 and R3's re-entry
+rule (R10). Run a witness
 with:
 
 ```sh
@@ -16,7 +17,6 @@ timeout -k 2 40 ~/tmp/target/debug/graphix --no-fusion repro.gx
 | dead `SeqDo` flatten arm in `lower_do_stmts` | open (R5) |
 | `rewrite_with` re-spells the enum | open (R6) |
 | docs and coverage drift | open (R7) |
-| a step re-enters on its previous run's value | open (R10) |
 
 ## R3 — P2: the machine calls bare `filter`
 
@@ -69,42 +69,6 @@ consumer that justifies the helper.
 - The proptest generator produces `Seq` but never `SeqDo`, `Until` or
   `TryWith`; printer/parser drift for those is uncovered.
 
-## R10 — P2: a step re-enters on its previous run's value
-
-Two witnesses, both engines, both pre-existing:
-
-```graphix
-seqq request {
-  let x = try { bad(request)? } with(e) { 0 };
-  sys::time::timer(duration:2.ms, false) ~ x     // [0, 0, 0]; expected [0, 2, 3]
-}
-```
-
-```graphix
-seq request {
-  let f = |v| { let r = never(); catch(e) r <- e ~ -2; r <- bad(v)?; r };
-  f(request)                                     // [-2, -2, 2]; expected [-2, 2, 3]
-}
-```
-
-Run 1 is right. Later runs complete at the step's entry with the
-previous run's value: the `~`'s held resident (sleep is pause) and the
-lambda instance's `r` are present-but-stale at wake, the completion
-guard passes them, and the continuation select routes on a present
-scrutinee. The same tail as a call (`after_idle(duration:2.ms, x)`) is
-right, because the issue atom snapshots `x` and an async call is
-bottom until its new result.
-
-The tag cannot decide it: a level read as it stands at entry (R2,
-accept) and a previous run's answer (reject) are both present-stale.
-Requiring a FIRED production for call-containing steps fixes both
-witnesses but stalls `f(x)` when the body returns a level the call
-does not fire. Candidates: rewrite a top-level `a ~ b` step to
-`a ~! b` (first witness only), or give the presence select's `once` a
-per-entry generation so a production older than the entry is not
-admitted (both, if productions can be stamped). Eric's call.
-
 ## Suggested order
 
-R10 (a wrong value), then R3 and R4 (confusing failures in generated
-code), then R5, R6, R7.
+R3 and R4 (confusing failures in generated code), then R5, R6, R7.

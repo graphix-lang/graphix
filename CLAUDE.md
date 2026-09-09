@@ -1262,6 +1262,17 @@ the rules.
   with body ending in `e?`). Value: both tails write the statement's
   cell; the with value must fit the try body's type (annotated lets
   pass their annotation to the carried cell). Pins: `lang/seq_try.rs`.
+  **A step completes on a FIRED production after entry** (R10,
+  2026-09-09): a standing value at entry is the previous run's (a `~`
+  resident, a lambda instance's cell — sleep is pause, and that stays
+  so). `SeqGuard` holds bottom until the first fire after activation,
+  then passes everything; the guard on an issued call sits on the call
+  inside the snapshot select; a call-free step or `until` condition is
+  `any(pc ~! e, e)` (fired at entry as it stands, waited for if
+  absent); a nullary call is a level. Casualty by rule: `|v| k` (a
+  standing level the call does not derive from its arg) never fires
+  again, so the run stalls — `|v| v ~ k`. Pin: `lang/seq.rs`
+  `reentry_fired_only`.
 - **Place references** (`design/place_references.md`, 2026-09-02,
   Eric: "not having this changed the way you wrote an API in tui;
   that qualifies as a now change"): `&a[i]`, `&s.f`, `&t.0`, `&m{k}`

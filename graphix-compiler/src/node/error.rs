@@ -645,7 +645,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 #[derive(Debug)]
 enum GuardState {
     Sleeping,
-    Running(u64),
+    /// Entered under this handler generation; `settled` once a FIRED
+    /// production has passed since entry — until then a standing
+    /// value is the previous run's answer, not this one's.
+    Running {
+        generation: u64,
+        settled: bool,
+    },
     Failed,
 }
 
@@ -682,13 +688,13 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let generation = match self.state {
+        let (generation, settled) = match self.state {
             GuardState::Sleeping => {
                 let generation = self.handler.generation();
-                self.state = GuardState::Running(generation);
-                generation
+                self.state = GuardState::Running { generation, settled: false };
+                (generation, false)
             }
-            GuardState::Running(generation) => generation,
+            GuardState::Running { generation, settled } => (generation, settled),
             GuardState::Failed => {
                 if self.handler.has_nested_errors() {
                     let _ = self.n.update(ctx, event);
@@ -701,7 +707,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
             if generation == self.handler.generation()
                 && !self.handler.has_nested_errors()
             {
-                return value;
+                if settled || value.tag().is_bottom() {
+                    return value;
+                }
+                if value.is_fired() {
+                    self.state = GuardState::Running { generation, settled: true };
+                    return value;
+                }
+                return TagValue::bottom_null(false);
             }
         }
         if generation != self.handler.generation() {

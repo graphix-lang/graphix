@@ -30,8 +30,20 @@ observing the raise.
 ## Completion guards
 
 Lowering wraps each step expression, let initializer, connect RHS, and
-`until` condition in a compiler-only `SeqGuard`. Each statement within a
+`until` condition in a compiler-only `SeqGuard`, and each issued call
+inside the snapshot select in another. Each statement within a
 `do` has the same boundary, before its nested continuation.
+
+A guard also decides what counts as this activation's answer: it holds
+bottom until the first FIRED production after activation, then passes
+every production (a `do`'s continuation must keep routing on stale
+cycles). A standing value at activation is the previous run's — a
+sampled resident or a lambda instance's cell, re-presented at wake. The
+lowering makes levels fire at entry (`any(pc ~! e, e)` around a
+call-free step or an `until` condition) so the rule costs a level
+nothing; a call's answer is its own fire after re-issue, which is why
+the guard on a call sits on the call and not outside the snapshot
+select (that select fires at entry carrying the call's resident).
 
 The guard captures the handler generation when activated. It checks that
 generation before evaluating its child and again before returning the

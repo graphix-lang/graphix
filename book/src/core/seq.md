@@ -48,8 +48,17 @@ seq request {
 If an argument is bottom at entry, the call waits; it cannot reuse a
 previous run's snapshot. After issuance, later argument changes or bottom
 do not change the snapshot or interrupt the pending result. Nested calls
-get their own snapshots. Calls without explicit arguments retain their
-ordinary activation behavior.
+get their own snapshots. A call without arguments is read at entry like a
+level.
+
+A step completes when it produces a new value after its entry, never on a
+value left standing from an earlier run. A call's answer is what the call
+produces after it is issued; a step that reads a level (`let y = x`,
+`until flag`) takes the level as it stands at entry, and waits for it if
+it is absent. One consequence: a function that returns a level it does not
+derive from its argument (`|v| k`) produces nothing new when called
+again, so a step calling it never completes after the first run. Sample
+the level on the argument instead (`|v| v ~ k`).
 
 This clocks the call site, not the function body: callbacks and captured
 state inside a function remain reactive. References are sampled as
