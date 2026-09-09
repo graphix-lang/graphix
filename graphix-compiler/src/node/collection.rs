@@ -26,11 +26,10 @@ use triomphe::Arc;
 pub mod list {
     use super::*;
 
-    /// The slim rep (`design/list_native.md`): cons = a 2-slot array
-    /// `[head, tail]`, nil = a refcount clone of the static EMPTY
-    /// array (NOT `Null` — `[List, null]` must not collapse). The
-    /// discriminant is the array length; this module is the ONLY
-    /// place that knows the layout.
+    /// The list rep: cons = a 2-slot array `[head, tail]`, nil = a
+    /// clone of this static (not `Null`: `[List, null]` must not
+    /// collapse). The discriminant is the length; only this module
+    /// knows the layout.
     static EMPTY: std::sync::LazyLock<ValArray> =
         std::sync::LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
 
@@ -265,13 +264,9 @@ impl MapCollection for ValArray {
 
 type ValueMap = CMap<Value, Value, 32>;
 
-/// The Map-HOF pair element encoding: each `(k, v)` entry crosses the
-/// callback as a 2-element `Value::Array([k, v])`. `make_pair` /
-/// [`split_pair`] are the ONE seam — the interpreted `ValueMap`
-/// iteration, the interpreted finishes, and the JIT boundary helpers
-/// (`graphix_cmap_to_pairs` / `graphix_valarray_into_cmap`) all
-/// encode/decode through them, so the two evaluators agree
-/// bit-for-bit.
+/// The Map-HOF pair encoding: each `(k, v)` entry crosses the callback
+/// as `Value::Array([k, v])`. Every encoder and decoder, interpreted
+/// or JIT, goes through `make_pair` / [`split_pair`].
 pub(crate) fn make_pair(key: &Value, value: &Value) -> Value {
     Value::Array(ValArray::from_iter_exact([key.clone(), value.clone()].into_iter()))
 }
@@ -446,18 +441,9 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     type Collection: MapCollection;
 
-    /// `true` iff `finish` reads the SOURCE ELEMENTS as part of the
-    /// RESULT (filter, find — the callback is only a predicate and the
-    /// elements pass through beside it). The result then genuinely
-    /// depends on the elements, so a same-length source refresh with
-    /// quiet callback slots must still fire the production (the strict
-    /// dependence rule, 2026-08-06: `filter([in0, 0], |_| true)` lost
-    /// in0's update — the interp's cached result went stale while the
-    /// fused loop recomputed fresh values under a quiet disc, and any
-    /// init-view reader saw the two sides disagree). Callback-driven
-    /// kinds (map, filter_map, flat_map, find_map, init, the folds)
-    /// stay quiet: their results flow entirely through callback
-    /// productions, which fire when the callback consumes what fired.
+    /// `true` iff `finish` reads the source elements into the result
+    /// (filter, find): a same-length source refresh with quiet callback
+    /// slots must then still fire the production.
     const PASS_THROUGH: bool = false;
 
     fn finish(
@@ -484,12 +470,8 @@ struct CallbackParam {
     binds: Vec<(BindId, usize)>,
 }
 
-/// The callback's `index`-th POSITIONAL parameter. A callback with
-/// labeled parameters is refused (`None` — the collection interprets):
-/// the loop delivers the element to the positional slot the interp
-/// fills, and the inline emitter has nothing to bind a labeled
-/// parameter's default to (`BuiltinSlot::LabeledDefault` is a
-/// cross-kernel slot, not an inline binding).
+/// The callback's `index`-th positional parameter; `None` for a
+/// callback with labeled parameters, which the collection interprets.
 fn callback_param<R: Rt, E: UserEvent>(
     callback: &super::lambda::GXLambda<R, E>,
     index: usize,
@@ -544,9 +526,8 @@ fn is_unit_or_null(typ: &Type) -> bool {
     matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
 }
 
-/// Whether a FROZEN type admits `null` — filter_map's drop marker.
-/// Conservative: an unknown shape answers true, so the caller keeps
-/// the interpreted path (a coverage loss, never a wrong answer).
+/// Whether a frozen type admits `null`, filter_map's drop marker.
+/// An unknown shape answers true, so the caller keeps interpreting.
 fn frozen_may_be_null(t: &Type) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Primitive(p)) => p.contains(netidx_value::Typ::Null),
@@ -582,17 +563,10 @@ fn finish_loop_result(
     flags.apply(cx, result, &[source.disc])
 }
 
-/// Emit a List/Map HOF source for the loop scaffolds: marshal the
-/// collection Value OWNED (`emit_owned_value_operand_node` — clone if
-/// borrowed) and flatten it to a fresh ValArray through `helper`
-/// (`graphix_list_to_valarray` / `graphix_cmap_to_pairs`, which
-/// CONSUME the value). The returned [`CompiledExpr`] is the SOURCE's
-/// (disc, payload) — its disc carries taint/stale for the firing
-/// wrap; the [`scaffold::ArraySrc`] owns the flattened array (the
-/// loop's `adopt_owned_src` handles cleanup). Semantically
-/// `list::map(l, f)` lowers as `from_array(array::map(to_array(l),
-/// f))`: the SlotFlags rule over the flattened length IS the
-/// interpreted ordinal-slot rule (MapQ/FoldQ are collection-generic).
+/// Emit a List/Map HOF source: marshal the collection Value owned and
+/// flatten it to a fresh ValArray through `helper`, which consumes it.
+/// Returns the source's (disc, payload) and the [`scaffold::ArraySrc`]
+/// that owns the flattened array.
 fn emit_flattened_source<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -648,7 +622,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
 
 #[derive(Debug)]
 struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
-    /// wake catch-up: set by `sleep()`, taken by the next update
+    /// Set by `sleep()`, taken by the next update.
     slept: bool,
     base: MapQBase<R, E>,
     scope: Scope,
@@ -732,17 +706,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
     }
 }
 
-/// Fold one production into the collection's. This IS the orthogonal
-/// tag algebra — taint ORs, stale ANDs — so it delegates to
-/// [`Tag::join`] rather than restating it. The hand-rolled version
-/// collapsed its taint arm to `Tag::TAINT`, whose invariant form is
-/// TAINT|STALE: merging two FRESH bottoms produced a STANDING one and
-/// the fired bit was lost. Only visible with 2+ slots (one slot takes
-/// the `None` arm verbatim), and the consequence was that a
-/// collection going bottom never delivered a TRIGGERING poison — so
-/// every consumer stayed on the R1 quiet-ride and kept re-serving its
-/// pre-bottom value, three epochs on (an `array::init(i64:2, |_| v0)`
-/// over a bottomed capture; aug14f backlog, hz0 aug13d 000312).
+/// Fold one slot production into the collection's tag via [`Tag::join`].
 fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
     Some(match current {
         None => next,
@@ -752,10 +716,8 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // The fuse driver never descends a collection callback (its fusion
-        // is the inline emission at the enclosing call), so decorated nodes
-        // inside the prototype body get their attribute dispatch here —
-        // census-gated: attribute-free compiles pay nothing.
+        // The fuse driver never descends a collection callback, so the
+        // prototype body's attributes dispatch here.
         if !ctx.attr_census.lock().is_empty() {
             if let Some(body) = self.base.callback_body() {
                 crate::fusion::check_attributes_subtree(body, ctx)?;
@@ -778,10 +740,8 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
             };
             src_trig = tag.triggers();
-            // A tainted source is a placeholder, and an unselectable
-            // value (init's over-limit count) is bottom — neither
-            // carries elements to deliver, but the slot walk below must
-            // still run so slot-internal state sees this cycle's events.
+            // A tainted or unselectable source is bottom; the slot walk
+            // still runs so slot-internal state sees this cycle's events.
             if tag.is_tainted() {
                 forced_taint = true;
             } else if let Some(source) =
@@ -816,13 +776,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     }
                 }
             } else {
-                // An unselectable source (init's over-limit count, a
-                // wrong-shaped collection Value) IS bottom, exactly as
-                // the comment above says — this previously fell
-                // through untainted and the retained slots emitted at
-                // the old length (init-over-limit-aug2026). The slots
-                // stay retained: bottom is "no value this cycle",
-                // never a reset.
+                // Slots stay retained: bottom is not a reset.
                 forced_taint = true;
             }
         }
@@ -833,9 +787,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 event.init = saved_init;
                 return self.resident.ride();
             }
-            // A fresh slot's first dispatch runs under a forced init
-            // view: its callback ref reads the store's standing entry
-            // as Fired (R2) — the old explicit backfill is gone.
+            // A fresh slot's first dispatch runs under a forced init view.
             if i >= old_len {
                 event.init = true;
             }
@@ -848,17 +800,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     i >= old_len
                 );
             }
-            // Only TRIGGERING slot productions fold into the firing
-            // decision; a stale ride is the slot's value channel and
-            // by the R1 law carries an unchanged value. STRICT
-            // (Eric's ruling 2026-08-13, completing option A): ANY
-            // triggering bottom taints its slot and the collection
-            // poisons — a produced value is never internally
-            // mixed-freshness, and `map` agrees with the hand-written
-            // array literal (constructors propagate bottom, Q1). The
-            // old bottomed-slot-with-history ride was an undesignated
-            // data ride; downstream holding is the STORE's job.
-            // `value` survives as sleep/frame memory only.
+            // Only triggering productions fold into the firing decision;
+            // any triggering bottom taints its slot and poisons the
+            // collection. `value` is sleep/frame memory only.
             if tag.triggers() {
                 if tag.is_bottom() {
                     production = merge_tag(production, tag);
@@ -869,10 +813,8 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     self.slots[i].tag = Tag::STALE;
                 }
             } else if !tag.is_bottom() {
-                // the value channel flows through slots: a stale
-                // production refreshes the slot silently (an arm-wake's
-                // capture-only callback produces stale — the slot must
-                // still FILL, or the collection can never build)
+                // A stale production must still fill the slot, or the
+                // collection can never build.
                 self.slots[i].value = Some(tv.value());
             }
         }
@@ -885,24 +827,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 self.resident.ride()
             };
         }
-        // A slot's taint mark is PERSISTENT — set by a triggering
-        // bottom, cleared only by a clean production — so "is this
-        // collection bottom?" is a question about the slots NOW, not
-        // about what arrived this cycle. Option A (fold-tainted-init,
-        // Eric 2026-08-13): bottom in, bottom out, and the retained
-        // value NEVER substitutes for a poisoned production.
-        //
-        // The production tag decides only the FIRED bit: FreshBottom
-        // when something triggered, StaleBottom when the cycle was
-        // quiet (the aug13k rule — a standing bottom must not re-fire;
-        // minting FRESH per cycle drove a downstream guard where
-        // nothing consumed fired, aug14f generated_missing_fires).
-        // Riding the resident instead is what leaked: `ride` keeps the
-        // last VALUE, so a quiet cycle over standing poison re-served
-        // the pre-bottom collection and a consumer firing on its own
-        // trigger read it as current (aug14f backlog, an
-        // `array::init` over a bottomed capture resurrecting three
-        // epochs later).
+        // A slot's taint is persistent until a clean production, so
+        // bottomness is a question about the slots now; the production
+        // tag decides only the fired bit. The resident never substitutes
+        // for a poisoned production.
         let poisoned = self.slots.iter().any(|slot| slot.tag.is_tainted());
         if crate::dbgenv::gxdbg_slot() {
             eprintln!(
@@ -921,12 +849,8 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     .resident
                     .set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM));
             }
-            // WAKE CATCH-UP (design/wake_catchup.md): the first update
-            // after this node's sleep recomputed every slot (their
-            // productions came back STALE and refreshed `value`
-            // above), but with nothing triggering, the ride below
-            // would re-surface the PRE-SLEEP collection — a resident
-            // drifted behind its slots. Rebuild on the value channel.
+            // After a sleep the resident may lag the stale-refreshed
+            // slots; rebuild quietly (design/wake_catchup.md).
             None if woke
                 && !self.slots.is_empty()
                 && self.slots.iter().all(|slot| slot.value.is_some()) =>
@@ -945,7 +869,6 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                 None => self.resident.ride(),
             }
         } else if tag.triggers() {
-            // an element has never produced: the collection is bottom
             self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
             self.resident.ride()
@@ -989,12 +912,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept = true;
-        // Slot values and `current` survive sleep — sleep is PAUSE
-        // (Eric's ruling 2026-07-31): while awake a bottoming callback
-        // already rides its slot's previous value (`update` only
-        // overwrites on production), and the kernel's per-slot state
-        // words persist across arm deselection, so a re-woken
-        // collection resumes from its history like every other node.
+        // Slot values survive sleep: sleep is pause.
         self.base.source.sleep(ctx);
         for slot in self.slots.iter_mut() {
             slot.call.sleep(ctx);
@@ -1255,10 +1173,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // The fuse driver never descends a collection callback (its fusion
-        // is the inline emission at the enclosing call), so decorated nodes
-        // inside the prototype body get their attribute dispatch here —
-        // census-gated: attribute-free compiles pay nothing.
+        // The fuse driver never descends a collection callback, so the
+        // prototype body's attributes dispatch here.
         if !ctx.attr_census.lock().is_empty() {
             if let Some(body) = self.base.callback_body() {
                 crate::fusion::check_attributes_subtree(body, ctx)?;
@@ -1280,12 +1196,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
             };
             src_trig = tag.triggers();
-            // A tainted SOURCE is a placeholder with no elements to
-            // deliver (a genuine destructuring consumer — forced), and
-            // an unselectable source value is bottom; the slot walk
-            // below must still run so slot-internal state sees this
-            // cycle's events. (A tainted INIT is different — a
-            // poisoned delivery, see below.)
+            // A tainted or unselectable source is bottom; the slot walk
+            // still runs so slot-internal state sees this cycle's events.
+            // A tainted init is a poisoned delivery instead, see below.
             if tag.is_tainted() {
                 forced_taint = true;
             } else if let Some(source) =
@@ -1310,8 +1223,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
                 }
             } else {
-                // An unselectable source IS bottom (see MapQ's twin —
-                // init-over-limit-aug2026); slots stay retained.
+                // Slots stay retained: bottom is not a reset.
                 forced_taint = true;
             }
         }
@@ -1325,30 +1237,9 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             };
             init_tag = Some(tag);
             if tag.is_tainted() {
-                // A tainted INIT is a poisoned DELIVERY to slot 0's
-                // acc, not a whole-fold abort: the kernel's FoldAcc
-                // carries init taint on the acc alone, so a callback
-                // that never consumes the acc recovers — a consuming
-                // callback taints its slot and the any-slot-tainted
-                // check below bottoms the fold, exactly the kernel's
-                // sticky flags fold. Force-tainting here silenced the
-                // whole fold where the kernel recovered (jul19b
-                // generate class: a tail-looped callee's bottom
-                // escapes as a tainted production at init and poisons
-                // the init bind). The placeholder stays out of the
-                // cross-cycle store, like Bind's tainted arm.
-                //
-                // The acc delivery MIRRORS the init's current tag: a
-                // TRIGGERING bottom is a FRESH poison; a STANDING one
-                // delivers the kernel's quiet TAINT|STALE twin —
-                // StaleBottom, which poisons the value channel without
-                // firing anything (the aug13k re-mint bug was minting
-                // FRESH per cycle; the quiet poison keeps its fix
-                // while option A's bottom-in-bottom-out holds across
-                // standing cycles — without it slot 0's ref fell back
-                // to the STORE's pre-bottom entry and the retained
-                // init substituted for a poisoned production, aug14f
-                // window_div0).
+                // A tainted init is a poisoned delivery to slot 0's acc,
+                // not a whole-fold abort: a callback that never consumes
+                // the acc recovers. The delivery mirrors the init's tag.
                 if let Some(slot) = self.slots.first() {
                     let poison = if tag.triggers() {
                         Tag::FRESH_BOTTOM
@@ -1370,12 +1261,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         }
 
         if self.slots.is_empty() && self.source_present && !forced_taint {
-            // STRICT (Eric's ruling 2026-08-13): a BOTTOMED init
-            // delivery poisons the empty fold THIS cycle — reading the
-            // retained `self.init` here rode the last good init value
-            // out FIRED (aug13f reactive/000061; the kernel poisons).
-            // The retained init still serves genuinely QUIET cycles
-            // below (no init delivery at all — the value channel).
+            // A bottomed init delivery poisons the empty fold this cycle;
+            // the retained init serves only quiet cycles.
             if let Some(t) = init_tag {
                 if t.is_bottom() {
                     return if t.triggers() {
@@ -1403,20 +1290,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             };
         }
 
-        // Only SLOT PRODUCTIONS seed the firing decision (the ruled
-        // per-slot precision: a same-length source refresh whose
-        // callback bodies are all quiet does NOT re-fire — MapQ's
-        // `production` merge and the kernel's SlotFlags agree). A
-        // fired source/init delivery reaches the result only through
-        // a slot body that consumes it; seeding from the deliveries
-        // made a const-body fold re-emit per source tick (twochannel
-        // p7, a 5b flip regression). `forced_taint && src_trig` stays:
-        // the bottom arm below distinguishes a triggering taint
-        // (FreshBottom) from a standing one (ride).
+        // Only slot productions seed the firing decision: a source or
+        // init delivery reaches the result only through a slot that
+        // consumes it. A triggering taint still counts, for the bottom arm.
         let mut any_trig = forced_taint && src_trig;
-        // The previous slot's production bottomed THIS cycle — a fresh
-        // slot's seed gate (below): the resize must propagate the
-        // chain's current poison, not resurrect `held`.
+        // A resize must propagate the chain's current poison to a fresh
+        // slot's seed, not resurrect `held`.
         let mut prev_slot_bottom = false;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
@@ -1424,23 +1303,12 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 event.init = saved_init;
                 return self.resident.ride();
             }
-            // A fresh slot's first dispatch runs under a forced init
-            // view (R2 serves the callback ref from the store); the
-            // acc SEED below is FoldQ's own semantic chain, not a
-            // cache backfill, and stays.
+            // A fresh slot's first dispatch runs under a forced init view.
             if i >= old_len {
                 event.init = true;
                 let acc_id = self.slots[i].acc_id;
-                // A fresh slot's seed is the chain's CURRENT state,
-                // never a substitute for it (option A: `held`/the
-                // retained init serve only genuinely quiet value
-                // channels): seeding from the last-good value while
-                // the incoming chain is bottom THIS cycle overwrote
-                // the poison the resize should propagate — a fold
-                // whose init stood bottom recovered its pre-bottom
-                // init on every resize (aug14f window_div0; the
-                // kernel reseeds from the init operand's current disc
-                // per invocation and stays bottom).
+                // The seed is the chain's current state, never a
+                // last-good substitute for a bottomed chain.
                 let incoming_bottom = if i == 0 {
                     init_tag.is_some_and(|t| t.is_bottom())
                 } else {
@@ -1465,26 +1333,13 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             let tv = self.slots[i].call.update(ctx, event).clone();
             let tag = tv.tag();
             prev_slot_bottom = tag.is_bottom();
-            // Only TRIGGERING slot productions advance the fold; a
-            // stale ride is the value channel (unchanged by the R1
-            // law) and the acc chain's standing store entries serve
-            // the next slot — the old absence-as-signal next-acc
-            // REMOVAL is gone (honest propagation: a bottomed slot
-            // delivers a poisoned acc instead of withdrawing it).
+            // Only triggering productions advance the fold; a bottomed
+            // slot delivers a poisoned acc rather than withdrawing it.
             if tag.triggers() {
                 any_trig = true;
                 if tag.is_bottom() {
-                    // Eric's ruling 2026-08-13 (fold-tainted-init,
-                    // option A): a consuming callback's bottom taints
-                    // the slot and travels the acc chain — bottom in,
-                    // bottom out, like every op. `held` (the last
-                    // good carry) survives as sleep/frame memory but
-                    // never substitutes for a poisoned production;
-                    // the old held-history ride here was a pre-dense
-                    // fork-7 residual the kernel never had, and it
-                    // made the fold an undesignated ride site. An
-                    // acc-IGNORING callback recovers organically (its
-                    // production never consumes the poison).
+                    // The bottom travels the acc chain; `held` is
+                    // sleep/frame memory and never substitutes for it.
                     self.slots[i].tag = tag;
                     self.slots[i].cycle = None;
                     if i + 1 < self.slots.len() {
@@ -1506,8 +1361,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     }
                 }
             } else if !tag.is_bottom() {
-                // the value channel advances the acc chain silently
-                // (stale result, no any_trig — see MapQ's twin)
+                // A stale production advances the acc chain silently.
                 self.slots[i].tag = Tag::STALE;
                 let value = tv.value();
                 self.slots[i].cycle = Some(value.clone());
@@ -1518,29 +1372,18 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     event.variables.insert(next, TagValue::stale(value));
                 }
             } else {
-                // A STANDING bottom still poisons the chain: record it
-                // so the last-slot check below sees a chain born bottom
-                // (a slot whose callback NEVER produced — a phantom
-                // filter/skip read — keeps its fresh-slot STALE tag
-                // otherwise, and a resize's poisoned result rode the
-                // resident instead of bottoming: aug13i hz0/hz1
-                // reactive, the fold-callback-outer-bottom pair).
+                // A standing bottom still poisons the chain; record it
+                // so the last-slot check sees a chain born bottom.
                 self.slots[i].tag = tag;
                 self.slots[i].cycle = None;
             }
         }
         event.init = saved_init;
 
-        // CONSUMPTION decides (the kernel's FoldAcc sticky-flags rule):
-        // an interior slot's poison travels the acc chain and bottoms
-        // the fold only if a downstream callback CONSUMES it — an
-        // acc-ignoring callback recovers. Only the LAST slot's chain
-        // state is the result.
+        // An interior slot's poison bottoms the fold only if a downstream
+        // callback consumes it; only the last slot's state is the result.
         if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_tainted()) {
-            // A RESIZE is an event even when the chain is poisoned —
-            // the firing rule below counts it, and the kernel's
-            // SlotFlags fire the tainted result the same way. Without
-            // it a fold growing onto a bottomed chain was silent.
+            // A resize is an event even when the chain is poisoned.
             return if any_trig || resized {
                 self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             } else {
@@ -1549,11 +1392,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         }
         if let Some(last) = self.slots.last() {
             if let Some(value) = last.cycle.clone() {
-                // the firing rule: a fold fires iff it RESIZED, a slot
-                // fired, or the source fired empty — a resize's fresh
-                // chain result is an event even when the surviving
-                // slots' callbacks rode (an acc-only callback is
-                // organically stale, but the shape change isn't)
+                // A fold fires iff it resized, a slot fired, or the
+                // source fired empty.
                 let tag = if resized || any_trig { Tag::FIRED } else { Tag::STALE };
                 return self.resident.set(TagValue::tagged(value, tag));
             }
@@ -1607,11 +1447,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The fold seed, per-slot acc-carry (`held`), and slot tags
-        // survive sleep — sleep is PAUSE (Eric's ruling 2026-07-31);
-        // the kernel twins (FoldAcc carry, sticky flag folds) persist
-        // across arm deselection. `cycle` is re-derived by every
-        // update pass, so preserving it is inert.
+        // The seed, `held` and slot tags survive sleep: sleep is pause.
         self.base.source.sleep(ctx);
         self.base.init.sleep(ctx);
         for slot in self.slots.iter_mut() {
@@ -1687,11 +1523,8 @@ fn emit_fold_call<R: Rt, E: UserEvent, T: FoldFn<R, E>>(
 }
 
 /// The callback's definition value when the prototype call resolved
-/// statically: a runtime slot then calls that lambda directly
-/// (`callback_fnode`) instead of binding to whatever value the
-/// callback parameter carries — which a TRAIT METHOD dispatcher never
-/// carries (the prototype resolved it to an implementation by the
-/// element type; the slots inherit that, `design/traits.md` §2).
+/// statically; a slot then calls that lambda directly, which a trait
+/// method dispatcher requires (the parameter carries no value).
 fn prototype_def<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     prototype: &Node<R, E>,
@@ -1727,17 +1560,6 @@ fn callback<R: Rt, E: UserEvent>(
     Some(callback)
 }
 
-// ─── Collection flavors and the shared kind emitters ─────────────
-//
-// A List/Map op's CLIF emission differs from its Array twin ONLY in
-// the [`Flavor`] hooks: how the source becomes the scaffold loop's
-// ValArray and how the loop's finalized array converts back to the
-// flavor's collection Value (`design/collection_intrinsics.md` — the
-// FLATTEN boundary). Each loop KIND's eligibility gates and loop
-// shape live in exactly one `emit_*_kind` fn below; the op impls
-// delegate with their flavor. The interpreted side (`finish`) stays
-// per-op — the result construction genuinely differs per collection.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flavor {
     Array,
@@ -1746,11 +1568,9 @@ enum Flavor {
 }
 
 impl Flavor {
-    /// Emit the loop source: the flavor's collection expression
-    /// marshalled to the scaffold's ValArray. Returns the SOURCE's
-    /// (disc, payload) — its disc drives the firing wrap — plus the
-    /// loop's [`scaffold::ArraySrc`]. List/CMap flatten through their
-    /// consuming helpers; an Array is the loop representation already.
+    /// Emit the loop source as the scaffold's ValArray. Returns the
+    /// source's (disc, payload), whose disc drives the firing wrap,
+    /// plus the loop's [`scaffold::ArraySrc`].
     fn emit_source<R: Rt, E: UserEvent>(
         self,
         cx: &mut BodyCx,
@@ -1831,9 +1651,7 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
         |cx| body.emit_clif(cx),
     )?;
     let result = flavor.emit_result(cx, ptr)?;
-    // The oversize-forced disc (init-over-limit-aug2026): the firing
-    // wrap must see an over-limit count as a TAINTED source, exactly
-    // like `exact_stale` and the slot chains inside the loop.
+    // The firing wrap must see an over-limit count as a tainted source.
     let count = CompiledExpr::new(count_disc, count.payload);
     Ok(Some(finish_loop_result(cx, result, flags, &count, source_invariant)))
 }
@@ -1922,12 +1740,7 @@ fn emit_filter_map_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     };
     let Some(output_element) = kernel_abi::nullable_inner(&output_type) else {
-        // A TOTAL callback: its return type has no null member, so it
-        // can never produce the `Null` that filter_map drops — this
-        // filter_map IS map (the trait map DEFAULT's shape,
-        // `|c, f| filter_map(c, |x| f(x))`). Emit the map loop.
-        // A type that MAY be null (or an unknown shape) keeps the
-        // interpreted path.
+        // A callback that can never return null makes filter_map a map.
         if frozen_may_be_null(&output_type) {
             return Ok(None);
         }
@@ -1975,12 +1788,8 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     else {
         return Ok(None);
     };
-    // The output gate and extend mode are the flavor's: an Array
-    // callback returns an Array; a List callback returns a List (a
-    // 2-word opaque Variant after the recursive-leaf freeze), and the
-    // extend helper walks it — including the interpreted "non-list
-    // value pushes as a single element" fallback. No CMap flat_map
-    // intrinsic exists.
+    // A List callback's return freezes to a 2-word opaque Variant; the
+    // extend helper walks it. No CMap flat_map intrinsic exists.
     let output_kind = kernel_abi::freeze_for_abi_normalized(body.typ())
         .as_ref()
         .and_then(|typ| kernel_abi::abi_kind(typ));
@@ -2004,8 +1813,6 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
         extend,
         &emit::slot_state_sites(body),
         |cx| {
-            // An Array body yields a composite payload word; a List
-            // body yields a full 2-word value.
             let value = body.emit_clif(cx)?;
             match flavor {
                 Flavor::Array => {
@@ -2107,10 +1914,8 @@ fn emit_find_map_kind<R: Rt, E: UserEvent>(
     Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
 }
 
-/// The fold kind. Acc shapes are the fold loop's Scalar/Composite/
-/// Str/Value set — a List- or Map-valued ACCUMULATOR (`|acc, x|
-/// list::cons(x, acc)`) has no `FoldAcc` carry discipline yet and
-/// stays interpreted (pinned by `list_fold_list_acc_interprets`).
+/// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
+/// carry and stays interpreted.
 fn emit_fold_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -2141,15 +1946,8 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
         }
         _ => None,
     };
-    // The BODY must itself be a value-producing shape, whatever the
-    // signature's acc froze to: a Bottom-typed body (a connect
-    // callback — `|acc, x| a <- [..]`) unifies with any acc type but
-    // emits the shapeless (NULL|TAINT, 0) placeholder, which violated
-    // the owned-acc discipline (aug04 crash_000000: zero ValArray
-    // bits at drop_old; a string acc reads the same 0 as ArcStr
-    // bits). The `node_is_bottom` twin of the source/init gate in
-    // `emit_fold` — refusal keeps the interpreted per-slot fold,
-    // which handles a never-producing body correctly.
+    // A Bottom-typed body unifies with any acc type but emits a
+    // shapeless placeholder that violates the owned-acc discipline.
     if emit::node_is_bottom(body) {
         return Ok(None);
     }
@@ -2165,18 +1963,8 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
             }
         }
         Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
-        // Value-shaped accumulators (2026-07-14): the list-building
-        // reverse/collect idiom, nullable max-by, variant state
-        // machines, and map group-by all carry an owned two-word
-        // Value through the loop (scaffold::FoldAcc::Value). The
-        // acc's SHAPE comes from the resolved signature; the init
-        // and body nodes emit by their OWN shapes, which may be
-        // NARROWER members of the acc union (a bare-Array init for
-        // a `[Array, Error]` acc paired a composite box pointer as
-        // a Value payload — jul17a crash_000002). Both emit through
-        // `emit_owned_value_operand_node`, which normalizes any
-        // shape to an owned proper Value — so the srcs are Owned
-        // and unknowable shapes de-fuse here.
+        // The init and body may emit narrower members of the acc union;
+        // `emit_owned_value_operand_node` normalizes them to an owned Value.
         Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
             if acc.binds.is_empty() =>
         {
@@ -2231,8 +2019,6 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
     )?;
     Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
 }
-
-// ─── The ops: interpreted `finish` per collection, emit by kind ───
 
 #[derive(Debug, Default)]
 struct ArrayInit;
@@ -2678,8 +2464,6 @@ impl<R: Rt, E: UserEvent> MapFn<R, E> for MapMap {
         Some(Value::Map(CMap::from_iter(values.drain(..))))
     }
 
-    // The callback returns a (k, v) pair tuple; the loop collects
-    // pair arrays and the exit boundary rebuilds the CMap.
     fn emit_clif(
         cx: &mut BodyCx,
         source: &Node<R, E>,

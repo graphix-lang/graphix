@@ -93,7 +93,6 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        // Forward events to child first
         self.child.as_widget_mut().update(
             &mut tree.children[0],
             event,
@@ -117,8 +116,6 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if state.open {
-                    // Close on left-click outside the overlay
-                    // (clicks on overlay items are handled by MenuOverlay)
                     state.open = false;
                 }
             }
@@ -148,7 +145,6 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, GraphixTheme, Renderer>> {
-        // First check for child overlays
         let child_overlay = self.child.as_widget_mut().overlay(
             &mut tree.children[0],
             layout,

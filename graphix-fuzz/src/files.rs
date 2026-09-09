@@ -1,7 +1,6 @@
-//! Multi-file wrappers — module sections riding the SAME single text
-//! artifact as the schedule header, so a modular program flows
-//! unchanged through every protocol (check / minimize / regress /
-//! corpus / the isolated-child stdin).
+//! Multi-file wrappers: module sections in the same text artifact as
+//! the schedule header, so a modular program flows unchanged through
+//! every protocol.
 //!
 //! ```text
 //! // schedule-v1: …                (optional, before the body)
@@ -12,21 +11,11 @@
 //! let f = |x: i64| -> i64 x + i64:1
 //! ```
 //!
-//! The MAIN body comes first (a findings file reads program-first, and
-//! a wrapper with no marker is exactly the old single-file format —
-//! zero corpus migration); each `// file-v1: <name>` marker line opens
-//! a section running to the next marker or EOF. Sections mount in the
-//! oracle's VFS at the ROOT (`/<name>`), and the driver declares
-//! `mod <stem>;` for each `.gx` section at the COMPILE-TEXT top level —
-//! beside the schedule decls, for the same reason (the `{ mod test; …}`
-//! wrap scopes under an anonymous `do<ExprId>`, root-level items are
-//! the reliable place) — so the body reaches them by absolute path
-//! (`m0::f(…)`). Interfaces are pure VFS data: `m0.gxi` is picked up by
-//! the resolver next to `m0.gx` automatically.
-//!
-//! Section names are flat `stem.gx` / `stem.gxi` (no directories in
-//! v1); a malformed marker is an error in every protocol — a generator
-//! or minimizer bug, never silently a comment (the schedule rule).
+//! The main body comes first; each `// file-v1: <name>` line opens a
+//! section running to the next marker or EOF. Sections mount in the
+//! oracle's VFS at the root and the driver declares `mod <stem>;` for
+//! each `.gx` section at the compile-text top level. Names are flat
+//! `stem.gx` / `stem.gxi`; a malformed marker is an error, never a comment.
 
 pub const FILE_PREFIX: &str = "// file-v1: ";
 

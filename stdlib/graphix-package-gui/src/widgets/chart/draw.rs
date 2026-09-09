@@ -23,8 +23,6 @@ use plotters::{
     },
 };
 
-// ── Color palette & helpers ─────────────────────────────────────────
-
 const PALETTE: [RGBColor; 8] = [
     RGBColor(31, 119, 180),
     RGBColor(255, 127, 14),
@@ -39,15 +37,10 @@ const PALETTE: [RGBColor; 8] = [
 const DEFAULT_GAIN: RGBColor = RGBColor(44, 160, 44);
 const DEFAULT_LOSS: RGBColor = RGBColor(214, 39, 40);
 
-// ── Drawing macros ──────────────────────────────────────────────────
-
-/// Draw series data onto a chart context. The macro is parameterized by
-/// coordinate type to avoid duplicating the ~200-line series loop for
-/// numeric vs. datetime x-axes.
+/// Draw series data onto a chart context, parameterized by x coordinate type.
 macro_rules! draw_chart_body {
     ($chart:expr, $self:expr, $xy_variant:path, $ohlc_variant:path,
      $eb_variant:path, $label_sz:expr) => {{
-        // Draw each dataset
         for (i, ds) in $self.datasets.iter().enumerate() {
             match ds {
                 DatasetEntry::XY { kind, data, style } => {
@@ -153,7 +146,7 @@ macro_rules! draw_chart_body {
                     }
                 }
 
-                // These dataset types are rendered in their own ChartMode paths
+                // Rendered by their own ChartMode paths.
                 DatasetEntry::Bar { .. }
                 | DatasetEntry::Pie { .. }
                 | DatasetEntry::Scatter3D { .. }
@@ -241,7 +234,6 @@ macro_rules! draw_chart_body {
             }
         }
 
-        // Legend
         let has_labels = $self.datasets.iter().any(|ds| ds.label().is_some());
         if has_labels {
             let legend_pos = $self
@@ -328,8 +320,6 @@ macro_rules! configure_mesh {
     }};
 }
 
-// ── Program impl ────────────────────────────────────────────────────
-
 impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::GraphixTheme>
     for ChartW<X>
 {
@@ -363,7 +353,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
         bounds: iced_core::Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<iced_canvas::Geometry<Renderer>> {
-        // Check dirty flag from data updates
         if self.dirty.get() {
             state.cache.clear();
             self.dirty.set(false);
@@ -384,7 +373,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             let backend = IcedBackend::new(frame, w, h);
             let root = backend.into_drawing_area();
 
-            // Background color
             let bg = self
                 .background
                 .t
@@ -432,11 +420,9 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         Some(r) => (r.min, r.max),
                         None => auto_y,
                     };
-                    // Apply zoom/pan overrides
                     let (x_min, x_max) = state.x_view.unwrap_or(base_x);
                     let (y_min, y_max) = state.y_view.unwrap_or(base_y);
 
-                    // Compute label areas
                     let (_, tick_h) = estimate_text("0", label_sz as f64);
                     let prec = tick_precision(y_max - y_min);
                     let y_min_s = format!("{y_min:.prec$}");
@@ -465,7 +451,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                             Err(_) => return,
                         };
 
-                    // Capture plot area for interactivity
                     let (px, py) = chart.plotting_area().get_pixel_range();
                     state.plot_info.set(Some(PlotInfo {
                         rect: iced_core::Rectangle {
@@ -501,7 +486,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         None => auto_y,
                     };
 
-                    // For zoom/pan, work in millis
                     let base_x_ms = (
                         base_x_dt.0.timestamp_millis() as f64,
                         base_x_dt.1.timestamp_millis() as f64,
@@ -509,7 +493,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let effective_x_ms = state.x_view.unwrap_or(base_x_ms);
                     let (y_min, y_max) = state.y_view.unwrap_or(base_y);
 
-                    // Convert back to DateTime
                     let x_min =
                         chrono::DateTime::from_timestamp_millis(effective_x_ms.0 as i64)
                             .unwrap_or(base_x_dt.0);
@@ -517,7 +500,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         chrono::DateTime::from_timestamp_millis(effective_x_ms.1 as i64)
                             .unwrap_or(base_x_dt.1);
 
-                    // Compute label areas — datetime ticks are wider
                     let (_, tick_h) = estimate_text("0", label_sz as f64);
                     let prec = tick_precision(y_max - y_min);
                     let y_min_s = format!("{y_min:.prec$}");
@@ -546,7 +528,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                             Err(_) => return,
                         };
 
-                    // Capture plot area for interactivity (store x as millis)
                     let (px, py) = chart.plotting_area().get_pixel_range();
                     state.plot_info.set(Some(PlotInfo {
                         rect: iced_core::Rectangle {
@@ -571,7 +552,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                 }
 
                 ChartMode::Bar => {
-                    // Collect unique categories and compute y-range
                     let mut categories: Vec<String> = Vec::new();
                     let mut y_min = f64::INFINITY;
                     let mut y_max = f64::NEG_INFINITY;
@@ -595,7 +575,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     if categories.is_empty() {
                         return;
                     }
-                    // Extend y-range to include 0
                     if y_min > 0.0 {
                         y_min = 0.0;
                     }
@@ -608,7 +587,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     };
                     let (y_min, y_max) = state.y_view.unwrap_or(base_y);
 
-                    // Compute label areas
                     let (_, tick_h) = estimate_text("0", label_sz as f64);
                     let prec = tick_precision(y_max - y_min);
                     let y_min_s = format!("{y_min:.prec$}");
@@ -639,7 +617,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         Err(_) => return,
                     };
 
-                    // Capture plot area for interactivity
                     let (px, py) = chart.plotting_area().get_pixel_range();
                     state.plot_info.set(Some(PlotInfo {
                         rect: iced_core::Rectangle {
@@ -654,7 +631,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
 
                     configure_mesh!(chart, x_label, y_label, mesh_style);
 
-                    // Draw each bar dataset
                     for (i, ds) in self.datasets.iter().enumerate() {
                         if let DatasetEntry::Bar { data, style } = ds {
                             if let Some(bd) = data.t.as_ref() {
@@ -685,7 +661,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         }
                     }
 
-                    // Legend
                     let has_labels = self.datasets.iter().any(|ds| ds.label().is_some());
                     if has_labels {
                         let legend_pos = self
@@ -725,7 +700,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                 }
 
                 ChartMode::Pie => {
-                    // Pie is drawn directly on the DrawingArea, no ChartBuilder
                     let (pie_data, pie_style) =
                         match self.datasets.iter().find_map(|ds| {
                             if let DatasetEntry::Pie { data, style } = ds {
@@ -738,7 +712,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                             None => return,
                         };
 
-                    // Account for title height
                     let title_h = if title.is_some() {
                         let (_, th) =
                             estimate_text(title.unwrap_or(""), title_size as f64);
@@ -765,7 +738,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let label_strs: Vec<&str> =
                         pie_labels.iter().map(|s| s.as_str()).collect();
 
-                    // Store plot info for pie hover
                     state.plot_info.set(Some(PlotInfo {
                         rect: iced_core::Rectangle {
                             x: center_x as f32 - radius as f32,
@@ -835,7 +807,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         Err(_) => return,
                     };
 
-                    // Apply projection with interactive offsets
                     let proj = self.projection.t.as_ref().and_then(|o| o.0.as_ref());
                     let yaw_offset = state.yaw_offset;
                     let pitch_offset = state.pitch_offset;
@@ -858,7 +829,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         pb.into_matrix()
                     });
 
-                    // Configure axes
                     {
                         let mut axes = chart.configure_axes();
                         if mesh_style.and_then(|ms| ms.label_size).is_some()
@@ -901,7 +871,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         }
                     }
 
-                    // Draw each 3D dataset
                     for (i, ds) in self.datasets.iter().enumerate() {
                         match ds {
                             DatasetEntry::Scatter3D { data, style } => {
@@ -977,10 +946,8 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                     let y_vals: Vec<f64> =
                                         grid.0[0].iter().map(|pt| pt.1).collect();
 
-                                    // Build a flat z grid indexed by (row, col) for
-                                    // O(1) lookup. SurfaceSeries::xoz calls us with
-                                    // the exact x/y values we provide, so binary
-                                    // search on those sorted vecs finds the index.
+                                    // SurfaceSeries::xoz calls back with the exact x/y
+                                    // values supplied, so binary search finds the index.
                                     let ncols = y_vals.len();
                                     let z_grid: Vec<f64> = grid
                                         .0
@@ -1066,7 +1033,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         }
                     }
 
-                    // Legend
                     let has_labels = self.datasets.iter().any(|ds| ds.label().is_some());
                     if has_labels {
                         let legend_pos = self
@@ -1113,7 +1079,6 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             }
         });
 
-        // Draw tooltip overlay (uncached, redrawn each frame)
         let mut result = vec![chart_geom];
         if let Some(snap) = &state.snap_point {
             let overlay = iced_canvas::Cache::new();

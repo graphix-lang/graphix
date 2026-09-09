@@ -6,11 +6,9 @@ use netidx::subscriber::Value;
 use poolshark::global::GPooled;
 use tokio::{fs, sync::mpsc, time::Duration};
 
-/// Macro to create fs::watch tests with common setup/teardown logic.
-/// Supports both simple single-action tests and complex multi-event sequences.
+/// Build an fs::watch test: a single action after establishment with a
+/// boolean expectation, or a multi-event sequence with state tracking.
 macro_rules! watch_test {
-    // Simple pattern: single action after establishment, boolean expectation
-    // This delegates to the complex pattern with sensible defaults
     (
         name: $test_name:ident,
         interest: $interest:expr,
@@ -29,9 +27,8 @@ macro_rules! watch_test {
             on_event: |count, temp_dir, _event_count| {
                 *_event_count = count;
                 if count == 1 {
-                    // Allow FSEvents debouncer to flush the Established
-                    // event before performing the action, preventing
-                    // coalescing on macOS.
+                    // Let the FSEvents debouncer flush the Established
+                    // event before acting (macOS coalescing).
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     eprintln!("watch established, performing action");
                     let $action_dir = &temp_dir;
@@ -46,7 +43,6 @@ macro_rules! watch_test {
         }
     };
 
-    // Complex pattern: multi-event sequence with state tracking
     (
         name: $test_name:ident,
         interest: $interest:expr,
@@ -62,13 +58,11 @@ macro_rules! watch_test {
             let ctx = crate::init(tx).await?;
             let temp_dir = tempfile::tempdir()?;
 
-            // Run setup
             let watch_path = {
                 let $setup_dir = &temp_dir;
                 $setup
             };
 
-            // Start watching
             let code = format!(
                 r#"{{ use sys::fs::watch::{{self, *}}; let w = create(null)?; path(watch(#interest: {}, w, "{}")?) }}"#,
                 $interest, escape_path(watch_path.display())
@@ -109,7 +103,7 @@ macro_rules! watch_test {
     };
 }
 
-// Test file creation detection (watches directory since file doesn't exist yet)
+// File creation (watches the directory since the file does not exist yet).
 watch_test! {
     name: test_watch_create_file,
     interest: "[`Established, `Create]",
@@ -121,9 +115,8 @@ watch_test! {
     expect: true
 }
 
-// Test file modification detection (watches the file directly).
-// Skipped on macOS: the notify crate's FSEvents backend reports all
-// file changes (including appends) as Create(File), not Modify.
+// File modification (watches the file directly). Skipped on macOS:
+// FSEvents reports appends as Create(File), not Modify.
 #[cfg(not(target_os = "macos"))]
 watch_test! {
     name: test_watch_modify_file,
@@ -140,8 +133,7 @@ watch_test! {
     expect: true
 }
 
-// macOS variant: FSEvents reports file modifications as Create, so
-// we test that file changes are detected using broader interest.
+// macOS variant: FSEvents reports modifications as Create.
 #[cfg(target_os = "macos")]
 watch_test! {
     name: test_watch_modify_file,
@@ -158,7 +150,7 @@ watch_test! {
     expect: true
 }
 
-// Test file deletion detection (watches the file directly)
+// File deletion (watches the file directly).
 watch_test! {
     name: test_watch_delete_file,
     interest: "[`Established, `Delete]",
@@ -174,9 +166,8 @@ watch_test! {
     expect: true
 }
 
-// Test interest filtering (should NOT detect events not matching interest).
-// Skipped on macOS: FSEvents reports O_CREAT|O_TRUNC overwrites as Create,
-// so a Create-only interest incorrectly matches file overwrites.
+// Interest filtering: events not matching the interest are not reported.
+// Skipped on macOS: FSEvents reports O_CREAT|O_TRUNC overwrites as Create.
 #[cfg(not(target_os = "macos"))]
 watch_test! {
     name: test_watch_interest_filtering,
@@ -193,7 +184,7 @@ watch_test! {
     expect: false
 }
 
-// Test watching a non-existent file that gets created
+// Watching a non-existent file that gets created.
 watch_test! {
     name: test_watch_nonexistent_file_created,
     interest: "[`Create, `Established]",
@@ -222,7 +213,7 @@ watch_test! {
     }
 }
 
-// Test watching existing file, deleting it, then recreating it
+// Watching an existing file, deleting it, then recreating it.
 watch_test! {
     name: test_watch_delete_then_recreate,
     interest: "[`Established, `Create, `Delete, `Modify]",
@@ -256,7 +247,7 @@ watch_test! {
     }
 }
 
-// Test renaming parent directory
+// Renaming the parent directory.
 watch_test! {
     name: test_watch_parent_rename,
     interest: "[`Established, `Delete, `Create]",
@@ -286,7 +277,7 @@ watch_test! {
     }
 }
 
-// Test multi-level parent creation
+// Multi-level parent creation.
 watch_test! {
     name: test_watch_multilevel_parent_creation,
     interest: "[`Established, `Create]",
@@ -325,8 +316,7 @@ watch_test! {
     }
 }
 
-// Test deep parent rename (rename two levels up)
-// This isn't supported on windows
+// Deep parent rename (two levels up); unsupported on Windows.
 #[cfg(unix)]
 watch_test! {
     name: test_watch_deep_parent_rename,
@@ -360,7 +350,7 @@ watch_test! {
     }
 }
 
-// Test race with parent deletion
+// Race with parent deletion.
 watch_test! {
     name: test_watch_parent_tree_deletion,
     interest: "[`Established, `Delete]",
@@ -389,7 +379,7 @@ watch_test! {
     }
 }
 
-// Test multiple watches on related paths (shared watcher, flattened stream)
+// Multiple watches on related paths: shared watcher, flattened stream.
 #[tokio::test(flavor = "current_thread")]
 async fn test_watch_multiple_related_paths() -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
@@ -402,7 +392,6 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let file1 = dir.join("file1.txt");
     let file2 = dir.join("file2.txt");
 
-    // Watch two files with a shared watcher, flatten via path()
     let code = format!(
         r#"{{
   use sys::fs::watch::{{self, *}};
@@ -435,7 +424,6 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
                             eprintln!("Event #{event_count}: {v}");
 
                             if !created_file {
-                                // After first established event, create file2
                                 eprintln!("Creating file2");
                                 fs::write(&file2, b"content").await?;
                                 created_file = true;
@@ -453,7 +441,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     Ok(())
 }
 
-// Test established -> pending transition -> established
+// established -> pending -> established.
 watch_test! {
     name: test_watch_established_to_pending,
     interest: "[`Delete, `Create, `Established]",
@@ -493,9 +481,8 @@ watch_test! {
     }
 }
 
-// Test file -> directory transition.
-// Skipped on macOS: FSEvents coalesces the rapid delete+create into a
-// single event, so we can't reliably observe separate Delete and Create.
+// File -> directory transition. Skipped on macOS: FSEvents coalesces
+// the rapid delete+create into one event.
 #[cfg(not(target_os = "macos"))]
 watch_test! {
     name: test_watch_file_to_directory,
@@ -529,7 +516,7 @@ watch_test! {
     }
 }
 
-// Test symlink with non-existent target
+// A symlink with a non-existent target.
 #[cfg(unix)]
 watch_test! {
     name: test_watch_symlink_nonexistent_target,
@@ -559,9 +546,8 @@ watch_test! {
     }
 }
 
-// Test deleting and recreating symlink target (watches resolve through symlinks)
-// Skipped on macOS: FSEvents watches the link's parent directory, not the target's,
-// so changes to the target at a different path don't generate events on the link.
+// Deleting and recreating a symlink target (watches resolve through
+// symlinks). Skipped on macOS: FSEvents watches the link's parent.
 #[cfg(all(unix, not(target_os = "macos")))]
 watch_test! {
     name: test_watch_symlink_recreate,
@@ -599,10 +585,7 @@ watch_test! {
     }
 }
 
-// Test create with params
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// create with params.
 run!(
     test_watch_create_with_params,
     r#"{ use sys::fs::watch::{self, *}; let w = create(#poll_batch_size: 0, #poll_interval: duration:1.s, null); !is_err(w) }"#,

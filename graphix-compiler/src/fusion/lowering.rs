@@ -1,9 +1,7 @@
-//! Fusion support library: builtin-call discovery, kernel signature
-//! derivation (lambda callees and body sub-regions), and the
-//! abstract-type resolver. Body code generation
-//! lives with each node (`Update::emit_clif` / `Apply::emit_clif`,
-//! see `design/distributed_jit.md`); this module supplies the
-//! analysis those emitters consume.
+//! Fusion analysis: fastcall-site discovery, lambda kernel signature
+//! derivation, and the env-free type-ref expander. Code generation
+//! lives with each node's `emit_clif`; this module supplies what those
+//! emitters consume.
 
 use crate::{
     BindId, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
@@ -23,97 +21,70 @@ use arcstr::ArcStr;
 use netidx_value::Value;
 use poolshark::local::LPooled;
 
-// Re-export the canonical kernel-ABI types so existing callers
-// (graphix-shell, in-tree tests) keep compiling. The definitive home
-// is `kernel_abi`.
 pub use kernel_abi::{KnownFusedFn, PrimType};
 
-/// Cached entry in [`FusionCtx::kernels`]. One per
-/// `(LambdaId, Arc<FnType>)` monomorphization of a lambda definition.
-///
-/// `fn_name` is the synthetic kernel name call sites resolve against
-/// (`funcids` / `callee_refs` in the JIT's declare/define phases).
+/// A lambda kernel signature, cached per monomorphization in
+/// `FusionCtx::kernels`. `fn_name` is the symbol call sites resolve
+/// against.
 #[derive(Debug, Clone)]
 pub struct CachedKernel {
     pub fn_name: ArcStr,
     pub kernel: std::sync::Arc<KernelSig>,
     pub signature: KnownFusedFn,
-    /// Captured outer-scope bindings the lambda body references,
-    /// lifted to extra positional kernel arguments (closure
-    /// conversion). Appended to the kernel signature *after* the
-    /// formal args, in this list's order. Empty for non-capturing
-    /// lambdas. The caller (`emit_lambda_call_node`) forwards each
-    /// capture's current value as an extra call arg.
+    /// Captured outer bindings, appended to the signature after the
+    /// formals in this order; callers forward each capture's current value.
     pub captures: Vec<CaptureSlot>,
-    /// The body references its own binding (self-recursion — tail or
-    /// not).
+    /// The body references its own binding.
     pub is_rec: bool,
-    /// The binding the kernel was built FROM (the call site's fnode
-    /// Ref id), when there was one. For a recursive callee the direct
-    /// path's Node body emission recognises self-calls by this id.
+    /// The binding the kernel was built from; body emission recognises
+    /// self-calls by it.
     pub self_bind: Option<BindId>,
-    /// Fastcall/cast sites discovered in this kernel's BODY
-    /// (`walk_node_for_builtin_calls`). The body emitter
-    /// (`CallSite::emit_clif` via `BodyCx::builtin_site`) lowers each
-    /// registered site to a direct call. Empty for a body with no
-    /// fusable builtin calls.
+    /// Fastcall/cast sites in the body, by `Apply` expr id.
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
 /// One captured outer-scope binding lifted into a lambda kernel's
-/// signature. See [`CachedKernel::captures`].
+/// signature.
 #[derive(Debug, Clone)]
 pub struct CaptureSlot {
-    /// The captured binding's `BindId` in the enclosing lexical
-    /// environment. The caller resolves the capture's value by
-    /// looking this id up in the parent kernel's input slots
-    /// (`lookup_local_by_bind_id`) — BindId-keyed so a same-named
-    /// shadow in the parent doesn't mis-route.
+    /// Keyed by id, not name, so a same-named shadow in the parent
+    /// cannot mis-route the capture.
     pub bind_id: BindId,
-    /// Source-level name of the captured binding. Used as the kernel
-    /// input slot name (so the body's `Ref` resolves) and as the
-    /// const-fallback lookup key.
+    /// The kernel input slot name the body's `Ref` resolves to.
     pub name: ArcStr,
-    /// Frozen type of the capture — for caller-side typecheck and slot
-    /// classification.
+    /// Frozen type of the capture.
     pub typ: Type,
 }
 
-/// How a discovered site dispatches inside a kernel: the builtin's
-/// registered `FastFn`, called directly on the site's stack buffer,
-/// or a `TypedFastFn` with the `Type` the site registered beside it —
-/// a builtin's resolved return type, or the Cast pseudo-site's
-/// destination ([`cast_typed`]).
+/// How a discovered site dispatches inside a kernel: a `FastFn` called
+/// directly on the site's stack buffer, or a `TypedFastFn` with the
+/// `Type` that directs its result (a resolved return type, or a cast's
+/// target).
 #[derive(Debug, Clone)]
 pub enum SiteDispatch {
     Fast(crate::FastFn),
     Typed(crate::TypedFastFn, Type),
 }
 
-/// The Cast pseudo-site's typed fast fn: `target.cast_value(env, x)`,
-/// the EXACT function `TypeCast::update` runs on the node-walk, so the
-/// two evaluators agree by construction.
+/// The cast pseudo-site's typed fast fn: the same `cast_value` call
+/// `TypeCast::update` makes on the node-walk.
 fn cast_typed(env: &Env, target: &Type, args: &[Value]) -> Option<Value> {
     Some(target.cast_value(env, args[0].clone()))
 }
 
-/// Where one buffer slot of a fastcall site comes from: an arg the
-/// call wrote (its index in the source-order arg list, spanning
-/// labeled and positional args), or a labeled DEFAULT the call left
-/// to the callee — the CallSite's own compiled default node, looked
-/// up by name (`CallSite::arg_named`).
+/// Where one buffer slot of a fastcall site comes from: an arg the call
+/// wrote (its index in the source-order arg list), or a labeled default
+/// the call left to the callee (the CallSite's compiled default node,
+/// by name).
 #[derive(Debug, Clone)]
 pub enum MarshalArg {
     Call(usize),
     Default(ArcStr),
 }
 
-/// Layout of one fusable call site — a sync builtin with a fast fn
-/// or a non-inline `cast<T>(x)` — captured at discovery so
-/// `emit_builtin_call_node` can marshal the call's args and decode
-/// the result. `marshal_args[i]` names the node that feeds buffer
-/// slot `i`, typed `arg_types[i]` (frozen; variadic args carry the
-/// element type).
+/// Layout of one fusable call site (a builtin with a fast fn, or a
+/// non-inline `cast<T>(x)`). `marshal_args[i]` feeds buffer slot `i`,
+/// typed `arg_types[i]` (frozen; variadic args carry the element type).
 #[derive(Debug, Clone)]
 pub struct BuiltinCallSiteInfo {
     pub marshal_args: Vec<MarshalArg>,
@@ -122,27 +93,18 @@ pub struct BuiltinCallSiteInfo {
     pub dispatch: SiteDispatch,
 }
 
-/// Output of [`walk_node_for_builtin_calls`]: `Apply.spec.id →
-/// BuiltinCallSiteInfo` so `CallSite::emit_clif` recognises a
-/// fusable site at emit time.
+/// Output of [`walk_node_for_builtin_calls`], keyed by `Apply` expr id.
 #[derive(Debug, Default, Clone)]
 pub struct BuiltinCallDiscovery {
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
 
-/// Walk a Node subtree to discover fusable call sites: every
-/// `CallSite` whose target resolves to a sync builtin binding
-/// registered in `ctx.builtin_bindings` WITH a `FastFn`, and every
-/// non-inline `cast<T>(x)`, gets an `apply_sites` entry. Descent is
-/// [`fusion::for_each_emitted_node`]: ordinary lambda bodies remain
-/// separate kernels, while compiler-owned collection callbacks are
-/// included because their bodies emit inline in the caller. Each site
-/// reads the CallSite's resolved FnType and its compiled arg/return
-/// sub-nodes' types (post-typecheck), never the AST.
-///
-/// Sites that can't be lowered (no fast fn, unsupported arg type,
-/// async builtin, mismatched arity, …) are simply omitted — emission
-/// then fails on the un-registered site and the subtree node-walks.
+/// Discover the fusable call sites in a subtree: every `CallSite` on a
+/// builtin with a fast fn and every non-inline `cast<T>(x)`. Descent
+/// is [`fusion::for_each_emitted_node`], so collection callbacks are
+/// included and ordinary lambda bodies are not. A site that cannot be
+/// lowered is omitted; emission then fails on it and the subtree
+/// node-walks.
 pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -157,30 +119,19 @@ pub fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     });
 }
 
-/// Register a `cast<T>(x)` site as a one-argument call to the cast
-/// machinery, if it can't be emitted inline. A scalar→scalar cast stays
-/// inline (`emit_cast_node`'s `compile_cast` fast path — pure register
-/// arithmetic); ONLY a cast with a non-scalar source (e.g. a `datetime`)
-/// or non-scalar target needs the machinery call. The decision here
-/// MUST mirror `emit_cast_node`'s inline test, or the site would
-/// (de)register out of step with emission.
+/// Register a cast that is not emitted inline. The inline test here
+/// must mirror `emit_cast_node`'s, or the site registers out of step
+/// with emission.
 fn try_register_cast<R: Rt, E: UserEvent>(
     tc: &crate::node::TypeCast<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
     let source = tc.n.typ();
-    // Inline-able scalar→scalar cast: no site (matches emit_cast_node's
-    // fast path — NUMERIC prims only; a bool cast needs the machinery
-    // call, so it registers like any non-inline cast).
     if scalar_prim(source).is_some_and(|p| p.is_numeric())
         && PrimType::from_type(&tc.target).is_some_and(|p| p.is_numeric())
     {
         return;
     }
-    // The source must marshal across the call ABI, and the cast's
-    // fallible result type (`[T, Error]`) must decode — otherwise the
-    // site can't be lowered and emission fails on the un-registered
-    // node (the region stays unfused).
     let Some(arg_frozen) = freeze_for_abi_normalized(source) else { return };
     let Some(ret_frozen) = freeze_for_abi_normalized(&tc.typ) else { return };
     out.apply_sites.insert(
@@ -194,39 +145,26 @@ fn try_register_cast<R: Rt, E: UserEvent>(
     );
 }
 
-/// Register one CallSite as a fastcall site, if it qualifies.
-/// The FnType shape comes from the CallSite (`callsite.ftype()
-/// .map(|ft| ft.resolve_tvars())`); each concrete arg/return type
-/// comes from the compiled sub-nodes (`cs.arg_positional` /
-/// `cs.arg_named` / `cs.typ()`) — the node-resident types the
-/// typechecker resolved. Neither reads the AST: the function
-/// expression's FnType is unresolved for generic builtins (e.g.
-/// `str::parse` with a polymorphic `'b: Cast` return), and an arg
-/// node's `typ()` is its concrete instantiated type.
+/// Register one CallSite as a fastcall site, if it qualifies. Types
+/// come from the CallSite's resolved FnType and its compiled arg and
+/// return nodes, never the AST, which is unresolved for generic
+/// builtins.
 fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     ctx: &ExecCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
-    // Need the source Apply Expr (for ExprKind::Ref-vs-other check
-    // on the function, and for ExprId to register the site). The
-    // CallSite's spec is always `ExprKind::Apply`.
     let apply_expr = cs.spec();
     let a = match &apply_expr.kind {
         ExprKind::Apply(a) => a,
         _ => return,
     };
-    // Only direct builtin calls qualify: the function must be a
-    // direct binding Ref.
     let path = match &a.function.kind {
         ExprKind::Ref { name } => name,
         _ => return,
     };
-    // Scope comes from the CallSite node itself — so a builtin called
-    // inside a nested-scope lambda body (a callee/callback whose
-    // discovery runs from `build_lambda_kernel`) resolves in its own
-    // module scope, not the region root's. Behaviour-preserving at the
-    // root (root call sites carry root scope).
+    // The CallSite's own scope, so a call inside a nested lambda body
+    // resolves in its module, not the region root's.
     let (_, bind) = match ctx.env.lookup_bind(&cs.scope().lexical, path).ok().flatten() {
         Some(b) => b,
         None => return,
@@ -236,24 +174,11 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(i) => i.clone(),
         None => return,
     };
-    // Async builtins can't be fused — they may produce values on a
-    // later cycle than the trigger.
     if !ctx.builtin_effect(info.name.as_str()).is_sync() {
         return;
     }
-    // Use the CallSite's resolved FnType (TVars unified at typecheck
-    // time to the call-site's concrete arg types) for the call shape.
-    //
-    // After typecheck has run for this CallSite, `cs.ftype()` is
-    // `Some(ft)` carrying the lambda's signature with the call-site's
-    // TVar bindings still live in the TVars' RwLock cells. Calling
-    // `resolve_tvars()` deep-clones with every TVar dereffed to its
-    // bound concrete type — exactly what fusion needs.
-    //
-    // `cs.ftype()` may be `None` if typecheck hasn't run yet, or
-    // didn't reach this site (e.g. a compile error elsewhere). Fall
-    // back to the binding's own (generic) FnType in that case as a
-    // last resort — it usually won't freeze, so the site stays unfused.
+    // `cs.ftype()` is `None` when typecheck did not reach this site;
+    // the binding's generic FnType then usually fails to freeze.
     let fn_type: std::sync::Arc<FnType> = match cs.ftype() {
         Some(ft) => std::sync::Arc::new(ft.resolve_tvars()),
         None => {
@@ -283,9 +208,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     Some(p) => p,
                     None => return,
                 };
-                // Concrete arg type from the compiled arg node — the
-                // node-resident value the typechecker resolved. Fall
-                // back to the formal type only if the node is absent.
                 let arg_typ = cs
                     .arg_positional(pos_idx)
                     .map(|n| n.typ().clone())
@@ -298,12 +220,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 marshal_args.push(MarshalArg::Call(*call_idx));
             }
             FnArgKind::Labeled { name, has_default } => {
-                // A fast fn sees the marshalled buffer AS the argument
-                // list, so every label needs a slot: one the call
-                // wrote marshals its arg node; one the call left to
-                // its default marshals the CallSite's compiled default
-                // node (`Arg::is_default`), which the typechecker
-                // resolved against this site like any written arg.
+                // A fast fn sees the buffer as the whole argument list,
+                // so an unwritten label marshals the compiled default.
                 let (source, arg_typ) = match call_labeled.remove(name.as_str()) {
                     Some(call_idx) => (
                         MarshalArg::Call(call_idx),
@@ -353,8 +271,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !call_labeled.is_empty() {
         return;
     }
-    // Return type — the CallSite's own resolved output type (the
-    // node-resident value the typechecker propagated for this Apply).
     let ret_typ = cs.typ().clone();
     let return_type = match kernel_abi::freeze_for_abi_normalized(&ret_typ) {
         Some(t) => t,
@@ -366,11 +282,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !is_call_return_supported(&return_type) {
         return;
     }
-    // STRICT FUSION (design/strict_fusion.md): only a builtin with a
-    // registered fast fn fuses — every other builtin dispatch
-    // node-walks on the canonical interp. A typed fast fn gets the
-    // site's resolved return type, the one its node-walk twin reads
-    // from `typecheck1`'s `resolved` FnType.
     let dispatch = match ctx.builtin_fastcall(info.name.as_str()) {
         Some(crate::FastCall::Plain(f)) => SiteDispatch::Fast(f),
         Some(crate::FastCall::Typed(f)) => SiteDispatch::Typed(f, ret_typ),
@@ -382,10 +293,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     );
 }
 
+/// The bare identifier of a single-level path; a kernel reads a `Ref`
+/// from a local slot, so a module-qualified path has none.
 pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
-    // A Ref we can fuse must be a bare identifier (no module path),
-    // because we read its value from a local binding in the kernel.
-    // `foo::bar` would require a more elaborate story.
     let s: &str = path.0.as_ref();
     let base = netidx_core::path::Path::basename(s)?;
     if netidx_core::path::Path::levels(s) != 1 {
@@ -393,8 +303,6 @@ pub(crate) fn ident_of(path: &ModPath) -> Option<&str> {
     }
     Some(base)
 }
-
-// ─── Expression-position emitters ────────────────────────────────
 
 /// The constant `Value` of a node, seeing through `ExplicitParens`.
 /// `None` for anything that isn't a compile-time-known literal.
@@ -407,11 +315,6 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
         NodeView::ExplicitParens(ep) => node_const_value(&ep.n),
-        // Composite literals fold when every element folds — the
-        // runtime shape of an array/tuple is a flat `ValArray`, a map
-        // is a `Value::Map`. Lets a constant nested composite (a map of
-        // arrays, an array of maps, …) lower to one Value constant
-        // instead of bailing the whole literal.
         NodeView::Array(a) => const_valarray(&a.n),
         NodeView::ListLit(l) => const_valarray(&l.n).map(|v| match v {
             Value::Array(a) => {
@@ -425,9 +328,8 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
     }
 }
 
-/// Fold a slice of element nodes into a constant `Value::Array` (the
-/// flat `ValArray` runtime shape shared by array and tuple literals),
-/// or `None` if any element isn't constant.
+/// Fold element nodes into a constant `Value::Array` (the runtime shape
+/// of array and tuple literals), or `None` if any element isn't constant.
 fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
     let mut vals: poolshark::local::LPooled<Vec<Value>> =
         poolshark::local::LPooled::take();
@@ -437,11 +339,8 @@ fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
     Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
 }
 
-/// Fold parallel key/value node slices into a constant
-/// `Value::Map`, or `None` if any entry isn't constant. Shared by
-/// `node_const_value`'s `Map` arm and `emit_map_new`.
-/// (`pub(crate)`: also the direct path's `emit_map_new_node` —
-/// fusion::emit — const-folds through it.)
+/// Fold parallel key/value node slices into a constant `Value::Map`,
+/// or `None` if any entry isn't constant.
 pub(crate) fn const_map<R: Rt, E: UserEvent>(
     keys: &[Node<R, E>],
     vals: &[Node<R, E>],
@@ -456,31 +355,12 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
     Some(Value::Map(map))
 }
 
-/// On-demand monomorphization for a user lambda encountered at a
-/// `CallSite` whose `resolved_apply()` is `ApplyView::Lambda(&g)`.
-///
-/// Expand named (`Type::Ref`) types to their definitions, recursing
-/// through composites, so `abi_kind` / `freeze_for_abi` can classify a
-/// value's runtime shape env-free. Abstract types are LEAVES: a nominal
-/// abstract is an opaque `Value::Abstract` box whatever its
-/// representation (`design/nominal_abstract_types.md`).
-///
-/// Recursive types (`List<'a> = [`Cons('a, List<'a>), `Nil]`) terminate
-/// by [`Seen`] cycle detection on the `Ref` expansion arm: a
-/// re-occurring expansion is left as-is, `abi_kind` then yields `None`,
-/// and the kernel simply doesn't fuse — correct, since a recursive type
-/// has no fixed ABI layout. Detection is by expansion IDENTITY (the
-/// full `TypeRef`), so structural depth never trips it — a
-/// deeply-nested but FINITE type resolves fully. The one case identity
-/// can't catch is NON-regular recursion whose params grow each step
-/// (`type T<'a> = T<Array<'a>>`); a generous length backstop on the
-/// expansion chain (NOT structural depth) guarantees termination there.
-/// Every caller is FUSION-side (kernel-sig derivation), where a
-/// truncated resolution only de-fuses (freeze rejects the opaque
-/// remainder — never a wrong value or a spurious typecheck failure), so
-/// the budget is small: finishing the expansion of a huge type (the GUI
-/// widget unions) buys nothing — such types have no kernel encoding —
-/// and a per-region resolve of one was the 2026-07-13 compile wedge.
+/// Expand named types to their definitions through composites so
+/// `abi_kind`/`freeze_for_abi` can classify a shape env-free. Abstract
+/// types are leaves. A recursive expansion is left as-is (the kernel
+/// then does not fuse); non-regular recursion is stopped by a length
+/// backstop on the expansion chain. Truncation only ever de-fuses, so
+/// the work budget is small.
 pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
     let cx =
         ResolveCx { budget: 2_048, size_cap: FUSION_SIZE_CAP, ..ResolveCx::default() };
@@ -491,44 +371,24 @@ pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
 /// is work the freeze would discard.
 pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 
-/// Per-top-level-resolve state. `Seen` bounds each expansion PATH, but
-/// nothing bounded the expansion TREE: an unmemoized walk over types that
-/// repeat at every nesting level is exponential in the nesting depth, and
-/// the deep-cloned results are RETAINED per call site (the GUI
-/// widget/style signatures hit the OOM killer at 41GB expanding per
-/// static call site, 2026-07-13). `memo` caches expansions keyed by
-/// (`ExpandKey`, the set of `Seen` keys the computation consulted): an
-/// entry is valid on any path containing all its dependencies, and a hit
-/// shares the stored `Type`'s Arcs, so a resolve builds a DAG sized by
-/// DISTINCT types instead of a tree sized by paths. `expansions` is a
-/// total-work backstop: exhaustion leaves the remainder opaque (de-fuse /
-/// check-refuse, never a wrong value), the same failure mode as the
-/// per-path length backstop.
+/// State of one top-level resolve. Memo entries are keyed by the
+/// expansion plus the `Seen` keys it consulted, so an entry is valid on
+/// any path containing all its dependencies and a resolve costs the
+/// number of distinct types, not paths.
 struct ResolveCx {
+    /// Ref expansions.
     memo: std::cell::RefCell<LPooled<Vec<MemoEntry>>>,
-    /// STRUCTURAL node memo: (variant discriminant, content Arc
-    /// address(es)) → this pass's result for that shared subtree, valid
-    /// on any path containing its recorded `Seen` dependencies. The
-    /// expansion memo (`memo`) dedupes REF expansions; without this one
-    /// every shared composite BETWEEN expansions was re-walked per path
-    /// — tree-cost over the resolved DAG.
+    /// Shared composite subtrees between expansions.
     nodes: std::cell::RefCell<LPooled<ahash::AHashMap<crate::typ::NormKey, NodeEntry>>>,
-    /// `Seen` keys consulted by the CURRENT expansion frame's computation
-    /// (the frame's own key excluded on merge-up — a self-hit is not a
-    /// dependency on the caller's path).
+    /// `Seen` keys the current frame consulted; a frame's own key is
+    /// not a dependency on its caller's path.
     consulted: std::cell::RefCell<LPooled<Vec<kernel_abi::ExpandKey>>>,
-    /// The current frame's result was truncated (budget, size cap, or
-    /// path-length backstop) — not the true expansion, must not be
-    /// memoized.
+    /// The current frame's result was truncated and must not be memoized.
     poisoned: std::cell::Cell<bool>,
     expansions: std::cell::Cell<u32>,
     budget: u32,
-    /// Running count of OUTPUT nodes (tree-wise — a memo hit charges its
-    /// entry's recorded unfolded size, not 1), against `size_cap`.
-    /// Callers that would DISCARD an over-large result (the instance-
-    /// signature and fusion resolvers) set the cap so a widget-scale
-    /// resolution aborts as soon as it is knowably too big instead of
-    /// being computed and thrown away per call site.
+    /// Output nodes so far, tree-wise; a memo hit charges its recorded
+    /// size. Past `size_cap` the resolve stops.
     unfolded: std::cell::Cell<u32>,
     size_cap: u32,
 }
@@ -562,22 +422,13 @@ struct FrameResult {
 
 #[derive(Clone)]
 struct MemoEntry {
-    /// [`expand_key_fp`] of `key` — compared first so a lookup scans
-    /// the entry list with u64 compares instead of `TypeRef` string
-    /// equality (which dominated the resolve at GUI scale).
+    /// [`expand_key_fp`] of `key`, compared before the key itself.
     fp: u64,
     key: kernel_abi::ExpandKey,
     deps: Vec<(u64, kernel_abi::ExpandKey)>,
-    /// `Some` = the expansion with abstracts substituted (inline it);
-    /// `None` = nothing beneath the ref's expansion resolved — the ref
-    /// stays OPAQUE. Inlining a substitution-free ref buys nothing and
-    /// DESYNCS expansion states across the program: `contains`' ref-pair
-    /// history keys on refs, so one pre-expanded side turns co-inductive
-    /// recursion into an exponential structural walk (the 2026-07-13
-    /// button-click wedge).
+    /// `None` when nothing beneath the ref resolved: the ref stays opaque.
     resolved: Option<Type>,
-    /// Unfolded (tree-wise) node count of `resolved`, charged against
-    /// `ResolveCx::size_cap` on every hit.
+    /// Tree-wise node count of `resolved`, charged on every hit.
     size: u32,
 }
 
@@ -595,8 +446,8 @@ fn key_closed(key: &kernel_abi::ExpandKey) -> bool {
 }
 
 impl ResolveCx {
-    /// Record a `Seen` hit: the current frame's result depends on `key`
-    /// being on the path.
+    /// Record that the current frame's result depends on `key` being on
+    /// the path.
     fn consult(&self, key: &kernel_abi::ExpandKey) {
         let mut cur = self.consulted.borrow_mut();
         if !cur.contains(key) {
@@ -623,8 +474,7 @@ impl ResolveCx {
         Some(entry.resolved)
     }
 
-    /// Count `n` OUTPUT nodes against the size cap; `false` = the result
-    /// has grown past the cap — poisoned, stop expanding.
+    /// Count `n` output nodes against the size cap; `false` once past it.
     fn count_nodes(&self, n: u32) -> bool {
         let total = self.unfolded.get().saturating_add(n);
         self.unfolded.set(total);
@@ -635,9 +485,8 @@ impl ResolveCx {
         true
     }
 
-    /// Structural-memo hit: `Some(result)` when `key` has an entry whose
-    /// path dependencies are all on the current `seen` path. Charges the
-    /// entry's recorded size and re-registers its dependencies.
+    /// `Some(result)` when `key` has an entry whose dependencies are all
+    /// on the current path; charges its size and re-registers them.
     fn node_lookup(
         &self,
         key: &crate::typ::NormKey,
@@ -659,9 +508,9 @@ impl ResolveCx {
         Some(resolved)
     }
 
-    /// Run `f` as a tracked frame: capture the `Seen` keys it consults,
-    /// whether it was truncated, and the output size it accumulated —
-    /// then merge consults/poisoning into the enclosing frame.
+    /// Run `f` as a tracked frame, returning what it consulted, whether
+    /// it was truncated and its output size; merges both into the
+    /// enclosing frame.
     fn node_frame<R>(&self, f: impl FnOnce(&Self) -> R) -> (R, FrameResult) {
         let saved_consulted =
             std::mem::replace(&mut *self.consulted.borrow_mut(), LPooled::take());
@@ -684,8 +533,7 @@ impl ResolveCx {
         (r, FrameResult { deps, poisoned, size })
     }
 
-    /// Charge one expansion against the budget; `false` = exhausted, the
-    /// caller must leave the type opaque.
+    /// Charge one expansion against the budget; `false` when exhausted.
     fn charge(&self) -> bool {
         let n = self.expansions.get();
         if n >= self.budget {
@@ -704,10 +552,8 @@ impl ResolveCx {
         true
     }
 
-    /// Run `f` as one expansion frame: track the `Seen` keys it consults,
-    /// memoize the result against them when `memoize` (unless the frame
-    /// was truncated), and merge its dependencies — minus `key` itself —
-    /// into the enclosing frame.
+    /// Run `f` as one expansion frame; memoize an untruncated result
+    /// against the keys it consulted when `memoize`.
     fn expand(
         &self,
         key: kernel_abi::ExpandKey,
@@ -723,10 +569,8 @@ impl ResolveCx {
             std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
         let poisoned = self.poisoned.get();
         deps.retain(|k| k != &key);
-        // CLOSED keys only, even for the per-call memo: an unbound-TVar
-        // param compares equal to any other unbound cell, so a hit for a
-        // different-but-eq key would hand one site's cells to another
-        // and skip `lookup_ref`'s constraint registration.
+        // An unbound tvar param compares equal to any other unbound
+        // cell, so an open key would hand one site's cells to another.
         if memoize && !poisoned && key_closed(&key) {
             let entry = MemoEntry {
                 fp: expand_key_fp(&key),
@@ -748,9 +592,8 @@ impl ResolveCx {
     }
 }
 
-/// `None` = nothing beneath resolved — the caller keeps the original
-/// (shared). Truncation (budget/size/path backstops) also returns `None`
-/// with `cx.poisoned` set: the remainder stays opaque.
+/// `None` when nothing beneath resolved (the caller keeps the original)
+/// or the resolve was truncated (`cx.poisoned` set).
 fn resolve_abstract_d<'a>(
     typ: &Type,
     env: &Env,
@@ -758,28 +601,15 @@ fn resolve_abstract_d<'a>(
     cx: &ResolveCx,
 ) -> Option<Type> {
     use kernel_abi::Seen;
-    // Non-regular-recursion backstop (see fn doc). Counts EXPANSIONS, not
-    // structural nesting, so finite types of any structural depth are
-    // unaffected. It bounds the number of distinct EXPANSIONS on one path
-    // (named-alias / abstract hops): the case it's FOR is non-regular
-    // recursion whose params grow each step (identity can't catch it), but
-    // a pathologically long FINITE expansion chain (>256 distinct hops)
-    // would also be left opaque and simply not fuse. A truncated result
-    // is not the true expansion — poison memoization upward.
+    // Bounds distinct expansions on one path, which is what stops
+    // non-regular recursion; structural depth is not counted.
     if Seen::len(seen) > 256 {
         cx.poisoned.set(true);
         return None;
     }
-    // Every visit costs ~one unit against the size cap; a memo hit
-    // charges its recorded subtree size in `lookup` instead. Once the
-    // accumulated work crosses the caller's cap, stop — the result would
-    // be discarded anyway. `None` = the subtree is returned UNCHANGED
-    // (shared) — abstract-free subtrees materialize nothing.
     if !cx.count_nodes(1) {
         return None;
     }
-    // Structural node memo: a shared composite reached along many paths
-    // resolves once per (path-dependency) context.
     let nkey = crate::typ::norm_key(typ);
     if let Some(k) = &nkey
         && let Some(hit) = cx.node_lookup(k, seen)
@@ -806,24 +636,10 @@ fn resolve_abstract_node<'a>(
 ) -> Option<Type> {
     use kernel_abi::{ExpandKey, Seen};
     match typ {
-        // Deref bound TVars and resolve through them — an INFERRED
-        // binding type (e.g. a region input's `let` binding, #218) is
-        // TVar-wrapped, unlike the declared signature types the
-        // classic kernel-build callers pass. An unbound TVar returns
-        // unchanged (freeze rejects it downstream, correctly). The
-        // deref itself is a change: the output carries the BINDING, not
-        // the cell.
-        //
-        // Clone the inner type OUT of `with_deref` and recurse with
-        // the TVar's read guard DROPPED: recursing inside the closure
-        // held the guard across `lookup_ref` / `ABSTRACT_REGISTRY`
-        // acquisitions, and with parking_lot's fair (non-reentrant)
-        // locks that cross-holding deadlocked concurrent compiles in
-        // one process (caught as the post-flip parallel test wedge —
-        // every worker parked on `check_sig`'s registry write).
-        //
-        // A TVar deref is not an expansion (it can't recurse forever —
-        // TVar bindings are occurs-checked), so `seen` passes through.
+        // The inner type is cloned out so the tvar's read guard is not
+        // held across `lookup_ref`'s lock acquisitions (a deadlock under
+        // concurrent compiles). A deref is not an expansion: `seen`
+        // passes through.
         Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
             Some(t) => Some(resolve_abstract_d(&t, env, seen, cx).unwrap_or(t)),
             None => None,
@@ -832,7 +648,7 @@ fn resolve_abstract_node<'a>(
             let key = ExpandKey::Ref(tr.clone());
             if Seen::contains(seen, &key) {
                 cx.consult(&key);
-                return None; // recursive named type — leave opaque
+                return None;
             }
             if let Some(t) = cx.lookup(&key, seen) {
                 return t;
@@ -841,14 +657,6 @@ fn resolve_abstract_node<'a>(
                 return None;
             }
             match typ.lookup_ref(env) {
-                // Refs INLINE unconditionally: the instance signature
-                // must be env-INDEPENDENT — inside the defining module
-                // `lookup_ref` resolves names to their PRIVATE forms,
-                // and the caller's env cannot reproduce that view (the
-                // scoped-abstract instance semantics, 2026-07-13). The
-                // expansion-state mismatch this creates for `contains`
-                // is paid for there (the pure-probe pair memo), not by
-                // keeping refs opaque.
                 Ok(resolved) => cx.expand(key, true, || {
                     let node = Seen::push(seen, ExpandKey::Ref(tr.clone()));
                     Some(
@@ -864,37 +672,17 @@ fn resolve_abstract_node<'a>(
     }
 }
 
-/// Build (or cache-hit) the fused [`CachedKernel`] signature for a
-/// resolved, concretely-typed lambda `g`, populating the per-`ExecCtx`
-/// `(LambdaId, resolved FnType)` cache. Pure signature derivation —
-/// the body is validated by the compile attempt itself ("is it
-/// fusable" IS the compile attempt); `None` = the lambda has no
-/// kernel-representable signature and its call sites node-walk.
-///
-/// `kernel_name` becomes the built `CachedKernel.fn_name`; a cache hit
-/// returns the first builder's name. `GXLambda` carries its analyzed
-/// self-binding and recursion facts.
 /// The catch-coverage fingerprint of a lambda instance's body: each
-/// interior `?`/`$` site's resolved handler bind in deterministic
-/// node-visit order (`u64::MAX` = handler-less). Part of the kernel
-/// cache key — a kernel bakes its instance's handler ids into its
-/// qop-deliver sites, so two call sites with different coverage need
-/// two kernels (catch-callsite-coverage-aug2026).
+/// `?`/`$` site's resolved handler bind in node-visit order (`u64::MAX`
+/// = handler-less). Part of the kernel cache key, because a kernel
+/// bakes its handler ids into its deliver sites.
 pub(crate) type QopCoverage = smallvec::SmallVec<[u64; 4]>;
 
-/// The lambda-RESOLUTION fingerprint of a lambda instance's body: for
-/// every statically-resolved lambda call site (deterministic
-/// node-visit order), the callee's `LambdaId`, plus the resolved
-/// identity of each fn-typed argument the site forwards (a lambda
-/// literal's own id; a `Ref`'s `bind_to_lambda` entry — the
-/// per-callsite elaboration channel). Part of the kernel cache key:
-/// two call sites of one lambda can agree on every TYPE and still
-/// resolve an fn-typed formal or capture to two different callbacks,
-/// and a kernel BAKES those resolutions as CLIF calls — sharing it
-/// across such instances would run the first site's callback for the
-/// second. An unresolvable forwarded fn arg records `u64::MAX`; a
-/// body with one can't emit that call anyway (its kernel never
-/// defines), so colliding markers never share live code.
+/// The lambda-resolution fingerprint of a lambda instance's body: per
+/// statically-resolved call site, the callee's `LambdaId` and the
+/// identity of each fn-typed argument forwarded (`u64::MAX` when
+/// unresolvable). Part of the kernel cache key, because a kernel bakes
+/// those resolutions as CLIF calls.
 pub(crate) type FnResolutions = smallvec::SmallVec<[u64; 4]>;
 
 fn body_fingerprint<R: Rt, E: UserEvent>(
@@ -929,10 +717,8 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
                             v.downcast_ref::<crate::LambdaDef<R, E>>()
                                 .map(|d| d.id.inner())
                         })
-                        // A forwarded fn formal's b2l entry is torn down
-                        // by the time fusion fingerprints the body; the
-                        // persistent snapshot keeps the distinguishing
-                        // resolution (fn_formal_forwarded).
+                        // A forwarded fn formal's `bind_to_lambda` entry
+                        // is gone by fingerprint time; the snapshot keeps it.
                         .or_else(|| {
                             ec.fn_forward_resolutions.get(&r.id).map(|id| id.inner())
                         }),
@@ -946,8 +732,7 @@ fn body_fingerprint<R: Rt, E: UserEvent>(
     (cov, res)
 }
 
-/// Visit each of a call site's arg Nodes in source order (labeled args
-/// resolved by name, positionals by running positional count).
+/// Visit a call site's arg nodes in source order.
 fn each_arg_node<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     f: &mut impl FnMut(&Node<R, E>),
@@ -968,9 +753,7 @@ fn each_arg_node<R: Rt, E: UserEvent>(
     }
 }
 
-/// Is this type an fn type once tvars deref and (for `Ref` aliases)
-/// the name expands? The formal/arg classification the fn-skip and
-/// the resolution fingerprint share.
+/// Is this an fn type once tvars deref and aliases expand?
 fn is_fn_shaped(t: &Type, env: &Env) -> bool {
     t.with_deref(|t| match t {
         Some(Type::Fn(_)) => true,
@@ -981,17 +764,10 @@ fn is_fn_shaped(t: &Type, env: &Env) -> bool {
     })
 }
 
-/// Formal positions passed UNCHANGED by every self-call in the body:
-/// the arg at that position is exactly a `Ref` to the formal's own
-/// binding, so a tail-loop rebind of it is the identity. Such a
-/// formal needs no rebind slot, which frees it from the loop's
-/// register-loopable kind gate — and lets an fn-typed formal drop out
-/// of the kernel signature entirely (its only uses are
-/// statically-resolved calls). Vacuously all-true (for single-name
-/// formals) when the body has no self-calls; a destructured formal is
-/// never invariant. Walks like [`self_calls_abi_consistent`]:
-/// `for_each_node` skips nested lambda bodies (a self-call there is a
-/// mutual edge that de-fuses at its own call site).
+/// Per formal: is it passed unchanged (a `Ref` to its own binding) by
+/// every self-call in the body? Such a formal needs no rebind slot.
+/// Vacuously true with no self-calls; a destructured formal is never
+/// invariant. Nested lambda bodies are not walked.
 pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
@@ -1001,8 +777,6 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
     let mut inv: smallvec::SmallVec<[bool; 8]> =
         ids.iter().map(|id| id.is_some()).collect();
     let Some(sb) = self_bind else { return inv };
-    // Per-formal call-site lookup: positional formals index the
-    // positional arg list by their position AMONG positionals.
     enum ALook {
         Pos(usize),
         Named(ArcStr),
@@ -1048,6 +822,12 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
     inv
 }
 
+/// Build, or fetch from the per-`ExecCtx` cache, the kernel signature
+/// for the lambda `g` at the call site's resolved type. Signature
+/// derivation only: the body is validated by the compile attempt.
+/// `None` means the lambda has no kernel-representable signature and
+/// its call sites node-walk. A cache hit returns the first builder's
+/// `fn_name`.
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site_ftype: &FnType,
@@ -1055,47 +835,22 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     ec: &mut ExecCtx<R, E>,
 ) -> Option<CachedKernel> {
     let self_bind = g.self_bind();
-    // A COLLECTION-bodied lambda (`array::fold` and family) never
-    // takes the cross-kernel call path: its call sites inline-emit the
-    // scaffold loop via the Apply hook (`GXLambda::emit_clif` →
-    // `emit_clif_call`), consulted before `lambda_site`. A standalone
-    // kernel for the marker body would never be called — and its
-    // define FAILS (a callee body can't claim the select-ride state
-    // the scaffold context provides), which would de-fuse the whole
-    // region. The fn-formal freeze refusal used to guard this by
-    // accident; the invariant-formal skip removed it, so refuse
-    // explicitly.
+    // A collection-bodied lambda is inline-emitted at its call sites; a
+    // standalone kernel for it would fail to define.
     if matches!(g.body().view(), NodeView::MapQ(_) | NodeView::FoldQ(_)) {
         return None;
     }
-    // Cache key: (LambdaId, the CALL SITE's resolved FnType, the
-    // instance body's CATCH COVERAGE). `resolve_tvars` deep-clones,
-    // dereffing every TVar to its bound concrete type, so
-    // monomorphizations agree across syntactically-distinct but
-    // structurally-equivalent FnTypes. The key must be the SITE's
-    // type, not `g.typ()`: the lambda instance's FnType shares TVar
-    // cells with the lambda def, and when one polymorphic lambda is
-    // called at two monomorphizations the first site's unification
-    // wins those cells — a later site's `g.typ()` reports the FIRST
-    // monomorphization (audit-jul2026/02). Coverage is part of a call
-    // site's identity too: each instance body's `?` nodes resolved
-    // their handler against THAT site's dynamic scope, and a kernel
-    // bakes those handler ids into its qop-deliver sites — two sites
-    // with different coverage sharing one kernel silently dropped the
-    // covered site's error delivery
-    // (catch-callsite-coverage-aug2026).
+    // The key is the site's type, not `g.typ()`: the instance shares
+    // tvar cells with the def, so `g.typ()` reports whichever
+    // monomorphization unified first.
     let resolved_typ = std::sync::Arc::new(site_ftype.resolve_tvars());
     let (coverage, fn_resolutions) = body_fingerprint(g.body(), ec);
     let key = (g.id(), resolved_typ, coverage, fn_resolutions);
     if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
         return Some(cached);
     }
-    // A coverage VARIANT needs its own SYMBOL: kernel names are
-    // module-wide in the JIT, and a second definition under the same
-    // name fails the region build (a spurious whole-region de-fuse).
-    // The suffix counts existing same-(lambda, mono) entries —
-    // deterministic in compile order, so the compiled shape stays
-    // process-stable (#19 detcheck).
+    // Kernel names are module-wide, so each coverage variant needs its
+    // own symbol; the suffix is deterministic in compile order.
     let variant = {
         let kernels = ec.fusion.kernels.lock();
         kernels
@@ -1109,28 +864,17 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         compact_str::format_compact!("{kernel_name}__cov{variant}").as_str().into()
     };
     let kernel_name = &kernel_name;
-    // The kernel is BUILT from `g` — its body's node types are what
-    // emission reads — so if the instance disagrees with the site
-    // (the shared-cell corruption above), building would emit a kernel
-    // whose CLIF types mismatch the call site (a cranelift verifier
-    // panic, or worse a silent same-width misread). Refuse instead;
-    // the site node-walks. Compare the pieces the build consumes
-    // (args/vargs/return), not the whole FnType — constraint lists
-    // carry TVar identities that differ benignly between the site copy
-    // and the def.
+    // Emission reads the instance's node types, so an instance that
+    // disagrees with the site would emit a kernel whose CLIF types
+    // mismatch the call. Constraint lists differ benignly; compare only
+    // args, vargs and return.
     {
         let gt = g.typ().resolve_tvars();
         let st = &*key.1;
         let args_agree = gt.args.len() == st.args.len()
             && gt.args.iter().zip(st.args.iter()).all(|(a, b)| {
-                // A fn-typed arg is never an ABI value slot — it is
-                // skipped (invariant) or refuses the build (rebound),
-                // and WHICH callback it resolves to is keyed separately
-                // by `FnResolutions`, not by this type. Its structure
-                // differs benignly between instance and site (a
-                // resolved callback settles `throws _`, the site keeps
-                // the trait's `throws 'e`), so require only that both
-                // are fn-shaped, never structural equality.
+                // An fn-typed arg is never a value slot and is keyed by
+                // `FnResolutions`; its `throws` differs benignly here.
                 if is_fn_shaped(&a.typ, &ec.env) || is_fn_shaped(&b.typ, &ec.env) {
                     is_fn_shaped(&a.typ, &ec.env) && is_fn_shaped(&b.typ, &ec.env)
                 } else {
@@ -1147,13 +891,9 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             return None;
         }
     }
-    // Re-entrancy guard: a lambda whose body (transitively) builds a
-    // lambda that calls back into THIS one — mutual recursion — would
-    // recurse this build forever (the cache entry above only lands on
-    // completion). Refuse the re-entered build instead: the inner
-    // call site doesn't lower, the enclosing body emission fails, and
-    // the whole chain de-fuses to the node-walk. Mutually-recursive
-    // lambdas are a fusion gap, not a compiler hang.
+    // Mutual recursion would re-enter this build forever (the cache
+    // entry lands only on completion); a re-entered build refuses and
+    // the chain de-fuses.
     struct BuildingGuard(triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>, u64);
     impl Drop for BuildingGuard {
         fn drop(&mut self) {
@@ -1165,21 +905,13 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         return None;
     }
     let _building = BuildingGuard(ec.fusion.building.clone(), lid);
-    // Translate each lambda formal arg into a kernel input slot. Slots
-    // carry the formal's PATTERN BindId when the pattern is a single
-    // name — body `Ref`s resolve id-first, which is load-bearing when
-    // the instance was resolved through a DECLARED fn type whose
-    // parameter names are documentation (`f: fn(acc: 'b, x: 'a)` in a
-    // .gxi) and differ from the callback literal's own names
-    // (`|acc, v| …` — the body's `Ref(v)` never matches slot name
-    // "x"). The FnArgKind name still names the slot for by-name
-    // resolution of destructured formals (no single id).
+    // Slots carry the formal's BindId because a declared fn type's
+    // parameter names may differ from the lambda literal's own; body
+    // `Ref`s resolve by id first.
     let typ = g.typ();
     let mut inputs: LPooled<Vec<(ArcStr, RegionInputKind, Option<BindId>)>> =
         LPooled::take();
-    // The frozen kernel-ABI slot type of each formal (source position,
-    // frozen type), kept for the recursive-self-call ABI check below
-    // (#21). Positions, because skipped fn formals leave holes.
+    // Keyed by source position because skipped fn formals leave holes.
     let mut formal_kts: LPooled<Vec<(usize, Type)>> = LPooled::take();
     let inv = invariant_formals(g, self_bind);
     let mut skipped_args: Vec<u32> = Vec::new();
@@ -1190,14 +922,9 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             _ => return None,
         };
         let arg_typ = expand_refs(&fa.typ, &ec.env);
-        // An fn-typed formal is never a VALUE slot. When every
-        // self-call passes it through unchanged, its value is never
-        // needed at run time — the body's uses are statically-resolved
-        // calls (the fn-capture precedent: if the body actually needs
-        // it as a value, body emission fails and the build is
-        // discarded). Drop it from the signature; callers skip the
-        // arg. A self-call that REBINDS an fn formal keeps the old
-        // refusal — a rebind slot can't carry a LambdaDef.
+        // An invariant fn-typed formal drops out of the signature: its
+        // uses are statically-resolved calls, and a body that needs it
+        // as a value fails to emit. A rebind slot cannot carry a lambda.
         if is_fn_shaped(&arg_typ, &ec.env) {
             if inv[i] && matches!(fa.kind, FnArgKind::Positional { .. }) {
                 skipped_args.push(i as u32);
@@ -1209,14 +936,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         let kind = type_to_region_input_kind(kt.clone())?;
         let id = g.args().get(i).and_then(|p| p.single_bind_id());
         if id.is_none() {
-            // A DESTRUCTURED formal (`|(k, v)| …`) has no single id and
-            // its leaves aren't bound as slots yet — refuse the build.
-            // Falling through with a name-only slot is a WRONG-BINDING
-            // hazard: the slot is named from the DECLARED FnType (a
-            // .gxi doc name like "x"), and a body leaf that happens to
-            // share it resolves by name to the whole composite —
-            // `array::map(a, |(p, x)| x)` returned the tuple POINTER
-            // as the scalar x (jit_destructure_probes).
+            // A destructured formal refuses: a name-only slot would let
+            // a same-named body leaf resolve to the whole composite.
             let mut has_ids = false;
             if let Some(p) = g.args().get(i) {
                 p.ids(&mut |_| has_ids = true);
@@ -1234,18 +955,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         .filter(|(i, v)| **v && !skipped_args.contains(&(*i as u32)))
         .map(|(i, _)| i as u32)
         .collect();
-    // Closure conversion: every binding the body references but
-    // doesn't bind itself is a capture. Lift each value-typed capture
-    // into an extra positional kernel arg (after the formal args).
-    // Live semantics: the caller passes the capture's *current* value
-    // at each call, matching `GXLambda`'s runtime behavior.
-    //
-    // `g.body().refs()` reports the body's referenced/bound ids, but
-    // it does NOT account for the lambda's *formal arg* patterns —
-    // those bind their ids in the lambda Node, outside the body. So
-    // the body's `Ref(x)` to a formal arg `x` surfaces as "external"
-    // here. Exclude the formal-arg ids explicitly so they aren't
-    // mistaken for captures.
+    // Formal patterns bind outside the body, so `refs` reports them as
+    // external; they are excluded from the captures.
     let mut arg_ids: LPooled<nohash::IntSet<BindId>> = LPooled::take();
     for pat in g.args() {
         pat.ids(&mut |id| {
@@ -1260,35 +971,18 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             external.push(id);
         }
     });
-    // Deterministic order so the kernel signature (and thus the
-    // `(LambdaId, FnType)` cache entry) is stable across builds.
     external.sort_by_key(|id| id.inner());
     let mut captures: Vec<CaptureSlot> = Vec::new();
     for bind_id in external.iter().copied() {
-        // The lambda's own binding is not a capture — a recursive
-        // body's self-reference lowers as a call (`TailCall` in tail
-        // position, a native call elsewhere), never as a value. It
-        // can't be scanned as one anyway: a rec binding's env type is
-        // a TVar-wrapped `Fn` that the shallow `Type::Fn` skip below
-        // misses and `freeze_for_abi` then rejects, killing the
-        // whole build (recursive lambdas never fused because of it).
+        // A self-reference lowers as a call, never as a value.
         if Some(bind_id) == self_bind {
             continue;
         }
         let b = ec.env.by_id.get(&bind_id)?;
         let cap_typ = b.typ.clone();
-        // Function-typed captures: a statically-resolvable callee is
-        // handled by the body's own CallSite emit (it fires this same
-        // CallSite emit and emits a CLIF call), so it isn't a value
-        // capture — skip it. A dynamic fn binding (used as a value)
-        // can't be lifted as a value slot; bail (the lambda stays
-        // unfused, runtime takes the interp path).
+        // A statically-resolved fn capture is emitted as a call, not a
+        // value slot; a body that needs it as a value fails to emit.
         if matches!(&cap_typ, Type::Fn(_)) {
-            // We can't cheaply tell static-vs-dynamic here without the
-            // call site; rely on the body emit to lower static calls
-            // and to bail on dynamic use. Skipping is safe: if the
-            // body actually needs this as a value, body emit fails and
-            // the whole build returns None below.
             continue;
         }
         let kt = match kernel_abi::freeze_for_abi_normalized(&expand_refs(
@@ -1307,48 +1001,25 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     }
     let return_typ =
         kernel_abi::freeze_for_abi_normalized(&expand_refs(&typ.rtype, &ec.env))?;
-    // Unified Value ABI: every return crosses as the genuine two-word
-    // Value pair, so String returns marshal like everything else.
-    // Unit / bare-Null returns still refuse (a unit-typed call has no
-    // value to return; bare Null should have widened) — the call
-    // stays on the node-walk (via `GXLambda`).
+    // A unit-typed call has no value to return; bare Null should have
+    // widened.
     if matches!(
         kernel_abi::abi_kind(&return_typ),
         Some(kernel_abi::AbiKind::Unit | kernel_abi::AbiKind::Null)
     ) {
         return None;
     }
-    // Self-recursion: the body references its own binding. With a
-    // self tail-call present, the kernel compiles to a rebind-and-jump
-    // loop (`has_tail_loop`) instead of a native recursive call —
-    // constant stack at any depth. Only LOOP-CARRIED formals are
-    // rebound (captures and invariant formals are loop-invariant
-    // within one invocation), so the loop is gated on every CARRIED
-    // formal being a rebind-supported kind; otherwise self-calls stay
-    // plain native recursion (correct, native stack depth).
     let is_rec = g.self_recursive();
-    // A recursive self-call is a SECOND source of values for the formals
-    // (besides the outer call). If inference resolved a formal to the
-    // outer call's type but the self-call feeds it a differently-shaped
-    // value, the kernel would marshal that value under the wrong ABI (a
-    // composite pointer read as a scalar leaks it; a scalar deref'd as a
-    // pointer crashes). Static instance checking rejects that mismatch;
-    // retain this ABI check as defense in depth and de-fuse on disagreement.
+    // Defense in depth behind static instance checking: a self-call
+    // feeding a formal a differently-shaped value would marshal it under
+    // the wrong ABI.
     if is_rec
         && let Some(sb) = self_bind
         && !self_calls_abi_consistent(g.body(), sb, &formal_kts, ec)
     {
         return None;
     }
-    // The native-loop gate is the SHARED structural predicate — the same
-    // one `analysis::analyze` uses (sync-gated) for the interpreter's
-    // tail-loop, so the two backends can't disagree on which lambdas loop.
     let has_tail = g.tail_loop();
-    // The build is pure signature derivation — the body is validated
-    // by the compile attempt itself (`emit_clif` over the body Node;
-    // "is it fusable IS the compile attempt"). A body that doesn't
-    // emit fails the kernel define, and the call site's region
-    // node-walks.
     let (mut sig, arg_types) = match fusion::sig_from_inputs(
         kernel_name.clone(),
         inputs.iter().map(|(name, kind, bind_id)| (name.clone(), kind, *bind_id)),
@@ -1356,8 +1027,6 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     ) {
         Ok(v) => v,
         Err(e) => {
-            // Malformed frozen input — the callee kernel can't be built,
-            // so the call site node-walks (de-fuse, never panic).
             log::trace!("build_lambda_kernel: sig_from_inputs failed: {e:#}");
             return None;
         }
@@ -1365,12 +1034,6 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     sig.has_tail_loop = has_tail;
     sig.skipped_args = skipped_args;
     sig.tail_invariant = tail_invariant;
-    // Discover the fastcall/cast sites in the body (the same prepass
-    // `try_fuse` runs on a region root): `apply_sites` lets the body
-    // emitter recognise each call site. The inline collection
-    // path consumes these directly (the callback body's own builtins);
-    // the cross-kernel callee path consumes them via `CalleeBody`
-    // (Stage 2 — the runtime combined-slot delivery).
     let mut discovery = BuiltinCallDiscovery::default();
     walk_node_for_builtin_calls(g.body(), ec, &mut discovery);
     if crate::dbgenv::graphix_dbg_kernels() {
@@ -1397,26 +1060,17 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     Some(cached)
 }
 
-/// The SHARED structural tail-loop predicate, behind both the JIT's
-/// native-loop gate (`build_lambda_kernel`'s `has_tail`) and the
-/// interpreter's per-`GXLambda` `tail_loop` gate (which
-/// `analysis::analyze` additionally sync-gates). ONE seam, so the two
-/// backends can never disagree on WHICH lambdas loop: `g` is
-/// self-recursive w.r.t. `self_bind`, every LOOP-CARRIED formal is a
-/// register-loopable kind (`Prim`/`Array`/`Tuple`/`Struct` — what the
-/// rebind-and-jump loop can carry; other kinds keep native recursion —
-/// INVARIANT formals are exempt, they are never rebound), and the
-/// body has a self-call in tail position. NOT sync-gated here — fusion
-/// excludes effect on purpose (a fusable body is sync by construction;
-/// an effect-inference false-negative must never flip a JIT loop to
-/// recursion), and `analyze` applies the sync gate for the interpreter.
+/// The structural tail-loop predicate shared by the JIT's native-loop
+/// gate and the interpreter's `tail_loop` gate, so both backends loop
+/// the same lambdas: `g` is self-recursive through `self_bind`, every
+/// formal is positional, every loop-carried formal is a kernel-encodable
+/// kind, and a self-call sits in tail position. Not sync-gated; the
+/// interpreter's `analyze` adds that gate.
 pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: BindId,
     ec: &ExecCtx<R, E>,
 ) -> bool {
-    // is_rec: the body references its own binding. (A formal can't be
-    // `self_bind` — formals are pattern-bound, `self_bind` is a `let`.)
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
     let mut is_rec = false;
@@ -1428,22 +1082,10 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
     if !is_rec {
         return false;
     }
-    // Simple rebind only: all-positional formals, no vargs. The
-    // interpreter's tail-loop rebinds the self-call's positional args
-    // 1:1 onto the formals (`analysis::analyze`); gating both backends
-    // here keeps them in lockstep (a labeled/varargs self-call stays
-    // native / per-cycle recursion in BOTH).
+    // The rebind maps the self-call's positional args 1:1 onto the formals.
     if g.typ().vargs.is_some() {
         return false;
     }
-    // Every formal must be positional, and every LOOP-CARRIED formal a
-    // kernel-encodable kind (the same classification
-    // `build_lambda_kernel` derives for its slots; the rebind lowers
-    // every [`RegionInputKind`] — scalars in registers, composite
-    // pointers and two-word Values via the clone/drop protocol,
-    // 2026-08-30). An INVARIANT formal — passed unchanged by every
-    // self-call — is never rebound (the rebind would be the identity),
-    // so even an fn-typed one loops (it drops out of the signature).
     let inv = invariant_formals(g, Some(self_bind));
     for (i, fa) in g.typ().args.iter().enumerate() {
         if !matches!(fa.kind, FnArgKind::Positional { .. }) {
@@ -1464,17 +1106,10 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
     body_has_self_tail_call(g.body(), self_bind)
 }
 
-/// Pure tail-position pre-scan: does this body contain a self tail
-/// call (a `CallSite` in tail position whose fnode `Ref` carries
-/// `self_bind`)? Tail positions are [`fusion::for_each_tail_leaf`]'s
-/// — the shared definition `emit_body_tail` also dispatches on
-/// (review A5). Decides `has_tail_loop` BEFORE emission:
-/// `emit_body_tail` only lowers a tail call when `self_call` is
-/// `Some`, and the caller only passes `Some` when this returned true,
-/// so a kernel can't emit a tail call without its loop head. (The
-/// converse over-approximation is harmless: a detected-but-rejected
-/// tail call — e.g. an arg type mismatch at emit time — leaves a
-/// vestigial loop head the body jumps into once.)
+/// Does the body contain a self-call in tail position (as
+/// [`fusion::for_each_tail_leaf`] defines it)? A tail call is emitted
+/// only when this said so, so a kernel never emits one without its loop
+/// head; a rejected tail call leaves a harmless vestigial head.
 pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     self_bind: BindId,
@@ -1491,19 +1126,10 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     )
 }
 
-/// A recursive lambda's self-call is a second value source for its
-/// formals (besides the outer call). Verify every self-call in the body
-/// feeds each positional formal a value whose frozen type is contained
-/// in that formal's kernel-ABI slot type (`formal_kts`). A mismatch
-/// means the formal's inferred type was narrower than the union it
-/// should have had (the swallowed body recheck dropped the self-call's
-/// contribution), so the kernel ABI would be a lie — return `false` and
-/// the caller de-fuses (#21). Conservative: an arg that can't be frozen,
-/// or a self-call that doesn't map 1:1 onto the positional formals, both
-/// count as inconsistent. Descends the body via `for_each_node` (which
-/// skips nested lambda bodies — a self-call buried in a nested closure
-/// stays a fusion gap, not a soundness hole, since that closure fuses
-/// under its own build).
+/// Does every self-call in the body feed each positional formal a value
+/// whose frozen type fits that formal's slot type? Conservative: an
+/// unfreezable arg or a self-call that does not map 1:1 onto the
+/// formals counts as inconsistent. Nested lambda bodies are not walked.
 fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: BindId,
@@ -1539,52 +1165,33 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     ok
 }
 
-/// Per-input slot classification — the analysis-side view a
-/// [`kernel_abi::KernelParam`] is built from (`fusion::sig_from_inputs`
-/// translates each into its `ParamKind`). Function-typed inputs are
-/// not value slots (they ride the statically-resolved call path).
+/// Kernel input slot classification, the source of a
+/// [`kernel_abi::KernelParam`]'s `ParamKind`. Function-typed inputs are
+/// not value slots. Each carried `Type` is frozen.
 #[derive(Debug, Clone)]
 pub enum RegionInputKind {
     Prim(PrimType),
-    /// Array of `Type` element (the carried `Type` is the *element*
-    /// type, frozen).
+    /// Carries the element type.
     Array(Type),
-    /// Tuple — the carried `Type` is the full `Type::Tuple` (per-slot
-    /// types read back via `kernel_abi::tuple_slots`).
+    /// Carries the full tuple type.
     Tuple(Type),
-    /// Struct — the carried `Type` is the full `Type::Struct`.
+    /// Carries the full struct type.
     Struct(Type),
-    /// Variant — the carried `Type` is the full variant type
-    /// (`Type::Variant` or a `Type::Set` of single-Variant members).
+    /// Carries the full variant type (a `Variant` or a `Set` of them).
     Variant(Type),
-    /// `[T, null]` option shape — runtime representation is a `Value`
-    /// that is either `Value::Null` or `T`'s form. The carried `Type`
-    /// is the non-null inner element type (frozen).
+    /// `[T, null]`; carries `T`.
     Nullable(Type),
-    /// String — the payload word is an owned `ArcStr`'s bits.
     String,
-    /// Bare value-shape (`DateTime`/`Duration`/`Bytes`/`Map`/`Error`) —
-    /// carries the full `Type` so a `Local` read re-wraps to the
-    /// right type.
+    /// Any other value shape; carries the full type.
     Value(Type),
 }
 
-/// Classify a (frozen) value [`Type`] into the matching
-/// [`RegionInputKind`] so it can be registered as a kernel input.
-/// Returns `None` for types that have no kernel-input representation:
-/// - `Unit` (no value), bare `Null` (always widened to `Nullable<T>`
-///   at the construction site).
-/// - function types (handled via the statically-resolved-call path,
-///   not as a value slot).
+/// Classify a value [`Type`] as a kernel input. `None` for `Unit`, bare
+/// `Null` (widened to `Nullable<T>` at construction) and fn types.
 pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     use AbiKind;
-    // FREEZE at the boundary. The Type comes from a binding's declared
-    // type, which may still wrap a (bound) TVar or a Ref. `abi_kind`
-    // derefs, so it classifies a TVar-bound `Tuple` as `Tuple` — but
-    // the non-derefing accessors (`tuple_slots`/`struct_fields`/
-    // `array_elem`) later run on the STORED `Type` (via
-    // `sig_from_inputs` / the emitters) and would return `None`. Store
-    // the concrete frozen `Type` so those accessors always succeed.
+    // The stored type must be frozen: the non-derefing accessors
+    // (`tuple_slots`, `struct_fields`, `array_elem`) run on it later.
     let t = kernel_abi::freeze_for_abi(&t)?;
     match abi_kind(&t)? {
         AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
@@ -1603,9 +1210,7 @@ pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
     }
 }
 
-/// True if a (frozen) `Type` is a marshallable call **argument**
-/// shape — every fusable shape except `Unit` (no value to pass) and
-/// bare `Null` (always widened to `Nullable<T>` at construction).
+/// A marshallable call argument shape: every fusable shape but `Unit`.
 fn is_call_arg_supported(t: &Type) -> bool {
     use AbiKind;
     match abi_kind(t) {
@@ -1651,8 +1256,7 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
     })
 }
 
-/// True if a (frozen) `Type` is a marshallable call **return**
-/// shape — every fusable shape except bare `Null`. `Unit` IS allowed.
+/// A marshallable call return shape: every fusable shape but bare `Null`.
 fn is_call_return_supported(t: &Type) -> bool {
     use AbiKind;
     match abi_kind(t) {

@@ -43,9 +43,7 @@ where
         .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
 
-// Unary minus. Tried AFTER `literal()` in the `arith_term` choice so a
-// signed numeric literal (`-2.5`, `-2`) is consumed as a `Constant`; only
-// a non-literal operand (`-x`, `-(a + b)`, `-f(x)`) becomes a `Neg` node.
+// Tried after `literal()` so a signed numeric literal stays a `Constant`.
 fn neg_arith<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -70,9 +68,8 @@ enum QopSuffix {
     OrNever,
 }
 
-// One postfix operator. Each alternative is `attempt`-wrapped so a partial
-// parse (e.g. the `{` of a map-key access that turns out to be a block)
-// backtracks and the postfix loop ends cleanly rather than hard-failing.
+// Each alternative is `attempt`-wrapped so a partial parse (the `{` of a
+// map access that is really a block) ends the postfix loop cleanly.
 fn postfix_op<I>() -> impl Parser<I, Output = Post>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -90,8 +87,6 @@ where
     ))
 }
 
-// The optional trailing `?`/`$` error operator. Mirrors the tail of the old
-// `qop` combinator; applied once to the whole postfix expression.
 fn qop_suffix<I>() -> impl Parser<I, Output = QopSuffix>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -127,11 +122,8 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
     }
 }
 
-// `( e )` or `( a, b, .. )`. Yields the bare inner expr plus a marker:
-// `Some(())` for a single parenthesized expr — it becomes `ExplicitParens` if
-// no postfix follows, else its parens are stripped and it is used directly as
-// the postfix source (matching the old `ref_pexp`/`apply_pexp` `between`).
-// `None` marks a tuple (>= 2 elements).
+// `Some(())` marks a single parenthesized expr: `ExplicitParens` if no
+// postfix follows, else the bare postfix source. `None` marks a tuple.
 fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<()>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -155,10 +147,8 @@ where
         })
 }
 
-// A primary expression — everything that can begin a postfix expression. The
-// prefix-operator forms (`!`, `&`, `*`, unary `-`) recurse into `arith_term`,
-// so they bind looser than the postfix operators. `paren_group` carries the
-// "is a single `( e )`" marker; every other primary is `None`.
+// The prefix-operator forms recurse into `arith_term`, so they bind looser
+// than the postfix operators.
 fn primary<I>() -> impl Parser<I, Output = (Expr, Option<()>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -207,11 +197,8 @@ parser! {
                     optional(qop_suffix()),
                 )
                     .and_then(|(pos, (base, paren), mut ops, qop)| {
-                        // The postfix loop is ITERATIVE, so `grow`'s
-                        // depth counter never sees it — but the fold
-                        // below turns N ops into an N-deep AST, and
-                        // tearing that down is recursive drop glue no
-                        // guard can wrap. Refuse before building it.
+                        // The iterative postfix loop escapes `grow`'s depth
+                        // counter, but the fold builds an N-deep AST.
                         if ops.len() > max_nesting() {
                             note_refused();
                             return Err(<StreamErrorFor<I>>::message_static_message(
@@ -239,15 +226,8 @@ parser! {
                         })
                     }),
             ))
-        // NOTE: arith_term must NOT skip trailing spaces — the tight
-        // brace rule (`m{"k"}` is a map access, `m {"k"}` is not)
-        // depends on the whitespace between a postfix source and `{`
-        // surviving to the postfix loop. The old trailing
-        // `.skip(spaces())` laundered it for PREFIX forms: `*r {i8:0}`
-        // recursed into arith_term for `r`, whose trailing skip ate
-        // the space, and the OUTER postfix loop then saw `{i8:0}`
-        // flush and built a MapRef (found by the extended round-trip
-        // proptest).
+        // arith_term must not skip trailing spaces: `m{"k"}` is a map
+        // access and `m {"k"}` is not, so the postfix loop must see them.
     }
 }
 
@@ -300,7 +280,6 @@ pub(crate) fn precedence(op: &str) -> (u8, bool) {
 }
 
 /// Shunting-yard algorithm to build an expression tree respecting precedence.
-/// Thank you Djikstra.
 fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(&'static str, Expr)>>) -> Expr {
     let mut output: LPooled<Vec<Expr>> = LPooled::take();
     let mut ops: LPooled<Vec<&'static str>> = LPooled::take();
@@ -342,14 +321,9 @@ parser! {
                     attempt(string("<=")),
                     attempt(string("&&")),
                     attempt(string("||")),
-                    // `>` must not swallow a list literal's `>]` closer:
-                    // `[<a, b>]` ends element parsing at `b`. `> ]` is
-                    // never valid arithmetic (no expression starts with
-                    // `]`), so nothing is lost.
+                    // `>` must not swallow a list literal's `>]` closer.
                     attempt(string(">").skip(not_followed_by(token(']')))),
-                    // `<` must not swallow the `<-` of a connect: with unary
-                    // minus, `a <- b` would otherwise read as `a < (-b)`.
-                    // `a < -b` (space before `-`) still parses as less-than.
+                    // `<` must not swallow the `<-` of a connect.
                     attempt(string("<").skip(not_followed_by(token('-')))),
                     attempt(string("+?")),
                     attempt(string("+")),
@@ -367,9 +341,7 @@ parser! {
                 arith_term(),
             )),
         ).and_then(|(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
-            // Same iterative-loop / nested-result problem as the
-            // postfix fold above: `1 + 1 + 1 + ...` builds one AST
-            // level per operator.
+            // The iterative operator chain builds one AST level per operator.
             if exprs.len() > max_nesting() {
                 note_refused();
                 return Err(<StreamErrorFor<I>>::message_static_message(

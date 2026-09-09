@@ -13,14 +13,8 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
-// SIZE 16, not MapS (=256): the env maps are WRITE-heavy at compile
-// time (one insert_cow per bind/typedef while the whole stdlib
-// compiles), and a COW insert clones the touched chunk — at 256
-// entries of ~100-byte `Bind` that was ~25KB of memcpy plus ~1k
-// refcount bumps PER INSERT, ~20% of total compile time in the
-// jul22 samply profile; measured knee: 256→74ms/16→57ms per stdlib
-// compile, regress suite −10%. Small chunks trade slightly deeper trees
-// (reads stay O(log n)) for 16x cheaper writes.
+// Chunk size 16: the env maps are write-heavy at compile time and a
+// COW insert clones the touched chunk.
 pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, 16>;
 pub type Set<K> = immutable_chunkmap::set::Set<K, 16>;
 use netidx_core::path::Path;
@@ -36,20 +30,15 @@ pub struct Bind {
     pub doc: Option<ArcStr>,
     pub scope: ModPath,
     pub name: CompactString,
-    /// Source position where the binding was introduced. Used by IDE
-    /// tooling for go-to-definition; not consulted by the compiler.
+    /// Where the binding was introduced (IDE tooling only).
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
-    /// Bound by a select arm's pattern: a facet of the arm's scrutinee
-    /// delivery, which the arm's match consumes — so no nested select
-    /// tracks it as an input of its own for wake catch-up
-    /// (`design/wake_catchup.md`).
+    /// Bound by a select arm's pattern: a facet of the scrutinee
+    /// delivery, so no nested select tracks it for wake catch-up.
     pub pattern: bool,
-    /// Bound by a destructuring `let` alongside siblings: the group's
-    /// representative bind. One delivery reaches every sibling, so
-    /// wake catch-up tracks the group as one input — a read of any
-    /// sibling spends the delivery for all of them.
+    /// Bound by a destructuring `let`: the group's representative bind,
+    /// which wake catch-up tracks as one input for all siblings.
     pub facet: Option<BindId>,
 }
 
@@ -78,19 +67,15 @@ impl Clone for Bind {
 
 #[derive(Debug, Clone)]
 /// The representation of a Graphix-minted abstract type (`type T =
-/// Abstract<rep>`), registered globally like [`Env::names`] but
-/// consulted only from inside the defining scope — which is what gates
-/// `T(v)`, `x.0` and the pattern `T(x)` to where the definition is
-/// visible (`design/nominal_abstract_types.md`).
+/// Abstract<rep>`), registered globally but consulted only where the
+/// definition is visible, which gates `T(v)`, `x.0` and `T(x)`.
 pub struct AbstractRep {
     pub scope: ModPath,
     pub name: ArcStr,
     pub params: Arc<[TVar]>,
     pub rep: Type,
-    /// The definition is EXPORTED (an interface's `type T =
-    /// Abstract<rep>`, or a module with no interface), so the
-    /// constructor is usable from anywhere the type is; otherwise only
-    /// from inside `scope`.
+    /// The definition is exported, so the constructor is usable
+    /// wherever the type is; otherwise only inside `scope`.
     pub public: bool,
 }
 
@@ -120,14 +105,11 @@ impl AbstractRep {
 pub struct TypeDef {
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub typ: Type,
-    /// For a Graphix-minted abstract type (`type T = Abstract<rep>`),
-    /// the representation its constructor wraps — present exactly
-    /// where the definition is visible, which is what gates `T(v)`,
-    /// `x.0` and the pattern `T(x)` (`design/nominal_abstract_types.md`).
+    /// For a Graphix-minted abstract type, the representation its
+    /// constructor wraps; present only where the definition is visible.
     pub rep: Option<Type>,
     pub doc: Option<ArcStr>,
-    /// Source position where this typedef was declared. Used by IDE
-    /// tooling for go-to-definition; the compiler doesn't read it.
+    /// Where the typedef was declared (IDE tooling only).
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
 }
@@ -137,15 +119,13 @@ pub struct TypeDef {
 /// resolves to `name` in the module at `scope`.
 #[derive(Debug, Clone)]
 pub struct ImportEntry {
-    /// canonical scope the item was imported from
+    /// Canonical scope the item was imported from.
     pub scope: ModPath,
-    /// the item's own name there
+    /// The item's own name there.
     pub name: CompactString,
-    /// the import's anchor is a keyword root (`self`/`super`): the
-    /// redirect walks `scope` up to its module root instead of
-    /// consulting `scope` alone, because the anchor of a `super`
-    /// import may be a block level (a script file's top level) whose
-    /// items live across the block chain.
+    /// The import's anchor is `self`/`super`: the redirect walks
+    /// `scope` up to its module root, since a `super` anchor may be a
+    /// block level whose items live across the block chain.
     pub chain: bool,
     /// Position/origin of the `use`, for diagnostics and IDE tooling.
     pub pos: SourcePosition,
@@ -161,12 +141,9 @@ pub struct ScopeNames {
     pub globs: Arc<Vec<ModPath>>,
 }
 
-/// A declared trait (`design/traits.md`): its identity, where it was
-/// declared, and its methods. Lives in [`Env::trait_defs`], a GLOBAL
-/// registry keyed by [`TraitId`] — the interface's declaration and
-/// the implementation's re-declaration mint the same id, and the
-/// later registration (the implementation's, which carries the
-/// default-method bindings) replaces the earlier.
+/// A declared trait: its identity, declaring scope and methods. Lives
+/// in the global [`Env::trait_defs`]; an interface's declaration and
+/// the implementation's re-declaration mint the same id.
 #[derive(Debug, Clone)]
 pub struct TraitDef {
     pub id: TraitId,
@@ -177,12 +154,9 @@ pub struct TraitDef {
     /// method dispatchers are bound (`Trait::method`, `use Trait::*`).
     pub path: ModPath,
     pub methods: Arc<[TraitMethodDef]>,
-    /// A CONSTRUCTOR trait: every signature applies `self` (`self<'a>`),
-    /// so the receiver's type is a type constructor — an impl head
-    /// names one with its last parameter as the hole (`Array<'_>`), a
-    /// call selects by the receiver's outermost form, and `'c:
-    /// Collection` makes `'c` a constructor variable
-    /// (`design/recursive_activations.md` §7).
+    /// A constructor trait: every signature applies `self` (`self<'a>`),
+    /// so an impl head names a constructor (`Array<'_>`) and a call
+    /// selects by the receiver's outermost form.
     pub hole: bool,
     pub doc: Option<ArcStr>,
     pub pos: SourcePosition,
@@ -200,9 +174,8 @@ pub struct TraitMethodDef {
     /// The declaration supplies a default body (an implementor may
     /// omit the method).
     pub has_default: bool,
-    /// The dispatcher binding at `path::name` — what a call names; a
-    /// call site resolves it to an implementation by its self
-    /// argument's type (`CallSite::resolve_trait_call`).
+    /// The dispatcher binding at `path::name`, resolved to an
+    /// implementation by the self argument's type.
     pub dispatcher: BindId,
     /// The default body's binding, when the method has one and the
     /// declaring implementation has compiled it.
@@ -217,8 +190,7 @@ pub struct TraitMethodRef {
     pub index: usize,
 }
 
-/// One `impl Trait for Target` ([`Env::impls`], global — impls are
-/// facts, not names; `design/traits.md` §4).
+/// One `impl Trait for Target` ([`Env::impls`], global).
 #[derive(Debug, Clone)]
 pub struct ImplDef {
     pub trait_id: TraitId,
@@ -232,20 +204,16 @@ pub struct ImplDef {
     pub scope: ModPath,
     /// Method name → the binding a resolved call references.
     pub methods: Map<CompactString, BindId>,
-    /// The impl came from an interface declaration (`impl T for X;`):
-    /// its method bindings were minted by the signature and the
-    /// implementation's methods proxy to them. An implementation's
-    /// own registration of the same (trait, target) replaces it.
+    /// From an interface declaration (`impl T for X;`): its method
+    /// bindings were minted by the signature and the implementation's
+    /// methods proxy to them.
     pub declared: bool,
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
 }
 
-/// Which namespace a resolution serves. Path INTERIORS are always
-/// module-kind; the terminal name's kind decides which preludes
-/// apply: values and types get the core prelude, modules get the
-/// package prelude (registered package names as path roots) and then
-/// the core prelude (core's public submodules).
+/// Which namespace a resolution serves. Path interiors are always
+/// modules; the terminal name's kind decides which preludes apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameNs {
     Value,
@@ -261,7 +229,6 @@ pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
     if !s.starts_with(prefix) {
         return false;
     }
-    // Avoid matching e.g. `/tu` as a prefix of `/tui`.
     s.as_bytes().get(prefix.len()).copied() == Some(b'/')
 }
 
@@ -287,66 +254,38 @@ pub struct Env {
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     /// Every scope's explicit namespace (imports + globs), keyed by
-    /// the scope path. NOT part of the lexical env: scope paths are
-    /// globally unique, so this is a per-context registry of every
-    /// module and block's import table — it survives the module
-    /// privacy swap (`restore_lexical_env` keeps it from `self`),
-    /// which is what lets deferred resolution consult the DEFINING
-    /// module's table long after that module finished compiling.
+    /// scope path. A global registry, not lexical state: it survives
+    /// `restore_lexical_env`, so deferred resolution can consult the
+    /// defining module's table.
     pub names: Map<ModPath, ScopeNames>,
-    /// Every Graphix-minted abstract type's representation, keyed by
-    /// its identity — a global registry like `names` (see
-    /// [`AbstractRep`]); visibility is decided at lookup.
+    /// Every Graphix-minted abstract type's representation, global;
+    /// visibility is decided at lookup.
     pub abstract_reps: Map<AbstractId, Arc<AbstractRep>>,
-    /// Trait NAMES by declaring scope — lexical, like `typedefs`
-    /// (a trait is in scope by declaration, `use`, or prelude).
+    /// Trait names by declaring scope; lexical, like `typedefs`.
     pub traits: Map<ModPath, Map<CompactString, TraitId>>,
-    /// Every trait's definition by identity — a global registry like
-    /// `names` (see [`TraitDef`]).
+    /// Every trait's definition by identity; global.
     pub trait_defs: Map<TraitId, Arc<TraitDef>>,
-    /// Dispatcher binding → the trait method it names, for every
-    /// registration (an interface's and its implementation's
-    /// dispatchers both map here). Global.
+    /// Dispatcher binding → the trait method it names; global.
     pub trait_methods: Map<BindId, TraitMethodRef>,
-    /// Every trait's implementations. Global: an impl applies
-    /// wherever its trait is used, scope governs only the trait's
-    /// NAME (`design/traits.md` §4).
+    /// Every trait's implementations; global (scope governs only the
+    /// trait's name).
     pub impls: Map<TraitId, Arc<Vec<Arc<ImplDef>>>>,
-    /// GENERALIZED bindings — let-bound lambdas, interface `val`s and
-    /// trait dispatchers — whose signature a VALUE occurrence
-    /// instantiates afresh, exactly as a call site does
-    /// (`Ref::typecheck0`). A lambda parameter is never here: it is
-    /// monomorphic within its body. Global like `names`.
+    /// Generalized bindings (let-bound lambdas, interface `val`s, trait
+    /// dispatchers) whose signature a value occurrence instantiates
+    /// afresh. A lambda parameter is never here. Global.
     pub poly_binds: Set<BindId>,
-    /// Registered package names — the package prelude: usable as
-    /// module path roots from anywhere. Populated by package
-    /// registration; survives the lexical swap like `names`.
+    /// Registered package names, usable as module path roots from
+    /// anywhere. Global.
     pub package_roots: Set<ArcStr>,
-    /// Append-only mirror of every `(scope, name) → BindId` ever
-    /// created via `bind_variable`. Used by IDE tooling for cursor
-    /// → scope completion: it exposes lambda parameters and other
-    /// short-lived bindings that `binds` drops at scope teardown
-    /// and `unbind_variable` removes from `by_id`. Not consulted by
-    /// the compiler. Only populated when `lsp_mode` is set.
+    /// Append-only mirror of every binding ever created, including
+    /// short-lived ones `binds` drops. IDE tooling only; populated
+    /// under `lsp_mode`.
     pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
-    /// True iff the compiler should populate IDE side-channels
-    /// (`ide_binds`, the `ide` sink, etc.). Toggled by the LSP
-    /// runtime; normal compiles leave it unset and pay no IDE cost.
+    /// Populate the IDE side-channels (`ide_binds`, the `ide` sink).
     pub lsp_mode: bool,
-    /// Every IDE side-channel ([`Ide`]): name/module/type references,
-    /// the scope map, sig→impl links, and per-module env snapshots.
-    /// `Some(_)` only when running under an LSP-style check; clones
-    /// share the inner `Arc<Mutex>` so reentrant or concurrent compiles
-    /// within a single check all drain into the same buffer. The runtime
-    /// swaps this in/out at each check boundary. Sites that hold `&mut
-    /// ExecCtx` push the first three tables via [`Env::push_reference`] /
-    /// [`Env::push_module_reference`] / [`Env::push_scope_map_entry`];
-    /// sites that hold only `&Env` push the rest via [`Env::push_type_ref`]
-    /// / [`Env::push_sig_link`] / [`Env::push_module_internal_view`].
-    ///
-    /// Named `ide` rather than `lsp` because the sink is general IDE
-    /// tooling state, not specific to the language server — other
-    /// consumers (e.g. atlas) may read it too.
+    /// The IDE side-channels ([`Ide`]); `Some` only under an LSP-style
+    /// check. Clones share the `Arc<Mutex>` so every compile within one
+    /// check drains into the same buffer.
     pub ide: Option<Arc<Mutex<Ide>>>,
 }
 
@@ -385,16 +324,8 @@ impl Env {
         *ide_binds = Map::new();
     }
 
-    // restore the lexical environment to the state it was in at the
-    // snapshot `other`, but leave the bind and type environment
-    // alone. `ide_binds` is preserved across restoration so IDE
-    // tooling sees lambda parameters / let bindings that were
-    // introduced inside the restored region. The `ide` sink is
-    // preserved on `self` so any pushes that happened inside the
-    // restored region accumulate alongside the rest of the check.
-    // `names` and `package_roots` are global registries keyed by
-    // globally-unique scope paths, not lexical state — always kept
-    // from `self`.
+    // Restore the lexical environment to the snapshot `other`; the
+    // global registries and IDE sinks stay as they are on `self`.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
         Self {
             binds: other.binds,
@@ -437,8 +368,7 @@ impl Env {
         }
     }
 
-    /// Push a `ReferenceSite` into the active IDE sink, if any. No-op
-    /// when `self.ide` is `None` (every non-LSP compile).
+    /// Push a `ReferenceSite` into the active IDE sink, if any.
     pub fn push_reference(&self, site: ReferenceSite) {
         if let Some(ide) = &self.ide {
             ide.lock().references.push(site);
@@ -459,8 +389,7 @@ impl Env {
         }
     }
 
-    /// Push a `TypeRefSite` into the active IDE sink, if any. No-op
-    /// when `self.ide` is `None` (every non-LSP compile).
+    /// Push a `TypeRefSite` into the active IDE sink, if any.
     pub fn push_type_ref(&self, site: TypeRefSite) {
         if let Some(ide) = &self.ide {
             ide.lock().type_refs.push(site);
@@ -583,12 +512,9 @@ impl Env {
     }
 
     /// The scope `k` levels of `super` above the module enclosing
-    /// `scope`. One `super` from module M is the SCOPE surrounding
-    /// M's declaration (which may be a block level — a script file's
-    /// top level); further `super`s iterate dirname∘mod_root. Errors
-    /// when a step would climb above the package root — the root
-    /// scope for user programs (the program is the package), `/pkg`
-    /// for registered packages.
+    /// `scope`: one `super` is the scope surrounding the module's
+    /// declaration (possibly a block level). Errors on a step above
+    /// the package root.
     pub fn super_anchor<'a>(&self, scope: &'a str, k: usize) -> Result<&'a str> {
         let mut anchor = scope;
         for _ in 0..k {
@@ -606,13 +532,10 @@ impl Env {
         Ok(anchor)
     }
 
-    /// Consult one lexical level for `n`: the level's own
-    /// declarations (via `f`), then — iff `origin` is inside the
-    /// level's module (imports are private to their module and its
-    /// descendants) — its explicit imports (redirected, following
-    /// the target level's own imports in turn) and its globs (a glob
-    /// provides the source module's OWN names only; two globs
-    /// providing the same name is an error at use).
+    /// Consult one lexical level for `n`: its own declarations (via
+    /// `f`), then, iff `origin` is inside the level's module, its
+    /// explicit imports and its globs (two globs providing one name is
+    /// an error at use).
     fn lookup_at<T>(
         &self,
         origin: &str,
@@ -640,10 +563,8 @@ impl Env {
             if let Some(t) = hit {
                 return Ok(Some(t));
             }
-            // an import covers only the kinds its target has; a
-            // kind-miss falls through to globs (the widget-module
-            // pattern: `use gui::text::{self, *}` imports the module
-            // name AND glob-provides the same-named val inside it)
+            // A kind-miss on an import falls through to globs
+            // (`use gui::text::{self, *}`).
         }
         let mut found: Option<(usize, T)> = None;
         for (i, g) in sn.globs.iter().enumerate() {
@@ -679,10 +600,8 @@ impl Env {
         Ok(None)
     }
 
-    /// Resolve the single segment `seg` as a MODULE from `scope`:
-    /// the lexical chain (own submodules, module imports, glob-
-    /// provided modules), then the package prelude, then the core
-    /// prelude. Returns the canonical module scope.
+    /// Resolve the single segment `seg` as a module from `scope`: the
+    /// lexical chain, then the package prelude, then the core prelude.
     fn resolve_module_seg(&self, scope: &str, seg: &str) -> Result<Option<ModPath>> {
         let mut f = |lvl: &str, n: &str| {
             let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
@@ -691,18 +610,16 @@ impl Env {
         if let Some(p) = self.chain_lookup(scope, scope, seg, 0, &mut f)? {
             return Ok(Some(p));
         }
-        // package_roots alone answers here — a sandboxed env may keep
-        // `/sys/net` without `/sys`, so the DESCENT is what gates,
-        // not the root
+        // A sandboxed env may keep `/sys/net` without `/sys`: the
+        // descent gates, not the root.
         if self.package_roots.contains(seg) {
             return Ok(Some(ModPath(Path::root().append(seg))));
         }
         Ok(f("/core", seg))
     }
 
-    /// One qualified-path descent step: resolve `seg` as a module
-    /// within the module at `cur` — its own submodules always, its
-    /// module imports/globs iff `origin` is inside it.
+    /// One qualified-path descent step: `seg` as a module within `cur`
+    /// (its imports/globs visible iff `origin` is inside it).
     fn descend_step(
         &self,
         origin: &str,
@@ -716,15 +633,10 @@ impl Env {
         self.lookup_at(origin, cur, seg, 0, &mut f)
     }
 
-    /// The resolution core: resolve `name`, written at `scope`, per
-    /// the explicit-import rules — `f` is consulted with candidate
-    /// `(module_scope, base_name)` pairs in precedence order and the
-    /// first `Some` wins; a `None` from `f` means "no item of my
-    /// kind there" and resolution continues (so an import whose
-    /// target lacks the wanted kind falls through). Errors are
-    /// structural: an ambiguous glob name, a `super` past the root,
-    /// a missing interior module, a keyword in a non-leading
-    /// position.
+    /// Resolve `name`, written at `scope`: `f` is consulted with
+    /// candidate `(module_scope, base_name)` pairs in precedence order
+    /// and the first `Some` wins. Errors are structural: an ambiguous
+    /// glob name, a `super` past the root, a missing interior module.
     pub fn resolve_visible<T>(
         &self,
         scope: &ModPath,
@@ -735,9 +647,8 @@ impl Env {
         let parts: LPooled<Vec<&str>> = Path::parts(&**name).collect();
         let Some((&base, _)) = parts.split_last() else { return Ok(None) };
         let n_super = parts.iter().take_while(|s| **s == "super").count();
-        // the bare receiver name of an impl method is an ordinary
-        // value binding (`self.0`, `read(self, n)`); only `self::x`
-        // is the path keyword
+        // A bare `self` in value position is the receiver binding;
+        // only `self::x` is the path keyword.
         if parts.len() == 1 && base == "self" && ns == NameNs::Value {
             return self.chain_lookup(scope, scope, base, 0, &mut f);
         }
@@ -755,15 +666,11 @@ impl Env {
             bail!("`{kw}` is only legal leading a path")
         }
         let interior = &parts[lead..parts.len() - 1];
-        // keyword-rooted or qualified: resolve the module context,
-        // then the terminal name at that module (with imports/globs
-        // visible iff we are inside it — lookup_at gates that)
         let anchor: &str = match parts[0] {
             "self" => mod_root(scope),
             "super" => self.super_anchor(scope, n_super)?,
             "package" => self.package_root(scope),
             _ if parts.len() == 1 => {
-                // bare name: the lexical chain, then the preludes
                 if let Some(t) = self.chain_lookup(scope, scope, base, 0, &mut f)? {
                     return Ok(Some(t));
                 }
@@ -774,22 +681,16 @@ impl Env {
                 }
                 return Ok(f("/core", base));
             }
-            first => {
-                // qualified: the first segment resolves as a module
-                // through the chain and preludes
-                match self.resolve_module_seg(scope, first)? {
-                    Some(m) => {
-                        let m = self.descend(scope, m, &interior[1..])?;
-                        return self.lookup_at(scope, &m, base, 0, &mut f);
-                    }
-                    None => return Ok(None),
+            first => match self.resolve_module_seg(scope, first)? {
+                Some(m) => {
+                    let m = self.descend(scope, m, &interior[1..])?;
+                    return self.lookup_at(scope, &m, base, 0, &mut f);
                 }
-            }
+                None => return Ok(None),
+            },
         };
-        // keyword-rooted path: `super::x` resolves along the anchor's
-        // own chain (a super anchor may be a block level); self and
-        // package anchors are module roots, where the chain is one
-        // level. No preludes — keyword roots are explicit.
+        // `super::x` resolves along the anchor's own chain (a super
+        // anchor may be a block level). No preludes for keyword roots.
         if interior.is_empty() {
             return self.chain_lookup(scope, anchor, base, 0, &mut f);
         }
@@ -858,10 +759,8 @@ impl Env {
         })
     }
 
-    /// The trait a type reference names, if it names one rather than
-    /// a typedef. A reference whose resolution cell is filled is a
-    /// typedef (traits never fill it), so the table walk runs only for
-    /// still-unresolved refs — trait conjuncts on constrained cells.
+    /// The trait a type reference names, if it names one rather than a
+    /// typedef (a filled resolution cell is always a typedef).
     pub fn trait_of_ref(&self, tr: &crate::typ::TypeRef) -> Option<TraitId> {
         if tr.resolved().is_some() {
             return None;
@@ -869,13 +768,10 @@ impl Env {
         self.lookup_trait(&tr.scope, &tr.name).ok().flatten()
     }
 
-    /// Declare trait `name` in `scope`. Binds one dispatcher per
-    /// method at `scope::name::method` (registering `scope::name` as
-    /// a module-like scope so `Trait::m` paths and `use Trait::m`
-    /// resolve), records the dispatchers in `trait_methods`, and
-    /// registers the definition globally — replacing an earlier
-    /// registration of the same identity (an interface's), whose
-    /// dispatchers stay valid through `trait_methods`.
+    /// Declare trait `name` in `scope`: one dispatcher per method at
+    /// `scope::name::method`, recorded in `trait_methods`, and the
+    /// definition registered globally. The first registration of an
+    /// identity is the definition of record.
     pub fn deftrait(
         &mut self,
         scope: &ModPath,
@@ -943,9 +839,7 @@ impl Env {
         self.traits
             .get_or_default_cow(scope.clone())
             .insert_cow(name.as_str().into(), id);
-        // the FIRST registration (an interface's, when there is one)
-        // is the definition of record; a re-declaration contributes
-        // its default bodies through `set_trait_defaults`
+        // A re-declaration contributes only its default bodies.
         if self.trait_defs.get(&id).is_none() {
             self.trait_defs.insert_cow(id, def.clone());
         }
@@ -997,17 +891,11 @@ impl Env {
         self.trait_defs.get(&id)
     }
 
-    /// Register an implementation. One impl per (trait, target): a
-    /// registration whose head unifies with an existing one is a
-    /// conflict — unless the existing one is the interface
-    /// DECLARATION of the same module (`impl T for X;`), which the
-    /// implementation FULFILS. The declaration stays the entry of
-    /// record: its method bindings are what every consumer resolves
-    /// to, whether it compiled before or after the implementation
-    /// loaded (a dynamic module's consumers compile first, and a
-    /// reload mints fresh implementation bindings), and the
-    /// implementation's methods proxy to them
-    /// (`node::module::check_sig`). Returns the fulfilled declaration.
+    /// Register an implementation. One impl per (trait, target): an
+    /// overlapping head is a conflict unless it is the same module's
+    /// interface declaration, which the implementation fulfils — the
+    /// declaration stays the entry of record and the implementation's
+    /// methods proxy to it. Returns the fulfilled declaration.
     pub fn register_impl(&mut self, im: Arc<ImplDef>) -> Result<Option<Arc<ImplDef>>> {
         let mut list: Vec<Arc<ImplDef>> =
             self.impls.get(&im.trait_id).map(|l| (**l).clone()).unwrap_or_default();
@@ -1074,16 +962,12 @@ impl Env {
     }
 
     /// The implementation of `trait_id` for `t`, which must already be
-    /// dereferenced and expanded to a structural type (no `TVar`,
-    /// `Ref`, or `Set` at the top — the caller decides those). An
-    /// abstract target matches by identity; any other head matches by
-    /// unification against a fresh instantiation (binding its
-    /// variables, whose bounds discharge through the cells — `impl<'a:
-    /// T> T for P<'a>`), then equivalence.
+    /// dereferenced and expanded to a structural type. An abstract
+    /// target matches by identity; any other head by unification
+    /// against a fresh instantiation, then equivalence.
     pub fn find_impl(&self, trait_id: TraitId, t: &Type) -> Result<Option<Arc<ImplDef>>> {
         let Some(list) = self.impls.get(&trait_id) else { return Ok(None) };
-        // an open cell inside `t` could still become anything: no
-        // head is known to apply, and a probe must not bind it
+        // An open cell inside `t` could still become anything.
         if t.has_unbound() {
             return Ok(None);
         }
@@ -1124,9 +1008,7 @@ impl Env {
         })
     }
 
-    /// lookup binds in scope that match the specified partial
-    /// name. This is intended to be used for IDEs and interactive
-    /// shells, and is not used by the compiler.
+    /// Binds in scope matching a partial name (IDE/shell completion).
     pub fn lookup_matching(
         &self,
         scope: &ModPath,
@@ -1175,8 +1057,6 @@ impl Env {
                 scan(&mut res, "/core", part);
             }
             Some(_) => {
-                // qualified partial: resolve the module prefix, scan
-                // its own names
                 let part_base = Path::basename(&**part).unwrap_or("");
                 let prefix = ModPath(Path::from(ArcStr::from(
                     Path::dirname(&**part).unwrap_or("/"),
@@ -1189,9 +1069,7 @@ impl Env {
         res
     }
 
-    /// lookup modules in scope that match the specified partial
-    /// name. This is intended to be used for IDEs and interactive
-    /// shells, and is not used by the compiler.
+    /// Modules in scope matching a partial name (IDE/shell completion).
     pub fn lookup_matching_modules(
         &self,
         scope: &ModPath,
@@ -1245,10 +1123,8 @@ impl Env {
     }
 
     /// Install one explicit import at `scope`. Errors on a duplicate
-    /// import or a same-scope declaration of the same name, unless
-    /// `replace` (the REPL: a re-`use` shadows). Identical re-imports
-    /// are idempotent (a `.gxi` use applies to the impl too, and the
-    /// impl may spell it again).
+    /// import or a same-scope declaration of the name unless `replace`;
+    /// identical re-imports are idempotent.
     pub fn import(
         &mut self,
         scope: &ModPath,
@@ -1315,9 +1191,7 @@ impl Env {
         if e.chain { chain_levels(&e.scope).any(check) } else { check(&e.scope) }
     }
 
-    /// Drop every import table at `scope` or any descendant. Used
-    /// when a dynamic module recompiles (its `use`s re-register from
-    /// the fresh source) and by the LSP scope scrub.
+    /// Drop every import table at `scope` or any descendant.
     pub fn clear_names_under(&mut self, scope: &ModPath) {
         let stale: LPooled<Vec<ModPath>> = (&self.names)
             .into_iter()
@@ -1387,18 +1261,12 @@ impl Env {
             }
         }
         if self.lsp_mode {
-            // Capture every type-name occurrence inside the typedef
-            // body for IDE find-references. This catches uses that
-            // never go through `Type::lookup_ref` directly (e.g.
-            // `Foo` inside `type Pair = (Foo, Foo)` — typedef bodies
-            // are stored, not type-checked against anything). Done
-            // before we mutably borrow `self.typedefs` below.
+            // Typedef bodies are stored, not checked, so their type
+            // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep) {
-            // an interface's typedefs are compiled again inside the
-            // implementation: a re-registration never hides a
-            // published definition
+            // A re-registration never hides a published definition.
             let public =
                 public || self.abstract_reps.get(id).map(|r| r.public).unwrap_or(false);
             let formals = Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
@@ -1416,17 +1284,9 @@ impl Env {
             name.into(),
             TypeDef { params, typ: typ.clone(), rep, doc, pos, ori },
         );
-        // A chain of BARE aliases must not close a cycle: `type A = B;
-        // type B = A` names nothing, and contains' coinductive ref-pair
-        // memo answers true for (cycle, T) before any structure is
-        // compared — a binding annotated with the cycle would typecheck
-        // against everything. Recursion through a structural body
-        // (variant, union, tuple, struct, ...) is untouched: the walk
-        // follows only bodies that are bare `Type::Ref`s, and it runs
-        // at the def that closes the loop (earlier legs stop at the
-        // then-unresolvable forward name). `resolve_pure` because a
-        // def-gate probe must not fill resolution cells at a
-        // mid-compile registration horizon.
+        // A chain of bare aliases must not close a cycle: `type A = B;
+        // type B = A` names nothing, and contains' coinductive memo
+        // would accept it against everything.
         {
             let mut seen: LPooled<AHashSet<(CompactString, CompactString)>> =
                 LPooled::take();
@@ -1465,13 +1325,9 @@ impl Env {
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from a
-    /// registered typedef body — the closure-conversion moment for
-    /// bodies fusion will expand env-free (`TypeRef::expand_cell`): a
-    /// recursive type's inner occurrence is reached by no typecheck
-    /// walk (the Ref×Ref name fast path answers without expanding), so
-    /// only this pass fills it. Runs after typecheck, when every name's
-    /// FINAL target is registered — the one moment eager seeding is
-    /// order-correct.
+    /// registered typedef body, for env-free expansion
+    /// (`TypeRef::expand_cell`). Must run after typecheck, when every
+    /// name's final target is registered.
     pub fn seed_typedef_refs(&self) {
         for (_, defs) in self.typedefs.into_iter() {
             for (_, td) in defs.into_iter() {
@@ -1500,9 +1356,7 @@ impl Env {
         }
     }
 
-    /// Is `id` a Graphix-minted abstract type (as opposed to a
-    /// Rust-backed one)? Visible from everywhere: the TAG is public,
-    /// only the representation is scoped.
+    /// Is `id` a Graphix-minted (not Rust-backed) abstract type?
     pub fn abstract_minted(&self, id: AbstractId) -> bool {
         self.abstract_reps.get(&id).is_some()
     }
@@ -1517,16 +1371,9 @@ impl Env {
         }
     }
 
-    /// Drop everything registered at `scope` or any descendant. Used by
-    /// the LSP when re-typechecking a stdlib (or third-party graphix)
-    /// package crate's own source: the runtime's env was pre-loaded
-    /// with that package at startup, but the live edits need to
-    /// register fresh under the same scope. Without scrubbing first,
-    /// re-registration trips the duplicate-module / duplicate-type
-    /// guards.
-    ///
-    /// Returns the number of (scope, name) entries removed across binds
-    /// and typedefs.
+    /// Drop everything registered at `scope` or any descendant, so a
+    /// package's source can re-register under the same scope. Returns
+    /// the number of bind and typedef entries removed.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
         let mut removed = 0;
         let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
@@ -1569,8 +1416,7 @@ impl Env {
         removed
     }
 
-    /// create a new binding. If an existing bind exists in the same
-    /// scope shadow it.
+    /// Create a new binding, shadowing an existing one in the same scope.
     pub fn bind_variable(
         &mut self,
         scope: &ModPath,
@@ -1676,13 +1522,10 @@ mod test {
         let mut env = Env::default();
         assert_eq!(env.super_anchor("/a/b/c", 1).unwrap(), "/a/b");
         assert_eq!(env.super_anchor("/a/b/c", 2).unwrap(), "/a");
-        // a user program's depth-1 module: the parent is the root
-        // scope, which IS the user package's root
         assert_eq!(env.super_anchor("/a", 1).unwrap(), "/");
         assert!(env.super_anchor("/a", 2).is_err());
         assert_eq!(env.super_anchor("/#do1/foo", 1).unwrap(), "/#do1");
         assert!(env.super_anchor("/#do1", 1).is_err());
-        // a registered package's root refuses super
         env.package_roots.insert_cow(ArcStr::from("pkg"));
         assert!(env.super_anchor("/pkg", 1).is_err());
         assert_eq!(env.super_anchor("/pkg/sub", 1).unwrap(), "/pkg");

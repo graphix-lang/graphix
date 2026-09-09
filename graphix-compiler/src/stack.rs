@@ -7,11 +7,9 @@ use std::{
 };
 
 /// Stack headroom that must remain before [`ensure_sufficient`]
-/// switches to a fresh segment. It has to exceed what ONE recursion
-/// level can consume between two checks — an unoptimized `expr` parse
-/// cycle burns ~420KB (the `choice` tuples in `expr` and `arith_term`
-/// are ~112KB and ~125KB of stack frame each), a node-walk lambda
-/// dispatch ~10KB.
+/// switches to a fresh segment. It must exceed what one recursion
+/// level consumes between two checks (~420KB for an unoptimized
+/// `expr` parse level).
 pub(crate) const RED_ZONE: usize = 1024 * 1024;
 
 /// Size of each fresh segment. Segments are mmap'd on entry and
@@ -20,13 +18,8 @@ pub(crate) const RED_ZONE: usize = 1024 * 1024;
 pub(crate) const SEGMENT: usize = 32 * 1024 * 1024;
 
 /// The stack a thread may hold on grown segments before the running
-/// derivation is ABORTED (`Control::abort`, the sticky shutdown Ctrl-C
-/// arms). Depth is bounded by memory (`design/recursive_activations.md`
-/// §4b) and this is the embedder's word on how much of it: containment
-/// outside the language, like the interrupt — no program can observe
-/// it short of being stopped. Unlimited by default; `GRAPHIX_STACK_BUDGET`
-/// (bytes) or [`set_stack_budget`] set it — the fuzz pool gives every
-/// child one so a runaway recursion cannot take a soak box down.
+/// runtime is aborted. Unlimited by default; set by
+/// `GRAPHIX_STACK_BUDGET` (bytes) or [`set_stack_budget`].
 static STACK_BUDGET: LazyLock<AtomicUsize> = LazyLock::new(|| {
     AtomicUsize::new(match std::env::var("GRAPHIX_STACK_BUDGET") {
         Ok(s) => s.trim().parse().unwrap_or(usize::MAX),
@@ -38,10 +31,8 @@ pub fn set_stack_budget(bytes: usize) {
     STACK_BUDGET.store(bytes, Ordering::Relaxed);
 }
 
-/// Abort the running runtime because a recursion exceeded the budget —
-/// the one exit for both engines (the node-walk's [`grow`], the
-/// kernel's `graphix_stack_check`), so the log line and the
-/// `CtlFlag::Budget` mark are the same whichever descended.
+/// Abort the running runtime because a recursion exceeded the budget;
+/// the one exit for both the node-walk and the kernel stack check.
 pub(crate) fn budget_abort() {
     log::error!(
         "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
@@ -57,15 +48,8 @@ thread_local! {
 }
 
 /// Run `f` with a guarantee of [`RED_ZONE`] stack, moving onto a fresh
-/// heap segment when the current stack is nearly exhausted.
-///
-/// Wrap the recursion knots a user program can drive arbitrarily deep:
-/// how deeply a program may nest is then bounded by memory rather than
-/// by whichever thread the work lands on (libtest gives 2MB, tokio
-/// workers 2MB, the main thread 8MB), and it stops depending on the
-/// build profile — unoptimized frames are ~6x the optimized ones, so a
-/// 2MB thread parses 5 levels of nesting at opt-level 0 against 26 at
-/// opt-level "z".
+/// heap segment when the current stack is nearly exhausted. Wrap every
+/// recursion knot a user program can drive arbitrarily deep.
 #[inline(always)]
 pub(crate) fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
     if stacker::remaining_stack().unwrap_or(0) >= RED_ZONE { f() } else { grow(f) }

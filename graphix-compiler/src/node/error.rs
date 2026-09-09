@@ -111,9 +111,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             .env
             .bind_variable(&catch_scope.lexical, &c.bind, typ, spec.pos, spec.ori.clone())
             .id;
-        // The handler compiles BEFORE this catch registers, so a
-        // rethrowing `?` inside it resolves to a predecessor catch in
-        // the same block or an outer one — never to itself.
+        // the handler compiles before this catch registers, so a
+        // rethrowing `?` inside it never resolves to itself
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
         let covered = scope.with_catch((bind_id, top_id));
         let seq_abort = c
@@ -218,9 +217,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // Siblings typecheck first, so Qop/CallSite throws are already
-        // unioned into the bind. Snapshot them, then ascribe `T` so the
-        // handler sees `e: T` rather than the inferred union.
+        // siblings typecheck first, so the region's throws are already
+        // unioned into the bind: snapshot them, then ascribe `T`
         if let Some(t) = self.constraint.clone() {
             let tv = {
                 let bind = ctx
@@ -243,9 +241,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck0(ctx))?;
         }
-        // The capture cell's type is the union of every covering
-        // handler's throws; a handler whose region cannot throw (a
-        // ⊥ bind) contributes nothing, so the cell is exact.
+        // the capture cell's type is the union of every covering
+        // handler's throws
         if let Some(cap) = self.capture {
             let etyp = ctx
                 .env
@@ -261,8 +258,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             let Type::TVar(tv) = &bind.typ else {
                 bail!("BUG: seq capture cell is not a cell")
             };
-            // The bind is a (frozen) cell: union its CONTENT, so two
-            // arms' errors merge the way two `?` under one catch do.
+            // union the cell's content, not the cell
             let etyp = match &etyp {
                 Type::TVar(b) => b.read().typ.read().typ.clone().unwrap_or(Type::Bottom),
                 t => t.clone(),
@@ -285,10 +281,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck1(ctx))?;
         }
-        // `catch(e: T)`: T is the type of `e`. It must still cover every
-        // error the region throws (the snapshot from typecheck0). A call
-        // site's compile-time `ftype.throws` supersets later instance
-        // interiors, so this stays sound for runtime-bound callees.
+        // `T` must cover every error the region throws (the typecheck0
+        // snapshot); a call site's `ftype.throws` supersets later
+        // instance interiors, so this holds for runtime-bound callees
         if let Some(t) = &self.constraint {
             let accumulated = self
                 .thrown
@@ -320,10 +315,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // A catch is a fusion boundary (no `emit_clif`): the handler
-        // reads the error variable a handler-ful `?` writes, and that
-        // read is necessarily a separate kernel. The handler's own
-        // subtrees fuse.
+        // a catch is a fusion boundary; the handler's own subtrees fuse
         crate::fusion::fuse(&mut self.handler, ctx)?;
         if let Some(abort) = &mut self.seq_abort {
             crate::fusion::fuse(&mut abort.node, ctx)?;
@@ -332,18 +324,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 }
 
-/// Deliver a `?`'s error `e` (the raw error payload) to the catch
-/// handler `(handler_id, handler_top)` on behalf of the `?` at
-/// `spec` under `own_top` — the ONE handler path, shared by
-/// `Qop::update` and the fused kernel's delivery drain
-/// (`Kernel::update`): `wrap_error` against the env, then a same-top
-/// delivery uses the same-cycle Vacant-insert (or `set_var` when the
-/// handler's variable already holds this cycle's value), a CROSS-top
-/// delivery (REPL: a catch installed by an earlier input) goes through
+/// Deliver a `?`'s raw error payload `e` to `handler` on behalf of the
+/// `?` at `spec` under `own_top`. The one handler path, shared by
+/// `Qop::update` and the fused kernel's delivery drain: same-top
+/// deliveries land in this cycle's event, cross-top ones go through
 /// `rt.set_var`, and inside an evaluation frame the delivery is parked
-/// (`ExecCtx::frame_outbox`) — the frame's private `event.variables`
-/// is discarded when the pass ends, and a handler delivery is
-/// outward-bound.
+/// in `ExecCtx::frame_outbox`.
 pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
@@ -369,10 +355,8 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     }
 }
 
-/// A fused handler-ful `?` site: what the kernel's delivery drain
-/// needs to run [`deliver_error`] for an error the emitted code
-/// raised there. Interned per site (`BodyCx::interned_qop_site`) and
-/// kept alive by the kernel's `KernelValues`.
+/// A fused handler-ful `?` site: what the kernel's delivery drain needs
+/// to run [`deliver_error`] for an error raised there.
 #[derive(Debug)]
 pub struct QopSite {
     pub(crate) handler: ErrorHandler,
@@ -384,12 +368,8 @@ pub struct QopSite {
 pub struct Qop<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
-    /// The resolved handler: its error-variable bind and the TOP the
-    /// handler node lives under. A same-top delivery uses the
-    /// same-cycle Vacant-insert; a CROSS-top delivery (REPL: catch
-    /// installed by an earlier input) must go through `rt.set_var` —
-    /// the insert only reaches nodes that update later in the same
-    /// cycle, and cross-top ordering is not ours to assume.
+    /// The resolved handler: its error-variable bind and the top the
+    /// handler node lives under.
     pub(crate) handler: Option<ErrorHandler>,
     pub(crate) top_id: ExprId,
     pub n: Node<R, E>,
@@ -445,8 +425,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         if tv.tag().is_bottom() {
-            // a bottom (incl. the phantom) is not an error VALUE —
-            // pass it on
+            // a bottom is not an error value
             return tv;
         }
         let err = tv.with_value(|v| match v {
@@ -468,8 +447,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                         &self.spec,
                         (*e).clone(),
                     );
-                    // the consumed error event produces an event with
-                    // no value
                     self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
                 None => {
@@ -540,17 +517,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                     {
                         Ok(etyp.clone())
                     }
-                    // A caught error's type arrives EXPANDED through a
-                    // call site's throws (the alias-expansion note in
-                    // CLAUDE.md); structurally it is the same chain, and
-                    // `wrap_error` chains the value rather than nesting
-                    // it, so the type must not nest either.
+                    // a chain arriving expanded through a call site's
+                    // throws is the same chain: `wrap_error` chains the
+                    // value rather than nesting it, so the type must not nest
                     Some(Type::Struct(fields)) if is_echain_shape(fields) => {
                         Ok(etyp.clone())
                     }
                     Some(et) => {
-                        // The chain may also arrive as a Ref resolved in
-                        // another scope (a callee's throws): expand it.
+                        // the chain may arrive as a Ref from another scope
                         let expanded = match et {
                             Type::Ref(_) => Some(et.lookup_ref(&ctx.env)?),
                             _ => None,
@@ -592,9 +566,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         }
         let err = Type::Primitive(Typ::Error.into());
         let rtyp = self.n.typ().diff(&ctx.env, &err)?;
-        // A `?` over a type with no non-error member never produces: it
-        // is bottom, which a select absorbs, not an empty union, which
-        // no pattern could match (a seq with body ending in `e?`).
+        // a `?` with no non-error member never produces: bottom, which a
+        // select absorbs, not an empty union no pattern could match
         let rtyp = if rtyp.is_uninhabited() { Type::Bottom } else { rtyp };
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         if let Some(handler) = &self.handler {
@@ -645,9 +618,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 #[derive(Debug)]
 enum GuardState {
     Sleeping,
-    /// Entered under this handler generation; `settled` once a FIRED
-    /// production has passed since entry — until then a standing
-    /// value is the previous run's answer, not this one's.
+    /// Entered under this handler generation; `settled` once a fired
+    /// production has passed since entry (before that a standing value
+    /// is the previous run's answer).
     Running {
         generation: u64,
         settled: bool,
@@ -803,8 +776,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         match err {
             None => tv,
             Some(e) => {
-                // LOG EVERYWHERE (Q2): a fresh ignored error logs at
-                // every depth; a stale error re-delivery rides.
+                // only a fresh error logs
                 if tv.tag().is_fired() {
                     log::warn!(
                         "ignored error in {} at {} {e}",
@@ -867,7 +839,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // `$` never has a catch handler (log + drop on error) — no delivery.
+        // `$` has no handler, so no delivery
         emit_qop_node(cx, self.spec.id, &self.n, &self.typ, None)
     }
 }

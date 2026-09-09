@@ -230,8 +230,8 @@ const DATETIME_ARITH18: &str = r#"
     duration:9999999999999.s *? 99999999999999
 "#;
 
-// Homogeneous arithmetic: duration is not a Number — checked or not,
-// the operator rejects at compile time (scaling is sys::time::scale).
+// duration is not a Number: the operator rejects at compile time
+// (scaling is sys::time::scale).
 run!(datetime_arith18, DATETIME_ARITH18, |v: Result<&Value>| matches!(v, Err(_));
      graphix_package_core::testing::FuseExpect::None);
 
@@ -254,7 +254,7 @@ const DATETIME_ARITH20: &str = r#"
 }
 "#;
 
-// later before earlier saturates at zero: durations are unsigned
+// later before earlier saturates at zero: durations are unsigned.
 run!(datetime_arith20, DATETIME_ARITH20, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::ZERO => true,
     _ => false,

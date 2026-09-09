@@ -12,9 +12,6 @@ const BYREF_DEREF: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -28,9 +25,6 @@ const BYREF_TUPLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(byref_tuple, BYREF_TUPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -45,9 +39,6 @@ const BYREF_PATTERN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(byref_pattern, BYREF_PATTERN, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -62,9 +53,6 @@ const CONNECT_DEREF0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(41), Value::I64(42)] => true,
@@ -82,9 +70,6 @@ const CONNECT_DEREF1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(41), Value::I64(42)] => true,
@@ -93,12 +78,8 @@ run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Refs are first-class runtime values (`Value::U64(bind_id)` — Deref
-// re-registers lazily off the value), so a ref read back out of a
-// CONTAINER derefs like any other. `Deref::typecheck0` used to match
-// the child type structurally (`Type::ByRef` only) and rejected the
-// TVar-bound `&T` an accessor/`$` read produces — `*(a[0]$)` over
-// `Array<&i64>` was "expected reference" at compile time (2026-07-08).
+// Refs are first-class runtime values, so a ref read back out of a
+// container derefs like any other (`*(a[0]$)` over `Array<&i64>`).
 const DEREF_FROM_ARRAY: &str = r#"
 {
   let v = 42;
@@ -126,10 +107,10 @@ run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, |v: Result<&Value>| matches
     Ok(Value::I64(14))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// ── place references (design/place_references.md, 2026-09-02) ──
+// Place references (design/place_references.md).
 
-// Reads through every accessor kind, and writes through each — the
-// root value rebuilt along the path.
+// Reads and writes through every accessor kind; the root value is
+// rebuilt along the path.
 const PLACE_READ_WRITE: &str = r#"
 {
   let a = [10, 20, 30];
@@ -159,9 +140,8 @@ run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // A moving reference points where its key says when it fires; two
-// writes to one root in one cycle both land (patches resolve at
-// delivery, each on the other's result); a write into a place that
-// does not exist is dropped and the root is untouched.
+// writes to one root in one cycle both land; a write into a missing
+// place is dropped and the root is untouched.
 const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 {
   let a = [1, 2, 3];
@@ -188,8 +168,8 @@ run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:1, [i64:100, i64:2, i64:300], i64:300]"
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The form's shape: a lambda over `&State` reaches an editor held in
-// an array through a place reference passed as its argument.
+// A lambda over `&State` reaches an editor held in an array through a
+// place reference passed as its argument.
 const PLACE_THROUGH_PARAM: &str = r#"
 {
   type State = { value: string, cursor: i64 };

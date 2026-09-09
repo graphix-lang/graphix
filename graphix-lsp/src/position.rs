@@ -1,29 +1,12 @@
-//! LSP `Position` ↔ char-column conversion under different position
-//! encodings.
-//!
-//! LSP positions are per-line; the `character` field's units depend on
-//! the encoding the client and server negotiated:
-//!
-//! - **UTF-16** (the default): one unit per UTF-16 code unit. BMP
-//!   characters are 1 unit; supplementary-plane characters (most emoji,
-//!   `𝒜`, etc.) are 2 units.
-//! - **UTF-32**: one unit per Unicode scalar (Rust `char`). Equivalent
-//!   to counting `chars()`.
-//! - **UTF-8**: one unit per UTF-8 byte. Equivalent to byte offsets.
-//!
-//! The graphix compiler (and our cursor helpers) want char-column
-//! offsets — `combine`'s `SourcePosition::column` advances per char.
-//! These helpers translate at the LSP boundary so the rest of the code
-//! can speak chars uniformly.
-//!
-//! For ASCII-only lines (the common case in graphix source) all three
-//! encodings agree, so this is a no-op fast path most of the time.
+//! LSP `Position` ↔ char-column conversion under the negotiated
+//! position encoding (UTF-16 code units, UTF-32 scalars, or UTF-8
+//! bytes). The compiler and the cursor helpers speak char columns, so
+//! these translate at the LSP boundary; ASCII lines are a no-op.
 
 use lsp_types::{Position, PositionEncodingKind};
 
-/// Position encoding negotiated with the client. We narrow
-/// `lsp_types::PositionEncodingKind` to the three variants the spec
-/// defines, so we can match exhaustively.
+/// Position encoding negotiated with the client, narrowed to the three
+/// variants the spec defines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionEncoding {
     Utf8,
@@ -32,10 +15,8 @@ pub enum PositionEncoding {
 }
 
 impl PositionEncoding {
-    /// Map the negotiated `PositionEncodingKind` (or its absence,
-    /// meaning the LSP default of UTF-16) into our enum. Anything we
-    /// don't recognize falls back to UTF-16 — that's the spec's
-    /// default and what every conforming client supports.
+    /// Map the negotiated `PositionEncodingKind` (absent or unrecognized
+    /// means the UTF-16 default) into our enum.
     pub fn from_kind(kind: Option<&PositionEncodingKind>) -> Self {
         match kind {
             Some(k) if *k == PositionEncodingKind::UTF8 => Self::Utf8,
@@ -49,9 +30,8 @@ impl PositionEncoding {
 /// `line_text` is the line at `position.line`, with the line terminator
 /// already stripped (i.e. the same string `str::lines()` yields).
 ///
-/// Out-of-range character offsets clamp to the end of the line — the
-/// LSP spec mandates this, otherwise an editor sending a position past
-/// EOL (e.g. while the user is typing) would surface as a hard error.
+/// Out-of-range character offsets clamp to the end of the line, as the
+/// LSP spec mandates.
 pub fn position_to_char_col(
     line_text: &str,
     position: Position,
@@ -98,10 +78,8 @@ pub fn position_to_char_col(
     }
 }
 
-/// Build an LSP `Position` from a (line, char-column) pair. Inverse of
-/// `position_to_char_col`. `char_col` is clamped to the line length so
-/// callers don't have to worry about whether the compiler reported a
-/// column past EOL.
+/// Build an LSP `Position` from a (line, char-column) pair; inverse of
+/// `position_to_char_col`. `char_col` is clamped to the line length.
 pub fn char_col_to_position(
     line_text: &str,
     line: u32,
@@ -120,9 +98,8 @@ pub fn char_col_to_position(
     Position { line, character }
 }
 
-/// Helper for the common case: get the line at `position.line` from
-/// the full document text and convert the position to a char-column.
-/// Returns `None` if the line index is out of range.
+/// `position_to_char_col` over the full document text; `None` if the
+/// line index is out of range.
 pub fn position_to_char_col_in_text(
     text: &str,
     position: Position,
@@ -132,9 +109,8 @@ pub fn position_to_char_col_in_text(
     Some(position_to_char_col(line, position, encoding))
 }
 
-/// Helper for `char_col_to_position` taking the full document text.
-/// Returns a position with `character: 0` if the line index is out of
-/// range — keeps the LSP response well-formed in degenerate cases.
+/// `char_col_to_position` over the full document text; `character: 0`
+/// if the line index is out of range.
 pub fn char_col_to_position_in_text(
     text: &str,
     line: u32,
@@ -180,14 +156,9 @@ mod tests {
 
     #[test]
     fn utf16_supplementary_plane() {
-        // 𝒜 (MATHEMATICAL SCRIPT CAPITAL A) is U+1D49C — outside the
-        // BMP, so 2 UTF-16 code units, 4 UTF-8 bytes, 1 char.
+        // 𝒜 (U+1D49C) is 2 UTF-16 units, 4 UTF-8 bytes, 1 char.
         let line = "a𝒜b";
-        // After "a" (1 unit/byte/char), then 𝒜 (+2 units, +4 bytes, +1 char), then "b".
-        // Cursor right after 𝒜:
-        // - utf16 character = 3 → char col = 2
-        // - utf8 character = 5 → char col = 2
-        // - utf32 character = 2 → char col = 2
+        // Cursor right after 𝒜: utf16 3, utf8 5, utf32 2 → char col 2.
         assert_eq!(position_to_char_col(line, at(0, 3), PositionEncoding::Utf16), 2);
         assert_eq!(position_to_char_col(line, at(0, 5), PositionEncoding::Utf8), 2);
         assert_eq!(position_to_char_col(line, at(0, 2), PositionEncoding::Utf32), 2);
@@ -200,9 +171,7 @@ mod tests {
 
     #[test]
     fn utf16_position_inside_surrogate_clamps_down() {
-        // 𝒜 occupies utf16 units [1..3]. character=2 is in the middle
-        // of its surrogate pair; we clamp to the char boundary before
-        // — col=1 (after "a").
+        // character=2 is mid surrogate pair; clamp to the boundary before.
         let line = "a𝒜b";
         assert_eq!(position_to_char_col(line, at(0, 2), PositionEncoding::Utf16), 1);
     }

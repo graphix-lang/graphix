@@ -227,12 +227,8 @@ run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// `Lines::lines` frames at the BYTE level, which is the reason it is
-// a builtin rather than a read loop in Graphix. This child writes a
-// line split across two reads ("del" then "ta\n"), a CRLF line, and a
-// trailing fragment with no newline: decoding each read on its own
-// would corrupt the split, and a naive splitter would emit the
-// fragment as a line.
+// `Lines::lines` frames at the byte level: a line split across two
+// reads, a CRLF line, and a trailing fragment with no newline.
 #[cfg(unix)]
 const IO_LINES: &str = r#"
 {
@@ -273,9 +269,8 @@ run!(io_lines, IO_LINES, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The batched form delivers one event per READ carrying every line that
-// read made available, so the two writes arrive as two arrays rather
-// than five events.
+// The batched form delivers one event per read carrying every line that
+// read made available: two writes arrive as two arrays.
 #[cfg(unix)]
 const IO_LINES_BATCHED: &str = r#"
 {

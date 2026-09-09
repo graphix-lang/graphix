@@ -1,22 +1,13 @@
-//! Fusion: identify eligible pure subtrees of the compiled node graph
-//! and JIT-compile them to native kernels.
+//! Fusion: JIT-compile pure subtrees of the compiled node graph to
+//! native kernels.
 //!
-//! The architecture is distributed (`design/distributed_jit.md`):
-//! body code generation is `Update::emit_clif` / `Apply::emit_clif`
-//! trait methods living with each node, and the fusion phase is
-//! `Update::fuse` recursion driven by [`fuse`]. This module supplies
-//! the shared mechanics those impls call:
-//!
-//! - [`try_fuse`] — the whole-subtree compile attempt: region-input
-//!   collection → [`sig_from_inputs`] → builtin/lambda call-site
-//!   discovery → compile under the jit lock (`emit_clif` recursion
-//!   from the root) → [`builder::FusedKernel`] + feeders. "Is it
-//!   fusable" IS the compile attempt.
-//! - [`fuse`] — the uniform child-visit protocol (try_fuse,
-//!   else recurse, swap in any replacement).
-//! - [`lowering`] — discovery, signature derivation (lambda callees,
-//!   collection callbacks, body splits), abstract-type resolution.
-//! - [`builder`] — the runtime [`builder::FusedKernel`] carrier.
+//! Code generation is distributed: each node's `Update::emit_clif` /
+//! `Apply::emit_clif` emits its own CLIF and [`fuse`] drives the
+//! `Update::fuse` recursion. This module supplies the shared mechanics:
+//! [`try_fuse`] (the whole-subtree compile attempt — "is it fusable"
+//! IS the compile attempt), [`fuse`] (the child-visit protocol),
+//! [`lowering`] (discovery and signature derivation) and [`builder`]
+//! (the runtime [`builder::FusedKernel`] carrier).
 
 pub mod builder;
 pub mod emit;
@@ -26,9 +17,6 @@ pub mod kernel;
 pub mod kernel_abi;
 pub mod lowering;
 
-// The runtime kernel carrier is the one piece of fusion external code
-// constructs directly; everything else is reached through the named
-// submodules.
 pub use builder::FusedKernel;
 
 use crate::{
@@ -100,41 +88,27 @@ pub(crate) fn blocker(spec: &Expr, reason: compact_str::CompactString) -> anyhow
 }
 
 /// Compile-time fusion outcome counters, accumulated on
-/// [`FusionCtx::stats`] by every `compile()` the context
-/// runs. Per-context (the compiler supports many instances per
-/// process and tests run in parallel) — unlike the runtime-side
-/// per-thread `emit_helpers` invocation counters, which can't
-/// give per-region failure reasons and are wrong for a per-program
-/// assertion on a multi-thread runtime.
-///
-/// Exists because the direct JIT path degrades silently: a region
-/// that fails to compile just node-walks and produces the correct
-/// value, so value-agreement tests cannot distinguish "fused
-/// correctly" from "never fused". These counters make "did it
-/// actually fuse, and if not why" a queryable fact.
+/// [`FusionCtx::stats`] by every `compile()` the context runs. A
+/// region that fails to compile node-walks and produces the correct
+/// value, so these counters are the only way to ask "did it fuse, and
+/// if not why".
 #[derive(Debug, Clone, Default)]
 pub struct FusionStats {
     /// `try_fuse` attempts that passed the cheap gates (identity,
     /// return-type) and reached the compile attempt.
     pub attempted: usize,
-    /// Regions that compiled + spliced (direct path), or classic-path
-    /// splices (for old-vs-new coverage comparison at the flip).
+    /// Regions that compiled and were spliced in.
     pub fused: usize,
     /// Per-failure source identity and compile error. Compile-time only;
     /// bounded by program size.
     pub failed: Vec<FusionFailure>,
-    /// JIT module ROTATIONS this context has performed (see
-    /// `FusionCtx::retired_jits`): each is one retired ~256MB arena
-    /// still resident (dead kernels stay mapped; live kernels from old
-    /// generations keep executing). Embedders running recompile-heavy
-    /// workloads (hot-reloading dynamic modules, long plugin sessions)
-    /// can poll this and recycle the ExecCtx to reclaim everything.
+    /// JIT module rotations (see `FusionCtx::retired_jits`). Each leaves
+    /// one ~256MB arena resident until the ExecCtx is dropped; embedders
+    /// that recompile heavily can poll this and recycle the ExecCtx.
     pub jit_generations: usize,
-    /// Region-root ExprIds that successfully fused. Lets a consumer
-    /// (e.g. the `#[native]` reporter) tell a STRUCTURAL `failed` entry —
-    /// a `let`/block whose region attempt failed but whose VALUE fused in
-    /// a sub-region — from a REAL blocker (a residue node with nothing
-    /// fused beneath it). Compile-time only; bounded by program size.
+    /// Region roots that fused. Distinguishes a structural `failed`
+    /// entry (a block whose value fused in a sub-region) from a real
+    /// blocker with nothing fused beneath it.
     fused_sources: Vec<FusionSource>,
 }
 
@@ -161,46 +135,22 @@ impl FusionStats {
     }
 }
 
-/// Per-[`ExecCtx`] state owned by the fusion subsystem, grouped here
-/// (rather than as loose `ExecCtx` fields) because it's all fusion's
-/// own concern. Non-generic — none of these types depend on `R`/`E` —
-/// so it's a plain `ctx.fusion` field. Reached as `ctx.fusion.<x>`.
+/// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
+/// `ctx.fusion.<x>`.
 pub struct FusionCtx {
-    /// Per-context JIT state — cranelift module + cross-kernel-call
-    /// cache. Each `ExecCtx` gets its own isolated JIT target (no
-    /// shared global module, no races across concurrent in-process
-    /// runtimes). The `parking_lot::Mutex` is interior mutability only
-    /// (not shared ownership) — it satisfies the `Sync` bound graphix-rt
-    /// puts on `ExecCtx` (cranelift's `JITModule` holds a `RefCell` so
-    /// isn't auto-`Sync`). Access via `ctx.fusion.jit.lock()`. JIT ops
-    /// are compile-time only, so the lock cost is negligible. Kernels
-    /// compile into this module via
-    /// [`emit::compile_kernel_with_callees_direct`] (parent + callees
-    /// declared/defined together → direct CLIF cross-kernel calls).
+    /// Per-context cranelift module + cross-kernel-call cache. The
+    /// mutex is interior mutability for `ExecCtx`'s `Sync` bound; JIT
+    /// ops are compile-time only.
     pub jit: parking_lot::Mutex<emit::Jit>,
-    /// RETIRED JIT generations (the generational rotation, 2026-08-06,
-    /// Eric's design): when the active module's arena exhausts during
-    /// a region build, the whole `Jit` — module, arena, caches, and
-    /// every lifetime anchor its kernels bake pointers into — moves
-    /// here and a fresh one takes its place; the failed region build
-    /// retries once against the fresh module. Old kernels keep
-    /// executing from retired arenas (their spliced nodes hold the fn
-    /// pointers); GENERATIONS NEVER LINK — every direct kernel call is
-    /// intra-region and a region builds atomically within one
-    /// generation, so a post-rotation region recompiles its whole
-    /// transitive callee set. Freed only by ExecCtx drop /
+    /// JIT generations retired when the active arena exhausted. Their
+    /// kernels stay mapped and executing; generations never link (a
+    /// region builds atomically within one). Freed by ExecCtx drop or
     /// [`Self::reset_jit_for_check`].
     pub retired_jits: parking_lot::Mutex<Vec<emit::Jit>>,
-    /// On-demand monomorphized lambda-kernel cache, keyed by
-    /// `(LambdaId, Arc<FnType>, catch coverage)`. Populated by
-    /// `build_lambda_kernel`: derive the signature once, reuse it for
-    /// every later call to the same (lambda definition,
-    /// monomorphization, coverage). Coverage is part of a call site's
-    /// identity — each instance body's `?` handlers resolved against
-    /// that site's dynamic scope, and the kernel bakes them
-    /// (catch-callsite-coverage-aug2026). The cached `Arc<KernelSig>`
-    /// IS the compiled-callable handle — the JIT's `by_kernel` cache
-    /// keys on its pointer identity.
+    /// Monomorphized lambda-kernel cache. Catch coverage and fn
+    /// resolutions are part of the key because the kernel bakes them.
+    /// The cached `Arc<KernelSig>` is the callable handle: the JIT's
+    /// `by_kernel` cache keys on its pointer identity.
     pub kernels: parking_lot::Mutex<
         std::collections::BTreeMap<
             (
@@ -212,39 +162,23 @@ pub struct FusionCtx {
             lowering::CachedKernel,
         >,
     >,
-    /// Lambdas whose kernel build is CURRENTLY on the stack —
-    /// `build_lambda_kernel`'s re-entrancy guard. Mutual recursion
-    /// (f's body builds g, whose body re-enters f before f's cache
-    /// entry lands) would otherwise recurse the build forever; the
-    /// guard refuses the inner build so the chain de-fuses to the
-    /// node-walk instead of hanging the compiler. `Arc` so a drop-guard
-    /// can hold the set without borrowing the `ExecCtx`.
+    /// Lambdas whose kernel build is currently on the stack. A
+    /// re-entrant build (mutual recursion) is refused so the chain
+    /// de-fuses instead of recursing forever. `Arc` so a drop-guard can
+    /// hold the set without borrowing the `ExecCtx`.
     pub(crate) building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
-    /// Whether fusion is enabled for the current compile. Set by
-    /// [`crate::compile`] from `!flags.contains(CFlag::FusionDisabled)`.
-    /// Defaults `true`.
+    /// Whether fusion is enabled for the current compile; set by
+    /// [`crate::compile`].
     pub enabled: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub stats: FusionStats,
-    /// The TOP expression id of the compile currently running — set by
-    /// [`crate::compile`] before the fusion phase. `try_fuse` builds its
-    /// feeder Refs with this id: `Rt::ref_var`/`unref_var` are keyed
-    /// `(BindId, top_id)`, and the runtime wakes a top expression on
-    /// `set_var` only while its ref count is nonzero. A feeder
-    /// registered under the REGION's interior ExprId would strand the
-    /// real top expression at count zero once the spliced original's
-    /// Refs unref — a fused region fed by a `<-`-written variable would
-    /// then never see updates past the first cycle.
+    /// The top expression id of the running compile. Feeder Refs must
+    /// register under it: `Rt::ref_var` is keyed `(BindId, top_id)`, and
+    /// a region's interior id would strand the top expression at count 0.
     pub(crate) top_id: Option<ExprId>,
-    /// Declared facts of each registered builtin, keyed by name.
-    /// Populated by `register_builtin` from `T::EFFECT`.
-    /// The effect is read by fusion's effect inference to decide
-    /// whether a builtin call site can be absorbed into a sync kernel;
-    /// the stateless bit by the transient-recursion gate
-    /// (`node::callsite::transient_body_ok`). Builtins absent from this
-    /// map are treated as `Async` + stateful (the conservative
-    /// defaults), always correct.
+    /// Declared facts of each registered builtin, keyed by name (from
+    /// `T::EFFECT`). An absent builtin is treated as `Async` + stateful.
     pub builtin_facts: ahash::AHashMap<&'static str, crate::effects::BuiltinFacts>,
 }
 
@@ -264,22 +198,15 @@ impl FusionCtx {
         })
     }
 
-    /// Reset the JIT to a clean, empty module, discarding every compiled
-    /// kernel and the cross-kernel `by_kernel` cache. The lambda-kernel
-    /// SIGNATURE cache (`kernels`) is module-independent — it holds
-    /// `Arc<KernelSig>` descriptors, not `FuncId`s (those live in the
-    /// Jit's `by_kernel`) — so it deliberately survives: a surviving sig
-    /// simply re-declares into the fresh module on next use.
+    /// Reset the JIT to an empty module, discarding every compiled
+    /// kernel. The lambda-kernel signature cache survives: it holds
+    /// module-independent descriptors that re-declare into the fresh
+    /// module on next use.
     ///
-    /// For the check/LSP path ONLY. That path shares one long-lived
-    /// runtime across every checked file and NEVER executes a fused
-    /// kernel (the checked nodes are deleted right after), so without a
-    /// per-check reset each file's kernels pile into the single
-    /// persistent module until cranelift's `finalize_definitions` chokes
-    /// on the bloat — a cross-file crash that bricks the shared runtime.
-    /// A per-check reset makes each file hermetic, like a fresh-runtime
-    /// `--check`. MUST NOT be called on a runtime with live (executing)
-    /// kernels: it frees their compiled code.
+    /// For the check/LSP path only, which never executes a kernel and
+    /// would otherwise accumulate every checked file's kernels in one
+    /// module. Must not be called on a runtime with live kernels: it
+    /// frees their code.
     pub fn reset_jit_for_check(&self) -> anyhow::Result<()> {
         *self.jit.lock() = emit::Jit::new()?;
         self.retired_jits.lock().clear();
@@ -292,30 +219,18 @@ impl FusionCtx {
 pub(crate) struct FreeVarInput {
     pub(crate) bind_id: BindId,
     pub(crate) name: arcstr::ArcStr,
-    /// Kernel-input classification, computed once from the binding's
-    /// type. Drives the `RegionInput.kind` at build time.
+    /// Kernel-input classification, computed once from the binding's type.
     pub(crate) kind: RegionInputKind,
-    /// Full graphix type — used to construct the runtime feeder Node
-    /// (`genn::reference`), which needs the complete `Type`.
+    /// Full graphix type, needed by the runtime feeder Node.
     pub(crate) typ: Type,
 }
 
-/// Walk the candidate subtree, collect every external Ref's
-/// BindId (referenced but NOT bound inside the body), and resolve
-/// each to its name + kernel-input classification via `ctx.env.by_id`.
-///
-/// Because `CallSite::refs` recurses into a statically-resolved
-/// lambda's body (via `GXLambda::refs`), a lambda's captures
-/// transitively surface here as external Refs of the enclosing
-/// region — so this pre-pass registers them as parent kernel inputs,
-/// and `emit_lambda_call`'s capture forwarding finds them via
-/// `lookup_local_by_bind_id`. This is the mechanism that makes
-/// closure conversion's capture cascade automatic.
-///
-/// Slots whose type has no kernel-input representation (function
-/// types, bare `String`/`Null`/`Unit`) are skipped — the builder
-/// fails those Refs when emitting them and the candidate stays
-/// unfused (correct fall-back to the interpreter).
+/// Collect every external Ref of the subtree (referenced but not bound
+/// inside it) and resolve each to a [`FreeVarInput`]. A statically
+/// resolved lambda's captures surface here through `CallSite::refs`,
+/// which is what makes capture forwarding automatic. Slots with no
+/// kernel-input representation are skipped; emitting such a Ref later
+/// fails the build.
 pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
     subtree: &dyn Update<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -335,29 +250,19 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
     out
 }
 
-/// Resolve a single binding `id` to its [`FreeVarInput`] (name + kernel
-/// slot classification + full type), or `None` if its type has no
-/// kernel-input representation (function types, bare `String`/`Null`).
-/// Shared by [`collect_region_inputs`] (external refs) and the
-/// connect-target LIFT (a let-bound counter routed in as a feeder).
+/// Resolve binding `id` to its [`FreeVarInput`], or `None` if its type
+/// has no kernel-input representation.
 pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     id: BindId,
     ctx: &ExecCtx<R, E>,
 ) -> Option<FreeVarInput> {
     let b = ctx.env.by_id.get(&id)?;
-    // Resolve named/abstract type refs to their concrete rep BEFORE
-    // freezing — `freeze_for_abi` is deliberately Env-free and rejects
-    // `Type::Ref`, so an abstract-typed input needs the same
-    // `expand_refs` pre-pass the classic kernel-signature derivation
-    // applies (#218). The feeder type stays UNRESOLVED — the runtime Ref
-    // wants the type system's view; only the kernel-slot classification
-    // (`kind`, which carries the frozen types) needs the concrete rep.
+    // `freeze_for_abi` is env-free and rejects `Type::Ref`, so refs expand
+    // first. The feeder keeps the unresolved type; only the slot
+    // classification needs the concrete rep.
     let resolved = expand_refs(&b.typ, &ctx.env);
-    // Normalized: a binding whose defining select has a never() arm
-    // carries a Set polluted by the arm's late-bound TVar — the
-    // resolve_tvars rung collapses it so the local threads as a region
-    // input instead of silently de-fusing every consumer
-    // (bench/stream_stats.gx's window-gate idiom).
+    // Normalized: a select with a never() arm leaves a Set polluted by
+    // the arm's late-bound TVar.
     let frozen = kernel_abi::freeze_for_abi_normalized(&resolved)?;
     let kind = lowering::type_to_region_input_kind(frozen)?;
     Some(FreeVarInput {
@@ -368,18 +273,11 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     })
 }
 
-/// The single definition of "tail position" (review A5). A body ROOT
-/// is a tail position; tailness propagates inward through exactly
-/// three structural FORMERS — a `Block`'s LAST child, an
-/// `ExplicitParens`' inner node, and every `Select` arm body — and
-/// stops at everything else (a `Leaf`, where a tail action happens:
-/// return, or a self tail-call's rebind-and-jump). Consumers that
-/// must AGREE on this set all dispatch through here: the analysis
-/// walks (`analysis::mark_tail_sites`, both `body_has_self_tail_call`
-/// twins, via [`for_each_tail_leaf`]) and the kernel emitter
-/// (`emit::flow::emit_body_tail`) — the JIT's tail set must match the
-/// analysis's or a `TailCall` emits without its loop. Adding a former
-/// here is a compile error at every one of those sites.
+/// The single definition of "tail position". A body root is a tail
+/// position; tailness propagates through a `Block`'s last child, an
+/// `ExplicitParens`' inner node and every `Select` arm body, and stops
+/// at a `Leaf`. The analysis walks and the kernel emitter must agree on
+/// this set, so all of them match on this enum.
 pub(crate) enum TailPosition<'a, R: Rt, E: UserEvent> {
     Block(&'a node::Block<R, E>),
     Parens(&'a node::ExplicitParens<R, E>),
@@ -398,12 +296,9 @@ pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
     }
 }
 
-/// Walk `node`'s tail positions per [`TailPosition`], calling `f` on
-/// each tail-position LEAF; returns whether `f` returned true for at
-/// least one. Every Select arm is visited (no short-circuit — `f` may
-/// mark), and `on_select` fires for each `Select` on the tail spine
-/// whose arms contained a true leaf (`mark_tail_sites`' hook for the
-/// interp-side `tail_position` flag; pass a no-op for pure queries).
+/// Call `f` on each tail-position leaf of `node`; returns whether any
+/// call returned true. Every Select arm is visited (no short-circuit),
+/// and `on_select` fires for each Select on the tail spine with a true leaf.
 pub(crate) fn for_each_tail_leaf<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     f: &mut impl FnMut(&Node<R, E>) -> bool,
@@ -428,14 +323,9 @@ pub(crate) fn for_each_tail_leaf<R: Rt, E: UserEvent>(
     }
 }
 
-/// Visit `node` and every reachable descendant (pre-order: `f` sees a
-/// node before its children) — the canonical full-coverage immutable
-/// walker. The `NodeView` match is EXHAUSTIVE on purpose: a new node
-/// variant is a compile error here, not a silently-untraversed
-/// container. Lambda BODIES are
-/// not descended (a body compiles per call site — its call sites belong
-/// to the callee kernel's own discovery), and `FusedKernel` is opaque
-/// (post-fusion synthetic).
+/// Visit `node` and every reachable descendant, pre-order. The
+/// `NodeView` match is exhaustive on purpose. Lambda bodies are not
+/// descended (a body compiles per call site) and `FusedKernel` is opaque.
 pub(crate) fn for_each_node<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
     f: &mut dyn FnMut(&'a Node<R, E>),
@@ -466,9 +356,8 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             }
         }
         NodeView::CallSite(cs) => {
-            // The args map is hash-ordered; walk in ArgKey order or the
-            // discovery order downstream (callee fn indices, the region
-            // layout) becomes a per-process coin flip.
+            // The args map is hash-ordered; walk in ArgKey order so the
+            // downstream discovery order is deterministic.
             let mut args: LPooled<Vec<(&crate::node::callsite::ArgKey, &Node<R, E>)>> =
                 cs.args
                     .iter()
@@ -630,85 +519,52 @@ pub(crate) fn for_each_emitted_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
-/// One discovered statically-resolved lambda call site in a region
-/// being directly compiled — the lambda-call analogue of
-/// [`lowering::BuiltinCallSiteInfo`]. Recorded by
-/// [`discover_lambda_calls`] during `try_fuse`'s ANALYSIS phase (before
-/// the jit lock — `build_lambda_kernel` needs `&mut ExecCtx`); consumed
-/// by `CallSite::emit_clif` via `BodyCx::lambda_site` to emit a CLIF
-/// `call` against the declared callee.
+/// One statically-resolved lambda call site in a region being compiled,
+/// recorded by [`discover_lambda_calls`] and consumed by
+/// `CallSite::emit_clif` to emit a CLIF `call` against the callee.
 #[derive(Debug, Clone)]
 pub struct LambdaCallInfo {
-    /// The callee kernel's name in the `funcids`/`callee_refs` maps.
-    /// Always the CACHED kernel's name (a cache hit returns the first
-    /// builder's name — possibly a `__hof_*` name from the per-slot
-    /// HOF path), never this call site's source name.
+    /// The callee kernel's name in the `funcids`/`callee_refs` maps —
+    /// the cached kernel's name, never this call site's source name.
     pub fn_name: arcstr::ArcStr,
-    /// Kept alive so the return-ABI read outlives the build and the
-    /// `by_kernel` entry pins the same `Arc`.
+    /// The same `Arc` the `by_kernel` entry keys on.
     pub kernel: std::sync::Arc<KernelSig>,
-    /// The callee's flat input types in signature order — formals
-    /// first, captures appended (`KnownFusedFn::arg_types`, cloned
-    /// from the `CachedKernel` at discovery). These were resolved
-    /// (`expand_refs`) and frozen at BUILD time, so they're the
-    /// caller's type authority for arg classification — freezing the
-    /// caller-side node type instead re-rejects abstract Refs (#218),
-    /// and env isn't available at emit time to resolve them. The
-    /// classic caller (`emit_lambda_call`) types args the same way.
+    /// The callee's input types in signature order, formals then
+    /// captures, resolved and frozen at build time — the caller's type
+    /// authority for arg classification (env is unavailable at emit time).
     pub arg_types: Vec<Type>,
-    /// Closure-converted captures, appended after the formal args in
-    /// the callee's input list (the caller marshals each from its own
-    /// env, BindId-first).
+    /// Closure-converted captures, appended after the formal args; the
+    /// caller marshals each from its own env, BindId-first.
     pub captures: Vec<lowering::CaptureSlot>,
 }
 
-/// A discovered callee's body Node + self-call info, recorded by
-/// [`discover_lambda_calls`] for the direct path's per-callee body
-/// emission (F0). The body reference is live through this region's
-/// resolved `GXLambda` for the duration of `try_fuse`.
+/// A discovered callee's body Node + self-call info. The body reference
+/// is live through this region's resolved `GXLambda` for the duration
+/// of `try_fuse`.
 pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
     pub body: &'n Node<R, E>,
-    /// `Some((self_bind, info))` for a self-recursive callee: the
-    /// binding its body's self-references carry, and the kernel's own
-    /// call descriptor — non-tail self-calls emit through the regular
-    /// lambda-call path against the kernel's own FuncRef; tail-position
-    /// self-calls become the rebind-and-jump loop.
+    /// `Some((self_bind, info))` for a self-recursive callee: non-tail
+    /// self-calls emit through the lambda-call path against the
+    /// kernel's own FuncRef; tail-position ones become the rebind loop.
     pub self_call: Option<(BindId, LambdaCallInfo)>,
-    /// This callee body's OWN statically-resolved lambda call sites
-    /// (#203 Phase C — the transitive closure). The callee's
-    /// `NodeBodyEmitter` consumes these so its body emits its nested
-    /// cross-kernel calls; empty for a leaf callee (one whose body calls
-    /// no other fusable lambda).
+    /// This callee body's own statically-resolved lambda call sites;
+    /// empty for a leaf callee.
     pub sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
-    /// This callee body's OWN sync builtin/cast/qop Apply sites
-    /// (`CachedKernel.apply_sites`, mirrored here so the callee's
-    /// `NodeBodyEmitter` can emit them). Consumed by Stage 2's
-    /// combined-slot runtime delivery; until then the callee emitter
-    /// ignores it and a callee-with-a-builtin de-fuses.
+    /// This callee body's own builtin/cast/qop Apply sites.
     pub apply_sites: nohash::IntMap<ExprId, lowering::BuiltinCallSiteInfo>,
 }
 
 /// Walk the region collecting every statically-resolved lambda call
-/// site, building (or cache-hitting) each callee's [`CachedKernel`]
-/// signature — TRANSITIVELY (#203 Phase C). After a callee's kernel is
-/// built its OWN body is scanned for further lambda calls, so the whole
-/// reachable closure of cross-kernel calls is discovered (callback → g →
-/// g2 → …). A lambda that fails to build (unsupported arg/return shape)
-/// is simply NOT recorded — its call site bails at emission and the
-/// subtree node-walks. A callee whose body has a call this discovery
-/// can't record (a non-fusable builtin, a dynamic dispatch) emits no
-/// CLIF for that call and the whole region de-fuses (never a partial
-/// kernel).
+/// site, building (or cache-hitting) each callee's kernel signature
+/// transitively: a built callee's own body is scanned in turn. A lambda
+/// that fails to build is not recorded; its call site bails at emission
+/// and the region de-fuses (never a partial kernel).
 ///
-/// Returns: the ROOT's call sites; the name→`KernelSig` map of EVERY
-/// callee in the closure (the define loop declares them all, so they can
-/// call each other — including mutual recursion); and a `kernel-ptr →
-/// CalleeBody` map giving each callee's body `Node` (reached live
-/// through its resolved `GXLambda`), its self-call info, and its OWN
-/// discovered call sites. Termination: a callee already recorded in
-/// `bodies` is not re-scanned, so self- and mutual-recursion close the
-/// loop (the back-edge's call site is still recorded for emission, but
-/// the body isn't re-enqueued).
+/// Returns the root's call sites, every callee in the closure in
+/// discovery order, each callee's body + self-call info + own call
+/// sites keyed by kernel identity, and the decorated nodes the region
+/// would absorb. A callee already in `bodies` is not re-scanned, which
+/// closes self- and mutual recursion.
 pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
@@ -718,30 +574,18 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
     LPooled<nohash::IntSet<ExprId>>,
 ) {
-    // Honesty-census piggyback: decorated nodes seen by THIS walk are
-    // exactly the nodes a successful region build ABSORBS (the walk
-    // descends collection callbacks and callee bodies — everything the
-    // kernel compiles). `try_fuse` commits them to `attr_absorbed` on
-    // success; no dedicated attribute traversal exists. Collected only
-    // when a census exists — attribute-free compiles skip even the
-    // per-node dec test.
+    // Decorated nodes seen by this walk are exactly the nodes a
+    // successful build absorbs; `try_fuse` commits them to `attr_absorbed`.
     let collect_decorated = !ctx.attr_census.lock().is_empty();
     let mut decorated: LPooled<nohash::IntSet<ExprId>> = LPooled::take();
-    // Identified by kernel IDENTITY (`kernel_key`), like `bodies` —
-    // names shadow and monomorphizations share a name, so a name-keyed
-    // map here bound call sites to the wrong kernel (audit-jul2026
-    // 01/02). Kept as a Vec in DISCOVERY order: emission iterates this
-    // list to assign fn indices and the region layout, and a
-    // pointer-ordered map made all of those
-    // ASLR-dependent — the compiled shape of the same program differed
-    // across processes (#19).
+    // Keyed by kernel identity (names shadow, monomorphizations share a
+    // name); a Vec in discovery order so fn indices and the region
+    // layout are stable across processes.
     let mut callees: LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>> = LPooled::take();
     let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
         std::collections::BTreeMap::new();
-    // Bodies still to scan; the second field says where the body's
-    // discovered sites land — `None` = the root (returned), `Some(ptr)`
-    // = that callee's `CalleeBody.sites`. LIFO; scan order is irrelevant
-    // (every reachable body is scanned exactly once, gated by `bodies`).
+    // The second field says where a body's discovered sites land:
+    // `None` = the root, `Some(ptr)` = that callee's `CalleeBody.sites`.
     let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<usize>)>> = LPooled::take();
     worklist.push((root, None));
     let mut root_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> = LPooled::take();
@@ -761,12 +605,9 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else {
                 return;
             };
-            // Kernel name: the call site's SOURCE name — a LABEL for the
-            // emitted symbol and diagnostics only; resolution is by kernel
-            // identity, so shadowed same-name lambdas and multiple
-            // monomorphizations coexist. A lambda-literal call
-            // (`(|x| x)(1)` — fnode isn't a Ref) has no name and stays on
-            // the node-walk.
+            // The source name labels the emitted symbol only; resolution
+            // is by kernel identity. A lambda-literal call has no name
+            // and stays on the node-walk.
             let ExprKind::Ref { name } = &cs.fnode.spec().kind else {
                 return;
             };
@@ -777,8 +618,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                     arcstr::ArcStr::from(s)
                 }
             };
-            // The SITE's resolved FnType keys the kernel cache — see
-            // build_lambda_kernel.
+            // The site's resolved FnType keys the kernel cache.
             let Some(site_ftype) = cs.resolved_ftype() else {
                 return;
             };
@@ -787,11 +627,8 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                 return;
             };
             let ptr = kernel_abi::kernel_key(&cached.kernel);
-            // First time we reach this callee: record it (discovery
-            // order), record its body + self-call info, and enqueue it
-            // for transitive scanning. A repeat (its own self-call, or
-            // a mutual back-edge) records the site below but does NOT
-            // re-enqueue — that's the termination guard.
+            // A repeat reach (a self-call or mutual back-edge) records
+            // the site but does not re-enqueue the body.
             if !bodies.contains_key(&ptr) {
                 callees.push((ptr, cached.kernel.clone()));
                 let self_call = cached.is_rec.then(|| {
@@ -843,32 +680,18 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     (root_sites, callees, bodies, decorated)
 }
 
-/// Run the fusion phase on one `Node` — the distributed path's uniform
-/// visit protocol, used by [`crate::compile`] on the root and by every
-/// [`Update::fuse`] impl on its children: first try to fuse the
-/// WHOLE subtree via [`try_fuse`]; if it doesn't fuse, recurse into the
-/// node's own `fuse` (which fuses ITS children's maximal subtrees in
-/// turn). Either way a produced replacement is swapped in and the
-/// original deleted — the parent owns the swap because a node can't
-/// replace itself behind `&mut self`.
-///
-/// Maximality falls out of the top-down order: the highest subtree
-/// whose `try_fuse` succeeds is spliced and nothing below it is ever
-/// attempted; a failed attempt falls through to finer-grained fusion
-/// inside.
-///
-/// The `FusionDisabled` short-circuit is NOT here — it
-/// is checked once in [`crate::compile`] before this is called, rather
-/// than on every recursive step.
+/// The fusion visit protocol for one `Node`: try to fuse the whole
+/// subtree via [`try_fuse`]; otherwise recurse into the node's own
+/// `fuse`. The replacement is swapped in here because a node cannot
+/// replace itself behind `&mut self`. Top-down order gives maximality:
+/// the highest subtree that fuses is spliced and nothing below it is
+/// attempted. `FusionDisabled` is checked once in [`crate::compile`].
 pub fn fuse<R: Rt, E: UserEvent>(
     child: &mut Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> anyhow::Result<()> {
     if let Some(new) = try_fuse(child, ctx)? {
         let mut old = std::mem::replace(child, new);
-        // (Honesty-census absorption was committed by `try_fuse` on
-        // success, collected during its discovery walk — no dedicated
-        // traversal here.)
         old.delete(ctx);
         check_node_attributes(child, ctx)?;
         return Ok(());
@@ -881,15 +704,12 @@ pub fn fuse<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Dispatch each registered attribute's check on a decorated node the fusion
-/// walk just resolved (see [`crate::AttributeCheckFn`] — this IS the
-/// attribute check pass; there is no separate walk). A successfully fused
-/// node was replaced by its [`FusedKernel`], which carries the region root's
-/// spec — so `#[native]` checks against the replacement and passes; a node
-/// absorbed into a strictly-larger ancestor kernel is never visited here,
-/// which is also a pass (it IS native). Definition assertions
-/// (`#[tail_recursive]`/`#[sync]`/`#[async]`) are not registry attributes
-/// and never reach this — they verify at `analysis::analyze`'s tail.
+/// Dispatch each registered attribute's check ([`crate::AttributeCheckFn`])
+/// on a node the fusion walk just resolved. A fused node was replaced by
+/// its [`FusedKernel`], which carries the region root's spec, so
+/// `#[native]` passes; a node absorbed into a larger kernel is never
+/// visited, which is also a pass. Definition assertions
+/// (`#[tail_recursive]`/`#[sync]`/`#[async]`) verify in `analysis::analyze`.
 fn check_node_attributes<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -909,14 +729,9 @@ fn check_node_attributes<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Attribute sweep over a subtree the fuse driver does NOT route
-/// node-by-node: collection-intrinsic callback bodies (`MapQ`/`FoldQ`
-/// prototypes — their fusion is the inline emission at the enclosing call,
-/// so the driver never descends them). Called from `MapQ`/`FoldQ::fuse`.
-/// Walks with `for_each_node` and descends through resolved lambda call
-/// sites (a nested collection or lambda inside the callback), exactly the
-/// coverage the retired standalone check walk gave these trees — scoped to
-/// the trees that need it.
+/// Attribute sweep over collection-intrinsic callback bodies, which the
+/// fuse driver never descends (their fusion is the inline emission at
+/// the enclosing call). Descends through resolved lambda call sites.
 pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -950,27 +765,18 @@ pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
 }
 
 /// Try to fuse the whole subtree rooted at `node` into one JIT kernel.
-/// Mechanics only, NO policy — policy (where to attempt, what to
-/// recurse) lives in each node's [`Update::fuse`] impl.
+/// Mechanics only; policy lives in each node's [`Update::fuse`].
 ///
-/// `Ok(Some(replacement))` — the subtree compiled; the replacement is
-/// a [`FusedKernel`] node (feeders + JIT dispatch) the caller swaps in
-/// (deleting the original). `Ok(None)` — not fusable: the root type
-/// isn't representable at the kernel boundary, the subtree is an
-/// identity passthrough (zero compute — the runtime `Ref` feeder
-/// already produces the value), or some node in the subtree doesn't
-/// emit CLIF (the `emit_clif` default `Err`) — async ops, unsupported
-/// shapes. "Is it fusable" IS the compile attempt; there is no
-/// separate analysis to drift out of sync with the emitter.
+/// `Ok(Some(replacement))`: a [`FusedKernel`] node the caller swaps in.
+/// `Ok(None)`: the root type has no kernel representation, the subtree
+/// is an identity passthrough, or some node does not emit CLIF. "Is it
+/// fusable" IS the compile attempt; there is no separate analysis.
 pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
-    // Identity suppression: a bare binding read (possibly through
-    // grouping parens) forwards one input unchanged — fusing it wraps
-    // zero compute in dispatch overhead (and the `run!` harness's
-    // `let result = {code}` wrapper would otherwise register as
-    // "fused" without any real body fusion — see CLAUDE.md #139).
+    // A bare binding read forwards one input unchanged; fusing it wraps
+    // zero compute in dispatch overhead.
     if region_is_identity(node) {
         return Ok(None);
     }
@@ -986,21 +792,12 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     };
     ctx.fusion.stats.attempted += 1;
     let mut inputs = collect_region_inputs(&**node, ctx);
-    // DETERMINISM: input order so far is `Refs`' nohash-set iteration
-    // order — nonlinear in the ABSOLUTE BindId values, which can drift
-    // between processes (detcheck gen#29: the same program compiled a
-    // kernel signature `(.., i8, i64, f64)` in one child and
-    // `(.., f64, i64, i8)` in the other). BindIds allocate in compile
-    // order, so sorting by id makes the signature source-order-stable
-    // regardless of where the counter started.
+    // `Refs` iterates in set order, which varies with absolute BindId
+    // values across processes; BindIds allocate in compile order, so
+    // sorting makes the signature source-order-stable.
     inputs.sort_by_key(|fv| fv.bind_id);
-    // #219 taint rides each param's disc word (no separate validity
-    // bitmask), and the per-param firing trackers spill to the heap, so
-    // there is no input-count ceiling — a region of any width fuses.
     if let Some(name) = non_scalar_basename_collision(&inputs) {
-        // A real blocker, not protocol noise — log it (a silent
-        // Ok(None) after `attempted += 1` makes the stats disagree
-        // with the failure list).
+        // Recorded so `attempted` and `failed` agree.
         ctx.fusion.stats.record_failure(
             node.spec(),
             compact_str::format_compact!(
@@ -1010,16 +807,12 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         );
         return Ok(None);
     }
-    // Discover the fusable call sites BEFORE the kernel build:
-    // `apply_sites` lets `CallSite::emit_clif` recognise a registered
-    // site and lower it to a direct call.
+    // `apply_sites` lets `CallSite::emit_clif` lower a registered site
+    // to a direct call.
     let mut discovery = lowering::BuiltinCallDiscovery::default();
     lowering::walk_node_for_builtin_calls::<R, E>(node, ctx, &mut discovery);
-    // Statically-resolved lambda call sites: build (or cache-hit) each
-    // callee's kernel NOW — `build_lambda_kernel` needs `&mut ExecCtx`,
-    // which emission (under the jit lock) can't have. The callees
-    // compile from their body Nodes during the parallel period; the
-    // parent's call sites emit CLIF `call`s against them.
+    // Callee kernels build before the jit lock is taken:
+    // `build_lambda_kernel` needs `&mut ExecCtx`.
     let (lambda_sites, lambda_callees, callee_bodies, region_decorated) =
         discover_lambda_calls(node, ctx);
     let source_id = node.spec().id;
@@ -1032,9 +825,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     ) {
         Ok(v) => v,
         Err(e) => {
-            // A frozen region input whose ABI kind doesn't match its
-            // Type — a freeze invariant that should hold for well-typed
-            // input, but de-fuse rather than panic if it ever doesn't.
+            // A freeze invariant violation; de-fuse rather than panic.
             ctx.fusion.stats.record_failure(
                 node.spec(),
                 compact_str::format_compact!("sig_from_inputs: {e:#}"),
@@ -1043,10 +834,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         }
     };
     let kernel = std::sync::Arc::new(sig);
-    // The compile attempt: entry binds the declared params, then the
-    // body is emitted by `emit_clif` recursion from the root. Any Err
-    // (a node that doesn't emit) discards the half-built function —
-    // the subtree node-walks.
     let build = |ctx: &mut ExecCtx<R, E>| {
         emit::compile_kernel_with_callees_direct(
             &mut ctx.fusion.jit.lock(),
@@ -1061,17 +848,9 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         )
     };
     let mut result = build(ctx);
-    // GENERATIONAL ROTATION (Eric's design, 2026-08-06): an exhausted
-    // arena retires the whole active `Jit` (its kernels stay mapped
-    // and executing — spliced nodes hold the fn pointers) and the
-    // region build retries ONCE against a fresh module. A region
-    // builds atomically within one generation and generations never
-    // link (every direct kernel call is intra-region; the retry
-    // recompiles the whole transitive callee set into the fresh
-    // module's empty cache), so no cross-module relocation can exist.
-    // Half-emitted functions in the retired module are unreachable
-    // garbage in an arena nothing touches again. A second exhaustion
-    // (a single region larger than the arena) de-fuses normally.
+    // An exhausted arena retires the whole active `Jit` (its kernels
+    // stay mapped) and the build retries once in a fresh module; the
+    // retry recompiles the whole callee set, so generations never link.
     if let Err(e) = &result {
         if format!("{e:#}").contains("memory region exhausted") {
             match emit::Jit::new() {
@@ -1114,14 +893,9 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             return Ok(None);
         }
     };
-    // Feeders register `Rt::ref_var(bind_id, TOP_ID)` — the runtime
-    // wakes a top expression on `set_var` only while its (id, top_id)
-    // ref count is nonzero. The REAL top id (from `ExecCtx::
-    // fuse_top_id`, set per `compile()`), NOT the region's interior
-    // `source_id`: registering under an id no installed expression
-    // matches would strand the top expression at count zero once the
-    // spliced original's Refs unref on delete — a region fed by a
-    // `<-`-written variable would never see updates past cycle one.
+    // Feeders register under the real top id: `Rt::ref_var` is keyed
+    // `(BindId, top_id)`, and the region's interior id would strand the
+    // top expression at ref count zero.
     let feeder_top = ctx.fusion.top_id.unwrap_or(source_id);
     let feeders: Box<[Node<R, E>]> = inputs
         .iter()
@@ -1139,12 +913,6 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
                 inputs.len()
             );
-            // `GRAPHIX_DBG_REGION`: dump each fused region's input wiring
-            // (name, BindId, declared vs deref'd type, cell constraints,
-            // derived slot kind). The region-side complement of
-            // `GRAPHIX_DUMP_CLIF` — a kernel gated forever on a "missing"
-            // input usually means an input here froze under a lied-about
-            // type (#18 was diagnosed with exactly this dump).
             if crate::dbgenv::graphix_dbg_region() {
                 for (i, fv) in inputs.iter().enumerate() {
                     let deref =
@@ -1166,19 +934,13 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 }
             }
             ctx.fusion.stats.record_fused(node.spec());
-            // Commit the honesty-census absorption (collected during
-            // discovery's walk — see `discover_lambda_calls`): every
-            // decorated node in this now-native region is satisfied.
             if !region_decorated.is_empty() {
                 ctx.attr_absorbed.lock().extend(region_decorated.iter().copied());
             }
             Ok(Some(n))
         }
         Err(e) => {
-            // The kernel COMPILED but the runtime carrier refused it —
-            // log like any other blocker (a silent Ok(None) here made
-            // `attempted` and `failed` disagree, which is exactly the
-            // drift FusionStats exists to expose).
+            // Recorded so `attempted` and `failed` agree.
             ctx.fusion.stats.record_failure(
                 node.spec(),
                 compact_str::format_compact!("FusedKernel::new: {e:#}"),
@@ -1188,12 +950,9 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     }
 }
 
-/// Scalar env slots resolve BindId-first (C2) — duplicate basenames
-/// are fine there. The OTHER per-kind tables are still name-keyed
-/// (BindId-keying lands per-table as each shape gains emission):
-/// two distinct non-scalar inputs sharing a basename would silently
-/// alias one slot — callers refuse to fuse instead. Returns the
-/// first colliding name.
+/// Scalar env slots resolve by BindId, but the other per-kind tables
+/// are name-keyed, so two non-scalar inputs sharing a basename would
+/// alias one slot. Returns the first colliding name.
 pub(crate) fn non_scalar_basename_collision(
     inputs: &[FreeVarInput],
 ) -> Option<&arcstr::ArcStr> {
@@ -1209,18 +968,11 @@ pub(crate) fn non_scalar_basename_collision(
     None
 }
 
-/// Freeze a region root's graphix type into the kernel's return ABI
-/// type, or `None` if the region can't fuse. The kernel boundary
-/// can't represent bare `Null` (fusion must widen to Nullable first)
-/// or `Unit` (a side-effect-only marker), and a type that doesn't
-/// freeze to a concrete shape can't have an ABI at all.
-/// `freeze_for_abi_normalized` because a select-rooted region's type is
-/// typecheck's raw arm union (`Set([i64, TVar→i64])`), which only
-/// freezes once flattened. On plain-freeze failure, retry through
-/// `expand_refs` (#218): a region returning an abstract-typed
-/// value (e.g. `Array<Elem>` with `Elem` an interface type) carries
-/// Refs the env-free freeze rejects; the resolved concrete rep IS
-/// the return ABI.
+/// Freeze a region root's type into the kernel's return ABI type, or
+/// `None` if the region can't fuse: bare `Null` and `Unit` have no
+/// kernel representation. Normalized because a select-rooted region's
+/// type is the raw arm union; on failure, retry with refs expanded,
+/// since an abstract-typed return carries Refs the env-free freeze rejects.
 pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     use kernel_abi::AbiKind;
     if crate::dbgenv::graphix_dbg_freeze() {
@@ -1268,17 +1020,9 @@ fn region_is_identity<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     }
 }
 
-/// Build a [`KernelSig`] straight from a typed input list
-/// — signature only, no body. One [`kernel_abi::KernelParam`] per
-/// input in SOURCE order (vec order is ABI order — the wrapper, the
-/// runtime packer, the entry binder, and the tail-rebind all follow
-/// it; there is no per-kind grouping). Used by every kernel-build
-/// path: `try_fuse` regions, lambda kernels (`build_lambda_kernel` —
-/// formals carry `bind_id: None`, captures their binding), and
-/// body-split sub-regions.
-///
-/// The second return is the flat per-input graphix type list in the
-/// same order — [`kernel_abi::KnownFusedFn::arg_types`], the
+/// Build a [`KernelSig`] from a typed input list — signature only. One
+/// param per input in source order; vec order is ABI order. The second
+/// return is the per-input graphix type list in the same order, the
 /// caller-side type authority for cross-kernel call marshalling.
 pub(crate) fn sig_from_inputs<'k>(
     fn_name: arcstr::ArcStr,

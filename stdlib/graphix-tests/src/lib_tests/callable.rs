@@ -1,13 +1,6 @@
-//! The embedder-callable path (`GXHandle::compile_callable`) — how a
-//! GUI/TUI package dispatches a graphix handler per external event.
-//! The callable's callee instances are born lazily on the cycle of
-//! their first real dispatch, AFTER any `&state` reference value in
-//! the enclosing body was delivered — so the write side
-//! (`ConnectDeref`) must resolve its target from the standing store,
-//! exactly as `Deref`'s read side does. Before the 2026-08-19 fix the
-//! target stayed unresolved and every `*st <- v` reached through the
-//! callable was silently dropped (found by graphix-package-tui's
-//! line_edit under TuiTestHarness).
+//! The embedder-callable path (`GXHandle::compile_callable`): a callee
+//! instance born lazily at its first dispatch must resolve `*st <- v`
+//! from the standing store, like `Deref`'s read side.
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
@@ -67,10 +60,8 @@ async fn callable_handler_writes_through_ref_param() -> Result<()> {
     let r = gx.compile_ref(handle_bid).await?;
     let lambda = r.last.clone().context("handle has no value")?;
     let callable = gx.compile_callable(lambda).await?;
-    // Interpose cycles between the callable's init and its first
-    // dispatch — the embedder shape (a TUI renders between building
-    // the handler and the first key). The reference value delivered
-    // at init must survive to the instance the dispatch creates.
+    // Cycles between the callable's init and its first dispatch: the
+    // reference value delivered at init must survive to the instance.
     for _ in 0..3 {
         let _e = gx.compile(arcstr::literal!("i64:0")).await?;
     }
@@ -98,15 +89,9 @@ async fn callable_handler_writes_through_ref_param() -> Result<()> {
     }
 }
 
-/// The phantom-replay repro (admin-TUI find, 2026-08-31): a handler
-/// whose interior select routes by a state variable. Flipping the
-/// state wakes an arm for the FIRST time; the callee call site under
-/// it materializes with the handler's params STANDING (the last real
-/// event was consumed cycles ago, by another arm). Those standing
-/// inputs must deliver present-but-STALE (Eric's ruling): delivering
-/// them fired re-raises a past event — the pump's Enter, standing
-/// from the name modal's submit, phantom-submitted the freshly opened
-/// password modal with "".
+/// A handler whose interior select routes by a state variable: flipping
+/// the state wakes an arm for the first time, and the handler's standing
+/// params must deliver stale, never re-fire a consumed event.
 const PHANTOM: &str = r#"
 let active: [`A, `B, null] = null;
 let submitted = 0;
@@ -154,9 +139,8 @@ async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
         let r = gx.compile_ref(get("test::set_active")?).await?;
         gx.compile_callable(r.last.clone().context("no set_active")?).await?
     };
-    // route to `A, deliver one real event (consumed by the `A arm),
-    // then flip to `B with NO new event — the flip must not fire the
-    // `B arm's callee with the standing "x"
+    // route to `A, deliver one real event, then flip to `B with no new
+    // event: the flip must not fire the `B arm's callee with the standing "x"
     set_active.call(ValArray::from_iter_exact([Value::Bool(false)].into_iter())).await?;
     handle_l.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
     set_active.call(ValArray::from_iter_exact([Value::Bool(true)].into_iter())).await?;
@@ -214,15 +198,9 @@ async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
     bail!("the legitimate fire never landed (last={last:?})")
 }
 
-/// A callable's body flips its own routing state from a key it consumed
-/// (the admin TUI's landing: Enter on the landing arm requests a
-/// connect, the tab switches its screen to the connect form). The
-/// screen flip selects the connect arm for the first time with the
-/// same key still standing — and that arm's callee must read it STALE
-/// (the landing arm consumed the fire), never dispatch on it. Found
-/// 2026-09-02: the callable's call site skipped the compile pipeline,
-/// and in its unchecked body the first dispatch read the standing
-/// pattern bind as fired.
+/// A callable's body flips its own routing state from a key it consumed:
+/// the newly selected arm's callee must read the standing key stale,
+/// never dispatch on it.
 const FLIP: &str = r#"
 type Key = { code: [`Enter, `Other], kind: [`Press, `Release] };
 type Event = [`Key(Key), `Mouse];

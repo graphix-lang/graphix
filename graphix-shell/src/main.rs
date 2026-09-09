@@ -176,17 +176,11 @@ struct Params {
     /// do not attempt to run the init module
     #[arg(short = 'i', long)]
     no_init: bool,
-    /// disable JIT fusion — run the canonical node-walk interpreter
-    /// only. The fused JIT and the node-walk always agree on values
-    /// (the differential test/fuzz oracle enforces it); this is for
-    /// benchmarking the two evaluators and for debugging a suspected
-    /// fusion issue.
+    /// disable JIT fusion and run the node-walk interpreter only
     #[arg(long = "no-fusion")]
     no_fusion: bool,
-    /// after compiling the script, print its fusion profile to stderr:
-    /// how many regions attempted/fused and the per-region blocker
-    /// reasons (the stdlib baseline is subtracted). Only meaningful
-    /// when running a file with fusion enabled.
+    /// after compiling the script, print its fusion profile (regions
+    /// attempted/fused and per-region blocker reasons) to stderr
     #[arg(long = "fusion-stats")]
     fusion_stats: bool,
     /// do not execute the program, just veryify that it compiles and
@@ -333,10 +327,7 @@ fn tokio_main(
                 .context("starting log")?;
         }
         info!("graphix shell starting");
-        // netidx is a package concern now (design/netidx_extraction.md):
-        // the shell just seeds NetConfig. --no-netidx (or a config
-        // failure) means Internal-on-demand — programs that never use
-        // sys::net never touch the network.
+        // --no-netidx (or a config failure) leaves the network internal-on-demand.
         let net_config = if p.no_netidx {
             NetConfig::Internal
         } else {

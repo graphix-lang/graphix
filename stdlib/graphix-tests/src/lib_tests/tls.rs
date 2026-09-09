@@ -6,10 +6,8 @@ fn cert_dir() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
 }
 
-// TLS round-trip: connect + accept, then write/read through upgraded streams
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// TLS round-trip: connect + accept, then write/read through upgraded
+// streams.
 run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
     use sys::io::{{Read, Write}};
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
@@ -27,9 +25,8 @@ run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
     matches!(v, Ok(Value::String(s)) if &**s == "hello tls")
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Trait dispatch over a UNION of two Rust-backed abstract types: the
-// generated select tests each member's tag, which a Rust-backed value
-// answers by the path-derived wrapper UUID its package registered.
+// Trait dispatch over a union of two Rust-backed abstract types: each
+// member's tag test answers by its registered wrapper UUID.
 run!(socket_union_dispatch, { let cd = cert_dir(); format!(r#"{{
     use sys::io::{{Read, Write}};
     use sys::tcp::Socket;

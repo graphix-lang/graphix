@@ -24,8 +24,6 @@ use txn::{
 
 pub use tree::{DbValue, TreeValue};
 
-// ── Package registration ──────────────────────────────────────────
-
 graphix_derive::defpackage! {
     builtins => [
         DbGetType,

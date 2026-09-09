@@ -27,12 +27,10 @@ use triomphe::Arc;
 
 pub type BufferOverrides = Arc<Mutex<AHashMap<PathBuf, ArcStr>>>;
 
-/// A VFS module entry: its `.gx`/`.gxi` source text, plus optionally the
-/// pre-parsed AST as a packed blob (see [`super::serialize`]). When `packed`
-/// is present the resolver decodes it instead of re-parsing `source` — the
-/// startup win for stdlib packages. `source` is always kept (for `Origin`
-/// reconstruction and error-message snippets). Loose-source entries (tests,
-/// `eval`, the REPL) leave `packed` `None` and parse as before.
+/// A VFS module entry: its source text plus, optionally, the pre-parsed AST
+/// as a packed blob (see [`super::serialize`]), which the resolver decodes
+/// instead of re-parsing `source`. `source` is always kept for `Origin`
+/// reconstruction and error snippets.
 #[derive(Debug, Clone)]
 pub struct VfsEntry {
     pub source: ArcStr,
@@ -47,9 +45,7 @@ impl From<ArcStr> for VfsEntry {
 
 /// A module source loader. The compiler ships [`VfsResolver`] and
 /// [`FilesResolver`]; loaders for other transports live in the package
-/// that owns the transport (e.g. the netidx loader in
-/// graphix-package-sys) and are threaded in by the embedder — the core
-/// has no knowledge of any network.
+/// that owns the transport and are threaded in by the embedder.
 pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
     /// Try to resolve module `name` in `scope` under `parent`. Return
     /// [`Resolution::TryNextMethod`] (pushing any diagnostic into
@@ -62,19 +58,15 @@ pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
         errors: &'a mut Vec<anyhow::Error>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>>;
 
-    /// Derive a resolver for the SUBMODULES of a module whose
-    /// implementation came from `source`, when this resolver
-    /// understands that source kind (e.g. the netidx loader answers
-    /// `Source::Netidx(p)` with a clone based at `p`). The compiler
-    /// handles `Source::File` itself; everything else is offered to
-    /// the resolver list in order.
+    /// Derive a resolver for the submodules of a module whose
+    /// implementation came from `source`, when this resolver understands
+    /// that source kind. The compiler handles `Source::File` itself.
     fn for_source(&self, _source: &Source) -> Option<ResolverRef> {
         None
     }
 
     /// Fetch a single top-level source this resolver's transport
-    /// understands (the runtime's `Source::Netidx` script-file load).
-    /// `None` (the default) means "not my transport".
+    /// understands. `None` (the default) means "not my transport".
     fn fetch_source<'a>(
         &'a self,
         _source: &'a Source,
@@ -82,28 +74,24 @@ pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
         None
     }
 
-    /// The LSP buffer-overrides this resolver carries, if any — used
-    /// when the compiler derives directory-based prepend resolvers for
-    /// relative includes.
+    /// The LSP buffer overrides this resolver carries, if any; inherited by
+    /// the directory-based resolvers derived for relative includes.
     fn overrides(&self) -> Option<BufferOverrides> {
         None
     }
 }
 
-/// A shared resolver handle. `std::sync::Arc`: resolvers are
-/// cold-path configuration objects and triomphe cannot unsize to
-/// trait objects.
+/// A shared resolver handle (`std::sync::Arc`: triomphe cannot unsize to
+/// trait objects).
 pub type ResolverRef = std::sync::Arc<dyn ModuleResolver>;
 
 /// Resolvers threaded through module resolution, tried in order.
 pub type Resolvers = std::sync::Arc<[ResolverRef]>;
 
 /// Constructs a resolver from the payload of a `scheme:` entry in
-/// GRAPHIX_MODPATH (the part after the colon). Registered by the
-/// embedder per scheme — the shell registers the sys package's
-/// `netidx` factory; `file` is built in. The factory receives the
-/// context's [`LibState`] so package resolvers can share state (e.g.
-/// config and connection handles) with their package's builtins.
+/// GRAPHIX_MODPATH. Registered by the embedder per scheme; `file` is built
+/// in. Receives the context's [`LibState`] so a package resolver can share
+/// state with its package's builtins.
 pub type ResolverFactory = std::sync::Arc<
     dyn Fn(&mut crate::LibState, &str) -> Result<ResolverRef> + Send + Sync,
 >;
@@ -191,8 +179,7 @@ pub fn parse_modpath(
 }
 
 /// `GRAPHIX_DISABLE_PACKED_AST=1` forces module resolution to parse source
-/// even when a packed AST is available — for differential testing (packed vs
-/// parsed must compile identically) and as an escape hatch.
+/// even when a packed AST is available.
 fn packed_ast_disabled() -> bool {
     use std::sync::LazyLock;
     static DISABLED: LazyLock<bool> =
@@ -206,9 +193,8 @@ pub enum Resolution {
     Resolved {
         interface: Option<Origin>,
         implementation: Origin,
-        // Packed pre-parsed AST for impl/interface, when the VFS entry carried
-        // one. `None` for loose source and for the file/netidx resolvers (which
-        // always parse). The decode happens at the parse splice in `resolve`.
+        // Packed pre-parsed AST for impl/interface, when the VFS entry
+        // carried one.
         impl_packed: Option<Bytes>,
         intf_packed: Option<Bytes>,
     },
@@ -216,8 +202,7 @@ pub enum Resolution {
 }
 
 impl Resolution {
-    /// Build a parse-always resolution (no packed AST) — the shape
-    /// every non-VFS loader returns.
+    /// A parse-always resolution (no packed AST).
     pub fn parsed(interface: Option<Origin>, implementation: Origin) -> Self {
         Resolution::Resolved {
             interface,
@@ -248,7 +233,6 @@ fn resolve_from_vfs(
     let (implementation, impl_packed) = match vfs.get(&scoped_impl) {
         Some(e) => (ori!(e), e.packed.clone()),
         None => {
-            // try {name}/mod.gx fallback (consistent with file resolver)
             let mod_impl = scope.append(&format_compact!("{name}/mod.gx"));
             match vfs.get(&mod_impl) {
                 Some(e) => (ori!(e), e.packed.clone()),
@@ -314,7 +298,6 @@ async fn resolve_from_files(
         Ok(s) => Some(ori!(s, intf_path)),
         Err(_) => None,
     };
-    // file/netidx resolvers always parse — never packed.
     Resolution::Resolved {
         interface,
         implementation,
@@ -323,8 +306,8 @@ async fn resolve_from_files(
     }
 }
 
-// add modules that are only mentioned in the interface to the implementation
-// keep their relative location and order intact
+// Splice modules mentioned only in the interface into the implementation,
+// keeping their relative location and order.
 pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     #[derive(Clone, Copy)]
     struct Item<'a> {
@@ -456,13 +439,8 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
             }
             SigKind::Bind(_) | SigKind::Impl(_) => (),
         }
-        // An `impl` declaration is never spliced into the
-        // implementation — the implementation writes its own — so it
-        // can anchor nothing. The next interface-only item keeps the
-        // anchor of the last item that IS spliceable and stays in
-        // relative order; without this it fell through to the
-        // unanchored tail and was appended after the whole module
-        // body, where the declarations above it could not see it.
+        // An `impl` declaration is never spliced, so it anchors nothing;
+        // the next interface-only item keeps the last spliceable anchor.
         if !matches!(si.kind, SigKind::Impl(_)) {
             last = Some(si);
         }
@@ -604,11 +582,8 @@ async fn resolve(
     for r in prepend.iter().map(|r| &**r).chain(resolvers.iter().map(|r| &**r)) {
         let (interface, implementation, impl_packed, intf_packed) =
             check!(r.resolve(&scope, &parent, &name, &mut errors).await);
-        // Decode the pre-parsed AST if the VFS entry shipped one, else parse
-        // the source. Both run on a blocking thread (decode and parse are CPU
-        // work, and `serialize::unpack_module` sets the per-module `Origin` +
-        // AbstractId-remap thread-locals on the thread that decodes — mirroring
-        // how `parser::parse` sets `set_origin` inside its own closure).
+        // Decode and parse both run on a blocking thread; `unpack_module`
+        // sets its per-module thread-locals on the thread that decodes.
         let exprs = {
             let ori = implementation.clone();
             match impl_packed.filter(|_| !packed_ast_disabled()) {
@@ -670,17 +645,13 @@ impl Expr {
         })
     }
 
-    /// Resolve external modules referenced in the expression using
-    /// the resolvers list. Each resolver will be tried in order,
-    /// until one succeeds. If no resolver succeeds then an error will
-    /// be returned.
+    /// Resolve external modules referenced in the expression, trying each
+    /// resolver in order until one succeeds.
     pub async fn resolve_modules<'a>(&'a self, resolvers: &'a Resolvers) -> Result<Expr> {
         self.resolve_modules_in_scope(&ModPath::root(), resolvers).await
     }
 
-    /// Like `resolve_modules` but starts at a non-root scope. Used by
-    /// the runtime when typechecking a graphix package crate's source
-    /// under that crate's namespace.
+    /// Like `resolve_modules` but starts at a non-root scope.
     pub async fn resolve_modules_in_scope<'a>(
         &'a self,
         scope: &'a ModPath,
@@ -734,8 +705,6 @@ impl Expr {
                     ori: self.ori.clone(),
                     pos: self.pos,
                     kind: $kind,
-                    // Preserve decorations (comments/attrs) through module
-                    // resolution so they survive into the resolved tree.
                     dec: self.dec.clone(),
                 })
             };
@@ -803,15 +772,9 @@ impl Expr {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
-                // The prepend resolver supplies a base for resolving
-                // *this module's* sub-modules. The right base is the
-                // implementation's sub-module directory, not the
-                // parent's directory: for `foo.gx` (pattern 1) that's
-                // `<dir>/foo/`; for `foo/mod.gx` (pattern 2) it's just
-                // `<dir>/`. We dig the implementation file's path out
-                // of the body — the body's exprs carry the impl file
-                // as their ori, while `self.ori` only points at the
-                // file where `mod foo;` was written.
+                // Sub-modules resolve relative to the implementation file's
+                // directory (`<dir>/foo/` for `foo.gx`, `<dir>/` for
+                // `foo/mod.gx`); the body's exprs carry that file as their ori.
                 let impl_path: Option<&std::path::Path> =
                     exprs.iter().find_map(|e| match &e.ori.source {
                         Source::File(p) => Some(p.as_path()),
@@ -841,9 +804,6 @@ impl Expr {
                                 overrides,
                             }) as ResolverRef
                         }),
-                        // Non-file transports (e.g. netidx) are offered to
-                        // the resolver list in order — the owning loader
-                        // derives a child based at the source's path.
                         source => resolvers.iter().find_map(|m| m.for_source(source)),
                     },
                 };

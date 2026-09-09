@@ -16,13 +16,10 @@ use tokio::{
 };
 use triomphe::Arc;
 
-/// `GRAPHIX_DBG_VARS=1` — print every runtime variable event:
-/// `REF_VAR`/`UNREF_VAR` (the (BindId, ExprId) wake-interest refcount),
-/// `SET_VAR` (a queued cross-cycle write), and `NOTIFY_SET` (same-cycle
-/// bind delivery with the current interest map). The tool for "who
-/// publishes/wakes this bind" — found the dead-eliminated module
-/// statement (a fused region waiting forever on a feeder whose producer
-/// was spliced away, 2026-07-08). Checked once; set before launch.
+/// `GRAPHIX_DBG_VARS=1` prints every runtime variable event:
+/// `REF_VAR`/`UNREF_VAR` (wake-interest refcounts), `SET_VAR` (queued
+/// cross-cycle writes) and `NOTIFY_SET` (same-cycle bind delivery).
+/// Checked once; set before launch.
 fn dbg_vars() -> bool {
     static ON: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_DBG_VARS").is_some());
@@ -31,15 +28,11 @@ fn dbg_vars() -> bool {
 
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
-    /// The persistent tagged store (design/dense_delivery.md R3): the
-    /// (production, cycle-stamp) of every bound variable's last
-    /// delivery. Written by the cycle loop as each variable event
-    /// lands in `event.variables`, and by the same-cycle publishers
-    /// through [`Rt::store_insert`]. THE cross-cycle read — see
-    /// [`Rt::store`].
+    /// The (production, cycle-stamp) of every bound variable's last
+    /// delivery; the cross-cycle read is [`Rt::store`].
     pub(super) store: IntMap<BindId, (TagValue, u64)>,
-    /// The store's clock — bumped once at the top of each `do_cycle`.
-    /// Also the trace recorder's cycle number (one clock).
+    /// Bumped once at the top of each `do_cycle`; also the trace
+    /// recorder's cycle number.
     pub(super) cycle: u64,
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
     pub(super) var_updates: VecDeque<(BindId, VarUpdate)>,
@@ -51,20 +44,17 @@ pub struct GXRt<X: GXExt> {
     pub(super) watches:
         SelectAll<mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>>,
     pub(super) var_watches: SelectAll<mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>>,
-    // so the selectall will never return None
+    // keeps the SelectAll from ever returning None
     dummy_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
-    // so the selectall will never return None
+    // keeps the SelectAll from ever returning None
     var_dummy_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
     pub(super) updated: IntMap<ExprId, bool>,
     pub ext: X,
 }
 
 impl<X: GXExt> GXRt<X> {
-    /// A runtime with no netidx (or any other network) — networking
-    /// lives in packages since the netidx extraction
-    /// (design/netidx_extraction.md); sys::net owns its handles in
-    /// `ctx.libstate` and delivers through the generic
-    /// `watch`/`watch_var`/`spawn_var` machinery.
+    /// A runtime with no network; packages deliver external events
+    /// through `watch`/`watch_var`/`spawn_var`.
     pub fn new() -> Self {
         let mut tasks = JoinSet::new();
         tasks.spawn(async { future::pending().await });
@@ -117,7 +107,7 @@ impl<X: GXExt> Rt for GXRt<X> {
     }
 
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        // stamped one cycle back: Standing to every same-cycle reader
+        // stamped one cycle back, so it reads Standing to every same-cycle reader
         self.store.insert(id, (tv, self.cycle.wrapping_sub(1)));
     }
 

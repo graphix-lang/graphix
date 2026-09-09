@@ -1,15 +1,6 @@
-//! A `mod m;` statement is never DEAD: its binds publish into the
-//! persistent env — readable by Refs outside the fused region and by
-//! every later-installed top expression — so fusion's dead-statement
-//! elimination must treat a Module as an effect
-//! (`stmt_subtree_effect_free`, fusion/emit.rs). The whole-file Do
-//! region once eliminated the module statement while routing its
-//! constant in as a FEEDER: the splice then deleted the module (the
-//! feeder's only producer) with the consumed region, and the kernel
-//! waited forever on its own input — `mod m0; m0::c` under the shell's
-//! file wrap printed nothing under fusion and `1000` under
-//! `--no-fusion` (found probing the fuzzer's cross-module vocabulary,
-//! 2026-07-08).
+//! A `mod m;` statement is never dead: its binds publish into the
+//! persistent env, so dead-statement elimination treats a Module as an
+//! effect.
 
 use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;

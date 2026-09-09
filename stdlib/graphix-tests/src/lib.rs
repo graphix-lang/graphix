@@ -1,10 +1,8 @@
-// This crate exists solely to host the language and stdlib integration tests.
-// It depends on all stdlib packages so that TEST_REGISTER includes everything,
-// breaking the circular dev-dependency that previously existed in
-// graphix-package-core.
+// Hosts the language and stdlib integration tests; depends on every
+// stdlib package so TEST_REGISTER includes them all.
 
-// Auto-discovered from this crate's [dependencies] (the `graphix-package-*`
-// list IS the curation — it deliberately omits bench/gui/tui).
+// Discovered from this crate's [dependencies], which deliberately omit
+// bench/gui/tui.
 #[cfg(test)]
 pub(crate) const TEST_REGISTER: &[&dyn graphix_package::Package<graphix_rt::NoExt>] =
     graphix_package::package_refs!();

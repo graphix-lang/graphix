@@ -1,12 +1,10 @@
-//! AST-to-AST lowering of `seq` (`design/seq_blocks.md` §7).
+//! AST-to-AST lowering of `seq` (`design/seq_blocks.md`).
 //!
-//! Straight-line plus `try … with`: lets, connects, expression steps,
-//! `until`, `do`, and the error-triggered branch (§7.9). `catch` is
-//! refused anywhere in a seq body; a bare `{ ... }` statement is
-//! refused. The machine installs one handler that resets and rethrows;
-//! each try-body arm carries a generated handler that jumps to the with
-//! body. Each step is its own arm; calls consume one strict argument
-//! snapshot per entry.
+//! Lets, connects, expression steps, `until`, `do`, and `try … with`.
+//! `catch` and a bare `{ ... }` statement are refused in a seq body. The
+//! machine installs one handler that resets and rethrows; each try-body
+//! arm carries a generated handler that jumps to the with body. Each step
+//! is its own arm; a call consumes one argument snapshot per entry.
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
@@ -30,9 +28,9 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
-/// A carried cell per let name (and per try's `e`): its generated
-/// name, the declaring position, and the let's annotation when the
-/// pattern is a plain name (so a union-typed try value can be spelled).
+/// A carried cell per let name (and per try's `e`): its generated name,
+/// the declaring position, and the let's annotation when the pattern is a
+/// plain name.
 type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition, Option<Type>)>;
 
 #[derive(Clone, Copy)]
@@ -181,11 +179,9 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     Ok(block(pos, body_exprs))
 }
 
-/// `catch` is refused anywhere in a seq body (design/seq_blocks.md R7):
-/// an install can observe an error but cannot produce the value the
-/// next step waits for, so inside a sequence it can only rethrow or
-/// stall. A lambda literal is its own dynamic scope — ordinary Graphix
-/// again — so its body and defaults are exempt.
+/// `catch` is refused anywhere in a seq body: an install cannot produce
+/// the value the next step waits for. A lambda literal is its own dynamic
+/// scope, so its body and defaults are exempt.
 fn refuse_catch(e: &Expr) -> Result<()> {
     match find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Catch(_))) {
         None => Ok(()),
@@ -198,10 +194,8 @@ fn refuse_catch(e: &Expr) -> Result<()> {
     }
 }
 
-/// The first node satisfying `pred` that is not inside a lambda
-/// literal's body or defaults: a function is its own dynamic scope and
-/// its own firing world, so a statement neither waits on a call inside
-/// one nor owns a catch inside one.
+/// The first node satisfying `pred` that is not inside a lambda literal's
+/// body or defaults.
 fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> {
     let in_lambda: LPooled<AHashSet<ExprId>> =
         e.fold(LPooled::take(), &mut |mut set, x| {
@@ -239,10 +233,9 @@ enum Write {
 
 type Sink = SmallVec<[Write; 2]>;
 
-/// The arms under construction. Labels are allocated as statements are
-/// lowered (`S{k}`, not contiguous per statement — a `try` allocates
-/// its with-body's entry ahead of its body's arms); the pc type is the
-/// set of every label allocated.
+/// The arms under construction. Labels `S{k}` are allocated as statements
+/// are lowered, not contiguously per statement; the pc type is the set of
+/// every label allocated.
 struct Machine<'a> {
     pc: &'a str,
     result: &'a str,
@@ -336,12 +329,10 @@ impl Machine<'_> {
         })
     }
 
-    /// §7.9: the try body's arms each carry a generated handler that
-    /// captures the first error of a failure into the with body's cell
-    /// (`seq_capture`: the `Catch` node writes it and unions its
-    /// inferred throws into the cell's type) and whose drain action
-    /// jumps to the with body's entry. Both bodies' tails perform the
-    /// sink's writes and transition to `next`.
+    /// Each try-body arm carries a generated handler that captures the
+    /// first error into the with body's cell (`seq_capture`) and whose
+    /// drain action jumps to the with body's entry. Both tails write the
+    /// sink and transition to `next`.
     fn lower_try(
         &mut self,
         spec: &Expr,
@@ -921,9 +912,9 @@ fn rewrite(e: &Expr, map: &AHashMap<ArcStr, ArcStr>) -> Expr {
     rewrite_with(e, map, Rewrite::Bindings)
 }
 
-/// A step's scrutinee. A step completes on a FIRED production after
-/// entry (the guard); a call is re-issued at entry and answers fired,
-/// while a level read as it stands (R2) is fired at entry here.
+/// A step's scrutinee. A step completes on a fired production after entry;
+/// a call is re-issued at entry and answers fired, while a level read as
+/// it stands is fired at entry here.
 fn issue_expr(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, pc: &str) -> Expr {
     let issued = has_call(e);
     let e = rewrite_with(e, map, Rewrite::Issue(pc));
@@ -967,12 +958,9 @@ fn inline_lambda(mut e: &Expr) -> bool {
     matches!(e.kind, ExprKind::Lambda(_))
 }
 
-/// One call issued per entry: the arguments are snapshotted on the
-/// entry event and the call is made over the snapshot. The guard sits
-/// on the call itself — the snapshot select fires at entry carrying
-/// the call's resident, and only the call's own fired production is
-/// this invocation's answer. A nullary call has nothing to re-issue;
-/// it is a level read at entry.
+/// One call issued per entry over a snapshot of the arguments taken on
+/// the entry event; only the call's own fired production is this
+/// invocation's answer. A nullary call is a level read at entry.
 fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     if call.args.is_empty() {
         let mut expr = spec.clone();
@@ -1103,10 +1091,8 @@ fn rewrite_with_inner(
         ExprKind::Qop(x) => {
             let x = rewrite(x, map);
             match mode {
-                // R2: a `?` over a level (no call to wait for) reads it
-                // as it stands at entry, so a carried error raises at
-                // every entry and not only when a catch-up fire happens
-                // to deliver it.
+                // A `?` over a level reads it as it stands at entry, so a
+                // carried error raises at every entry.
                 Rewrite::Issue(pc) if !has_call(&x) => ExprKind::Qop(Arc::new(
                     ExprKind::StrictSample {
                         lhs: Arc::new(r#ref(x.pos, pc)),

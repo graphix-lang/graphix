@@ -6,11 +6,7 @@ use netidx::publisher::{FromValue, Value};
 use plotters::prelude::SeriesLabelPosition;
 use poolshark::local::LPooled;
 
-// ── Backend-agnostic color ─────────────────────────────────────────
-
 /// A simple RGBA color that does not depend on iced_core.
-/// Consumers (e.g. netidx-browser) can convert to/from their own
-/// color types through the public fields.
 #[derive(Clone, Copy, Debug)]
 pub struct ChartColor(pub f32, pub f32, pub f32, pub f32);
 
@@ -36,8 +32,6 @@ impl From<ChartColor> for iced_core::Color {
     }
 }
 
-// ── Data point types ────────────────────────────────────────────────
-
 /// XY data: either numeric (f64, f64) or time-series (DateTime<Utc>, f64).
 pub enum XYData {
     Numeric(LPooled<Vec<(f64, f64)>>),
@@ -53,8 +47,7 @@ impl FromValue for XYData {
         if a.is_empty() {
             return Ok(Self::Numeric(LPooled::take()));
         }
-        // Check first element's x value variant directly.
-        // Don't use cast_to: netidx casts any number to DateTime (as Unix timestamp).
+        // Not cast_to: netidx casts any number to DateTime.
         let is_datetime = matches!(&a[0], Value::Array(tup) if !tup.is_empty() && matches!(&tup[0], Value::DateTime(_)));
         if is_datetime {
             Ok(Self::DateTime(
@@ -144,9 +137,7 @@ impl FromValue for OHLCData {
         if a.is_empty() {
             return Ok(Self::Numeric(LPooled::take()));
         }
-        // Check first element's x field type
         let first_fields = a[0].clone().cast_to::<[(ArcStr, Value); 5]>()?;
-        // Fields are sorted alphabetically: close, high, low, open, x
         let x_val = &first_fields[4].1;
         if matches!(x_val, Value::DateTime(_)) {
             Ok(Self::DateTime(
@@ -215,9 +206,7 @@ impl FromValue for EBData {
         if a.is_empty() {
             return Ok(Self::Numeric(LPooled::take()));
         }
-        // Check first element's x field type
         let first_fields = a[0].clone().cast_to::<[(ArcStr, Value); 4]>()?;
-        // Fields sorted alphabetically: avg, max, min, x
         let x_val = &first_fields[3].1;
         if matches!(x_val, Value::DateTime(_)) {
             Ok(Self::DateTime(
@@ -276,8 +265,6 @@ impl FromValue for SurfaceData {
         Ok(Self(rows))
     }
 }
-
-// ── Style types ─────────────────────────────────────────────────────
 
 pub struct SeriesStyleV {
     pub color: Option<ChartColor>,
@@ -391,7 +378,6 @@ pub struct PieStyleV {
 
 impl FromValue for PieStyleV {
     fn from_value(v: Value) -> Result<Self> {
-        // Fields sorted alphabetically: colors, donut, label_offset, show_percentages, start_angle
         let [
             (_, colors),
             (_, donut),
@@ -445,7 +431,6 @@ pub struct SurfaceStyleV {
 
 impl FromValue for SurfaceStyleV {
     fn from_value(v: Value) -> Result<Self> {
-        // Fields sorted alphabetically: color, color_by_z, label
         let [(_, color), (_, color_by_z), (_, label)] =
             v.cast_to::<[(ArcStr, Value); 3]>()?;
         Ok(Self {
@@ -467,8 +452,6 @@ impl FromValue for SurfaceStyleV {
         })
     }
 }
-
-// ── Mesh style ──────────────────────────────────────────────────────
 
 pub struct MeshStyleV {
     pub show_x_grid: Option<bool>,
@@ -565,8 +548,6 @@ impl FromValue for OptMeshStyle {
     }
 }
 
-// ── Legend style ────────────────────────────────────────────────────
-
 pub struct LegendStyleV {
     pub background: Option<ChartColor>,
     pub border: Option<ChartColor>,
@@ -616,8 +597,6 @@ impl FromValue for OptLegendStyle {
     }
 }
 
-// ── Legend position ─────────────────────────────────────────────────
-
 #[derive(Clone)]
 pub struct LegendPositionV(pub SeriesLabelPosition);
 
@@ -650,8 +629,6 @@ impl FromValue for OptLegendPosition {
     }
 }
 
-// ── Optional f64 newtype ────────────────────────────────────────────
-
 pub struct OptF64(pub Option<f64>);
 
 impl FromValue for OptF64 {
@@ -663,8 +640,6 @@ impl FromValue for OptF64 {
         }
     }
 }
-
-// ── Optional Color newtype ──────────────────────────────────────────
 
 pub struct OptColor(pub Option<ChartColor>);
 
@@ -678,8 +653,6 @@ impl FromValue for OptColor {
     }
 }
 
-// ── Projection3D ───────────────────────────────────────────────────
-
 pub struct Projection3DV {
     pub pitch: Option<f64>,
     pub scale: Option<f64>,
@@ -688,7 +661,6 @@ pub struct Projection3DV {
 
 impl FromValue for Projection3DV {
     fn from_value(v: Value) -> Result<Self> {
-        // Fields sorted alphabetically: pitch, scale, yaw
         let [(_, pitch), (_, scale), (_, yaw)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
         Ok(Self {
             pitch: if pitch == Value::Null {
@@ -718,8 +690,6 @@ impl FromValue for OptProjection3D {
     }
 }
 
-// ── Axis range ──────────────────────────────────────────────────────
-
 #[derive(Clone, Debug)]
 pub struct AxisRange {
     pub min: f64,
@@ -747,8 +717,6 @@ impl FromValue for OptAxisRange {
     }
 }
 
-// ── X-axis range ───────────────────────────────────────────────────
-
 /// Parsed x-axis range: either numeric or datetime.
 pub enum XAxisRange {
     Numeric { min: f64, max: f64 },
@@ -763,11 +731,9 @@ impl FromValue for OptXAxisRange {
         if v == Value::Null {
             return Ok(Self(None));
         }
-        // Try numeric first
         if let Ok([(_, max), (_, min)]) = v.clone().cast_to::<[(ArcStr, f64); 2]>() {
             return Ok(Self(Some(XAxisRange::Numeric { min, max })));
         }
-        // Try datetime
         let [(_, max), (_, min)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
         Ok(Self(Some(XAxisRange::DateTime {
             min: min.cast_to::<DateTime<Utc>>()?,

@@ -145,8 +145,8 @@ fn collect_package_deps(
     }
 }
 
-/// Collect graphix-package-* deps from [dependencies] only (used for
-/// register() calls that must compile without dev-dependencies).
+/// Collect graphix-package-* deps from [dependencies] only; register()
+/// must compile without dev-dependencies.
 fn runtime_deps() -> Vec<String> {
     let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
         .expect("failed to read Cargo.toml");
@@ -158,9 +158,8 @@ fn runtime_deps() -> Vec<String> {
     result
 }
 
-/// Collect graphix-package-* dependency names from both [dependencies] and
-/// [dev-dependencies], preserving the order written in Cargo.toml.
-/// Core always comes first. Used for TEST_REGISTER.
+/// Collect graphix-package-* deps from [dependencies] and
+/// [dev-dependencies] in document order, core first. Used for TEST_REGISTER.
 fn package_deps() -> Vec<String> {
     let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
         .expect("failed to read Cargo.toml");
@@ -180,11 +179,10 @@ fn package_deps() -> Vec<String> {
     result
 }
 
-/// Read the calling crate's `[dependencies]` for `graphix-package-*` entries,
-/// returning `(short_name, optional)` in document order with `core` moved
-/// first. Used by the `packages!()`/`package_refs!()` macros (which run in
-/// graphix-shell / graphix-tests / embedder crates, not graphix-package crates,
-/// so they must NOT call `check_invariants`).
+/// The calling crate's `[dependencies]` `graphix-package-*` entries as
+/// `(short_name, optional)` in document order, core first. Used by
+/// `packages!()`/`package_refs!()`, which run in embedder crates and so
+/// must not call `check_invariants`.
 fn graphix_deps_ordered() -> Vec<(String, bool)> {
     let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
         .expect("failed to read Cargo.toml");
@@ -239,15 +237,10 @@ fn test_harness() -> TokenStream {
     }
 }
 
-// walk the graphix files in src/graphix and build the vfs for this package
+// the vfs for this package, decoded from the build.rs AST blob
 fn graphix_files() -> Vec<TokenStream> {
-    // The package's `build.rs` (via `graphix-ast-pack`) parses + packs every
-    // `src/graphix/*` file into `OUT_DIR/graphix_ast.pack`, a self-contained
-    // index of `(vfs_path, source, packed_ast)`. We embed that blob and decode
-    // it into the modules map at `register` time, so module resolution decodes
-    // a pre-parsed AST instead of re-parsing the source (the startup win). The
-    // per-module AST stays packed in `VfsEntry.packed` and is decoded lazily
-    // when the module is actually resolved.
+    // Each module stays packed in `VfsEntry.packed` and is decoded when
+    // it is resolved.
     vec![quote! {
         {
             const GRAPHIX_AST_BLOB: &[u8] =
@@ -393,8 +386,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         pub struct P;
 
         impl P {
-            // The author's `is_custom`/`init_custom` bodies, kept with their
-            // exact original signatures so they compile unchanged; the trait's
+            // The author's bodies keep their exact signatures; the trait's
             // `maybe_init_custom` orchestrates them.
             #[allow(unused)]
             fn __is_custom<X: ::graphix_rt::GXExt>(
@@ -476,10 +468,9 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 /// Build `Vec<Box<dyn Package<_>>>` from the calling crate's `graphix-package-*`
-/// dependencies (core first). Optional deps are `#[cfg(feature = "<short>")]`-
-/// gated (feature name == short name); non-optional deps are unconditional. Use
-/// in a typed position (e.g. `stdlib_packages::<X>()` or `.add_packages(...)`)
-/// so `_` resolves to the desired `X`.
+/// dependencies (core first). Optional deps are gated on the feature of the
+/// same short name. Use in a typed position (`stdlib_packages::<X>()`,
+/// `.add_packages(...)`) so `_` resolves.
 #[proc_macro]
 pub fn packages(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let pushes: Vec<TokenStream> = graphix_deps_ordered()
@@ -515,10 +506,9 @@ pub fn packages(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 /// Build a `const`-compatible `&[&dyn Package<NoExt>]` from the calling crate's
-/// `graphix-package-*` dependencies (core first). For crates whose graphix deps
-/// are all NON-optional (the test crates) — optional deps can't be `#[cfg]`-
-/// gated as array elements. Use as `const X: &[&dyn Package<NoExt>] =
-/// graphix_package::package_refs!();`.
+/// `graphix-package-*` dependencies (core first). Only for crates whose graphix
+/// deps are all non-optional: array elements cannot be `#[cfg]`-gated.
+/// Use as `const X: &[&dyn Package<NoExt>] = graphix_package::package_refs!();`.
 #[proc_macro]
 pub fn package_refs(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let refs: Vec<TokenStream> = graphix_deps_ordered()

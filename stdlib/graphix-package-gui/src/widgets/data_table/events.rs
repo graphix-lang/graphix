@@ -1,6 +1,5 @@
-//! User-input handling on `DataTableW`: keyboard nav, cell edit
-//! lifecycle, clicks, scroll, and column resize drags. Dispatched to
-//! by the `on_message` arm of the `GuiWidget` trait impl.
+//! Input handling for `DataTableW`: keyboard navigation, cell editing,
+//! clicks, scroll, and column resize drags.
 
 use super::{
     DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_HEIGHT_ESTIMATE,
@@ -18,7 +17,6 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn fire_on_select(&self, row_idx: usize, col_name: &str) {
         if let Some(callable) = &self.on_select {
             if let Some(row_path) = self.row_paths.get(row_idx) {
-                // Send the full cell path: row_path/col_name
                 let cell_path: ArcStr = if col_name == ROW_NAME_KEY {
                     row_path.clone().into()
                 } else {
@@ -47,9 +45,6 @@ impl<X: GXExt> DataTableW<X> {
         }
         let show_name = self.show_row_name.t.unwrap_or(true);
         let name_offset = if show_name { 1 } else { 0 };
-        // Build the FULL column list (not just visible) for keyboard
-        // nav. Pooled scratch — keyboard events are bursty (key repeat)
-        // and we don't want a fresh Vec per arrow press.
         let mut display_cols: LPooled<Vec<ArcStr>> = LPooled::take();
         if show_name {
             display_cols.push(ROW_NAME_KEY_ARC.clone());
@@ -67,14 +62,12 @@ impl<X: GXExt> DataTableW<X> {
         if n_display_cols == 0 {
             return false;
         }
-        // Find current position from the selection set.
-        // Selection contains cell paths like "row_path/col_name" or "row_path" for name col.
+        // A selected path is a row (the name column) or `<row>/<col>`.
         let (cur_row, cur_col) = self
             .selection
             .iter()
             .find_map(|sel_path| {
                 for (ri, rp) in self.row_paths.iter().enumerate() {
-                    // Check "row_path/col_name" format
                     for (ci, col_name) in display_cols.iter().enumerate() {
                         let matches = if col_name == &ROW_NAME_KEY_ARC {
                             sel_path.as_str() == rp.as_ref()
@@ -94,7 +87,6 @@ impl<X: GXExt> DataTableW<X> {
             | TableKeyAction::Down
             | TableKeyAction::Left
             | TableKeyAction::Right => {
-                // Clamp c to data columns only (skip name column)
                 let min_col = name_offset;
                 let (mut r, mut c) = (cur_row, cur_col.max(min_col));
                 match action {
@@ -124,8 +116,6 @@ impl<X: GXExt> DataTableW<X> {
                 }
                 let col_name = &display_cols[c];
                 self.fire_on_select(r, col_name);
-                // Scroll to keep the target cell visible (optimistic,
-                // don't wait for graphix round-trip)
                 self.scroll_to_cell(r, col_name);
                 true
             }
@@ -160,7 +150,6 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     pub(crate) fn handle_cell_edit(&mut self, row: usize, col: ArcStr) -> bool {
-        // Initialize edit buffer with current cell value
         let col_in_table = self.displayed_index_of(col.as_str()).is_some();
         let row_path = match self.row_paths.get(row) {
             Some(p) => p.clone(),
@@ -214,10 +203,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     pub(crate) fn handle_cell_click(&mut self, row: usize, col: ArcStr) -> bool {
-        // Name column click fires on_activate. Accept the display
-        // label `"name"` as a synonym for the row-name col so tests
-        // and external callers don't need to know the internal
-        // sentinel key.
+        // The display label is accepted as a synonym for the row-name key.
         if col.as_str() == ROW_NAME_KEY || col.as_str() == ROW_NAME_LABEL {
             if let Some(callable) = &self.on_activate {
                 if let Some(row_path) = self.row_paths.get(row) {
@@ -227,7 +213,6 @@ impl<X: GXExt> DataTableW<X> {
                 }
             }
         }
-        // Any cell click fires on_select with the cell path
         self.fire_on_select(row, &col);
         true
     }
@@ -246,11 +231,8 @@ impl<X: GXExt> DataTableW<X> {
         let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
         let cols_in_view =
             ((vp_w / MIN_COL_WIDTH).ceil() as usize).saturating_sub(name_cols).max(1);
-        // Viewport metrics update unconditionally so that a pure resize
-        // notification (no offset change, or offset matching the
-        // keyboard-override position) still refreshes the cached
-        // viewport width / row count. Gating this behind the override
-        // check would drop resize updates.
+        // Metrics update before the override check so a pure resize is
+        // never dropped.
         let prev = *self.viewport_metrics.lock();
         let metrics_changed = prev.viewport_width != vp_w
             || prev.viewport_height != vp_h
@@ -266,10 +248,9 @@ impl<X: GXExt> DataTableW<X> {
             };
         }
         if self.keyboard_scroll_override {
-            // Check if this is a real user scroll (position actually changed
-            // from what we'd expect) or just the overlay re-asserting.
-            // Column threshold uses half the current column's width so
-            // wide columns don't mis-detect the overlay as a real scroll.
+            // A real user scroll moves the position away from the
+            // keyboard-driven one; anything closer is the overlay
+            // re-asserting it.
             let expected_ox = self.offset_at_col(self.first_col);
             let expected_oy = self.first_row as f32 * row_h;
             let col_thresh = {
@@ -282,29 +263,19 @@ impl<X: GXExt> DataTableW<X> {
             let real_scroll = (ox - expected_ox).abs() > col_thresh
                 || (oy - expected_oy).abs() > row_h * 0.5;
             if !real_scroll {
-                // Overlay is re-asserting — keep keyboard-driven
-                // first_row/first_col, but metric changes above still
-                // take effect. Re-subscribe if the visible row window
-                // grew/shrank so newly-visible rows get subs.
                 if metrics_changed && prev.rows_in_view != rows_in_view {
                     self.update_subscriptions();
                 }
                 return metrics_changed;
             }
-            // Real user scroll — clear override and process normally
             self.keyboard_scroll_override = false;
         }
         let n_rows = self.row_paths.len();
         let n_cols = self.total_data_cols();
         let new_first_row = ((oy / row_h).round() as usize).min(n_rows.saturating_sub(1));
-        // At scroll-end, snap-to-midpoint inside `col_at_offset` can land
-        // first_col BELOW the fit threshold — the rendered suffix then
-        // overflows on the right and the last column is clipped. Detect
-        // "ox ≈ ox_max" and force first_col to `min_first_col_for_fit`
-        // so the suffix lands exactly inside the viewport. We can't do
-        // this clamp unconditionally: at low ox, min_fit can be > 0
-        // (because the table is wider than the viewport), and applying
-        // it would hide the leftmost columns.
+        // At scroll-end `col_at_offset`'s snap can land below the fit
+        // threshold and clip the last column; clamping at low offsets
+        // would hide the leftmost columns instead.
         let virtual_width = self.virtual_content_width();
         let max_ox = (virtual_width - vp_w).max(0.0);
         let snap_col = self.col_at_offset(ox).min(n_cols.saturating_sub(1));
@@ -333,7 +304,6 @@ impl<X: GXExt> DataTableW<X> {
         col_meta_idx: usize,
         _cursor_x: f32,
     ) -> bool {
-        // Double-click detection: if same handle clicked within 400ms, auto-fit
         let now = Instant::now();
         let is_double = self
             .last_resize_click
@@ -372,7 +342,6 @@ impl<X: GXExt> DataTableW<X> {
         cursor_x: f32,
     ) -> Option<(graphix_rt::CallableId, f64)> {
         let drag = self.resize_drag.as_mut()?;
-        // First sample seeds last_x; no width change yet.
         let last = match drag.last_x {
             Some(v) => v,
             None => {

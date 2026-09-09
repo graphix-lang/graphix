@@ -10,8 +10,6 @@ use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::{fmt, sync::Arc};
 
-// ── Cursor types ──────────────────────────────────────────────────
-
 pub(crate) struct CursorInner {
     iter: parking_lot::Mutex<sled::Iter>,
     key_typ: Option<Typ>,
@@ -32,10 +30,6 @@ graphix_package_core::impl_abstract_arc!(
     CursorValue,
     static CURSOR_WRAPPER = "db::cursor::Cursor"
 );
-
-// ── Builtins ──────────────────────────────────────────────────────
-
-// -- DbCursorNew (with optional prefix) --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorNewEv;
@@ -82,8 +76,6 @@ impl EvalCachedAsync for DbCursorNewEv {
 
 pub(crate) type DbCursorNew = CachedArgsAsync<DbCursorNewEv>;
 
-// -- DbCursorRead --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorReadEv;
 
@@ -127,8 +119,6 @@ impl EvalCachedAsync for DbCursorReadEv {
 }
 
 pub(crate) type DbCursorRead = CachedArgsAsync<DbCursorReadEv>;
-
-// -- DbCursorReadMany --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorReadManyEv;
@@ -187,8 +177,6 @@ impl EvalCachedAsync for DbCursorReadManyEv {
 }
 
 pub(crate) type DbCursorReadMany = CachedArgsAsync<DbCursorReadManyEv>;
-
-// -- DbCursorRange --
 
 fn parse_bound(key_typ: Option<Typ>, v: &Value) -> Option<std::ops::Bound<Vec<u8>>> {
     use std::ops::Bound;

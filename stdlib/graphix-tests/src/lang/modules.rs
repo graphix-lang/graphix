@@ -277,18 +277,10 @@ run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ── Finding-1 regression fixtures (design/module_system.md P3) ──
-//
-// The admin-TUI campaign's finding 1 (2026-08-21): under the old
-// open-style resolver, a name spelled at the DEF site could be
-// unresolvable when a deferred consumer (per-callsite instance
-// elaboration, TypeRef touch) re-resolved it from a different
-// scope/time — the ambient environment could not be reconstructed.
-// The namespace table makes resolution a pure function of
-// (module, name); these pin the three faces green.
+// Resolution is a pure function of (module, name): a name spelled at
+// the def site resolves the same from any deferred consumer.
 
-// Face 1: a gxi signature spells a type through a `use … as` alias;
-// the consumer resolves it at instance/callsite touch.
+// A gxi signature spells a type through a `use … as` alias.
 run!(
     finding1_sig_alias,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
@@ -313,8 +305,7 @@ let wrap = |x: U| -> U x
 "#
     ; graphix_package_core::testing::FuseExpect::Jit);
 
-// Face 2: a module-PRIVATE type (not in the gxi) annotating a public
-// lambda's body — resolved at per-callsite instance elaboration.
+// A module-private type annotating a public lambda's body.
 run!(
     finding1_private_type_in_body,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
@@ -334,8 +325,8 @@ let f = |x: i64| -> i64 {
 "#
     ; graphix_package_core::testing::FuseExpect::Jit);
 
-// Face 3: a use-imported bare type name annotating a binding inside
-// a public lambda's body.
+// A use-imported bare type name annotating a binding inside a public
+// lambda's body.
 run!(
     finding1_imported_body_annotation,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
@@ -362,17 +353,9 @@ let f = |x: i64| -> i64 {
 "#
     ; graphix_package_core::testing::FuseExpect::Jit);
 
-// `use` and STATIC `mod` are declarations, not expressions. In value
-// position (a `let` RHS, a call arg, a block's value slot) they used to
-// compile to a `Bottom`-typed `Nop` that unified with any downstream
-// type, defeating soundness: aug27a aieka bound `let tag = use array::*`,
-// then a downstream slice-select `[init.., x] => x * 100` narrowed the
-// unconstrained type to `Array<i64>` while `tag` held (via a `<-`
-// connect) the error-payload STRUCT `e.0`, and a fused arm-body kernel
-// read a struct where it compiled a scalar. Now rejected at typecheck.
-// (A DYNAMIC module keeps a real `[error, null]` value — covered by the
-// `dynamic_module*` fixtures, which put `let status = mod .. dynamic {..}`
-// in exactly this position.)
+// `use` and static `mod` are declarations: value position (a `let` RHS,
+// a call arg, a block's value slot) is rejected at typecheck. A dynamic
+// module stays a real `[error, null]` value.
 #[tokio::test]
 async fn use_in_value_position_is_compile_error() {
     for src in [
@@ -391,8 +374,6 @@ async fn use_in_value_position_is_compile_error() {
 
 #[tokio::test]
 async fn use_value_soundness_witness_rejected() {
-    // The aug27a aieka minimized witness — accepted (and then diverged
-    // interp vs jit) before the fix.
     let src = r#"{let a = {let a = [true]; let tag = use array::*; {catch(e) tag <- e.0; any(a[i64:5]?, i64:0)}; select tag {"" => never(""), t => t}}; select a {[init.., x] => x * i64:100, _ => i64:0}}"#;
     let r = eval(src, crate::TEST_REGISTER).await;
     assert!(
@@ -402,11 +383,7 @@ async fn use_value_soundness_witness_rejected() {
     );
 }
 
-// The rest of the declaration family: `type`/`trait`/`impl` are ⊥-typed
-// declarations exactly like `use`/static `mod` above, and the same
-// value-position hole existed (aug31e ryouko: `let inner = type M = ..`
-// typed `inner` ⊥ and a catch connect routed runtime arrays through it).
-// Statement position only.
+// `type`/`trait`/`impl` are statement-position-only declarations too.
 #[tokio::test]
 async fn declaration_in_value_position_is_compile_error() {
     for src in [
@@ -430,13 +407,8 @@ async fn declaration_in_value_position_is_compile_error() {
 
 #[tokio::test]
 async fn bottom_connect_target_witness_rejected() {
-    // aug31e ryouko: both doors into the ⊥-typed connect-target hole.
-    // The first is the typedef-in-value-position witness (also refused
-    // by the declaration rule above); the second reaches the contains
-    // (Bottom, TVar) arm through a value-position CONNECT, which stays
-    // a legal expression — pre-fix the arm answered true for a site
-    // cell already bound to Array<string> and the kernel froze the
-    // consumer to Scalar(I64) while the interp routed arrays.
+    // A typedef in value position, and a value-position connect into a
+    // ⊥-initialized binding whose site cell is already bound.
     for src in [
         r#"{let outer = never(); catch(e) outer <- i64:1; let g = || {let inner = type M = [`M(Map<string, i64>), `N]; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}"#,
         r#"{let dummy = i64:0; let g = || {let inner = dummy <- i64:1; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); v - i64:1}"#,
@@ -450,14 +422,9 @@ async fn bottom_connect_target_witness_rejected() {
     }
 }
 
-// Face 2 residual (the admin-TUI Toast recurrence, 2026-08-31): a
-// module-PRIVATE type as a UNION MEMBER in a body annotation, reached
-// through a nested lambda's connect. The def gate's probe walks
-// answer `[P, null] ⊇ null` without expanding P, so no def-time walk
-// cell-fills the ref, and the instance body's typecheck used to run
-// under the CALLER's env — where the defining module's private
-// typedefs are gone ("undefined type"). GXLambda now restores its
-// def-side env around the body drives.
+// A module-private type as a union member in a body annotation, reached
+// through a nested lambda's connect: the instance body typechecks under
+// the defining module's env.
 run!(
     finding1_private_type_union_member,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),

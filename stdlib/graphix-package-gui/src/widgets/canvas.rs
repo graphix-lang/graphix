@@ -9,7 +9,6 @@ use netidx::publisher::{FromValue, Value};
 use smallvec::SmallVec;
 use tokio::try_join;
 
-// Use full paths to avoid ambiguity with our module name
 use iced_widget::canvas as iced_canvas;
 
 #[derive(Clone, Debug)]

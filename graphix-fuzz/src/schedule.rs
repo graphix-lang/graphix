@@ -1,38 +1,18 @@
-//! Injection schedules — the multi-epoch input plan a reactive program
-//! is driven with, and the ONE place its text format lives.
-//!
-//! A scheduled program is a single text artifact — the wrapper — that
-//! flows unchanged through every protocol (check / minimize / regress /
-//! corpus / the isolated-child stdin): an optional one-line header
-//! followed by the program body.
+//! Injection schedules: the `schedule-v1` header that drives a
+//! reactive program through multiple input epochs.
 //!
 //! ```text
 //! // schedule-v1: cap=64 events=512; in0=i64:3 in1=f64:1.5; in0=i64:4
 //! { let acc = 0; acc <- in0 ~ (acc + in0); acc }
 //! ```
 //!
-//! Sections are `;`-separated: the caps first (the runtime trace
-//! budgets — schedule DATA, so both evaluation modes run under
-//! identical budgets and a cap mismatch is a real divergence), then one
-//! section per epoch, each a space-separated set of simultaneous
-//! `name=type:literal` injections. A wrapper with no header is a
-//! single-burst program (empty schedule, default caps) — every
-//! pre-schedule finding parses unchanged.
-//!
-//! The oracle owns parse AND render; the generator constructs
-//! [`Schedule`] values and renders through [`Schedule::render`] — the
-//! round-trip test pins the format so the two can't drift.
-//!
-//! Injected inputs are declared by the DRIVER at the top level of the
-//! compile text (`let in0: i64 = 0; in0 <- never(0);` — the D4
-//! contract: the `<-` marks the binding unstable so fusion binds a
-//! kernel input instead of const-folding the default). Top level, NOT
-//! inside the `{ mod test; … }` wrap: a Do block scopes under an
-//! anonymous `do<ExprId>` path, so module-internal names aren't
-//! reachable by `compile_ref_by_name` from root — root-level decls
-//! are, and the module body sees them lexically. Defaults are
-//! type-canonical (0 / 0.0 / false): epoch 0 observes the default,
-//! injections start at epoch 1.
+//! Sections are `;`-separated: the trace caps first (schedule data, so
+//! every mode runs under identical budgets), then one section per epoch
+//! of simultaneous `name=type:literal` injections. No header means a
+//! single-burst program with default caps. The driver declares each
+//! input at the compile-text top level as `let in0: i64 = 0; in0 <-
+//! never(0);` (the `<-` keeps the binding unstable so fusion binds a
+//! kernel input); epoch 0 observes the canonical default.
 
 use netidx::publisher::Value;
 
@@ -85,9 +65,8 @@ impl Schedule {
         out
     }
 
-    /// The driver-side top-level input declarations (the D4 contract).
-    /// The default literals are graphix SOURCE (unlike the header's
-    /// `render_value` forms, which only schedule.rs ever parses).
+    /// The driver-side top-level input declarations. The defaults are
+    /// graphix source, unlike the header's `render_value` forms.
     pub fn decls(&self) -> String {
         let mut s = String::new();
         for (name, t, d) in self.inputs() {
@@ -131,17 +110,9 @@ impl Schedule {
     }
 
     /// Split a wrapper into its schedule and body. No header → the
-    /// empty schedule and the whole text. A malformed header is an
-    /// error (a generator or minimizer bug — never silently a comment).
-    ///
-    /// The header may sit BELOW other leading `//` comment lines (a
-    /// pinned finding's provenance block) — the scan walks the leading
-    /// comment block and stops at the first non-comment line. When the
-    /// header is found mid-block, the returned body starts AFTER it
-    /// (the provenance comments above it stay in the file, not the
-    /// compiled body). Previously only line 1 was checked, so a
-    /// finding file with its schedule below the `// bisect:` header ran
-    /// with ZERO injections — a vacuous re-check (soak jul04 item 10).
+    /// empty schedule and the whole text. The header may sit below other
+    /// leading `//` lines; the body returned starts after it. A malformed
+    /// header is an error, never silently a comment.
     pub fn parse(text: &str) -> Result<(Schedule, &str), String> {
         let mut cursor = text;
         let (line, rest) = loop {
@@ -216,9 +187,8 @@ impl Schedule {
     }
 }
 
-/// The v1 injectable scalar set: i64, f64, bool. Rendering must
-/// round-trip exactly (Rust's shortest-roundtrip float formatting;
-/// `NaN`/`inf` parse back via `f64::from_str`).
+/// The injectable scalar set: i64, f64, bool. Rendering round-trips
+/// exactly, `NaN`/`inf` included.
 pub(crate) fn render_value(v: &Value) -> String {
     match v {
         Value::I64(n) => format!("i64:{n}"),

@@ -2,8 +2,8 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
-// Strict fusion: the rand builtins carry per-instance RNG state, so
-// every fixture here node-walks (design/strict_fusion.md).
+// The rand builtins carry per-instance RNG state, so every fixture
+// here node-walks.
 
 const RAND_FLOAT_DEFAULT: &str = r#"
   rand::rand(#clock:1)

@@ -65,9 +65,8 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     })
 }
 
-/// Swap the thread-local origin, returning the previous value. Used by the
-/// AST decoder (`serialize`) to bracket a decode unit so decoded `Expr`s pick
-/// up the right module origin via `get_origin`, then restore on completion.
+/// Swap the thread-local origin, returning the previous value. Brackets a
+/// decode unit so decoded `Expr`s pick up their module origin via `get_origin`.
 pub(crate) fn swap_origin(ori: Option<Arc<Origin>>) -> Option<Arc<Origin>> {
     ORIGIN.with_borrow_mut(|global| std::mem::replace(global, ori))
 }
@@ -97,8 +96,7 @@ pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
-    // source position is IDE metadata, excluded from `Arg` equality and from
-    // the packed form (restored as the `1,1` default on decode).
+    // IDE metadata: excluded from equality and from the packed form.
     #[pack(skip)]
     pub pos: SourcePosition,
 }
@@ -129,8 +127,7 @@ impl PartialOrd for Arg {
 #[pack(unwrapped)]
 pub struct Doc(pub Option<ArcStr>);
 
-/// A single `#[name(args, ...)]` / `#[name]` attribute attached above an
-/// expression — `#[sync]`, `#[async]`, `#[tail_recursive]`, `#[native]`.
+/// A `#[name(args, ...)]` / `#[name]` attribute attached above an expression.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Attr {
@@ -138,11 +135,8 @@ pub struct Attr {
     pub args: Arc<[Expr]>,
 }
 
-/// Source decorations attached to the `Expr` they sit above — the `//`
-/// comment lines and `#[..]` attributes on their own line directly above
-/// the expression. `None` for the overwhelming majority of expressions,
-/// so it costs one word and no allocation. Invisible to `Expr` equality
-/// (comments don't affect semantics — see `PartialEq for Expr`).
+/// The `//` comment lines and `#[..]` attributes on their own line directly
+/// above an `Expr`. Invisible to `Expr` equality.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Decorations {
@@ -158,24 +152,21 @@ pub struct TypeDefExpr {
     pub body: TypeDefBody,
 }
 
-/// What a `type` definition says about its name
-/// (`design/nominal_abstract_types.md`).
+/// What a `type` definition says about its name.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub enum TypeDefBody {
     /// `type T = typ` — a transparent alias of its body
     Alias(Type),
-    /// `type T = Abstract<rep>` — a nominal type whose values are
-    /// `Value::Abstract` boxes minted only by its constructor `T(..)`;
-    /// `type T;` — the same with no representation in Graphix: either
-    /// an interface hiding a definition, or a Rust-backed type
+    /// `type T = Abstract<rep>` — a nominal type whose values are minted
+    /// only by its constructor `T(..)`; `type T;` — the same with no
+    /// representation in Graphix (an interface hiding one, or Rust-backed)
     Abstract(Option<Type>),
 }
 
-/// `trait Name { val m: fn(self, ..) -> T; val n: fn(self) -> U = |s| ..; .. }`
-/// (`design/traits.md`). Every method's signature mentions the
-/// receiver as the type `self`; a method with a `default` body is
-/// overridable, one without is required of every implementor.
+/// `trait Name { val m: fn(self, ..) -> T; val n: fn(self) -> U = |s| ..; .. }`.
+/// A method's signature names the receiver as the type `self`; a method
+/// with a `default` body is overridable, one without is required.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TraitExpr {
@@ -272,8 +263,7 @@ pub enum SigKind {
 pub struct SigItem {
     pub doc: Doc,
     pub kind: SigKind,
-    // pos/ori are IDE metadata, excluded from `SigItem` equality and dropped
-    // from the packed form (decode to the default / None).
+    // IDE metadata: excluded from equality and from the packed form.
     #[pack(skip)]
     pub pos: SourcePosition,
     #[pack(skip)]
@@ -354,14 +344,14 @@ pub struct CatchExpr {
     pub handler: Arc<Expr>,
     /// Compiler-only: this catch unconditionally rethrows before aborting.
     pub seq_abort: Option<Arc<Expr>>,
-    /// Compiler-only: a seq `try`'s per-arm handler (§7.9). The first
-    /// error delivered per failure is written to this cell, and the
-    /// handler's inferred throws are unioned into the cell's type.
+    /// Compiler-only: a seq `try`'s per-arm handler. The first error
+    /// delivered per failure is written to this cell, and the handler's
+    /// inferred throws are unioned into the cell's type.
     pub seq_capture: Option<ArcStr>,
 }
 
 /// `try { stmts } with(e[: T]) { stmts }` — a seq statement: an
-/// error-triggered branch (`design/seq_blocks.md` §7.9).
+/// error-triggered branch.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TryWithExpr {
@@ -460,9 +450,7 @@ pub enum ExprKind {
     Apply(ApplyExpr),
     /// `never<T>(args…)`: a value that never arrives, typed `T` where
     /// given and bottom otherwise; the arguments are kept live and
-    /// consumed. Syntax rather than a builtin so its type is known at
-    /// compile time — a call site's cell binds to bottom only at
-    /// static resolution, after a select has unioned its arms.
+    /// consumed.
     Never {
         typ: Option<Type>,
         args: Arc<[Expr]>,
@@ -487,7 +475,6 @@ pub enum ExprKind {
         args: Arc<[Expr]>,
     },
     /// `T(v)` — the constructor of the abstract type at `name`
-    /// (`design/nominal_abstract_types.md`)
     Construct {
         name: ModPath,
         arg: Arc<Expr>,
@@ -495,7 +482,7 @@ pub enum ExprKind {
     Struct(StructExpr),
     Select(SelectExpr),
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
-    /// a select over a step variable (`design/seq_blocks.md`).
+    /// a select over a step variable.
     Seq {
         queued: bool,
         trigger: Option<Arc<Expr>>,
@@ -505,12 +492,11 @@ pub enum ExprKind {
     /// seq step.
     Until(Arc<Expr>),
     /// `do { stmts }` — several seq statements as one arm. Legal only
-    /// as a seq step (`design/seq_blocks.md`).
+    /// as a seq step.
     SeqDo {
         body: Arc<[Expr]>,
     },
-    /// `try { stmts } with(e) { stmts }` — legal only as a seq step
-    /// (`design/seq_blocks.md` §7.9).
+    /// `try { stmts } with(e) { stmts }` — legal only as a seq step.
     TryWith(Arc<TryWithExpr>),
     Qop(Arc<Expr>),
     /// Compiler-generated forwarding; a nonthrowing region supplies bottom.
@@ -601,8 +587,8 @@ pub enum ExprKind {
         lhs: Arc<Expr>,
         rhs: Arc<Expr>,
     },
-    /// `lhs ~! rhs` — the STRICT sample: `rhs` at each fire of `lhs`,
-    /// and bottom (no bank, no debt) when `rhs` is bottom.
+    /// `lhs ~! rhs` — the strict sample: `rhs` at each fire of `lhs`,
+    /// bottom when `rhs` is bottom.
     StrictSample {
         lhs: Arc<Expr>,
         rhs: Arc<Expr>,
@@ -674,7 +660,6 @@ impl Source {
     }
 }
 
-// hallowed are the ori
 #[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
 pub struct Origin {
     pub parent: Option<Arc<Origin>>,
@@ -755,15 +740,9 @@ pub struct Expr {
     pub dec: Option<Box<Decorations>>,
 }
 
-/// A deep AST is a chain of `Arc<Expr>`, and every level of tearing it
-/// down comes back through here — recursively, in compiler-generated
-/// glue that runs AFTER this returns and so cannot be wrapped from
-/// inside it. Taking `kind` out makes the teardown an explicit drop
-/// this can place inside the guard, and leaves field glue with a
-/// trivial `NoOp`. No `ManuallyDrop` needed (the twins on `Node` and
-/// `TVar` do need it): `ExprKind` has no `Drop` of its own, so
-/// destroying it here recurses into the children's `Expr::drop` rather
-/// than back into this one.
+/// Field drop glue runs after `drop` returns and cannot be stack-guarded,
+/// so `kind` is taken out and dropped under the guard here; the glue then
+/// drops a trivial `NoOp`.
 impl Drop for Expr {
     fn drop(&mut self) {
         let kind = std::mem::replace(&mut self.kind, ExprKind::NoOp);
@@ -780,9 +759,8 @@ impl fmt::Debug for Expr {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         print::write_leading(f, &self.dec)?;
-        // Printing descends the whole tree, and error paths print
-        // arbitrary user subexpressions (`bailat!`, the default
-        // `emit_clif` blocker message).
+        // Printing descends the whole tree, including arbitrary user
+        // subexpressions on error paths.
         crate::stack::ensure_sufficient(|| write!(f, "{}", self.kind))
     }
 }
@@ -891,10 +869,9 @@ impl Expr {
         acc.unwrap()
     }
 
-    /// Visit each direct sub-expression, in the one canonical order
-    /// (`fold` and `map_children` share it): the fuzzer's preorder
-    /// indices and the seq rewrite are built on it, so a new `ExprKind`
-    /// child is added here and nowhere else.
+    /// Visit each direct sub-expression in the one canonical child order,
+    /// shared by `fold` and `map_children`. A new `ExprKind` child is
+    /// added here and nowhere else.
     pub fn for_each_child(&self, f: &mut impl FnMut(&Expr)) {
         use ExprKind::*;
         match &self.kind {
@@ -1015,9 +992,7 @@ impl Expr {
     }
 
     /// This node rebuilt with each direct sub-expression replaced by
-    /// `f(child)`, in `for_each_child`'s order: a fresh id, everything
-    /// else kept. A transform keeps only the arms it changes and sends
-    /// the rest here.
+    /// `f(child)`, in `for_each_child`'s order, with a fresh id.
     pub fn map_children(&self, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
         use ExprKind::*;
         let a = |f: &mut dyn FnMut(&Expr) -> Expr, x: &Arc<Expr>| Arc::new(f(x));

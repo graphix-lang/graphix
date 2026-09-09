@@ -17,9 +17,7 @@ pub(crate) struct AfterIdle {
     /// (re)arms the idle timer.
     timeout_v: Option<Value>,
     /// The latest value of the watched arg — the emission source when
-    /// the timer fires (async, after the arg's delivery is long
-    /// gone). An explicit OWN field, not an arg-cache slot
-    /// (design/dense_delivery.md, the throttle/timer P4 item).
+    /// the timer fires, after the arg's delivery is gone.
     last_v: Option<Value>,
     id: Option<BindId>,
     eid: ExprId,
@@ -160,8 +158,7 @@ impl Repeat {
 #[derive(Debug)]
 pub(crate) struct Timer {
     /// The latest raw repeat value — re-cast when a later timeout
-    /// delivery (re)schedules, the cross-cycle read the arg-cache
-    /// slot used to serve.
+    /// delivery (re)schedules.
     repeat_v: Option<Value>,
     timeout: Option<Duration>,
     repeat: Repeat,
@@ -303,7 +300,6 @@ pub(crate) struct Now {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
-    // When trigger fires, samples the current time and emits same-cycle.
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "sys_time_now";
 
@@ -371,12 +367,9 @@ macro_rules! time_fn {
 /// Variant tag for the catchable errors the duration functions return.
 static DURATION_ERR_TAG: arcstr::ArcStr = literal!("DurationError");
 
-// The evicted datetime/duration OPERATOR semantics, verbatim (netidx
-// op.rs): datetime ± duration SATURATES at the datetime range limits;
-// duration − duration SATURATES at zero (durations are unsigned —
-// graphix #176 C); duration + duration and scaling are CATCHABLE
-// errors on overflow / negative / NaN (function-land gets the rare-
-// stdlib-fn error discipline, where the operator logged and bottomed).
+// datetime ± duration saturates at the datetime range limits; duration −
+// duration saturates at zero; duration + duration and scaling return
+// catchable errors on overflow / negative / NaN.
 time_fn!(TimeAddEv, TimeAdd, fc_time_add, "sys_time_add", |t, d| {
     let t: chrono::DateTime<Utc> = t;
     let d: Duration = d;

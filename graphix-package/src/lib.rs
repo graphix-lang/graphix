@@ -100,12 +100,9 @@ pub enum CustomResult<X: GXExt> {
     NotCustom(CompExp<X>),
 }
 
-/// Trait implemented by Graphix packages. Object-safe, so packages can be
-/// collected as `Vec<Box<dyn Package<X>>>` (or `&[&dyn Package<X>]`) and driven
-/// uniformly by the shell and the test harness. `Send + Sync` because the
-/// generated package type `P` is a ZST (the bound is always satisfied) and some
-/// callers share/move the package list across threads. Normally implemented by
-/// the `defpackage!` macro.
+/// Trait implemented by Graphix packages, normally via `defpackage!`.
+/// Object-safe so packages can be collected as `Vec<Box<dyn Package<X>>>`
+/// or `&[&dyn Package<X>]` and driven uniformly.
 pub trait Package<X: GXExt>: Send + Sync {
     /// Register this package's builtins and Graphix modules: modules by path in
     /// `modules`, the package itself by name in `root_mods`. Registration is
@@ -137,10 +134,8 @@ pub trait Package<X: GXExt>: Send + Sync {
 }
 
 /// Build the root-module prelude from the registered package names:
-/// `mod <name>` for each package, joined by `;\n`. Core needs no
-/// `use` — the compiler's core prelude makes core's root items
-/// visible everywhere. Shared by the shell, the LSP, and the test
-/// harness.
+/// `mod <name>` for each package, joined by `;\n`. Core needs no `use`;
+/// the compiler's core prelude makes its root items visible everywhere.
 pub fn root_module_source(root_mods: &IndexSet<ArcStr>) -> ArcStr {
     let mut parts = Vec::new();
     for name in root_mods {
@@ -216,13 +211,10 @@ fn packages_toml_path() -> Result<PathBuf> {
     Ok(graphix_data_dir()?.join("packages.toml"))
 }
 
-/// The default set of user-facing stdlib packages shipped with graphix.
-/// Stdlib packages track the shell version and carry no per-package version.
-/// This list seeds a fresh packages.toml and serves as the "known stdlib" set
-/// when migrating an old-format file. The authoritative set at any given shell
-/// version is enumerated from that version's source Cargo.toml
-/// (`stdlib_packages_in_source`); this constant is only a bootstrap heuristic
-/// and may legitimately drift behind the source.
+/// The user-facing stdlib packages that seed a fresh packages.toml and
+/// the "known stdlib" set when migrating an old-format file. The
+/// authoritative set at a shell version comes from that version's
+/// Cargo.toml (`stdlib_packages_in_source`); this is only a bootstrap.
 const DEFAULT_PACKAGES: &[&str] = &[
     "core", "array", "str", "map", "sys", "http", "json", "toml", "pack", "xls",
     "sqlite", "db", "list", "args", "hbs", "re", "rand", "tui", "gui",
@@ -233,11 +225,9 @@ const DEFAULT_PACKAGES: &[&str] = &[
 /// installable on purpose via `graphix package add <name>`.
 const INTERNAL_PACKAGES: &[&str] = &["bench"];
 
-/// Old top-level stdlib packages that were merged into another package. On
-/// migration the dead name is dropped (the crate has no version compatible with
-/// the current shell, so leaving it would break the build) and its replacement
-/// is installed instead, so the user keeps the functionality — `fs`/`net`/`time`
-/// are now submodules of `sys` (`sys::fs`, etc.).
+/// Old top-level stdlib packages merged into another package. On
+/// migration the dead name is dropped and its replacement installed
+/// (`fs`/`net`/`time` are submodules of `sys`).
 const LEGACY_REMAP: &[(&str, &str)] = &[("fs", "sys"), ("net", "sys"), ("time", "sys")];
 
 /// True if `name` is a stdlib package (user-facing or internal). Stdlib
@@ -285,11 +275,8 @@ impl Packages {
     }
 
     /// Derive the inputs to a shell build: the stdlib Cargo feature list
-    /// (installed stdlib packages minus `core`, which is always compiled) and
-    /// the external packages (compiled as regular deps and registered via the
-    /// generated `packages.rs`). Stdlib packages are selected by feature, so a
-    /// removed stdlib package is simply absent from the feature list — no files
-    /// are edited for stdlib changes.
+    /// (installed stdlib packages minus `core`, always compiled) and the
+    /// external packages (compiled as regular deps).
     fn build_plan(&self) -> BuildPlan {
         let features = self
             .stdlib_installed
@@ -507,12 +494,9 @@ async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<String>
     stdlib_packages_in_cargo_toml(&content)
 }
 
-/// Parse the shell `[features]` table into forward edges: each feature mapped to
-/// the package features it directly enables. Only bare feature references are
-/// edges; `dep:` activations and `crate/feat` / `crate?/feat` entries are
-/// ignored. The dependency closure of a package is the transitive reachability
-/// over these edges — this mirrors the closure the shell's feature graph
-/// compiles, so it is the single source of truth for "what depends on what".
+/// Parse the shell `[features]` table into forward edges: each feature
+/// mapped to the package features it directly enables. Only bare feature
+/// references are edges; `dep:`, `crate/feat` and `crate?/feat` are ignored.
 fn feature_edges(content: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
     use toml_edit::DocumentMut;
     let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
@@ -822,11 +806,9 @@ fn compute_update_plan(
 }
 
 /// Apply a selection to `packages`, returning the shell version to build
-/// against. Pure. New stdlib packages can only be built against the latest
-/// shell source, so they are only acted on when the build version is the
-/// latest; a deselected new package is then explicitly recorded in `removed`.
-/// When the shell bump is declined the new packages are left untracked so they
-/// resurface once the user takes the bump.
+/// against. Pure. New stdlib packages build only against the latest shell,
+/// so with the bump declined they are left untracked to resurface later;
+/// with it taken, a deselected new package is recorded in `removed`.
 fn apply_selection(
     current_shell: &str,
     latest_shell: &str,
@@ -1150,13 +1132,9 @@ impl GraphixPM {
         }
     }
 
-    /// Update Cargo.toml to include package dependencies
-    /// Add the external packages to the shell's `[dependencies]`. Only external
-    /// (third-party) packages are managed here — the stdlib packages are
-    /// permanent optional dependencies of the shell, selected at build time by
-    /// Cargo feature, and are never touched, nor is the `[features]` table. The
-    /// source tree is freshly unpacked before each build (so it contains only
-    /// the stdlib deps), and this adds the externals on top.
+    /// Add the external packages to the freshly unpacked shell source's
+    /// `[dependencies]`. Stdlib packages are permanent optional deps
+    /// selected by Cargo feature; neither they nor `[features]` are touched.
     fn update_cargo_toml(
         &self,
         cargo_toml_content: &str,
@@ -1205,10 +1183,8 @@ impl GraphixPM {
         source_dir: &Path,
         plan: &BuildPlan,
     ) -> Result<()> {
-        // Add external package deps to Cargo.toml (the permanent stdlib deps and
-        // the [features] table are untouched). The shell's `packages!()` macro
-        // reads this Cargo.toml at compile time, so registration needs no
-        // generated source — adding the dep is enough.
+        // The shell's `packages!()` macro reads this Cargo.toml at compile
+        // time, so adding the dep is the whole registration.
         println!("Updating Cargo.toml...");
         let cargo_toml_path = source_dir.join("Cargo.toml");
         let cargo_toml_content = fs::read_to_string(&cargo_toml_path).await?;
@@ -1228,9 +1204,7 @@ impl GraphixPM {
             let backup_path = graphix_path.with_file_name(&backup_name);
             let _ = fs::copy(&graphix_path, &backup_path).await;
         }
-        // Build and install. Stdlib packages are selected by Cargo feature, so a
-        // removed package is simply absent from the feature list — no source
-        // edits. `core` is non-optional and always compiled.
+        // Stdlib packages are selected by Cargo feature; `core` is always compiled.
         println!("Building graphix with updated packages (this may take a while)...");
         let mut cmd = Command::new(&self.cargo);
         cmd.arg("install")
@@ -1364,18 +1338,16 @@ impl GraphixPM {
         Ok(())
     }
 
-    /// Remove packages and rebuild. Removing a stdlib package that other
-    /// installed packages depend on cascades (with confirmation) to those
-    /// dependents — otherwise the feature graph would silently keep the
-    /// "removed" package compiled in, contradicting the recorded state.
+    /// Remove packages and rebuild. Removing a stdlib package cascades
+    /// (with confirmation) to installed dependents; otherwise the feature
+    /// graph would keep the removed package compiled in.
     pub async fn remove_packages(&self, packages: &[PackageId]) -> Result<()> {
         let mut lock = Self::lock_file()?;
         let _guard = lock.write().context("waiting for package lock")?;
         let mut installed = read_packages().await?;
         let version = graphix_version().await?;
-        // Removing a stdlib package needs the shell's feature graph to find its
-        // dependents; unpack the source once and reuse it for the build.
-        // External-only removals don't need it (`rebuild` unpacks at the end).
+        // A stdlib removal needs the shell's feature graph; unpack the source
+        // once and reuse it for the build.
         let needs_edges =
             packages.iter().any(|p| p.name() != "core" && is_stdlib_package(p.name()));
         let prepared = if needs_edges {
@@ -1529,10 +1501,9 @@ impl GraphixPM {
             crate_name.strip_prefix("graphix-package-").ok_or_else(|| {
                 anyhow!("package name must start with graphix-package-, got {crate_name}")
             })?;
-        // The embedded package is registered as an external (path) package, and
-        // the binary auto-runs its standalone main program. Enable the stdlib
-        // features the embedded package directly depends on — the shell feature
-        // graph pulls their transitive closure; `core` is always compiled.
+        // The embedded package is registered as an external path package.
+        // Its direct stdlib deps become features; the shell feature graph
+        // pulls their closure and `core` is always compiled.
         let mut external = BTreeMap::new();
         external.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
         let features: Vec<String> = stdlib_packages_in_cargo_toml(&contents)?
@@ -1555,19 +1526,16 @@ impl GraphixPM {
             }
             self.unpack_source(&graphix_version().await?).await?
         };
-        // Add the embedded package as a dep; the shell's `packages!()` macro
-        // discovers it (and its `main_program`) from this Cargo.toml.
+        // The shell's `packages!()` macro discovers the dep (and its
+        // `main_program`) from this Cargo.toml.
         println!("Updating Cargo.toml...");
         let shell_cargo_toml_path = source_dir.join("Cargo.toml");
         let shell_cargo_toml = fs::read_to_string(&shell_cargo_toml_path).await?;
         let updated = self.update_cargo_toml(&shell_cargo_toml, &external)?;
         fs::write(&shell_cargo_toml_path, &updated).await?;
         println!("Building standalone binary (this may take a while)...");
-        // Pin the target dir under the source tree so we know exactly where
-        // the binary lands. A user's global build.target-dir (in
-        // ~/.cargo/config.toml) or CARGO_TARGET_DIR would otherwise redirect
-        // the output out from under the copy below, leaving us unable to find
-        // the binary we just built.
+        // Pin the target dir so a global build.target-dir or CARGO_TARGET_DIR
+        // cannot move the binary out from under the copy below.
         let target_dir = source_dir.join("target");
         let status = Command::new(&self.cargo)
             .arg("build")

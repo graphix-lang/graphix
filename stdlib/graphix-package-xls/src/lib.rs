@@ -12,8 +12,6 @@ use poolshark::local::LPooled;
 use std::io::Cursor;
 use triomphe::Arc as TArc;
 
-// ── Cell conversion ──────────────────────────────────────────
-
 fn data_to_value(cell: &Data) -> Value {
     match cell {
         Data::Int(i) => Value::I64(*i),
@@ -37,8 +35,6 @@ fn data_to_value(cell: &Data) -> Value {
         Data::Error(e) => Value::String(ArcStr::from(format!("{e:?}").as_str())),
     }
 }
-
-// ── Shared parsing core ──────────────────────────────────────
 
 fn parse_sheets<RS: std::io::Read + std::io::Seek + Clone>(rs: RS) -> Value {
     let wb = match open_workbook_auto_from_rs(rs) {
@@ -68,8 +64,6 @@ fn parse_sheet<RS: std::io::Read + std::io::Seek + Clone>(rs: RS, sheet: &str) -
     Value::Array(ValArray::from_iter_exact(rows.drain(..)))
 }
 
-// ── XlsSheets (async) ───────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct XlsSheetsEv;
 
@@ -89,8 +83,6 @@ impl EvalCachedAsync for XlsSheetsEv {
 
 type XlsSheets = CachedArgsAsync<XlsSheetsEv>;
 
-// ── XlsRead (async) ─────────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct XlsReadEv;
 
@@ -109,8 +101,6 @@ impl EvalCachedAsync for XlsReadEv {
 }
 
 type XlsRead = CachedArgsAsync<XlsReadEv>;
-
-// ── Package registration ─────────────────────────────────────
 
 graphix_derive::defpackage! {
     builtins => [

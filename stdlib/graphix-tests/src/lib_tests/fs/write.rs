@@ -6,9 +6,9 @@ use netidx::subscriber::Value;
 use poolshark::global::GPooled;
 use tokio::{fs, sync::mpsc, time::Duration};
 
-/// Macro to create fs::write_* tests with common setup/teardown logic
+/// Build an fs::write_* test: an error expectation, a success case with
+/// verification, or a custom expectation.
 macro_rules! write_test {
-    // Error expectation case - delegates to main pattern
     (
         name: $test_name:ident,
         function: $func:expr,
@@ -30,7 +30,6 @@ macro_rules! write_test {
             }
         }
     };
-    // Success case with verification - delegates to main pattern
     (
         name: $test_name:ident,
         function: $func:expr,
@@ -44,17 +43,14 @@ macro_rules! write_test {
             content: $content,
             setup: |$temp_dir| $setup,
             expect: |_v: Value| -> Result<()> {
-                // Check write succeeded (returns Ok(null))
                 if !matches!(_v, Value::Null) {
                     panic!("expected Null (success), got: {_v:?}");
                 }
-                // Verify file contents - need to recreate temp_dir reference
                 Ok(())
             },
             verify: |$verify_dir| $verify
         }
     };
-    // Main pattern with custom expectation and optional verification
     (
         name: $test_name:ident,
         function: $func:expr,
@@ -69,7 +65,6 @@ macro_rules! write_test {
             let ctx = crate::init(tx).await?;
             let $temp_dir = tempfile::tempdir()?;
 
-            // Run setup block which should return test_file
             let test_file = { $setup };
 
             let code = format!(

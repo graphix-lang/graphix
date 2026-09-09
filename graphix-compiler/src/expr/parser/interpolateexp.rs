@@ -40,9 +40,8 @@ parser! {
                 }
             }
         }
-        // Adjacent literal parts merge (the triple form's bare-quote
-        // continuation splits chunks at every quote), so the AST is
-        // canonical whichever delimiter the author wrote.
+        // Adjacent literal parts merge so the AST is canonical whichever
+        // delimiter the author wrote.
         fn finish(pos: SourcePosition, mut toks: LPooled<Vec<Intp>>) -> Expr {
             let mut merged: LPooled<Vec<Intp>> = LPooled::take();
             for t in toks.drain(..) {
@@ -51,9 +50,6 @@ parser! {
                     (_, t) => merged.push(t),
                 }
             }
-            // A lone literal is a plain constant; anything else — any
-            // interpolated expr, or several parts — is one
-            // StringInterpolate over the parts in order.
             match &merged[..] {
                 [] => ExprKind::Constant(Value::from("")).to_expr(pos),
                 [Intp::Lit(_, _)] => merged.drain(..).next().unwrap().to_expr(),
@@ -66,9 +62,8 @@ parser! {
         let interp_part = || attempt(
             between(token('['), sptoken(']'), expr()).map(Intp::Expr)
         );
-        // A `[` that does not open a well-formed `[expr]` ends the
-        // string parse; the note names the escape (the failure itself
-        // lands wherever the expression inside stopped).
+        // A `[` that opens no well-formed `[expr]` ends the string parse;
+        // the note names the escape.
         let bracket_note = || (position(), token('[')).then(|(pos, _)| {
             note_reason(
                 pos,
@@ -92,21 +87,13 @@ parser! {
                     value(Intp::Lit(pos, s)).left()
                 }
             });
-        // Triple-quoted TEMPLATE form: literal text is the common case
-        // there, so the marking flips — brackets are plain content and
-        // the SPLICE is marked, `\[expr]`. Everything else matches the
-        // normal form's escapes minus the bracket escapes (`\]` is an
-        // error; bare `]` is always writable). A bare `"` is legal
-        // (content ends at the FIRST unescaped `"""`; a quote that
-        // would begin the terminator is written `\"`), and one newline
-        // immediately after the opener is stripped (so the template's
-        // first line needn't share the opener's line).
+        // Template form: brackets are content and the splice is marked
+        // `\[expr]`; `\]` is an error; content ends at the first unescaped
+        // `"""`; one newline right after the opener is stripped.
         let splice_part = || attempt(string("\\["))
             .with(expr())
             .skip(sptoken(']'))
             .map(Intp::Expr);
-        // A raw run of template content: anything but `"` (terminator
-        // check) and `\\` (escape or splice). Brackets are content.
         let triple_run = || (
             position(),
             combine::many1::<String, _, _>(combine::satisfy(|c| {
@@ -114,9 +101,6 @@ parser! {
             })),
         )
             .map(|(pos, s)| Intp::Lit(pos, s));
-        // The template escape set: the normal form's minus the bracket
-        // escapes — `\]` is an error (bare `]` is always writable) and
-        // `\[` belongs to the splice arm above.
         let triple_escape = || attempt(token('\\').with(choice((
             token('n').map(|_| '\n'),
             token('r').map(|_| '\r'),

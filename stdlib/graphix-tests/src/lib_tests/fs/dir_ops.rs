@@ -1,10 +1,6 @@
 use graphix_package_core::run_with_tempdir;
 use tokio::fs;
 
-// ============================================================================
-// fs::create_dir tests
-// ============================================================================
-
 run_with_tempdir! {
     name: test_create_dir_basic,
     code: r#"sys::fs::create_dir("{}")"#,
@@ -145,10 +141,6 @@ run_with_tempdir! {
     expect_error
 }
 
-// ============================================================================
-// fs::remove_file tests
-// ============================================================================
-
 run_with_tempdir! {
     name: test_remove_file_basic,
     code: r#"sys::fs::remove_file("{}")"#,
@@ -197,10 +189,6 @@ run_with_tempdir! {
     }
 }
 
-// ============================================================================
-// Integration tests combining operations
-// ============================================================================
-
 run_with_tempdir! {
     name: test_create_and_remove_dir_sequence,
     code: r#"{{
@@ -232,7 +220,6 @@ run_with_tempdir! {
     verify: |temp_dir| {
         let test_file = temp_dir.path().join("fileseq").join("data.txt");
         assert!(!test_file.exists());
-        // Parent directory should still exist
         let test_dir = temp_dir.path().join("fileseq");
         assert!(test_dir.exists());
     }

@@ -1,9 +1,6 @@
-//! The display control a program reaches through libstate: with no
-//! terminal display running — every harness is headless — a suspend
-//! request has no taker. The runner parks the receiver in the control
-//! until a display claims it, so a rising edge answers with an error
-//! at once instead of parking the program on an acknowledgement that
-//! can never come; the level's false side asks nothing of a display.
+//! With no display running (every harness is headless) a suspend
+//! request has no taker: a rising edge answers with an error at once,
+//! and the level's false side asks nothing of a display.
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;

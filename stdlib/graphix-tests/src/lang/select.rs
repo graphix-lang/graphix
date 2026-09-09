@@ -17,10 +17,7 @@ const SELECT0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: string interpolation in select expression
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — string interpolation in a select expression.
 run!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,
@@ -54,7 +51,7 @@ const SELECTSTRUCT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+// ASPIRE: Jit — nested composite / variant payload composite.
 run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
@@ -81,9 +78,8 @@ select 42 {
 }
 "#;
 
-// Fuses since Select::fuse (2026-08-14): the scrutinee/arm sub-region
-// descent — the never() arms de-fuse individually, the wildcard arm and
-// scrutinee fuse.
+// The never() arms de-fuse individually; the wildcard arm and scrutinee
+// fuse.
 run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -98,7 +94,7 @@ const NESTEDMATCH0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+// ASPIRE: Jit — nested composite / variant payload composite.
 run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
@@ -114,7 +110,7 @@ const NESTEDMATCH1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: nested composite / variant payload composite
+// ASPIRE: Jit — nested composite / variant payload composite.
 run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
@@ -147,24 +143,15 @@ const NESTEDMATCH3: &str = r#"
 }
 "#;
 
-// The nested destructure itself fuses now (`_` infers a fresh TVar), but
-// THIS select's `_ => never()` arm body is async — a correct de-fuse for
-// the select region (program-level Jit is satisfied by sibling regions).
-// `select_ignore_sorts_first` covers the same pattern shape with a
-// fusable catch-all.
+// The `_ => never()` arm is async, so this select's region de-fuses;
+// sibling regions satisfy Jit.
 run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// =============================================================================
-// #219 — a MISSING region input consumed only on a DEAD arm must yield a real
-// value, not bottom. The scrutinee picks a live arm; the missing input (`x`,
-// fed by `never()`) is referenced only on the un-taken arm. Pre-#219 the fused
-// kernel bottomed on ANY missing input; now taint rides each input's disc and
-// is forced only where the taken path consumes it. (The composite case is
-// value-correct too but currently de-fuses — covered by the differential
-// suite; these two fuse and exercise the in-kernel taint path.)
+// A missing region input consumed only on a dead arm yields a real
+// value, not bottom.
 const MISSING_ON_DEAD_ARM_SCALAR: &str = r#"
 { let x: i64 = never(); select i64:0 { i64:0 => i64:5, _ => x } }
 "#;
@@ -181,14 +168,8 @@ run!(missing_on_dead_arm_string, MISSING_ON_DEAD_ARM_STRING, |v: Result<&Value>|
     matches!(v, Ok(Value::String(s)) if &**s == "live")
 });
 
-// =============================================================================
-// Phase 4 — structural destructuring over a BORROWED composite scrutinee
-// (tuple / struct / slice patterns with SCALAR leaves) fuses. The length
-// test in each arm's structure condition doubles as the #219 taint gate
-// (a missing composite input is an EMPTY placeholder, so it misses every
-// length-tested arm and the miss trap yields the tainted bottom).
-// Deferred (still de-fuse): whole-composite/@ binds, NAMED rest binds,
-// nested structural leaves (nestedmatch3), owned-producer scrutinees.
+// Structural destructuring over a borrowed composite scrutinee (tuple /
+// struct / slice patterns with scalar leaves) fuses.
 
 const SELECT_TUPLE_DESTRUCTURE: &str = r#"
 {
@@ -261,8 +242,7 @@ run!(select_slice_len_dispatch, SELECT_SLICE_LEN_DISPATCH, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
 });
 
-// Wrong-length arms fall through (the length test misses [x] and [x,y,z]),
-// landing on the catch-all.
+// Wrong-length arms fall through to the catch-all.
 const SELECT_SLICE_MISS: &str = r#"
 {
   let a = [1, 2, 3, 4];
@@ -278,8 +258,7 @@ run!(select_slice_miss, SELECT_SLICE_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
 });
 
-// Anonymous-rest prefix `[x, ..]` (tail: None) fuses; a NAMED rest
-// (`[x, rest..]`) still de-fuses (owned subslice arm local — deferred).
+// An anonymous-rest prefix `[x, ..]`.
 const SELECT_SLICE_PREFIX: &str = r#"
 {
   let a = [7, 8, 9];
@@ -294,8 +273,7 @@ run!(select_slice_prefix, SELECT_SLICE_PREFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(7)))
 });
 
-// Anonymous-head suffix `[.., x]` (head: None) — the leaf reads at
-// `a[len - 1]`, a runtime-relative index.
+// An anonymous-head suffix `[.., x]` reads `a[len - 1]`.
 const SELECT_SLICE_SUFFIX: &str = r#"
 {
   let a = [7, 8, 9];
@@ -310,8 +288,7 @@ run!(select_slice_suffix, SELECT_SLICE_SUFFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(9)))
 });
 
-// Empty-slice pattern: `[]` is `len == 0` — matched here by the empty
-// array, with the sized arms falling through.
+// `[]` matches the empty array; the sized arms fall through.
 const SELECT_SLICE_EMPTY: &str = r#"
 {
   let a: Array<i64> = [];
@@ -327,11 +304,8 @@ run!(select_slice_empty, SELECT_SLICE_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-7)))
 });
 
-// A NAMED rest binding: the SELECT itself de-fuses (the subslice is an
-// owned composite arm local; JitEnv::truncate emits no drops — deferred),
-// but sibling regions (the array literal) still fuse, so the program-level
-// expectation stays Jit. The de-fuse itself is pinned by
-// `native_select_named_rest_defuses` in lib_tests/native.rs.
+// A named rest binding de-fuses the select (pinned by
+// `native_select_named_rest_defuses`); sibling regions still fuse.
 const SELECT_SLICE_NAMED_REST: &str = r#"
 {
   let a = [1, 2, 3];
@@ -346,11 +320,7 @@ run!(select_slice_named_rest, SELECT_SLICE_NAMED_REST, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
 });
 
-// Node-walk regression (found by the Phase 4 differential): SliceSuffix
-// BINDS used start-relative offsets (`a[N..]`) while `is_match` tested the
-// LAST N elements — `[init.., x]` over [7,8,9] bound x=8 (and init=[7])
-// instead of x=9/init=[7,8]. Named `init..` de-fuses (owned subslice arm
-// local), so this exercises the node-walk binder in both modes.
+// `[init.., x]` over [7,8,9] binds x=9, init=[7,8] on both engines.
 const SELECT_SUFFIX_NAMED_HEAD: &str = r#"
 {
   let a = [7, 8, 9];
@@ -365,10 +335,7 @@ run!(select_suffix_named_head, SELECT_SUFFIX_NAMED_HEAD, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(902)))
 });
 
-// The old start-relative suffix binds indexed OUT OF BOUNDS (a node-walk
-// panic) when `suffix.len() <= len < 2 * suffix.len()`: `[.., x, y]` over a
-// 2-element array read `tail = a[2..]` (empty) then `tail[0]`. With the
-// fixed end-relative split it binds x=1, y=2.
+// `[.., x, y]` over a 2-element array binds x=1, y=2.
 const SELECT_SUFFIX_EXACT_LEN: &str = r#"
 {
   let a = [1, 2];
@@ -383,23 +350,12 @@ run!(select_suffix_exact_len, SELECT_SUFFIX_EXACT_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(12)))
 });
 
-// =============================================================================
-// Slice-pattern LENGTH coverage (2026-08-21, from the admin-TUI
-// campaign's fingerprint chunker): unguarded array-slice arms whose
-// element patterns match anything jointly cover an array scrutinee
-// when their lengths cover ℕ — `[]` + a rest form needs no wildcard.
-// The claim is per scrutinee array member, and every pool arm's type
-// predicate must contain the member (runtime dispatch is type-gated
-// per arm, so a differently-typed slice arm is a hole, not coverage).
-//
-// ASPIRE: Jit (currently None) on the lambda-wrapped value fixtures —
-// the select sits in an instance kernel where a composite scrutinee
-// has no ride storage ("no scrutinee-ride storage — de-fuse"; the
-// value-residents-in-site-blocks ASPIRE restores them).
-// `select_slice_cover_fused` pins the region-root form natively.
+// Slice-pattern length coverage: unguarded all-bind slice arms cover an
+// array scrutinee when their lengths cover every length.
+// ASPIRE: Jit on the lambda-wrapped fixtures — a composite scrutinee in
+// an instance kernel; `select_slice_cover_fused` pins the root form.
 
-// The region-root form: a wildcard-less slice-covered select fuses
-// (the final arm's miss trap is dead code under the new coverage).
+// The region-root form: a wildcard-less slice-covered select fuses.
 const SELECT_SLICE_COVER_FUSED: &str = r#"
 {
   let a = [7, 8, 9];
@@ -442,8 +398,7 @@ run!(select_slice_cover_prefix, SELECT_SLICE_COVER_PREFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(69)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// An exact-length ladder under the rest form: 0 and 1 by exact arms,
-// [2, ∞) by the rest arm.
+// An exact-length ladder under the rest form.
 const SELECT_SLICE_COVER_LADDER: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -459,8 +414,7 @@ run!(select_slice_cover_ladder, SELECT_SLICE_COVER_LADDER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// The pool covers the ARRAY member; the null member still needs its
-// own arm — and has one.
+// The pool covers the array member; the null member needs its own arm.
 const SELECT_SLICE_COVER_UNION: &str = r#"
 {
   let f = |xs: [Array<i64>, null]| -> i64 select xs {
@@ -476,8 +430,7 @@ run!(select_slice_cover_union, SELECT_SLICE_COVER_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A hole in the length ladder refuses (and the message names the
-// hole): [] + [a, b, rest..] leaves length 1 uncovered.
+// A hole in the length ladder refuses and the message names it.
 const SELECT_SLICE_HOLE: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -492,7 +445,7 @@ run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Exact-length arms alone cover finitely many lengths — never ℕ.
+// Exact-length arms alone never cover every length.
 const SELECT_SLICE_NO_REST: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -507,7 +460,7 @@ run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A guard makes an arm's coverage conditional — it claims nothing.
+// A guarded arm claims no coverage.
 const SELECT_SLICE_GUARDED_REST: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -525,9 +478,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// Deadness is length-precise too (Eric's call — no dead arms, ever):
-// a wildcard behind a complete slice ladder is unreachable, exactly
-// like a wildcard behind a full variant set.
+// A wildcard behind a complete slice ladder is dead.
 const SELECT_SLICE_DEAD_WILDCARD: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -546,8 +497,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// A slice arm whose whole length range is matched by earlier covering
-// arms can never run: [init.., y] is [1, ∞), all taken by [x, rest..].
+// A slice arm whose whole length range is taken by earlier arms is dead.
 const SELECT_SLICE_DEAD_SHADOW: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -566,8 +516,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// The bool literal pair subtracts like a full variant set: a trailing
-// wildcard after `true` + `false` is dead.
+// A trailing wildcard after `true` + `false` is dead.
 const SELECT_BOOL_DEAD_WILDCARD: &str = r#"
 {
   let f = |x: bool| -> i64 select x {
@@ -586,10 +535,8 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// The live side of the line: a PARTIAL ladder keeps its wildcard (the
-// empty array still needs it), and a refutable-element arm neither
-// dies (its lengths aren't covered yet where it stands) nor blocks
-// the arms below it from completing coverage.
+// A partial ladder keeps its wildcard; a refutable-element arm neither
+// dies nor blocks the arms below it from completing coverage.
 const SELECT_SLICE_PARTIAL_WILDCARD_LIVE: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -625,8 +572,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A refutable ELEMENT pattern only matches some arrays of its length —
-// the arm claims nothing.
+// A refutable element pattern claims no coverage.
 const SELECT_SLICE_REFUTABLE_ELEM: &str = r#"
 {
   let f = |xs: Array<i64>| -> i64 select xs {
@@ -644,11 +590,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// =============================================================================
-// Phase 5 — NESTED structural select patterns (scalar leaf binds) fuse:
-// the intermediate composite reads are BORROWED interior pointers (the
-// root scrutinee is pinned borrowed across the arm chain and values are
-// immutable), staged behind each level's length test.
+// Nested structural select patterns with scalar leaf binds fuse.
 
 const SELECT_NESTED_TUPLE: &str = r#"
 {
@@ -664,10 +606,7 @@ run!(select_nested_tuple, SELECT_NESTED_TUPLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(33)))
 });
 
-// The nestedmatch3 shape: a struct pattern with a nested slice-prefix
-// leaf. The select fuses fully now that `_` infers a fresh TVar (see
-// `native_select_nested_struct_ok` — the old `Type::Any` inference
-// short-circuited the unification walk at the sorted-first `_` fields).
+// A struct pattern with a nested slice-prefix leaf fuses.
 const SELECT_NESTED_STRUCT_SLICE: &str = r#"
 {
   let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
@@ -682,7 +621,7 @@ run!(select_nested_struct_slice, SELECT_NESTED_STRUCT_SLICE, |v: Result<&Value>|
     matches!(v, Ok(Value::F64(3.0)))
 });
 
-// A LITERAL inside the nested level (second-stage staged test).
+// A literal inside the nested level.
 const SELECT_NESTED_LITERAL: &str = r#"
 {
   let t = ((7, 2), 5);
@@ -697,14 +636,9 @@ run!(select_nested_literal, SELECT_NESTED_LITERAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
 
-// =============================================================================
-// Phase 6 — OWNED (fresh-producer) select scrutinees fuse in value
-// position: the scrutinee is bound as an env local (a mid-arm pending
-// exit drops it via drop_owned_composites) and dropped exactly once at
-// the merge every normal path crosses. Tail-position selects keep the
-// borrowed-only gate (no merge point).
+// Owned (fresh-producer) select scrutinees fuse in value position.
 
-// An inline tuple literal scrutinee (fresh producer = Owned).
+// An inline tuple literal scrutinee.
 const SELECT_OWNED_TUPLE: &str = r#"
 {
   let a = 3;
@@ -719,8 +653,7 @@ run!(select_owned_tuple, SELECT_OWNED_TUPLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(9)))
 });
 
-// An inlined-HOF result as the scrutinee — the owned array flows from
-// the map loop straight into the select's length dispatch.
+// An inlined HOF result as the scrutinee.
 const SELECT_OWNED_HOF_RESULT: &str = r#"
 {
   let a = [1, 2];
@@ -735,8 +668,7 @@ run!(select_owned_hof_result, SELECT_OWNED_HOF_RESULT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
 });
 
-// An owned VARIANT scrutinee (fresh constructor) with a scalar payload
-// bind — the two-word owned Value drops at the merge.
+// An owned variant scrutinee with a scalar payload bind.
 const SELECT_OWNED_VARIANT: &str = r#"
 {
   let n = 5;
@@ -750,8 +682,8 @@ run!(select_owned_variant, SELECT_OWNED_VARIANT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(12)))
 });
 
-// The no-match edge: the owned scrutinee still drops when the taken path
-// is the catch-all (every arm's length test missed).
+// The no-match edge: every length test misses and the catch-all is
+// taken.
 const SELECT_OWNED_MISS: &str = r#"
 {
   let a = [1, 2, 3];
@@ -766,15 +698,9 @@ run!(select_owned_miss, SELECT_OWNED_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
 });
 
-// =============================================================================
-// `_` inference regression: `_` used to infer `Type::Any`, and select's
-// unification-by-contains walk short-circuits at the first false pair
-// (`T.contains(Any)` = false) — so every slot AFTER a `_` (positional in
-// tuples, sorted-field order in structs) never narrowed its bind TVars,
-// and those selects de-fused. `_` now infers a fresh TVar like an
-// anonymous bind.
+// `_` infers a fresh TVar, so slots after a `_` still narrow their binds.
 
-// `_` BEFORE the nested slot in a tuple (the p7 probe shape).
+// `_` before the nested slot in a tuple.
 const SELECT_IGNORE_BEFORE_NESTED: &str = r#"
 {
   let t = (42, [1.0, 2.0]);
@@ -789,8 +715,7 @@ run!(select_ignore_before_nested, SELECT_IGNORE_BEFORE_NESTED, |v: Result<&Value
     matches!(v, Ok(Value::F64(3.0)))
 });
 
-// Struct parent whose `_` fields sort FIRST (bar/baz < foo) — the
-// nestedmatch3 shape with a fusable catch-all.
+// A struct parent whose `_` fields sort first.
 const SELECT_IGNORE_SORTS_FIRST: &str = r#"
 {
   let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
@@ -805,19 +730,9 @@ run!(select_ignore_sorts_first, SELECT_IGNORE_SORTS_FIRST, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(3.0)))
 });
 
-// The "gate stats until the window is non-empty" idiom
-// (bench/stream_stats.gx): an Array local whose defining bind is a
-// never()-gated select must thread into the downstream fold region as
-// a kernel input. The never() arm's fresh TVar gets bound by the
-// fold's own unification AFTER the select's arm-union type was built,
-// leaving Set([TVar->Array<TVar->f64>, Array<f64>]) — structurally
-// unmergeable, so the plain and normalize freezes both reject it and
-// the local was silently skipped as a region input ("undefined local
-// `w`", ~30x on the per-event stats). freeze_for_abi_normalized's
-// resolve_tvars rung collapses it. The #[native] on the fold is the
-// load-bearing assertion — program-level FuseExpect::Jit passes even
-// unfixed via the sibling regions.
-// windows (n=3): [1] -> [1,2] -> [1,2,3] -> [2,3,4]; final fold = 9.0
+// An Array local defined by a never()-gated select threads into the
+// downstream fold region as a kernel input (the `#[native]` on the fold
+// is the assertion). Final fold = 9.0.
 const GATED_WINDOW_FOLD: &str = r#"
 {
   let tick = array::iter([1.0, 2.0, 3.0, 4.0]);
@@ -840,9 +755,7 @@ run!(gated_window_fold, GATED_WINDOW_FOLD, |v: Result<&Value>| matches!(
     Ok(Value::F64(9.0))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// The discovery leg of the same gap: a builtin call whose ARG is a
-// never()-gated string local — the arg freeze also runs through the
-// normalized path now, so the str::len site registers and fuses.
+// A builtin call whose arg is a never()-gated string local fuses.
 const GATED_STRING_BUILTIN: &str = r#"
 {
   let tick = array::iter([1, 2, 3, 4]);
@@ -865,22 +778,8 @@ run!(gated_string_builtin, GATED_STRING_BUILTIN, |v: Result<&Value>| matches!(
     Ok(Value::I64(8))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — the UNANNOTATED scalar gate, the
-// fixture that motivated typing `never()` as Bottom (2026-07-05).
-// The ⊥ typing fixed the SEMANTIC story (⊥ unifies everywhere, the
-// connect-seed idiom works, `f(never(), 5)` accepts) but the fusion
-// blocker turned out to be one level deeper: the never arm's call-
-// site cell stays OPEN through the select's union (the (TVar, ⊥)
-// rule deliberately doesn't bind — the seed idiom needs the cell
-// open for writers), and the downstream arith's containment walk
-// then binds it to the WIDE Number set — multiple register classes,
-// no sound freeze. The remaining fix is converting the
-// (Primitive, TVar-unbound) wide-bind rule to constrain-don't-bind
-// (the next Phase-B-style conversion, design/tvar_constraints.md);
-// with a Number CONJUNCT instead of a wide binding, the terminal
-// settle would ⊥ the never cell and the union would collapse.
-// Annotating the let (`let m: i64 = ...`) fuses today. Pinned so
-// drift in either direction surfaces.
+// ASPIRE: Jit — the unannotated scalar gate: the never arm's open cell
+// binds wide under the downstream arith. `let m: i64` fuses today.
 const GATED_SCALAR_UNANNOTATED: &str = r#"
 {
   let c = array::iter([1, 2, 3, 4]);
@@ -901,13 +800,7 @@ run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, |v: Result<&Value>| mat
     Ok(Value::I64(9))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A GUARDED arm before a bind-all final was rejected "missing match
-// cases": the bind-all's inferred type predicate is a fresh TVar, and
-// the coverage check's greedy unifying walk bound it to the FIRST
-// scrutinee union member, leaving the rest "uncovered". Coverage now
-// counts an inferred irrefutable pattern as the whole scrutinee type
-// (found by fuzzer-v2 gen-check; guard-first arms are idiomatic — the
-// TUI examples' key handlers are exactly this shape).
+// A guarded arm before a bind-all final arm is exhaustive.
 const GUARDED_ARM_THEN_BINDALL: &str = r#"
 {
   let v: [`A(i64), `B] = `A(i64:1);
@@ -920,14 +813,7 @@ run!(guarded_arm_then_bindall, GUARDED_ARM_THEN_BINDALL, |v: Result<&Value>| mat
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A guard decides whether its arm matches, so it must be `bool`. Any
-// type used to be accepted, and the arm then simply never matched — so
-// `select n { v if n => a, _ => b }` (someone reaching for truthiness)
-// compiled to a silently dead arm. The differential fuzzer cannot see
-// this class at all: both engines agree on the dead arm, and the
-// generator's guards are bool by construction. It surfaced when the
-// minimizer's replace-with-a-literal operator put a string in a guard
-// and the program still compiled (2026-08-09).
+// A guard must be `bool`.
 const GUARD_STRING: &str = r#"
 {
   let x = i64:1;
@@ -948,8 +834,7 @@ const GUARD_INT: &str = r#"
 run!(guard_int_rejected, GUARD_INT, |v: Result<&Value>| matches!(v, Err(_));
     graphix_package_core::testing::FuseExpect::None);
 
-// A nullable bool is not a bool either: `[bool, null]` can't decide an
-// arm, and admitting it would make the null case a silent non-match.
+// A nullable bool is not a bool guard either.
 const GUARD_NULLABLE_BOOL: &str = r#"
 {
   let b: [bool, null] = true;
@@ -962,8 +847,7 @@ run!(guard_nullable_bool_rejected, GUARD_NULLABLE_BOOL, |v: Result<&Value>| matc
     Err(_)
 ); graphix_package_core::testing::FuseExpect::None);
 
-// The check INFERS as well as rejects: an unannotated lambda used as a
-// guard binds its return tvar to bool, exactly as `!x` and `&&` do.
+// An unannotated lambda used as a guard infers a bool return.
 const GUARD_INFERS_BOOL: &str = r#"
 {
   let p = |x| x > i64:0;
@@ -976,7 +860,7 @@ run!(guard_infers_bool, GUARD_INFERS_BOOL, |v: Result<&Value>| matches!(
     Ok(Value::I64(0))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// The dual shape: the guarded arm names a DIFFERENT tag than the value.
+// The dual shape: the guarded arm names a different tag than the value.
 const GUARDED_OTHER_TAG_THEN_BINDALL: &str = r#"
 {
   let v: [`A(i64), `B] = `A(i64:7);
@@ -991,11 +875,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A select's result union built over an arm still holding an unbound
-// `$`-result TVar never re-collapsed once the TVar bound: the field
-// access then failed "expected struct not [{..}, {..}]" on two
-// since-identical members. deref_typ! now normalizes a Set through
-// the TVar-aware merge before giving up (found by fuzzer-v2 gen-check).
+// A select's result union re-collapses once an arm's `$`-result TVar
+// binds, so field access on the result typechecks.
 const ARM_UNION_TVAR_COLLAPSE: &str = r#"
 {
   let v0 = select i64:100 {
@@ -1011,11 +892,8 @@ run!(arm_union_tvar_collapse, ARM_UNION_TVAR_COLLAPSE, |v: Result<&Value>| match
     Ok(Value::I64(42))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// Bind-all arm types narrow by position: the value reaching `s` cannot
-// be null (the earlier unguarded irrefutable arm consumed it), so `s`
-// is `string`, usable where a string is required. This came out right
-// before only because the coverage walk happened to greedily bind the
-// wildcard's tvar to the union's first member.
+// Bind-all arm types narrow by position: `s` after an unguarded
+// irrefutable arm cannot be null, so it is `string`.
 const BINDALL_NARROWS_BY_POSITION: &str = r#"
 {
   let o: [string, null] = "x";
@@ -1029,12 +907,8 @@ run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, |v: Result<&Value
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A variant arm with a PAYLOAD bind narrows the arms after it the way
-// `null as _` and a bare variant do: the residual reaching `n` cannot
-// be `` `Bad ``. The residual subtraction compared the arm's predicate
-// (`` `Bad('m) ``, its bind's cell) against the member with `==`, and a
-// bound cell never equals its binding, so the member stayed and `n`
-// kept the whole union (the admin TUI's unit-form parsers, 2026-09-02).
+// A variant arm with a payload bind narrows the arms after it: the
+// residual reaching `n` cannot be `` `Bad ``.
 const VARIANT_PAYLOAD_ARM_NARROWS: &str = r#"
 {
   let g = |x: [i64, `Bad(string)]| -> i64 select x {
@@ -1050,9 +924,7 @@ run!(variant_payload_arm_narrows, VARIANT_PAYLOAD_ARM_NARROWS, |v: Result<&Value
     Ok(Value::I64(45))
 ); graphix_package_core::testing::FuseExpect::None);
 
-// The same through a named member and an ignored payload: the bind
-// after `` `Bad(_) `` is the alias's type alone, so it can fill a field
-// declared as it.
+// The same through a named member and an ignored payload.
 const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
 {
   type T = [`OnStart, `OnAccess(Array<string>)];
@@ -1078,12 +950,8 @@ run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, |
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A GUARDED select used to force its result FRESH on every kernel
-// invocation ("over-fire, safe") — but firing is observable through
-// `count`: with an unrelated reactive input in the region, the fused
-// kernel counted every event (interp 1, jit 5). The select's STALE now
-// also ANDs a guard-feeder word (any arm's guard input fired → the
-// select may fire), computed path-independently before the arm chain.
+// A guarded select fires only when an input feeding it fired: count 1
+// on both engines despite an unrelated reactive input in the region.
 const GUARDED_SELECT_FIRING_COUNT: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1097,18 +965,8 @@ run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ORGANIC FIRING delta 2 (design/organic_firing.md, Eric 2026-08-14):
-// a guard-dep fire EMITS regardless of whether the selection changes.
-// m fires per x delivery, so the select emits 5 times (init + 4 guard
-// fires) on both engines — the old selection-memory cadence (4) and
-// the per-instance state word that produced it are gone.
-// THE INIT-PHANTOM GUARD (activation_state.md, 2026-08-20): a guard
-// that has NEVER produced (its deps deliver after init) is UNKNOWN,
-// not false — the old `unwrap_or(false)` took the wildcard at init;
-// under the bottom-out rule the chain stops undetermined and the
-// select bottoms until the guard first becomes evaluable. Every
-// fixture in this family loses exactly its init emission (5 → 4,
-// 55 → 44): the count starts at the guard's first sound fire.
+// A guard-dep fire emits whether or not the selection changes; a guard
+// that has never produced bottoms the select. m fires per x delivery: 4.
 const GUARDED_SELECT_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1125,10 +983,7 @@ run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Resul
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Delta 2 inside a collection loop: the slot's select emits per guard
-// fire (4; the init-phantom guard bottoms the init cycle), no
-// per-slot selection memory involved — the
-// structural context survives as organic-cadence coverage.
+// The same inside a collection loop: 4.
 const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1146,11 +1001,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2, two slots with different stable selections: both slots
-// emit per guard fire now (4 — the init-phantom guard bottoms the
-// init cycle) — under organic firing
-// per-slot independence is trivially exact because there is no
-// selection memory to alias.
+// Two slots with different stable selections both emit per guard fire: 4.
 const GUARDED_SELECT_PER_SLOT_INDEPENDENCE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1167,9 +1018,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 across a source resize (1 → 2 mid-run): emissions follow
-// deliveries through the regrow on both engines (4 total — the
-// init-phantom guard bottoms the init cycle).
+// Across a source resize (1 -> 2 mid-run): 4.
 const GUARDED_SELECT_SLOT_TABLE_RESIZE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1189,9 +1038,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 two loops deep: per-delivery emission through nested loops
-// (4 guard fires; the init-phantom guard bottoms the init cycle),
-// no state chain involved.
+// Two loops deep: 4.
 const GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1209,8 +1056,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2, four slot pairs with different stable selections ((i+j)
-// parity): all emit per guard fire (4; init-phantom bottoms init).
+// Four slot pairs with different stable selections: 4.
 const GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1227,9 +1073,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 with ragged inner lengths + an outer resize mid-run:
-// per-delivery emission through the reshape (4 total; init-phantom
-// bottoms init).
+// Ragged inner lengths plus an outer resize mid-run: 4.
 const GUARDED_SELECT_NESTED_RAGGED_RESIZE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1249,7 +1093,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 at loop depth 3 (4 guard fires; init-phantom bottoms init).
+// Loop depth 3: 4.
 const GUARDED_SELECT_TRIPLE_NESTED: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1267,8 +1111,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 in a CALLEE body: a guard-dep fire emits through the
-// compiled callee (5 = init + 4) — no per-call-site selection words.
+// In a callee body: 5 (init + 4).
 const GUARDED_SELECT_IN_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1283,9 +1126,8 @@ run!(guarded_select_in_callee, GUARDED_SELECT_IN_CALLEE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Delta 2, one compiled callee at two call sites with different
-// stable selections: both sites emit per guard fire (44 = 4*10 + 4;
-// init-phantom bottoms init).
+// One callee at two call sites with different stable selections:
+// 44 = 4*10 + 4.
 const GUARDED_SELECT_CALLEE_TWO_SITES: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1304,8 +1146,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2, a callee called inside a loop (two slots, different stable
-// selections): per-delivery emission (4; init-phantom bottoms init).
+// A callee called inside a loop: 4.
 const GUARDED_SELECT_CALLEE_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1323,8 +1164,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2, a callee whose own body has a loop-select, called at root:
-// per-delivery emission (4; init-phantom bottoms init).
+// A callee whose own body has a loop-select: 4.
 const GUARDED_SELECT_CALLEE_INTERNAL_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1342,9 +1182,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2, the deep composition — a callee with an internal
-// loop-select, called from inside a loop: per-delivery emission (4;
-// init-phantom bottoms init).
+// A callee with an internal loop-select, called from inside a loop: 4.
 const GUARDED_SELECT_CALLEE_LOOP_IN_LOOP: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1363,9 +1201,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Delta 2 inside a TAIL-RECURSIVE callee: the interior select's guard
-// fires per delivery and the emission rides out through the loop
-// (4; init-phantom bottoms init) — no site-block selection words.
+// Inside a tail-recursive callee: 4.
 const GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1386,15 +1222,9 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Arm-local `<-` target PERSISTS across the arm's sleep (2026-08-14,
-// supersedes the jul08g re-seed this fixture used to pin): a wake
-// RESUMES an arm, it does not create one, so the seed is a birth value
-// and the connect-written 11 survives the take where the arm slept.
-// Sleep is PAUSE (Eric 2026-07-31); `findings/arm-local-bind-aug2026/`
-// carries the three faces of the seam. Both engines changed — the
-// node-walk stopped re-executing the arm's binds under the wake view,
-// and the kernel's lifted seed-select stopped preferring the seed when
-// the init override is active (fusion/emit/flow.rs).
+// An arm-local `<-` target persists across the arm's sleep: a wake
+// resumes the arm, so the written 11 survives.
+// findings/arm-local-bind-aug2026/
 const SELECT_ARM_LOCAL_PERSISTS: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1417,9 +1247,7 @@ run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Same shape, connect RHS computed by a fold: the write lands while
-// the arm is asleep, and the re-entry now SEES it (6) instead of the
-// seed — the persistence rule above.
+// Same shape with the connect RHS computed by a fold: re-entry sees 6.
 const SELECT_ARM_LOCAL_PERSISTS_FOLD: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1442,14 +1270,8 @@ run!(select_arm_local_persists_fold, SELECT_ARM_LOCAL_PERSISTS_FOLD, |v: Result<
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A GUARD reading a CAPTURE inside a rec callee's TAIL select.
-// Delta 2 on the tail spine, capture-driven guard: every m fire
-// emits (the old sequence had a quiet same-selection cycle; organic
-// emits it; the init-phantom guard bottoms the init cycle
-// (activation_state.md), so the sequence is [1, 1, 2] with the
-// final 2 in group's open bucket). The jul17c capture-flip fire
-// flows through the prologue guard fold instead of final-selection
-// memory.
+// A guard reading a capture inside a rec callee's tail select emits per
+// m fire; the init-phantom guard bottoms init: [1, 1, 2].
 const TAIL_SELECT_GUARD_CAPTURE_MEMORY: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1477,14 +1299,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A guard flip wakes the catch-all arm whose fold callback reads ONLY
-// the captured scrutinee bind (no slot param). The wake binds v3
-// STALE (honest tags) and the becoming-selected fire emits the arm's
-// cached value — which the CallSite's frame-depth-0 STALE filter
-// starved by eating the capture-only slot production (interp emitted
-// 42 forever; the kernel correctly fired 1). The fd0 filter now
-// exempts init views (jul18d ryouko divergence; pinned in
-// arm-wake-body-fire-jul2026/03).
+// A guard flip wakes a catch-all arm whose fold callback reads only the
+// captured scrutinee bind: the becoming-selected fire emits 1.
 const ARM_WAKE_CAPTURE_ONLY_CALLBACK: &str = r#"
 {
   let k = true;
@@ -1535,23 +1351,9 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A pattern's inferred type predicate must not refuse a value because
-// an EARLIER union member already walked it.
-//
-// `Type::is_a_int`'s Ref arm kept a visited set that never popped, and a
-// repeat answered "no match". `Type::Set` is a union tried with `any`,
-// so one member descending into a child and failing is ordinary
-// backtracking — but its leftover entries then answered "no" for every
-// later member over that same child. Here the tuple's two `T`s are the
-// same recursive name, so checking the first pattern poisons the second:
-// NO arm matched, the select produced nothing, and everything downstream
-// went bottom. Since the program's only exit is gated on that value, it
-// sat idle at zero CPU forever — which is why bench/symbolic.gx read as
-// `timeout` in the results table rather than as a wedge.
-//
-// Latent until e86d18c1 made an inferred predicate load-bearing at
-// runtime. A regression here WEDGES rather than fails, so the harness
-// timeout is what turns it back into a test failure.
+// A pattern's inferred type predicate over a recursive type must not
+// refuse a value because an earlier union member already walked it.
+// A regression here wedges; the harness timeout is the failure.
 const SELECT_RECURSIVE_TYPE_TUPLE_ARMS: &str = r#"
 {
   type T = [`N(f64), `A(T, T)];
@@ -1572,9 +1374,7 @@ run!(
 );
 
 // The shape it was found in: two recursive functions over a recursive
-// ADT, where the second's select must re-check nodes the first walked.
-// Deeper than the minimal case above and correspondingly slower to
-// wedge, but it is the actual bench program's core and worth pinning.
+// ADT, where the second's select re-checks nodes the first walked.
 const SELECT_RECURSIVE_ADT_CHAIN: &str = r#"
 {
   type T = [`N(f64), `V, `A(T, T), `M(T, T)];
@@ -1607,11 +1407,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// ── partial struct patterns infer from the scrutinee (2026-08-18) ──
-// `{x, ..}` used to infer an exact one-field struct that could never
-// match (and, worse, computed field indexes into the wrong layout).
-// The select typecheck now completes the inferred predicate from the
-// scrutinee member and realigns the compiled binder's indexes.
+// A partial struct pattern `{x, ..}` completes from the scrutinee.
 
 const SELECT_PARTIAL_STRUCT: &str = r#"
 {
@@ -1628,8 +1424,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// The realign regression: `y` names the SECOND field of the member, so
-// an un-realigned binder reads slot 0 (`x = 1`) instead of "z".
+// `y` names the second field of the member; the binder reads "z".
 const SELECT_PARTIAL_IN_VARIANT: &str = r#"
 {
   type E = [`A({ x: i64, y: string }), `B({ x: i64, z: i64 }), `C];
@@ -1664,8 +1459,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// One binder holds one index layout, so a partial matching several
-// union members must be annotated — refused with a teaching error.
+// A partial matching several union members must be annotated.
 const SELECT_PARTIAL_AMBIGUOUS: &str = r#"
 {
   type S = { x: i64, y: string };
@@ -1684,12 +1478,8 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// ── an explicit predicate on a Rust-backed abstract type ────────
-// It is a NOMINAL tag test: the value answers by the path-derived
-// wrapper UUID its package registered. Refused outright until the io
-// migration made that registration the rule (2026-08-23) — before it
-// the arm was a guaranteed-dead arm the wildcard silently won, which
-// is what the netidx-admin dogfood campaign hit on 2026-08-18.
+// An explicit predicate on a Rust-backed abstract type is a nominal tag
+// test answered by the wrapper UUID its package registered.
 const SELECT_ABSTRACT_PREDICATE: &str = r#"
 {
   let td: [sys::fs::tempdir::T, i64] = sys::fs::tempdir::create(null)?;
@@ -1707,12 +1497,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// ── a union-typed arm plus a never() arm returns the declared union
-// (2026-08-19) ── the produced union's member that is (or contains)
-// the signature's own tvar cell must be covered reflexively by the
-// declared set; the bare-tvar residue arm instead captured it and the
-// occurs check refused `'r := ['r, ...]`. Found by the netidx-admin
-// package's `result` ceremony accessor.
+// A union-typed arm plus a never() arm returns the declared union.
 const SELECT_UNION_RETURN_NEVER_ARM: &str = r#"
 {
   type Ev<'a> = [`Q(i64), `Done(['a, `E(string)])];
@@ -1731,10 +1516,8 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// The bare-cell face of the same bug: the produced union carries the
-// signature's `'r` cell itself as a member (plus never()'s fresh
-// tvar), and the coverage walk must recognize its own cell rather
-// than binding through it.
+// The bare-cell face: the produced union carries the signature's own
+// `'r` cell as a member.
 const SELECT_UNION_PARAM_NEVER_ARM: &str = r#"
 {
   let f = |x: ['r, i64]| -> ['r, i64] select 0 { 0 => x, _ => never() };
@@ -1749,14 +1532,9 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A select's type is the UNION of its arm types, and a free type
-// variable in one arm stays free — nothing infers `str::parse`'s result
-// from a sibling `i64` arm. Both spellings must agree: with a literal
-// `i64` arm this was always rejected, while a binding whose `i64`
-// arrived through a bound tvar (`array::iter`'s instantiation) typed by
-// accident — the instance check compared the union against a copy of
-// itself and the free member absorbed its sibling's `i64` — and the
-// per-slot callback instance then bottomed at runtime (aug22c class E).
+// A select's type is the union of its arm types; a free tvar arm beside
+// an `i64` arm stays free, whether the `i64` is a literal or arrives
+// through a bound tvar.
 #[tokio::test]
 async fn free_union_arm_is_not_inferred_from_sibling() {
     for code in [
@@ -1772,21 +1550,16 @@ async fn free_union_arm_is_not_inferred_from_sibling() {
     }
 }
 
-// The annotation is what types the union: `i64 ⊇ ['b, i64]` binds `'b`.
+// The annotation types the union: `i64 ⊇ ['b, i64]` binds `'b`.
 const UNION_ARM_ANNOTATED: &str = r#"{let y = i64:0; let v: i64 = select i64:1 {i64:1 => str::parse("42")?, _ => y}; v}"#;
 run!(union_arm_annotated, UNION_ARM_ANNOTATED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(42))
 ));
 
-// ---- Shallow arm discriminators (Type::shallow_discriminant,
-// 2026-08-25): an INFERRED arm predicate over an enumerable scrutinee
-// union is sealed to an outermost-shape test at the select's first
-// consult. These pin the two boundary cases: an ambiguous union
-// (same tag, same arity — must stay on the deep walk, and dispatch
-// by the explicit predicates), and a mixed union where the shallow
-// test is active and must produce the same dispatch the deep walk
-// did. Union type-test dispatch interprets, hence FuseExpect::None.
+// Shallow arm discriminators: an ambiguous union (same tag, same arity)
+// stays on the deep walk; a mixed union dispatches the same shallow.
+// Union type-test dispatch interprets, hence None.
 
 run!(
     shallow_ambiguous_same_tag_union,
@@ -1820,14 +1593,12 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// ─── Or-patterns (design/or_patterns.md, ruled 2026-08-31) ───
+// Or-patterns
 
 const OR_LITERALS: &str = r#"
 select 2 { 1 | 2 | 3 => "small", _ => "big" }
 "#;
 
-// Or-arms emit natively since P3 (`emit_or_chain` — alternatives
-// chain left to right into one done block with the shared BindIds).
 run!(or_literals, OR_LITERALS, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "small")
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -1846,8 +1617,7 @@ select (5, 0) { (0, y) | (y, 0) if y > 3 => y, _ => 0 - 1 }
 
 run!(or_guard, OR_GUARD, |v: Result<&Value>| { matches!(v, Ok(Value::I64(5))) });
 
-// An or-arm covers its alternatives' variants: exhaustive with no
-// wildcard.
+// An or-arm covers its alternatives' variants without a wildcard.
 const OR_VARIANT_EXHAUST: &str = r#"
 {
   let v: [`A(i64), `B(i64), `C] = `B(7);
@@ -1859,8 +1629,7 @@ run!(or_variant_exhaust, OR_VARIANT_EXHAUST, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(7)))
 });
 
-// Alternatives try LEFT TO RIGHT: (1, 2) matches both, the first
-// alternative's binds deliver (y = 2, not 1).
+// Alternatives try left to right: (1, 2) binds the first (y = 2).
 const OR_FIRST_MATCH: &str = r#"
 select (1, 2) { (1, y) | (y, 2) => y, _ => 0 }
 "#;
@@ -1877,9 +1646,8 @@ run!(or_nested, OR_NESTED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "y")
 });
 
-// The length-ladder pool takes one claim per alternative: [] plus
-// [_, ..] covers every length, no wildcard needed. (The BOUND
-// spelling `[] | [x, r..]` is ill-typed first, by same-binds.)
+// `[] | [_, ..]` covers every length; the bound spelling `[] | [x, r..]`
+// is ill-typed by same-binds.
 const OR_SLICE_LADDER: &str = r#"
 {
   let a = [1, 2, 3];
@@ -1891,8 +1659,7 @@ run!(or_slice_ladder, OR_SLICE_LADDER, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "ok")
 });
 
-// A different alternative matches on different cycles; the shared
-// BindIds deliver each cycle's leaf (1 + 2 + 3 = 6).
+// A different alternative matches on different cycles (1 + 2 + 3 = 6).
 const OR_REACTIVE: &str = r#"
 {
   let x = array::iter([(0, 1), (2, 0), (0, 3)]);
@@ -1905,7 +1672,7 @@ const OR_REACTIVE: &str = r#"
 
 run!(or_reactive, OR_REACTIVE, |v: Result<&Value>| { matches!(v, Ok(Value::I64(6))) });
 
-// Same-binds: every alternative must bind the same names.
+// Every alternative must bind the same names.
 const OR_SAME_BINDS_ERR: &str = r#"
 select 1 { 1 | x => 0, _ => 1 }
 "#;
@@ -1913,8 +1680,7 @@ select 1 { 1 | x => 0, _ => 1 }
 run!(or_same_binds_err, OR_SAME_BINDS_ERR, |v: Result<&Value>| v.is_err();
  graphix_package_core::testing::FuseExpect::None);
 
-// Exactly-equal types: y cannot be i64 in one alternative and string
-// in another (the unified cell makes the second alternative type-dead).
+// Payload binds must have exactly equal types across alternatives.
 const OR_EQUAL_TYPES_ERR: &str = r#"
 select (1, "a") { (1, y) | (y, "b") => 1, _ => 0 }
 "#;
@@ -1937,9 +1703,7 @@ select 1 { _ | 1 => 0 }
 run!(or_dead_alt_err, OR_DEAD_ALT_ERR, |v: Result<&Value>| v.is_err();
  graphix_package_core::testing::FuseExpect::None);
 
-// P3 zero-residue pins (design/or_patterns.md): the whole or-select
-// compiles native — alternatives chain into one done block, the first
-// match's binds ride the block params to the shared BindIds.
+// Zero-residue: the whole or-select compiles native.
 const OR_NATIVE: &str = r#"
 {
   let p = (1, 2);
@@ -1950,9 +1714,7 @@ const OR_NATIVE: &str = r#"
 run!(or_native, OR_NATIVE, |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
 graphix_package_core::testing::FuseExpect::Jit);
 
-// Owned binds through the chain: the variant payload clones out on the
-// matched alternative's path, forwards to the done block, and the
-// arm-exit scope drops free it (the select-arm-bind-leak discipline).
+// Owned binds through the or-chain are dropped at arm exit.
 const OR_OWNED_BINDS: &str = r#"
 {
   let v: [`A(Array<i64>), `B(Array<i64>), `C] = `B([1, 2, 3]);
@@ -1964,12 +1726,8 @@ run!(or_owned_binds, OR_OWNED_BINDS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The guard-prologue path: a non-schedule-free guard (calls) on an
-// or-arm makes the prologue run the chain with `nomatch: None` — on a
-// `C scrutinee NO alternative matches, so the placeholder feed (owned
-// drop-safe defaults behind TAINT|STALE) runs every invocation and the
-// guard evaluates over bottom binds without being consulted (the arm's
-// structure failed — the consulted-guard rule).
+// A calling guard on an or-arm runs the guard prologue; on a `C
+// scrutinee no alternative matches and the guard is not consulted.
 const OR_GUARD_PROLOGUE: &str = r#"
 {
   let lim = 2;
@@ -1982,10 +1740,8 @@ run!(or_guard_prologue, OR_GUARD_PROLOGUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The distribution law (2026-08-31, the admin-TUI panel screens): a
-// scrutinee member whose variant payload is a UNION is exhausted by
-// per-member arms — `[`P(A), `P(B)]` covers `P([A, B])` — and the
-// shape fuses.
+// A scrutinee member whose variant payload is a union is exhausted by
+// per-member arms: `[`P(A), `P(B)]` covers `P([A, B])`; fuses.
 const SELECT_VARIANT_UNION_PAYLOAD: &str = r#"
 {
   type Panel = [`Q, `D, `R];
@@ -2007,9 +1763,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Multi-argument distribution is sound only through ONE position:
-// rectangular arms (every candidate covers the other position in
-// full) pool their claims.
+// Multi-argument distribution pools through one position: rectangular
+// arms cover.
 const SELECT_VARIANT_UNION_RECT: &str = r#"
 {
   type T = [`P([`A, `B], [`X, `Y]), `N];
@@ -2029,9 +1784,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// The non-rectangular (diagonal) arm set claims nothing: `P(`A, `Y)
-// matches neither arm, so coverage must still refuse without a
-// wildcard.
+// A diagonal arm set claims nothing: `P(`A, `Y) matches neither arm.
 const SELECT_VARIANT_UNION_DIAGONAL: &str = r#"
 {
   type T = [`P([`A, `B], [`X, `Y]), `N];
@@ -2051,8 +1804,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// The same law through a tuple head: two arms splitting one tuple
-// position pool their claims.
+// The same through a tuple head.
 const SELECT_TUPLE_UNION_MEMBER: &str = r#"
 {
   let v: [([`A, `B], i64), null] = (`B, 7);
@@ -2071,11 +1823,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// An @-capture in an or-arm types as the UNION of its per-alternative
-// narrowed types (Eric's ruling 2026-08-31, the admin-TUI keymaps):
-// Graphix narrows captures where Rust binds at the enum type, so the
-// old exactly-equal rule refused the form orthodox Rust code writes.
-// The capture is the whole matched value — the union is exact.
+// An @-capture in an or-arm types as the union of its per-alternative
+// narrowed types.
 const OR_CAPTURE_UNION: &str = r#"
 {
   let sel = 0;
@@ -2098,8 +1847,7 @@ run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "up")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Payload binds keep the exactly-equal rule: the body reads through
-// the slot at one type.
+// Payload binds keep the exactly-equal rule.
 const OR_PAYLOAD_UNEQUAL: &str = r#"
 {
   let v: (i64, string) = (0, "x");
@@ -2114,11 +1862,9 @@ run!(or_payload_unequal_rejected, OR_PAYLOAD_UNEQUAL, |v: Result<&Value>| {
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// An enclosing select's pattern binds are facets of one delivery:
-// arm 0 handles the key through the whole-value capture `ev`, so the
-// payload bind `k` is spent too, and the flip to arm 1 must not
-// re-raise it (2026-09-02, the admin TUI's landing screen: the
-// connect form's Enter fired with no keypress).
+// An enclosing select's pattern binds are facets of one delivery: arm 0
+// handles the key through `ev`, so `k` is spent and the flip to arm 1
+// does not re-raise it.
 const SELECT_SIBLING_BINDS_SPENT: &str = r#"
 {
   type Ev = [`Key([`Enter, `Other]), `Mouse];
@@ -2165,12 +1911,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// Ledger 11 (graphix-admin findings, 2026-09-02): a select over an
-// optional callback `[fn(..), null]` was refused — the dead-arm check
-// reported the bind arm as never matching the function member, because
-// `could_match` had no function arm at all. Fixed the same night: two
-// function types could match when their arities, labels and components
-// could.
+// A select over an optional callback `[fn(..), null]` compiles: the
+// bind arm can match the function member.
 const SELECT_OPTIONAL_FN: &str = r#"
 {
   let f: [fn(x: i64) -> i64, null] = |x: i64| x + 1;
@@ -2188,12 +1930,7 @@ async fn select_optional_fn_member_matches() -> Result<()> {
     Ok(())
 }
 
-// Ledger 14 (graphix-admin findings, 2026-09-02): bool literals pool
-// coverage per POSITION inside a composite pattern — same-shaped arms
-// cover the scrutinee's member of that shape once their literal
-// vectors cover every assignment of the positions any of them tests,
-// a bind or `_` matching both. Before, only a top-level `true`/`false`
-// pair completed a bool.
+// Bool literals pool coverage per position inside a composite pattern.
 const BOOL_PAIR_LADDER: &str = r#"
 {
   let f = |a: bool, b: bool| -> i64 select (a, b) {
@@ -2226,8 +1963,7 @@ run!(variant_bool_ladder_covers, VARIANT_BOOL_LADDER, |v: Result<&Value>| matche
     Ok(Value::I64(99))
 ); graphix_package_core::testing::FuseExpect::None);
 
-// The dead-arm twin: a wildcard behind a complete ladder is dead, the
-// same as behind a full variant set.
+// A wildcard behind a complete bool ladder is dead.
 const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
 {
   let f = |a: bool, b: bool| -> i64 select (a, b) {
@@ -2244,10 +1980,8 @@ run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, |v: Result<&Value>|
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Ledger 4 (graphix-admin findings, 2026-09-02): a destructuring
-// `let`'s siblings are facets of one delivery, the `let` twin of
-// `select_sibling_binds_spent`: arm 0 handles the pair through `a`, so
-// `b` is spent too, and the flip to arm 1 must not re-raise it.
+// A destructuring `let`'s siblings are facets of one delivery: arm 0
+// handles the pair through `a`, so `b` is spent.
 const LET_SIBLING_BINDS_SPENT: &str = r#"
 {
   let screen = 0;
@@ -2279,13 +2013,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// `never` is SYNTAX with a compile-time type (2026-09-02, ledger 2 of
-// the admin-TUI findings): bottom bare, `T` as `never<T>()`. A builtin
-// call's cell bound to bottom only at static resolution, after a select
-// had unioned its arms, so a nested select of never() arms + one call
-// typed as `['_a: _, '_b: _, string]` and had to be annotated. Now the
-// arms absorb at typecheck0: the type test below is exhaustive only if
-// `u` is exactly `string`.
+// Nested never() arms absorb at typecheck0: the type test below is
+// exhaustive only if `u` is exactly `string`.
 const NEVER_ARMS_ABSORB: &str = r#"
 {
   let m: [string, null] = "b";
@@ -2302,8 +2031,7 @@ run!(never_arms_absorb, NEVER_ARMS_ABSORB, |v: Result<&Value>| matches!(
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// `never<T>()` carries `T` where nothing else fixes the type: a binding
-// whose only initializer never arrives.
+// `never<T>()` carries `T` where nothing else fixes the type.
 const NEVER_TYPED: &str = r#"
 {
   let p = never<i64>();
@@ -2317,8 +2045,7 @@ run!(never_typed, NEVER_TYPED, |v: Result<&Value>| matches!(
     Ok(Value::I64(6))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// The arguments stay live and are consumed: a connect inside never's
-// argument list keeps writing while never itself produces nothing.
+// never's arguments stay live: a connect inside them keeps writing.
 const NEVER_ARGS_LIVE: &str = r#"
 {
   let x = 0;
@@ -2334,8 +2061,8 @@ run!(never_args_live, NEVER_ARGS_LIVE, |v: Result<&Value>| matches!(
     Ok(Value::I64(3))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A sampled write in an arm keeps the sample as its trigger: `x` is
-// 30 at step 6 (last `On` sample is step 3), not a free-running loop.
+// A sampled write in an arm keeps the sample as its trigger: `x` is 30
+// at step 6.
 const ARM_SAMPLED_WRITE_KEEPS_TRIGGER: &str = r#"
 {
   let step = 0;
@@ -2353,9 +2080,8 @@ run!(arm_sampled_write_keeps_trigger, ARM_SAMPLED_WRITE_KEEPS_TRIGGER, |v: Resul
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The compiler does not sample an ungated write on the scrutinee:
-// three `Go` deliveries write the sampled counter three times and the
-// constant once (init of the arm). `~` is how you choose per-delivery.
+// An ungated write is not sampled on the scrutinee: three `Go`
+// deliveries write the sampled counter three times, the constant once.
 const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
 {
   let step = 0;
@@ -2393,10 +2119,8 @@ run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// `e ~! v` is `v` at each fire of `e` and bottom when `v` is bottom —
-// no bank. Three triggers arrive before `v` exists: `~` banks them and
-// pays all three when `v` arrives (three writes); `~!` drops them and
-// samples only the trigger that finds `v` present (one write).
+// `~` banks triggers that find `v` absent (three writes); `~!` drops
+// them (one write).
 const STRICT_SAMPLE_NO_BANK: &str = r#"
 {
   let step = 0;
@@ -2417,9 +2141,8 @@ run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A write under `select chosen` where `chosen` starts as `never()`:
-// the arm sleeps (it has a `<-`), wakes on the first delivery, and
-// the nested confirm write fires. The admin TUI's uninstall confirm.
+// A write arm under a scrutinee that starts as `never()` wakes on the
+// first delivery and the nested write fires.
 const ARM_WRITE_FROM_NEVER: &str = r#"
 {
   let step = 0;
@@ -2450,8 +2173,8 @@ run!(arm_write_from_never, ARM_WRITE_FROM_NEVER, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A skip-sleep (pure) arm over a delayed scrutinee still computes on
-// first take: no init-prime, no wake. The admin TUI's action-list title.
+// A pure (skip-sleep) arm over a delayed scrutinee computes on first
+// take.
 const SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE: &str = r#"
 {
   let step = 0;

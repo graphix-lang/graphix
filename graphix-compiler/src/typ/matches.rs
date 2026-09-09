@@ -279,12 +279,6 @@ impl Type {
                 }
                 Ok(())
             }
-            // A constructor application (`fn(c: Collection)` elaborates
-            // both sides to `App('#c, '_elem)`) matches component-wise —
-            // without this arm the pair fell through to the catch-all
-            // and an INTERFACE-DECLARED Collection-generic fn could
-            // never compile (found by gen-check the day the generator
-            // learned the vocabulary: collection-generic-call 0/8).
             (Self::App(c0, a0), Self::App(c1, a1)) => {
                 c0.sig_matches_int(env, c1, tvar_map, hist)?;
                 a0.sig_matches_int(env, a1, tvar_map, hist)
@@ -298,17 +292,8 @@ impl Type {
                 })
             }
             (sig_type, Self::TVar(impl_tv)) => {
-                // A BOUND impl tvar is a solved inference fact — the
-                // signature's concrete choice must match it
-                // structurally. Without this, an impl inferred
-                // fn(f64) -> f64 slipped under a `val: fn(i64) -> i64`
-                // sig because its formals are cells: this arm recorded
-                // the instantiation and returned Ok, and the mismatch
-                // was previously caught only by the retired mixed-arith
-                // UNION rtype hitting the catch-all — accidentally
-                // (dynamic_module1, homogeneous-arith fallout
-                // 2026-07-12). Clone the binding out before recursing
-                // (lock discipline).
+                // A bound impl tvar is a solved fact: the signature's
+                // concrete type must match its binding structurally.
                 let bound = impl_tv.read().typ.read().typ.clone();
                 if let Some(b) = bound {
                     return sig_type.sig_matches_int(env, &b, tvar_map, hist);

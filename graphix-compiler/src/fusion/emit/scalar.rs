@@ -38,8 +38,7 @@ pub(super) fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
     })
 }
 
-/// Map an element [`PrimType`] to the `graphix_valarray_get_<T>`
-/// helper symbol name. Used by ArrayGet / TupleGet lowering.
+/// Map an element [`PrimType`] to the `graphix_valarray_get_<T>` helper.
 pub(super) fn valarray_get_helper(p: PrimType) -> Result<&'static str> {
     Ok(match p {
         PrimType::I8 => "graphix_valarray_get_i8",
@@ -56,8 +55,6 @@ pub(super) fn valarray_get_helper(p: PrimType) -> Result<&'static str> {
     })
 }
 
-/// Map a struct field [`PrimType`] to the `graphix_struct_get_<T>`
-/// helper symbol name.
 /// The helper that reads a Graphix-minted abstract value's payload
 /// (`.0`) at the representation's shape.
 pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
@@ -90,6 +87,7 @@ pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
     })
 }
 
+/// Map a struct field [`PrimType`] to the `graphix_struct_get_<T>` helper.
 pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
     Ok(match p {
         PrimType::I8 => "graphix_struct_get_i8",
@@ -106,11 +104,9 @@ pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
     })
 }
 
-/// Map an element [`Type`] to its element-read helper symbol —
-/// primitive (`get_<prim>`), String (`get_arcstr`), composite
-/// (`get_array`, owned ValArray bits), or value-shape (`get_value`, a
-/// two-word `Value`). `struct_access` picks the `struct_get_*` (two-
-/// level kv-pair read) family over the flat `valarray_get_*` family.
+/// Map an element [`Type`] to its element-read helper by ABI kind.
+/// `struct_access` picks the `struct_get_*` (kv-pair read) family over
+/// the flat `valarray_get_*` family.
 pub(super) fn element_read_helper(
     elem: &Type,
     struct_access: bool,
@@ -152,12 +148,8 @@ pub(super) fn element_read_helper(
     })
 }
 
-/// Emit an element read: `arr_ptr[idx]` (or struct field) of the given
-/// element `Type`, dispatching to the right `..._get_*` helper. The
-/// result is OWNED (fresh box / refcount-bumped clone). Returns a
-/// `CompiledExpr` (disc + payload) whose disc tag marks a value-shape
-/// element (two-register Value) vs a scalar / string / composite-pointer
-/// element — one routine serves both the scalar and value-shape reads.
+/// Emit an element read `arr_ptr[idx]` (or struct field) of element
+/// type `elem`. The result is owned (fresh box or refcount-bumped clone).
 pub(super) fn compile_element_read(
     b: &mut FunctionBuilder,
     arr_ptr: ClifValue,
@@ -173,17 +165,14 @@ pub(super) fn compile_element_read(
         .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
     if kernel_abi::is_value_shape(elem) {
-        // Value-shape element read returns two words (disc, payload).
         let (r0, r1) = {
             let r = b.inst_results(call);
             (r[0], r[1])
         };
         Ok(CompiledExpr::new(r0, r1))
     } else {
-        // Scalar / string / composite element read returns one word.
         let r0 = b.inst_results(call)[0];
-        // The element read is untainted (a valid array element); the disc
-        // is a const taint-carrier matching the element kind.
+        // An element read is never tainted; the disc only carries the kind.
         let disc = match kernel_abi::abi_kind(elem) {
             Some(AbiKind::Scalar(p)) => scalar_disc(b, p),
             Some(AbiKind::String) => b.ins().iconst(types::I64, value_disc::STRING),
@@ -193,9 +182,7 @@ pub(super) fn compile_element_read(
     }
 }
 
-/// Widen a CLIF value to i64. Helpers expect a usize index; if the
-/// caller's index expression was narrower (e.g. `i32` from a
-/// `cast`), we zero/sign extend here.
+/// Widen an integer CLIF value to the i64 index the helpers expect.
 pub(super) fn widen_to_i64(
     b: &mut FunctionBuilder,
     v: ClifValue,
@@ -215,11 +202,9 @@ pub(super) fn widen_to_i64(
     })
 }
 
-/// Promote a scalar CLIF value to the 8-byte payload word of a
-/// `repr(u64)` Value. Integers smaller than i64 get zero/sign-
-/// extended (we use unsigned `uextend` because the payload's
-/// interpretation is fixed by the discriminant; truncation back
-/// preserves bits). f32/f64 bitcast through their integer mirror.
+/// Promote a scalar CLIF value to the 8-byte payload word of a Value,
+/// following `pack_value_to_u64`: signed ints sign-extend, unsigned
+/// ints and bool zero-extend, floats bitcast through their integer mirror.
 // CR claude for eric: `pack_value_to_u64` (the Rust twin) SIGN-extends
 // signed prims, so a kernel-produced payload word differs from a
 // runtime-packed one in the upper bytes. Harmless today (every
@@ -233,13 +218,6 @@ pub(super) fn scalar_to_payload_i64(
 ) -> ClifValue {
     match p {
         PrimType::I64 | PrimType::U64 => v,
-        // Signed narrow ints SIGN-extend — the payload word must be
-        // the genuine Value encoding (`pack_value_to_u64`'s rules:
-        // `*x as i64 as u64`), per design/unified_value_abi.md's "the
-        // payload word IS the Value encoding" invariant (C1 ruling,
-        // 2026-07-20; previously uextend — harmless to consumers,
-        // which truncate, but a raw-word compare or memo key would
-        // have diverged from a runtime-packed twin).
         PrimType::I8 | PrimType::I16 | PrimType::I32 => b.ins().sextend(types::I64, v),
         PrimType::U8 | PrimType::U16 | PrimType::U32 | PrimType::Bool => {
             b.ins().uextend(types::I64, v)
@@ -263,8 +241,7 @@ pub(super) fn scalar_to_payload_i64(
 }
 
 /// The `graphix_string_buf_push_*` helper that Display-renders a
-/// scalar of `p` into a Concat / string-interpolate buffer. Used by
-/// [`emit_string_interpolate_node`].
+/// scalar of `p` into a string buffer.
 pub(super) fn string_buf_push_helper(p: PrimType) -> &'static str {
     match p {
         PrimType::I64 => "graphix_string_buf_push_i64",
@@ -281,11 +258,9 @@ pub(super) fn string_buf_push_helper(p: PrimType) -> &'static str {
     }
 }
 
-/// Lower a scalar [`Value`] constant of the given `prim` to a CLIF
-/// `iconst`/`f32const`/`f64const`. `prim` comes from the constant's
-/// frozen type; `v` must be the matching scalar (`Z*`/`V*`
-/// accepted for their fixed-width prim). Returns `Err` otherwise (a
-/// malformed kernel — de-fuses to the node-walk instead of panicking).
+/// Lower a scalar [`Value`] constant of `prim` to a CLIF constant.
+/// `v` must be the matching scalar (`Z*`/`V*` accepted for their
+/// fixed-width prim); anything else is `Err`, which de-fuses.
 pub(super) fn compile_const(
     b: &mut FunctionBuilder,
     v: &Value,
@@ -345,10 +320,8 @@ pub(super) fn compile_const(
     })
 }
 
-/// A zero / false constant of the given prim type. Used for the
-/// `pending_exit` block's sentinel return value (never observed —
-/// `Kernel::update` discards the result on the pending path — but
-/// CLIF needs a well-typed value of the right width).
+/// A zero / false constant of `p`: the well-typed sentinel for a
+/// return whose value is never observed.
 pub(super) fn zero_const(b: &mut FunctionBuilder, p: PrimType) -> ClifValue {
     match p {
         PrimType::I8 | PrimType::U8 | PrimType::Bool => b.ins().iconst(types::I8, 0),
@@ -388,21 +361,13 @@ pub(super) fn compile_bin(
             }
         }
     } else {
-        // float
         match op {
             BinOp::Add => b.ins().fadd(l, r),
             BinOp::Sub => b.ins().fsub(l, r),
             BinOp::Mul => b.ins().fmul(l, r),
             BinOp::Div => b.ins().fdiv(l, r),
             BinOp::Mod => {
-                // Cranelift has no `frem` — float `%` would need an fmod
-                // libcall, and `compile_bin` has no module handle to emit
-                // one here. Bail so the kernel falls back to the
-                // interpreter (which computes float `%` correctly),
-                // instead of emitting a runtime trap that crashed the
-                // whole runtime. (The trap was a latent crash found by
-                // graphix-fuzz on `f64:7.0 % f64:3.0`; wiring the fmod
-                // libcall so it JITs is a follow-up.)
+                // Cranelift has no `frem`; refuse so the kernel node-walks.
                 let _ = (l, r);
                 return Err(anyhow!(
                     "JIT: float modulo unsupported (no cranelift frem); \
@@ -421,27 +386,19 @@ pub(super) fn compile_cmp(
     r: ClifValue,
 ) -> ClifValue {
     if operand_typ.is_float() {
-        // Float comparison uses graphix's TOTAL order, matching
-        // `Value::partial_cmp` / the node-walk: NaN == NaN, and NaN sorts
-        // below every non-NaN value. `FloatCC::Equal`/`LessThan`/etc. are
-        // the IEEE *ordered* predicates (any NaN operand → false); a NaN
-        // is the only value unordered with itself, so `fcmp Unordered x x`
-        // tests "x is NaN". fcmp yields an I8 0/1, so `bxor_imm(v, 1)` is
-        // logical NOT. We build `eq` and `lt` under the total order and
-        // derive the rest.
+        // Graphix's total order (`Value::partial_cmp`): NaN == NaN and
+        // NaN sorts below every non-NaN. `fcmp Unordered x x` tests NaN;
+        // fcmp yields an I8 0/1, so `bxor_imm(v, 1)` is NOT.
         let l_nan = b.ins().fcmp(FloatCC::Unordered, l, l);
         let r_nan = b.ins().fcmp(FloatCC::Unordered, r, r);
         let not_l_nan = b.ins().bxor_imm(l_nan, 1);
         let not_r_nan = b.ins().bxor_imm(r_nan, 1);
-        // eq: ordered-equal, OR both NaN.
         let ord_eq = b.ins().fcmp(FloatCC::Equal, l, r);
         let both_nan = b.ins().band(l_nan, r_nan);
         let eq = b.ins().bor(ord_eq, both_nan);
-        // lt: ordered IEEE l<r, OR (l is NaN and r is not) since NaN is least.
         let ord_lt = b.ins().fcmp(FloatCC::LessThan, l, r);
         let nan_lt = b.ins().band(l_nan, not_r_nan);
         let lt = b.ins().bor(ord_lt, nan_lt);
-        // gt: ordered IEEE l>r, OR (r is NaN and l is not).
         let ord_gt = b.ins().fcmp(FloatCC::GreaterThan, l, r);
         let nan_gt = b.ins().band(r_nan, not_l_nan);
         let gt = b.ins().bor(ord_gt, nan_gt);
@@ -450,13 +407,11 @@ pub(super) fn compile_cmp(
             CmpOp::Ne => b.ins().bxor_imm(eq, 1),
             CmpOp::Lt => lt,
             CmpOp::Gt => gt,
-            CmpOp::Lte => b.ins().bxor_imm(gt, 1), // not gt
-            CmpOp::Gte => b.ins().bxor_imm(lt, 1), // not lt
+            CmpOp::Lte => b.ins().bxor_imm(gt, 1),
+            CmpOp::Gte => b.ins().bxor_imm(lt, 1),
         }
     } else {
         let cc = if operand_typ.is_signed() || operand_typ == PrimType::Bool {
-            // Bool comparisons are fine via signed (or unsigned) — but
-            // signed eq/ne behaves identically on an I8 holding 0/1.
             match op {
                 CmpOp::Eq => IntCC::Equal,
                 CmpOp::Ne => IntCC::NotEqual,
@@ -486,7 +441,6 @@ pub(super) fn compile_cast(
     dst: PrimType,
 ) -> ClifValue {
     if prim_to_clif(src) == prim_to_clif(dst) && src.is_float() == dst.is_float() {
-        // Same underlying CLIF type and same float/int family — no-op.
         return v;
     }
     let dst_ty = prim_to_clif(dst);
@@ -502,14 +456,10 @@ pub(super) fn compile_cast(
         } else if src_size > dst_size {
             b.ins().ireduce(dst_ty, v)
         } else {
-            // Same size — bit reinterpretation only.
             v
         }
     } else if src.is_integer() && dst.is_float() {
-        // x64 int→float converts need a 32/64-bit source — widen a
-        // narrow int first (the backend has no encoding for an i8/i16
-        // fcvt source; sibling of the narrow fcvt-to-int unreachable
-        // below).
+        // x64 has no fcvt encoding for an i8/i16 source.
         let v = if src_size < 4 {
             if src.is_signed() {
                 b.ins().sextend(types::I32, v)
@@ -525,14 +475,9 @@ pub(super) fn compile_cast(
             b.ins().fcvt_from_uint(dst_ty, v)
         }
     } else if src.is_float() && dst.is_integer() {
-        // Saturating to match Rust `as` semantics on out-of-range.
-        // The x64 backend can only encode fcvt to i32/i64
-        // (`fcvt_to_uint_sat.i8` hit cranelift's emit unreachable —
-        // jit_generated_sweep, `cast<u8>(f64)$`), so narrow targets
-        // convert at i32, clamp to the TARGET's range (the i32-width
-        // saturation alone would wrap 300 → u8:44 where Rust `as` —
-        // and the node-walk's `Value::cast` — clamp to 255), then
-        // reduce.
+        // Saturate like Rust `as`. x64 encodes fcvt only to i32/i64, so
+        // narrow targets convert at i32, clamp to the target's range,
+        // then reduce.
         if dst_size < 4 {
             if dst.is_signed() {
                 let wide = b.ins().fcvt_to_sint_sat(types::I32, v);
@@ -561,14 +506,9 @@ pub(super) fn compile_cast(
             b.ins().fdemote(dst_ty, v)
         }
     } else {
-        // bool ↔ integer/float — `emit_cast_node` refuses these
-        // before emitting; reaching this branch means a caller
-        // bypassed that gate.
         unreachable!("compile_cast: bool casts should be rejected before emission");
     }
 }
-
-// ─── Type plumbing ───────────────────────────────────────────────
 
 pub(super) fn prim_to_clif(p: PrimType) -> ClifType {
     match p {
@@ -581,8 +521,7 @@ pub(super) fn prim_to_clif(p: PrimType) -> ClifType {
     }
 }
 
-/// Width in bytes of the underlying CLIF type — used to pick between
-/// extend / reduce / promote / demote in casts.
+/// Width in bytes of the underlying CLIF type.
 pub(super) fn clif_size(p: PrimType) -> u32 {
     match p {
         PrimType::I8 | PrimType::U8 | PrimType::Bool => 1,
@@ -592,11 +531,8 @@ pub(super) fn clif_size(p: PrimType) -> u32 {
     }
 }
 
-/// Cast a u64 (typically the raw bits of a scalar primitive packed
-/// via [`pack_value_to_u64`] or returned from a call trampoline) to a
-/// CLIF value of the target prim type. Integer truncations use
-/// `ireduce`; floats route through a same-width integer then
-/// `bitcast`.
+/// Narrow a `pack_value_to_u64` payload word to a CLIF value of prim
+/// type `p`; floats bitcast from their same-width integer.
 pub(super) fn cast_u64_to_prim(
     b: &mut FunctionBuilder,
     raw: ClifValue,

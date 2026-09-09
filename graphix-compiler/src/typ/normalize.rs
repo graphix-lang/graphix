@@ -8,17 +8,10 @@ use smallvec::SmallVec;
 use std::{iter, mem::Discriminant};
 use triomphe::Arc;
 
-/// Per-pass [`Type::normalize`] state. `cells` = visited TVar cells
-/// (the first visit normalizes the binding in place; one cell is
-/// reachable along many paths, and re-walking was exponential — soak
-/// jul06h). `memo` = pointer-identity cache of composite results, so a
-/// subtree SHARED along many paths is processed once per pass (a DAG
-/// walk, not a tree walk). Keyed by (variant discriminant, content Arc
-/// address(es)) and restricted to variants whose Arcs ARE the node's
-/// whole content — `Ref`/`Variant` carry extra fields and are skipped
-/// (their composite children still hit their own entries). Sound
-/// per-pass: cell writes happen once per cell (`cells`), so a shared
-/// subtree normalizes identically at every occurrence within the pass.
+/// Per-pass [`Type::normalize`] state: `cells` are the visited TVar
+/// cells (the first visit normalizes the binding in place); `memo` is a
+/// pointer-identity cache of composite results, keyed by (variant,
+/// content Arc address) for variants whose Arcs are their whole content.
 pub(super) struct NormCx {
     pub(super) cells: LPooled<nohash::IntSet<usize>>,
     memo: LPooled<AHashMap<NormKey, Option<Type>>>,
@@ -32,18 +25,10 @@ impl NormCx {
     }
 }
 
-/// Per-pass [`Type::resolve_tvars`] state — the walk is a DAG traversal,
-/// not a tree copy. `done` = completed snapshots of BOUND cells (one
-/// cell reached along many paths through the shared expansion snapshots
-/// once; re-walking materialized tree-scale copies — the widget-typed
-/// instance signatures hit 40GB, 2026-07-13). `fresh` = the pass's ONE
-/// fresh mint per UNBOUND source cell, preserving the source's alias
-/// topology (the same discipline as `reset_tvars`' cell-keyed map —
-/// per-occurrence minting was an artifact of the tree walk, not a
-/// contract). `in_progress` = the cycle guard (a cell revisited while
-/// its own binding expands snapshots as fresh unbound, as before).
-/// `memo` = pointer-identity cache of composite results — sound because
-/// cells resolve identically within the pass by construction.
+/// Per-pass [`Type::resolve_tvars`] state: `done` holds completed
+/// snapshots of bound cells, `fresh` the one fresh mint per unbound
+/// source cell (preserving alias topology), `in_progress` the cycle
+/// guard, `memo` a pointer-identity cache of composite results.
 pub(super) struct ResolveTvarsCx {
     done: LPooled<nohash::IntMap<usize, Type>>,
     fresh: LPooled<nohash::IntMap<usize, TVar>>,
@@ -91,11 +76,9 @@ impl Type {
         Self::flatten_set_tracked(set).0
     }
 
-    /// [`Self::flatten_set`] reporting whether it CHANGED anything
-    /// relative to a `Type::Set` of the input members in input order
-    /// (`false` lets [`Self::normalize_int`] keep the original shared
-    /// members instead of rebuilding an identical set). Conservative:
-    /// `true` may be reported for an ultimately-identical result.
+    /// [`Self::flatten_set`] reporting whether it changed anything
+    /// relative to a `Type::Set` of the input members in input order.
+    /// Conservative: `true` may be reported for an identical result.
     fn flatten_set_tracked(set: impl IntoIterator<Item = Self>) -> (Self, bool) {
         let init: Box<dyn Iterator<Item = Self>> = Box::new(set.into_iter());
         let mut iters: LPooled<Vec<Box<dyn Iterator<Item = Self>>>> =
@@ -117,21 +100,15 @@ impl Type {
                         iters.push(Box::new(v.into_iter()))
                     }
                     Some(Type::Any) => return (Type::Any, true),
-                    // ⊥ ∪ X = X: a ⊥ member (a never() select arm, a
-                    // ⊥-settled cell after resolve_tvars) contributes
-                    // nothing to a union — drop it. An ALL-⊥ set is ⊥
-                    // itself (see the exit match).
+                    // ⊥ ∪ X = X; an all-⊥ set is ⊥ (the exit match).
                     Some(Type::Bottom) => {
                         changed = true;
                         saw_bottom = true
                     }
                     Some(t) => {
-                        // `acc` is merge-saturated (invariant maintained
-                        // here), so only the INCOMING element — or the
-                        // result of merging it — can enable a new merge:
-                        // re-run for the merged value alone instead of
-                        // restarting the whole sweep from (0, 0) (the
-                        // restart made saturation cubic in set width).
+                        // `acc` is merge-saturated, so only the incoming
+                        // element (or its merge result) can enable a new
+                        // merge.
                         let mut incoming = t;
                         'merge: loop {
                             for j in 0..acc.len() {
@@ -162,8 +139,8 @@ impl Type {
     }
 
     /// Map `f` over a shared slice, rebuilding only if some element
-    /// changed (`None` from `f` = element unchanged). `None` = nothing
-    /// changed, keep the original.
+    /// changed (`None` from `f` means unchanged). `None` when nothing
+    /// changed.
     pub(crate) fn cow_slice<T: Clone>(
         orig: &[T],
         mut f: impl FnMut(&T) -> Option<T>,
@@ -186,21 +163,10 @@ impl Type {
         rebuilt.map(|mut v| Arc::from_iter(v.drain(..)))
     }
 
-    /// Snapshot the type with every bound TVar replaced by its concrete
-    /// binding (recursively). Unbound TVars become fresh named TVars —
-    /// ONE fresh cell per source cell per pass, preserving the source's
-    /// alias topology (the same discipline as `reset_tvars`). This
-    /// produces a snapshot that is independent of the original TVar
-    /// cells. The walk is a DAG traversal: TVar-FREE subtrees are
-    /// returned SHARED (the original Arcs), bound cells snapshot once
-    /// per pass, and shared composites are pointer-memoized — cell
-    /// independence only concerns cells, and re-walking shared structure
-    /// per path materialized tree-scale copies (40GB on widget-typed
-    /// instance signatures, 2026-07-13). A cell revisited while its own
-    /// binding expands snapshots as a fresh unbound (cycle guard —
-    /// defense in depth: the cycle VECTORS are closed at
-    /// `TVar::{alias, copy, settle}`, but a walk this hot must not hang
-    /// on one that slips through).
+    /// Snapshot the type with every bound TVar replaced by its binding,
+    /// recursively; unbound TVars become fresh cells, one per source
+    /// cell, preserving alias topology. The result shares no cell with
+    /// the original; TVar-free subtrees are returned shared.
     pub fn resolve_tvars(&self) -> Self {
         self.resolve_tvars_seen(&mut ResolveTvarsCx::take())
             .unwrap_or_else(|| self.clone())
@@ -299,23 +265,14 @@ impl Type {
         r
     }
 
-    /// Normalization walks CELLS as well as structure, and one cell can
-    /// be reachable along many paths (aliased tvars share a cell;
-    /// entangled fn-sig unions repeat cells across members), so the
-    /// walk carries a visited set keyed by cell address: without it the
-    /// re-walk was exponential in the sharing depth — a polymorphic
-    /// builtin used as a first-class array element wedged the whole
-    /// compile (soak jul06h), ASLR-order dependent via the Set sort.
-    /// A revisited cell is returned as-is; the first visit normalizes
-    /// its binding.
+    /// Normalize structure and the bindings of every reachable cell;
+    /// each cell is normalized once per pass.
     pub fn normalize(&self) -> Self {
         self.normalize_int(&mut NormCx::take()).unwrap_or_else(|| self.clone())
     }
 
-    /// `None` = already normal — the caller keeps the original (shared).
-    /// A `TVar` normalizes its binding IN PLACE inside the shared cell
-    /// (`TVar::normalize_int`) and is therefore always `None` as a
-    /// value: the node still wraps the same cell.
+    /// `None` when already normal. A `TVar` normalizes its binding in
+    /// place inside the shared cell and is therefore always `None`.
     pub(super) fn normalize_int(&self, cx: &mut NormCx) -> Option<Self> {
         crate::stack::ensure_sufficient(|| self.normalize_int_inner(cx))
     }
@@ -392,9 +349,7 @@ impl Type {
     }
 
     fn merge(&self, t: &Self) -> Option<Self> {
-        // Equality modulo set-flattening at a NESTED position. Flatten
-        // only when a side actually is a Set — flattening (and cloning)
-        // both sides on every comparison dominated merge on large types.
+        // Equality modulo set-flattening at a nested position.
         fn flat_eq(t0: &Type, t1: &Type) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
@@ -550,15 +505,7 @@ impl Type {
                     None
                 }
             }
-            // STRICT tvar identity (`union_identical`, the setops
-            // union rule): `TVar::eq` calls two distinct UNBOUND cells
-            // equal (None == None) and default-minted cells share a
-            // name, so the old `tv0 == tv1` guard merged a select
-            // union's base-arm cell into the rec-return cell — the
-            // dropped cell's future binding vanished and the survivor
-            // terminal-settled ⊥ (jul17c katana divergence 000001:
-            // `[i64, ⊥]` elem flattened to i64 and the kernel compared
-            // a Fn element's payload bits as i64).
+            // Strict tvar identity: two distinct unbound cells never merge.
             (t0v @ Type::TVar(_), t1v @ Type::TVar(_))
                 if super::setops::union_identical(t0v, t1v) =>
             {

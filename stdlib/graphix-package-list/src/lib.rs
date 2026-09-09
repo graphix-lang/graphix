@@ -26,8 +26,6 @@ fn list_to_array(list: &Value) -> Option<Value> {
     to_array(list).map(Value::Array)
 }
 
-// ── EvalCached implementations ───────────────────────────────────
-
 fn fc_nil(_args: &[Value]) -> Option<Value> {
     Some(make_nil())
 }
@@ -519,8 +517,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
 
 type Unzip = CachedArgs<UnzipEv>;
 
-// ── Custom BuiltIn/Apply implementations ─────────────────────────
-
 #[derive(Debug)]
 struct ListIterBI(BindId, ExprId, TagValue);
 
@@ -573,10 +569,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         self.2 = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Delivery rides set_var (async); the wake registration is
-        // sleep's business, never reset_replay's.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -662,13 +655,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The queue and trigger debt are semantic buffering (async
-        // delivery) — sleep's clearing is the arm-rewake restart.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
-
-// ── Package registration ─────────────────────────────────────────
 
 graphix_derive::defpackage! {
     builtins => [

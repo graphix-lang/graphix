@@ -13,38 +13,20 @@ pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
 }
 
-/// The fusion outcome a [`run!`] fixture asserts for its program.
-/// Checked bidirectionally in the `jit` mode: a fixture that fuses
-/// when it shouldn't (or fails to fuse / JIT when it should) fails the
-/// test, so the suite is a live, drift-detecting map of the fusion
-/// frontier.
-///
-/// Fusion is JIT-only. A kernel that
-/// can't JIT-compile is never spliced; its original nodes node-walk
-/// instead. So there is no "fuses but runs on the interpreter" state:
-/// a program either fuses + JITs (`Jit`) or doesn't fuse at all
-/// (`None`).
+/// The fusion outcome a [`run!`] fixture asserts for its program,
+/// checked bidirectionally in `jit` mode: fusing when it shouldn't, or
+/// failing to when it should, fails the test.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FuseExpect {
-    /// The program builds a fused kernel AND the JIT compiles + runs
-    /// it natively. `FUSION > 0 && JIT > 0` in `jit` mode.
+    /// The program builds a fused kernel and the JIT runs it natively.
     Jit,
-    /// The program produces no fused kernel at all — async/IO edges,
-    /// error-expecting fixtures, language-feature tests with no sync
-    /// subgraph to fuse, or sync subgraphs the JIT can't lower yet
-    /// (which fall back to the node-walk). `FUSION == 0`.
+    /// The program produces no fused kernel at all.
     None,
 }
 
 /// Assert the observed fusion counters match `expect`. Called after a
-/// fixture runs, in the `jit` mode only. Reads the per-thread
-/// `FUSION_INVOCATIONS` / `JIT_INVOCATIONS` counters (reset after
-/// runtime init, so they reflect only the fixture's own program).
-///
-/// A fused kernel always JITs (`fuse()`
-/// only splices a kernel it could JIT-compile), so `FUSION > 0` and
-/// `JIT > 0` move together. A kernel that can't JIT isn't spliced —
-/// FUSION stays 0 and the program node-walks.
+/// fixture runs, in `jit` mode only; the per-thread counters are reset
+/// after runtime init so they reflect only the fixture's own program.
 #[cfg(debug_assertions)]
 pub fn check_fuse_expectation(expect: FuseExpect) {
     use graphix_compiler::fusion::emit_helpers::{fusion_invocations, jit_invocations};
@@ -125,11 +107,9 @@ where
     init_with_flags_and_setup(sub, register, resolvers, BitFlags::empty(), setup).await
 }
 
-/// Like [`init_with_setup`] but lets the caller pin the
-/// compile-time flags (`CFlag::FusionDisabled`,
-/// etc.) the runtime will pass to every `compile()` it dispatches.
-/// Used by the [`run!`] macro to drive the same fixture through
-/// the interp / jit modes.
+/// Like [`init_with_setup`] but lets the caller pin the compile-time
+/// flags (`CFlag::FusionDisabled`, etc.) the runtime passes to every
+/// `compile()` it dispatches.
 pub async fn init_with_flags_and_setup<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
@@ -145,11 +125,8 @@ where
         >,
     ),
 {
-    // Depth is bounded by memory; give every test runtime a stack budget
-    // so a fixture that recurses without end aborts (design/
-    // recursive_activations.md §5) instead of eating the box — a kernel
-    // grows stack at hundreds of MB/s. Generous enough for the 2M-deep
-    // fuzz probes; an explicit GRAPHIX_STACK_BUDGET still wins.
+    // A fixture that recurses without end must abort instead of
+    // eating the box; an explicit GRAPHIX_STACK_BUDGET still wins.
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
@@ -158,9 +135,7 @@ where
 
 /// Like [`init_with_flags_and_setup`] but builds an **lsp_mode** runtime —
 /// the `check` path, which compiles to verify types and then deletes the
-/// nodes without ever executing them. Used to test that fusion runs, and
-/// never panics, in the check/LSP path (fusion is a compile-time pass, so
-/// it runs during a check even though no kernel is ever executed).
+/// nodes without ever executing them.
 pub async fn init_lsp_mode<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
@@ -196,10 +171,8 @@ where
     ),
 {
     let _ = env_logger::try_init();
-    // No netidx: the runtime is network-free since the extraction.
-    // Tests that use sys::net (or the gui data_table) share ONE
-    // process-internal netidx materialized on demand by NetState
-    // (NetConfig defaults to Internal when nothing is seeded).
+    // Nothing seeds NetConfig, so tests that touch sys::net share one
+    // process-internal netidx materialized on demand.
     let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new())?;
     let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
@@ -275,11 +248,9 @@ where
     }
 }
 
-/// Like [`eval`], but for a REACTIVE program that CONVERGES over several
-/// cycles (a `<-` connect schedules updates for later cycles, which `eval`'s
-/// first-update return can't observe). Collects updates for a brief window
-/// and returns the LAST value of the result expr. Use for multi-cycle
-/// convergence (e.g. a fold whose init changes via `<-`).
+/// Like [`eval`], but for a program that converges over several cycles:
+/// collects updates for a brief window and returns the LAST value of the
+/// result expr.
 pub async fn eval_converged(
     code: &str,
     register: &[PackageRef],
@@ -320,10 +291,9 @@ pub async fn eval_converged(
     }
 }
 
-/// Like [`eval`], but ships the `/test.gx` module as a PACKED pre-parsed AST
-/// (`serialize::pack_module`) rather than source, so the resolver takes its
-/// `unpack_module` path instead of parsing. The result must match [`eval`] —
-/// packed-load and parse-load are the same program.
+/// Like [`eval`], but ships the `/test.gx` module as a packed pre-parsed
+/// AST (`serialize::pack_module`) rather than source, so the resolver
+/// takes its `unpack_module` path. The result must match [`eval`].
 pub async fn eval_packed(
     code: &str,
     register: &[PackageRef],
@@ -381,29 +351,17 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// Run a graphix fixture under two modes and assert the supplied
 /// predicate holds for the produced Value in each:
 ///
-/// - **interp**: `CFlag::FusionDisabled` set. Fusion is a no-op; the
-///   program runs purely through the Update-trait node-walk. Ground
-///   truth for differential testing.
-/// - **jit**: no flags set. The full fusion + JIT path. Resets the
-///   fusion + JIT invocation counters at start, runs, asserts the
-///   `FuseExpect` annotation (and the optional `; shape:` NodeShape)
-///   against the live post-fusion graph. The shape is checked here
-///   (was in the removed `fused` mode) — with the interpreter gone, a
-///   fused kernel always JITs, so the graph shape is identical whether
-///   we observe it in jit mode or not. `cfg(debug_assertions)`-gated
-///   since the counters only exist in debug builds.
+/// - **interp**: `CFlag::FusionDisabled` set; the program runs purely
+///   through the node-walk.
+/// - **jit**: the full fusion + JIT path. Asserts the `FuseExpect`
+///   annotation (and the optional `; shape:` NodeShape) against the
+///   live post-fusion graph; debug builds only, where the counters exist.
 ///
-/// There is no third "fuse but don't JIT" mode: fusion is JIT-only,
-/// so `FusionDisabled` toggles all compile-time fusion on or off.
-/// The macro expands to a child module `mod $name {
-/// fn interp() … fn jit() … }` — two `#[tokio::test(flavor =
-/// "current_thread")]` functions, one result per mode.
+/// Expands to `mod $name { fn interp() … fn jit() … }` — two
+/// `#[tokio::test(flavor = "current_thread")]` functions.
 #[macro_export]
 macro_rules! run {
-    // ── NodeShape-bearing forms (trailing `; shape: <NodeShape>`) ──
-    // Pin the compiled node-graph shape in addition to the value + fusion
-    // expectation. The spec is checked in `fused` mode (graph shape is
-    // backend-independent). Must precede the plain `; $fexpect` arms so
+    // The `; shape:` arms must precede the plain `; $fexpect` arms so
     // the longer token sequence matches first.
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; shape: $shape:expr) => {
         $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
@@ -411,7 +369,6 @@ macro_rules! run {
     ($name:ident, $code:expr, $pred:expr; shape: $shape:expr) => {
         $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
     };
-    // Default form: assert the program fuses AND JITs (`FuseExpect::Jit`).
     ($name:ident, $code:expr, $pred:expr) => {
         $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
@@ -421,10 +378,6 @@ macro_rules! run {
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
         $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
     };
-    // Explicit fusion-expectation form: trailing `; FuseExpect::X`.
-    // The `;` separator makes the expectation insertable at the very
-    // end of any invocation regardless of its argument shape, which
-    // is what the run_no_jit!→run! migration relied on.
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
         $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
@@ -439,7 +392,7 @@ macro_rules! run {
             use super::*;
 
             /// The optional `NodeShape` spec to check against the
-            /// compiled graph (`None` for fixtures that don't pin it).
+            /// compiled graph.
             #[allow(dead_code)]
             fn shape_spec(
             ) -> ::std::option::Option<::graphix_compiler::node_shape::NodeShape> {
@@ -465,10 +418,8 @@ macro_rules! run {
                     tx, &crate::TEST_REGISTER, vec![resolver], flags,
                     |_ctx| {},
                 ).await?;
-                // Reset the JIT + fusion invocation counters AFTER
-                // runtime init — init compiles the stdlib root module
-                // and may fuse/JIT things there. We only want to count
-                // activity caused by the fixture's own compile below.
+                // Init compiles the stdlib root and may fuse there;
+                // only the fixture's own compile should count.
                 if reset_counters_after_init {
                     #[cfg(debug_assertions)]
                     {
@@ -482,10 +433,6 @@ macro_rules! run {
                     Err(e) => assert!(pred(dbg!(Err(e)))),
                     Ok(e) => {
                         let eid = e.exprs[0].id;
-                        // Assert the compiled graph's shape (only in
-                        // modes where fusion ran, against the live
-                        // post-fusion graph). A mismatch fails here
-                        // with the offending path + reason.
                         if check_shape {
                             if let ::std::option::Option::Some(spec) = shape_spec() {
                                 bs.match_shape(eid, spec).await?;
@@ -526,21 +473,12 @@ macro_rules! run {
                         }
                     }
                 }
-                // Bidirectional fusion-expectation check (debug only).
-                // `fusion_check` is true only in `jit` mode; the interp
-                // (FusionDisabled) mode never fuses, so there's nothing
-                // to assert there.
                 #[cfg(debug_assertions)]
                 if fusion_check {
                     $crate::testing::check_fuse_expectation($fexpect);
                 }
-                // Audit diagnostics: under GRAPHIX_FUSE_AUDIT, dump
-                // the per-region blocker list — the "why didn't it
-                // fuse" companion to the FUSEAUDIT verdict line.
-                // Includes stdlib-root noise (the stats are
-                // per-ExecCtx, no baseline subtraction here) — filter
-                // by eye. Gate on fusion actually having run (not the
-                // interp mode's FusionDisabled).
+                // The blocker list includes stdlib-root noise (stats
+                // are per-ExecCtx).
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
                     && !flags
                         .contains(::graphix_compiler::CFlag::FusionDisabled)
@@ -564,8 +502,6 @@ macro_rules! run {
 
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {
-                // Ground truth: fusion fully disabled (node-walk only),
-                // no fusion/shape check.
                 run_with_flags(
                     ::graphix_compiler::CFlag::FusionDisabled.into(),
                     false,
@@ -577,13 +513,8 @@ macro_rules! run {
             #[::tokio::test(flavor = "current_thread")]
             #[cfg(debug_assertions)]
             async fn jit() -> ::anyhow::Result<()> {
-                // Discovery mode: when GRAPHIX_FUSION_DISCOVERY is set,
-                // run every fixture (checked or not) through the full
-                // fusion+JIT path WITHOUT asserting, then print the
-                // observed level (`FUSEMAP <path> <level>`). Harvests
-                // the whole-corpus fusion-state map in one run. With the
-                // interpreter gone, "fuses" and "JITs" coincide — a
-                // single full-path run measures both.
+                // GRAPHIX_FUSION_DISCOVERY: run without asserting and
+                // print the observed level (`FUSEMAP <path> <level>`).
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
                     run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
@@ -621,16 +552,9 @@ macro_rules! run {
                     );
                     return Ok(());
                 }
-                // Coverage-audit mode: when GRAPHIX_FUSE_AUDIT is
-                // set, run the fixture normally but REPORT the
-                // observed fusion level against the `FuseExpect`
-                // annotation instead of asserting it. Harvest:
-                // `GRAPHIX_FUSE_AUDIT=1 cargo test -p graphix-tests
-                // -- jit --nocapture 2>&1 | grep FUSEAUDIT` — the
-                // MISMATCH lines are the coverage delta to review
-                // (and FUSEAUDIT-BLOCKER lines say why a region
-                // didn't fuse). Built for the F1→F2 flip audit; kept
-                // as the standing no-assert coverage observer.
+                // GRAPHIX_FUSE_AUDIT: report the observed fusion level
+                // against the annotation (`FUSEAUDIT` lines) instead
+                // of asserting it.
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
                     run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
@@ -655,10 +579,6 @@ macro_rules! run {
                     );
                     return Ok(());
                 }
-                // Full fusion + JIT; checks the precise `FuseExpect`
-                // and (since the interpreter is gone, so the old
-                // `fused`-mode shape check is gone with it) the
-                // backend-independent NodeShape against the live graph.
                 run_with_flags(
                     ::graphix_compiler::BitFlags::empty(),
                     true,

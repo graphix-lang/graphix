@@ -4,7 +4,7 @@ use netidx::subscriber::Value;
 use std::collections::HashMap;
 use tokio::{fs, time::Duration};
 
-/// Helper to convert metadata array to a hashmap for easier testing
+/// The metadata array as a map.
 fn metadata_to_map(v: &Value) -> Option<HashMap<String, Value>> {
     if let Value::Array(arr) = v {
         let mut map = HashMap::new();
@@ -22,8 +22,6 @@ fn metadata_to_map(v: &Value) -> Option<HashMap<String, Value>> {
         None
     }
 }
-
-// ===== is_file tests =====
 
 run_with_tempdir! {
     name: test_is_file_basic,
@@ -81,8 +79,6 @@ run_with_tempdir! {
         }
     }
 }
-
-// ===== is_dir tests =====
 
 run_with_tempdir! {
     name: test_is_dir_basic,
@@ -156,8 +152,6 @@ run_with_tempdir! {
     }
 }
 
-// ===== metadata tests =====
-
 run_with_tempdir! {
     name: test_metadata_file_basic,
     code: r#"sys::fs::metadata("{}")"#,
@@ -169,11 +163,9 @@ run_with_tempdir! {
     expect: |v: Value| -> Result<()> {
         let fields = metadata_to_map(&v).expect("expected metadata array");
 
-        // Check that kind is File
         let kind = fields.get("kind").expect("kind field missing");
         assert!(matches!(kind, Value::String(s) if s.as_str() == "File"), "expected kind=File, got: {kind:?}");
 
-        // Check that len is 11 (length of "hello world")
         let len = fields.get("len").expect("len field missing");
         assert!(matches!(len, Value::U64(11)), "expected len=11, got: {len:?}");
 
@@ -220,7 +212,6 @@ run_with_tempdir! {
     expect: |v: Value| -> Result<()> {
         let fields = metadata_to_map(&v).expect("expected metadata array");
         let kind = fields.get("kind").expect("kind field missing");
-        // With follow_symlinks=true (default), should see File not Symlink
         assert!(matches!(kind, Value::String(s) if s.as_str() == "File"), "expected kind=File (followed), got: {kind:?}");
         Ok(())
     }
@@ -240,7 +231,6 @@ run_with_tempdir! {
     expect: |v: Value| -> Result<()> {
         let fields = metadata_to_map(&v).expect("expected metadata array");
         let kind = fields.get("kind").expect("kind field missing");
-        // With follow_symlinks=false, should see Symlink
         assert!(
             matches!(kind, Value::String(s) if s.as_str() == "Symlink"),
             "expected kind=Symlink (not followed), got: {kind:?}"
@@ -256,7 +246,6 @@ run_with_tempdir! {
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "content").await?;
-        // Set specific permissions (0o644)
         let mut perms = fs::metadata(&test_file).await?.permissions();
         use std::os::unix::fs::PermissionsExt;
         perms.set_mode(0o644);
@@ -267,7 +256,6 @@ run_with_tempdir! {
         let fields = metadata_to_map(&v).expect("expected metadata array");
         let permissions = fields.get("permissions").expect("permissions field missing");
         if let Value::U32(mode) = permissions {
-            // Check that at least the lower bits match 0o644
             assert_eq!(mode & 0o777, 0o644, "expected mode 0o644, got: {mode:#o}");
             Ok(())
         } else {
@@ -282,14 +270,11 @@ run_with_tempdir! {
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "content").await?;
-        // Give filesystem time to set timestamps
         tokio::time::sleep(Duration::from_millis(10)).await;
         test_file
     },
     expect: |v: Value| -> Result<()> {
         let fields = metadata_to_map(&v).expect("expected metadata array");
-        // Just verify that the timestamp fields exist
-        // We can't check exact values, but we can check they're present
         assert!(fields.contains_key("accessed"), "missing accessed field");
         assert!(fields.contains_key("created"), "missing created field");
         assert!(fields.contains_key("modified"), "missing modified field");

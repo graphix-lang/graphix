@@ -637,11 +637,8 @@ fn decode_svg_icon(data: &[u8]) -> Result<Option<winit::window::Icon>> {
 impl FromValue for ImageSourceV {
     fn from_value(v: Value) -> Result<Self> {
         match v {
-            // Bare string → file path
             Value::String(s) => Ok(Self::Path(s.to_string())),
-            // Bare bytes → encoded image data
             Value::Bytes(b) => Ok(Self::Bytes((*b).clone())),
-            // Variant tag
             v => {
                 let (tag, val) = v.cast_to::<(ArcStr, Value)>()?;
                 match &*tag {

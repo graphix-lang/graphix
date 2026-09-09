@@ -2,8 +2,6 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-// combine parser types nest deeply enough that monomorphizing the
-// expression parser exceeds the default 128.
 #![recursion_limit = "256"]
 #[macro_use]
 extern crate netidx_core;
@@ -30,9 +28,8 @@ pub mod tval;
 pub mod typ;
 
 use compact_str::CompactString;
-// Re-exported so packages implementing `Apply::emit_clif` get the
-// cranelift types through the compiler — no direct cranelift dep in a
-// package, so version lockstep with the JIT is structural.
+// Packages implementing `Apply::emit_clif` take cranelift through the
+// compiler, so they stay in version lockstep with the JIT.
 pub use cranelift_codegen;
 pub use cranelift_frontend;
 pub use fusion::FusionStats;
@@ -88,18 +85,10 @@ pub enum CFlag {
     WarnUnhandled,
     WarnUnused,
     WarningsAreErrors,
-    /// Disable fusion entirely. `compile()` runs build + typecheck and
-    /// returns the regular Node graph; no kernels are built or spliced.
-    /// This is the test harness's
-    /// `interp` mode: the program executes PURELY through the
-    /// Update-trait node-walk, the canonical model. The single fusion
-    /// control knob — fusion is JIT-only (no interpreter), so there is
-    /// no meaningful "fuse but don't JIT" state to represent.
+    /// Disable fusion: no kernels are built or spliced and the program
+    /// runs purely through the node-walk.
     FusionDisabled,
-    /// Interactive (REPL) name-collision policy: a `use` that would
-    /// collide with an existing import or declaration SHADOWS it
-    /// instead of erroring, the way `let` re-binding already does.
-    /// File modules keep the strict rules.
+    /// REPL policy: a colliding `use` shadows instead of erroring.
     ReplaceImports,
     /// Print each `seq`'s lowered machine to stdout as it is compiled
     /// (`graphix --expand`): the source position, then the program.
@@ -108,32 +97,22 @@ pub enum CFlag {
 
 /// Runtime control signals shared between a runtime handle and the
 /// running `ExecCtx`. `Interrupt` makes in-flight loops abort to bottom
-/// (no value this cycle) while the runtime keeps going; `Abort`
-/// additionally shuts the runtime down (its run loop returns before the
-/// next cycle). Both are set from the handle side and polled lock-free
-/// from the loop side — the tail loop and opt-in builtins via
-/// [`ExecCtx::interrupted`], and the JIT kernels via `graphix_interrupted`.
+/// while the runtime keeps going; `Abort` also shuts the runtime down.
+/// Polled lock-free via [`ExecCtx::interrupted`] and `graphix_interrupted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[bitflags]
 #[repr(u32)]
 pub enum CtlFlag {
     Interrupt = 1,
     Abort = 2,
-    /// Set beside `Abort` when the STACK BUDGET stopped the runtime
-    /// (`stack::budget_abort`): a harness can tell that containment
-    /// from a runtime error of the program's own.
+    /// Set beside `Abort` when the stack budget stopped the runtime.
     Budget = 4,
 }
 
-/// A runtime diagnostic: a failure whose value-level outcome is BOTTOM
-/// by design (no value this cycle — nothing for `?`/`try` to catch),
-/// surfaced through the runtime's event stream so embedders and the
-/// shell can still tell the user WHICH expression produced nothing and
-/// why. Produced into [`ExecCtx::diagnostics`] at the failure site,
-/// drained by the runtime after every cycle. No producer exists since
-/// the call-depth limit went (depth is bounded by memory,
-/// `design/recursive_activations.md` §4b); the channel stays for the
-/// next one.
+/// A runtime diagnostic: a failure whose value-level outcome is bottom
+/// (nothing for `?` to catch), surfaced through the runtime's event
+/// stream. Pushed to [`ExecCtx::diagnostics`], drained every cycle.
+/// Currently no producer exists.
 #[derive(Debug, Clone)]
 pub enum RtDiagnostic {}
 
@@ -143,9 +122,8 @@ impl std::fmt::Display for RtDiagnostic {
     }
 }
 
-/// Lock-free [`CtlFlag`] set over an `AtomicU32`. A loop polls
-/// [`Control::interrupted`] (any flag ⇒ abort); the run loop polls
-/// [`Control::aborted`] (Abort ⇒ shut down). See [`CtlFlag`].
+/// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
+/// the run loop polls [`Control::aborted`].
 #[derive(Debug)]
 pub struct Control {
     flags: AtomicU32,
@@ -162,14 +140,14 @@ impl Control {
         Control { flags: AtomicU32::new(0) }
     }
 
-    /// Request that in-flight loops abort this cycle; the runtime keeps
-    /// running and `do_cycle` clears this at the end of the cycle.
+    /// Request that in-flight loops abort this cycle; cleared at the
+    /// end of the cycle.
     pub fn interrupt(&self) {
         self.flags.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
     }
 
-    /// Request shutdown: in-flight loops abort AND the run loop returns
-    /// before the next cycle. Sticky — never cleared.
+    /// Request shutdown: in-flight loops abort and the run loop returns
+    /// before the next cycle. Sticky.
     pub fn abort(&self) {
         self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
     }
@@ -185,21 +163,17 @@ impl Control {
         self.flags.load(Ordering::Acquire) & (CtlFlag::Budget as u32) != 0
     }
 
-    /// True if any control flag is set — the signal a loop polls to
-    /// decide whether to abort (both flags break loops).
+    /// True if any control flag is set: a loop should abort.
     pub fn interrupted(&self) -> bool {
         self.flags.load(Ordering::Acquire) != 0
     }
 
-    /// True if `Abort` is set — the signal the run loop polls before each
-    /// cycle to decide whether to shut down.
+    /// True if `Abort` is set.
     pub fn aborted(&self) -> bool {
         self.flags.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
     }
 
-    /// Clear the `Interrupt` bit, leaving `Abort` sticky. Called by
-    /// `do_cycle` at the end of each cycle so a one-shot `interrupt()`
-    /// doesn't persist into the next cycle.
+    /// Clear the `Interrupt` bit, leaving `Abort` sticky.
     pub fn clear_interrupt(&self) {
         self.flags.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
     }
@@ -245,8 +219,6 @@ pub fn trace() -> bool {
     TRACE.load(Ordering::Relaxed)
 }
 
-// ─── Fusion / JIT mode ───────────────────────────────────────────
-//
 #[macro_export]
 macro_rules! tdbg {
     ($e:expr) => {
@@ -341,15 +313,13 @@ impl UserEvent for NoUserEvent {
 #[bitflags]
 #[repr(u64)]
 pub enum PrintFlag {
-    /// Dereference type variables and print both the tvar name and the bound
-    /// type or "unbound".
+    /// Print each type variable with its binding or "unbound".
     DerefTVars,
-    /// Replace common primitives with shorter type names as defined
-    /// in core. e.g. Any, instead of the set of every primitive type.
+    /// Print core's short names for primitive sets (`Any`, `Number`).
     ReplacePrims,
-    /// When formatting an Origin don't print the source, just the location
+    /// Print an Origin's location without its source.
     NoSource,
-    /// When formatting an Origin don't print the origin's parents
+    /// Print an Origin without its parents.
     NoParents,
 }
 
@@ -357,13 +327,11 @@ thread_local! {
     static PRINT_FLAGS: Cell<BitFlags<PrintFlag>> = Cell::new(PrintFlag::ReplacePrims.into());
 }
 
-/// global pool of channel watch batches
+/// Global pool of channel watch batches.
 pub static CBATCH_POOL: LazyLock<Pool<Vec<(BindId, Box<dyn CustomBuiltinType>)>>> =
     LazyLock::new(|| Pool::new(10000, 1000));
 
-/// For the duration of the closure F change the way type variables
-/// are formatted (on this thread only) according to the specified
-/// flags.
+/// Run `f` with the given type-formatting flags on this thread.
 pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
     flags: G,
     f: F,
@@ -374,36 +342,21 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
     res
 }
 
-/// Event represents all the things that happened simultaneously in a
-/// given execution cycle. Event may contain only one update for each
-/// variable and netidx subscription in a given cycle, if more updates
-/// happen simultaneously they must be queued and deferred to later
-/// cycles.
+/// Everything that happened simultaneously in one execution cycle. At
+/// most one update per variable per cycle; further updates are queued
+/// for later cycles.
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
     pub init: bool,
-    /// Set alongside `init` when the init view being forced is a select
-    /// arm's WAKE rather than a birth. The wake must look like an init
-    /// to everything whose init handling is its own machinery (fused
-    /// kernels force their input view, call sites prime their first
-    /// dispatch, refs read standing entries as Fired), but a resumed arm
-    /// is not a new one: a `<-` target that already holds a value keeps
-    /// it instead of being reseeded by its own re-fired initializer,
-    /// because sleep is PAUSE (Eric 2026-07-31). Without this a
-    /// `{let s = i64:0; s <- …; s}` arm reset to its seed on every
-    /// re-selection (fuzz/pending-triage/arm_fnvalue_connect_stale.gx).
+    /// Set alongside `init` when the forced init view is a select arm's
+    /// wake rather than a birth: a `<-` target that already holds a
+    /// value keeps it instead of being reseeded.
     pub wake_init: bool,
-    /// The INNERMOST overlay: same-cycle transient deliveries (select
-    /// arm binds, call-site formal publishes) at depth 0, or the current evaluation frame's
-    /// private writes inside a framed pass. Under dense delivery
-    /// (design/dense_delivery.md R3) this is NOT the value store —
-    /// reads fall through the frame stack to [`Rt::store`] via
-    /// `node::read_var`.
+    /// The innermost overlay: same-cycle transient deliveries at depth
+    /// 0, or the current evaluation frame's private writes. Not the
+    /// value store: reads fall through the frame stack to [`Rt::store`].
     pub variables: IntMap<BindId, TagValue>,
-    /// The enclosing overlays of the current frame stack (innermost
-    /// last). Empty at depth 0. A framed pass reads through to
-    /// enclosing frames (an inner dispatch's captures live in its
-    /// caller's frame) and then to the store.
+    /// The enclosing overlays of the frame stack, innermost last.
     pub(crate) frames: Vec<IntMap<BindId, TagValue>>,
     pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
     pub user: E,
@@ -432,20 +385,14 @@ impl<E: UserEvent> Event<E> {
         user.clear();
     }
 
-    /// Enter an evaluation-frame OVERLAY: the current `variables` map
-    /// is pushed onto the frame stack and `frame` (the pass's private
-    /// writes — usually empty, or the tail loop's rebound formals)
-    /// becomes the innermost overlay. Reads fall through the stack to
-    /// the persistent store, so no seeding is required.
+    /// Push the current `variables` onto the frame stack and make
+    /// `frame` the innermost overlay.
     pub fn enter_frame(&mut self, frame: IntMap<BindId, TagValue>) {
         self.frames.push(std::mem::replace(&mut self.variables, frame));
     }
 
-    /// Leave the frame entered by [`Self::enter_frame`]: the enclosing
-    /// overlay returns to `variables`; the frame's final map is
-    /// handed back (the tail loop reads it as the previous pass's
-    /// rebinds; everything else discards it — only
-    /// `ExecCtx::frame_outbox` outlives a frame).
+    /// Leave the frame entered by [`Self::enter_frame`], handing back
+    /// its final map.
     pub fn exit_frame(&mut self) -> IntMap<BindId, TagValue> {
         let outer = self.frames.pop().expect("exit_frame without enter_frame");
         std::mem::replace(&mut self.variables, outer)
@@ -460,38 +407,17 @@ pub struct Refs {
 
 pub use combine::stream::position::SourcePosition;
 
-/// Metadata captured for every `let foo = |...| 'builtin_name`
-/// binding. Stored on [`ExecCtx::builtin_bindings`] keyed by the
-/// binding's [`BindId`] so the fusion pass can lower `Apply` sites
-/// targeting this binding into a [`fusion::kernel_abi::FnSource::Builtin`]
-/// slot without round-tripping through the runtime's `LambdaDef`
-/// value.
-///
-/// `name` is the canonical builtin identifier (e.g. `core_once`) —
-/// matches the key used by [`ExecCtx::register_builtin`] and
-/// [`ExecCtx::builtins`].
-///
-/// `argspec` is the original source-level argument list (including
-/// each labeled arg's default expression, if any), needed to
-/// construct the per-formal-arg [`fusion::kernel_abi::BuiltinSlot`]
-/// layout at fusion time.
-///
-/// `typ` is the binding's resolved function type at the binding
-/// site. The fusion pass also reads the per-call-site resolved
-/// `FnType` off the `Apply.function.typ` cell when generic; this
-/// site-level `typ` is the declared binding signature, useful for
-/// quick rejections.
+/// Metadata for a `let foo = |...| 'builtin_name` binding
+/// ([`ExecCtx::builtin_bindings`]): the canonical builtin `name`, the
+/// source-level `argspec` (with labeled defaults), and the binding's
+/// declared `typ`.
 #[derive(Debug, Clone)]
 pub struct BuiltinBindInfo {
     pub name: ArcStr,
     pub argspec: triomphe::Arc<[expr::Arg]>,
     pub typ: triomphe::Arc<typ::FnType>,
-    /// Lambda definition ID for this binding's value (if it was
-    /// compiled as a lambda — every binding registered here was).
-    /// Used by `Kernel::pre_bind_builtin` to look up the lambda's
-    /// env+scope when compiling a `BuiltinSlot::LabeledDefault`
-    /// expression — defaults may reference free variables visible
-    /// only in the lambda's original definition scope.
+    /// The binding's lambda definition; labeled defaults compile in its
+    /// env and scope.
     pub lambda_id: Option<LambdaId>,
 }
 
@@ -510,30 +436,21 @@ impl Refs {
     }
 
     /// Mark `id` as bound within the walked subtree so it is never
-    /// surfaced as an external ref. A node implementing [`Update::refs`]
-    /// uses this for synthetic internal bindings it owns — e.g. a HOF
-    /// builtin's analysis-only per-element slot — which must not leak
-    /// into fusion's region-input discovery (a leaked input becomes an
-    /// orphaned kernel feeder that nothing ever feeds).
+    /// surfaced as an external ref (synthetic internal bindings).
     pub fn mark_bound(&mut self, id: BindId) {
         self.bound.insert(id);
     }
 
-    /// Visit every id BOUND within the walked subtree. Used by the
-    /// direct emission's dead-statement elimination to learn which
-    /// ids a `Bind` introduces.
+    /// Visit every id bound within the walked subtree.
     pub fn with_bound(&self, mut f: impl FnMut(BindId)) {
         for id in &*self.bound {
             f(*id);
         }
     }
 
-    /// Visit every id READ in the walked subtree, whether it is bound
-    /// inside it or outside. Externality answers "who owns this
-    /// binding", which is the wrong question for "did anything this
-    /// subtree reads carry new information this cycle" — a `<-` target
-    /// declared INSIDE the subtree is written across cycles by the
-    /// runtime just like a capture is.
+    /// Visit every id read in the walked subtree, bound inside it or
+    /// not (a `<-` target declared inside is still written across
+    /// cycles).
     pub fn with_refs(&self, mut f: impl FnMut(BindId)) {
         for id in &*self.refed {
             f(*id);
@@ -547,24 +464,14 @@ impl Refs {
     }
 }
 
-/// A compiled graph node.
-///
-/// A newtype rather than a bare `Box<dyn Update>` so that every pass
-/// that descends the tree has ONE place to claim stack headroom: each
-/// recursive `Update` method is shadowed here by an inherent method
-/// that runs the vtable call under [`stack::ensure_sufficient`], and a
-/// node's children are `Node`s, so a nesting depth an adversarial
-/// program controls costs heap segments instead of overflowing
-/// whatever thread the compile lands on. Non-recursive methods
-/// (`typ`, `spec`, `view`) and anything not shadowed reach the trait
-/// through `Deref`.
+/// A compiled graph node. Each recursive `Update` method is shadowed
+/// by an inherent method that runs the vtable call under
+/// [`stack::ensure_sufficient`]; the rest reach the trait through
+/// `Deref`.
 pub struct Node<R: Rt, E: UserEvent>(std::mem::ManuallyDrop<Box<dyn Update<R, E>>>);
 
-/// Destroying a deep graph re-enters this through each node's
-/// children, and drop glue is not a function `ensure_sufficient` can
-/// wrap from outside. `ManuallyDrop` moves the teardown INSIDE the
-/// guard: field glue would otherwise run after `drop` returns, back on
-/// the original stack.
+/// `ManuallyDrop` moves the recursive teardown inside the stack guard;
+/// field glue would run after `drop` returns.
 impl<R: Rt, E: UserEvent> Drop for Node<R, E> {
     fn drop(&mut self) {
         stack::ensure_sufficient(|| unsafe { std::mem::ManuallyDrop::drop(&mut self.0) })
@@ -662,40 +569,21 @@ pub type InitFn<R, E> = sync::Arc<
         + 'static,
 >;
 
-/// Apply is a kind of node that represents a function application. It
-/// does not hold ownership of it's arguments, instead those are held
-/// by a CallSite node. This allows us to change the function called
-/// at runtime without recompiling the arguments.
+/// A function application. Its arguments are owned by the `CallSite`,
+/// so the function can change at runtime without recompiling them.
 pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
-    /// Typed view for analysis-layer code (notably fusion). Default
-    /// returns `BuiltIn` — opaque to fusion beyond the builtin's
-    /// declared facts. `GXLambda` overrides to `Lambda(self)`,
-    /// `BuiltInLambda` delegates to `self.apply.view()`.
-    ///
-    /// The `BuiltIn` default works on `&dyn Apply` (no `Self: Sized`
-    /// bound needed) because the variant carries no reference. This
-    /// means every existing Apply impl inherits sensible "opaque
-    /// builtin" semantics without per-impl edits.
+    /// Typed view for analysis code. The default is `BuiltIn` (opaque).
     fn view(&self) -> ApplyView<'_, R, E> {
         ApplyView::BuiltIn
     }
 
-    /// Mutable counterpart to [`Self::view`]. Same dispatch story;
-    /// used by fusion when it needs to splice a sub-kernel into the
-    /// graph reachable through this Apply (e.g. into a `GXLambda`
-    /// body Node).
+    /// Mutable counterpart to [`Self::view`].
     fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
         ApplyViewMut::BuiltIn
     }
 
     /// Same borrowed-production contract as [`Update::update`]: the
-    /// returned `&TagValue` is the builtin's RESIDENT (its result slot
-    /// — an ordinary builtin returns `self.out.set(TagValue::fired(v))`
-    /// and rides the resident on a quiet cycle). The production's
-    /// tag rides in the value — there is no side channel: `GXLambda`
-    /// returns its body's tag, `CachedArgs` re-surfaces its result
-    /// slot retagged STALE on a quiet arg refresh, the fused `Kernel`
-    /// returns the JIT out slot's disc tags.
+    /// returned `&TagValue` is the builtin's resident result slot.
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -703,14 +591,13 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         event: &mut Event<E>,
     ) -> &TagValue;
 
-    /// delete any internally generated nodes, only needed for
-    /// builtins that dynamically generate code at runtime
+    /// Delete any internally generated nodes.
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
         ()
     }
 
-    /// First typecheck pass ("Lambda phase"): typecheck the call's
-    /// argument nodes against the lambda's own FnType while it is built.
+    /// First typecheck pass: the call's arguments against the
+    /// lambda's own FnType.
     fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -719,7 +606,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
-    /// Second typecheck pass ("CallSite phase").
+    /// Second typecheck pass.
     fn typecheck1(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -729,8 +616,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
-    /// return the lambdas type, builtins do not need to implement
-    /// this, it is implemented by the BuiltIn wrapper
+    /// The lambda's type; the BuiltIn wrapper implements it for builtins.
     fn typ(&self) -> Arc<FnType> {
         static EMPTY: LazyLock<Arc<FnType>> = LazyLock::new(|| {
             Arc::new(FnType {
@@ -745,42 +631,25 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Arc::clone(&*EMPTY)
     }
 
-    /// Populate the Refs structure with all the ids bound and refed by this
-    /// node. It is only necessary for builtins to implement this if they create
-    /// nodes, such as call sites.
+    /// Record every id bound and referenced by this node. Only needed
+    /// by builtins that create nodes.
     fn refs<'a>(&self, _refs: &mut Refs) {}
 
-    /// Put the builtin to sleep — used by constructs like select for
-    /// unselected branches. Paused computations retain their values
-    /// and semantic state. Builtins that discard pending work or
-    /// detach an event source must also clear their outputs to phantom:
-    /// a restarted operation has no completion until it produces one.
-    /// Documented restart builtins also clear their semantic latches
-    /// (once/take/skip/hold/uniq/count).
+    /// Pause the builtin (an unselected arm). Values and semantic state
+    /// are retained; a builtin that discards pending work or detaches an
+    /// event source must clear its output to phantom, and the restart
+    /// builtins clear their latches.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
-    /// Clear REPLAY caches, preserve SEMANTIC state — the `Apply`-side
-    /// twin of [`Update::reset_replay`] (see its doc for the
-    /// classification rule and the caller contract). For a builtin:
-    /// cached ARG values (`CachedArgs`/`EvalCached` memory) are replay
-    /// state and clear; accumulators (`count`'s tally, a queue, `once`'s
-    /// fired flag) and pure memos (a compiled `Regex`, a typecheck-derived
-    /// cast type) are semantic/derived and survive. **Required, no
-    /// default impl** — every builtin must classify its own state.
+    /// Clear replay caches (cached argument values), preserve semantic
+    /// state (accumulators, memos); see [`Update::reset_replay`]. No
+    /// default: every builtin classifies its own state.
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>);
 
-    /// Emit this call site into the open JIT kernel as CLIF (the
-    /// builtin-owned half of distributed emission — see
-    /// [`Update::emit_clif`]). The contract:
-    ///
-    /// - `Ok(Some(cv))` — emitted; `cv` is the call's result.
-    /// - `Ok(None)` — shape not handled; the call site falls back to
-    ///   its next strategy (a fastcall, or no fusion). The
-    ///   impl MUST NOT have emitted any instructions before returning
-    ///   `Ok(None)`.
-    /// - `Err` — abort the whole kernel build; the subtree node-walks.
-    ///   Partial emission before `Err` is fine — the half-built
-    ///   function is discarded.
+    /// Emit this call site into the open JIT kernel as CLIF.
+    /// `Ok(Some(cv))`: emitted. `Ok(None)`: shape not handled, and no
+    /// instructions may have been emitted. `Err`: abort the kernel
+    /// build (partial emission is fine).
     fn emit_clif(
         &self,
         _callsite: &CallSite<R, E>,
@@ -789,70 +658,37 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(None)
     }
 
-    /// Participate in the compile-time fusion phase. Called by
-    /// [`CallSite::fuse`] — i.e. exactly when `try_fuse` on the call
-    /// site FAILED (the call did NOT inline into an enclosing kernel).
-    /// [`GXLambda`] overrides this to fuse the maximal sync sub-regions
-    /// of its per-callsite instance BODY in place (async residue
-    /// node-walks), so a lambda whose call site didn't fuse still runs
-    /// its body natively. The impl MUST swallow build errors (de-fuse,
-    /// never fail the compile — node-walk is canonical). Default: no-op.
+    /// Fuse inside this apply when its call site did not fuse
+    /// (`GXLambda` fuses its instance body's sync regions in place).
+    /// Build errors must be swallowed, never fail the compile.
     fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
 }
 
-/// Typed view of an [`Apply`] for fusion / analysis layer code,
-/// symmetric to [`NodeView`].
-///
-/// Variants:
-/// - [`Lambda`](ApplyView::Lambda) — a graphix-language lambda with
-///   a walkable [`Node`] body. Fusion descends into the body via
-///   [`GXLambda::body`].
-/// - [`BuiltIn`](ApplyView::BuiltIn) — opaque builtin. Fusion emits
-///   a direct fastcall when the builtin registers one (or the builtin
-///   participates via [`Apply::emit_clif`]); no introspection beyond the trait
-///   methods. The default `view()` returns this — every Apply impl
-///   inherits opaque-builtin semantics unless it overrides.
+/// Typed view of an [`Apply`], symmetric to [`NodeView`]: a Graphix
+/// lambda with a walkable body, or an opaque builtin.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
     Lambda(&'a GXLambda<R, E>),
     BuiltIn,
 }
 
-/// Mutable counterpart to [`ApplyView`]. Used by fusion for splicing
-/// sub-kernels into Nodes reachable through an Apply (the body Node
-/// of a [`Lambda`](ApplyViewMut::Lambda)).
+/// Mutable counterpart to [`ApplyView`].
 pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
     Lambda(&'a mut GXLambda<R, E>),
     BuiltIn,
 }
 
-/// Exhaustive typed view of the compiled node graph.
-///
-/// `Node` (`Box<dyn Update>`) is optimized for execution: vtable
-/// dispatch is what LLVM does best for the hot update loop. But for
-/// compile-time analysis — fusion, linting, dead-code detection,
-/// escape analysis, refactoring — a closed enum is what you want.
-///
-/// `NodeView` is that enum: one variant per concrete `Update` impl
-/// in the compiler. The two forms coexist by specializing: `Node`
-/// keeps the vtable for runtime, `NodeView<'a>` provides a borrowed,
-/// pattern-matchable view for analysis.
-///
-/// **No `Other` catch-all.** Adding a new node type requires picking
-/// a variant; adding a new variant requires reviewing every
-/// exhaustive match (across all analysis tools) that consumes
-/// `NodeView`. This is the project's "compiler tracks what humans
-/// would otherwise have to remember" pattern, applied to the node
-/// graph itself.
+/// Exhaustive typed view of the compiled node graph, one variant per
+/// concrete `Update` impl, for compile-time analysis. No catch-all:
+/// a new node type must pick a variant, and a new variant must be
+/// handled by every exhaustive match.
 #[allow(missing_docs)]
 pub enum NodeView<'a, R: Rt, E: UserEvent> {
-    // Fusion-relevant containers
     Bind(&'a node::bind::Bind<R, E>),
     Lambda(&'a node::lambda::Lambda),
     Block(&'a node::Block<R, E>),
     Module(&'a node::module::Module<R, E>),
-    // Child-bearing non-container
     CallSite(&'a CallSite<R, E>),
     MapQ(&'a node::collection::MapQBase<R, E>),
     FoldQ(&'a node::collection::FoldQBase<R, E>),
@@ -869,7 +705,6 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Any(&'a node::Any<R, E>),
     Never(&'a node::Never<R, E>),
     Sample(&'a node::Sample<R, E>),
-    // Producers
     Struct(&'a node::data::Struct<R, E>),
     StructWith(&'a node::data::StructWith<R, E>),
     Tuple(&'a node::data::Tuple<R, E>),
@@ -878,17 +713,14 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Array(&'a node::array::Array<R, E>),
     ListLit(&'a node::array::ListLit<R, E>),
     Map(&'a node::map::Map<R, E>),
-    // Accessors
     StructRef(&'a node::data::StructRef<R, E>),
     TupleRef(&'a node::data::TupleRef<R, E>),
     ArrayRef(&'a node::array::ArrayRef<R, E>),
     ArraySlice(&'a node::array::ArraySlice<R, E>),
     MapRef(&'a node::map::MapRef<R, E>),
-    // Binding access
     Ref(&'a node::bind::Ref),
     ByRef(&'a node::bind::ByRef<R, E>),
     Deref(&'a node::bind::Deref<R, E>),
-    // Arithmetic — one variant per macro-generated struct in node/op.rs
     Add(&'a node::op::Add<R, E>),
     Sub(&'a node::op::Sub<R, E>),
     Mul(&'a node::op::Mul<R, E>),
@@ -899,7 +731,6 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     CheckedMul(&'a node::op::CheckedMul<R, E>),
     CheckedDiv(&'a node::op::CheckedDiv<R, E>),
     CheckedMod(&'a node::op::CheckedMod<R, E>),
-    // Comparison + logical
     Eq(&'a node::op::Eq<R, E>),
     Ne(&'a node::op::Ne<R, E>),
     Lt(&'a node::op::Lt<R, E>),
@@ -910,96 +741,58 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Or(&'a node::op::Or<R, E>),
     Not(&'a node::op::Not<R, E>),
     Neg(&'a node::op::Neg<R, E>),
-    // Leaves and declarations
     Constant(&'a node::Constant),
     TypeDef(&'a node::TypeDef),
     Impl(&'a node::traits::Impl<R, E>),
     Nop(&'a node::Nop),
-    // Synthetic — produced by fusion itself.
     FusedKernel(&'a fusion::FusedKernel<R, E>),
 }
 
-/// Update represents a regular graph node, as opposed to a function
-/// application represented by Apply. Regular graph nodes are used for
-/// every built in node except for builtin functions.
+/// A regular graph node, as opposed to a function application (Apply).
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
-    /// Update the node with the specified event and return its
-    /// production, borrowed from the node's own production slot (the
-    /// RESIDENT — a computing node recomputes into it, a delegating
-    /// node forwards its child's borrow). DENSE: every awake node
-    /// delivers every cycle — Fired(v) / Stale(v) / FreshBottom /
-    /// StaleBottom; a quiet cycle rides the resident
-    /// (`self.resident.ride()`). See `tval::TagValue`, [`TagView`],
-    /// and `design/dense_delivery.md`.
+    /// Update the node with the event and return its production,
+    /// borrowed from the node's own resident slot. Every awake node
+    /// delivers every cycle; a quiet cycle rides the resident. See
+    /// [`TagView`].
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue;
 
-    /// delete the node and it's children from the specified context
+    /// Delete the node and its children from the context.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
 
-    /// First typecheck pass: structural type checking. Each node checks
-    /// itself and recurses into its children (`wrap!(child,
-    /// child.typecheck0(ctx))?`), running over the whole tree before
-    /// `typecheck1`.
+    /// First typecheck pass: structural checking. Each node checks
+    /// itself and recurses into its children.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
-    /// Second typecheck pass, run over the whole tree AFTER `typecheck0`
-    /// completes. By now every `FnType::lambda_ids` closure is final, so
-    /// a `CallSite` can read it to decide static dispatch and drive the
-    /// resolved-type-dependent finalization that used to be the deferred
-    /// check. NO default impl: every `Update` node must recurse into its
-    /// children's `typecheck1` (mirroring `typecheck0`'s child walk), so
-    /// a new node type is a compile error until it participates.
+    /// Second typecheck pass, after `typecheck0` finished the whole
+    /// tree: `lambda_ids` are final, so call sites can resolve
+    /// statically. No default: every node must recurse into its children.
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
 
-    /// return the node type
+    /// The node's type.
     fn typ(&self) -> &Type;
 
-    /// Populate the Refs structure with all the bind ids either refed or bound
-    /// by the node and it's children
+    /// Record every bind id referenced or bound by the node and its
+    /// children.
     fn refs(&self, refs: &mut Refs);
 
-    /// return the original expression used to compile this node
+    /// The expression this node was compiled from.
     fn spec(&self) -> &Expr;
 
-    /// put the node to sleep, called on unselected branches
+    /// Pause the node (an unselected arm).
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
 
-    /// Clear REPLAY caches — the "last value I saw" memory that
-    /// combineLatest evaluation keeps so one fresh input can combine
-    /// with a quiet other (operand `Cached` wrappers, select's cached
-    /// scrutinee, a call site's published arg values) — while
-    /// preserving SEMANTIC state (`count`'s tally, `once`'s fired
-    /// flag, an accumulated queue). Sequential evaluation calls this
-    /// between frames (a `For` body between iterations, a tail loop
-    /// between jumps) so iteration i−1's sub-results cannot leak into
-    /// iteration i when i's producer bottoms; the caller re-primes
-    /// quiet inputs from the runtime cache (captures are load-bearing
-    /// across frames — see the arm-wake cached-pull delivery).
-    /// **Required, no default impl**: the replay-vs-semantic
-    /// classification is a per-node decision the compiler must force —
-    /// a defaulted no-op on a node with an operand cache is a silent
-    /// wrong-answer bug. Impls recurse into children like `sleep`.
+    /// Clear replay caches (the last-seen input values a node combines
+    /// a fresh input with) while preserving semantic state (a tally, a
+    /// queue, a fired flag). Called between tail-loop frames. No
+    /// default: the classification is per node. Recurses like `sleep`.
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>);
 
-    /// Return a typed view of this node for compile-time analysis.
-    /// **Required, no default impl** — every `Update` impl picks a
-    /// `NodeView` variant. Adding a new node type can't compile
-    /// without choosing a variant; adding a new variant forces
-    /// every exhaustive match consuming `NodeView` to be reviewed.
+    /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R, E>;
 
-    /// Emit this node's computation into the open JIT kernel as CLIF
-    /// and return its SSA result. Emission recursion is distributed —
-    /// an impl compiles its children via `child.emit_clif(cx)`; the
-    /// raw cranelift builder is `cx.b` and the graphix-specific
-    /// surface (env binds, helper FuncRefs, taint/pending) lives on
-    /// [`BodyCx`].
-    ///
-    /// The default is `Err`: this node doesn't emit, so any kernel
-    /// attempt whose subtree contains it fails to compile and the
-    /// subtree node-walks — the universal fallback. Correctness is
-    /// structural: a missing (or not-yet-written) impl can lose
-    /// fusion, never produce a wrong answer.
+    /// Emit this node into the open JIT kernel as CLIF and return its
+    /// SSA result; an impl emits its children via `child.emit_clif(cx)`.
+    /// The default is `Err`: the subtree node-walks.
     fn emit_clif(&self, _cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
         anyhow::bail!(
             "node does not emit CLIF (spec id {:?}, `{}`) — subtree \
@@ -1009,27 +802,11 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
         )
     }
 
-    /// Fuse this subtree. The contract:
-    ///
-    /// - `Ok(Some(replacement))` — "I fused myself: delete me and swap
-    ///   this in." The caller (the parent node, or the compile-time
-    ///   driver for roots) calls `old.delete(ctx)` after the swap.
-    /// - `Ok(None)` — no replacement at this level. The impl already
-    ///   recursed `fuse` into its own children via `&mut self` (using
-    ///   [`fusion::fuse`], which also attempts
-    ///   [`fusion::try_fuse`] on each child) and swapped any
-    ///   that returned a replacement.
-    ///
-    /// Policy is per-node: containers choose where to recurse, and the
-    /// maximal-region property falls out of top-down order (the highest
-    /// subtree whose `try_fuse` succeeds is spliced and nothing below it
-    /// is attempted). The default is
-    /// `Ok(None)` with no recursion. Only Module, Block, Bind,
-    /// CallSite, and TryCatch (plus `Apply` on Lambda) override it to
-    /// descend; the other containers (Sample, Connect, Select, Any,
-    /// the operators, producers) deliberately keep the no-recursion
-    /// default — a sync subtree under them fuses only as part of an
-    /// enclosing block/bind region that fuses as a whole.
+    /// Fuse this subtree. `Ok(Some(replacement))`: the caller swaps it
+    /// in and deletes the old node. `Ok(None)`: the impl already
+    /// recursed into its children via [`fusion::fuse`]. The default is
+    /// `Ok(None)` with no recursion; only the containers fusion
+    /// descends through override it.
     fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         Ok(None)
     }
@@ -1044,47 +821,31 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
     ExprId,
 ) -> Result<Box<dyn Apply<R, E>>>;
 
-/// A builtin's FAST CALL entry (see [`FastCall`]): a pure function
-/// over its present argument values; `None` is "no value this cycle".
-/// The JIT calls it directly with no dispatch machinery.
+/// A builtin's direct-call entry (see [`FastCall`]): a pure function
+/// over present argument values; `None` is bottom this cycle.
 pub type FastFn = fn(&[Value]) -> Option<Value>;
 
-/// The TYPED twin of [`FastFn`]: the same contract, plus the call
-/// site's resolved return `Type` and the environment it resolves in —
-/// for a builtin whose result is DIRECTED by its return type
-/// (`str::parse` casting to its `'b` target).
+/// [`FastFn`] plus the call site's resolved return `Type` and its env,
+/// for a builtin whose result is directed by its return type.
 pub type TypedFastFn = fn(&env::Env, &Type, &[Value]) -> Option<Value>;
 
-/// The direct-call entry a `Stateless` builtin carries
-/// ([`Effect::Stateless`]): a plain function the JIT calls directly at
-/// every fused call site — no site identity, no per-site inner `Apply`,
-/// no `CachedArgs` memo, no allocation beyond the argument buffer. The
-/// kernel decides the production's tag from its argument discs: a
-/// tainted argument bottoms the call WITHOUT invoking the fn (bottom
-/// propagates — the fn only ever sees present values), all-stale
-/// arguments make the result stale, and `None` from the fn is this
-/// cycle's bottom. Meant for CHEAP pure functions: recomputation
-/// replaces the memo, so an expensive fast fn re-evaluates on every
-/// kernel invocation in which any other region input fired. The
-/// node-walk keeps using `init`/`update`; `eval` should delegate to
-/// the same fn so there is one implementation
-/// (`graphix_package_core::fast_eval`). `Typed` is for a builtin whose
-/// result is directed by its call site's resolved RETURN type: the JIT
-/// bakes the site's `CallSite::typ()` beside the fn and loans the
-/// kernel's env for the call, so the fn runs the interp's exact cast.
+/// The direct-call entry of a [`Effect::Stateless`] builtin: the JIT
+/// calls it at every fused site with the present argument values (a
+/// tainted argument bottoms the call without invoking it). It may
+/// re-evaluate whenever any region input fires, so keep it cheap.
+/// `eval` should delegate to the same fn (`graphix_package_core::
+/// fast_eval`). `Typed` also receives the site's resolved return type.
 #[derive(Debug, Clone, Copy)]
 pub enum FastCall {
     Plain(FastFn),
     Typed(TypedFastFn),
 }
 
-/// Trait implemented by graphix built-in functions implemented in rust
+/// A Graphix builtin implemented in Rust.
 pub trait BuiltIn<R: Rt, E: UserEvent> {
-    /// The name of the builtin, this must be package::unique_name for
-    /// builtins in a package
+    /// The builtin's name, `package::unique_name` for a package builtin.
     const NAME: &str;
-    /// The builtin's classification — see [`Effect`] for the three
-    /// questions it answers. The conservative default is `Async`.
+    /// The builtin's classification; see [`Effect`]. Default `Async`.
     const EFFECT: Effect = Effect::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1097,31 +858,17 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     ) -> Result<Box<dyn Apply<R, E>>>;
 }
 
-/// A compile-time check for a `#[..]` attribute. Dispatched by the FUSION
-/// walk (`fusion::fuse`) at each visited decorated node, after that node's
-/// fusion attempt resolved — so `node` is the final (possibly fused) node of
-/// the expression the attribute sits above, and the check sees exactly the
-/// fusion outcome. There is no separate attribute walk; under `--no-fusion`
-/// the walk never runs and registry attributes are vacuously satisfied (the
-/// documented `#[native]` contract). A node absorbed into a strictly-larger
-/// ancestor kernel is never visited — also correct (it IS native).
-/// Returning `Err` turns the attribute into a compile error. Registered on the
-/// `ExecCtx` via [`ExecCtx::register_attribute`], mirroring builtin
-/// registration, so packages can add their own attributes. (The
-/// definition-asserting attributes — `#[tail_recursive]`, `#[sync]`,
-/// `#[async]` — are NOT registry attributes: they are compiler-reserved
-/// names stamped into `ExecCtx::def_assertions` at compile and verified at
-/// the tail of `analysis::analyze`, mode-independently.)
+/// A compile-time check for a `#[..]` attribute, dispatched by the
+/// fusion walk on the final (possibly fused) node of the decorated
+/// expression; under `--no-fusion` it never runs. `Err` is a compile
+/// error. Registered via [`ExecCtx::register_attribute`]. The
+/// definition assertions (`#[tail_recursive]`/`#[sync]`/`#[async]`)
+/// are compiler-reserved, not registry attributes.
 pub type AttributeCheckFn<R, E> = fn(&ExecCtx<R, E>, &Attr, &Node<R, E>) -> Result<()>;
 
-/// A definition assertion stamped by a compiler-reserved attribute
-/// (`#[tail_recursive]` / `#[sync]` / `#[async]`) on a function definition.
-/// Stamped by `node::compiler::compile` when the decorated statement is
-/// built; verified (and removed) at the tail of `analysis::analyze` once the
-/// definition has been reached by the analysis — an assertion on a
-/// not-yet-called definition stays pending until a later compile uses it
-/// (REPL: define now, call later, verified then; dead code is never
-/// verified, like dead code anywhere).
+/// A definition assertion (`#[tail_recursive]` / `#[sync]` /
+/// `#[async]`), verified at the tail of `analysis::analyze` once the
+/// definition is reached; until then it stays pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefAssertionKind {
     Sync,
@@ -1150,20 +897,15 @@ pub(crate) struct DefAssertion {
 
 /// Trait implemented by graphix attributes (`#[name]` / `#[name(args)]`).
 pub trait Attribute<R: Rt, E: UserEvent> {
-    /// The bare attribute name as written in source (e.g. `native` for
-    /// `#[native]`). Attribute names are a flat global namespace — they are
-    /// NOT package-prefixed the way builtin names are.
+    /// The bare attribute name (`native` for `#[native]`); a flat
+    /// global namespace.
     const NAME: &str;
     fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()>;
 }
 
-/// The `#[native]` attribute: the decorated expression must compile to native
-/// code with zero node-walk residue, else it is a compile error. It may only
-/// decorate a value-producing computation or a call — never a function
-/// definition. A `native` requirement on a function value would be infectious
-/// and brittle (such a function could never be stored, dynamically dispatched,
-/// or passed to a non-fusing HOF); a performance requirement belongs at the
-/// use site, so a function-typed target is rejected outright.
+/// `#[native]`: the decorated expression must compile to native code
+/// with zero node-walk residue. A function-typed target is rejected;
+/// the requirement belongs at the use site.
 pub struct Native;
 
 impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
@@ -1177,26 +919,12 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
                  put it on the call site, not the definition"
             );
         }
-        // Fully fused: the decorated node is itself a native kernel. (If it was
-        // absorbed into a strictly-larger ancestor kernel, `for_each_node`
-        // never reaches it and this check doesn't run — also native, correctly.)
         if let NodeView::FusedKernel(_) = node.view() {
             return Ok(());
         }
-        // (Under `--no-fusion` this check never dispatches at all — the
-        // fusion walk doesn't run — the same vacuous pass the old in-check
-        // `fusion.enabled` branch produced: `#[native]` rides in `run!`
-        // interp fixtures and `--no-fusion` bench runs.)
-        // The node survived fusion as node-walk residue. Surface the REAL
-        // blockers, filtering out attempt-then-recurse protocol noise:
-        // `try_fuse` records a `failed` entry for EVERY region root it tries,
-        // including a `let`/block whose own region attempt fails ("node does
-        // not emit CLIF") but whose VALUE fused in a child sub-region. Report
-        // only the LEAF-most failures whose subtree contains NO fused region —
-        // the genuine residue (the call/op that node-walks), not the
-        // structural containers above it. Source identity, rather than the
-        // instance-local ExprId, correlates callback instances with the
-        // compile attempt that produced the failure.
+        // Report only the leaf-most failures whose subtree contains no
+        // fused region: `try_fuse` records a failure for every region
+        // root it tries, containers included.
         let mut report: Vec<&fusion::FusionFailure> = Vec::new();
         fusion::for_each_node(node, &mut |n| {
             let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
@@ -1259,134 +987,86 @@ pub trait Rt: Debug + Any {
 
     fn clear(&mut self);
 
-    /// This will be called by the compiler whenever a bound variable
-    /// is referenced. The ref_by is the toplevel expression that
-    /// contains the variable reference. When a variable event
-    /// happens, you should update all the toplevel expressions that
-    /// ref that variable.
-    ///
-    /// ref_var will also be called when a bound lambda expression is
-    /// referenced, in that case the ref_by id will be the toplevel
-    /// expression containing the call site.
+    /// Called whenever a bound variable (or lambda) is referenced;
+    /// `ref_by` is the toplevel expression containing the reference,
+    /// which must be updated when the variable changes.
     fn ref_var(&mut self, id: BindId, ref_by: ExprId);
     fn unref_var(&mut self, id: BindId, ref_by: ExprId);
 
-    /// Called by the ExecCtx when set_var is called on it.
-    ///
-    /// All expressions that ref the id should be updated when this happens. The
-    /// runtime must deliver all set_vars in a single event except that set_vars
-    /// for the same variable in the same cycle must be queued and deferred to
-    /// the next cycle.
-    ///
-    /// The runtime MUST NOT change event while a cycle is in
-    /// progress. set_var must be queued until the cycle ends and then
-    /// presented as a new batch.
+    /// Queue a variable write for the next cycle. Writes to distinct
+    /// variables are delivered in one event; a second write to the same
+    /// variable waits a cycle. The event must not change mid-cycle.
     fn set_var(&mut self, id: BindId, value: Value);
-    /// Queue a write THROUGH A PATH into a bound variable
-    /// (design/place_references.md): at delivery the variable's value
-    /// as it then stands is rebuilt along `path` with `value` at the
-    /// end. Queued and deferred exactly like `set_var` — same variable,
-    /// same cycle waits a cycle — which is what makes two patches to
-    /// one root land in order on each other's result.
+    /// Queue a write through a path: at delivery the variable's value as
+    /// it then stands is rebuilt along `path` with `value` at the end.
+    /// Deferred exactly like `set_var`.
     fn patch_var(&mut self, id: BindId, path: node::place::Path, value: Value);
-    /// Register the place a reference cell stands for: `&root[i].f`
-    /// mints a cell like any `&`, and this is how `*r` reads through
-    /// the root and `*r <- v` patches it. Re-registered whenever the
-    /// path's keys move; cleared when the reference is deleted.
+    /// Register the place a reference cell stands for (`&root[i].f`), so
+    /// `*r` reads through the root and `*r <- v` patches it.
     fn set_ref_path(&mut self, cell: BindId, root: BindId, path: node::place::Path);
     fn ref_path(&self, cell: &BindId) -> Option<&(BindId, node::place::Path)>;
     fn clear_ref_path(&mut self, cell: &BindId);
 
-    /// The persistent tagged store (design/dense_delivery.md R3): the
-    /// (production, cycle-stamp) of every bound variable's last
-    /// delivery. THE cross-cycle read under dense delivery: a reader
-    /// interprets `stamp == cycle()` as delivered-this-cycle (the
-    /// entry's own tag), an older stamp as the standing value channel
-    /// (Stale — Fired under an init view, R2), and absence as the
-    /// phantom. Maintained AT DELIVERY — when a queued `set_var`
-    /// actually lands in `event.variables` — so a primed read can
-    /// never observe a value AHEAD of the delivery stream (the old
-    /// `ExecCtx`-owned map got this wrong twice — soak jul08l/jul08n).
+    /// The persistent store: the (production, cycle stamp) of every
+    /// bound variable's last delivery. `stamp == cycle()` reads as
+    /// delivered this cycle, an older stamp as standing (Stale; Fired
+    /// under an init view), absence as the phantom. Maintained at
+    /// delivery, never ahead of it.
     fn store(&self) -> &IntMap<BindId, (TagValue, u64)>;
 
-    /// The last delivered VALUE of a bind — the store entry's value
-    /// half. A bind whose last delivery was a bottom yields `None`:
-    /// per ruled delta 7 there is no pre-bottom value to resurrect
-    /// (the sparse `cached` map retained one; that behavior died with
-    /// it at P5b′).
+    /// The last delivered value of a bind; `None` if the last delivery
+    /// was a bottom.
     fn store_value(&self, id: &BindId) -> Option<Value> {
         self.store().get(id).and_then(|(tv, _)| {
             if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
         })
     }
 
-    /// Insert a full tagged production into the store, stamped with
-    /// the current cycle — the same-cycle publishers' seam (`Bind`'s
-    /// publish, the runtime's delivery loop, pattern binds).
+    /// Insert a production into the store, stamped with the current
+    /// cycle.
     fn store_insert(&mut self, id: BindId, tv: TagValue);
 
-    /// Remove a bind from the store — delete/unbind/replay cleanup.
+    /// Remove a bind from the store.
     fn store_remove(&mut self, id: &BindId);
 
-    /// Insert a STANDING entry — value-channel maintenance that is
-    /// deliberately NOT a delivery (`ByRef`'s init seed): stamped as
-    /// an earlier cycle, so a same-cycle reader sees it Standing
-    /// (stale / init-fired), never Delivered.
+    /// Insert a standing entry, stamped as an earlier cycle so a
+    /// same-cycle reader never sees it as delivered.
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue);
 
-    /// The current cycle number — the store's stamp clock.
+    /// The current cycle number.
     fn cycle(&self) -> u64;
 
-    /// Notify the RT that a top level variable has been set internally
-    ///
-    /// This is called when the compiler has determined that it's safe to set a
-    /// variable without waiting a cycle. When the updated variable is a
-    /// toplevel node this method is called to notify the runtime that needs to
-    /// update any dependent toplevel nodes.
+    /// A variable was set within the current cycle; dependent toplevel
+    /// nodes must be updated.
     fn notify_set(&mut self, id: BindId);
 
-    /// arrange to have a Timer event delivered after timeout. When
-    /// the timer expires you are expected to deliver a Variable event
-    /// for the id, containing the current time.
+    /// Deliver a variable event for `id` carrying the current time after
+    /// `timeout`.
     fn set_timer(&mut self, id: BindId, timeout: Duration);
 
-    /// Spawn a task
-    ///
-    /// When the task completes it's output must be delivered as a
-    /// custom event using the returned `BindId`
-    ///
-    /// Calling `abort` must guarantee that if it is called before the
-    /// task completes then no update will be delivered.
+    /// Spawn a task whose output is delivered as a custom event for the
+    /// returned `BindId`. `abort` before completion guarantees no
+    /// delivery.
     fn spawn<F: Future<Output = (BindId, Box<dyn CustomBuiltinType>)> + Send + 'static>(
         &mut self,
         f: F,
     ) -> Self::AbortHandle;
 
-    /// Spawn a task
-    ///
-    /// When the task completes it's output must be delivered as a
-    /// variable event using the returned `BindId`
-    ///
-    /// Calling `abort` must guarantee that if it is called before the
-    /// task completes then no update will be delivered.
+    /// Spawn a task whose output is delivered as a variable event for
+    /// the returned `BindId`. `abort` before completion guarantees no
+    /// delivery.
     fn spawn_var<F: Future<Output = (BindId, Value)> + Send + 'static>(
         &mut self,
         f: F,
     ) -> Self::AbortHandle;
 
-    /// Ask the runtime to watch a channel
-    ///
-    /// When event batches arrive via the channel the runtime must
-    /// deliver the events as custom updates.
+    /// Deliver batches arriving on the channel as custom updates.
     fn watch(
         &mut self,
         s: mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
     );
 
-    /// Ask the runtime to watch a channel
-    ///
-    /// When event batches arrive via the channel the runtime must
-    /// deliver the events variable updates.
+    /// Deliver batches arriving on the channel as variable updates.
     fn watch_var(&mut self, s: mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>);
 }
 
@@ -1394,11 +1074,7 @@ pub trait Rt: Debug + Any {
 pub struct LibState(AHashMap<TypeId, Box<dyn Any + Send + Sync>>);
 
 impl LibState {
-    /// Look up and return the context global library state of type
-    /// `T`.
-    ///
-    /// If none is registered in this context for `T` then create one
-    /// using `T::default`
+    /// The library state of type `T`, created with `T::default` if absent.
     pub fn get_or_default<T>(&mut self) -> &mut T
     where
         T: Default + Any + Send + Sync,
@@ -1410,11 +1086,7 @@ impl LibState {
             .unwrap()
     }
 
-    /// Look up and return the context global library state of type
-    /// `T`.
-    ///
-    /// If none is registered in this context for `T` then create one
-    /// using the provided function.
+    /// The library state of type `T`, created with `f` if absent.
     pub fn get_or_else<T, F>(&mut self, f: F) -> &mut T
     where
         T: Any + Send + Sync,
@@ -1436,7 +1108,7 @@ impl LibState {
         self.0.entry(TypeId::of::<T>())
     }
 
-    /// return true if `T` is present
+    /// True if `T` is present.
     pub fn contains<T>(&self) -> bool
     where
         T: Any + Send + Sync,
@@ -1444,10 +1116,7 @@ impl LibState {
         self.0.contains_key(&TypeId::of::<T>())
     }
 
-    /// Look up and return a reference to the context global library
-    /// state of type `T`.
-    ///
-    /// If none is registered in this context for `T` return `None`
+    /// The library state of type `T`, if registered.
     pub fn get<T>(&mut self) -> Option<&T>
     where
         T: Any + Send + Sync,
@@ -1455,10 +1124,7 @@ impl LibState {
         self.0.get(&TypeId::of::<T>()).map(|t| t.downcast_ref::<T>().unwrap())
     }
 
-    /// Look up and return a mutable reference to the context global
-    /// library state of type `T`.
-    ///
-    /// If none is registered return `None`
+    /// The library state of type `T`, mutably, if registered.
     pub fn get_mut<T>(&mut self) -> Option<&mut T>
     where
         T: Any + Send + Sync,
@@ -1466,9 +1132,7 @@ impl LibState {
         self.0.get_mut(&TypeId::of::<T>()).map(|t| t.downcast_mut::<T>().unwrap())
     }
 
-    /// Set the context global library state of type `T`
-    ///
-    /// Any existing state will be returned
+    /// Set the library state of type `T`, returning any existing state.
     pub fn set<T>(&mut self, t: T) -> Option<Box<T>>
     where
         T: Any + Send + Sync,
@@ -1478,7 +1142,7 @@ impl LibState {
             .map(|t| t.downcast::<T>().unwrap())
     }
 
-    /// Remove and refurn the context global state library state of type `T`
+    /// Remove and return the library state of type `T`.
     pub fn remove<T>(&mut self) -> Option<Box<T>>
     where
         T: Any + Send + Sync,
@@ -1487,16 +1151,10 @@ impl LibState {
     }
 }
 
-/// A registry of abstract type UUIDs used by graphix and graphix libraries,
-/// along with a string tag describing what the type is. We must do this because
-/// you can't register different type ids with the same uuid in netidx's
-/// abstract type system, and because abstract types often need to be
-/// parameterized by the Rt and UserEvent they will have different a different
-/// type id for each monomorphization, and thus they must have a different uuid.
-///
-/// The tag is necessary because non parameterized functions often end up with
-/// an abstract netidx type and want to know generally what it is, for example
-/// printing functions.
+/// A registry of abstract type UUIDs with a string tag per type. Each
+/// monomorphization over Rt/UserEvent is a distinct type id and needs
+/// its own UUID; the tag lets non-parameterized code (printers) know
+/// what a value generally is.
 #[derive(Default)]
 pub struct AbstractTypeRegistry {
     by_tid: AHashMap<TypeId, Uuid>,
@@ -1511,7 +1169,7 @@ impl AbstractTypeRegistry {
         f(&mut *g)
     }
 
-    /// Get the UUID of abstract type T
+    /// The UUID of abstract type T.
     pub(crate) fn uuid<T: Any>(tag: &'static str) -> Uuid {
         Self::with(|rg| {
             *rg.by_tid.entry(TypeId::of::<T>()).or_insert_with(|| {
@@ -1522,12 +1180,12 @@ impl AbstractTypeRegistry {
         })
     }
 
-    /// return the tag of this abstract type, or None if it isn't registered
+    /// The tag of this abstract type, if registered.
     pub fn tag(a: &Abstract) -> Option<&'static str> {
         Self::with(|rg| rg.by_uuid.get(&a.id()).map(|r| *r))
     }
 
-    /// return true if the abstract type has tag
+    /// True if the abstract type has `tag`.
     pub fn is_a(a: &Abstract, tag: &str) -> bool {
         match Self::tag(a) {
             Some(t) => t == tag,
@@ -1536,50 +1194,26 @@ impl AbstractTypeRegistry {
     }
 }
 
-/// Side channel for the interpreter's sync-tail-recursion loop. A
-/// tail-position self-call (`CallSite::update`, flagged
-/// `is_self_tail_call` by `analysis::analyze`) stashes its rebind args
-/// here and returns without dispatching; the enclosing `GXLambda::update`
-/// loop takes it, rebinds the formals, and re-runs the body — looping in
-/// place instead of recursing on the Rust stack. A single slot suffices:
-/// a tail call is the last thing evaluated, and the owning lambda
-/// consumes it immediately on the way back up.
+/// Side channel for the interpreter's tail-recursion loop: a
+/// tail-position self-call stashes its rebind args here and returns;
+/// the enclosing `GXLambda::update` rebinds the formals and re-runs the
+/// body. One slot suffices: a tail call is the last thing evaluated.
 pub(crate) struct PendingTailCall {
-    /// The recursive callee's `LambdaId` — the loop key the owning
-    /// `GXLambda::update` matches against `self.id`.
+    /// The recursive callee's `LambdaId`.
     pub(crate) lambda: LambdaId,
-    /// The self-call's argument values, in callee-formal order. `None`
-    /// means the arg expression produced nothing this jump (bottomed,
-    /// or quiet with no cached value) — the formal RIDES its previous
-    /// value, the interp twin of the kernel's taint-gated tail rebind
-    /// (`emit_tail_rebind_jump`; Eric's ruling 2026-07-15/16: a
-    /// bottomed tail-jump arg rides its previous value on BOTH
-    /// backends). Before this, an incomplete arg set fell through to
-    /// genuine depth-charged recursion, so the same loop agreed with
-    /// the kernel below the depth limit and silently aborted above it
-    /// (jul16a fuzz divergence class B).
-    ///
-    /// Each present arg carries its production TAG (Eric's ruling
-    /// 2026-07-18, the tail_jump_fired_plumbing pin): the rebind used
-    /// to deliver every jumped formal unconditionally FIRED — bare
-    /// `Value`s left it nothing else to go on — which manufactured
-    /// freshness for results that depend on nothing that fired (an
-    /// `n - 1` chain from a quiet entry read as an event). The tag is
-    /// the arg expression's honest production tag, so freshness rides
-    /// the dataflow exactly as the kernel's disc carry does.
+    /// The self-call's argument productions in callee-formal order.
+    /// `None`: the arg produced nothing this jump and the formal rides
+    /// its previous value. Each present arg keeps its own tag, so
+    /// freshness rides the dataflow as the kernel's disc carry does.
     pub(crate) args: smallvec::SmallVec<[Option<TagValue>; 4]>,
 }
 
-/// A call site's INSTANTIATION identity: per argument in source order,
-/// the source lambda ([`node::lambda::LambdaDef::source`]) the argument
-/// statically resolves to, or `None` (not a lambda, or not statically
-/// known). Two sites reaching one def with the same identity are the
-/// same instantiation — a self-call, which shares the instance being
-/// elaborated; different identities are distinct instantiations even
-/// while the def is resolving (a use of the same HOF nested under its
-/// own callback). Keyed on SOURCE identity, not the minted `LambdaId`:
-/// a literal inside an instance body is re-minted per instance compile,
-/// and the regress `f(n, |y| g(y+1))` must still knot at depth two.
+/// A call site's instantiation identity: per argument, the source
+/// lambda ([`node::lambda::LambdaDef::source`]) it statically resolves
+/// to, or `None`. Two sites reaching one def with the same identity are
+/// one instantiation (a self-call); different identities are distinct
+/// even while the def is resolving. Source identity, not `LambdaId`,
+/// because a literal in an instance body is re-minted per compile.
 pub(crate) type FnArgIdentity = smallvec::SmallVec<[Option<ExprId>; 4]>;
 
 #[derive(Clone)]
@@ -1589,16 +1223,12 @@ pub(crate) struct ResolvingLambda {
     pub identity: FnArgIdentity,
 }
 
-/// The active instantiations of one def, innermost last. A stack, not
-/// a slot: `h(g)`'s callback may instantiate `h(k)` while `h(g)` is
-/// still resolving, and a site inside `h(k)` reaching `h(g)` again is a
-/// self-call of the OUTER entry — with a single shadowed slot the two
-/// identities would alternate fresh instances forever.
+/// The active instantiations of one def, innermost last. A stack: a
+/// site inside `h(k)` may reach a still-resolving `h(g)`.
 pub(crate) type ResolvingStack = smallvec::SmallVec<[ResolvingLambda; 2]>;
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
-    /// The active instantiation of `def` with exactly this identity —
-    /// the instance a nested site with that identity is a self-call of.
+    /// The active instantiation of `def` with exactly this identity.
     pub(crate) fn resolving(
         &self,
         def: LambdaId,
@@ -1614,8 +1244,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 
     /// The innermost active instantiation of `def`, whatever its
-    /// identity — what a bare VALUE reference to the def inside a
-    /// resolving body refers to (it has no arguments to key on).
+    /// identity: what a bare value reference inside a resolving body
+    /// refers to.
     pub(crate) fn resolving_innermost(&self, def: LambdaId) -> Option<ResolvingLambda> {
         self.resolving_lambdas.lock().get(&def)?.last().cloned()
     }
@@ -1624,9 +1254,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.resolving_lambdas.lock().entry(def).or_default().push(r)
     }
 
-    /// Retire the entry `push_resolving` made for `instance` (the
-    /// innermost such — entries nest like the resolutions that made
-    /// them).
+    /// Retire the innermost entry `push_resolving` made for `instance`.
     pub(crate) fn pop_resolving(&self, def: LambdaId, instance: LambdaInstanceId) {
         let mut map = self.resolving_lambdas.lock();
         if let Some(stack) = map.get_mut(&def) {
@@ -1641,167 +1269,64 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
 }
 
 pub struct ExecCtx<R: Rt, E: UserEvent> {
-    // used to wrap lambdas into an abstract netidx value type
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
-    // all registered built-in functions
     builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
-    // all registered attributes (`#[name]`), keyed by bare name. An attr whose
-    // name is absent here is an "unknown attribute" compile error; present
-    // names are checked post-fusion via their `AttributeCheckFn`.
     attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
-    // whether calling built-in functions is allowed in this context, used for
-    // sandboxing
+    // Sandboxing.
     builtins_allowed: bool,
-    // hash consed variant tags
     tags: AHashSet<ArcStr>,
-    /// context global library state for built-in functions
+    /// Library state for builtins.
     pub libstate: LibState,
-    /// the language environment, typdefs, binds, lambdas, etc
+    /// The language environment: typedefs, binds, lambdas.
     pub env: Env,
-    /// the runtime
+    /// The runtime.
     pub rt: R,
-    /// LambdaDefs indexed by LambdaId, used by `CallSite::typecheck1` to
-    /// reach each callee/callback's retained check `Apply` (`def.check`).
+    /// LambdaDefs by LambdaId.
     pub lambda_defs: IntMap<LambdaId, Value>,
-    /// The value seam's hook-site registry (`node::coretraits`): the
-    /// call sites through which `Value` comparison and printing reach
-    /// core-trait implementations, keyed by `(trait, AbstractId)` and
-    /// built on first use.
+    /// The call sites through which `Value` comparison and printing
+    /// reach core-trait implementations, built on first use.
     pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
-    /// `BindId → LambdaDef Value` for every lambda binding in the current
-    /// compile BATCH. Populated during `typecheck0` (each
-    /// `Bind::typecheck0` records its own binding, `Module::typecheck0`
-    /// adds the signature→impl proxy entries) so it is globally complete
-    /// before `typecheck1` runs the static-resolution it feeds: a
-    /// `CallSite` whose `fnode` is a `Ref` looks its `BindId` up here to
-    /// pre-bind to a known lambda. This is a compile-time ANALYSIS map,
-    /// deliberately kept out of `cached` (runtime state) — see
-    /// `CallSite::typecheck1`.
-    ///
-    /// Scoped to the BATCH, not the individual `compile` call: the RT
-    /// compiles a program's top-level statements as SEPARATE `compile`
-    /// calls, so clearing per-`compile` would hide a lambda defined in
-    /// one statement (`let rec f = …`) from a call in a later statement
-    /// (e.g. inside an HOF callback — #203). PERSISTENT across batches
-    /// since the jul12 shell resolution-flap fix: the old per-batch
-    /// clear dropped the stdlib's entries before the user file
-    /// compiled, so resolution fell to the `store_value` fallback and
-    /// FUSION became a race against the previous batch's init cycle.
-    /// Each RT batch entry instead prunes the OUTGOING batch's
-    /// `unstable_bindings` (exactly the `<-`-retargeted lambdas the
-    /// clear guarded against — shadowing mints fresh BindIds, so a
-    /// pruned id can't be re-inserted with a stale value), and
-    /// `Bind::delete` removes its ids (bounds growth on long-lived
-    /// LSP/REPL runtimes). BindIds are globally unique, so
-    /// accumulation is collision-free; the `unstable_bindings` guard
-    /// still excludes the current batch's `<-` targets at read time.
+    /// `BindId → LambdaDef Value` for every lambda binding, filled in
+    /// `typecheck0` so `typecheck1`'s static resolution sees it
+    /// complete. Persistent across batches (`Bind::delete` removes
+    /// its ids); the `unstable_bindings` guard excludes `<-` targets
+    /// at read time.
     pub bind_to_lambda: IntMap<BindId, Value>,
-    /// BindIds of bindings that are the target of a `<-` (Connect)
-    /// somewhere in the program. Populated lazily by
-    /// [`node::Connect::compile`] — every Connect resolves
-    /// its target name to a BindId via `env.lookup_bind`, and that
-    /// BindId is recorded here. Fusion's stability checks consult
-    /// this set to determine whether a Bind's value can be safely
-    /// fused (a `<-` target rebinds at runtime, so a static splice
-    /// into native code would dispatch into stale state).
+    /// The `<-` targets of the current compile batch, recorded by
+    /// [`node::Connect::compile`]; a `<-` target rebinds at runtime and
+    /// must not be statically resolved.
     pub unstable_bindings: IntSet<BindId>,
-    /// The same `<-` targets, but DURABLE: `unstable_bindings` is
-    /// cleared at the head of every compile batch and repopulated as
-    /// that batch's Connects compile, so it only ever names the current
-    /// batch. `Bind::update` needs the question answered for the whole
-    /// program lifetime — a select arm's wake must not reseed a `<-`
-    /// target that already holds a value (sleep is PAUSE) — and a REPL
-    /// or dynamic-module batch compiled afterwards would otherwise wipe
-    /// the answer for every earlier arm. Populated beside
-    /// `unstable_bindings` by [`node::Connect::compile`]; `Bind::delete`
-    /// removes its ids, so growth is bounded exactly as
-    /// `bind_to_lambda`'s is.
+    /// Every `<-` target for the program's lifetime (`unstable_bindings`
+    /// is per batch): `Bind::update` must not reseed a woken target that
+    /// holds a value. `Bind::delete` removes its ids.
     pub connect_targets: IntSet<BindId>,
-    /// `(scope, name)` → builtin metadata for bindings whose value
-    /// is a builtin lambda (i.e. `let foo = |...| 'builtin_name`).
-    /// Keyed by name+scope rather than `BindId` because sig and
-    /// impl share the same `(scope, name)` but get distinct
-    /// `BindId`s — external Refs resolve to the SIG id while
-    /// `Bind::compile` registers under the IMPL id, so a `BindId`-
-    /// keyed map would miss external lookups. Name+scope is the
-    /// single canonical key that both sides see consistently.
-    ///
-    /// The info captures everything fusion needs to recognise an
-    /// `Apply` site whose `function` resolves to this binding as a
-    /// builtin call: the canonical builtin `name` (matches
-    /// `ctx.builtins`), the source-level `argspec` (with default
-    /// expressions for labeled args), and the resolved `FnType`.
-    ///
-    /// Populated by [`node::bind::Bind::compile`] when the
-    /// value being bound is an `ExprKind::Lambda` with
-    /// `body == Either::Right(name)`. User-lambda bindings leave
-    /// no entry here; only builtin lambdas appear.
+    /// Builtin metadata for `let foo = |...| 'builtin_name` bindings.
+    /// Keyed by `(scope, name)` because a sig and its impl share the
+    /// name but have distinct `BindId`s.
     pub builtin_bindings: AHashMap<(ModPath, CompactString), BuiltinBindInfo>,
-    /// `LambdaId`s whose def-time body typecheck is IN PROGRESS
-    /// (`Lambda::typecheck0`'s faux instantiation). A `CallSite` whose
-    /// callee ftype carries one of these ids is a recursive self-call
-    /// inside the very body being checked: it must unify against the
-    /// def's OWN ftype cells instead of a `reset_tvars` freshening —
-    /// monomorphic recursion. The knot makes the μ-equation collapse
-    /// (`'r ⊇ [T, 'r]` binds `'r := T` through the same-cell rule) and
-    /// makes a self-call arg mismatch a def-time error, exactly as it
-    /// is for the non-recursive twin. A freshened self-call instead
-    /// leaves an orphan cell in the arm union that `constrain_known`
-    /// widens to `Any` — the recursive lambda's checked signature
-    /// silently degrades (soak jul05 items 11/17).
+    /// `LambdaId`s whose def-time body typecheck is in progress: a
+    /// self-call inside such a body unifies against the def's own
+    /// ftype cells (monomorphic recursion), not a freshening.
     pub(crate) rec_defs: nohash::IntSet<LambdaId>,
-    /// Param-call knot for the definition gate: the
-    /// fn-typed arg-pattern BindIds of the lambda def(s) currently
-    /// being body-checked. A callsite whose fnode is a Ref to one of
-    /// these unifies against the param's OWN declared FnType cells
-    /// (a shallow clone — the same knot `rec_defs` gives self-calls)
-    /// instead of a freshened instantiation, so `f(v)` inside
-    /// `|f: fn(x: 'a) -> 'b, …|` types as the def's rigid 'b and the
-    /// declared-rtype acceptance check can see the body delivers it.
+    /// The fn-typed parameter BindIds of the defs being body-checked: a
+    /// call through one unifies against the param's own declared cells,
+    /// so `f(v)` types as the def's rigid 'b.
     pub(crate) def_gate_params: nohash::IntSet<BindId>,
-    /// Def-gate nesting depth. `constrain_known` (the obs4 def-time
-    /// fact conjuncts) runs only at depth 1: a lambda gated INSIDE an
-    /// enclosing def's gate (an inline HOF callback) has inferred
-    /// cells still entangled with the enclosing inference, and
-    /// recording them as CLOSED facts (`bind_as(Any)` snapshots) can
-    /// bind a shared cell to `Array<Any>` and make the enclosing rigid
-    /// return-type check reject its own body.
+    /// Def-gate nesting depth; a nested gate's cells are still
+    /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas:
         Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingStack>>>,
-    /// Per-callsite-instance param BindId → the `LambdaId` it was
-    /// FORWARDED (`premat_fn_args`, the successful re-drive path only).
-    /// A forwarded fn formal's `bind_to_lambda` entry is scoped to its
-    /// re-drive and gone by fusion time, but the kernel cache key
-    /// (`FnResolutions`) must still distinguish two instances that
-    /// forward different callbacks through the same callee — this is the
-    /// persistent record the fingerprint reads when the b2l entry has
-    /// been torn down. Keyed by fresh instance BindIds, so a stale entry
-    /// is reachable only from its own instance body (collision-free); the
-    /// guard-blocked recursive-rebind path deliberately records nothing,
-    /// so a shared recursive instance can't be clobbered.
+    /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
+    /// the persistent record the kernel cache fingerprint reads after
+    /// the re-drive's `bind_to_lambda` entry is gone.
     pub(crate) fn_forward_resolutions: IntMap<BindId, LambdaId>,
-    /// DEFERRED terminal settles, a stack of FRAMES — one per
-    /// resolution scope. Each call site's `typecheck1` pushes its
-    /// resolved signature into the CURRENT frame instead of settling
-    /// in place; statement boundaries (Block/Module children,
-    /// `compile_stmt`'s tail) drain the current frame, so a later
-    /// statement's resolution (trait dispatch reading its self type —
-    /// a never() arm's cell must already be ⊥) sees settled facts
-    /// exactly as it did when sites settled in place — INCLUDING the
-    /// statements of a lambda body typechecked inside an instance
-    /// re-drive, which get their own frame. A site's re-drives run
-    /// under a fresh frame, and whatever remains when the re-drive
-    /// returns (entries whose cells the SITE's resolution owns — the
-    /// collection prototype's signature) merges UP to the parent frame
-    /// and drains only after the enclosing writers have run: settling
-    /// them in place ⊥-settled find_map's `'b` mid-resolution, and the
-    /// extracted-callback spelling failed "Option<_> does not contain
-    /// [i64, null]" while the inline spelling compiled. A settle is
-    /// sound only after every writer in its scope has run — the
-    /// jul22e discriminator's premise, made structural. Entries:
-    /// (resolved sig, the site's own rtype cell, defaulted-arg cells
-    /// exempt from settling, the site spec for error context).
+    /// Deferred terminal settles, one frame per resolution scope. A
+    /// call site pushes its resolved signature into the current frame;
+    /// statement boundaries drain it, so a settle runs only after every
+    /// writer in its scope. A re-drive's leftovers merge up to the
+    /// parent frame. Entries: (resolved sig, the site's rtype cell,
+    /// defaulted-arg cells exempt from settling, the site spec).
     pub(crate) pending_settles: Vec<
         Vec<(
             typ::FnType,
@@ -1810,117 +1335,55 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
             triomphe::Arc<expr::Expr>,
         )>,
     >,
-    /// All state owned by the fusion subsystem — the JIT module,
-    /// kernel caches, abstract-type registry, builtin effects, and the
-    /// compile-time fusion flags/counters. Grouped into one struct so
-    /// `ExecCtx` isn't cluttered with loose fusion fields; reached as
-    /// `ctx.fusion.<x>`. See [`fusion::FusionCtx`].
+    /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
-    /// Runtime side channel for the interpreter's tail-call loop. See
-    /// [`PendingTailCall`]. `None` except for the instant between a tail
-    /// self-call stashing its args and the owning lambda consuming them.
+    /// See [`PendingTailCall`].
     pub(crate) pending_tail_call: Option<PendingTailCall>,
     /// Imports whose terminal name did not exist when the `use`
-    /// compiled (a `use self::sub::x` may legitimately precede
-    /// `mod sub;` in body order). Drained and re-checked at the end
-    /// of [`compile_stmt`] — an entry still naming nothing is a
-    /// compile error there, so a typo'd import cannot ride along
-    /// silently.
+    /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
+    /// at the end of [`compile_stmt`].
     pub(crate) pending_imports: Vec<PendingImport>,
-    /// Module names pre-registered by a block's headers scan (one
-    /// AST pass over each block's direct children before they
-    /// compile), making `mod` declaration order irrelevant to name
-    /// resolution. The `Module` compile arm removes its own entry
-    /// instead of tripping the duplicate-module guard on it.
+    /// Module names pre-registered by a block's header scan, so `mod`
+    /// declaration order does not matter.
     pub(crate) predeclared_mods: AHashSet<ModPath>,
-    /// `LambdaId`s whose `GXLambda::update` is currently ON the Rust
-    /// call stack, with activation counts (a multiset — recursion
-    /// activates the same id many times). `CallSite::bind` consults it:
-    /// binding a callee whose def is already active is a recursive
-    /// unfold, and a qualifying body (see
-    /// `callsite::transient_body_ok`) binds TRANSIENT — the instance is
-    /// deleted when its dispatch returns, so non-tail recursion holds
-    /// O(depth) instances instead of one per dynamic call (the full
-    /// call TREE — fib(28) retained 1M instances / 9.6GB).
+    /// `LambdaId`s whose `GXLambda::update` is on the Rust stack, with
+    /// activation counts. `CallSite::bind` binds a recursive unfold
+    /// transient (`callsite::transient_body_ok`), so non-tail recursion
+    /// holds O(depth) instances.
     pub(crate) active_lambdas: nohash::IntMap<LambdaId, u32>,
-    /// Interrupt/abort control, shared (cloned `Arc`) with the runtime
-    /// handle. Loops poll it via [`Self::interrupted`] to abort a wedge;
-    /// the runtime polls `control.aborted()` to shut down. See [`Control`].
+    /// Interrupt/abort control, shared with the runtime handle. See
+    /// [`Control`].
     pub control: Arc<Control>,
-    /// Runtime diagnostics produced during the current cycle — failures
-    /// whose value-level outcome is BOTTOM by design (no value, nothing
-    /// to catch) but that users still need to hear about. Trip sites
-    /// push here; the runtime drains after each node update and
-    /// forwards to embedders through its event stream (the shell prints
-    /// them). See [`RtDiagnostic`].
+    /// Runtime diagnostics produced during the current cycle; see
+    /// [`RtDiagnostic`].
     pub diagnostics: Vec<RtDiagnostic>,
-    /// Non-zero while executing a tail-loop re-entry against a private,
-    /// per-frame variables map (see `reset_replay`). Frame-only behaviors
-    /// (a call site's
-    /// stale-channel arg delivery; error sites producing silent tainted
-    /// placeholders instead of the logged None) gate on this so
-    /// reactive-land semantics are untouched. A counter, not a bool:
-    /// frames nest. The per-value fired/taint channels themselves ride
-    /// [`TagValue`] — see `design/dense_delivery.md`.
+    /// Non-zero while a tail-loop re-entry runs against a private
+    /// per-frame variables map; frame-only behaviors gate on it. A
+    /// counter: frames nest.
     pub(crate) frame_depth: u32,
-    /// The REAL `event.init` of the dispatch whose evaluation frames
-    /// are currently running (frames FORCE `event.init` for
-    /// re-derivation, so literal nodes can't read the flag directly).
-    /// The interp twin of the kernel's `init_flag` wire slot, which is
-    /// uniform across all of an invocation's loop iterations: a
-    /// constant inside a frame produces FIRED iff the dispatch itself
-    /// was a genuine init (`const_stale_gate`). Only meaningful when
-    /// `frame_depth > 0`.
+    /// The real `event.init` of the dispatch whose frames are running
+    /// (frames force `event.init` for re-derivation). Only meaningful
+    /// when `frame_depth > 0`.
     pub(crate) frame_init: bool,
-    /// Set true ONLY while a `Select::update` sleeps an arm it is
-    /// actively DESELECTING — a recursion shrinking, i.e. the loop
-    /// reached a shallower depth this cycle. A recursive-edge
-    /// `CallSite::sleep` under this flag DELETES its callee instead of
-    /// retaining it, so a depth no longer reached is reclaimed and
-    /// re-reaching it is a FRESH activation: the collection-slot rule
-    /// (MapQ's delete-on-shrink) applied to recursion. Cleared crossing
-    /// into any callee body (`GXLambda::sleep`) so a whole-recursion
-    /// PAUSE (an outer arm deselecting the entire call) and an external
-    /// call sitting in the deselected arm both RETAIN (sleep-is-pause).
-    /// Off everywhere else.
+    /// Set only while a `Select::update` sleeps an arm it is
+    /// deselecting: a recursive-edge `CallSite::sleep` under it deletes
+    /// its callee (shrink = delete). Cleared crossing into any callee
+    /// body, so a whole-recursion pause retains.
     pub(crate) shrink_unwind: bool,
-    /// Accumulates the tail-spine selects' scrutinee firing across one
-    /// tail-loop dispatch — the interp twin of the kernel's
-    /// `tail_scrut_stale` loop accumulator, which every
-    /// `emit_kernel_return` folds into the result disc: a dispatch's
-    /// result fires if its value chain fired OR any tail-select
-    /// scrutinee on the executed path did (control-dependence firing).
-    /// Tail-spine selects OR into it (`node/select.rs`); the tail-loop
-    /// dispatch saves/resets it on entry and applies it in the
-    /// result-tag derivation (`node/lambda.rs`).
+    /// Whether any tail-spine select's scrutinee fired during the
+    /// current tail-loop dispatch: the dispatch's result fires if its
+    /// value chain did or any such scrutinee did.
     pub(crate) tail_scrut_fired: bool,
-    /// Pending definition assertions (see [`DefAssertion`]): stamped at
-    /// compile, verified and removed at `analysis::analyze`'s tail once the
-    /// asserted definition is reached by the analysis. Persistent across
-    /// compiles (a REPL definition is verified when a later statement calls
-    /// it); deduped on push.
+    /// Pending definition assertions; see [`DefAssertion`].
     pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
-    /// Registry-attribute honesty census (reset per `compile_stmt`): every
-    /// registry attribute (`#[native]`, package attrs) recorded at compile
-    /// must, by the end of the fusion walk, have been DISPATCHED
-    /// (`fusion::check_node_attributes`) or ABSORBED into a successfully
-    /// fused region (collected at splice) — anything left over sits in a
-    /// position the fusion walk cannot reach, and lying silently is not an
-    /// option: `compile_stmt` errors on it. Empty census ⇒ zero work.
+    /// Registry attributes recorded this `compile_stmt`; each must be
+    /// dispatched or absorbed by the fusion walk, or the statement errors.
     pub(crate) attr_census: Mutex<Vec<Expr>>,
     pub(crate) attr_dispatched: Mutex<IntSet<ExprId>>,
     pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
     /// Variable deliveries raised inside an evaluation frame that must
-    /// ESCAPE it. A frame runs the body against a PRIVATE
-    /// `event.variables` map, which is the point — an interior publish
-    /// dies with the pass. But an error delivery to a `catch` handler
-    /// is outward-bound, like a `<-` to a binding outside the lambda,
-    /// and the private map swallowed it, so the handler never ran
-    /// (`findings/qop-tailloop-frame-swallow-aug2026`). `Qop::update`
-    /// parks the delivery here
-    /// instead; `GXLambda::update` drains it into the real map once the
-    /// frames unwind. Nested frames bubble: the drain only runs at
-    /// `frame_depth == 0`.
+    /// escape it (an error delivery to a `catch` handler); drained into
+    /// the real map at `frame_depth == 0`.
     pub(crate) frame_outbox: Vec<(BindId, Value)>,
 }
 
@@ -1930,22 +1393,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.rt.clear();
     }
 
-    /// True while an evaluation frame (a tail-loop pass's private
-    /// re-derivation) is running. Read-only; for `Apply` authors whose
-    /// wake catch-up must exclude frames (the QUIET rule — a framed
-    /// pass is loop plumbing, not the reactive world).
+    /// True while an evaluation frame (a tail-loop pass) is running.
     pub fn in_frame(&self) -> bool {
         self.frame_depth > 0
     }
 
-    /// Build a new execution context.
-    ///
-    /// This is a very low level interface that you can use to build a
-    /// custom runtime with deep integration to your code. It is very
-    /// difficult to use, and if you don't implement everything
-    /// correctly the semantics of the language can be wrong.
-    ///
-    /// Most likely you want to use the `rt` module instead.
+    /// Build a new execution context. A low-level interface for custom
+    /// runtimes; most embedders want `graphix-rt`.
     pub fn new(user: R) -> Result<Self> {
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
@@ -1988,24 +1442,18 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             attr_absorbed: Mutex::new(IntSet::default()),
             frame_outbox: Vec::new(),
         };
-        // `#[native]` is a language-level attribute (its check is
-        // compiler-internal), so it is registered here rather than by a
-        // package. Other attributes can be registered via `register_attribute`.
         this.register_attribute::<Native>()?;
         Ok(this)
     }
 
-    /// True if an `interrupt()` or `abort()` is pending on this context's
-    /// [`Control`]. Loopy builtins (and the interpreter's tail loop)
-    /// poll this at their loop head and `return None` to abort a wedge.
+    /// True if an `interrupt()` or `abort()` is pending; loops poll this
+    /// at their head.
     pub fn interrupted(&self) -> bool {
         self.control.interrupted()
     }
 
     /// Open a compile frame for a node built at runtime outside any
-    /// statement (a callable's call site): the fusion top id and a fresh
-    /// deferred-settles frame, what `compile_stmt` opens for a statement
-    /// before [`check_and_fuse`] closes it.
+    /// statement, as `compile_stmt` does before [`check_and_fuse`].
     pub fn begin_runtime_node(&mut self, top_id: ExprId) {
         self.fusion.top_id = Some(top_id);
         self.pending_settles.clear();
@@ -2038,22 +1486,18 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         Ok(())
     }
 
-    /// The check fn for a registered attribute, or `None` if `name` is not a
-    /// known attribute. Used by the compiler to reject unknown attributes and
-    /// by the fusion walk to dispatch each known attribute's check.
+    /// The check fn for a registered attribute.
     pub fn lookup_attribute(&self, name: &str) -> Option<AttributeCheckFn<R, E>> {
         self.attributes.get(name).copied()
     }
 
-    /// Look up the sync/async effect of a registered builtin. Returns
-    /// `EffectKind::Async` (the conservative default) for unknown names
-    /// so callers don't need to handle the "missing" case specially.
+    /// A registered builtin's effect; `Async` for unknown names.
     pub fn builtin_effect(&self, name: &str) -> EffectKind {
         self.fusion.builtin_facts.get(name).map(|f| f.effect).unwrap_or_default()
     }
 
-    /// Whether a registered builtin is [`Effect::Stateless`]. Returns
-    /// `false` (the conservative default) for unknown names.
+    /// Whether a registered builtin is [`Effect::Stateless`]; `false`
+    /// for unknown names.
     pub fn builtin_stateless(&self, name: &str) -> bool {
         self.fusion.builtin_facts.get(name).map(|f| f.stateless).unwrap_or(false)
     }
@@ -2064,11 +1508,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.fusion.builtin_facts.get(name).and_then(|f| f.fastcall)
     }
 
-    /// Wrap a `LambdaDef` into a `Value` that can be returned from a builtin
-    /// as a first-class function value. The runtime handles the resulting
-    /// Value as a callable lambda — call sites resolve against the LambdaDef's
-    /// `init` to construct an Apply impl. Also registers the LambdaDef in
-    /// `lambda_defs` so deferred typechecking can find it.
+    /// Wrap a `LambdaDef` into a first-class function `Value` and
+    /// register it in `lambda_defs`.
     pub fn wrap_lambda(&mut self, def: LambdaDef<R, E>) -> Value {
         let id = def.id;
         let v = self.lambdawrap.wrap(def);
@@ -2086,9 +1527,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
     }
 
-    /// Restore the lexical environment to the snapshot `env` for the duration
-    /// of `f` restoring it to it's original value afterwords. `by_id` and
-    /// `lambdas` defined by the closure will be retained.
+    /// Run `f` with the lexical environment restored to `env`, then put
+    /// the current one back. Bindings `f` creates are retained.
     pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(&mut self, env: Env, f: F) -> T {
         let snap = self.env.restore_lexical_env(env);
         let orig = mem::replace(&mut self.env, snap);
@@ -2097,11 +1537,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         r
     }
 
-    /// Restore the lexical environment to the snapshot `env` for the duration
-    /// of `f` restoring it to it's original value afterwords. `by_id` and
-    /// `lambdas` defined by the closure will be retained. `env` will be mutated
-    /// instead of requiring a clone, this allows maintaining continuity in two
-    /// different envs across multiple invocations
+    /// [`Self::with_restored`] mutating `env` in place, so two envs
+    /// keep continuity across invocations.
     pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
         &mut self,
         env: &mut Env,
@@ -2116,8 +1553,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 }
 
-/// A deferred import-existence check: see
-/// [`ExecCtx::pending_imports`].
+/// A deferred import-existence check; see [`ExecCtx::pending_imports`].
 #[derive(Debug)]
 pub(crate) struct PendingImport {
     pub(crate) scope: ModPath,
@@ -2126,12 +1562,9 @@ pub(crate) struct PendingImport {
     pub(crate) ori: triomphe::Arc<expr::Origin>,
 }
 
-/// The lexical and dynamic scope of a point in a program. The lexical
-/// half is a path that names the point in the source (module and
-/// block nesting); the dynamic half is the chain of installed error
-/// handlers visible to a `?` there, which follows the CALL chain: an
-/// instantiated body starts from its call site's dynamic scope and its
-/// definition's lexical scope.
+/// The lexical scope (module and block nesting path) and dynamic scope
+/// (the error handlers visible to a `?`, following the call chain) of
+/// a point in a program.
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub lexical: ModPath,
@@ -2158,14 +1591,9 @@ impl Scope {
     }
 }
 
-/// The dynamic scope: the chain of installed error handlers visible
-/// at a point, innermost first. One node per handler install and
-/// nothing else — an activation whose body installs no handler shares
-/// its caller's scope outright, so the chain is as long as the number
-/// of handlers between a point and the program root, never as long as
-/// the call chain. Each node names the handler's error-variable bind
-/// and the top the handler node lives under (cross-top deliveries
-/// take the `set_var` path).
+/// The chain of installed error handlers visible at a point, innermost
+/// first, one node per install. Each node names the handler's
+/// error-variable bind and the top it lives under.
 #[derive(Clone, Default)]
 pub struct DynScope(Option<ErrorHandler>);
 
@@ -2259,10 +1687,8 @@ impl std::fmt::Debug for DynScope {
     }
 }
 
-/// The chain can be as deep as a recursion that installs a handler per
-/// activation, so the default drop glue's recursion into `parent` is
-/// unwound into a loop: each node whose only owner was its child is
-/// taken apart here, never inside a nested drop.
+/// The chain can be as deep as a recursion, so the drop is a loop, not
+/// glue recursing into `parent`.
 impl Drop for DynNode {
     fn drop(&mut self) {
         let mut next = self.parent.0.take();
@@ -2275,10 +1701,9 @@ impl Drop for DynNode {
     }
 }
 
-/// Format a generated block-scope component. The `#` prefix marks it
-/// as a non-module level: identifiers cannot start with `#`, so a
-/// scope path structurally records where the enclosing module ends —
-/// [`mod_root`] strips trailing marked components.
+/// Format a generated block-scope component. The `#` prefix marks a
+/// non-module level (identifiers cannot start with `#`); [`mod_root`]
+/// strips them.
 pub fn block_component(kind: &str, id: u64) -> CompactString {
     compact_str::format_compact!("#{kind}{id}")
 }
@@ -2305,8 +1730,8 @@ pub fn mod_root(mut scope: &str) -> &str {
     scope
 }
 
-/// compile the expression into a node graph in the specified context
-/// and scope, return the root node or an error if compilation failed.
+/// Compile the expression into a node graph in the given context and
+/// scope, returning the root node.
 pub fn compile<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -2318,14 +1743,8 @@ pub fn compile<R: Rt, E: UserEvent>(
 
 /// The passes every node runs after it is built and before it updates:
 /// both typecheck passes, the deferred settles, function-property
-/// analysis (effect + recursion — the node-walk reads its tail-loop
-/// facts too, not just fusion; it needs resolved call sites and a
-/// complete `bind_to_lambda`, so it follows typecheck1 and precedes
-/// fusion), the typedef resolution-cell seeding (every name's final
-/// target is registered exactly here, in BOTH modes — seeding under the
-/// fusion gate alone made `--no-fusion` a different typechecker), and
-/// fusion. Runtime-built nodes — a callable's call site — run it too:
-/// nothing skips typechecking. The caller restores its env on `Err`.
+/// analysis, typedef resolution-cell seeding (in both modes) and
+/// fusion. The caller restores its env on `Err`.
 pub fn check_and_fuse<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     node: &mut Node<R, E>,
@@ -2349,17 +1768,9 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Drain the DEFERRED terminal settles (see
-/// [`ExecCtx::pending_settles`]): run after each TOP-LEVEL statement
-/// (Block/Module children, gated on no re-drive being in progress)
-/// and at `compile_stmt`'s tail — by then every writer for the
-/// drained sites has run, the sound moment for the jul22e
-/// discriminator (open + unconstrained cells settle, refused ones
-/// error), and a LATER statement's resolution (trait dispatch reads
-/// its self type; the never()-arm cell must already be ⊥) sees the
-/// settled facts exactly as it did when sites settled in place. Push
-/// order = inner sites first; each entry is dependency-ordered
-/// internally by `settle_terminal`.
+/// Drain the deferred terminal settles ([`ExecCtx::pending_settles`])
+/// after a top-level statement, once every writer for the drained
+/// sites has run.
 pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
 ) -> Result<()> {
@@ -2372,31 +1783,18 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// [`compile`] for statement-list drivers that compile top-level
-/// expressions ONE AT A TIME (the shell REPL, `compile_root`, the
-/// checker) instead of through a file's synthetic `Do` wrap: a
-/// top-level `catch(e) expr` is legal here — it is statement position
-/// — and ADVANCES the scope for the statements that follow, exactly
-/// like a catch child inside a block. Thread the returned scope into
-/// the next statement's compile (and, for a live session, persist it)
-/// or later statements silently escape the catch's coverage. For
-/// every other expression kind the scope is returned unchanged.
+/// [`compile`] for drivers that compile top-level statements one at a
+/// time (REPL, checker). A top-level `catch(e) expr` advances the scope
+/// for the statements that follow: thread the returned scope into the
+/// next compile, or later statements escape the catch's coverage.
 pub fn compile_stmt<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: Expr,
 ) -> Result<(Node<R, E>, Scope)> {
-    // Fusion runs whenever the program typechecks — including in check/lsp
-    // runtimes, which it makes safe two ways: (1) fusion's emit path never
-    // panics; on any malformed input it returns Err and de-fuses to the
-    // node-walk (the universal correct fallback), so an ill-typed expr that
-    // slips past lsp's keep-going typecheck can at worst lose fusion, never
-    // crash; and (2) `#[native]` needs fusion to actually run during a check
-    // to verify its contract. The one real precondition — that the program
-    // typechecked — is already enforced structurally: typecheck0/1 + analyze
-    // (below) early-return on any error before the fusion call, so fusion is
-    // reached iff this expr is well-typed.
+    // Fusion also runs in check/lsp runtimes: `#[native]` needs it to
+    // verify its contract, and a malformed input only de-fuses.
     ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled);
     ctx.attr_census.lock().clear();
     ctx.attr_dispatched.lock().clear();
@@ -2414,11 +1812,8 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
             let c = c.clone();
             node::error::Catch::compile(ctx, flags, spec, scope, top_id, &c)
         }
-        // `mod`/`use`/`type`/`trait`/`impl` are declarations, legal as a
-        // top-level statement. The general `compile` rejects them (they
-        // are not expressions — see the `compile_kind` arms); compile
-        // them directly here, the statement-position twin of
-        // `compile_block_children`'s dispatch.
+        // Declarations are legal only in statement position; `compile`
+        // rejects them.
         expr::ExprKind::Use { reexport, names } => {
             let (reexport, names) = (*reexport, names.clone());
             node::compile_use(ctx, flags, spec, scope, reexport, &names)
@@ -2456,10 +1851,8 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         }
     };
     info!("compile time {:?}", st.elapsed());
-    // Deferred import-existence checks: a `use` whose terminal name
-    // didn't exist at its compile position (e.g. `use self::sub::x`
-    // ahead of `mod sub;`) must name something by the end of the
-    // statement, so a typo'd import cannot ride along silently.
+    // A `use` whose name did not exist at its compile position must
+    // name something by the end of the statement.
     for p in mem::take(&mut ctx.pending_imports) {
         let Some(e) = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key))
         else {
@@ -2481,11 +1874,8 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         ctx.env = env;
         return Err(e);
     }
-    // Registry-attribute honesty reconciliation (see `attr_census`): a
-    // decorated expression the fusion walk neither dispatched nor absorbed
-    // sits where no check can reach it — error loudly instead of letting
-    // the annotation silently assert nothing. Skipped under `--no-fusion`
-    // (the documented vacuity) and free when no attributes exist.
+    // An attribute the fusion walk neither dispatched nor absorbed
+    // would silently assert nothing.
     if ctx.fusion.enabled {
         let census = ctx.attr_census.lock();
         if !census.is_empty() {

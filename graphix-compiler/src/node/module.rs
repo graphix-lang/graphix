@@ -32,8 +32,7 @@ fn bind_sig(
     sig: &Sig,
 ) -> Result<()> {
     env.modules.insert_cow(scope.lexical.clone());
-    // headers pass: a sig `use self::sub::…` may precede `mod sub;`
-    // — declaration order carries no visibility meaning
+    // a sig `use self::sub::…` may precede `mod sub;`
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
             env.modules.insert_cow(scope.append(name).lexical);
@@ -59,10 +58,8 @@ fn bind_sig(
                 if *reexport {
                     bail!("re-exports (`pub use`) are not yet supported")
                 }
-                // `names` is a global registry keyed by unique scope
-                // paths (kept from `self` across the privacy swap),
-                // so registering in the OUTER env alone covers the
-                // impl compile too
+                // `names` is a global registry keyed by scope path, so
+                // registering in the outer env covers the impl compile too
                 for item in names.iter() {
                     super::compile_use_item(
                         env, pending, si.pos, &si_ori, scope, false, item,
@@ -114,10 +111,8 @@ fn bind_sig(
                 )?;
             }
             SigKind::Impl(im) => {
-                // a DECLARED implementation: its method bindings are
-                // minted here with the trait's signatures at the
-                // target, and the implementation's own registration
-                // of the same (trait, target) replaces it
+                // the implementation's own registration of the same
+                // (trait, target) replaces these bindings
                 let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)?
                 else {
                     bail!("no trait `{}` in scope at {}", im.trait_name, si.pos)
@@ -165,8 +160,6 @@ fn bind_sig(
     Ok(())
 }
 
-// copy the exported signature of all the exported inner modules in this sig to
-// the global env
 fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
     let mut buf: LPooled<String> = LPooled::take();
     for si in sig.items.iter() {
@@ -198,8 +191,6 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(binds);
             copy_sig!(typedefs);
             copy_sig!(traits);
-            // a re-exported module's Graphix-minted abstracts are
-            // public exactly where their typedef entries are copied
             let exported: LPooled<Vec<AbstractId>> = inner_env
                 .typedefs
                 .range::<ModPath, _>(&scope.lexical..)
@@ -221,15 +212,10 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
     }
 }
 
-/// A signature binding and the binding behind it: the implementation's
-/// own for a `val` or an overridden method, the trait's default for a
-/// method the implementation leaves to it. The module copies the
-/// inner production to the outer id every cycle (`Module::update`)
-/// and proxies the inner lambda for static resolution
-/// (`proxy_lambda_defs`). `owned` says the inner binding is the
-/// module's private one — its production moves out instead of being
-/// shared with the rest of the cycle, and a write to the outer id
-/// flows in.
+/// A signature binding (`outer`) and the binding behind it (`inner`):
+/// the implementation's own, or a trait default. `owned` means the
+/// inner binding is the module's private one: its production moves
+/// out and a write to the outer id flows in.
 #[derive(Debug, Clone, Copy)]
 struct Proxy {
     inner: BindId,
@@ -408,10 +394,8 @@ fn check_sig<R: Rt, E: UserEvent>(
                 }
             }
             SigKind::Trait(t) => {
-                // the implementation re-declares the trait (the
-                // interface's declaration is prepended to its body
-                // unless it wrote its own); a written re-declaration
-                // must agree with the interface
+                // an implementation's own re-declaration must agree
+                // with the interface
                 for n in nodes {
                     if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
                         && t2.name == t.name
@@ -465,11 +449,8 @@ pub struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
     source: Node<R, E>,
-    // we need to be able to check the module sig at run time, so we must keep
-    // both the environment we compile in as well as the inner private module
-    // environment (env). We must keep the outer sig environment because the
-    // dynamic module may itself not be exported from it's parent module, and in
-    // that case it's bound signature would be lost at run time.
+    // kept for the run-time sig check: a dynamic module not exported
+    // from its parent would otherwise lose its bound signature
     dynamic_sig_env: Option<Env>,
     env: Env,
     sig: Sig,
@@ -483,8 +464,7 @@ pub struct Module<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Module<R, E> {
-    /// The module's body node. Used by graph introspection
-    /// (`crate::node_shape`) to walk into a module.
+    /// The module's body node.
     pub(crate) fn source(&self) -> &Node<R, E> {
         &self.source
     }
@@ -500,10 +480,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         source: Arc<Expr>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        // The source expression is LOADER-side code: it compiles in the
-        // enclosing scope, so `let src = …; mod foo dynamic { … source
-        // src }` resolves. Only the loaded module text compiles under
-        // the module's own scope.
+        // the source expression compiles in the enclosing scope; only
+        // the loaded text compiles under the module's own scope
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         env.modules.insert_cow(scope.lexical.clone());
@@ -536,9 +514,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
         let mut env = ctx.env.clone();
-        // the private snapshot predates bind_sig, but the module's
-        // own path must be visible from inside it (its submodules
-        // resolve package-rooted paths through it)
+        // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .with_context(|| format!("binding signature for module {}", scope.lexical))?;
@@ -569,14 +545,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Origin { parent: None, source: Source::Unspecified, text };
-        // the signature's declarations apply to the loaded source
-        // exactly as a `.gxi`'s do to its file (the resolvers splice
-        // them the same way)
         let exprs = add_interface_modules(parser::parse(ori)?, &self.sig);
-        // the namespace table is a global registry (it survives the
-        // privacy swap), so a recompile must scrub the previous
-        // source's imports explicitly or they'd accumulate; the
-        // spliced signature items re-register the sig's own uses
+        // `names` is a global registry: a recompile must scrub the
+        // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
         self.compile_inner(ctx, &exprs)
     }
@@ -593,8 +564,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 exprs.iter(),
             )
             .map(|(n, c)| (Vec::from(n), c))?;
-            // Two-phase tc0, catches last innermost-first (see
-            // `Block::typecheck0`).
+            // catches last, innermost-first (see `Block::typecheck0`)
             let mut catch = catches.iter().copied().peekable();
             for (i, n) in nodes.iter_mut().enumerate() {
                 if catch.peek() == Some(&i) {
@@ -632,8 +602,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                         &self.nodes,
                     )
                 })?;
-                // a load happens at run time, long after the batch
-                // walk that `typecheck1`s a static module's children
                 self.proxy_lambda_defs(ctx);
                 self.typecheck1_nodes(ctx)?;
             }
@@ -642,10 +610,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         Ok(())
     }
 
-    /// Interface re-exports: a caller references the public signature
-    /// binding's `BindId`, but the lambda lives on the impl binding
-    /// (recorded by its own `Bind::typecheck0`). Proxy each outer id
-    /// to its inner LambdaDef so cross-module calls resolve.
+    /// Map each signature `BindId` to its impl binding's `LambdaDef` so
+    /// cross-module calls resolve statically.
     fn proxy_lambda_defs(&self, ctx: &mut ExecCtx<R, E>) {
         for Proxy { inner, outer, .. } in self.proxy.iter() {
             let hit = ctx.bind_to_lambda.contains_key(inner);
@@ -658,10 +624,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         }
     }
 
-    /// Drive the children's `typecheck1` under the module's private
-    /// env (`finalize_lambda` reads `ctx.env`); it finalizes call
-    /// sites and runs the static resolution folded into
-    /// `CallSite::typecheck1`.
+    /// Run the children's `typecheck1` under the module's private env.
     fn typecheck1_nodes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let Self { env, nodes, catches, .. } = self;
         ctx.with_restored_mut(env, |ctx| {
@@ -672,12 +635,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                     continue;
                 }
                 wrap!(n, n.typecheck1(ctx))?;
-                // Per-STATEMENT settle drain (see
-                // `drain_pending_settles`): a later statement's
-                // resolution reads settled facts, so each statement's
-                // deferred settles land before the next statement
-                // resolves — the CURRENT frame only; entries an
-                // enclosing resolution owns live in ITS frame.
+                // a later statement's resolution reads settled facts
                 wrap!(n, crate::drain_pending_settles(ctx))?;
             }
             for i in catches.iter().rev() {
@@ -710,12 +668,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             let tv = self.source.update(ctx, event);
             let tag = tv.tag();
             if !tag.triggers() {
-                // a quiet source production (the value channel) never
-                // recompiles the running module
                 None
             } else if tag.is_bottom() {
-                // never compile from a taint placeholder (and don't tear
-                // down the running module on one) — pass the taint on
+                // a taint placeholder never compiles or tears down
                 return self
                     .resident
                     .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
@@ -744,16 +699,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 }
             }
             compiled = true;
-            // Prime the fresh nodes' EXTERNAL refs from `ctx.cached` —
-            // exactly what the lazy `CallSite::bind` does for a
-            // runtime-compiled lambda body. The events that carried
-            // outer-binding values (a stdlib lambda like `str::len`'s
-            // `len`, bound at startup) are long gone, and `Ref::update`
-            // reads only `event.variables`, so without this a
-            // module-level builtin CALL in a dynamically loaded module
-            // never saw its callee value and never fired — while the
-            // module's status still reported success (soak-jul07b's
-            // first dynamic-module findings).
+            // prime the fresh nodes' external refs from the store: the
+            // events that carried those values are long gone
             let mut refs = Refs::default();
             for n in self.nodes.iter() {
                 n.refs(&mut refs);
@@ -763,7 +710,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         event.variables.entry(id)
                     {
-                        // FIRED: the priming is the fresh nodes' init view
                         e.insert(TagValue::fired(v.clone()));
                     }
                 }
@@ -776,8 +722,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         for Proxy { inner, outer, owned } in &self.proxy {
             if *owned && let Some(tv) = event.variables.get(outer) {
                 let tv = tv.clone();
-                // the entry's tag flows through the proxy; the clean
-                // cache never holds a taint placeholder
+                // the store never holds a taint placeholder
                 if !tv.is_tainted() {
                     ctx.rt.store_insert(*inner, TagValue::fired(tv.value_cloned()));
                 }
@@ -785,9 +730,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
         }
         {
-            // Two-phase order, catches last innermost-first (see
-            // `Block::update`); a module discards productions, so no
-            // value capture is needed.
+            // catches last, innermost-first (see `Block::update`)
             let mut catch = self.catches.iter().copied().peekable();
             for (i, n) in self.nodes.iter_mut().enumerate() {
                 if catch.peek() == Some(&i) {
@@ -810,8 +753,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             let tv = match tv {
                 Some(tv) => tv,
                 // a shared inner binding (a trait default) may have
-                // produced long before this load: its standing value
-                // is the fresh outer binding's init view
+                // produced long before this load
                 None if compiled => match ctx.rt.store_value(inner) {
                     Some(v) => TagValue::fired(v.clone()),
                     None => continue,
@@ -890,16 +832,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let t = Type::Primitive(Typ::String | Typ::Error);
         wrap!(self.source, t.check_contains(&self.env, self.source.typ()))?;
-        // All `typecheck0` precedes all `typecheck1`, so the proxied
-        // entries are present before resolution consumes them.
         self.proxy_lambda_defs(ctx);
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
-        // the main walk recurses only `source`; the children were
-        // `typecheck0`'d in `compile_inner` under the module env
         self.typecheck1_nodes(ctx)
     }
 
@@ -908,11 +846,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // A module is structure, not computation — recurse into its
-        // statement nodes so the contents fuse. (`source` is NOT a
-        // child to fuse: for a dynamic module it's the node producing
-        // the module's source string, whose compiled graph gets its
-        // own fusion pass inside `compile_source` at runtime.)
+        // `source` is not fused here: a dynamic module's loaded graph
+        // gets its own pass inside `compile_source`
         for child in self.nodes.iter_mut() {
             crate::fusion::fuse(child, ctx)?;
         }

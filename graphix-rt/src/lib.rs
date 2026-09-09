@@ -134,12 +134,9 @@ pub struct CompRes<X: GXExt> {
     pub env: Env,
 }
 
-/// Result of a typecheck-only compile pass. Carries the env as it
-/// would be after the source was compiled, plus every IDE side-channel
-/// ([`Ide`]) encountered during compilation. The `Ide` collections are
-/// `GPooled` so the buffers return to the named pools after crossing the
-/// LSP thread boundary, keeping the recompile-per-keystroke loop
-/// allocation-free in steady state. `ide` is empty for non-LSP compiles.
+/// Result of a typecheck-only compile pass: the env as it would be after
+/// the source compiled, plus the IDE side-channels ([`Ide`]) seen during
+/// compilation (empty for non-LSP compiles).
 #[derive(Debug)]
 pub struct CheckResult {
     pub env: Env,
@@ -405,10 +402,8 @@ enum ToGX<X: GXExt> {
     GetEnv {
         res: oneshot::Sender<Env>,
     },
-    /// Run a closure with the runtime's ExecCtx — the generic bridge
-    /// for handle-side consumers that need `ctx.libstate` (e.g. the
-    /// gui data_table reading the sys::net package's NetState; the
-    /// core itself is network-free).
+    /// Run a closure with the runtime's ExecCtx; the bridge for
+    /// handle-side consumers that need `ctx.libstate`.
     WithCtx {
         f: Box<dyn FnOnce(&mut ExecCtx<GXRt<X>, X::UserEvent>) + Send>,
     },
@@ -422,19 +417,11 @@ enum ToGX<X: GXExt> {
     },
     Check {
         path: Source,
-        /// If provided, override the runtime's default resolver chain
-        /// for this check only. Used by IDE tooling that needs
-        /// project-scoped module resolution without rebuilding the
-        /// runtime.
+        /// Override the runtime's resolver chain for this check only.
         resolvers: Option<Vec<ResolverRef>>,
-        /// If provided, compile the source under this scope rather
-        /// than at the root. Used by IDE tooling editing a graphix
-        /// package crate (`graphix-package-<x>`) so its `mod.gx` body
-        /// registers under `<x>::` rather than at root, matching the
-        /// way the runtime would load it via `mod <x>;` from another
-        /// project. Any pre-existing registrations under that scope
-        /// are scrubbed from the working env first so the package's
-        /// own pre-loaded contents don't trip duplicate-module guards.
+        /// Compile the source under this module scope rather than at the
+        /// root; pre-existing registrations under that scope are scrubbed
+        /// from the working env first.
         initial_scope: Option<ArcStr>,
         res: oneshot::Sender<Result<CheckResult>>,
     },
@@ -457,12 +444,8 @@ enum ToGX<X: GXExt> {
         id: BindId,
         v: Value,
     },
-    /// Set several variables ATOMICALLY — all delivered in the same
-    /// cycle. Two separate `Set` messages can land in different input
-    /// batches (and so different cycles) depending on scheduler
-    /// timing, which makes "simultaneous" injections nondeterministic;
-    /// one `SetMany` is processed in one batch by construction. See
-    /// [`GXHandle::set_many`].
+    /// Set several variables atomically, all delivered in the same cycle.
+    /// See [`GXHandle::set_many`].
     SetMany {
         sets: GPooled<Vec<(BindId, Value)>>,
     },
@@ -473,29 +456,24 @@ enum ToGX<X: GXExt> {
     DeleteCallable {
         id: CallableId,
     },
-    /// Introspection: check the compiled root node for `id` against a
-    /// `NodeShape` spec. `None` if no node is registered for `id`;
-    /// `Some(Ok)` on match; `Some(Err(reason))` on mismatch. Used by
-    /// graph-shape tests.
+    /// Check the compiled root node for `id` against a `NodeShape` spec.
+    /// `None` if no node is registered for `id`.
     MatchShape {
         id: ExprId,
         spec: graphix_compiler::node_shape::NodeShape,
         res: oneshot::Sender<Option<std::result::Result<(), String>>>,
     },
-    /// Introspection: render the compiled root node for `id` as an
-    /// indented text tree (authoring aid for writing a `NodeShape`).
+    /// Render the compiled root node for `id` as an indented text tree.
     /// `None` if no node is registered for `id`.
     DescribeShape {
         id: ExprId,
         res: oneshot::Sender<Option<String>>,
     },
-    /// Introspection: snapshot the compiler-env + runtime-ref
-    /// registry sizes for accounting / leak invariant tests.
+    /// Snapshot the compiler-env and runtime-ref registry sizes.
     EnvStats {
         res: oneshot::Sender<EnvStats>,
     },
-    /// Introspection: snapshot the compile-time fusion outcome
-    /// counters accumulated on the `ExecCtx`. See
+    /// Snapshot the fusion outcome counters. See
     /// [`graphix_compiler::FusionStats`].
     FusionStats {
         res: oneshot::Sender<FusionStats>,
@@ -528,30 +506,22 @@ enum ToGX<X: GXExt> {
 pub enum GXEvent {
     Updated(ExprId, Value),
     Env(Env),
-    /// A runtime diagnostic (see [`graphix_compiler::RtDiagnostic`]):
-    /// a failure whose value-level outcome is BOTTOM by design (e.g. a
-    /// call-depth-limit trip) — nothing arrives on the value channel,
-    /// so embedders subscribe here to tell the user which expression
-    /// produced nothing and why. `id` is the top-level expression
-    /// whose update produced the diagnostic (`None` for the rare trip
-    /// outside a node update, e.g. a callable invocation).
+    /// A runtime diagnostic (see [`graphix_compiler::RtDiagnostic`]) for a
+    /// failure whose outcome is bottom, so nothing arrives on the value
+    /// channel. `id` is the top-level expression whose update produced it
+    /// (`None` outside a node update, e.g. a callable invocation).
     Diagnostic(Option<ExprId>, graphix_compiler::RtDiagnostic),
 }
 
 /// One entry in a runtime-side trace (see [`GXHandle::trace_start`]).
-/// `cycle` numbers are the runtime's internal cycle counter — they are
-/// NOT deterministic across runs (control messages and startup traffic
-/// shift them), so consumers must compare cycles RELATIVE to an anchor
-/// (the `Compiled` marker, or an input ref's own `Updated`), never
-/// absolutely.
+/// `cycle` numbers are not deterministic across runs; compare them
+/// relative to an anchor (the `Compiled` marker, or an input ref's own
+/// `Updated`), never absolutely.
 #[derive(Debug, Clone)]
 pub enum TraceEvent {
     /// A `compile`/`load` completed for the expression `id`; `cycle` is
-    /// the cycle that will run next — the program's init cycle — so an
-    /// `Updated` produced during init has this same cycle number. This
-    /// marker is recorded runtime-side at the moment the nodes are
-    /// registered, which is what makes it a sound epoch anchor: the
-    /// `Compile` *response* races the compile cycle, the marker does not.
+    /// the program's init cycle, so an `Updated` produced during init has
+    /// the same cycle number. Recorded when the nodes are registered.
     Compiled { cycle: u64, id: ExprId },
     /// The node registered for `id` emitted `value` during `cycle`.
     Updated { cycle: u64, id: ExprId, value: Value },
@@ -562,25 +532,18 @@ pub enum TraceEvent {
 #[derive(Debug)]
 pub struct TraceSegment {
     pub events: GPooled<Vec<TraceEvent>>,
-    /// The runtime cycle at which this segment closed (idle reached or
-    /// a cap tripped). Same non-determinism caveat as
-    /// [`TraceEvent`] cycles — relative use only.
+    /// The runtime cycle at which this segment closed; relative use only.
     pub end_cycle: u64,
-    /// The trace hit its worked-cycle budget (a runaway or never-idle
-    /// program). Once tripped the trace is permanently quiet — see
-    /// [`GXHandle::trace_start`].
+    /// The trace hit its worked-cycle budget and is permanently quiet.
     pub capped_cycles: bool,
     /// The trace hit its total event budget. Permanently quiet, as above.
     pub capped_events: bool,
 }
 
 /// A snapshot of the compiler-env binding registry and the runtime
-/// ref-var registry sizes. Used by accounting-invariant tests that
-/// grow and shrink a reactive structure (e.g. an impure HOF array)
-/// and assert these counts return to baseline — i.e. that every
-/// binding/ref minted by per-slot `clone_rebind` is unbound on
-/// teardown, catching a silent `env.by_id` / `by_ref` growth leak.
-/// See [`GXHandle::env_stats`].
+/// ref-var registry sizes, for tests that grow and shrink a reactive
+/// structure and assert the counts return to baseline. See
+/// [`GXHandle::env_stats`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnvStats {
     /// number of bindings registered in the compiler env (`env.by_id`)
@@ -601,9 +564,8 @@ struct GXHandleInner<X: GXExt> {
 
 impl<X: GXExt> Drop for GXHandleInner<X> {
     fn drop(&mut self) {
-        // Signal abort first so a wedged `do_cycle` loop breaks and the
-        // run loop returns before its next cycle; `task.abort()` alone
-        // can't interrupt a wedged *sync* loop (no `.await` to fire at).
+        // Signal abort first so a wedged `do_cycle` loop breaks;
+        // `task.abort()` alone cannot interrupt a sync loop.
         self.control.abort();
         self.task.abort()
     }
@@ -628,9 +590,8 @@ impl<X: GXExt> Clone for GXHandle<X> {
 
 impl<X: GXExt> GXHandle<X> {
     /// Run `f` with the runtime's `ExecCtx` on the runtime task and
-    /// return its result. The generic accessor for handle-side
-    /// consumers of `ctx.libstate` (e.g. the gui data_table fetching
-    /// the sys::net NetState's subscriber).
+    /// return its result; the accessor for handle-side consumers of
+    /// `ctx.libstate`.
     pub async fn with_ctx<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
@@ -648,22 +609,11 @@ impl<X: GXExt> GXHandle<X> {
         Ok(rx.await?)
     }
 
-    /// Request that in-flight loops in the runtime abort to bottom this
-    /// cycle — a runaway sync tail-loop or a `map`/`fold`/… over a huge
-    /// array won't wedge the runtime thread. The runtime keeps running.
-    ///
-    /// This is the ONLY containment for a program that spins forever
-    /// inside one cycle, which the language permits: evaluation is
-    /// atomic within a cycle, so an infinite tail recursion never
-    /// yields (`design/atomic_recursion.md`). It is deliberately
-    /// outside the semantics — nothing arms it but a human or an
-    /// embedder, so no program can observe it, and the engine ships no
-    /// default timeout (that would be an iteration budget, whose
-    /// observable behavior would depend on input size).
-    ///
-    /// The shell arms it on Ctrl-C. An embedder that wants a
-    /// slow-program watchdog builds one — there is no engine support
-    /// to wait for:
+    /// Abort in-flight loops in the runtime to bottom this cycle; the
+    /// runtime keeps running. This is the only containment for a program
+    /// that spins forever inside one cycle, which the language permits.
+    /// Nothing arms it but a human or an embedder: the shell arms it on
+    /// Ctrl-C, and an embedder that wants a watchdog builds one:
     ///
     /// ```ignore
     /// let gx = handle.clone();
@@ -678,26 +628,21 @@ impl<X: GXExt> GXHandle<X> {
     /// });
     /// ```
     ///
-    /// The aborted cycle rides its last result and re-fires next cycle
-    /// (abort ≠ bottom), so a wrongly-fired watchdog costs a cycle, not
-    /// correctness.
+    /// The aborted cycle rides its last result and re-fires next cycle,
+    /// so a wrongly-fired watchdog costs a cycle, not correctness.
     pub fn interrupt(&self) {
         self.0.control.interrupt()
     }
 
-    /// True if the stack budget aborted this runtime
-    /// (`graphix_compiler::set_stack_budget`) — containment, not a
-    /// result of the program's.
+    /// True if the stack budget (`graphix_compiler::set_stack_budget`)
+    /// aborted this runtime.
     pub fn budget_aborted(&self) -> bool {
         self.0.control.budget_aborted()
     }
 
-    /// Shut the runtime down, breaking any wedged loop first. Unlike
-    /// dropping the handle, this can be called *while commands are in
-    /// flight* (it borrows `&self`, rather than consuming the last
-    /// handle), so pending commands resolve to errors instead of
-    /// deadlocking against a wedged runtime. Dropping the last handle
-    /// also triggers this.
+    /// Shut the runtime down, breaking any wedged loop first. Borrows
+    /// `&self`, so it can be called while commands are in flight; pending
+    /// commands resolve to errors. Dropping the last handle also does this.
     pub fn abort(&self) {
         self.0.control.abort()
     }
@@ -713,54 +658,21 @@ impl<X: GXExt> GXHandle<X> {
         self.exec(|res| ToGX::GetEnv { res }).await
     }
 
-    /// Check that a graphix module compiles and type-checks.
+    /// Check that a graphix module compiles and type-checks without
+    /// altering the runtime's live environment. A `netidx:` path loads
+    /// from netidx; otherwise from the filesystem (or the text itself for
+    /// `Source::Internal`).
     ///
-    /// If path starts with `netidx:` the module is loaded from
-    /// netidx; otherwise it is loaded from the filesystem (or read
-    /// directly if `Source::Internal`). On success returns a
-    /// `CheckResult` containing both an env snapshot (as it would be
-    /// after the module was compiled) and the set of resolved name
-    /// references the compiler observed — useful for IDE tooling
-    /// (`textDocument/references`). The runtime's live environment
-    /// is not altered — to keep the bindings live, use `compile` or
-    /// `load`.
+    /// Compile and parse failures carry structured context on the
+    /// `anyhow::Error`: `downcast_ref` to
+    /// [`graphix_compiler::expr::ErrorContext`] (compile-time failures,
+    /// carrying the failing `Expr`) or
+    /// [`graphix_compiler::expr::ParserContext`] (`Origin` +
+    /// `SourcePosition`) rather than scraping messages.
     ///
-    /// # Error position info
-    ///
-    /// Compile and parse failures attach a structured context to the
-    /// returned `anyhow::Error` carrying the originating `Origin` and
-    /// `SourcePosition`. IDE tooling and other consumers should
-    /// `downcast_ref` the error rather than scraping the chain's
-    /// message strings:
-    ///
-    /// - [`graphix_compiler::expr::ErrorContext`] — wraps compile-time
-    ///   failures (`bailat!`-style bails and `wrap!`-attached typecheck
-    ///   errors). Carries the failing `Expr`, from which `pos` and
-    ///   `ori` are read.
-    /// - [`graphix_compiler::expr::ParserContext`] — wraps combine
-    ///   parser failures with `Origin` + `SourcePosition` fields.
-    ///
-    /// `anyhow::Error::downcast_ref` walks the context chain via
-    /// anyhow's vtable and returns the outermost match, which for the
-    /// runtime's compile path is the right one.
-    ///
-    /// # IDE / LSP usage
-    ///
-    /// `CheckResult` carries IDE side-channels populated only when
-    /// `env.lsp_mode` is set: `references`, `module_references`,
-    /// `type_references`, `scope_map`, `sig_links`, and
-    /// `module_internals`. The first four record where the compiler saw
-    /// each name and where it resolved; `sig_links` ties `val foo` in a
-    /// `.gxi` to its `let foo = …` impl in the paired `.gx`;
-    /// `module_internals` carries each module's impl-side env so IDE
-    /// queries inside a module body can chase impl bind metadata that
-    /// isn't visible from the project's external view.
-    ///
-    /// To check editor buffers without saving, layer a
-    /// a buffer-override resolver into the resolver chain — its
-    /// override map shadows the on-disk version per path while
-    /// preserving `Source::File` origins, so reference matching and
-    /// goto-def land on the same file paths as a disk check would.
+    /// The `CheckResult` IDE side-channels are populated only when
+    /// `env.lsp_mode` is set. To check unsaved editor buffers, layer a
+    /// buffer-override resolver into the resolver chain.
     pub async fn check(
         &self,
         path: Source,
@@ -771,16 +683,9 @@ impl<X: GXExt> GXHandle<X> {
             .await??)
     }
 
-    /// Like `check` but overrides the runtime's resolver chain for
-    /// this call only. Used by IDE tooling to compile a project
-    /// against a project-scoped resolver chain (e.g. `Files(<root>)`)
-    /// without having to rebuild the runtime.
-    ///
-    /// `initial_scope`, when set, scopes the entire compilation under
-    /// the given module path (as if the source were the body of a
-    /// `mod <scope> { ... }` block). Used by the LSP when editing a
-    /// graphix package crate so its modules register under the
-    /// package's namespace.
+    /// Like `check` but overrides the runtime's resolver chain for this
+    /// call only. `initial_scope`, when set, compiles the source as the
+    /// body of `mod <scope> { ... }`.
     pub async fn check_with_resolvers(
         &self,
         path: Source,
@@ -818,12 +723,10 @@ impl<X: GXExt> GXHandle<X> {
         Ok(self.exec(|tx| ToGX::Load { path, res: tx, rt: self.clone() }).await??)
     }
 
-    /// Assert the compiled graph's shape: check the root node
-    /// registered for `id` (e.g. a `CompExp`'s expr id) against a
-    /// [`NodeShape`](graphix_compiler::node_shape::NodeShape) spec.
-    /// The walk-and-compare runs in-task against the live post-fusion
-    /// graph. `Ok(())` on match; an error (with the mismatch reason or
-    /// "no node registered") otherwise.
+    /// Check the root node registered for `id` against a
+    /// [`NodeShape`](graphix_compiler::node_shape::NodeShape) spec, on the
+    /// live post-fusion graph. Errors with the mismatch reason or
+    /// "no node registered".
     pub async fn match_shape(
         &self,
         id: ExprId,
@@ -836,84 +739,55 @@ impl<X: GXExt> GXHandle<X> {
         }
     }
 
-    /// Render the compiled graph for `id` as an indented text tree —
-    /// an authoring aid for writing a `NodeShape` spec. Errors if no
-    /// node is registered for `id`.
+    /// Render the compiled graph for `id` as an indented text tree.
+    /// Errors if no node is registered for `id`.
     pub async fn describe_shape(&self, id: ExprId) -> Result<String> {
         self.exec(|res| ToGX::DescribeShape { id, res })
             .await?
             .ok_or_else(|| anyhow!("no node registered for {id:?}"))
     }
 
-    /// Snapshot the compiler-env binding registry (`env.by_id`) and
-    /// the runtime ref-var registry sizes. Used by accounting-
-    /// invariant tests: grow a reactive structure, shrink it back,
-    /// and assert these counts return to baseline (no per-cycle
-    /// binding/ref leak). See [`EnvStats`].
+    /// Snapshot the compiler-env binding registry and the runtime ref-var
+    /// registry sizes. See [`EnvStats`].
     pub async fn env_stats(&self) -> Result<EnvStats> {
         self.exec(|res| ToGX::EnvStats { res }).await
     }
 
-    /// Snapshot the compile-time fusion outcome counters accumulated
-    /// on the `ExecCtx` by every `compile()` this runtime has
-    /// dispatched (the root module included). Stats are compile-time
-    /// only — they don't change while a program runs — so fetch any
-    /// time after the compile of interest. See
+    /// Snapshot the fusion outcome counters accumulated by every
+    /// `compile()` this runtime has dispatched. Compile-time only, so
+    /// fetch any time after the compile of interest. See
     /// [`graphix_compiler::FusionStats`].
     pub async fn fusion_stats(&self) -> Result<FusionStats> {
         self.exec(|res| ToGX::FusionStats { res }).await
     }
 
-    /// Whether the runtime has pending work scheduled for the next
-    /// cycle (an updated node, a queued var/custom/net update, a ready
-    /// extension, …). For a purely-synchronous program, once this is
-    /// `false` the runtime is quiescent and will never produce another
-    /// value on its own — so a result that hasn't been emitted by then
-    /// is *bottom*. The fuzz oracle uses this to detect a no-result
-    /// (div-by-zero, filtered, …) program instantly instead of waiting
-    /// out the whole timeout.
+    /// Whether the runtime has pending work for the next cycle. For a
+    /// purely synchronous program, once this is `false` the runtime will
+    /// never produce another value on its own.
     pub async fn cycle_ready(&self) -> Result<bool> {
         self.exec(|res| ToGX::CycleReady { res }).await
     }
 
-    /// Wait for the next value `id` emits, or `None` when the runtime
-    /// goes idle before any value arrives. This is the clean quiescence-
-    /// aware result wait for synchronous programs: it returns `Some(v)`
-    /// the cycle `id` produces `v`, and `None` the moment the runtime has
-    /// no pending work (so no future cycle can ever produce a result).
+    /// Wait for the next value `id` emits, or `None` when the runtime goes
+    /// idle before any value arrives.
     ///
-    /// Note the race a caller must handle: if `id` already emitted before
-    /// this call was serviced (e.g. a synchronous program that produced
-    /// its value during compile), the runtime is already idle and this
-    /// returns `None` — the value is in the event stream, not here. A
-    /// caller that needs that already-emitted value should drain the
-    /// event subscription on `None`.
+    /// If `id` already emitted before this call was serviced the runtime
+    /// is already idle and this returns `None`; the value is in the event
+    /// stream, so drain the event subscription on `None`.
     pub async fn wait_result_or_idle(&self, id: ExprId) -> Result<Option<Value>> {
         self.exec(|res| ToGX::WaitResultOrIdle { id, res }).await
     }
 
-    /// Start (or restart) runtime-side tracing. While a trace is
-    /// active, every value emitted by a registered node is recorded as
-    /// a [`TraceEvent::Updated`] and every `compile`/`load` records a
-    /// [`TraceEvent::Compiled`] anchor. Segments are taken with
-    /// [`trace_wait_idle`](Self::trace_wait_idle). Restarting discards
-    /// any recorded events (and cancels a pending waiter). Tracing
-    /// costs one branch per emitted value when off.
+    /// Start (or restart) runtime-side tracing: every value a registered
+    /// node emits is recorded as a [`TraceEvent::Updated`] and every
+    /// `compile`/`load` records a [`TraceEvent::Compiled`] anchor.
+    /// Segments are taken with [`trace_wait_idle`](Self::trace_wait_idle).
+    /// Restarting discards recorded events and cancels a pending waiter.
     ///
-    /// Both budgets are declared here, up front, rather than per wait:
-    /// recording must be a pure function of the traced program's own
-    /// event stream for a trace to be comparable across two runs, and a
-    /// per-wait budget would cut a runaway program's recording at a
-    /// point that depends on when the wait message happened to arrive.
-    /// `max_events` bounds the total events recorded across the whole
-    /// trace; `max_cycles` bounds the WORKED cycles (cycles in which
-    /// the graph was handed program events, including eventless
-    /// internal churn — control-message cycles don't count) per
-    /// segment, making it a cycle DEADLINE that resolves
-    /// [`trace_wait_idle`](Self::trace_wait_idle) even for a program
-    /// that never quiesces. When either budget is exhausted the trace
-    /// goes PERMANENTLY quiet (the segment reports `capped_*`), so
-    /// later segments of a capped trace are deterministically empty.
+    /// `max_events` bounds the total events recorded; `max_cycles` bounds
+    /// the worked cycles per segment, so a wait resolves even for a
+    /// program that never quiesces. Once either budget is exhausted the
+    /// trace is permanently quiet (the segment reports `capped_*`).
     pub fn trace_start(&self, max_events: usize, max_cycles: u64) -> Result<()> {
         self.0
             .tx
@@ -921,14 +795,10 @@ impl<X: GXExt> GXHandle<X> {
             .map_err(|_| anyhow!("runtime is dead"))
     }
 
-    /// Wait until the runtime goes idle (no pending work — quiescent)
-    /// or a trace cap trips, then take everything recorded since the
-    /// trace started (or since the previous segment was taken). Unlike
-    /// [`wait_result_or_idle`](Self::wait_result_or_idle) there is no
-    /// already-emitted race: a value produced before this call was
-    /// serviced is already in the segment. A second concurrent call
-    /// supersedes the first (which resolves as an error). Errors if no
-    /// trace is active.
+    /// Wait until the runtime goes idle or a trace cap trips, then take
+    /// everything recorded since the previous segment. There is no
+    /// already-emitted race. A second concurrent call supersedes the
+    /// first (which resolves as an error). Errors if no trace is active.
     pub async fn trace_wait_idle(&self) -> Result<TraceSegment> {
         match self.exec(|res| ToGX::TraceWaitIdle { res }).await? {
             Some(seg) => Ok(seg),
@@ -1011,12 +881,9 @@ impl<X: GXExt> GXHandle<X> {
         self.0.tx.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
     }
 
-    /// Set several variables ATOMICALLY: every update is delivered to
-    /// the graph in the SAME cycle. Separate [`set`](Self::set) calls
-    /// give no such guarantee — the messages can be batched into
-    /// different cycles depending on scheduler timing — so any caller
-    /// that needs simultaneity (e.g. the fuzzer's injection epochs)
-    /// must use this.
+    /// Set several variables atomically: every update is delivered to
+    /// the graph in the same cycle. Separate [`set`](Self::set) calls
+    /// give no such guarantee.
     pub fn set_many(
         &self,
         sets: impl IntoIterator<Item = (BindId, Value)>,
@@ -1051,8 +918,7 @@ pub struct GXConfig<X: GXExt> {
     /// The set of module resolvers to use when resolving loaded modules
     #[builder(default)]
     resolvers: Vec<ResolverRef>,
-    /// GRAPHIX_MODPATH scheme -> resolver factories (e.g. the sys
-    /// package's `netidx` factory). `file:` is built in.
+    /// GRAPHIX_MODPATH scheme -> resolver factories. `file:` is built in.
     #[builder(default)]
     resolver_factories: ahash::AHashMap<arcstr::ArcStr, ResolverFactory>,
     /// The channel that will receive events from the runtime
@@ -1060,10 +926,8 @@ pub struct GXConfig<X: GXExt> {
     /// The set of compiler flags. Default empty.
     #[builder(default)]
     flags: BitFlags<CFlag>,
-    /// If true, populate IDE side-channels (`ide_binds`,
-    /// references, module references, scope map, type-ref sink) on
-    /// every compile and check. Carries a per-compile cost; only
-    /// the LSP backend should set it.
+    /// Populate IDE side-channels on every compile and check. Carries a
+    /// per-compile cost; only the LSP backend should set it.
     #[builder(default)]
     lsp_mode: bool,
 }
@@ -1086,8 +950,7 @@ impl<X: GXExt> GXConfig<X> {
     /// library. To build a runtime with the full standard library and nothing
     /// else simply pass the output of `graphix_stdlib::register` to start.
     pub async fn start(self) -> Result<GXHandle<X>> {
-        // Clone the interrupt/abort control before `self` moves into the
-        // spawned task, so the handle and the running `ExecCtx` share it.
+        // The handle and the running `ExecCtx` share the control.
         let control = self.ctx.control.clone();
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();

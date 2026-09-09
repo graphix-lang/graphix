@@ -1,24 +1,11 @@
-//! Adversarially nested programs must not overflow the stack.
+//! Adversarially nested programs must not overflow the stack: the
+//! guarded walks run on heap segments and the parser refuses anything
+//! past `parser::max_nesting()`, so a deep program is a compile error.
 //!
-//! An embedded engine compiles programs it didn't write, so nesting
-//! depth is attacker-controlled. Every recursion the pipeline drives off
-//! program depth runs under `graphix_compiler::stack::ensure_sufficient`
-//! (heap segments instead of the thread's stack), and the parser rejects
-//! anything past `parser::max_nesting()` — so a deep program is a
-//! compile error, never an abort.
-//!
-//! Each case runs in a CHILD PROCESS with a deliberately SMALL worker
-//! stack (`STACK`, a quarter of what a tokio worker gets): a stack
-//! overflow aborts the process, so it can't be caught in-process, and a
-//! child lets the failure name the shape that caused it. `DEPTH` is far
-//! past the parse limit — every case here should come back as a clean
-//! error, and the point of the test is that it comes back at all.
-//!
-//! Behind the `slow-tests` feature (it costs ~80s): the guards it covers
-//! only move when a new recursion is added, so it runs at the release
-//! gate rather than every session. The child invocation below passes
-//! `--include-ignored` — without it a child would SKIP the test and
-//! exit 0, which this test reads as "the shape survived".
+//! Each case runs in a child process on a small worker stack (an
+//! overflow aborts, so it cannot be caught in-process). The child
+//! invocation passes `--include-ignored`; without it the child would
+//! skip the test and exit 0, which reads as success.
 
 use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
@@ -31,18 +18,14 @@ use std::{
 
 const STACK: usize = 512 * 1024;
 
-/// Exit code the child uses for "the nesting limit refused this", so
-/// the parent can tell a limit rejection from every other outcome.
+/// Exit code the child uses for "the nesting limit refused this".
 const REFUSED: i32 = 3;
 
 /// Past `parser::max_nesting()`: every shape must come back REFUSED.
 const REJECTED: usize = 100_000;
 
-/// Deepest nesting the limit admits for every shape, with room for the
-/// shapes that cost several parser knots per source level. Derived from
-/// the limit rather than fixed so this stays a real test of the deep
-/// path if the limit moves — the pass that drives the guarded walks
-/// only means something while the parser is still accepting.
+/// Deepest nesting the limit admits for every shape; derived from the
+/// limit so the deep path stays exercised if the limit moves.
 fn accepted() -> usize {
     graphix_compiler::expr::parser::max_nesting() / 8
 }
@@ -55,9 +38,8 @@ const DEPTH_VAR: &str = "GRAPHIX_DEEP_DEPTH";
 fn program(shape: &str, d: usize) -> String {
     match shape {
         "parens" => format!("let x = {}1{}", "(1 + ".repeat(d), ")".repeat(d)),
-        // The bracket shapes are also valid netidx `Value` literals, so
-        // `literal()` runs them through netidx-value's own parser —
-        // these cover its nesting guard as much as graphix's.
+        // Bracket shapes are also netidx `Value` literals, so these
+        // cover netidx-value's nesting guard too.
         "array" => format!("let x = {}1{}", "[".repeat(d), "]".repeat(d)),
         "maplit" => format!("let x = {}1{}", r#"{"k" => "#.repeat(d), "}".repeat(d)),
         "slicepat" => {
@@ -141,9 +123,8 @@ const SHAPES: &[&str] = &[
     "seqdo",
 ];
 
-/// The child half: compile one shape on a small-stack runtime. Reaching
-/// the end of this function at all is the assertion — Ok or Err both
-/// mean the pipeline stayed on its feet.
+/// The child half: compile one shape on a small-stack runtime.
+/// Returning at all is the assertion.
 fn run_child(shape: &str, depth: usize) {
     let dir = env::temp_dir().join(format!("gx-deep-{shape}-{}", std::process::id()));
     fs::create_dir_all(&dir).expect("tmpdir");
@@ -165,9 +146,8 @@ fn run_child(shape: &str, depth: usize) {
             .await
     });
     let _ = fs::remove_dir_all(&dir);
-    // Any other error is fine and still counts: a type error means the
-    // AST was built, walked and torn down, which is the exercise. Only
-    // the limit refusing means the deep path never ran.
+    // Any other error means the AST was built, walked and torn down.
+    // Only the limit refusing means the deep path never ran.
     if r.is_err_and(|e| format!("{e:#}").contains("nesting too deep")) {
         std::process::exit(REFUSED)
     }
@@ -181,9 +161,7 @@ fn deep_nesting_does_not_overflow() {
         return run_child(&shape, depth);
     }
     let exe = env::current_exe().expect("current exe");
-    // Every case pays a full stdlib compile, so run them in batches
-    // rather than one at a time — bounded because each child's compile
-    // is the memory-hungry part.
+    // Batched: each child pays a full stdlib compile.
     const CONCURRENCY: usize = 8;
     let spawn = |shape: &str, depth: usize| {
         Command::new(&exe)
@@ -215,8 +193,7 @@ fn deep_nesting_does_not_overflow() {
     let run = |shape: &str, depth: usize| codes[&(shape, depth)];
     let mut failed: Vec<String> = vec![];
     for shape in SHAPES {
-        // Deep but accepted: the parser must let it through, else the
-        // walks and destructors under test never run.
+        // The parser must admit it, else the walks under test never run.
         match run(shape, accepted()) {
             Some(0) => (),
             Some(REFUSED) => failed.push(format!(
@@ -226,14 +203,13 @@ fn deep_nesting_does_not_overflow() {
             )),
             other => failed.push(format!("{shape}@{}: {other:?}", accepted())),
         }
-        // Far past anything sane. Whether the limit refuses depends on
-        // the shape — `uniontyp` at 100k is a FLAT union, not nesting —
-        // so the assertion is only that the child came back at all.
+        // Whether the limit refuses is shape-dependent (`uniontyp` at
+        // 100k is a flat union); only assert the child came back.
         if run(shape, REJECTED).is_none() {
             failed.push(format!("{shape}@{REJECTED}: killed by a signal"))
         }
     }
-    // ...and that the limit does fire, on a shape that genuinely nests.
+    // The limit must fire on a shape that genuinely nests.
     if run("parens", REJECTED) != Some(REFUSED) {
         failed.push(format!("parens@{REJECTED}: the nesting limit did not fire"))
     }

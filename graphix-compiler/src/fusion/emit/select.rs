@@ -42,12 +42,9 @@ use super::{
     },
 };
 
-/// How a `select`'s arms merge into one result — derived from the
-/// select node's frozen result type. Every shape threads the disc
-/// (carrying `TAINT`/`STALE`) through the arm phi alongside the
-/// payload, so a tainted arm value propagates its bottom to the merged
-/// result, and the merge exit rides its interior-bottom cache
-/// ([`emit_scalar_taint_cache`] / [`emit_value_taint_cache`]).
+/// How a `select`'s arms merge into one result, derived from the
+/// select node's frozen result type. Every shape phis (disc, payload),
+/// so a tainted arm value propagates its bottom to the merged result.
 #[derive(Clone, Copy)]
 enum SelectMerge {
     Scalar(PrimType),
@@ -56,12 +53,10 @@ enum SelectMerge {
     String,
 }
 
-/// The select scrutinee, emitted exactly ONCE up front; every arm
-/// condition and pattern bind reuses these SSA values (SSA reuse
-/// gives eval-once for free). `Opaque` (string / composite) supports
-/// only Ignore / guard arms, none of which can test the value. The
-/// `disc` always carries the scrutinee's #219 taint — OR-ed into every
-/// arm's result so a bottom (missing) scrutinee bottoms the select.
+/// The select scrutinee, emitted once up front; every arm condition
+/// and pattern bind reuses these SSA values. `Opaque` (string) supports
+/// only Ignore / guard arms. `disc` carries the scrutinee's taint,
+/// OR-ed into every arm's result so a bottom scrutinee bottoms the select.
 #[derive(Clone, Copy)]
 pub(super) enum SelectScrut {
     Scalar {
@@ -73,11 +68,8 @@ pub(super) enum SelectScrut {
         disc: ClifValue,
         payload: ClifValue,
     },
-    /// A BORROWED array/tuple/struct scrutinee: the ValArray bits
-    /// stays live across the whole arm chain with no drop (the env slot
-    /// owns it — the owned-producer case de-fuses in
-    /// [`classify_select_scrutinee`]). Structural patterns
-    /// (tuple/struct/slice) test and read elements through it.
+    /// An array/tuple/struct scrutinee whose pointer stays live across
+    /// the whole arm chain; structural patterns read elements through it.
     Composite {
         disc: ClifValue,
         ptr: ClifValue,
@@ -111,10 +103,9 @@ enum ElemIdx {
     StructField(usize),
 }
 
-/// Read one scalar pattern leaf off the borrowed composite scrutinee.
-/// Callers MUST have proven the arm's length test first — under a
-/// tainted (missing) scrutinee the placeholder is an EMPTY array, and
-/// these reads are unchecked.
+/// Read one scalar pattern leaf off the composite scrutinee. The read
+/// is unchecked: callers must have proven the arm's length test first
+/// (a tainted scrutinee's placeholder is an empty array).
 fn read_scrut_elem(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -138,76 +129,40 @@ fn read_scrut_elem(
     Ok(cx.b.inst_results(call)[0])
 }
 
-/// A pattern binding to install in the arm's matched region, under the
-/// pattern's real `BindId` (the arm body's `Ref`s resolve BindId-first,
-/// so no shadow guard is needed).
+/// A pattern binding installed in the arm's matched region under the
+/// pattern's `BindId`.
 enum SelectArmBind {
     /// `n => ...` — bind the scalar scrutinee itself.
     Scrut(BindId),
     /// `T as n` over a `[T, null]` scrutinee — bind the matched
     /// non-null scalar payload after the type-predicate branch.
     NullableScalar { id: BindId, prim: PrimType },
-    /// `` `Tag(n) `` — bind one scalar variant payload. The read uses
-    /// `unreachable_unchecked` on a wrong-tag value, so it MUST be
-    /// emitted inside the matched region (after the tag-eq branch) —
-    /// never in the fall-through chain. (The node-walk evaluates binds
-    /// only after the pattern matches — we follow the node-walk.)
+    /// `` `Tag(n) `` — bind one scalar variant payload. The read is
+    /// unchecked on a wrong tag, so it must be emitted inside the
+    /// matched region, never in the fall-through chain.
     Payload { id: BindId, idx: usize, prim: PrimType },
-    /// `` `Tag(xs) `` — bind one NON-scalar variant payload: the slot
-    /// is cloned out of the variant as an owned local of `kind`
-    /// (Composite / String / Variant / Nullable / Value), dropped by
-    /// the arm's scope exit like any owned local. The shape-safe clone
-    /// helpers make it legal under a mask (the guard prologue): a
-    /// wrong-tag read yields an owned drop-safe default behind a
-    /// TAINT'd disc.
+    /// `` `Tag(xs) `` — bind one non-scalar variant payload, cloned out
+    /// as an owned local of `kind` and dropped at the arm's scope exit.
+    /// Legal under a mask: a wrong-tag read yields a drop-safe default
+    /// behind a tainted disc.
     PayloadValue { id: BindId, idx: usize, kind: LocalKind },
-    /// `[<a, b>]` / `[<h, rest..>]` — bind the j-th HEAD of a list
-    /// scrutinee: cloned out as an owned local of `kind` via the
-    /// kind-safe `graphix_list_get_*` helpers (legal under a mask).
+    /// `[<a, b>]` / `[<h, rest..>]` — bind the j-th head of a list
+    /// scrutinee, cloned out as an owned local of `kind` (legal under a mask).
     ListHead { id: BindId, idx: usize, kind: LocalKind },
     /// The rest bind: the k-th TAIL itself — O(1), shares the spine.
     ListTail { id: BindId, k: usize },
     /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
-    /// composite scrutinee. `ptr` is the (borrowed) composite the leaf
-    /// reads from: the scrutinee itself, or — for a NESTED pattern — a
-    /// borrowed interior pointer read during the arm's structure
-    /// condition. Emitted inside the matched region: the length tests
-    /// (the structure condition stages) are the memory-safety gate — a
-    /// tainted scrutinee's empty placeholder fails them, so the
-    /// unchecked element read never touches the placeholder.
+    /// composite scrutinee, read through `ptr` (the scrutinee, or a
+    /// borrowed interior pointer for a nested pattern). Emitted inside
+    /// the matched region: the length tests gate the unchecked read.
     Elem { id: BindId, idx: ElemIdx, prim: PrimType, ptr: ClifValue },
 }
 
-/// `select` at expression position — the Node twin of
-/// `emit_select_as_expr` (lowering) + `compile_ifchain` (codegen)
-/// fused into one pass. Canonical semantics are `Select::update` /
-/// `PatternNode::is_match` (node/select.rs, node/pattern.rs):
-///
-/// - the scrutinee is evaluated once; no scrutinee value → no select
-///   value (the scrutinee's disc `TAINT`/`STALE` folds into every arm's
-///   result disc — the #178 scrutinee gate);
-/// - an explicit type predicate is TESTED (`null as _` → IsNull;
-///   `i64 as _` over `[i64, null]` → NOT-null), so arm order is right
-///   by construction;
-/// - a guard runs only after the pattern matches, with the pattern's
-///   binds in scope; a bottom guard means the arm does NOT match;
-/// - the first matching arm wins; an arm with no condition and no
-///   guard takes the chain unconditionally.
-///
-/// The final-arm miss trap mirrors `compile_ifchain`, but is emitted
-/// only where typecheck's exhaustiveness makes it unreachable: a
-/// guarded final arm, or a conditional final arm under a possibly-
-/// bottom scrutinee (whose garbage cond bits could miss every arm),
-/// refuse to fuse instead.
-/// Collect the per-slot STATE sites in a scaffold-loop body: the
-/// callsite `ExprId` of every nested collection HOF call (a per-slot
-/// PREV-LENGTH word for its loop's exact firing rule — jul16a fuzz
-/// class A: the conservative fallback re-fired a ragged nested loop
-/// on every source refresh). The walk sees exactly the tree the loop
-/// will emit inline (a nested collection HOF's callback body lives
-/// behind its own lambda def, unreachable from here — its own sites
-/// anchor in the chain its loop opens). The loop emitters claim one
-/// per-slot state chain per site (see [`BodyCx::open_slot_tables`]).
+/// Collect the per-slot state sites in a scaffold-loop body: the
+/// callsite `ExprId` of every nested collection HOF call, each of which
+/// claims one per-slot state chain (see [`BodyCx::open_slot_tables`]).
+/// A nested callback body lives behind its own lambda def and anchors
+/// its sites in the chain its own loop opens.
 pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
 ) -> LPooled<Vec<ExprId>> {
@@ -225,6 +180,12 @@ pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
     ids
 }
 
+/// `select` at expression position. Canonical semantics are
+/// `Select::update` / `PatternNode::is_match`: the scrutinee is
+/// evaluated once and its disc folds into every arm's result; an
+/// explicit type predicate is tested; a guard runs after the pattern
+/// matches with its binds in scope, and a bottom guard stops the chain;
+/// the first matching arm wins.
 pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
@@ -252,39 +213,23 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     };
     let (scrut, scrut_kind, scrut_typ, scrut_drop) =
         classify_select_scrutinee(cx, sel, true)?;
-    // Capture the delivery's fresh-bottomness BEFORE the ride masks
-    // it to a quiet stale (THE BOTTOM-OUT RULE: the ride serves
-    // re-match and operands, never the emission's bottomness).
     let scrut_bfired = {
         let d = scrut.disc();
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
     };
-    // BOTTOM SCRUTINEE ⇒ BOTTOM SELECT (Eric's ruling 2026-08-29): a
-    // tainted scrutinee makes no selection — the match chain's per-arm
-    // disc re-check routes it to the miss trap, which bottoms to the
-    // merge (`emit_select_miss_value`). No ride, no held-arm dispatch —
-    // so no dispatch word and no scrutinee-shape gate (a bare VALUE
-    // scrutinee now fuses; it just bottoms on taint like every other
-    // shape). The user writes `hold` on the scrutinee to persist the
-    // last value across a bottom cycle.
-    // Every merge shape phis (disc, payload) — the scrutinee's taint
-    // rides the disc into every arm result, so there's no separate
-    // validity phi and no possibly-bottom-scrutinee gate (#219).
+    // A tainted scrutinee makes no selection: the arm chain routes it
+    // to the miss trap, which bottoms the merge.
     let merge = cx.b.create_block();
-    cx.b.append_block_param(merge, types::I64); // disc
+    cx.b.append_block_param(merge, types::I64);
     let payload_ty = match merge_shape {
         SelectMerge::Scalar(p) => prim_to_clif(p),
         _ => types::I64,
     };
-    cx.b.append_block_param(merge, payload_ty); // payload
+    cx.b.append_block_param(merge, payload_ty);
     let scrut_disc = scrut.disc();
-    // ORGANIC FIRING (Eric's ruling 2026-08-14,
-    // design/organic_firing.md): a select fires iff a consumed input
-    // fires — the scrutinee's or a prologue guard's STALE bit folds
-    // into every arm result beside the arm's own production. The
-    // select claims no memory of its own: no selection word, no ride
-    // (the interp twin is `own_fired` in node/select.rs).
+    // A select fires iff a consumed input fires: the scrutinee's or a
+    // consulted guard's STALE bit folds into every arm result.
     emit_select_arms(
         cx,
         sel,
@@ -306,11 +251,9 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         let params = cx.b.block_params(merge);
         (params[0], params[1])
     };
-    // Discharge an OWNED scrutinee: every normal path (each arm + the
-    // miss trap) crosses the merge, so this drops exactly once; a
-    // mid-arm pending exit dropped it as an env local instead. Unbind
-    // (truncate) so a LATER pending exit elsewhere in the kernel can't
-    // double-drop the already-freed value.
+    // Every normal path crosses the merge, so an owned scrutinee drops
+    // exactly once here; unbinding it keeps a later pending exit from
+    // double-dropping it.
     if let Some(ScrutDrop { kind, vv, mark }) = scrut_drop {
         match kind {
             LocalKind::Composite => {
@@ -333,29 +276,13 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         }
         cx.env.truncate(mark);
     }
-    // STRICT (Eric's ruling 2026-08-13): a bottoming taken arm IS a
-    // fresh bottom at the select's output — propagate, everywhere.
-    // The ride scopes are retired with `in_ride_scope`; the SCRUTINEE
-    // ride (emit_scrut_ride above) and the FINAL-value guard ride are
-    // the select's designated memory and are untouched.
     Ok(CompiledExpr::new(rdisc, rpayload))
 }
 
-/// The final-arm fail block of a VALUE-position select: reached only
-/// when a tainted (missing) scrutinee misses every conditional arm.
-/// Jump to the merge with a drop-safe tainted bottom — the disc's TAINT
-/// forces a bottom at the output, and the payload is a valid empty
-/// allocation so a scope-exit drop is null-safe.
-///
-/// The bottom's FRESHNESS is the SCRUTINEE's (the interp's
-/// `arg_prod.triggers()` rule at the no-ride bottom return): a
-/// STANDING-tainted scrutinee's miss is TAINT|STALE — nothing new —
-/// where the old bare-TAINT mint re-fired the settled bottom on every
-/// invocation an unrelated input triggered, and the select's bind
-/// republish clobbered a same-cycle ref-write forever (aug13l hz0
-/// reactive 000000: the region went permanently silent downstream).
-/// A FRESH-tainted (or genuinely fired mismatching) scrutinee keeps
-/// the fresh taint.
+/// The final-arm fail block of a value-position select, reached only
+/// when a tainted scrutinee misses every conditional arm: jump to the
+/// merge with a drop-safe tainted bottom whose freshness is the
+/// scrutinee's, so a standing bottom does not re-fire.
 fn emit_select_miss_value(
     cx: &mut BodyCx,
     merge_shape: SelectMerge,
@@ -367,9 +294,7 @@ fn emit_select_miss_value(
 }
 
 /// Jump to the merge with a drop-safe tainted bottom whose freshness
-/// is the caller's `stale_bits` (0 = fresh). The miss trap passes the
-/// scrutinee's STALE bit; the UNDETERMINED path (THE BOTTOM-OUT RULE)
-/// passes the combined own-fire staleness.
+/// is `stale_bits` (0 = fresh).
 fn emit_select_bottom_value(
     cx: &mut BodyCx,
     merge_shape: SelectMerge,
@@ -379,9 +304,7 @@ fn emit_select_bottom_value(
     let (disc, payload) = match merge_shape {
         SelectMerge::Scalar(p) => {
             let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
-            // `zero_const`, NOT `iconst(prim_to_clif(p))`: an `iconst.f64`
-            // is invalid CLIF (a verifier panic) — a float-result select
-            // with a conditional final arm reaches this trap.
+            // `iconst` of a float type is invalid CLIF.
             let z = zero_const(cx.b, p);
             (d, z)
         }
@@ -417,24 +340,19 @@ fn emit_select_bottom_value(
     Ok(())
 }
 
-/// What the value-position select owes at its merge point for an OWNED
-/// (fresh-producer) scrutinee: the scrutinee was bound as an env local
-/// (so a mid-arm pending exit drops it via `drop_owned_composites`), and
-/// the merge emits the normal-path drop then unbinds it (the env mark) —
-/// exactly once on either path.
+/// The merge-point obligation for an owned scrutinee: it is bound as an
+/// env local so a mid-arm pending exit drops it, and the merge drops
+/// then unbinds it on the normal path.
 pub(super) struct ScrutDrop {
     kind: LocalKind,
     vv: ValueVar,
     mark: usize,
 }
 
-/// Classify (and emit the read of) a select scrutinee: the shared
-/// prologue of the value-position and tail-position select emitters.
-/// `allow_owned`: the value-position caller has a single merge point
-/// every path crosses, so it can accept an OWNED composite/Value
-/// scrutinee and discharge the returned [`ScrutDrop`] there; the
-/// tail-position caller's arms terminate individually (no merge), so it
-/// passes `false` and owned scrutinees keep de-fusing.
+/// Classify and emit the read of a select scrutinee. `allow_owned`: the
+/// value-position caller has one merge point to discharge a
+/// [`ScrutDrop`] at; the tail-position caller's arms terminate
+/// individually, so an owned scrutinee refuses there.
 pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
@@ -451,10 +369,6 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     let scrut_kind = kernel_abi::abi_kind(&scrut_typ)
         .ok_or_else(|| anyhow!("emit_clif: select scrutinee shape not classifiable"))?;
     let mut drop_ob: Option<ScrutDrop> = None;
-    // Bind an OWNED scrutinee as an env local of its kind: a mid-arm
-    // pending exit drops it via `drop_owned_composites`, and the caller
-    // discharges the ScrutDrop (drop + unbind) at the merge on the
-    // normal path — exactly once on either path.
     let adopt = |cx: &mut BodyCx,
                  kind: LocalKind,
                  disc: ClifValue,
@@ -473,9 +387,6 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim: p }
         }
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
-            // The (disc, payload) pair stays live across the whole arm
-            // chain: a BORROWED env slot needs nothing; an OWNED
-            // producer needs the merge-point drop (value position only).
             let owned = node_composite_source(&sel.arg.node) != CompositeSource::Borrowed;
             if owned && !allow_owned {
                 return Err(anyhow!(
@@ -494,8 +405,6 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             }
             SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
-        // A composite scrutinee keeps its pointer live across the arm
-        // chain: borrowed = env-owned; owned = merge-point drop.
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
             let owned = node_composite_source(&sel.arg.node) != CompositeSource::Borrowed;
             if owned && !allow_owned {
@@ -510,12 +419,8 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             }
             SelectScrut::Composite { disc: cv.disc, ptr: cv.payload }
         }
-        // A String scrutinee supports only Ignore / guard arms (no
-        // condition can test it); we read it only for its disc (#219
-        // taint). The read is an owned ArcStr either way (a borrowed
-        // slot read CLONES, an owned producer transfers) — drop it
-        // immediately, keeping only the disc. No cross-arm retention,
-        // so owned strings are fine in both positions.
+        // A string scrutinee supports only Ignore / guard arms, so only
+        // its disc is kept; the read is an owned ArcStr either way.
         AbiKind::String => {
             let cv = sel.arg.node.emit_clif(cx)?;
             let drop = cx.helper("graphix_arcstr_drop")?;
@@ -530,31 +435,16 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 }
 
 /// Structure condition + scalar leaf binds for a tuple/struct/slice
-/// pattern over a BORROWED composite scrutinee. Mirrors
-/// `StructPatternNode::is_match` / `bind` (node/pattern.rs — the
-/// canonical semantics):
+/// pattern over a composite scrutinee, mirroring
+/// `StructPatternNode::is_match` / `bind`: Slice tests `len == N`,
+/// SlicePrefix/SliceSuffix/Struct `len >= N`; suffix leaves index from
+/// the end, struct leaves read `a[i][1]`.
 ///
-/// - Slice (tuple or array literal pattern): `len == N`, leaves at
-///   `a[j]`;
-/// - SlicePrefix: `len >= N`, leaves at `a[j]`;
-/// - SliceSuffix: `len >= N`, leaves at `a[len - (N - j)]`;
-/// - Struct: `len >= N`, leaf values at `a[i][1]` (canonically-sorted
-///   field index from typecheck).
-///
-/// The LENGTH test is also the taint gate: a missing (#219) composite
-/// input is an EMPTY placeholder array, so every length test with
-/// `N > 0` fails under taint and the unchecked element reads (emitted
-/// after the test) never touch the placeholder — the chain falls
-/// through to the final-arm miss trap, which produces the tainted
-/// bottom. Literal leaves are tested in a second block AFTER the
-/// length branch (same reason); `Bind` leaves are recorded in `binds`
-/// and read in the matched region.
-///
-/// Deferred (Err → the select de-fuses, node-walks): whole-composite
-/// `@` bindings, named prefix/suffix rest bindings (both allocate an
-/// owned composite local inside the arm — `JitEnv::truncate` emits no
-/// drops, so they'd leak on the normal path), non-scalar leaves, and
-/// nested structural leaves.
+/// The length test is also the taint gate: a tainted composite is an
+/// empty placeholder array, so the unchecked element reads (emitted
+/// after the test) never touch it. `@` bindings, rest bindings,
+/// non-scalar leaves and nested variant leaves refuse (the select
+/// de-fuses).
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -563,12 +453,9 @@ fn emit_composite_pattern_cond(
     fail: Block,
     binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
-    // The length read up front (safe on the empty taint placeholder) —
-    // suffix leaves index relative to it.
     let len_helper = cx.helper("graphix_valarray_len")?;
     let call = cx.b.ins().call(len_helper, &[ptr]);
     let len = cx.b.inst_results(call)[0];
-    // (leaf position, sub-pattern, element type) + the length compare.
     let styp = resolve_node_typ(cx.ctx, scrut_typ);
     struct LeafSpec<'p> {
         idx: ElemIdx,
@@ -661,7 +548,6 @@ fn emit_composite_pattern_cond(
                     ));
                 }
             };
-            // suffix leaf j lives at a[len - (N - j)].
             let n = suffix.len();
             let leaves = suffix
                 .iter()
@@ -705,9 +591,6 @@ fn emit_composite_pattern_cond(
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
     };
-    // Classify each leaf BEFORE emitting anything (an Err mid-emission
-    // would abandon the kernel build — fine — but classify-first keeps
-    // the failure cheap and the emission below straight-line).
     let mut lit_leaves: smallvec::SmallVec<[(ElemIdx, PrimType, &Value); 8]> =
         smallvec::SmallVec::new();
     let mut nested: smallvec::SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> =
@@ -731,14 +614,9 @@ fn emit_composite_pattern_cond(
                 let prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
                     anyhow!("emit_clif: non-scalar literal pattern leaf {v:?}")
                 })?;
-                // The typed element read is total: a slot whose VALUE
-                // isn't of `prim`'s family reads as the placeholder 0,
-                // which a `0`-literal pattern then MATCHES. Only the
-                // slot's static type proves the read faithful — a
-                // union-typed leaf (`[u8, Error<..>]` from a checked
-                // op) must de-fuse like a Bind leaf (aug06f
-                // divergence_000000: `(2, u8:0 -? u8:1)` matched
-                // `(2, u8:0)` on underflow).
+                // The typed element read is total: a slot not of `prim`'s
+                // family reads as 0, which a `0` literal would match.
+                // Only the static type proves the read faithful.
                 if kernel_abi::scalar_prim(&leaf.typ) != Some(prim) {
                     return Err(anyhow!(
                         "emit_clif: literal pattern leaf prim {prim:?} doesn't \
@@ -752,9 +630,6 @@ fn emit_composite_pattern_cond(
             | StructPatternNode::SlicePrefix { .. }
             | StructPatternNode::SliceSuffix { .. }
             | StructPatternNode::Struct { .. }) => {
-                // A NESTED structural pattern over a composite-shaped
-                // leaf recurses through a BORROWED interior pointer —
-                // read after this level's length test (below).
                 match kernel_abi::abi_kind(&leaf.typ) {
                     Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                         nested.push((leaf.idx, sub, leaf.typ.clone()));
@@ -780,17 +655,12 @@ fn emit_composite_pattern_cond(
             }
         }
     }
-    // The length test for THIS level.
     let n_c = cx.b.ins().iconst(types::I64, n as i64);
     let len_ok = cx.b.ins().icmp(len_cc, len, n_c);
     if lit_leaves.is_empty() && nested.is_empty() {
-        // Nothing to read before the matched region — the length test
-        // IS the condition (the caller's arm brif consumes it).
         return Ok(len_ok);
     }
-    // Reads happen below, so the length must be proven FIRST: branch to
-    // a staging block (the reads are unchecked — see the taint note
-    // above), then test literal leaves and recurse into nested patterns.
+    // The reads below are unchecked, so the length is proven first.
     let stage = cx.b.create_block();
     cx.b.ins().brif(len_ok, stage, &[], fail, &[]);
     cx.b.switch_to_block(stage);
@@ -809,11 +679,8 @@ fn emit_composite_pattern_cond(
         fold(cx, c);
     }
     for (idx, sub, typ) in nested {
-        // Borrowed interior pointer into this level's element slot —
-        // stable for the whole arm chain (the root scrutinee is a
-        // pinned borrowed env slot and values are immutable), so the
-        // recursion's reads and the matched-region leaf binds need no
-        // ownership or drops.
+        // A borrowed interior pointer: the root is a pinned borrowed
+        // slot and values are immutable, so no ownership or drops.
         let (helper_name, idx_v) = match idx {
             ElemIdx::FromStart(j) => (
                 "graphix_valarray_get_array_borrowed",
@@ -837,130 +704,62 @@ fn emit_composite_pattern_cond(
     Ok(cond.expect("staged composite pattern with no conditions"))
 }
 
-/// The shared select arm chain: pattern conditions (type predicate /
-/// structure / guard), per-arm binds, and the fail-block plumbing —
-/// identical between value position (arms widen and jump to a merge
-/// block) and tail position (arms terminate with a return or a self
-/// tail-call jump). `emit_arm` supplies the position-specific arm-body
-/// emission; it runs in the matched block with the arm's binds
-/// installed and MUST leave the block terminated (jump or return).
-/// `mark` is the env state to truncate back to after the body.
-/// The select's own-fire summary handed to each arm emitter (THE
-/// CONSULTED-GUARD RULE, design/activation_state.md, Eric
-/// 2026-08-20). `sound_stale` is the AND of the CONSULTED guards'
-/// sound-plane STALE bits — read from the chain-position accumulator
-/// at the arm's point, so structure-failed arms and arms below the
-/// taken one contribute nothing — the organic fired-emission
-/// upgrade. A taken arm's consulted guards are all SOUND by
-/// construction (a bottom-channel guard stops the chain at the undet
-/// path), so `bfired` (i8 bool) carries only the SCRUTINEE axis: a
-/// ridden fresh-bottom delivery, whose still-stale result must emit
-/// the bottom that arrived (`hold` is the explicit tool). The interp
-/// twin is `scoped`/`own_bottom` in node/select.rs.
+/// The select's own-fire summary handed to each arm emitter.
+/// `sound_stale`: the AND of the consulted guards' sound-plane STALE
+/// bits at this arm's point (structure-failed arms and arms below the
+/// taken one contribute nothing). `bfired` (i8 bool): the scrutinee
+/// delivery was a fresh bottom.
 #[derive(Clone, Copy)]
 pub(super) struct SelFires {
     pub(super) sound_stale: Option<ClifValue>,
     pub(super) bfired: Option<ClifValue>,
-    /// The scrutinee disc the arm-result FOLD reads (`propagate_taint` /
-    /// `scrut_stale`): a fired/bottom scrutinee folds into the result
-    /// (organic firing). Always `None` now (the bottom ride is deleted) —
-    /// the fold uses the plain scrutinee disc.
+    /// Always `None`; the arm-result fold uses the plain scrutinee disc.
     pub(super) fold_scrut_disc: Option<ClifValue>,
 }
 
+/// The shared arm chain: pattern conditions, per-arm binds and the
+/// fail-block plumbing, identical between value and tail position.
+/// `emit_arm` runs in the matched block with the arm's binds installed
+/// and must leave it terminated; `mark` is the env mark to truncate to.
+/// `emit_miss` handles the final-arm miss (a tainted scrutinee);
+/// `emit_undet` the undecidable outcome (a bottom consulted guard),
+/// given the outcome's STALE bits (0 = fresh).
 pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    // The scrutinee delivery's fresh-bottomness (i8 bool): a ridden
-    // fresh-bottom delivery's still-stale result must emit the bottom
-    // that arrived (THE BOTTOM-OUT RULE).
     scrut_bfired: Option<ClifValue>,
-    // (cx, arm body, env mark, fires): see [`SelFires`].
     emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, SelFires) -> Result<()>,
-    // The final-arm miss handler (reached only under a tainted
-    // scrutinee): value position jumps to the merge with a tainted
-    // bottom; tail position sets pending and exits.
     emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
-    // The UNDETERMINED handler (THE BOTTOM-OUT RULE): a bottomed
-    // guard with NO history is unknown, not false — the chain stops
-    // without recording a selection or running an arm, and this emits
-    // the bottom that arrived. The argument is the outcome's STALE
-    // bits (0 = fresh: something fired this invocation).
     emit_undet: &mut dyn FnMut(&mut BodyCx, ClifValue) -> Result<()>,
 ) -> Result<()> {
-    // A TAINTED (missing) scrutinee makes NO selection — the node-walk
-    // runs no ARM BODY at all (`Select::update`'s destructuring-
-    // consumer force). The per-arm taint maskings below only keep the
-    // COMPARES honest: a scalar pattern test over the placeholder
-    // value 0 can still spuriously match, and an unconditional final
-    // arm is taken structurally — either way the arm body ran and its
-    // interior site caches recorded PHANTOM history from evaluations
-    // the interp never performed (aug04b reactive/000000: `100/in0`
-    // computed 100 under the placeholder match, then the genuine first
-    // selection's div0 rode the phantom 100 out as an extra fire).
-    // Every matched path re-checks the scrutinee disc just before the
-    // body and routes a tainted take to this shared miss block instead.
-    // Pattern tests and GUARDS still evaluate — the interp ticks every
-    // arm's guard each cycle even without a selection (the jul19b
-    // select-guard-taint rule), so guard-interior history stays
-    // symmetric.
+    // A tainted scrutinee makes no selection and runs no arm body:
+    // every matched path re-checks the scrutinee disc before its body
+    // and routes a tainted take to the shared miss block.
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
-    // THE GUARD PROLOGUE (select-guard-shortcircuit-aug2026): the
-    // node-walk ticks EVERY arm's guard EVERY cycle, unconditionally,
-    // before any matching happens (`Select::update` — guards are live
-    // subgraphs with their own operand caches, and a skipped
-    // evaluation desyncs them from the interp's). The take chain
-    // below evaluates lazily, so every guard is evaluated HERE, once
-    // per invocation, and the chain consumes the precomputed value.
-    // Each guard stays downstream of its OWN arm's pattern condition
-    // in the DATA sense: the pattern's binds are installed with discs
-    // taint-masked by the arm's condition, so a shape mismatch
-    // delivers bottom and the guard's interior ops ride their caches
-    // — the kernel's representation of the interp's "non-matching
-    // pattern binds nothing". The guard discs are NOT folded into the
-    // select result (the strict select rule deleted the guard-feeder
-    // fold), and the prologue sits downstream of `emit_scrut_ride`
-    // and upstream of the tainted-take gate, so guards keep
-    // evaluating under a tainted scrutinee
-    // (select-phantom-arm-eval-aug2026/03). Guard-interior owned
-    // locals rely on the guard expression's own emission discipline,
-    // exactly as before the hoist; the prologue's own installs are
-    // all scalar. Each prologue guard's disc STALE bit ANDs into
-    // `guard_stale` — the organic-firing guard fold handed to the arm
-    // emitters (a fired or fresh-bottom guard production fires the
-    // select; a StaleBottom or quiet one doesn't).
-    // Per prologue guard: (eff = sound-true verdict, gbot = the
-    // guard's CURRENT channel is bottom, gs_sound = sound-plane STALE
-    // bits, gfire = fired-plane STALE bit). The CONSULTED folds
-    // happen along the CHAIN below (control flow scopes them —
-    // structure-failed arms and arms below the stop point never
-    // execute their consultation), into `acc_sound`/`acc_fires`.
+    // The guard prologue: the node-walk ticks every arm's guard every
+    // cycle before matching, so every guard that is not schedule-free
+    // is evaluated here once per invocation and the chain reads it.
+    // Per guard: (eff = sound-true verdict, gbot = channel is bottom,
+    // gs_sound = sound-plane STALE, gfire = fired-plane STALE); the
+    // consulted folds happen along the chain into acc_sound/acc_fires.
     let mut guard_vals: smallvec::SmallVec<
         [Option<(ClifValue, ClifValue, ClifValue, ClifValue)>; 8],
     > = smallvec::smallvec![None; n];
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
-        // A schedule-free guard needs no prologue slot: its value at
-        // consultation is a pure function of the binds the match just
-        // delivered, so lazy chain evaluation is observably
-        // equivalent to the per-cycle tick — and free when the arm
-        // isn't reached (symbolic's hot `x == 0.0` guards; the
-        // unconditional prologue cost the bench +58%).
         if guard_schedule_free(pat, &g.node) {
             continue;
         }
         let gmark = cx.env.mark();
         let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
         let pcond = if let StructPatternNode::Or { alts } = &pat.structure_predicate {
-            // P3 (design/or_patterns.md): the chain binds the shared
-            // BindIds itself (with tainted placeholders on the
-            // no-match path — the masked-install semantics), so
-            // `binds` stays empty and the install below no-ops.
+            // The or-chain binds the shared BindIds itself, so `binds`
+            // stays empty.
             if pat.explicit_type_predicate {
                 return Err(anyhow!(
                     "emit_clif: explicit type predicate on an or-pattern arm \
@@ -977,8 +776,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 None,
             )?)
         } else if composite_structural_arm(pat, scrut) {
-            // Value form of the staged composite condition: merge the
-            // staged fail edges into one i8 result.
             let fail_bl = cx.b.create_block();
             let done = cx.b.create_block();
             cx.b.append_block_param(done, types::I8);
@@ -1012,17 +809,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         };
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
-        // THE CONSULTED-GUARD RULE (design/activation_state.md, Eric
-        // 2026-08-20): there is NO guard ride — a consulted guard
-        // whose CURRENT channel is bottom makes the selection
-        // undecidable and the chain stops at it (the undet path
-        // below), whatever verdict a previous delivery had. The old
-        // aug13b held-bool cache is deleted; its observable (no
-        // phantom flip, no manufactured value) is preserved by the
-        // stop keeping selection state untouched. Planes off the RAW
-        // disc: gs_sound stales tainted productions
-        // (TAINT >> 1 == STALE); gfire is the fired plane (sound or
-        // bottom — freshness of an undetermined outcome).
+        // gs_sound stales tainted productions (TAINT >> 1 == STALE);
+        // gfire is the fired plane, sound or bottom.
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
         let gt = cx.b.ins().band_imm(gcv.disc, TAINT);
         let gts = cx.b.ins().ushr_imm(gt, 1);
@@ -1030,17 +818,14 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
-        // The prologue's masked installs CLONE owned payload binds per
-        // invocation (the mask taints the disc, never skips the clone)
-        // — drop them before the compile-time truncate.
+        // The masked installs clone owned payload binds per invocation;
+        // drop them before the truncate.
         super::flow::emit_scope_drops(cx, gmark)?;
         cx.env.truncate(gmark);
         guard_vals[i] = Some((eff, gbot, gs_sound, gs));
     }
-    // The CONSULTED accumulators (cranelift Variables — their value
-    // at any read is the fold over exactly the consultation points
-    // control flow executed): sound-plane and fired-plane STALE bits,
-    // both STALE-set identities.
+    // At any read these hold the fold over exactly the consultation
+    // points control flow executed.
     let (acc_sound, acc_fires) = {
         let sv = cx.b.declare_var(types::I64);
         let fv = cx.b.declare_var(types::I64);
@@ -1052,22 +837,16 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     let mut undet_bl: Option<Block> = None;
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
         let is_last = i == n - 1;
-        // A composite structural pattern (tuple/struct/slice) stages its
-        // condition across blocks (length branch, then literal-leaf
-        // tests), so its fail edge must exist BEFORE the condition is
-        // emitted — pre-create it (block creation order is free).
+        // A composite or or-pattern condition stages across blocks, so
+        // its fail edge must exist before emission.
         let is_or = matches!(&pat.structure_predicate, StructPatternNode::Or { .. });
         let early_fail = if is_or || composite_structural_arm(pat, scrut) {
             Some(cx.b.create_block())
         } else {
             None
         };
-        // Structure condition + the binds to install once matched. An
-        // or-pattern arm emits its own alternative chain (P3,
-        // design/or_patterns.md): the chain binds the shared BindIds in
-        // its done block (`binds` stays empty), so the env mark is
-        // taken BEFORE it — the arm-exit scope drops then cover the
-        // chain's owned binds like any other arm binds.
+        // An or-chain binds the shared BindIds in its done block, so the
+        // env mark is taken before it and the arm-exit drops cover them.
         let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
         let mut or_mark: Option<usize> = None;
         let (tcond, scond) = if let StructPatternNode::Or { alts } =
@@ -1099,20 +878,14 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
         };
         let has_guard = pat.guard.is_some();
-        // The final-arm miss trap below is sound only when typecheck's
-        // exhaustiveness makes a miss impossible. A guarded final arm
-        // (typecheck forbids it today — defensive) or garbage cond
-        // bits from a possibly-bottom scrutinee could miss every arm.
+        // The final-arm miss trap is sound only when a miss is
+        // impossible; typecheck forbids a guarded final arm.
         if is_last && has_guard {
             return Err(anyhow!(
                 "emit_clif: guard on the final select arm — the chain \
                  could miss every arm"
             ));
         }
-        // #219: a conditional final arm CAN miss every arm under a
-        // tainted (missing) scrutinee. That's no longer a refusal — the
-        // final fail block runs `emit_miss` (a tainted bottom), which is
-        // dead code for an exhaustive non-tainted scrutinee.
         let matched = cx.b.create_block();
         let fail: Option<Block> = match early_fail {
             Some(f) => Some(f),
@@ -1133,16 +906,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         install_arm_binds(cx, &binds, scrut, None)?;
         if let Some(g) = &pat.guard {
             let eff = match guard_vals[i] {
-                // Prologue-computed: a guard with interior state, a
-                // possible bottom, or an external read must tick every
-                // invocation (select-guard-shortcircuit-aug2026).
-                // This is the arm's CONSULTATION point — fold its
-                // planes into the accumulators (control flow scopes
-                // the fold to consulted arms), then THE
-                // CONSULTED-GUARD RULE: a bottom channel makes the
-                // selection undecidable — the chain stops (no
-                // selection recorded, no arm body run) and the undet
-                // path emits the bottom.
+                // The consultation point: fold the guard's planes into
+                // the accumulators; a bottom channel makes the selection
+                // undecidable and the chain stops here.
                 Some((eff, gbot, gs_sound, gfire)) => {
                     let cur = cx.b.use_var(acc_sound);
                     let n = cx.b.ins().band(cur, gs_sound);
@@ -1152,8 +918,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                     cx.b.def_var(acc_fires, n);
                     let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
                     let cont = cx.b.create_block();
-                    // The chain stops here (undecidable) — drop this
-                    // arm's owned binds before the shared undet block.
+                    // Drop this arm's owned binds before the shared undet block.
                     let ubdrop = cx.b.create_block();
                     cx.b.ins().brif(gbot, ubdrop, &[], cont, &[]);
                     cx.b.switch_to_block(ubdrop);
@@ -1164,11 +929,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                     cx.b.seal_block(cont);
                     eff
                 }
-                // Schedule-free (see the prologue's classifier): emit
-                // lazily with the matched binds in scope — pure and
-                // never-bottom, so no undetermined case and no fold
-                // (its fires are scrutinee-derived, covered by the
-                // scrutinee fold).
+                // Schedule-free: pure and never bottom, so no
+                // undetermined case and no fold.
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
                     let valid = is_untainted(cx.b, gcv.disc);
@@ -1176,10 +938,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
             };
             let body_blk = cx.b.create_block();
-            // A guard-FALSE falls through to the next arm (`fail`),
-            // dropping the matched region's owned binds on the way out
-            // (installed above; the taken path drops them at the arm
-            // exit, so this edge must too).
+            // Guard-false falls through to the next arm; the matched
+            // region's owned binds drop on the way out.
             let gfail = cx.b.create_block();
             cx.b.ins().brif(eff, body_blk, &[], gfail, &[]);
             cx.b.switch_to_block(gfail);
@@ -1189,16 +949,10 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
-        // The tainted-take gate (see the miss-block comment above): a
-        // matched arm under a tainted scrutinee must not run its body —
-        // no selection exists to fire and the body's site caches must not
-        // see the evaluation. A tainted take routes to the miss trap,
-        // which bottoms the select.
+        // A matched arm under a tainted scrutinee must not run its body:
+        // route to the miss trap, dropping the arm's owned binds first.
         let body_ok = cx.b.create_block();
         let clean = is_untainted(cx.b, sdisc);
-        // A tainted take routes to the shared miss trap — drop this
-        // arm's owned binds first (under taint they hold the clone
-        // helpers' drop-safe defaults).
         let tdrop = cx.b.create_block();
         cx.b.ins().brif(clean, body_ok, &[], tdrop, &[]);
         cx.b.switch_to_block(tdrop);
@@ -1207,11 +961,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         cx.b.ins().jump(miss_bl, &[]);
         cx.b.switch_to_block(body_ok);
         cx.b.seal_block(body_ok);
-        // The arm's own-fire summary, read AT ITS POINT: the sound
-        // accumulator holds exactly the consulted guards above and
-        // including this arm; a taken arm's consulted guards are all
-        // sound by construction (bottoms stopped the chain), so
-        // `bfired` carries only the scrutinee axis.
+        // Read here, the sound accumulator holds exactly the consulted
+        // guards up to and including this arm.
         let fold_scrut_disc = None;
         let fires = SelFires {
             sound_stale: Some(cx.b.use_var(acc_sound)),
@@ -1224,15 +975,11 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 cx.b.switch_to_block(f);
                 cx.b.seal_block(f);
                 if is_last {
-                    // Reached only under a tainted (missing) scrutinee —
-                    // every arm missed. Dead code for an exhaustive
-                    // non-tainted scrutinee.
+                    // Reached only under a tainted scrutinee: every arm missed.
                     cx.b.ins().jump(miss_bl, &[]);
                 }
             }
-            // An unconditional arm consumed control flow; any
-            // remaining arms are unreachable (typecheck's dead-arm
-            // check forbids them anyway). Mirrors `compile_ifchain`.
+            // An unconditional arm consumed control flow.
             None => break,
         }
     }
@@ -1242,11 +989,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     if let Some(ub) = undet_bl {
         cx.b.switch_to_block(ub);
         cx.b.seal_block(ub);
-        // Freshness of the UNDECIDABLE outcome: fresh iff a consumed
-        // input fired — the post-ride scrutinee, any consulted
-        // guard's production (the stopping guard included — folded at
-        // its consultation point before the jump), or a ridden
-        // fresh-bottom scrutinee delivery.
+        // The undecidable outcome is fresh iff a consumed input fired:
+        // the scrutinee, a consulted guard, or a fresh-bottom delivery.
         let undet_stale = {
             let ss = cx.b.ins().band_imm(sdisc, STALE);
             let af = cx.b.use_var(acc_fires);
@@ -1266,18 +1010,10 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// True when an arm's guard is a SCHEDULE-FREE function of its own
-/// binds: pure ops that can never bottom (comparisons, logicals, NOT,
-/// wrapping +/-/*/neg — no div/mod/checked arith, no indexing, no
-/// calls, nothing stateful) over this arm's pattern binds and
-/// constants only. Such a guard's value at consultation is a pure
-/// function of the binds the match just delivered — there is no
-/// interior state to desync, no effect to drop, and no bottom to ride
-/// — so lazy chain evaluation is observably equivalent to the
-/// interp's per-cycle tick and the guard skips the prologue
-/// (select-guard-shortcircuit-aug2026 requires the prologue only
-/// outside this set; the blanket prologue cost symbolic's hot
-/// `x == 0.0` guards +58%).
+/// True when a guard is a pure, never-bottom function of its arm's
+/// binds and constants (comparisons, logicals, not, wrapping +/-/*/neg;
+/// no div, indexing, calls or state). Such a guard is evaluated lazily
+/// in the chain instead of in the prologue.
 fn guard_schedule_free<R: Rt, E: UserEvent>(
     pat: &PatternNode<R, E>,
     guard: &Node<R, E>,
@@ -1311,9 +1047,8 @@ fn guard_schedule_free<R: Rt, E: UserEvent>(
 }
 
 /// True when `pat` is a composite structural pattern over a composite
-/// scrutinee — the shape whose condition STAGES across blocks (length
-/// branch, then literal-leaf tests) and therefore needs a pre-created
-/// fail edge before [`emit_arm_cond`] runs.
+/// scrutinee: its condition stages across blocks and needs a
+/// pre-created fail edge before [`emit_arm_cond`] runs.
 fn composite_structural_arm<R: Rt, E: UserEvent>(
     pat: &PatternNode<R, E>,
     scrut: SelectScrut,
@@ -1328,13 +1063,9 @@ fn composite_structural_arm<R: Rt, E: UserEvent>(
 }
 
 /// Emit arm `pat`'s pattern condition against `scrut`: the type
-/// predicate (`tcond`) and the structure condition (`scond`),
-/// populating `binds` with the pattern's bind list. Composite
-/// structural patterns stage their condition across blocks with fail
-/// edges into `early_fail` (pre-created by the caller when
-/// [`composite_structural_arm`] holds). Shared by the guard prologue
-/// (value form) and the take chain (control form) in
-/// [`emit_select_arms`].
+/// predicate (`tcond`) and the structure condition (`scond`), pushing
+/// the pattern's binds onto `binds`. Composite structural patterns
+/// stage across blocks with fail edges into `early_fail`.
 fn emit_arm_cond<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     pat: &PatternNode<R, E>,
@@ -1344,9 +1075,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     early_fail: Option<Block>,
     binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
-    // Type-predicate condition. The node-walk tests the predicate
-    // only when it's explicit (`PatternNode::is_match`); an
-    // inferred predicate imposes no runtime test.
+    // The node-walk tests the type predicate only when it is explicit.
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
         None
     } else {
@@ -1365,19 +1094,14 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     SelectScrut::Value { disc, .. }
                         if matches!(scrut_kind, AbiKind::Nullable) =>
                     {
-                        // Only the OPTION shape has a null member; a
-                        // result union's non-success value is an
-                        // error, so a null predicate over it is a
-                        // shape confusion — refuse
-                        // (result-union-nullable-abi-aug2026).
+                        // Only the option shape has a null member; a
+                        // result union's non-success value is an error.
                         if kernel_abi::nullable_error_marked(&scrut_typ) != Some(false) {
                             return Err(anyhow!(
                                 "emit_clif: null predicate over a \
                                      result union {scrut_typ:?}"
                             ));
                         }
-                        // Mask taint before the structural compare —
-                        // a tainted disc is not a clean tag (#219).
                         let cd = clean_disc(cx.b, disc);
                         Some(cx.b.ins().icmp_imm(IntCC::Equal, cd, value_disc::NULL))
                     }
@@ -1406,26 +1130,16 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                                 .and_then(|t| kernel_abi::scalar_prim(t))
                                 == PrimType::from_typ(pt) =>
                     {
-                        // Mask taint before the structural compare —
-                        // a tainted disc is not a clean tag (#219).
                         let cd = clean_disc(cx.b, disc);
                         match kernel_abi::nullable_error_marked(&scrut_typ) {
-                            // `[T, null]` runtime value is T or null,
-                            // so "is a T" ≡ "is not null" — tested,
-                            // not assumed (order-sound).
+                            // `[T, null]`: "is a T" is "is not null".
                             Some(false) => Some(cx.b.ins().icmp_imm(
                                 IntCC::NotEqual,
                                 cd,
                                 value_disc::NULL,
                             )),
-                            // `[T, Error<E>]`'s non-success value is
-                            // an ERROR whose disc is not NULL, so
-                            // "is a T" must be the POSITIVE test
-                            // against T's own disc — `!= NULL` takes
-                            // the success arm on an error and the
-                            // bind reads the error's payload word as
-                            // the scalar
-                            // (result-union-nullable-abi-aug2026).
+                            // `[T, Error<E>]`: the error is not null, so
+                            // "is a T" is the positive test against T's disc.
                             Some(true) => match PrimType::from_typ(pt) {
                                 Some(prim) => {
                                     let td = scalar_disc(cx.b, prim);
@@ -1483,11 +1197,8 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
 }
 
 /// OR `TAINT|STALE` into `disc` when `cond` is false: the pattern did
-/// not match, so the interp delivered NOTHING to this bind — the
-/// kernel's representation of that absence is a poisoned disc (#219),
-/// under which a guard's interior ops bottom and ride their caches.
-/// `None` = the caller already branched on the condition (or the
-/// pattern always matches) — no masking.
+/// not match, so nothing was delivered to this bind and a guard reading
+/// it bottoms. `None` = the caller already branched on the condition.
 fn mask_unmatched(
     cx: &mut BodyCx,
     disc: ClifValue,
@@ -1504,12 +1215,10 @@ fn mask_unmatched(
     }
 }
 
-/// The list-pattern condition + binds over a VALUE-kind scrutinee
-/// (`design/list_native.md` phase B3): structure = one
+/// The list-pattern condition + binds over a Value-kind scrutinee: one
 /// `graphix_list_match` spine walk (`k` cells, `exact` requires nil
-/// after); element binds clone heads out by ABI kind; the rest bind
-/// is the k-th tail — O(1), shared. Element sub-patterns beyond
-/// Bind/Ignore refuse (coverage, like nested variant payloads).
+/// after); head binds clone out by ABI kind; the rest bind is the k-th
+/// tail, shared. Nested element patterns refuse.
 fn emit_list_pattern_cond(
     cx: &mut BodyCx,
     pat: &StructPatternNode,
@@ -1611,8 +1320,6 @@ fn install_arm_binds(
                 };
                 let name: ArcStr =
                     compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                // The bound local carries the scrutinee's taint in its
-                // disc (#219).
                 let disc = mask_unmatched(cx, disc, mask);
                 bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(*id));
             }
@@ -1646,15 +1353,10 @@ fn install_arm_binds(
                 };
                 let helper = cx.helper(variant_payload_helper(*prim)?)?;
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                // Clean the scrutinee disc for the payload read; the
-                // payload inherits the variant's taint.
                 let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
                 let v = cx.b.inst_results(call)[0];
                 let name: ArcStr =
                     compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                // The bound payload fires iff its variant scrutinee
-                // fired — inherit the scrutinee's STALE (and taint), so
-                // an arm body reading it stays faithful.
                 let base = scalar_disc(cx.b, *prim);
                 let pdisc = propagate_flags(cx.b, base, &[disc]);
                 let pdisc = mask_unmatched(cx, pdisc, mask);
@@ -1696,8 +1398,6 @@ fn install_arm_binds(
                 };
                 let name: ArcStr =
                     compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                // The bound payload fires iff its variant scrutinee
-                // fired — inherit the scrutinee's STALE (and taint).
                 let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
                 let pdisc = mask_unmatched(cx, pdisc, mask);
                 bind_local(cx, name, pdisc, vpayload, *kind, Some(*id));
@@ -1765,15 +1465,10 @@ fn install_arm_binds(
                              scrutinee"
                     ));
                 };
-                // Safe here: the arm's length tests (the structure
-                // condition stages guarding this matched region) proved
-                // the element exists — a tainted scrutinee's empty
-                // placeholder failed them.
+                // The arm's length tests proved the element exists.
                 let v = read_scrut_elem(cx, *ptr, *idx, *prim)?;
                 let name: ArcStr =
                     compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                // The bound leaf fires iff its composite scrutinee
-                // fired — inherit the scrutinee's STALE (and taint).
                 let base = scalar_disc(cx.b, *prim);
                 let pdisc = propagate_flags(cx.b, base, &[disc]);
                 let pdisc = mask_unmatched(cx, pdisc, mask);
@@ -1785,8 +1480,7 @@ fn install_arm_binds(
 }
 
 /// Value-position arm-body emission: widen the arm's result to the
-/// select's merge shape and jump to the merge block. Extracted
-/// verbatim from the pre-F0b `emit_select_node` arm loop.
+/// select's merge shape and jump to the merge block.
 fn emit_select_value_arm<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     body: &Node<R, E>,
@@ -1813,13 +1507,10 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             (cv.disc, cv.payload)
         }
         SelectMerge::Value => {
-            // Node twin of `widen_arm_to_value`, keyed on the arm
-            // BODY's frozen type.
             match kernel_abi::abi_kind(&body_frozen) {
                 Some(AbiKind::Null) => {
-                    // A bare-null arm body has nothing to emit (and a
-                    // Null-shaped node can't emit anyway); only the
-                    // literal constant form is recognized.
+                    // Only the literal null constant is recognized as a
+                    // bare-null arm body.
                     match body.view() {
                         NodeView::Constant(c) if matches!(c.value, Value::Null) => {}
                         _ => {
@@ -1830,10 +1521,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                         }
                     }
                     // Same STALE gate as `emit_const_node`: a literal
-                    // fires only at init. A raw (always-FRESH) disc here
-                    // made the STALE AND-fold below unable to sleep the
-                    // arm, so a guarded select taking a null arm re-fired
-                    // on every kernel invocation (soak-jul06c B3).
+                    // fires only at init.
                     let init = cx.init_flag();
                     let d = cx.b.ins().iconst(types::I64, value_disc::NULL);
                     let d = const_stale_gate(cx.b, init, d);
@@ -1883,23 +1571,13 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
                      match the string merge"
                 ));
             }
-            // String reads/produces are owned at production.
             let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
     };
-    // Fold flags into the arm result — ORGANIC FIRING (Eric's ruling
-    // 2026-08-14). TAINT = OR(arm, scrut): a missing scrutinee bottoms
-    // regardless of arm. FIRING = OR(arm production, scrutinee
-    // delivery, prologue guard productions) — the STALE bits AND-fold
-    // (the interp's `own_fired` join in node/select.rs). A RIDDEN
-    // scrutinee arrives disc|STALE from `emit_scrut_ride`, so a bottom
-    // delivery with history stays quiet here (the ride axis).
-    // The FOLD disc is path-dependent under THE SELECTION RIDE: the real
-    // scrutinee disc on a clean match, a neutral STALE when the held arm
-    // was reached by the bottom-scrutinee dispatch (so its taint doesn't
-    // bottom a firing arm and its absent fire doesn't upgrade a quiet
-    // one).
+    // TAINT = OR(arm, scrutinee). Firing = OR(arm production, scrutinee
+    // delivery, consulted guard productions), as the STALE AND-fold
+    // (the interp's `own_fired`).
     let fold_disc = fires.fold_scrut_disc.unwrap_or(scrut_disc);
     let base = clean_disc(cx.b, disc);
     let d = propagate_taint(cx.b, base, &[disc, fold_disc]);
@@ -1910,14 +1588,9 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         Some(gs) => fold_stale(cx.b, d, gs),
         None => d,
     };
-    // THE BOTTOM-OUT RULE (design/activation_state.md): when every
-    // fired consumed input this invocation was a bottom — the result
-    // is still stale after the sound folds but a fresh-bottom fire
-    // happened — the emission is the bottom that arrived: TAINT
-    // fresh. The payload stays as computed (valid under TAINT,
-    // ownership exact — the merge's consumers drop it like any arm
-    // payload); the interp twin is the `own_bottom` branch of
-    // node/select.rs's `emit!`.
+    // When every fired consumed input was a bottom (stale after the
+    // sound folds, but a fresh-bottom fire happened) emit a fresh
+    // TAINT; the payload stays valid and owned.
     let d = match fires.bfired {
         Some(bf) => {
             let sbit = cx.b.ins().band_imm(d, STALE);
@@ -1929,23 +1602,18 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         }
         None => d,
     };
-    // Drop the arm's owned pattern binds (PayloadValue / ListHead /
-    // ListTail clones) before leaving the arm — the result was made
-    // independently owned by the widening above, so the drops can't
-    // free it (findings/select-arm-bind-leak-aug2026: these clones
-    // were never dropped on any value-position exit and a hot fused
-    // select leaked ~55MB/s).
+    // Drop the arm's owned pattern binds; the widening above made the
+    // result independently owned.
     super::flow::emit_scope_drops(cx, mark)?;
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
     Ok(())
 }
 
-/// One structure pattern's condition against the scrutinee — the
-/// per-shape half of [`emit_arm_cond`], shared with the or-pattern
-/// alternative chain ([`emit_or_chain`], which calls it once per
-/// alternative with that alternative's member of the arm's inferred
-/// predicate, `explicit_pred`/`has_tcond` both false).
+/// One structure pattern's condition against the scrutinee: the
+/// per-shape half of [`emit_arm_cond`], also called by [`emit_or_chain`]
+/// once per alternative with that alternative's member of the arm's
+/// inferred predicate (`explicit_pred`/`has_tcond` both false).
 fn emit_structure_cond(
     cx: &mut BodyCx,
     sp: &StructPatternNode,
@@ -1983,15 +1651,9 @@ fn emit_structure_cond(
                         "emit_clif: nullable scrutinee bind predicate is not scalar"
                     ));
                 };
-                // Over a result union the payload read is only safe
-                // under the explicit predicate's POSITIVE disc test
-                // (tcond above); an inferred-predicate bind has no
-                // test, so refuse rather than read an error's
-                // payload word as the scalar
-                // (result-union-nullable-abi-aug2026). The option
-                // shape stays bind-by-arm-order sound: a preceding
-                // arm must have consumed the null member for the
-                // inferred predicate to narrow to a scalar.
+                // Over a result union the payload read is safe only under
+                // the explicit predicate's positive disc test; an
+                // inferred-predicate bind has no test, so it refuses.
                 if !explicit_pred
                     && kernel_abi::nullable_error_marked(&scrut_typ) != Some(false)
                 {
@@ -2045,9 +1707,6 @@ fn emit_structure_cond(
                     ));
                 }
             };
-            // Payload types come from the arm's own (frozen)
-            // type predicate — `Variant(tag, elts)` for exactly
-            // this arm.
             let pred = kernel_abi::freeze_for_abi(pred_typ).ok_or_else(|| {
                 anyhow!(
                     "emit_clif: variant pattern predicate {:?} \
@@ -2106,9 +1765,8 @@ fn emit_structure_cond(
             }
             let tag_ptr = cx.interned_str(tag);
             let helper = cx.helper("graphix_variant_tag_eq")?;
-            // The helper enforces representation AND arity, not just
-            // the tag — same-tag arms at different arities are
-            // distinct cases (variant-arity-tag-only-aug2026).
+            // The helper checks arity as well as tag: same-tag arms at
+            // different arities are distinct cases.
             let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
             let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr, arity]);
             Some(cx.b.inst_results(call)[0])
@@ -2172,16 +1830,10 @@ fn select_bind_id(b: &SelectArmBind) -> BindId {
     }
 }
 
-/// A drop-safe TAINT|STALE placeholder pair for a local of `kind` —
-/// the or-chain's no-match binds (the prologue form must still bind
-/// every name so its guard evaluates each invocation; the masked
-/// semantics deliver bottom, and the arm-exit scope drops handle the
-/// owned shapes).
-///
-/// STANDING unconditionally, and that is the difference from
-/// `nodes::emit_bottom_placeholder`, which follows a trigger: a
-/// delivery that never happened is never an event, so there is no
-/// trigger to follow. Same reasoning as [`mask_unmatched`].
+/// A drop-safe TAINT|STALE placeholder pair for a local of `kind`: the
+/// or-chain's no-match binds. Standing unconditionally, unlike
+/// `nodes::emit_bottom_placeholder`: a delivery that never happened is
+/// not an event, so there is no trigger to follow.
 fn placeholder_for_kind(
     cx: &mut BodyCx,
     kind: LocalKind,
@@ -2213,21 +1865,15 @@ fn placeholder_for_kind(
     })
 }
 
-/// Emit an or-pattern arm's alternative chain (design/or_patterns.md
-/// P3): the alternatives' structure conditions run left to right in
-/// their own block runs; the FIRST match materializes ITS binds (via
-/// the ordinary [`install_arm_binds`] into a temporary env scope,
-/// ownership forwarded) and jumps to one `done` block, where the arm's
-/// canonical locals bind ONCE under the shared BindIds — every
-/// alternative binds the same names at the same types (enforced at
-/// pattern compile), so the layout (sorted BindIds + kinds, from
-/// alternative 0) is total; a mismatch here Errs (de-fuse), never
-/// miscompiles. `nomatch`: `Some` = the caller's fail destination,
-/// jumped with NO binds (the take chain); `None` = route through
-/// `done` with matched=0 and tainted drop-safe placeholders (the guard
-/// prologue). Returns the matched i8 with the builder positioned in
-/// `done` and the binds installed; the caller's env mark (taken BEFORE
-/// this) scopes the arm-exit drops over the done-bound locals.
+/// Emit an or-pattern arm's alternative chain: alternatives test left
+/// to right; the first match installs its binds and jumps to one `done`
+/// block whose params bind the arm's locals once under the shared
+/// BindIds (layout from alternative 0; a mismatch Errs, never
+/// miscompiles). `nomatch`: `Some` = the caller's fail block, jumped
+/// with no binds; `None` = route through `done` with matched=0 and
+/// tainted placeholders. Returns the matched i8 with the builder in
+/// `done` and the binds installed; the caller's env mark, taken before
+/// this, scopes the arm-exit drops over them.
 fn emit_or_chain(
     cx: &mut BodyCx,
     alts: &[StructPatternNode],
@@ -2237,9 +1883,8 @@ fn emit_or_chain(
     scrut_typ: &Type,
     nomatch: Option<Block>,
 ) -> Result<ClifValue> {
-    // Each alternative checks against its own member of the arm's raw
-    // inferred Set (built one member per alternative, in order); a
-    // non-Set predicate (or a collapsed one) applies whole.
+    // Each alternative tests against its own member of the arm's
+    // inferred Set; a non-Set predicate applies whole.
     let alt_types = pred_typ.with_deref(|t| match t {
         Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
         _ => None,
@@ -2288,8 +1933,7 @@ fn emit_or_chain(
             Some(c) => {
                 cx.b.ins().brif(c, mk, &[], fail_to, &[]);
             }
-            // An irrefutable alternative (legal only in last position —
-            // dead-alternative refusals upstream) takes unconditionally.
+            // An irrefutable alternative (last position only) takes unconditionally.
             None => {
                 cx.b.ins().jump(mk, &[]);
             }
@@ -2340,8 +1984,7 @@ fn emit_or_chain(
             args.push(dv.into());
             args.push(pv.into());
         }
-        // Ownership forwarded to the done block's canonical binds —
-        // compile-time pop only, no drops.
+        // Ownership is forwarded to the done block's binds; no drops.
         cx.env.truncate(amark);
         cx.b.ins().jump(done.expect("or chain layout unset"), &args);
     }

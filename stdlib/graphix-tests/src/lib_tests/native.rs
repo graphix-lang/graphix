@@ -1,22 +1,13 @@
-//! The `#[native]` attribute (Part C3). The decorated expression must compile
-//! to native code — one fused JIT kernel with zero node-walk residue — else it
-//! is a compile error. It may only decorate a value-producing computation or a
-//! call; a function definition (or any function-typed target) is rejected,
-//! because a `native` requirement on a function value would be infectious and
-//! brittle (it could never be stored, dynamically dispatched, or passed to a
-//! non-fusing HOF) — a performance requirement belongs at the use site.
-//!
-//! These are compile-time assertions, so they are tested directly via `eval`
-//! (which runs with fusion on) rather than the `run!` differential harness:
-//! `#[native]` is deliberately mode-dependent (it cannot be verified under
-//! `--no-fusion`), so the node-walk-vs-jit value-agreement harness doesn't
-//! apply.
+//! The `#[native]` attribute: the decorated expression must compile to
+//! one fused kernel with zero node-walk residue, else it is a compile
+//! error. It may decorate a value-producing computation or a call, not
+//! a function definition. Tested via `eval` (fusion on), since the
+//! attribute is mode-dependent.
 
 use graphix_package_core::testing::eval;
 use netidx::subscriber::Value;
 
-// A pure computation that fully fuses → `#[native]` is satisfied, and the
-// program still produces its value.
+// A pure computation that fully fuses satisfies `#[native]`.
 #[tokio::test]
 async fn native_fusable_ok() {
     let r =
@@ -28,7 +19,7 @@ async fn native_fusable_ok() {
     );
 }
 
-// `#[native]` on a bare lambda literal — a function definition — is an error.
+// `#[native]` on a bare lambda literal is an error.
 #[tokio::test]
 async fn native_on_lambda_literal_is_error() {
     let r = eval("#[native]\n|x: i64| x + i64:1", crate::TEST_REGISTER).await;
@@ -39,7 +30,7 @@ async fn native_on_lambda_literal_is_error() {
     );
 }
 
-// `#[native]` on a function binding — also a function definition — is an error.
+// `#[native]` on a function binding is an error.
 #[tokio::test]
 async fn native_on_lambda_binding_is_error() {
     let r =
@@ -52,10 +43,7 @@ async fn native_on_lambda_binding_is_error() {
     );
 }
 
-// `#[native]` on an async computation that cannot fuse is an error (this is
-// the teeth of the attribute — it forbids exactly the constructs that
-// de-fuse). `throttle` is classified async (cross-cycle pacing), so it
-// node-walks. (`once` played this role until the P7 Sync flip.)
+// `#[native]` on an async computation (`throttle`) is an error.
 #[tokio::test]
 async fn native_on_unfusable_is_error() {
     let r = eval("#[native]\nthrottle(i64:5)", crate::TEST_REGISTER).await;
@@ -66,7 +54,7 @@ async fn native_on_unfusable_is_error() {
     );
 }
 
-// An unregistered attribute name is a compile error, independent of fusion.
+// An unregistered attribute name is a compile error.
 #[tokio::test]
 async fn unknown_attribute_is_error() {
     let r = eval("#[bogus]\ni64:1", crate::TEST_REGISTER).await;
@@ -77,11 +65,8 @@ async fn unknown_attribute_is_error() {
     );
 }
 
-// `#[native]` INSIDE an HOF callback body — the case that used to pass
-// vacuously (the attribute checker stopped at lambda bodies). `list::map`
-// over a recursive List doesn't batch-loop inline, so its callback fuses
-// per-element; a wholly-sync callback fully fuses, so `#[native]` on its
-// body is satisfied and the program produces its value.
+// `#[native]` inside a HOF callback body is checked: a wholly sync
+// `list::map` callback satisfies it.
 #[tokio::test]
 async fn native_hof_callback_fusable_ok() {
     let prog = "list::to_array(list::map(list::from_array([1, 2, 3]), \
@@ -94,13 +79,8 @@ async fn native_hof_callback_fusable_ok() {
     );
 }
 
-// #203 (now FIXED): an `array::init` callback that calls a recursive
-// lambda defined in an EARLIER top-level statement fully fuses. The callee
-// resolves across statements (batch-scoped `bind_to_lambda`), its kernel is
-// discovered and built (recursive tail-loop), and the callback→callee call
-// lowers to a cross-kernel call — so `#[native]` on the callback body is
-// satisfied. (Before #203 the call node-walked and this was a compile
-// error; this is the miniature of `bench/mandelbrot.gx`.)
+// An `array::init` callback calling a recursive lambda defined in an
+// earlier top-level statement fully fuses.
 #[tokio::test]
 async fn native_hof_callback_recursive_call_fuses_ok() {
     let prog = "{ \
@@ -143,13 +123,8 @@ async fn native_fold_callback_fusable_ok() {
     );
 }
 
-// Stage 2 — `#[native]` on a computation that calls a transitively-defined
-// callee whose BODY contains a sync DynCall (`cast<i64>` lowers to the cast
-// machinery). The callee `g` fuses as a cross-kernel FuncId and its cast
-// dispatches through the region-wide combined `dyn_slots` table — so the whole
-// decorated computation is native (the `let g` binding itself node-walks, but
-// it isn't part of the decorated expr). Before Stage 2 the callee's cast
-// de-fused and this was a compile error.
+// A callee whose body contains a cast fuses; the decorated computation
+// calling it is native.
 #[tokio::test]
 async fn native_transitive_callee_dyncall_ok() {
     let prog = "{ \
@@ -165,10 +140,7 @@ async fn native_transitive_callee_dyncall_ok() {
     );
 }
 
-// `#[native]` on a `{ s with f: v }` struct update — Phase 1 gave StructWith
-// an `emit_clif` (build a new struct, copying unchanged fields from the source
-// via `compile_element_read`, overriding the replaced ones). An all-scalar
-// struct-with over a fused source struct fully fuses into one kernel.
+// An all-scalar `{ s with f: v }` over a fused source struct fuses.
 #[tokio::test]
 async fn native_structwith_ok() {
     let prog =
@@ -182,10 +154,7 @@ async fn native_structwith_ok() {
     );
 }
 
-// A struct-with whose source struct has a STRING field copied UNCHANGED — the
-// old "composite-with-string cliff". Phase 1 copies it via
-// `compile_element_read` + `push_field` (`graphix_struct_get_arcstr`), so the
-// whole update fuses.
+// A struct-with whose source has a string field copied unchanged fuses.
 #[tokio::test]
 async fn native_structwith_string_field_ok() {
     let prog = "#[native]\n{ let s = { name: \"x\", n: i64:1 }; { s with n: i64:2 } }";
@@ -198,22 +167,15 @@ async fn native_structwith_string_field_ok() {
     );
 }
 
-// A non-scalar `connect` (Phase 2): a composite RHS marshaled to an owned
-// Value and handed to `set_var`. The target `last` is an external capture
-// WRITTEN (not read) inside the map callback, so the connect fuses (the
-// read-after-write guard doesn't fire) and the struct literal is marshaled via
-// `emit_owned_value_operand_node`. Before Phase 2 the non-scalar RHS de-fused.
+// A connect inside a map callback.
 #[tokio::test]
 async fn native_connect_composite_rhs_ok() {
     let prog = "{ let last = { v: i64:0 }; \
                 array::map([1, 2, 3], |x| #[native] { last <- { v: x }; x }); \
                 last.v }";
     let r = eval(prog, crate::TEST_REGISTER).await;
-    // STRICT FUSION (design/strict_fusion.md): a connect is an effect
-    // and refuses emission, so `#[native]` on this callback is now a
-    // compile error — the advertised performance-model cliff. (The
-    // any-shape connect marshal this test used to pin is deletion
-    // inventory.)
+    // A connect is an effect and refuses emission, so `#[native]` on
+    // this callback is a compile error.
     let e = format!("{:?}", r.as_ref().err());
     assert!(
         r.is_err() && e.contains("did not fully fuse"),
@@ -234,9 +196,7 @@ async fn native_hof_string_element_ok() {
     );
 }
 
-// `select` structural destructuring (Phase 4): a tuple pattern over a
-// borrowed scrutinee fuses — the arm's length test + scalar leaf reads
-// compile into the kernel.
+// A tuple pattern over a borrowed scrutinee fuses.
 #[tokio::test]
 async fn native_select_destructure_ok() {
     let prog = "#[native]\n{ let t = (3, 4); select t { (0, y) => y, (x, y) => x + y } }";
@@ -248,9 +208,7 @@ async fn native_select_destructure_ok() {
     );
 }
 
-// NESTED structural select patterns (Phase 5): the intermediate composite
-// reads are borrowed interior pointers staged behind each level's length
-// test — a nested slice inside a TUPLE fully fuses.
+// A nested slice inside a tuple pattern fuses.
 #[tokio::test]
 async fn native_select_nested_tuple_ok() {
     let prog = "{ let t = ([1.0, 2.0], 42); \
@@ -263,12 +221,7 @@ async fn native_select_nested_tuple_ok() {
     );
 }
 
-// The STRUCT-parent nested case (the nestedmatch3 shape) — flipped from a
-// de-fuse pin: the blocker was `_` inferring as `Type::Any`
-// (`infer_type_predicate`), which made select's unification-by-contains
-// walk short-circuit at the `_` slot (`T.contains(Any)` = false), leaving
-// every LATER slot's bind TVars un-narrowed. `_` now infers a fresh TVar
-// like an anonymous bind, so the whole select fuses.
+// The struct-parent nested case fuses (`_` infers a fresh TVar).
 #[tokio::test]
 async fn native_select_nested_struct_ok() {
     let prog = "{ let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 }; \
@@ -283,10 +236,7 @@ async fn native_select_nested_struct_ok() {
     );
 }
 
-// A FLOAT-result select with a CONDITIONAL final arm (a composite pattern's
-// length test makes final arms conditional) exercises the miss trap's
-// zero constant — which must be `f64const`, not `iconst.f64` (invalid CLIF:
-// a cranelift verifier PANIC that killed the check runtime).
+// A float-result select with a conditional final arm.
 #[tokio::test]
 async fn native_select_float_conditional_final_ok() {
     let prog = "{ let x = { bar: 42, baz: 8.0 }; \
@@ -313,10 +263,8 @@ async fn native_hof_composite_leaf_ok() {
     );
 }
 
-// ...and the teeth for the DEFERRED case: a NAMED rest binding
-// (`[x, rest..]`) allocates an owned subslice arm local (JitEnv::truncate
-// emits no drops), so that select still de-fuses — `#[native]` on it must
-// be a compile error until that lands.
+// A named rest binding (`[x, rest..]`) still de-fuses, so `#[native]`
+// on it is a compile error.
 #[tokio::test]
 async fn native_select_named_rest_defuses() {
     let prog = "{ let a = [1, 2, 3]; \
@@ -329,14 +277,8 @@ async fn native_select_named_rest_defuses() {
     );
 }
 
-// The blocker LIST must be clean: a callback whose arithmetic fuses but
-// whose call node-walks should report the CALL ("builtin call site not
-// discovered"), NOT the structural `let`s ("node does not emit CLIF")
-// whose values fused — the successful-source filter suppresses those.
-// `throttle` is classified async (a permanent fusion boundary), so its
-// call is the stable non-fuser here (a recursive lambda call fuses per
-// #203, and `once` went Sync at the P7 flip, so neither can play this
-// role); the `let a` value still fuses, exercising the filter.
+// The blocker list names the call that node-walks (`throttle`), not
+// the structural `let`s whose values fused.
 #[tokio::test]
 async fn native_blocker_list_is_filtered() {
     let prog = "array::init(4, |idx| #[native] { let a = idx * 2; throttle(a) })";

@@ -25,8 +25,6 @@ use crate::{
     tree::TreeValue,
 };
 
-// ── Subscription types ────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 struct SubscriptionValue {
     bind_id: BindId,
@@ -64,8 +62,6 @@ graphix_package_core::abstract_wrapper!(
     SubscriptionValue,
     static SUBSCRIPTION_WRAPPER = "db::subscription::Subscription"
 );
-
-// ── Custom event ──────────────────────────────────────────────────
 
 #[derive(Debug)]
 enum DbEvent {
@@ -112,8 +108,6 @@ fn drain_ready(
         }
     }
 }
-
-// ── Subscribe (with optional prefix) ──────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct DbSubscribe {
@@ -186,7 +180,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                     if let Some(ev) = decode_sled_event(key_typ, first) {
                         events.push(ev);
                     }
-                    // drain all immediately-ready events
                     drain_ready(&mut subscriber, key_typ, &mut events);
                     if events.is_empty() {
                         continue;
@@ -225,8 +218,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         }
     }
 }
-
-// ── Subscription accessors ────────────────────────────────────────
 
 fn extract_sub_bind_id(v: &Value) -> Option<BindId> {
     match v {

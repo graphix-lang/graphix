@@ -28,10 +28,9 @@ macro_rules! slider_dim_set {
     };
 }
 
-/// Generate a horizontal or vertical slider widget. The two dims (height,
-/// width) are passed in alphabetical order together with a kind tag
-/// (`length` for the primary axis, `scalar` for the cross axis) that
-/// controls the field type and how the value is applied to the iced widget.
+/// Generate a horizontal or vertical slider widget. Dims are passed in
+/// alphabetical order with a kind tag: `length` (primary axis) or
+/// `scalar` (cross axis).
 macro_rules! slider_widget {
     ($name:ident, $label:literal, $Widget:ident,
      $dim1:ident: $kind1:tt, $dim2:ident: $kind2:tt) => {
@@ -220,8 +219,5 @@ macro_rules! slider_widget {
     };
 }
 
-// Slider: primary axis is width (LengthV), cross axis is height (scalar).
-// Dims listed in alphabetical order: height first, width second.
 slider_widget!(SliderW, "slider", Slider, height: scalar, width: length);
-// VerticalSlider: primary axis is height (LengthV), cross axis is width (scalar).
 slider_widget!(VerticalSliderW, "vslider", VerticalSlider, height: length, width: scalar);

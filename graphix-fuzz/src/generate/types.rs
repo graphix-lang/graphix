@@ -4,11 +4,9 @@
 
 use crate::mutate::Rng;
 
-/// The numeric primitive vocabulary — every graphix numeric type. The
-/// fixed-width ten are the JIT's register-scalar set (each with its own
-/// sign/zero-extension ABI path — the 50a562b9 bug class); the
-/// variable-width four (`v`/`z`) are valid language that de-fuses
-/// (outside `PrimType`), exercising the fused/unfused boundary.
+/// Every graphix numeric type. The fixed-width ten are the JIT's
+/// register-scalar set; the variable-width four (`v`/`z`) are valid
+/// language that de-fuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumTy {
     I8,
@@ -83,9 +81,8 @@ impl NumTy {
         )
     }
 
-    /// The value-range identity: `v`/`z` varints are alternate wire
-    /// encodings of a fixed-width type — casts and fits follow the
-    /// fixed-width twin.
+    /// `v`/`z` varints are alternate wire encodings of a fixed-width
+    /// type; casts and fits follow the fixed-width twin.
     fn range_twin(self) -> NumTy {
         match self {
             NumTy::V32 => NumTy::U32,
@@ -96,10 +93,8 @@ impl NumTy {
         }
     }
 
-    /// Every value of `self` casts to `other` losslessly — the
-    /// never-fails widening relation for generated `cast<T>`. Floats
-    /// count integer embeddings only up to their exact-integer range
-    /// (24/53 mantissa bits).
+    /// Every value of `self` casts to `other` losslessly. Floats count
+    /// integer embeddings only up to their exact-integer range.
     pub(super) fn fits_in(self, other: NumTy) -> bool {
         fn int_bits(t: NumTy) -> Option<(u32, bool)> {
             Some(match t {
@@ -131,8 +126,8 @@ impl NumTy {
         }
     }
 
-    /// A literal of this type, drawn from a per-type pool that includes
-    /// the boundary values (MIN/MAX — the wrap/overflow surface).
+    /// A literal of this type from a per-type pool that includes the
+    /// boundary values.
     pub(super) fn literal(self, rng: &mut Rng) -> String {
         let v: &str = match self {
             NumTy::I8 => {
@@ -170,80 +165,53 @@ pub enum GenType {
     Str,
     Tuple(Vec<GenType>),
     Array(Box<GenType>),
-    /// The native List (`design/list_native.md`): produced as `[<..>]`
-    /// literals / `list::from_array` / `cons`, consumed by list HOFs
-    /// and list-slice pattern selects.
+    /// The native List: produced as `[<..>]` literals / `list::from_array`
+    /// / `cons`, consumed by list HOFs and list-slice pattern selects.
     List(Box<GenType>),
-    /// Fields kept SORTED by name at construction, so structural
-    /// equality (the vocabulary-matching relation) matches graphix's
-    /// field-order-insensitive structs.
+    /// Fields kept sorted by name, so structural equality matches
+    /// graphix's field-order-insensitive structs.
     Struct(Vec<(String, GenType)>),
-    /// A tag union (`` [`A(i64), `B] ``). Only produced by dedicated
-    /// let emission (a bare variant literal's type is its single tag —
-    /// the union needs the annotation); consumed as pass-through data
-    /// until select patterns land.
+    /// A tag union (`` [`A(i64), `B] ``). Only produced by dedicated let
+    /// emission: a bare variant literal's type is its single tag.
     Variant(Vec<(String, Vec<GenType>)>),
-    /// String-keyed map, built from a small key pool so accesses
-    /// mostly hit.
+    /// String-keyed map over a small key pool so accesses mostly hit.
     Map(Box<GenType>),
-    /// An option (`[T, null]`) — produced as a value or `null`,
-    /// consumed by null-arm selects, `?`-in-try, or pass-through.
+    /// An option (`[T, null]`).
     Nullable(Box<GenType>),
-    /// A lambda with fully annotated params/return — callable at
-    /// exactly these types. Never produced by `random_type` (fn VALUES
-    /// inside composites are deferred); enters scope only through
-    /// lambda bindings.
+    /// A lambda with fully annotated params/return. Never produced by
+    /// `random_type`; enters scope only through lambda bindings.
     Fn {
         params: Vec<GenType>,
         ret: Box<GenType>,
     },
-    /// An explicitly-polymorphic numeric lambda
-    /// (`'a: Number |x: 'a, y: 'a| -> 'a x + y`) — per-call-site
-    /// monomorphizing, callable with all args at any one numeric type
-    /// (its body is built from params with `+ - *` only, so the result
-    /// type follows the argument type). Two call sites at distinct
-    /// numeric types = a monomorphization pair, the audit's bug-2
-    /// shape.
+    /// An explicitly-polymorphic numeric lambda, callable with all args
+    /// at any one numeric type; the result type follows the argument type.
     PolyFn {
         arity: usize,
     },
-    /// A reference `&T` — inner type kept SCALAR (v1). Refs enter
-    /// composites through tuples/structs (projection deref `*(p.0)`)
-    /// and arrays (element deref `*(a[0]$)` — legal since Deref
-    /// typechecks through bound TVars, c4c20881). Never produced by
+    /// A reference `&T` with a scalar inner type. Never produced by
     /// `random_type`; introduced by dedicated statements, ref-typed
-    /// fn/interface params, and `&literal` leaves.
+    /// params, and `&literal` leaves.
     Ref(Box<GenType>),
-    /// A generated module's abstract type (`type T;` in `m<i>.gxi`,
-    /// concrete rep hidden in the impl). Identified by its module —
-    /// two modules' `T`s are distinct types. The ONLY producers are
-    /// `<module>::mk(i64)` and T-typed bindings; the only structural
-    /// consumer is `<module>::un(T) -> i64` — everything else
-    /// (composites, selects, interfaces of later modules) treats it as
-    /// an opaque value, which is exactly the abstract-registry surface
-    /// (`resolve_abstract`/`freeze_for_abi`) under test. Never produced
-    /// by `random_type`; enters the vocabulary through module emission.
+    /// A generated module's abstract type, identified by its module.
+    /// Produced only by `<module>::mk(i64)`; the only structural consumer
+    /// is `<module>::un(T) -> i64`. Never produced by `random_type`.
     Abstract {
         module: String,
     },
-    /// A name deliberately bound to something OUTSIDE the typed
-    /// vocabulary (a rec lambda, a bare wide-tvar lambda). The entry
-    /// exists to MASK any binding the name shadowed — without it a
-    /// stale entry would offer the dead earlier type to later
-    /// references. Matches nothing; produced by no `random_type`.
+    /// A name bound to something outside the typed vocabulary (a rec
+    /// lambda, a bare wide-tvar lambda). The entry masks any binding the
+    /// name shadowed. Matches nothing.
     Opaque,
 }
 
-/// The historically-dominant trio — kept as consts so template code
-/// (rec skeletons, reactive counters, str::len results) names them
-/// without ceremony.
+/// The dominant trio, named for template code.
 pub(super) const I64: GenType = GenType::Num(NumTy::I64);
 pub(super) const F64: GenType = GenType::Num(NumTy::F64);
 pub(super) const U8: GenType = GenType::Num(NumTy::U8);
 
 impl GenType {
-    /// The graphix type-annotation text for this type (`Array<i64>`,
-    /// `(i64, string)`, ...), used for `let x: T = ...`.
+    /// The graphix type-annotation text for this type.
     pub fn render(&self) -> String {
         match self {
             GenType::Num(n) => n.render().into(),
@@ -278,7 +246,7 @@ impl GenType {
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
             GenType::Abstract { module } => format!("{module}::T"),
             GenType::Ref(t) => format!("&{}", t.render()),
-            // fn-type annotations name their positional params.
+            // fn-type annotations name their positional params
             GenType::Fn { params, ret } => {
                 let parts: Vec<_> = params
                     .iter()
@@ -297,10 +265,9 @@ impl GenType {
         matches!(self, GenType::Num(_))
     }
 
-    /// Whether the type contains an option anywhere — such a binding
-    /// must be ANNOTATED: an unannotated `let v = null` infers type
-    /// `null`, not the union, and every value-arm consumer of it is
-    /// then a dead arm.
+    /// Whether the type contains an option anywhere. Such a binding must
+    /// be annotated: an unannotated `let v = null` infers `null`, not
+    /// the union.
     pub(super) fn contains_nullable(&self) -> bool {
         match self {
             GenType::Nullable(_) => true,
@@ -327,11 +294,9 @@ impl GenType {
         matches!(self, GenType::Num(_) | GenType::Bool | GenType::Str)
     }
 
-    /// A literal-free generated body of this type INFERS exactly this
-    /// type: no Variant (a bare tag infers its single tag, not the
-    /// union) and no Nullable (a value-branch body infers the bare
-    /// type) anywhere. Gates unannotated-return impls — the interface
-    /// signature must MATCH the inferred type, it never narrows it.
+    /// A literal-free generated body of this type infers exactly this
+    /// type: no Variant and no Nullable anywhere. Gates unannotated-return
+    /// impls, whose signature must match the inferred type exactly.
     pub(super) fn infers_exact(&self) -> bool {
         match self {
             GenType::Num(_) | GenType::Bool | GenType::Str | GenType::Abstract { .. } => {
@@ -350,10 +315,8 @@ impl GenType {
     }
 }
 
-/// A random numeric type: the dominant trio (i64/f64/u8) at 60%, the
-/// rest of the family at 40% — narrow widths and varints keep enough
-/// presence to exercise their extension/boundary paths without
-/// diluting the poly/HOF combination surface the trio anchors.
+/// A random numeric type: the dominant trio at 60%, the rest of the
+/// family at 40%.
 pub(super) fn numeric_type(rng: &mut Rng) -> GenType {
     GenType::Num(num_ty(rng))
 }
@@ -375,12 +338,10 @@ pub(super) fn scalar_type(rng: &mut Rng) -> GenType {
     }
 }
 
-/// Struct field names. Deliberately overlaps nothing with binding
-/// names (`v<N>`) — field-vs-binding confusion is exercised through
-/// select patterns later, not here.
+/// Struct field names; disjoint from binding names (`v<N>`).
 pub(super) const FIELDS: &[&str] = &["a", "b", "c", "x", "y", "n"];
 
-/// Map keys — small pool so generated accesses mostly hit.
+/// Map keys: a small pool so generated accesses mostly hit.
 pub(super) const KEYS: &[&str] = &["k0", "k1", "k2", "a", "b"];
 
 /// Variant tags.
@@ -399,12 +360,9 @@ pub(super) fn random_struct(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Struct(fields)
 }
 
-/// A random tag union: 2-3 DISTINCT tags, each with 0-2 payload types.
-/// Two tags minimum is load-bearing: `gen_pattern` counts a variant
-/// pattern refutable on the ≥2-tag premise, and a single-tag union
-/// makes a select's final irrefutable arm DEAD ("unused match cases" —
-/// gen-check seed 51). The old draw deduped pool collisions down to
-/// one tag.
+/// A random tag union: 2-3 distinct tags, each with 0-2 payload types.
+/// Two tags minimum: `gen_pattern` counts a variant pattern refutable
+/// on that premise, and a single-tag union makes the final arm dead.
 pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     let n = 2 + rng.below(2);
     let mut tags: Vec<(String, Vec<GenType>)> = Vec::new();
@@ -418,11 +376,8 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
             ));
         }
     }
-    // Same-tag ARITY case: a variant's identity is (tag, arity), so
-    // `` [`A, `A(i64)] `` is a legal union whose cases differ only by
-    // payload count — the shape the kernel's tag-only test was blind
-    // to (variant-arity-tag-only-aug2026; the distinct-tag-only draw
-    // could never mint it).
+    // same-tag arity case: a variant's identity is (tag, arity), so
+    // `` [`A, `A(i64)] `` is a legal union
     if rng.below(8) == 0 {
         let (t, args) = tags[rng.below(tags.len())].clone();
         let mut arity = args.len();
@@ -483,8 +438,8 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
         GenType::List(elem) => {
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| literal(rng, elem)).collect();
-            // Nullable-bearing elements must be annotated (a `null`
-            // part infers bare null, not the union).
+            // nullable-bearing elements must be annotated: a `null` part
+            // infers bare null, not the union
             if elem.contains_nullable() {
                 format!(
                     "{{ let mtl: List<{}> = [<{}>]; mtl }}",
@@ -529,10 +484,10 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
                 literal(rng, t)
             }
         }
-        // The `&24.0` GUI-idiom leaf — a ref to a literal.
+        // a ref to a literal
         GenType::Ref(t) => format!("&{}", literal(rng, t)),
-        // No literal form exists, but the constructor over an i64
-        // literal is the closed leaf expression.
+        // no literal form; the constructor over an i64 literal is the
+        // closed leaf
         GenType::Abstract { module } => {
             format!("{module}::mk({})", literal(rng, &GenType::Num(NumTy::I64)))
         }

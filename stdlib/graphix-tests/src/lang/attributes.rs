@@ -1,9 +1,5 @@
-// The definition-asserting attributes (Eric, 2026-08-14):
-// `#[tail_recursive]` (every self-call in tail position — the
-// cannot-trip-the-depth-limit guarantee), `#[sync]` / `#[async]`
-// (the intrinsic-effect assertion, assert-only v1). All three are
-// compile-time checks registered beside `#[native]` (lib.rs); a
-// failed assertion is a compile error, surfaced here as `Err(_)`.
+// The definition-asserting attributes `#[tail_recursive]`, `#[sync]`
+// and `#[async]`: a failed assertion is a compile error (`Err(_)`).
 
 use anyhow::Result;
 use graphix_package_core::run;
@@ -33,9 +29,8 @@ const TAIL_RECURSIVE_NON_TAIL: &str = r#"
 
 run!(tail_recursive_non_tail, TAIL_RECURSIVE_NON_TAIL, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
 
-// One tail self-call does NOT make a function tail-recursive when
-// another self-call is non-tail (the tightened RecursionKind summary):
-// the non-tail site still consumes native stack.
+// One tail self-call does not make a function tail-recursive when
+// another self-call is non-tail.
 const TAIL_RECURSIVE_MIXED: &str = r#"
 {
   #[tail_recursive]
@@ -50,9 +45,8 @@ const TAIL_RECURSIVE_MIXED: &str = r#"
 
 run!(tail_recursive_mixed, TAIL_RECURSIVE_MIXED, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
 
-// `#[tail_recursive]` asserts a constant-space loop, and a loop is
-// constant-space only when its body is stateless: `count` gives every
-// iteration its own activation (design/recursive_activations.md §2).
+// `#[tail_recursive]` asserts a constant-space loop, which needs a
+// stateless body: `count` gives every iteration its own activation.
 const TAIL_RECURSIVE_STATEFUL: &str = r#"
 {
   #[tail_recursive]
@@ -87,8 +81,7 @@ const SYNC_OK: &str = r#"
 
 run!(sync_ok, SYNC_OK, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
 
-// `throttle` defers deliveries across cycles — the body is async, the
-// `#[sync]` assertion fails.
+// `throttle` defers deliveries across cycles: the body is async.
 const SYNC_ON_ASYNC: &str = r#"
 {
   #[sync]

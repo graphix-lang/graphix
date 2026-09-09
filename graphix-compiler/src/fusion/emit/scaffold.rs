@@ -1,20 +1,12 @@
 //! HOF loop scaffolds for the cranelift JIT backend.
 //!
-//! Each `emit_*_loop` owns the MECHANICS of one HOF loop shape: the
-//! length / buf-new calls, the counter variable, block creation and
-//! sealing order, per-iteration element binding and dropping, and the
-//! output-buf pending-cleanup registration. The CALLER owns the
-//! policy — WHAT the loop body computes — via a body closure that
-//! compiles the body through the [`BodyCx`] handed to it.
+//! Each `emit_*_loop` owns the mechanics of one loop shape (length and
+//! buf calls, the counter, block creation and sealing, per-iteration
+//! element binding and dropping, pending-cleanup registration); the
+//! caller supplies the body as a closure over the [`BodyCx`].
 //!
-//! The scaffolds' caller is the direct node path's
-//! `Apply::emit_clif` HOF impls (Stage D2), whose closures compile
-//! Node bodies via `node.emit_clif(cx)`.
-//!
-//! The emitted CLIF must stay instruction-for-instruction stable;
-//! changes here must preserve the emission sequence exactly
-//! (instruction order, block-creation order, variable-declaration
-//! order).
+//! The emitted CLIF must stay instruction-for-instruction stable:
+//! preserve instruction, block-creation and variable-declaration order.
 
 use crate::{
     expr::ExprId,
@@ -45,69 +37,41 @@ use super::{
     },
 };
 
-/// The input array for a HOF loop. `owned` ⇒ the scaffold emits a
-/// `graphix_valarray_drop(ptr)` after the loop completes — at the
-/// single post-loop merge point ONLY. An abort inside the loop body
-/// (QopUnwrap, `push_field`'s bottom-abort) jumps to `pending_exit`
-/// WITHOUT dropping it:
-/// `emit_pending_cleanup` only sees `value_buf_stack` entries and
-/// env-bound locals, and a raw `ArraySrc.ptr` is neither. So the
-/// contract for an owned fresh-producer input (Stage D2) is
-/// one-or-the-other: either register the ptr for pending cleanup (a
-/// valarray analogue of [`register_hof_buf`]) and pass `owned: true`,
-/// or bind it into the env as an owned composite local and pass
-/// `owned: false` (env scope-exit drops it — passing `owned: true` as
-/// well would DOUBLE-drop on the normal path). A borrowed env-local
-/// array passes `owned: false`.
+/// The input array for a HOF loop. `owned: true` means the scaffold
+/// drops it after the loop; an input bound as an env local must pass
+/// `owned: false` or it double-drops on the normal path.
 pub struct ArraySrc {
     pub ptr: ClifValue,
-    /// The source expression's full disc — its STALE bit is "the source
-    /// fired this invocation" (inherited by the bound elements, so slot
-    /// bodies fire with their elements) and its TAINT bit rides into
-    /// the result.
+    /// The source's full disc: its STALE bit is inherited by the bound
+    /// elements and its TAINT bit rides into the result.
     pub disc: ClifValue,
     pub owned: bool,
 }
 
-/// Loop element binding: bound under `name` in the `JitEnv` for the
-/// duration of each iteration, with shape dispatch from `typ`. `id` is
-/// the callback's element-arg `BindId` when the caller has one (the
-/// direct node path, where the body's element `Ref`s carry it and
-/// resolve BindId-first — the #162/#167 shadowing class); a name-only
-/// caller passes `None` (its synthetic locals are looked up by name).
-/// Bind bookkeeping emits no instructions, so `Some` vs `None` never
-/// changes the emitted CLIF.
+/// Loop element binding: bound under `name` (and `id`, when the
+/// callback's element arg has a `BindId`) for each iteration, with
+/// shape dispatch from `typ`.
 pub struct HofElem<'a> {
     pub name: &'a ArcStr,
     pub id: Option<crate::BindId>,
     pub typ: &'a Type,
-    /// Destructure leaves for a `|(k, v)|` callback: per bound leaf,
-    /// its pattern `BindId`, tuple position, and shape. [`bind_elem`]
-    /// reads each off the owned composite element and binds it
-    /// BindId-first, so the body's leaf `Ref`s resolve without name
-    /// plumbing. Scalar leaves are by-value copies; composite / string /
-    /// value-shape leaves are OWNED clones the loop drops at body end
-    /// (see [`drop_owned_elem`] — the leaf list `bind_elem` returns).
-    /// Sparse positions (`|(k, _)|`) simply have no entry. Empty for
-    /// single-name callbacks. Only valid on a composite element —
-    /// leaves on a non-composite element are a caller bug
-    /// ([`bind_elem`] Errs).
+    /// Destructure leaves for a `|(k, v)|` callback: per bound leaf its
+    /// pattern `BindId`, tuple position and shape. Empty for single-name
+    /// callbacks; only valid on a composite element ([`bind_elem`] Errs
+    /// otherwise).
     pub leaves: &'a [(crate::BindId, usize, LeafShape)],
 }
 
-/// The shape of one `|(k, v)|` destructure leaf — decided by the HOF
-/// gate (`elem_leaves` in the array package) from the tuple element
-/// type, and dispatched by [`bind_elem`]'s per-leaf reads.
+/// The shape of one `|(k, v)|` destructure leaf (see [`elem_leaves`]).
 #[derive(Clone, Copy, Debug)]
 pub enum LeafShape {
-    /// A register scalar — by-value copy, nothing to drop.
+    /// A register scalar; nothing to drop.
     Scalar(PrimType),
-    /// Array/tuple/struct — owned ValArray bits (a refcount clone).
+    /// Owned ValArray bits.
     Composite,
-    /// An owned `ArcStr` clone.
+    /// An owned `ArcStr`.
     String,
-    /// Variant / Nullable / DateTime / Duration / Bytes / Map — an owned
-    /// two-word Value clone, bound under the given local kind.
+    /// An owned two-word Value, bound under the given local kind.
     Value(ValueLeafKind),
 }
 
@@ -119,10 +83,9 @@ pub enum ValueLeafKind {
     Value,
 }
 
-/// A bound per-iteration element — see [`bind_elem`]. The owned kinds
-/// (Composite/String/Value) hold an owned refcount that a consumer must
-/// either MOVE into the output or drop via [`drop_owned_elem`] before the
-/// iteration ends.
+/// A bound per-iteration element (see [`bind_elem`]). The owned kinds
+/// must be moved into the output or dropped via [`drop_owned_elem`]
+/// before the iteration ends.
 pub(crate) enum BoundElem {
     Scalar {
         var: Variable,
@@ -136,24 +99,15 @@ pub(crate) enum BoundElem {
     String {
         var: Variable,
     },
-    /// An owned two-word `(disc, payload)` Value (variant/nullable/value).
+    /// An owned two-word `(disc, payload)` Value.
     Value {
         disc: Variable,
         payload: Variable,
     },
 }
 
-/// Fetch element `i_now` of `arr_ptr` and bind it under `elem.name`:
-/// a scalar element reads via `graphix_valarray_get_<prim>` into a
-/// scalar local; an array/tuple/struct element reads via
-/// `graphix_valarray_get_array` into a composite local (an OWNED
-/// owned ValArray bits the iteration must consume or drop). Any other
-/// shape errs — lowering never produces string / value-shape loop
-/// elements (the #150 gap), and an explicit refusal turns would-be
-/// type confusion on unreachable input into a clean de-fuse.
-/// An element has the source collection's event freshness. A source
-/// update delivers every element to its retained callback slot; an
-/// unrelated kernel input leaves those bindings stale.
+/// An element's disc: `base` plus the source's TAINT and STALE (an
+/// element has its source collection's freshness).
 fn elem_disc(cx: &mut BodyCx, base: ClifValue, src_disc: ClifValue) -> ClifValue {
     carry_disc(cx, base, src_disc, TAINT | STALE)
 }
@@ -170,14 +124,10 @@ fn carry_disc(
 }
 
 /// Read and bind the `|(k, v)|` destructure leaves of a composite
-/// `base_ptr`, each under its pattern `BindId` (BindId-first
-/// resolution — the synthetic composite name is never looked up).
-/// Scalar leaves are by-value copies (the composite's own drop covers
-/// the allocation); composite / string / value leaves are OWNED
-/// clones — bound as env locals of the matching kind (so a mid-body
-/// pending exit drops them via `drop_owned_composites`) and returned
-/// for the loop's normal-path [`drop_owned_leaves`]. Each leaf disc
-/// folds `src_disc & mask` onto its shape base ([`carry_disc`]).
+/// `base_ptr`, each under its pattern `BindId`. Owned leaves are env
+/// locals (a pending exit drops them) and are returned for the
+/// normal-path [`drop_owned_leaves`]. Each leaf disc carries
+/// `src_disc & mask`.
 fn bind_leaves(
     cx: &mut BodyCx,
     base_ptr: ClifValue,
@@ -242,6 +192,9 @@ fn bind_leaves(
     Ok(owned_leaves)
 }
 
+/// Fetch element `i_now` of `arr_ptr` and bind it under `elem`, plus
+/// its owned destructure leaves. The owned kinds are env locals, so a
+/// mid-body pending exit drops them.
 fn bind_elem(
     cx: &mut BodyCx,
     src_disc: ClifValue,
@@ -260,8 +213,6 @@ fn bind_elem(
             let get_helper = cx.helper(valarray_get_helper(prim)?)?;
             let call = cx.b.ins().call(get_helper, &[arr_ptr, i_now]);
             let elem_val = cx.b.inst_results(call)[0];
-            // The element of a valid array is untainted (a tainted source
-            // array bottoms the whole HOF separately).
             let disc = scalar_disc(cx.b, prim);
             let disc = elem_disc(cx, disc, src_disc);
             let var = cx.b.declare_var(prim_to_clif(prim));
@@ -292,9 +243,6 @@ fn bind_elem(
                 LocalKind::Composite,
                 elem.id,
             );
-            // Destructure leaves — see [`bind_leaves`]. Leaves have the
-            // source collection's event freshness, exactly like the
-            // element they were read from.
             let owned_leaves =
                 bind_leaves(cx, elem_ptr, src_disc, TAINT | STALE, elem.leaves)?;
             Ok((BoundElem::Composite { var }, owned_leaves))
@@ -305,10 +253,6 @@ fn bind_elem(
                     "destructure leaves on a string HOF element — caller bug"
                 ));
             }
-            // `graphix_valarray_get_arcstr` returns an OWNED (refcount-bumped)
-            // ArcStr; bound as a `LocalKind::String` local so a mid-body
-            // pending exit drops it via `drop_owned_composites` (the same
-            // free coverage composite elements get).
             let get = cx.helper("graphix_valarray_get_arcstr")?;
             let call = cx.b.ins().call(get, &[arr_ptr, i_now]);
             let bits = cx.b.inst_results(call)[0];
@@ -332,9 +276,6 @@ fn bind_elem(
                     "destructure leaves on a value-shape HOF element — caller bug"
                 ));
             }
-            // `graphix_valarray_get_value` returns an OWNED two-word Value;
-            // bound as the matching `LocalKind::{Variant,Nullable,Value}`
-            // local (uniform drop, mid-body-pending coverage as above).
             let get = cx.helper("graphix_valarray_get_value")?;
             let call = cx.b.ins().call(get, &[arr_ptr, i_now]);
             let (d, p) = {
@@ -358,13 +299,9 @@ fn bind_elem(
     }
 }
 
-/// Drop the owned destructure-leaf clones of one iteration — emitted
-/// once the body (or predicate) has fully consumed them: after the
-/// output push in map (a body result may BORROW a leaf local until the
-/// push copies it), and right after the predicate in filter/find (the
-/// kept/found edges move only the ELEMENT — leaves are never moved).
-/// The mid-body pending exit needs nothing here: each owned leaf is an
-/// env local of its kind, dropped by `drop_owned_composites`.
+/// Drop one iteration's owned leaves once the body or predicate has
+/// consumed them (a body result may borrow a leaf until the push
+/// copies it). Leaves are never moved into the output.
 fn drop_owned_leaves(cx: &mut BodyCx, leaves: &[BoundElem]) -> Result<()> {
     for l in leaves {
         drop_owned_elem(cx, l)?;
@@ -372,9 +309,7 @@ fn drop_owned_leaves(cx: &mut BodyCx, leaves: &[BoundElem]) -> Result<()> {
     Ok(())
 }
 
-/// Drop an owned per-iteration element (no-op for scalars): the
-/// counterpart of [`bind_elem`]'s owned arms, dispatching the matching
-/// sentinel-guarded drop helper.
+/// Drop an owned per-iteration element (no-op for scalars).
 fn drop_owned_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
     match elem {
         BoundElem::Scalar { .. } => {}
@@ -398,18 +333,9 @@ fn drop_owned_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
     Ok(())
 }
 
-/// Drop the input array when the caller passed it owned — emitted at
-/// the single post-loop merge point of each scaffold. A borrowed
-/// array (`owned: false`) emits nothing.
-/// Register an OWNED input array (a fresh producer the caller just
-/// emitted — literal, slice, inlined-HOF result) for pending cleanup:
-/// a `?` / bottom-abort inside the loop body
-/// frees it from `emit_pending_cleanup` via the ValArray-typed
-/// `owned_input_stack` (the buf stack uses the buf destructor — wrong
-/// type). Pair with [`drop_owned_src`] after the loop: drop on the
-/// normal path, pop the registration (cleanup on pend, explicit drop
-/// otherwise — exactly once on either path). A Borrowed source is
-/// env-owned and needs neither.
+/// Register an owned input array on `owned_input_stack` so a
+/// bottom-abort inside the loop frees it. Pair with [`drop_owned_src`]
+/// after the loop: exactly one drop on either path.
 fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
     if arr.owned {
         let var = cx.b.declare_var(types::I64);
@@ -418,6 +344,8 @@ fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
     }
 }
 
+/// Drop an owned input array at the post-loop merge point and pop its
+/// registration.
 fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
     if arr.owned {
         let drop_helper = cx.helper("graphix_valarray_drop")?;
@@ -437,8 +365,7 @@ fn unregister_hof_buf(ctx: &LowerCtx) {
     ctx.value_buf_stack.borrow_mut().pop();
 }
 
-/// `len = valarray_len(arr_ptr)` — the input-length read every
-/// array-consuming scaffold opens with.
+/// `len = valarray_len(arr_ptr)`.
 fn input_len(cx: &mut BodyCx, arr_ptr: ClifValue) -> Result<ClifValue> {
     let len_helper = cx.helper("graphix_valarray_len")?;
     let call = cx.b.ins().call(len_helper, &[arr_ptr]);
@@ -465,9 +392,8 @@ fn init_counter(cx: &mut BodyCx) -> Variable {
     i_var
 }
 
-/// Emit the `i < len` header test: brif to `loop_body` / `loop_exit`.
-/// The builder must be positioned in the (already-jumped-to) header
-/// block.
+/// Emit the `i < len` header test. The builder must be positioned in
+/// the header block.
 fn emit_loop_header(
     cx: &mut BodyCx,
     i_var: Variable,
@@ -480,9 +406,8 @@ fn emit_loop_header(
     cx.b.ins().brif(cond, loop_body, &[], loop_exit, &[]);
 }
 
-/// `i += 1; jump loop_header` — the loop back-edge. `i_now` is the
-/// caller's already-read counter value (its read position differs per
-/// scaffold and must be preserved).
+/// `i += 1; jump loop_header`. `i_now` is the caller's already-read
+/// counter value; its read position differs per scaffold.
 fn emit_increment(
     cx: &mut BodyCx,
     i_var: Variable,
@@ -502,27 +427,11 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
     Ok(cx.b.inst_results(call)[0])
 }
 
-/// Push an already-compiled field result into a `graphix_value_buf` —
-/// the push half of [`super::compile_and_push_field`]. Helper choice
-/// per shape:
-/// - **Scalar**: `graphix_value_buf_push_<T>` per the prim. A
-///   may-bottom (tainted-disc) slot does NOT abort — the caller
-///   accumulates its taint into the HOF result disc (see the body
-///   comment below).
-/// - **Array/Tuple/Struct**: `graphix_value_buf_push_array` (owned)
-///   or `_borrowed` (refcount-bumped), by `src`.
-/// - **Variant/Nullable/Value**: `graphix_value_buf_push_value` or
-///   `_borrowed`, picked the same way; pushes both `(disc, payload)`
-///   words.
-/// - **String**: `graphix_value_buf_push_string`, UNCONDITIONALLY —
-///   `src` is ignored because string SSA is always owned (every
-///   producer on both paths — ConstStr, Concat, Local/Ref reads —
-///   hands out a fresh refcount). The
-///   bits are the ArcStr's raw thin pointer, NOT a pointer to an
-///   ArcStr struct — `_push_arcstr` would dereference them as one
-///   (UAF/UB); `_push_string` takes the ArcStr by value (consumes).
-///   A caller with a genuinely borrowed string SSA must clone first.
-/// - **Unit/Null**: invalid as a field — caller should have rejected.
+/// Push a compiled field into a `graphix_value_buf`, choosing the
+/// helper by shape and `src`. Strings ignore `src`: string SSA is
+/// always owned and `_push_string` consumes it (`_push_arcstr` would
+/// dereference the bits as an `ArcStr` struct — UB). A tainted field
+/// does not abort; the caller folds its taint into the result.
 pub fn push_field(
     cx: &mut BodyCx,
     buf: ClifValue,
@@ -554,14 +463,8 @@ pub fn push_field(
         }
     };
     let push = cx.helper(helper_name)?;
-    // A tainted slot does NOT abort the kernel — the caller accumulates
-    // it (SlotFlags) into the HOF's RESULT disc (#219). Pushing the
-    // tainted slot is safe: its payload is the helper-safe placeholder,
-    // and every push helper masks the tag byte through the `TagValue`
-    // gateway before the value is cloned or stored.
-    // Value-shape fields (Variant/Nullable/DateTime/Duration/Bytes/Map)
-    // push both `(disc, payload)` registers; everything else pushes the
-    // payload word.
+    // Pushing a tainted field is safe: every push helper masks the tag
+    // byte before cloning the value.
     if kernel_abi::is_value_shape(typ) {
         cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
@@ -571,42 +474,24 @@ pub fn push_field(
 }
 
 /// Loop-carried slot-flags accumulator: per-slot TAINT is OR-reduced
-/// and per-slot STALE is AND-reduced across the loop.
-///
-/// TAINT: a tainted (bottom) body / predicate slot taints the WHOLE
-/// HOF result — the node-walk's HOF node emits nothing while a slot is
-/// incomplete — but never the kernel: unrelated outputs still fire
-/// (#219; these paths used to runtime-abort the kernel). The pushed
-/// slot values are the helper-safe placeholders, masked at every
-/// helper boundary.
-///
-/// STALE (firing): the native loop represents one collection node and
-/// fires iff a loop input fired and the evaluation produced an event.
-/// Elements and the accumulator deliver FIRED by convention, so the
-/// input gate keeps an inline loop quiet when an unrelated region input
-/// invoked the kernel (see [`Self::apply`]).
+/// and per-slot STALE is AND-reduced across the loop. A tainted slot
+/// taints the whole HOF result but never the kernel. The loop fires
+/// iff a loop input fired and the evaluation produced an event
+/// ([`Self::apply`]).
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
     len: Option<ClifValue>,
-    /// The result's own carried STALE is an ADDITIONAL firing source
-    /// beside the slots word — fold: the acc carry is the chain, and
-    /// it alone covers the zero-iteration case (an empty source under
-    /// a fired init has no body evaluations to fold).
+    /// The result's own STALE is an additional firing source beside the
+    /// slots word (fold: the acc carry alone covers zero iterations).
     result_also_fires: bool,
     src_invariant: bool,
-    /// PASS-THROUGH kinds (filter, find — the kernel twin of
-    /// `MapFn::PASS_THROUGH`): the result reads the source ELEMENTS
-    /// beside the callback verdicts, so a same-length source refresh
-    /// with quiet slots still fires (the strict dependence rule,
-    /// 2026-08-06 — without it the fused loop recomputed fresh values
-    /// under a quiet disc while the node-walk's cache went stale, and
-    /// init-view readers saw the two sides disagree).
+    /// Pass-through kinds (filter, find) read the source elements into
+    /// the result, so a same-length source refresh with quiet slots
+    /// still fires.
     pass_through: bool,
-    /// The collection callsite this loop lowers ([`BodyCx::
-    /// collection_site`], captured at loop start) — the key a NESTED
-    /// loop's prev-length word was chained under in the enclosing
-    /// frame ([`emit::slot_state_sites`]).
+    /// The collection callsite this loop lowers: the key a nested loop's
+    /// prev-length word is chained under in the enclosing frame.
     site_id: Option<crate::expr::ExprId>,
 }
 
@@ -616,7 +501,6 @@ impl SlotFlags {
         let z = cx.b.ins().iconst(types::I64, 0);
         cx.b.def_var(taint, z);
         let stale = cx.b.declare_var(types::I64);
-        // All-stale start: an empty loop contributes no firing.
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
         SlotFlags {
@@ -642,14 +526,12 @@ impl SlotFlags {
         self.pass_through = true;
     }
 
-    /// Record the source's element count for `apply`'s empty-source
-    /// term (a fold over an EMPTY array emits its init when an input
-    /// fired — there are no body evaluations to gate on).
+    /// Record the source's element count for `apply`'s empty-source term.
     pub fn set_len(&mut self, len: ClifValue) {
         self.len = Some(len);
     }
 
-    /// Fold one slot's disc into the accumulators (inside the loop).
+    /// Fold one slot's disc into the accumulators.
     pub fn fold(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.taint);
         let t = cx.b.ins().band_imm(disc, TAINT);
@@ -658,10 +540,8 @@ impl SlotFlags {
         self.fold_stale(cx, disc);
     }
 
-    /// Fold one slot's STALE bit alone (the fold loop): firing is
-    /// per-slot (FoldQ's `any_trig`), but TAINT rides only the acc
-    /// carry — consumption decides whether a poisoned slot bottoms
-    /// the fold, so an acc-ignoring callback recovers.
+    /// Fold one slot's STALE bit alone: in a fold TAINT rides only the
+    /// acc carry, so an acc-ignoring callback recovers.
     pub fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.stale);
         let sb = cx.b.ins().band_imm(disc, STALE);
@@ -669,16 +549,11 @@ impl SlotFlags {
         cx.b.def_var(self.stale, n);
     }
 
-    /// Apply the exact MapQ/FoldQ firing rule when a prev-length word
-    /// is available: a per-INSTANCE state word in a root body, or a
-    /// per-CALL-SITE word in a callee body (jul16a fuzz classes A+C:
-    /// the callee fallback to the conservative rule re-fired a
-    /// callee's loop on every same-length source refresh with a quiet
-    /// body, where the interp's per-slot rule is quiet — the site
-    /// word extends the exact rule's AVAILABILITY, not its
-    /// semantics). Nested loops over variant sources use the
-    /// conservative source-or-slot approximation because one shared
-    /// length cannot represent independent per-iteration slot sets.
+    /// Fold the accumulated flags and the source discs into `r`'s disc.
+    /// Uses the exact firing rule when a prev-length word is available
+    /// (a state word, a chain word, or a call-site word); a nested loop
+    /// over a variant-length source without a chain word falls back to
+    /// the conservative source-or-slot rule.
     pub fn apply(
         &self,
         cx: &mut BodyCx,
@@ -719,20 +594,13 @@ impl SlotFlags {
                 };
                 match state {
                     Some(off) => Some(PrevLen::State(off)),
-                    // Nested loop: a per-ENCLOSING-SLOT word from the
-                    // enclosing frame's chain (the node-walk's inner
-                    // MapQ instance per outer slot), keyed by this
-                    // loop's collection callsite. Works in root and
-                    // callee bodies alike (the chain anchors in the
-                    // state buffer or the site block respectively).
+                    // Nested loop: a per-enclosing-slot word from the
+                    // enclosing frame's chain.
                     None => match self.site_id.and_then(|id| cx.slot_select_word(id)) {
                         Some(w) => Some(PrevLen::Chain(w)),
-                        // Callee body: one word per CALL SITE is exact
-                        // when the length is per-instance — a loop at
-                        // the body's root, or an invariant length under
-                        // enclosing loops. A variant length under
-                        // enclosing in-body loops without a chain word
-                        // would alias iterations — conservative.
+                        // A call-site word is exact only when the length
+                        // is per-instance; a variant length under enclosing
+                        // loops would alias iterations.
                         None if cx.ctx.loop_depth.get() == 0 || self.src_invariant => {
                             cx.claim_site_word().map(PrevLen::Site)
                         }
@@ -754,23 +622,15 @@ impl SlotFlags {
             Some(PrevLen::Chain(SelWord::Guarded { base, addr })) => {
                 self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
             }
-            // The site block base may be 0 at runtime (recursive
-            // back-edge — a fresh transient activation): branch to the
-            // conservative rule instead of faulting.
+            // The site block base may be 0 on a recursive back-edge.
             Some(PrevLen::Site(off)) => {
                 let base = cx.site_ptr();
                 let addr = cx.b.ins().iadd_imm(base, off as i64);
                 self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
             }
         };
-        // A FRESH-tainted source is an event — the interp's
-        // `any_trig = forced_taint && src_trig`. None of the firing
-        // terms can see it: the tainted placeholder keeps the length
-        // (no resize), the slots run quiet (or zero iterations), and
-        // the source isn't empty — so the poison delivery rode out as
-        // a silent TAINT|STALE where the interp fires FreshBottom
-        // (aug13i hz0-reactive-000002: a fold over a literal holding a
-        // div0 element re-surfaced its pre-bottom result downstream).
+        // A fresh-tainted source is an event none of the firing terms
+        // can see (no resize, quiet slots, not empty): fire it here.
         let tainted = cx.b.ins().icmp_imm(IntCC::NotEqual, src_taint, 0);
         let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
         let fresh_taint = cx.b.ins().band(tainted, src_fired);
@@ -780,9 +640,8 @@ impl SlotFlags {
         r
     }
 
-    /// [`exact_stale`](Self::exact_stale) behind a null-guard on
-    /// `base` (a site block or chain table that is 0 on a recursive
-    /// back-edge): the conservative rule on the 0 path.
+    /// [`exact_stale`](Self::exact_stale) behind a null-guard on `base`
+    /// (0 on a recursive back-edge); the conservative rule on the 0 path.
     fn guarded_exact_stale(
         &self,
         cx: &mut BodyCx,
@@ -811,11 +670,9 @@ impl SlotFlags {
         cx.b.block_params(merge)[0]
     }
 
-    /// The exact firing rule's STALE contribution: fires iff resized ∨
-    /// a slot fired ∨ the source fired empty, against the prev-length
-    /// word at `addr` (stored `len + 1`, 0 = no previous observation; a
-    /// TAINTED source skips the logical resize — the node-walk saw no
-    /// event).
+    /// The exact firing rule's STALE contribution: fires iff resized, a
+    /// slot fired, or the source fired empty, against the prev-length
+    /// word at `addr` (stored `len + 1`; 0 = no previous observation).
     fn exact_stale(
         &self,
         cx: &mut BodyCx,
@@ -828,12 +685,8 @@ impl SlotFlags {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
         let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
-        // A TAINTED source computes no length at all in the node-walk
-        // (`forced_taint` returns before the resize walk), so it can
-        // never be a resize here either. The stored word is held for
-        // the same reason (`recorded`, below), and comparing that held
-        // word against this cycle's CLAMPED length made every quiet
-        // over-limit cycle read as a resize.
+        // A tainted source is never a resize and leaves the stored word
+        // untouched (the node-walk computes no length for it).
         let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
         let resized = cx.b.ins().band(resized, valid);
         let recorded = cx.b.ins().select(valid, lenp1, stored);
@@ -844,9 +697,7 @@ impl SlotFlags {
         let src_empty = cx.b.ins().band(src_fired, empty);
         let fires = cx.b.ins().bor(resized, slot_fired);
         let fires = cx.b.ins().bor(fires, src_empty);
-        // Pass-through kinds fire on ANY source fire — the elements
-        // are part of the result (`conservative_stale` already
-        // includes the source term, so only the exact rule needs it).
+        // Pass-through kinds fire on any source fire.
         let fires =
             if self.pass_through { cx.b.ins().bor(fires, src_fired) } else { fires };
         let quiet = cx.b.ins().iconst(types::I64, STALE);
@@ -854,9 +705,8 @@ impl SlotFlags {
         cx.b.ins().select(fires, zero, quiet)
     }
 
-    /// The conservative source-or-slot STALE contribution (no
-    /// prev-length word): the result reads fired when a slot fired OR
-    /// the source fired.
+    /// The conservative STALE contribution (no prev-length word): fired
+    /// when a slot or the source fired.
     fn conservative_stale(
         &self,
         cx: &mut BodyCx,
@@ -894,25 +744,10 @@ where
     let n = cx.b.ins().select(is_negative, zero, n_widened);
     let max = cx.b.ins().iconst(types::I64, crate::node::MAX_ARRAY_INIT_LEN);
     let oversize = cx.b.ins().icmp(IntCC::SignedGreaterThan, n, max);
-    // An over-limit count IS bottom (the interp's MapQ forces taint
-    // and keeps its retained slots), but the count's own disc is
-    // CLEAN, so every validity channel keyed on the source's taint
-    // read the cycle as a real resize-to-0: the prev-length word
-    // recorded the clamped 0 (a phantom resize fire two cycles later
-    // — init-over-limit-aug2026/01) and the slot tables truncated and
-    // freed every per-slot word the interp retains. Force the taint
-    // into the count's disc: `exact_stale` then keeps its stored
-    // length, the slot chains read invalid (no truncate), and the
-    // caller's firing wrap sees the source tainted. The count's own
-    // STALE bit rides through: a count that FIRED over the limit is a
-    // FRESH bottom (the interp's MapQ publishes one), and forcing
-    // STALE made it a standing one — the bind never published it, the
-    // store kept the previous array, and a downstream fold read a
-    // quiet empty source under a fired init (init-over-limit-aug2026/
-    // 02). The clamped-0 loop bound stays (the interp's retained-slot
-    // walk on the oversize cycle delivers no elements; slot-interior
-    // deps missing their tick that cycle is the documented
-    // interior-state residual).
+    // An over-limit count is bottom: taint the count's disc (so the
+    // stored length and slot tables are kept, not reset to 0) but keep
+    // its STALE bit, since a count that fired over the limit is a fresh
+    // bottom. The loop bound clamps to 0.
     let forced_bits = cx.b.ins().iconst(types::I64, TAINT);
     let forced_disc = cx.b.ins().bor(n_disc, forced_bits);
     let n_disc = cx.b.ins().select(oversize, forced_disc, n_disc);
@@ -1145,17 +980,9 @@ where
     let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
     cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
     cx.b.switch_to_block(push_block);
-    // The result in hand is ALWAYS the callback's 2-word
-    // Nullable-shaped VALUE — never an unwrapped element. Earlier
-    // per-inner-shape arms fed `value.payload` to shape-specific
-    // pushes: for a composite inner that handed a Value's INTERIOR
-    // ValArray bits to a `Box::from_raw` consumer (the type confusion
-    // `graphix_value_into_array`'s docs warn about — SIGSEGV,
-    // soak-jul13b crash_000018: `filter_map(a, |x| a[1..])`), and for
-    // ANY inner the `[T, Error]` result shape can put an Error value
-    // where the arm assumed T (garbage scalar bits, an `Arc<Value>`
-    // misread as ArcStr). The interpreted finish clones the Value
-    // whatever it runtime-is — push it AS a value, bit-for-bit.
+    // The result is always the callback's 2-word Nullable-shaped Value,
+    // never an unwrapped element (a `[T, Error]` result may hold an
+    // Error where the arm expects T): push it as a value, bit-for-bit.
     match kernel_abi::abi_kind(out_elem) {
         Some(
             AbiKind::Scalar(_)
@@ -1195,12 +1022,9 @@ where
     Ok((result, flags))
 }
 
-/// How a flat_map body result splices into the output buf: an ARRAY
-/// result extends via its owned ValArray ptr (one word); a LIST
-/// result walks the cons chain (an owned two-word Value; a non-list
-/// value pushes as a single element — `ListFlatMap::finish`'s
-/// fallback). Selected per-op so the array path's emitted CLIF stays
-/// instruction-for-instruction identical.
+/// How a flat_map body result splices into the output buf: an array
+/// result extends via its owned ValArray ptr; a list result walks the
+/// cons chain (a non-list value pushes as a single element).
 #[derive(Clone, Copy)]
 pub enum FlatMapExtend {
     Array,
@@ -1267,27 +1091,11 @@ where
     Ok((result, flags))
 }
 
-/// `array::fold(arr, init, |acc, x| body)` — a scalar accumulator
-/// Variable threaded through the loop. Per iteration the acc is bound
-/// FIRST, then the element (this binding order is load-bearing); the
-/// body's result re-defines the acc Variable. No output buf, no
-/// pending-cleanup registration.
-///
-/// The `init`/`body` closures return a register-scalar payload whose
-/// #219 taint has ALREADY been forced: callers wrap the compiled node in
-/// [`super::emit_forced`], which RUNTIME-aborts the whole kernel to bottom
-/// if the value taints (folds to no branch for a definitely-valid value).
-/// So a may-bottom fold body fuses and bottoms at runtime — faithful,
-/// since a bottom acc poisons every later iteration (the whole fold
-/// blocks). Same convention for [`emit_filter_loop`]/[`emit_find_loop`]
-/// predicates and [`emit_flat_map_loop`] bodies, and for the map path
-/// ([`push_field`]). There is NO build-time may-bottom de-fuse.
 /// Destructure-leaf shapes for a `|(k, v)|`-style pattern over a
-/// tuple-typed value: per bound leaf, its pattern `BindId`, tuple
-/// position, and [`LeafShape`]. `None` when the (frozen) type isn't a
-/// tuple or a bound position has no register/heap shape — those
-/// callers node-walk. Empty binds (single-name pattern) is trivially
-/// `Some(empty)`.
+/// tuple-typed value: per bound leaf its pattern `BindId`, tuple
+/// position and [`LeafShape`]. `None` when the type isn't a tuple or a
+/// bound position has no kernel shape (the caller node-walks); empty
+/// binds give `Some(empty)`.
 pub fn elem_leaves(
     in_elem: &Type,
     elem_binds: &[(crate::BindId, usize)],
@@ -1316,39 +1124,26 @@ pub fn elem_leaves(
         .collect()
 }
 
-/// The fold accumulator's shape — how the loop-carried value is held,
-/// bound for the body, made owned, and dropped when replaced.
+/// The fold accumulator's shape: how the loop-carried value is held,
+/// made owned, and dropped when replaced.
 pub enum FoldAcc<'a> {
-    /// A register scalar in a prim-typed Variable. Owns nothing.
+    /// A register scalar. Owns nothing.
     Scalar(PrimType),
-    /// OWNED ValArray bits (array / tuple / struct) in an I64
-    /// Variable. The loop owns the current acc: each iteration the
-    /// body's result is made independently owned (`ensure_owned` per
-    /// `body_src` — a borrowed Ref result clones) and the old acc is
-    /// dropped. `leaves` are the `|(a, b), v|` destructure leaves of
-    /// the acc pattern, re-read off the CURRENT acc each iteration
-    /// with TAINT|STALE carried from the acc disc.
+    /// Owned ValArray bits. The loop owns the current acc: each
+    /// iteration the body's result is made owned per `body_src` and the
+    /// old acc dropped. `leaves` are the acc pattern's destructure
+    /// leaves, re-read off the current acc each iteration.
     Composite {
         init_src: CompositeSource,
         body_src: CompositeSource,
         leaves: &'a [(crate::BindId, usize, LeafShape)],
     },
-    /// An OWNED `ArcStr` in an I64 Variable. String reads always CLONE
-    /// (`LocalKind::String`), so init and body results are already
-    /// independently owned — no `ensure_owned` step; the old acc still
-    /// drops when replaced.
+    /// An owned `ArcStr`. String reads always clone, so results are
+    /// already owned; the old acc still drops when replaced.
     Str,
-    /// An OWNED two-word Value (variant / nullable / opaque value —
-    /// e.g. a List or Map accumulator, or the max-by `[T, null]`
-    /// idiom). Unlike the other shapes, the acc's REAL value disc
-    /// varies per iteration (a nullable acc alternates Null and its
-    /// value disc; a List acc alternates the `Nil` string and the
-    /// `Cons` array), so the disc Variable carries the WHOLE disc —
-    /// value bits plus TAINT|STALE — never a re-based constant. The
-    /// loop owns the current acc (`ensure_owned` per src, like
-    /// Composite); the old one drops via `graphix_value_drop` (which
-    /// masks the tag bits). No destructure leaves — a value-shape acc
-    /// pattern is a single name.
+    /// An owned two-word Value. Its real value disc varies per
+    /// iteration (a nullable acc alternates Null and its value), so the
+    /// disc Variable carries the whole disc, never a re-based constant.
     Value { init_src: CompositeSource, body_src: CompositeSource, kind: ValueLeafKind },
 }
 
@@ -1366,9 +1161,9 @@ impl FoldAcc<'_> {
         }
     }
 
-    /// The clean (untainted, fired) disc for the carried acc shape —
-    /// each carry re-bases on this so only TAINT and STALE ride.
-    /// UNREACHABLE for [`FoldAcc::Value`] — its disc carries whole.
+    /// The clean disc for the carried acc shape; each carry re-bases on
+    /// it so only TAINT and STALE ride. Unreachable for
+    /// [`FoldAcc::Value`], whose disc carries whole.
     fn base_disc(&self, cx: &mut BodyCx) -> ClifValue {
         match self {
             FoldAcc::Scalar(p) => scalar_disc(cx.b, *p),
@@ -1380,11 +1175,8 @@ impl FoldAcc<'_> {
         }
     }
 
-    /// Drop the old carried acc when a new one replaces it (and on the
-    /// loop's pending-abort edges it is dropped as the env local the
-    /// loop binds it to — `drop_owned_composites`). Emits nothing for
-    /// a scalar (not even the `use_var` — scalar CLIF is preserved
-    /// instruction-for-instruction).
+    /// Drop the old carried acc when a new one replaces it. Emits nothing
+    /// for a scalar, not even the `use_var`.
     fn drop_old(
         &self,
         cx: &mut BodyCx,
@@ -1413,9 +1205,8 @@ impl FoldAcc<'_> {
         Ok(())
     }
 
-    /// The next carried disc for a fresh acc value: whole-carried for
-    /// [`FoldAcc::Value`] (real value disc + TAINT|STALE, other tag
-    /// bits stripped), re-based on the shape constant otherwise.
+    /// The next carried disc: the whole disc minus the other tag bits for
+    /// [`FoldAcc::Value`], re-based on the shape constant otherwise.
     fn carry_disc(&self, cx: &mut BodyCx, from_disc: ClifValue) -> ClifValue {
         match self {
             FoldAcc::Value { .. } => {
@@ -1431,6 +1222,9 @@ impl FoldAcc<'_> {
     }
 }
 
+/// `array::fold(arr, init, |acc, x| body)`. Each iteration binds the
+/// acc first, then the element (the order is load-bearing); the body's
+/// result becomes the next acc.
 pub fn emit_fold_loop<'a, 'f, 'c, I, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
@@ -1452,23 +1246,15 @@ where
         FoldAcc::Scalar(p) => prim_to_clif(*p),
         FoldAcc::Composite { .. } | FoldAcc::Str | FoldAcc::Value { .. } => types::I64,
     });
-    // The acc's TAINT and STALE are LOOP-CARRIED in its own disc
-    // Variable. Each carry re-bases on the clean scalar
-    // tag so only TAINT and STALE ride. STALE must ride too: rebasing
-    // to the always-fired scalar tag made an acc-consuming body read
-    // FIRED on every kernel run, so a fold over a quiet const array
-    // re-fired forever — a `s <- fold(a, …)` self-connect busy-spun
-    // where the node-walk quiesced (findings/hof-connect-jun2026/01,
-    // re-caught by the trace oracle after the SlotFlags rework).
+    // The acc's TAINT and STALE are loop-carried in its own disc; STALE
+    // must ride or an acc-consuming body reads FIRED on every run.
     let acc_disc_var = cx.b.declare_var(types::I64);
     let mut taint = SlotFlags::new(cx);
     taint.set_len(len);
     taint.result_also_fires();
     let init_cv = init(cx)?;
-    // A pointer-shaped acc is loop-OWNED from the start: a borrowed
-    // init (a Ref to a kernel input / outer local) clones here. String
-    // reads already clone; a scalar owns nothing. A Value acc owns
-    // both words and carries its REAL disc (see `carry_disc`).
+    // A pointer-shaped acc is loop-owned from the start: a borrowed init
+    // clones here.
     let (init_pay, init_disc) = match &acc {
         FoldAcc::Composite { init_src, .. } => {
             (ensure_owned_composite_src(cx, *init_src, init_cv.payload)?, init_cv.disc)
@@ -1483,9 +1269,6 @@ where
     cx.b.def_var(acc_var, init_pay);
     let d0 = acc.carry_disc(cx, init_disc);
     cx.b.def_var(acc_disc_var, d0);
-    // After the init emit — the node-walk evaluates fold's init at the
-    // CALLER's depth level; only the per-element callback dispatch
-    // enters a unit.
     let i_var = init_counter(cx);
     cx.open_slot_tables(sel_sites, len, arr.disc, i_var)?;
     let loop_header = cx.b.create_block();
@@ -1497,25 +1280,19 @@ where
     cx.b.switch_to_block(loop_body);
     let mark = cx.env.mark();
     cx.enter_loop();
-    // The acc binds BEFORE the interrupt poll (env bookkeeping — no
-    // instructions): an owned acc shape must be in the poll's abort
-    // cleanup (`drop_owned_composites`) or an interrupt would leak the
-    // loop-carried value.
+    // The acc binds before the interrupt poll so the poll's abort cleanup
+    // drops an owned acc.
     cx.env.bind(
         acc_name.clone(),
         ValueVar { disc: acc_disc_var, payload: acc_var },
         acc.local_kind(),
         acc_id,
     );
-    // Cooperative interrupt poll at the scaffold loop head: a wedged
-    // map/fold/filter/… over a huge array aborts to bottom; the in-flight
-    // result buffer (on `value_buf_stack`) is freed by the abort path.
     emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
     let i_now = cx.b.use_var(i_var);
     let (bound, owned_leaves) = bind_elem(cx, arr.disc, arr.ptr, i_now, elem)?;
-    // `|(a, b), v|` acc-destructure leaves re-read off the CURRENT acc
-    // each iteration; their discs carry the acc's loop-carried
-    // TAINT|STALE (unlike elements, the acc can be tainted).
+    // Acc leaves carry the acc's loop-carried TAINT|STALE; unlike an
+    // element, the acc can be tainted.
     let acc_owned_leaves = match &acc {
         FoldAcc::Composite { leaves, .. } if !leaves.is_empty() => {
             let acc_ptr = cx.b.use_var(acc_var);
@@ -1528,9 +1305,8 @@ where
     cx.exit_loop();
     cx.close_slot_tables();
     let new_acc = new_acc?;
-    // The new acc is made independently owned BEFORE anything drops: a
-    // borrowed body result (`|acc, x| acc`) may alias the old acc, an
-    // element, or a leaf local.
+    // Make the new acc owned before anything drops: a borrowed body
+    // result (`|acc, x| acc`) may alias the old acc, an element, or a leaf.
     let (new_pay, new_disc) = match &acc {
         FoldAcc::Composite { body_src, .. } => {
             (ensure_owned_composite_src(cx, *body_src, new_acc.payload)?, new_acc.disc)
@@ -1547,14 +1323,9 @@ where
     drop_owned_leaves(cx, &owned_leaves)?;
     drop_owned_elem(cx, &bound)?;
     cx.env.truncate(mark);
-    // The BODY EVALUATION's STALE folds into the firing flags — the
-    // per-slot rule (FoldQ's `any_trig`): a mid-chain body that
-    // consumed a fired acc fires the fold even when a later
-    // acc-ignoring arm leaves the final carry stale
-    // (findings/fold-midchain-fired-aug2026). TAINT stays off the
-    // flags: poison travels only the acc carry — consumption decides,
-    // an acc-ignoring callback recovers in both modes, and the INIT's
-    // taint rides only `d0`.
+    // Each body evaluation's STALE folds into the firing flags (a
+    // mid-chain body that consumed a fired acc fires the fold even if
+    // the final carry is stale); TAINT travels only the acc carry.
     taint.fold_stale(cx, new_disc);
     cx.b.def_var(acc_var, new_pay);
     let d = acc.carry_disc(cx, new_disc);
@@ -1635,9 +1406,6 @@ where
             (disc, payload)
         }
         BoundElem::Composite { var } => {
-            // Unified Value ABI: the owned ValArray bits ARE the
-            // Value's payload word — mint the disc, transfer ownership
-            // into the pair.
             let value = cx.b.use_var(*var);
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
             (disc, value)

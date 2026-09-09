@@ -1,62 +1,25 @@
-//! Embedder-callable dispatch schedules — the `callable-v1` contract
-//! and the ONE place its text format lives.
+//! The `callable-v1` header: embedder-callable dispatch schedules.
 //!
-//! The contract this mode enforces: **an embedder callable dispatch
-//! (`GXHandle::compile_callable` + `Callable::call`) is observationally
-//! the in-language call with the same arguments arriving on its
-//! argument bindings.** The two routes share one text artifact; the
-//! RUNNER picks the route, so the program flows unchanged through
-//! every protocol (check / minimize / regress / corpus / the
-//! isolated-child stdin), exactly like the schedule header:
+//! An embedder dispatch (`GXHandle::compile_callable` + `Callable::call`)
+//! must be observationally the in-language call with the same arguments
+//! arriving on its argument bindings. One text serves both routes; the
+//! runner picks the route.
 //!
 //! ```text
 //! // callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9
 //! { m0::observe }
 //! // file-v1: m0.gx
-//! let state = { v: 0 };
-//! let inner = |st: &{v: i64}, x: i64| -> null select x {
-//!   0 => null,
-//!   n => { *st <- (n ~ { v: (*st).v + n }); null }
-//! };
-//! let handler = |x: i64| -> null inner(&state, x);
-//! let observe = state
+//! let handler = |x: i64| -> null ...;
+//! let observe = ...
 //! ```
 //!
-//! Sections are `;`-separated: the handler's module path first, then
-//! one section per DISPATCH epoch — a space-separated `name=value` set
-//! giving the handler's positional arguments in order (every epoch
-//! must carry the same name sequence; the names are the driver-decl
-//! bindings). Values use the schedule's literal vocabulary.
-//!
-//! The driver is SYNTHESIZED by the runner, not written in the body:
-//! the argument declarations (the D4 contract, `let cx0: i64 = i64:0;
-//! cx0 <- never(i64:0);`) and the in-language call
-//! (`let cdrv = m0::handler(cx0);`) are composed into the compile
-//! text's top level — identically in BOTH routes, so at init the
-//! handler runs once with the canonical defaults either way. The
-//! routes then differ only in how the dispatch epochs are delivered:
-//!
-//! - **In-language** (route A): each epoch is a `set_many` injection
-//!   on the argument bindings — the driver's callsite dispatches, the
-//!   existing schedule machinery verbatim.
-//! - **Dispatch** (route B): the arguments are never injected; the
-//!   runner resolves the handler (`compile_ref_by_name` → the lambda
-//!   value → `compile_callable`) and `call`s each epoch's values —
-//!   the path every GUI/TUI handler dispatch takes, where the callee
-//!   instances are born lazily cycles after the enclosing body's
-//!   reference values were delivered (the ConnectDeref silent-write
-//!   class, 9f9e01d0 — invisible to the engine-differential oracle
-//!   because both engines share the node).
-//!
-//! The handler lives in a `file-v1` module because the body's block
-//! scopes under an anonymous `do<ExprId>` path — module bindings are
-//! what `compile_ref_by_name` can reach from root.
-//!
-//! Route comparison strength is per-epoch FINAL values
-//! ([`crate::trace::Trace::agrees_final`]): the routes' dispatch
-//! machinery differs (injection echo vs callable arg tasks), so
-//! cycle-exact pacing across routes is not contractual; the settled
-//! value per epoch is.
+//! Sections are `;`-separated: the handler's module path, then one
+//! space-separated `name=value` set per dispatch epoch (every epoch
+//! carries the same names; values use the schedule literal vocabulary).
+//! The runner synthesizes the argument declarations and the in-language
+//! driver call ([`CallSpec::decls`]). The handler must live in a
+//! `file-v1` module so `compile_ref_by_name` reaches it from root.
+//! Routes are compared on per-epoch final values, not cycle pacing.
 
 use netidx::publisher::Value;
 
@@ -64,9 +27,8 @@ use crate::schedule::{canonical, parse_value, render_value, value_kind};
 
 pub const HEADER_PREFIX: &str = "// callable-v1:";
 
-/// Cheap detection for routing decisions (batching, check pairing)
-/// without a full parse. Same leading-comment-block scan as parse: a
-/// header below provenance comments still counts.
+/// Detect a header without a full parse; the same leading-comment-block
+/// scan as [`CallSpec::parse`].
 pub fn has_header(text: &str) -> bool {
     let mut cursor = text;
     loop {
@@ -96,9 +58,9 @@ pub struct CallSpec {
 }
 
 impl CallSpec {
-    /// The argument declarations in positional order: name, graphix
-    /// type name, canonical default. Derived from the first epoch
-    /// (parse enforces every epoch carries the same name sequence).
+    /// The argument declarations in positional order: name, graphix type
+    /// name, canonical default (from the first epoch; parse enforces that
+    /// every epoch carries the same names).
     pub fn args(&self) -> Vec<(String, &'static str, Value)> {
         match self.epochs.first() {
             None => Vec::new(),
@@ -112,10 +74,8 @@ impl CallSpec {
         }
     }
 
-    /// The driver-side top-level declarations (the D4 contract, same
-    /// as `Schedule::decls`) plus the in-language driver call. Placed
-    /// AFTER the file-module `mod` declarations (the driver references
-    /// into the handler's module).
+    /// The driver-side argument declarations plus the in-language driver
+    /// call. Placed after the file-module `mod` declarations.
     pub fn decls(&self) -> String {
         let mut s = String::new();
         let mut params = String::new();
@@ -130,13 +90,9 @@ impl CallSpec {
             if !params.is_empty() {
                 params.push_str(", ");
             }
-            // `skip(1, …)` absorbs the decl's initial default, so the
-            // in-language callsite dispatches ONLY on injections: in
-            // the dispatch route (nothing injected) it never fires at
-            // all, and the callable's instances are the first the
-            // handler ever gets — the embedder geometry (a handler
-            // nobody calls in-language), which is where the lazy-
-            // instance reference bugs live.
+            // `skip(1, …)` absorbs the decl's default so the in-language
+            // callsite dispatches only on injections; in the dispatch route
+            // it never fires and the callable's instances are the handler's first.
             params.push_str(&format!("skip(#n: 1, {name})"));
         }
         s.push_str(&format!("let cdrv = {}({params});\n", self.handler));
@@ -158,20 +114,15 @@ impl CallSpec {
         s
     }
 
-    /// Assemble the wrapper: header + body (the body carries its own
-    /// schedule header and file sections as usual — the callable line
-    /// goes first so both scans find their header in the leading
-    /// comment block).
+    /// Header + body. The callable line goes first so both header scans
+    /// find theirs in the leading comment block.
     pub fn render(&self, body: &str) -> String {
         format!("{}\n{body}", self.header())
     }
 
-    /// Split a wrapper into its callable spec and body. No header →
-    /// `None` and the whole text. Same leading-comment-block scan as
-    /// `Schedule::parse` (the two headers may appear in either order,
-    /// each scan skipping the other as a comment). A malformed header
-    /// is an error in every protocol — a generator or minimizer bug,
-    /// never silently a comment.
+    /// Split a wrapper into its spec and body; no header → `None` and the
+    /// whole text. The two headers may appear in either order. A malformed
+    /// header is an error, never silently a comment.
     pub fn parse(text: &str) -> Result<(Option<CallSpec>, String), String> {
         let mut cursor = text;
         let (pre, line, rest) = loop {
@@ -243,8 +194,6 @@ impl CallSpec {
         if epochs.is_empty() {
             return Err("callable header has no dispatch epochs".into());
         }
-        // The body is everything around the header line (provenance
-        // comments above it stay, like the schedule scan).
         let body = format!("{pre}{rest}");
         Ok((Some(CallSpec { handler, epochs }), body))
     }
@@ -268,7 +217,6 @@ mod tests {
         let (c2, body2) = CallSpec::parse(&text).expect("parse");
         assert_eq!(c2.as_ref(), Some(&c));
         assert_eq!(body2.trim(), body);
-        // decls carry every arg plus the driver call
         let d = c.decls();
         assert!(d.contains("let cx0: i64 = i64:0;"));
         assert!(d.contains("let cx1: bool = false;"));

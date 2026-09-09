@@ -136,10 +136,8 @@ impl<X: GXExt> ScrollbarW<X> {
             .context("scrollbar tref track_symbol")?;
         let viewport_length = TRef::<X, Option<i64>>::new(viewport_length)
             .context("scrollbar tref viewport_length")?;
-        // Initial state's content_length: clamp the user-provided value
-        // (negative becomes 0). The draw loop re-applies this each frame
-        // through the same helper, so the warn here would just be a
-        // duplicate — suppress by using a throwaway dedup slot.
+        // The draw loop re-applies the same clamp each frame and warns
+        // there, so this one uses a throwaway dedup slot.
         let initial_len = content_length
             .t
             .and_then(|t| t)

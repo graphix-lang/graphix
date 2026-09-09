@@ -65,8 +65,7 @@ fn html_args_from_bad_value_returns_none() {
     assert!(html_args_from_value(&Value::from(42)).is_none());
 }
 
-// ── Integration tests (touch real system clipboard) ─────────────────
-// Run with --test-threads=1 since these share the system clipboard.
+// These share the real system clipboard; run with --test-threads=1.
 
 #[test]
 #[ignore]

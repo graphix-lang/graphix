@@ -33,45 +33,23 @@ use super::{
     select::{classify_select_scrutinee, emit_select_arms},
 };
 
-/// A `do` / `{ ... }` block — let prefix then a tail expression.
-/// Mirrors `compile_block_scalar`/`_value`: bind each let by its
-/// runtime shape (cloning borrowed composite/value sources so the
-/// block exclusively owns its locals), compile the tail, clone the
-/// tail out if it borrows a local we're about to drop, emit the
-/// scope-exit drops for this block's owned locals, then pop the
-/// block-scoped env entries.
-/// Conservative effect-freedom for dead-statement elimination: TRUE
-/// only when no node in the subtree could carry an effect the
-/// node-walk would have performed. Connect/ConnectDeref write
-/// variables; a `?` WITH a catch handler writes the handler's
-/// variable; a CallSite may target an async/effectful builtin (we
-/// can't consult `builtin_effects` at emit time, so ALL call sites
-/// are conservatively effectful). Handler-less `?` and `$` only emit
-/// the swallowed-error diagnostics, which are node-walk-only by
-/// design (a fused kernel drops them even when live) — and treating
-/// them as effects is actively WRONG here: their non-scalar error
-/// paths abort the whole kernel, so emitting a dead `m{k}$` bind
-/// wrong-bottoms the region (soak finding
-/// corpus-generate/divergence_000000, 2026-07-03). Everything else
-/// the direct emitter can encounter is value-only.
+/// True only when no node in the subtree could carry an effect.
+/// Every CallSite counts as effectful. Handler-less `?` and `$` are
+/// not effects: their diagnostics are node-walk-only, and their
+/// non-scalar error paths would abort the kernel.
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::Connect(_) | NodeView::ConnectDeref(_) | NodeView::CallSite(_) => {
             ok = false
         }
-        // A Module PUBLISHES its binds into the persistent env —
-        // readable by any Ref outside the region and by every
-        // later-installed top expression — so a `mod m;` statement is
-        // never dead.
+        // A Module publishes binds into the persistent env.
         NodeView::Module(_) => ok = false,
-        // A signature-less module is `Block { module: true }`, not a
-        // `Module` node — the SAME publisher, so the same rule.
+        // A signature-less module is a `Block { module: true }`.
         NodeView::Block(b) if b.module => ok = false,
         NodeView::Impl(_) => ok = false,
-        // A catch INSTALLATION is never dead: eliminating it from a
-        // fused block would silently drop the handler while covered
-        // `?`s keep delivering to its variable.
+        // Eliminating a catch install would drop the handler while covered
+        // `?`s keep delivering.
         NodeView::Catch(_) | NodeView::SeqGuard(_) => ok = false,
         NodeView::Qop(q) => {
             if q.handler.is_some() {
@@ -84,6 +62,8 @@ pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -
     ok
 }
 
+/// A block: bind each let, compile the tail, clone it out if it
+/// borrows a local about to drop, emit the scope drops.
 pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     children: &[Node<R, E>],
@@ -96,19 +76,9 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
     for (i, child) in children.iter().enumerate() {
         if i == last {
             let tail_cv = child.emit_clif(cx)?;
-            // The tail may alias a block-scoped local we're about to
-            // drop — clone borrowed results so they outlive the block.
-            // Taint rides in the disc through the clone.
-            //
-            // `freeze_for_abi_normalized`, NOT `abi_kind(child.typ())`
-            // raw: a select-valued tail's type is the un-normalized
-            // arm union, which doesn't classify — the old raw call
-            // fell through to "no clone needed" while the scope drop
-            // below still freed the local, so the caller's later clone
-            // read freed memory (soak jul08g generate crashes 0/1,
-            // SIGSEGV in `graphix_valarray_clone`). An unclassifiable
-            // tail is an ERROR (de-fuse), never a silent passthrough —
-            // the passthrough IS the use-after-free.
+            // The tail may alias a block-scoped local about to drop; clone
+            // borrowed results out. An unclassifiable tail is an error, never a
+            // passthrough (the passthrough is a use-after-free).
             let src = node_composite_source(child);
             let frozen = kernel_abi::freeze_for_abi_normalized(child.typ());
             let shape = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
@@ -139,33 +109,9 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
             cx.env.truncate(mark);
             return Ok(result);
         }
-        // Dead-statement elimination — the classic prune pass's
-        // semantics at the emission seam. A non-tail statement whose
-        // value nobody reads AND whose subtree is provably effect-free
-        // contributes NOTHING canonical: its node-walk value (or
-        // bottom) flows to no consumer. Emitting it anyway is worse
-        // than useless — a dead bottom (div0 inside a discarded
-        // tuple, an unused let holding an aborting array literal)
-        // poisons the WHOLE kernel via the composite producers'
-        // bottom-abort, a value divergence vs the node-walk
-        // (findings/flip-jun2026). A statement is dead iff no LATER
-        // sibling or the tail references an id its subtree binds — a
-        // bare expression's value is always unread, but its subtree
-        // may still bind.
-        //
-        // The effect-free gate is LOAD-BEARING: a statement whose
-        // subtree contains a Connect (`<-`), handler-ful `?`, `$`
-        // (logs), or ANY CallSite (a builtin may be async/effectful)
-        // must NOT be skipped — skipping converts "emission fails →
-        // region de-fuses → node-walk runs the effect" into silently
-        // DROPPING the effect (the env-accounting probe caught
-        // exactly that with a skipped `counter <- v`). Those emit
-        // normally and de-fuse via their emit Errs as before.
-        // A statement binds whatever `let`s its SUBTREE holds, not only
-        // a `let` at its root: `[i64:2, let x = true]` and
-        // `select let x = 1 {..}` in statement position bind `x` for
-        // every later sibling (aug22c classes A/B — the literal was
-        // eliminated whole and the connect target's seed went with it).
+        // Dead-statement elimination: a non-tail statement is dead iff no
+        // later sibling or the tail references an id its subtree binds and
+        // the subtree is effect-free. A dead bottom would poison the kernel.
         let mut bound = Refs::default();
         child.refs(&mut bound);
         let mut suffix = Refs::default();
@@ -178,15 +124,8 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
                 alive = true;
             }
         });
-        // A connect TARGET is a delivery destination, not a read —
-        // `Refs` deliberately doesn't carry it (a connect must not
-        // self-subscribe), so the suffix scan above misses it.
-        // A write-only `let` is NOT dead: it is the seed of a
-        // written variable, and eliminating it drops the target
-        // out of the env so the connect falls through to the
-        // external-iconst path with ONE baked id — every slot of
-        // an inlined callback then wrote the same variable while
-        // the interp binds per slot (aug18a class 3).
+        // A connect target is not a read in `Refs`; a write-only `let` is
+        // the target's seed and must survive.
         if !alive {
             for later in &children[i + 1..] {
                 fusion::for_each_node(later, &mut |n| {
@@ -208,14 +147,11 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
         }
         emit_block_stmt(cx, child)?;
     }
-    // The loop always returns on the last child.
     unreachable!("emit_block_node: last child not handled")
 }
 
-/// Emit one non-last block child as a statement: a `let` binds into
-/// the env, compile-time-only declarations are skipped, anything else
-/// evaluates and discards. Shared by the value-position block emitter
-/// and the tail-position walk (`emit_body_tail`).
+/// Emit one non-tail block child: a `let` binds, declarations are
+/// skipped, anything else evaluates and discards.
 fn emit_block_stmt<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     child: &Node<R, E>,
@@ -231,13 +167,8 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
                     ));
                 }
             };
-            // A rec FN binding is just a function-valued let (the
-            // binding node-walks, call sites fuse as cross-kernel
-            // calls — recursion included); `emit_let_node`'s
-            // fallthrough produces that message. A rec NON-fn let
-            // (`let rec x = x + 1` — a reactive feedback loop) is
-            // genuinely unfusable: its value depends on its own
-            // previous cycle.
+            // A rec fn binding is a function-valued let (`emit_let_node`
+            // reports it); a rec non-fn let depends on its own previous cycle.
             if bspec.rec && !matches!(bind.node.typ(), Type::Fn(_)) {
                 return Err(anyhow!(
                     "emit_clif: recursive non-function let not supported"
@@ -251,16 +182,7 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
         }
         // Compile-time-only declarations — nothing to emit.
         NodeView::Nop(_) | NodeView::TypeDef(_) => {}
-        // Expression statement — evaluate, discard the result. A
-        // discarded may-bottom scalar is fine — the bottom is never
-        // consumed. Owned non-scalar results are dropped: discarding is
-        // consuming. This includes a CALL in statement position: a
-        // no-value fire is a #219 tainted placeholder now, so
-        // discarding it discards the bottom exactly like the
-        // node-walk (`{println("hi"); 100}` used to pending-abort the
-        // kernel and lose the 100 — soak finding 2026-07-04, item 28).
-        // Effects never emit (strict fusion) — the region de-fuses,
-        // never silently skips.
+        // A discarded result is consumed; owned non-scalar results drop.
         _ => {
             let cv = child.emit_clif(cx)?;
             emit_discard_result(cx, child, cv)?;
@@ -270,14 +192,9 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
 }
 
 /// Tail-position body emission for a self-recursive kernel. Tail
-/// positions are [`fusion::TailPosition`]'s — the shared definition
-/// the analysis pre-scans walk (review A5), so the emitter's tail set
-/// can't drift from the set `body_has_self_tail_call` promised. A
-/// self-call leaf becomes the rebind-and-jump loop
-/// (`emit_self_tail_call`), every other leaf returns directly
-/// (`emit_kernel_return`, which drops ALL owned locals at any depth —
-/// nested-scope returns can't leak). Every path through this function
-/// leaves the current block TERMINATED.
+/// positions are [`fusion::TailPosition`]'s; a self-call leaf becomes
+/// the rebind-and-jump loop, every other leaf returns. Every path
+/// leaves the current block terminated.
 pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
@@ -295,25 +212,15 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
                 emit_block_stmt(cx, child)?;
             }
             emit_body_tail(cx, last, ret)?;
-            // Every path through the tail terminated — returns dropped
-            // all owned locals, tail-jumps dropped the non-slot locals
-            // (and already truncated to the param mark, making this a
-            // no-op). Pop the compile-time scope.
+            // Every path terminated and dropped its owned locals; pop the
+            // compile-time scope.
             cx.env.truncate(mark);
             Ok(())
         }
         TailPosition::Parens(ep) => emit_body_tail(cx, &ep.n, ret),
         TailPosition::Select(s) => {
-            // Outside a tail LOOP no arm can tail-jump (that needs
-            // `loop_head`; a self-call otherwise emits as a native call),
-            // so the select is an ordinary value expression: emit it
-            // VALUE-position — which carries THE SELECTION RIDE via its
-            // dispatch word (`emit_select_node`) — and return the result.
-            // This is where a return-position guard-less select rides its
-            // held arm on a bottom scrutinee (the select-quiet-scrutinee /
-            // select-merge-taint-ride corpus). The tail emitter stays for
-            // the genuine loop spine, whose arms terminate by jump/return
-            // and whose scrutinee is loop plumbing (no cross-cycle ride).
+            // Without a loop head no arm can tail-jump, so the select is an
+            // ordinary value expression.
             if cx.ctx.tail.loop_head.is_none() {
                 emit_return_from_node(cx, ret, node)
             } else {
@@ -321,12 +228,8 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
             }
         }
         TailPosition::Leaf(n) => {
-            // Self tail-call — checked BEFORE value emission. Matching
-            // is by the self BindId (names shadow, ids don't — #206).
-            // Only a kernel that LOOPS jumps: a stateful body has no
-            // loop head (`tail_loop` is gated on statelessness), and
-            // its tail-position self-call is an ordinary native
-            // recursive call whose activation owns its site blocks.
+            // Matched by the self BindId. Only a looping kernel jumps; a
+            // stateful body has no loop head and calls itself natively.
             if let Some((sb, _)) = cx.ctx.self_call
                 && cx.ctx.tail.loop_head.is_some()
             {
@@ -354,47 +257,25 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     }
     let (scrut, scrut_kind, scrut_typ, _none) =
         classify_select_scrutinee(cx, sel, false)?;
-    // Capture the delivery's fresh-bottomness for the organic-firing
-    // fold below (a tainted scrutinee early-returns bottom before the
-    // arms, so the bit is dynamically false on every arms path).
+    // The delivery's fresh-bottomness; false on every arms path once
+    // a tainted scrutinee has returned.
     let scrut_bfired = {
         let d = scrut.disc();
         let ts = cx.b.ins().band_imm(d, TAINT | STALE);
         Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
     };
-    // Fold this select's own fires into the kernel's tail-firing
-    // accumulator (`LowerCtx::tail_scrut_stale`, applied at every
-    // `emit_kernel_return`) — ORGANIC FIRING (Eric's ruling
-    // 2026-08-14, design/organic_firing.md): a fired scrutinee
-    // delivery or guard production fires the emission, and on the
-    // tail spine the arm emissions are swallowed by the jump
-    // machinery, so the accumulator is the only channel that carries
-    // an own-fire to the final base-arm emission (the interp twin is
-    // the `ctx.tail_scrut_fired` fold in node/select.rs). The
-    // cceb0809 derivation-changed damp and the final-selection
-    // memory (tail_sel_path) are gone: a selection flip implies a
-    // fired input (a capture-driven guard flip fires through the
-    // prologue guard fold below), so the own-fire folds carry all of
-    // it. band keeps a cleared (fired) bit cleared across loop
-    // iterations. Non-spine return-position selects fold too — the
-    // uniform rule.
+    // A fired scrutinee is one of this select's own fires; on the tail
+    // spine the accumulator is the only channel that carries it to the
+    // return. band keeps a fired bit cleared across iterations.
     let scrut_stale_bit = cx.b.ins().band_imm(scrut.disc(), STALE);
     {
         let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
         let n = cx.b.ins().band(cur, scrut_stale_bit);
         cx.b.def_var(cx.ctx.tail.scrut_stale, n);
     }
-    // Tail position: a missing (tainted) scrutinee RETURNS the tainted
-    // placeholder early — a value-level bottom. In a callee it rides
-    // back in-band in the returned disc and bottoms only the call's
-    // consumers (the node-walk's select-on-⊥ produces nothing for THIS
-    // result only: a recursive callee's depth-tripped tail select used
-    // to emit_bottom_abort here, which the caller escalated to a
-    // whole-kernel abort — soak-jul08c dv1, where the node-walk's fold
-    // recovered from the bottomed init). In a gated parent the return
-    // force bottoms the kernel — the same observable as the abort this
-    // replaces. The arms then run on a known-valid scrutinee, so the
-    // final-arm miss is unreachable.
+    // A tainted scrutinee returns a value-level bottom early; the arms
+    // then run on a valid scrutinee, so the final-arm miss is
+    // unreachable.
     {
         let valid = is_untainted(cx.b, scrut.disc());
         let arms_bl = cx.b.create_block();
@@ -402,11 +283,8 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         cx.b.ins().brif(valid, arms_bl, &[], taint_bl, &[]);
         cx.b.switch_to_block(taint_bl);
         cx.b.seal_block(taint_bl);
-        // A STANDING bottom scrutinee is not an event, so the return
-        // is a standing bottom too: the emission's freshness is the
-        // scrutinee's. The value-position twin is
-        // `emit_select_bottom_value`; the node-walk twin is Select's
-        // bottom-out arm.
+        // A standing bottom scrutinee is not an event: the return's
+        // freshness is the scrutinee's.
         let ph = emit_bottom_placeholder(cx, ret, &[scrut.disc()])?;
         emit_kernel_return(cx, ret, ph, CompositeSource::Owned)?;
         cx.b.switch_to_block(arms_bl);
@@ -422,25 +300,14 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         scrut_bfired,
         &mut |cx, body, mark, fires| {
             arm_index.set(arm_index.get() + 1);
-            // A prologue guard's SOUND fire is one of this select's
-            // own fires (organic firing): fold it into the
-            // accumulator on the taken arm's path, beside the
-            // scrutinee fold above. Bottom fires accumulate
-            // separately (THE BOTTOM-OUT RULE): `emit_kernel_return`
-            // turns a still-stale result with a fresh-bottom
-            // consumed fire into TAINT fresh — the bottom that
-            // arrived, never the ridden value.
+            // A prologue guard's sound fire is an own fire too; bottom fires
+            // accumulate separately for `emit_kernel_return`.
             if let Some(gs) = fires.sound_stale {
                 let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
                 let n = cx.b.ins().band(cur, gs);
                 cx.b.def_var(cx.ctx.tail.scrut_stale, n);
             }
-            // This select's own-fire scope for the returns inside its
-            // arm (`LowerCtx::sel_fires` — innermost-first at
-            // `emit_kernel_return`): sound = the post-ride scrutinee's
-            // STALE bit ANDed with the prologue guards' sound plane;
-            // bottom fires are per-CURRENT-iteration, never
-            // loop-carried.
+            // This select's own-fire scope for the returns inside its arm.
             let sound_lvl = match fires.sound_stale {
                 Some(gs) => cx.b.ins().band(scrut_stale_bit, gs),
                 None => scrut_stale_bit,
@@ -449,21 +316,16 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             let arm_res = emit_body_tail(cx, body, ret);
             cx.ctx.sel_fires.borrow_mut().pop();
             arm_res?;
-            // The arm terminated; pop its binds for the next arm's
-            // compile-time scope. Owned binds were runtime-dropped by
-            // the terminator (`emit_kernel_return`'s whole-env
-            // `drop_owned_composites`, or the tail-rebind epilogue's
-            // above-param-mark sweep) — this truncate is compile-time
-            // hygiene only.
+            // The terminator already dropped the arm's owned binds; this
+            // truncate is compile-time scope only.
             cx.env.truncate(mark);
             Ok(())
         },
         // Unreachable (scrutinee forced valid → exhaustive matches); a
         // terminator is still required.
         &mut |cx| emit_kernel_bottom(cx),
-        // UNDETERMINED (THE BOTTOM-OUT RULE): a bottomed guard with no
-        // history stops the chain — return the bottom that arrived,
-        // with the outcome's freshness.
+        // A bottomed guard with no history stops the chain: return the
+        // bottom with the outcome's freshness.
         &mut |cx, stale_bits| {
             let ph = emit_bottom_placeholder(cx, ret, &[stale_bits])?;
             emit_kernel_return(cx, ret, ph, CompositeSource::Owned)
@@ -500,11 +362,8 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     let mut slot_idx = 0usize;
     for i in 0..n {
         let iu = i as u32;
-        // A SKIPPED fn formal has no slot at all; an INVARIANT formal
-        // keeps its slot but every self-call passes it through
-        // unchanged — the rebind would be the identity. Neither arg is
-        // emitted (both are the formal's own `Ref`, pure by the
-        // invariance test that admitted them).
+        // A skipped formal has no slot; an invariant formal keeps its slot
+        // but is never rebound.
         if skipped.contains(&iu) {
             continue;
         }
@@ -517,15 +376,8 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
         let cv = arg.emit_clif(cx)?;
-        // A bottomed arg does NOT abort the call: the node-walk's
-        // dispatch backfills a quiet-or-failed arg from its cached
-        // value (combineLatest — Eric's ruling 2026-07-15: bottom is
-        // "no event this cycle", never a NaN-like poison, so
-        // `sum_to(n - 1, parse(s)? + n)` keeps looping on the last
-        // good acc). The kernel twin: a TAINTED new formal keeps the
-        // loop-carried previous value at the rebind. `is_tainted`
-        // folds to const-false for a proven-fresh disc — no branch on
-        // the hot path.
+        // A tainted new formal keeps the loop-carried previous value:
+        // bottom is "no event this cycle", not a poison.
         let taint = is_tainted(cx.b, cv.disc);
         let source = node_composite_source(arg);
         rebinds.push(TailRebind { slot, val: cv, source, taint });
@@ -533,11 +385,9 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }
 
-/// Bind one `let local = value` into the env by the value's runtime
-/// shape — the direct-path mirror of `compile_block_scalar`'s let
-/// arms (composite/value lets clone borrowed sources so this scope
-/// exclusively owns them; the scope-exit drop would otherwise free a
-/// buffer the enclosing scope still holds).
+/// Bind one `let` into the env by the value's runtime shape.
+/// Composite/value lets clone borrowed sources so this scope owns
+/// them.
 fn emit_let_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     name: &ArcStr,
@@ -550,9 +400,8 @@ fn emit_let_node<R: Rt, E: UserEvent>(
     let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
     match ak {
         Some(AbiKind::Scalar(p)) => {
-            // The disc carries the binding's taint — a `let`-bound bottom
-            // flows to its uses; an unconsumed one is dropped, never
-            // bottoming (#219).
+            // The disc carries the binding's taint; an unconsumed bottom is
+            // dropped, never bottoming.
             let cv = value.emit_clif(cx)?;
             bind_local(
                 cx,
@@ -590,12 +439,8 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             bind_local(cx, name.clone(), cv.disc, cv.payload, LocalKind::String, bind_id);
         }
         other => {
-            // A function-valued let can NEVER emit by design — a
-            // lambda isn't a kernel value; its call sites fuse as
-            // cross-kernel calls while the binding itself node-walks
-            // (publishing the LambdaDef). Distinct message so probe
-            // assertions can treat it as structural recurse noise,
-            // not a coverage gap.
+            // A lambda is not a kernel value: the binding node-walks, its call
+            // sites fuse. Distinct message so probes can tell it from a gap.
             if matches!(value.typ(), Type::Fn(_)) {
                 return Err(anyhow!(
                     "emit_clif: function-valued let — the binding \
@@ -628,8 +473,8 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
             let drop = cx.helper("graphix_arcstr_drop")?;
             cx.b.ins().call(drop, &[cv.payload]);
         }
-        // #219: a tainted 2-word value drops its (disc, payload) like an
-        // untainted one — clean the disc so the helper sees a valid tag.
+        // A tainted value drops like an untainted one; clean the disc so
+        // the helper sees a valid tag.
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) if owned => {
             let drop = cx.helper("graphix_value_drop")?;
             cx.b.ins().call(drop, &[cv.disc, cv.payload]);
@@ -639,13 +484,9 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Emit runtime drops for every owned composite / variant / nullable /
-/// string local this scope introduced above `mark` — the direct-path
-/// mirror of `compile_block_scalar`'s scope-exit drop block. Scalars
-/// need no drop.
+/// Drop every owned non-scalar local above `mark`.
 pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
-    // Snapshot the (kind, vv) of every local above the mark so the
-    // `cx.env` borrow ends before we drive `cx.b`.
+    // Snapshot so the `cx.env` borrow ends before driving `cx.b`.
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
         cx.env.locals[mark..].iter().map(|l| (l.kind, l.vv)).collect();
     for (kind, vv) in drops {
@@ -654,26 +495,7 @@ pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     Ok(())
 }
 
-/// `?` / `$` — both unwrap a Nullable<T> to T (else pass the value
-/// through unchanged for a non-Nullable inner, mirroring `wrap_qop`'s
-/// None branch). Scalar / string / composite success returns the
-/// unwrapped element; Value-shape success returns the (disc, payload)
-/// pair.
-///
-/// `result_typ` is the qop NODE's static type — the arm selection
-/// keys on it, NOT on the inner's one-layer option success. The
-/// typechecker (and the node-walk, which drops ANY error value)
-/// strips EVERY error member of the flattened inner union — so for a
-/// nested fallible union like `[[string, Error<E>], Error<AIE>]` the
-/// node's type is `string` and every consumer (the kernel return
-/// included) expects the STRING convention, while the inner's
-/// one-layer success `[string, Error<E>]` freezes value-shape. Arm-
-/// selecting on the latter minted the value-shape `(Null, 0)`
-/// placeholder on the error path, and the String-conventioned
-/// consumer dropped payload 0 — `graphix_arcstr_drop(NULL)` SIGABRT
-/// (soak jul05 item 15, crash_000014).
-/// True iff a FROZEN (concrete, deref'd) type has any error member —
-/// the gate for `emit_qop_node`'s no-union passthrough.
+/// True iff a frozen type has any error member.
 fn type_may_error(t: &Type) -> bool {
     match t {
         Type::Error(_) => true,
@@ -683,16 +505,10 @@ fn type_may_error(t: &Type) -> bool {
     }
 }
 
-/// The `?`/`$` bad path's raise-and-drop (shared by the
-/// composite/string, value-shape, AND scalar arms — the scalar arm
-/// reaches it under its own `is_err` branch, since its success path
-/// is branchless). With a catch handler (`site`, the interned
-/// [`QopSite`]), branch on `deliverable` (a REAL, FRESH error) and
-/// RAISE it onto the invocation's delivery queue — the helper clones
-/// the error, so ownership is untouched. Then drop the OWNED error; a
-/// Borrowed inner is owned by its env slot, which
-/// `emit_pending_cleanup` drops — dropping here too would
-/// double-free. `clean`/`payload` are the error Value's words.
+/// The `?`/`$` bad path: with a catch site, raise a deliverable
+/// (real, fresh) error onto the invocation's queue, then drop the
+/// error if the inner owns it (a borrowed inner is dropped by its
+/// env slot).
 fn emit_qop_error_disposal(
     cx: &mut BodyCx,
     site: Option<cranelift_codegen::ir::Value>,
@@ -720,6 +536,11 @@ fn emit_qop_error_disposal(
     Ok(())
 }
 
+/// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`; a non-error
+/// inner passes through. `result_typ` is the qop node's static type,
+/// which selects the arm: the typechecker strips every error member
+/// of the flattened inner union, so it can differ from the inner's
+/// one-layer success type.
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     _spec_id: ExprId,
@@ -727,9 +548,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     result_typ: &Type,
     handler: Option<cranelift_codegen::ir::Value>,
 ) -> Result<CompiledExpr> {
-    // Lockstep with the discovery-side freeze (lowering.rs
-    // try_register_qop_deliver): both normalized, so a site the
-    // discovery registered always emits.
+    // Normalized, in lockstep with the discovery-side freeze.
     let Some(inner_typ) = kernel_abi::freeze_for_abi_normalized(inner.typ()) else {
         return Err(anyhow!(
             "emit_clif: `?` inner type {:?} doesn't freeze concrete",
@@ -737,15 +556,8 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         ));
     };
     if kernel_abi::nullable_inner(&inner_typ).is_none() {
-        // Passthrough is only sound when the inner CANNOT be an error.
-        // `nullable_inner` answers "is this a `[T, Error<E>]` union" —
-        // a bare `Error<T>` inner (`error(x)$`) is not a union but is
-        // ALWAYS an error, and passing it through handed the error
-        // Value's payload word to the success consumer as a scalar
-        // (ASLR-varying garbage output; soak jul12f/jul12g fuzz
-        // divergence_000000). The node-walk checks `Value::Error` at
-        // runtime regardless of the static type — an error-bearing
-        // non-union inner de-fuses to it.
+        // `nullable_inner` only detects a `[T, Error<E>]` union; a bare
+        // `Error<T>` inner is always an error and must node-walk.
         if type_may_error(&inner_typ) {
             return Err(anyhow!(
                 "emit_clif: `?`/`$` inner type {inner_typ:?} can be an error                  but is not a [T, Error<E>] union — node-walk handles it"
@@ -766,49 +578,18 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     // taint first — a tainted disc is not a structural Error).
     let clean = clean_disc(cx.b, disc);
     let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
-    // Delivery requires a FRESH error — is_err && !TAINT && !STALE: a
-    // tainted error is a phantom computed from placeholders, and a
-    // stale one is the value channel re-surfacing (the interp's
-    // `Qop::update` delivers only a FIRED error).
+    // Delivery requires a fresh error: a tainted error is a phantom
+    // computed from placeholders and a stale one never fired.
     let fresh = is_fresh(cx.b, disc);
     let deliverable = cx.b.ins().band(is_err, fresh);
-    // A TAINTED error is a PHANTOM — computed from #219 placeholders
-    // after an upstream bottom (e.g. `(a[BAD]? /? y)?`: the index raise
-    // taints, the checked div then computes `0 /? 0` on placeholders
-    // and mints a REAL ArithError value). The node-walk never runs the
-    // div at all, so delivering it to a catch handler invents an error
-    // the program never raised (soak finding corpus-fuzz/
-    // divergence_000030: the wrong catch arm fired). A STALE error is
-    // the same phantom via the CACHE: the qop taint-cache degrades a
-    // dropped error to the prior success + STALE, ops compute on the
-    // ride (STALE ANDs across operands), and the minted error never
-    // FIRED — the node-walk's `Qop::update` runs only when its inner
-    // returns `Some`, so a no-fire cycle delivers nothing (jul19i
-    // katana divergence_000000: the taint-only gate re-delivered a div
-    // error minted from a cached operand, a ghost second write to the
     match kernel_abi::abi_kind(&success_typ) {
-        // Prim success — per-value taint, branchless on the SUCCESS
-        // path. The payload word holds the success bits when !is_err;
-        // on the error path the bits are garbage but the disc's TAINT
-        // means they're never used (forced at the output). The
-        // success case is a by-value scalar (no heap) — but the ERROR
-        // case is a heap-boxed ValError even when the success type is
-        // scalar (`[T, Error<E>]` classifies Nullable like the option
-        // shape, whose non-success IS by-value null — the same false
-        // assumption as result-union-nullable-abi), so an owned error
-        // must go through the shared deliver-or-drop or it leaks once
-        // per cycle, unbounded in a reactive program
-        // (qop-scalar-error-leak-aug2026: +11MB/90s on a 1ms timer).
-        // #219: the inner's own taint also flows through.
+        // Branchless on the success path. The error case is a heap-boxed
+        // ValError even for a scalar success, so an owned error must be
+        // disposed or it leaks once per cycle.
         Some(AbiKind::Scalar(p)) => {
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
             if inner_owned || handler.is_some() {
-                // On the structural-error path (phantoms included —
-                // an owned tainted error is still an allocation),
-                // deliver to the catch handler's variable (mirrors
-                // `Qop::update`'s handler path; the handler reading
-                // it is a separate kernel next cycle, so no
-                // read-after-write hazard) or drop the owned error.
+                // Deliver to the handler or drop the owned error.
                 let err_block = cx.b.create_block();
                 let after = cx.b.create_block();
                 cx.b.ins().brif(is_err, err_block, &[], after, &[]);
@@ -830,17 +611,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             let disc = taint_if(cx.b, disc, is_err);
-            // STRICT (2026-08-13): a `$`/`?`-dropped error IS a
-            // fresh bottom — propagate, everywhere (the ride scopes
-            // are retired).
+            // A dropped error is a fresh bottom.
             Ok(CompiledExpr::new(disc, value))
         }
-        // String / composite success — branch: the bad path (error OR
-        // tainted) produces a tainted shape-safe PLACEHOLDER and
-        // CONTINUES (interior-bottom v2, 2026-07-04) instead of the old
-        // whole-kernel pending-exit, which escalated a locally
-        // unconsumed bottom into no-output-at-all (the live-chain
-        // findings, triage item 11).
+        // The bad path produces a tainted placeholder and continues.
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let is_string =
                 matches!(kernel_abi::abi_kind(&success_typ), Some(AbiKind::String));
@@ -852,26 +626,14 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let qmerge = cx.b.create_block();
             cx.b.append_block_param(qmerge, types::I64); // disc
             cx.b.append_block_param(qmerge, types::I64); // payload
-            // #219: a TAINTED inner may carry the helper-safe Value::Null
-            // placeholder, whose CLEAN disc isn't Error — without folding
-            // taint into this branch the success path unboxes Null as an
-            // Array/ArcStr (`unreachable_unchecked` UB in the unboxers;
-            // soak crash 2026-07-04, `x$` of a tainted slice). Tainted =
-            // "no value" = the same abort as the error path.
+            // A tainted inner may carry the Value::Null placeholder, whose
+            // clean disc is not Error; the success path would unbox it as an
+            // Array/ArcStr.
             let tainted = is_tainted(cx.b, disc);
             let bad = cx.b.ins().bor(is_err, tainted);
             cx.b.ins().brif(bad, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            // Abort path. Handler-ful `?`: deliver a REAL error to the
-            // catch handler — the deliver CONSUMES the owned error (or
-            // clones a borrowed one), so it replaces the `value_drop`
-            // (dropping AND delivering an owned error would double-free).
-            // A tainted non-error must NOT deliver (the handler would
-            // receive placeholder garbage) but an owned one still drops.
-            // Handler-less: drop the owned value (a Borrowed Local is
-            // owned by its env slot, which `emit_pending_cleanup` drops —
-            // dropping here too would double-free).
             emit_qop_error_disposal(
                 cx,
                 handler,
@@ -880,10 +642,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                 payload,
                 inner_owned,
             )?;
-            // Tainted shape-safe placeholder; the inner's STALE carries
-            // (the qop fires iff its inner fired) and TAINT marks
-            // no-value — downstream consumers run harmlessly on the
-            // placeholder and the output gates only if it's consumed.
+            // The inner's STALE carries; TAINT marks no-value.
             let ph_helper = if is_string {
                 cx.helper("graphix_arcstr_empty")?
             } else {
@@ -897,15 +656,9 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().jump(qmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(ph)]);
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
-            // Extract success T (now known non-error). The unwrap
-            // result is Owned, so a String/composite success from a
-            // Borrowed inner must be cloned. String: the ArcStr bits
-            // inside a Value ARE the string ABI's word. Composite: the
-            // payload word IS the ValArray bits, but the narrowing
-            // stays CHECKED — unwrap via `graphix_value_into_array`
-            // (consumes) / `_borrowed` (clones inner), which abort
-            // defined on a non-Array (the tainted Null placeholder is
-            // reachable here, #199).
+            // A Borrowed inner's success must be cloned (the unwrap result is
+            // Owned). The composite narrowing stays checked: the unboxers
+            // abort on a non-Array.
             let v = match kernel_abi::abi_kind(&success_typ) {
                 Some(AbiKind::String) => {
                     if inner_owned {
@@ -933,16 +686,11 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            // STRICT (2026-08-13): the dropped error is a fresh
-            // bottom — propagate, everywhere (the ride scopes are
-            // retired).
+            // A dropped error is a fresh bottom.
             Ok(CompiledExpr::new(params[0], params[1]))
         }
-        // Value-shape success. The bad path (error) produces a tainted
-        // Value::Null placeholder and CONTINUES (interior-bottom v2);
-        // otherwise the non-error Value IS the result T (its own
-        // `(disc, payload)`, passed through to the consumer which takes
-        // ownership).
+        // The non-error Value is the result; the bad path continues on a
+        // tainted Null placeholder.
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let src = node_composite_source(inner);
             let inner_owned = src == CompositeSource::Owned;
@@ -954,16 +702,6 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
             cx.b.switch_to_block(pre_pending);
             cx.b.seal_block(pre_pending);
-            // Error path. Handler-ful `?`: deliver a REAL (untainted)
-            // error to the catch handler (consumes the owned error /
-            // clones a borrowed one), so it replaces the `value_drop`;
-            // a PHANTOM (tainted) error must not deliver — see
-            // `deliverable` above — but an owned one still drops.
-            // Handler-less: drop the owned error before aborting — but
-            // ONLY when `inner` is an owned producer. A Borrowed (Ref)
-            // inner is owned by its env slot, which
-            // `emit_pending_cleanup` -> `drop_owned_composites` already
-            // drops; dropping it here too would double-free.
             emit_qop_error_disposal(
                 cx,
                 handler,
@@ -981,12 +719,8 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().jump(qmerge, &[BlockArg::Value(ph_disc), BlockArg::Value(zero)]);
             cx.b.switch_to_block(continue_block);
             cx.b.seal_block(continue_block);
-            // The non-error Value IS the result T. Ensure it's owned: a
-            // Borrowed (Ref) inner aliases its env slot, which is also
-            // dropped at scope exit — handing those bits to the consumer
-            // (the unwrap result is Owned) would double-free. An Owned
-            // inner passes through unchanged. Clean for the clone; the
-            // inner's taint re-attaches to the result.
+            // A Borrowed inner aliases its env slot, which is dropped at scope
+            // exit; the result is Owned, so clone it.
             let (od, op) = ensure_owned_value_src(cx, src, clean, payload)?;
             // `e?` fires iff its operand fired (single input); STALE folds.
             let disc = propagate_flags(cx.b, od, &[cv.disc]);
@@ -994,9 +728,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.switch_to_block(qmerge);
             cx.b.seal_block(qmerge);
             let params = cx.b.block_params(qmerge);
-            // STRICT (2026-08-13): the dropped error is a fresh
-            // bottom — propagate, everywhere (the ride scopes are
-            // retired).
+            // A dropped error is a fresh bottom.
             Ok(CompiledExpr::new(params[0], params[1]))
         }
         Some(AbiKind::Unit | AbiKind::Null) | None => {

@@ -76,8 +76,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The cached args are replay memory; the rng is thread-local,
-        // not node state.
         self.args.clear()
     }
 }
@@ -177,7 +175,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Scratch buffer only — drained every update, nothing replays.
         self.buf.clear()
     }
 }

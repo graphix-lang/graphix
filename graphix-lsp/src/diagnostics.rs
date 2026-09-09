@@ -1,9 +1,6 @@
 //! Convert anyhow errors from the graphix compiler into LSP diagnostics.
-//!
-//! Compile-time errors are wrapped in `ErrorContext(Expr)` and parser
-//! errors in `ParserContext`; both carry the originating `Origin` and
-//! `SourcePosition` directly. We walk the anyhow chain and `downcast_ref`
-//! to recover them — no message-string scraping.
+//! Compile errors carry an `ErrorContext(Expr)` and parser errors a
+//! `ParserContext`; both are recovered by `downcast_ref`.
 
 use graphix_compiler::expr::{ErrorContext, ParserContext, Source};
 use lsp_types::Position;
@@ -17,17 +14,9 @@ pub struct ErrorLocation {
     pub file: Option<PathBuf>,
 }
 
-/// Walk the error chain and pick the most specific position +
-/// source file we can find.
-///
-/// `ErrorContext` (compile-time) and `ParserContext` (parser) carry
-/// `Origin` + `SourcePosition` structurally. anyhow stores them inside
-/// `ContextError<C, E>` wrappers, so `<&dyn Error>::downcast_ref` (which
-/// matches the actual chain-entry type) doesn't see them — instead we
-/// use `anyhow::Error::downcast_ref`, which walks the context chain via
-/// anyhow's vtable and returns the outermost matching `C`. For our
-/// migration the relevant wraps live at the top of the chain, so the
-/// outermost match is the right one.
+/// Walk the error chain for the most specific position and source file.
+/// `anyhow::Error::downcast_ref` returns the outermost matching context,
+/// which is the right one for the compile path.
 pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
     if let Some(ec) = err.downcast_ref::<ErrorContext>() {
         return location_from_origin_pos(&ec.0.ori.source, ec.0.pos);
@@ -38,9 +27,8 @@ pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
     ErrorLocation::default()
 }
 
-/// Compose an `ErrorLocation` from the compiler's 1-based
-/// (line, column) and the originating `Source`. LSP wants 0-based
-/// positions, so we subtract 1.
+/// Compose an `ErrorLocation` from the compiler's 1-based (line, column)
+/// and the originating `Source`; LSP positions are 0-based.
 fn location_from_origin_pos(
     source: &Source,
     pos: graphix_compiler::SourcePosition,
@@ -54,9 +42,7 @@ fn location_from_origin_pos(
     ErrorLocation { position: Some(Position { line, character }), file }
 }
 
-/// Use the chain's leaf as the diagnostic message. With structured
-/// `ErrorContext` / `ParserContext` carrying position info, the leaf
-/// is just the human-readable failure text (e.g. `"raw not defined"`).
+/// The chain's leaf is the human-readable failure text.
 pub fn error_leaf_message(err: &anyhow::Error) -> String {
     err.chain().last().map(|c| c.to_string()).unwrap_or_else(|| "error".into())
 }
@@ -82,18 +68,15 @@ mod tests {
     }
 
     fn expr_at(line: i32, column: i32, ori: Arc<Origin>) -> Expr {
-        // ExprKind::NoOp is the smallest concrete expr available — we
-        // only care about pos and ori for ErrorContext.
+        // Only pos and ori matter for ErrorContext.
         let pos = SourcePosition { line, column };
         let mut e = ExprKind::NoOp.to_expr(pos);
         e.ori = ori;
         e
     }
 
-    /// A compile bail wrapped via the new `bailat!` macro produces an
-    /// anyhow chain whose outer entry is an `ErrorContext` carrying the
-    /// originating expr. `error_location` should pull the position and
-    /// file straight out of it.
+    /// A compile bail carries an outer `ErrorContext`; `error_location`
+    /// pulls position and file from it.
     #[test]
     fn error_location_from_compile_error_context() {
         let o = ori("/tmp/foo.gx");
@@ -117,12 +100,9 @@ mod tests {
         assert_eq!(loc.file, Some(PathBuf::from("/tmp/bar.gx")));
     }
 
-    /// When multiple `ErrorContext` wraps stack up, anyhow's vtable
-    /// returns the outermost — i.e. the most recently attached context.
-    /// For compile-time wraps that's the parent expression's position
-    /// rather than the failing leaf, which is acceptable: the user is
-    /// taken to a containing expression rather than a missing token, but
-    /// the diagnostic still lands inside the user's code.
+    /// With stacked `ErrorContext` wraps the outermost (most recently
+    /// attached) wins: a containing expression's position, still inside
+    /// the user's code.
     #[test]
     fn error_location_picks_outermost_context() {
         let o = ori("/tmp/foo.gx");

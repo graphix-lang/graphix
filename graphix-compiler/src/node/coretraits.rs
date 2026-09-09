@@ -1,27 +1,11 @@
-//! The core traits `Eq`, `Ord` and `Display` (`design/traits.md` §8,
-//! §12).
+//! The core traits `Eq`, `Ord` and `Display`.
 //!
-//! A user implementation is honored at THE VALUE SEAM
-//! (`crate::abstract_value`): `Value`'s own `eq`/`partial_cmp`/`Debug`
-//! reach a `GxAbstract`, whose impls consult a thread-local dispatch
-//! handle loaned by whichever frame holds `&mut ExecCtx`/`&mut Event`
-//! around a comparing or printing operation ([`with_value_hooks`]).
-//! One seam covers every consumer at once — map keys, `array::sort`,
-//! `min`/`max`, `uniq`, the comparison operators (both engines: the
-//! JIT's `graphix_value_eq` helper calls `Value::eq`), the typed and
-//! naked printers — with the structural case wherever no loan is
-//! installed or no implementation exists.
-//!
-//! This module owns the dispatch: the per-context registry of hook
-//! CALL SITES (one pool per `(trait, AbstractId)`, built on first
-//! use, a fresh site per re-entrant activation), the delivery of
-//! arguments through `event.variables` (the same mechanism a
-//! collection slot uses for its callback), and THE BOTTOM-KEY RULE —
-//! a total order can't fall back structurally per pair (mixing two
-//! orders breaks transitivity), so a bottoming implementation
-//! resolves per KEY, like NaN: a key the implementation bottoms on
-//! sorts below every real key and equal to its fellow bottom keys,
-//! detected by self-probes (`cmp(a, a)`) on the bottom path only.
+//! A user implementation is consulted from `Value`'s own
+//! `eq`/`partial_cmp`/`Debug` on a `GxAbstract`, through a thread-local
+//! handle loaned by [`with_value_hooks`]; without a loan or an
+//! implementation the structural case applies. A bottoming
+//! implementation resolves per key like NaN: a bottom key sorts below
+//! every real key and equal to other bottom keys.
 
 use super::genn;
 use crate::{
@@ -110,9 +94,9 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
     }
 }
 
-/// The member of a union `ts` that `v` belongs to — the typed printer's
-/// rule: the first STRICT match, else the first structured plain
-/// match, else the first plain match.
+/// The member of a union `ts` that `v` belongs to: the first strict
+/// match, else the first structured plain match, else the first plain
+/// match.
 pub(crate) fn union_member(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
     let blind = |t: &Type| {
         t.with_deref(|t| matches!(t, None | Some(Type::Any) | Some(Type::Bottom)))
@@ -122,8 +106,6 @@ pub(crate) fn union_member(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
         .or_else(|| ts.iter().position(|t| !blind(t) && t.is_a(env, v)))
         .or_else(|| ts.iter().position(|t| t.is_a(env, v)))
 }
-
-// ── The hook-site registry ───────────────────────────────────────────
 
 /// One hook call site: a static call to the implementation's method
 /// binding over synthesized argument bindings the dispatch writes
@@ -135,20 +117,16 @@ struct HookSite<R: Rt, E: UserEvent> {
 }
 
 /// The state for one `(trait, AbstractId)` pair: `None` once the type
-/// is known to have no implementation, else the hook and a POOL of
-/// built sites — a dispatch takes a site out and puts it back, so a
-/// re-entrant comparison (an implementation whose body compares values
-/// of its own type) builds and uses a fresh site per activation, the
-/// per-activation state the interp gives any re-entered call.
+/// is known to have no implementation, else the hook and a pool of
+/// built sites; a re-entrant dispatch uses a fresh site.
 enum SiteEntry<R: Rt, E: UserEvent> {
     None,
     Impl { hook: Hook, pool: Vec<HookSite<R, E>> },
 }
 
-/// The per-context registry, keyed `(trait, tag)`. Lives on `ExecCtx`;
-/// entries are resolved on first use and STICKY — an implementation
-/// registered after a tag's first comparison in this context is not
-/// picked up (matching every other compile-time resolution).
+/// The per-context registry, keyed `(trait, tag)`. Entries resolve on
+/// first use and stick: an implementation registered later is not
+/// picked up.
 pub struct CoreHookSites<R: Rt, E: UserEvent>(
     ahash::AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
 );
@@ -231,13 +209,7 @@ fn call_hook<R: Rt, E: UserEvent>(
                     None
                 }
                 Ok(mut s) => {
-                    // Every dispatch is a FRESH logical invocation: a
-                    // reused site otherwise carries replay caches across
-                    // dispatches (a bottoming pair once re-emitted the
-                    // previous pair's answer). A held select SELECTION
-                    // needs no clearing here — a bottoming pair's select
-                    // bottoms at its scrutinee (BOTTOM SCRUTINEE ⇒ BOTTOM
-                    // SELECT) before the selection is consulted.
+                    // every dispatch is a fresh invocation
                     s.site.reset_replay(ctx);
                     for (id, v) in s.args.iter().zip(args.iter()) {
                         ctx.rt.store_insert(*id, TagValue::fired((*v).clone()));
@@ -265,8 +237,6 @@ fn call_hook<R: Rt, E: UserEvent>(
     r
 }
 
-// ── The dispatch handle ──────────────────────────────────────────────
-
 struct HookState<R: Rt, E: UserEvent> {
     ctx: *mut ExecCtx<R, E>,
     event: *mut Event<E>,
@@ -288,8 +258,7 @@ fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
     );
 }
 
-/// Does the implementation bottom on the key `k` (the self-probe of
-/// the bottom-key rule)?
+/// Does the implementation bottom on the key `k`?
 fn key_bottoms<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
@@ -318,8 +287,7 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
             log::warn!("core Eq for {} returned a non-bool {v:?}", a.name);
             Some(false)
         }
-        // THE BOTTOM-KEY RULE: bottom keys are equal to each other and
-        // to nothing real.
+        // bottom keys are equal to each other and to nothing real
         None => {
             let ab = key_bottoms(ctx, event, CoreTrait::Eq, &av);
             let bb = key_bottoms(ctx, event, CoreTrait::Eq, &bv);
@@ -361,12 +329,9 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
                 Some(Ordering::Equal)
             }
         },
-        // THE BOTTOM-KEY RULE (Eric's ruling 2026-08-23): a structural
-        // fallback per PAIR breaks the total order (mixing two orders
-        // is intransitive), and so does any constant answer. Per KEY it
-        // is total — bottom keys below every real key, equal among
-        // themselves — the NaN rule, with bottomness detected by the
-        // self-probe. Probes run only on this path.
+        // a structural fallback per pair would break the total order;
+        // per key it stays total: bottom keys below every real key,
+        // equal among themselves
         None => {
             let ab = key_bottoms(ctx, event, CoreTrait::Ord, &av);
             let bb = key_bottoms(ctx, event, CoreTrait::Ord, &bv);
@@ -394,8 +359,6 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
             log::warn!("core Display for {} returned a non-string {v:?}", a.name);
             None
         }
-        // printing has no algebra to preserve: a bottoming fmt renders
-        // structurally, loudly
         None => {
             log::warn!(
                 "core Display for {} produced no value; printing structurally",
@@ -406,18 +369,11 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     }
 }
 
-/// Loan `ctx`/`event` to the value seam for the duration of `f` — call
-/// this around any operation that compares or prints `Value`s and
-/// should honor core-trait implementations: the comparison operators,
-/// a builtin's `eval`, a map construction or lookup, a kernel
-/// invocation, a print's render. Loans nest (save/restore); with no
-/// core-trait implementation registered this is a handful of map
-/// probes and nothing is armed.
-///
-/// `f` receives the SAME `ctx`/`event` back: the raw pointers in the
-/// handle alias them, used only while `f`'s frame is suspended inside
-/// a `Value` operation — the `DYN_DISPATCH_HANDLE` loan pattern
-/// (`fusion::emit_helpers`).
+/// Loan `ctx`/`event` to the value seam for the duration of `f`. Call
+/// it around any operation that compares or prints `Value`s and should
+/// honor core-trait implementations. Loans nest. `f` receives the same
+/// `ctx`/`event` back; the handle's raw pointers alias them and are
+/// used only while `f`'s frame is suspended inside a `Value` operation.
 pub fn with_value_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,

@@ -18,8 +18,6 @@ use graphix_package_core::{
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
 
-// ── JSON ↔ Value conversion ──────────────────────────────────────
-
 fn json_to_value(json: serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Null,
@@ -126,8 +124,6 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
     }
 }
 
-// ── JsonRead (async) ─────────────────────────────────────────────
-
 #[derive(Debug)]
 enum ReadInput {
     Str(ArcStr),
@@ -218,8 +214,6 @@ impl EvalCachedAsync for JsonReadEv {
 
 type JsonRead = CachedArgsAsync<JsonReadEv>;
 
-// ── JsonWriteStr (sync) ──────────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct JsonWriteStrEv;
 
@@ -246,7 +240,6 @@ fn fc_write_str(args: &[Value]) -> Option<Value> {
     })
 }
 
-// json::write_str is a pure Value→string conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_str)));
     const NAME: &str = "json_write_str";
@@ -257,8 +250,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
 }
 
 type JsonWriteStr = CachedArgs<JsonWriteStrEv>;
-
-// ── JsonWriteBytes (sync) ────────────────────────────────────────
 
 #[derive(Debug, Default)]
 struct JsonWriteBytesEv;
@@ -292,8 +283,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
 }
 
 type JsonWriteBytes = CachedArgs<JsonWriteBytesEv>;
-
-// ── Package registration ─────────────────────────────────────────
 
 graphix_derive::defpackage! {
     builtins => [

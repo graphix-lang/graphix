@@ -1,6 +1,5 @@
-//! `try … with` (design/seq_blocks.md §7.9, R11): an error-triggered
-//! branch inside a seq. Both engines; the outer `catch` around each
-//! program is what an aborted run's rethrow reaches.
+//! `try … with`: an error-triggered branch inside a seq. The outer
+//! `catch` around each program is what an aborted run's rethrow reaches.
 
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
@@ -75,7 +74,7 @@ async fn callee_throw(fusion_disabled: bool) -> Result<()> {
 }
 
 // Cleanup then abort: the with body rethrows once, the machine resets,
-// the next request runs. This is the R2 witness in its final spelling.
+// the next request runs.
 async fn cleanup_rethrow(fusion_disabled: bool) -> Result<()> {
     for form in ["seq", "seqq"] {
         for cleanup in [

@@ -1,33 +1,10 @@
-//! Compile-time function-property analysis.
-//!
-//! Runs once after `typecheck1`, before fusion — ALWAYS (not gated on
-//! `ctx.fusion.enabled`), because the node-walk interpreter consumes its
-//! results too. It computes per-lambda and per-call-site facts that BOTH
-//! backends read, so the canonical node-walk and the cranelift JIT agree
-//! on which functions LOOP vs RECURSE.
-//!
-//! Motivation: a sync self-tail-recursive lambda (`let rec f = |v| f(v+1)`)
-//! compiles to a native loop in the JIT (constant stack), but the
-//! interpreter dispatches the recursive call on the Rust stack and
-//! overflows. The shared facts let the interpreter loop in place instead
-//! (`GXLambda::update`), matching the JIT.
-//!
-//! Three passes over the reachable call graph:
-//!   1. **Effect inference (M6)** — a greatest fixpoint writing each
-//!      reachable lambda's `LambdaDef::intrinsic_effect`. Optimistic start
-//!      (`Sync`), monotonically degrading to `Async`, so mutual recursion
-//!      of pure functions settles on `Sync`.
-//!   2. **Instance call graph** — collect static call edges, including
-//!      recursive backedges without instantiated `Apply` nodes.
-//!   3. **Recursion / tail marking** — classify SCCs, set
-//!      the callee's `GXLambda::tail_loop` (the operational interpreter
-//!      gate = structural tail-loop AND sync), mark the body's
-//!      tail-position self-call(s) (`CallSite::is_self_tail_call` +
-//!      `tail_arg_order` + `callee_lambda_id`), and record the
-//!      `RecursionKind` summary.
-//! The STRUCTURAL tail-loop predicate is shared with the JIT
-//! (`fusion::lowering::structural_tail_loop`) — one seam, so the backends
-//! can't disagree on which lambdas are loop-able.
+//! Compile-time function-property analysis, run after `typecheck1` in
+//! both fusion modes. Three passes over the reachable call graph:
+//! effect inference (a greatest fixpoint from `Sync` down to `Async`),
+//! the instance call graph, and recursion/tail marking (SCCs,
+//! `GXLambda::tail_loop`, `CallSite::is_self_tail_call`,
+//! `RecursionKind`). Both engines read the facts; the structural
+//! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
 
 use crate::{
     ApplyView, BindId, ExecCtx, LambdaId, LambdaInstanceId, Node, NodeView, Rt,
@@ -150,9 +127,7 @@ fn strongly_connected<R: Rt, E: UserEvent>(
         }
         walk.push(root);
         while let Some(id) = walk.pop() {
-            // An already-claimed node is a barrier: the claim it took
-            // under a later finish time IS its SCC, and it must not be
-            // relabeled by a walk that merely reaches it.
+            // An already-claimed node belongs to its own SCC.
             if components.contains_key(&id) {
                 continue;
             }
@@ -181,29 +156,18 @@ fn strongly_connected<R: Rt, E: UserEvent>(
     (components, cyclic, sizes)
 }
 
-/// Run the analysis over the whole compiled program. `root` is the
-/// top-level node; `ctx` is read immutably — every result lands via
-/// interior mutability (atomics / `Mutex`) on the nodes it reaches.
+/// Run the analysis over the whole compiled program. Results land via
+/// interior mutability on the nodes reached.
 pub fn analyze<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> Result<()> {
     let graph = collect_static_graph(root, None);
-    // Pass 1: discover every reachable statically-resolved lambda call
-    // site, descending through callee bodies.
     let sites = collect_resolved_sites(root);
-    // Pass 2: effect fixpoint over the reachable bodies.
     infer_effects(&sites, ctx);
-    // Pass 3: instance call-graph SCCs, recursion + tail marking.
     mark_recursion(&graph, ctx);
-    // Verify pending definition assertions (`#[tail_recursive]` /
-    // `#[sync]` / `#[async]` — `crate::DefAssertion`, stamped by
-    // `node::compiler::compile`) against the facts the passes above just
-    // wrote. An assertion whose definition the analysis hasn't reached
-    // yet (not called anywhere compiled so far) stays PENDING for a
-    // later compile — verified-or-failed exactly once, at the first
-    // analyze that covers it. A loop over the stamped list: no tree
-    // walk, and mode-independent (analyze runs with fusion off too).
+    // An assertion whose definition is not yet reached stays pending
+    // for a later compile.
     check_def_assertions(&graph, &sites, ctx)?;
     Ok(())
 }
@@ -284,16 +248,9 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
     err.map_or(Ok(()), Err)
 }
 
-/// Analyze a callee bound at RUNTIME (`CallSite::bind`): the lazy-bound
-/// apply compiles its body fresh, AFTER the program-wide [`analyze`]
-/// pass ran, so nothing in that subtree carries effect/recursion/tail
-/// facts — a tail-recursive `let rec` nested in the body stack-recursed
-/// into the call-depth guard (bottom at ~256) where the same lambda
-/// dispatched through a compile-time-resolved site tail-looped
-/// (soak-jul06c B8: rec lambda inside an HOF callback slot). Same three
-/// phases as [`analyze`], seeded with the outer `(callee, self_bind)`
-/// pair — a lazy-bound site is `DynamicBound`, which
-/// `collect_resolved_sites` skips.
+/// [`analyze`] for a callee bound at runtime (`CallSite::bind`), whose
+/// body compiled after the program-wide pass. Seeded with the outer
+/// `(callee, self_bind)` pair, which `collect_resolved_sites` skips.
 pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
@@ -308,11 +265,8 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     mark_recursion(&graph, ctx);
 }
 
-/// Every reachable resolved-lambda call site, as `(callee, self_bind)`.
-/// Mirrors `fusion::discover_lambda_calls`' traversal: walk with
-/// `for_each_node` (which does NOT descend lambda bodies), and at each
-/// resolved-lambda call site push the callee body for a further walk —
-/// deduped by `LambdaId` so recursion terminates.
+/// Every reachable resolved-lambda call site, as `(callee, self_bind)`;
+/// callee bodies are walked once each.
 fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
 ) -> LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> {
@@ -321,8 +275,6 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
     stack.push(root);
     while let Some(node) = stack.pop() {
-        // Collect bodies to descend separately, so the closure doesn't
-        // borrow `stack` while the outer loop pops it.
         let mut to_descend: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
         fusion::for_each_node(node, &mut |n| {
             let NodeView::CallSite(cs) = n.view() else { return };
@@ -339,22 +291,15 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     sites
 }
 
-// ── Phase 1: effect inference ────────────────────────────────────────
-
 /// Greatest-fixpoint effect inference. Every reachable lambda starts
 /// `Sync` and monotonically degrades to `Async` until stable.
 fn infer_effects<R: Rt, E: UserEvent>(
     sites: &[(&GXLambda<R, E>, BindId)],
     ctx: &ExecCtx<R, E>,
 ) {
-    // Dedup the reachable bodies by LambdaId (a lambda may have many call
-    // sites; its body + effect are one).
-    //
-    // The (callee, self_bind) pairs double as a BACK-EDGE resolution
-    // table: a dynamically-bound recursive callee can be analyzed before
-    // its self-call is present in `ctx.bind_to_lambda`. Falling through
-    // as Async would disable the interpreter tail loop and recurse on the
-    // Rust stack instead.
+    // The (callee, self_bind) pairs double as a back-edge table: a
+    // dynamically-bound recursive callee can be analyzed before its
+    // self-call is in `ctx.bind_to_lambda`.
     let mut bodies: LPooled<IntMap<LambdaId, &Node<R, E>>> = LPooled::take();
     let mut self_ids: LPooled<IntMap<BindId, LambdaId>> = LPooled::take();
     for (g, sb) in sites {
@@ -384,14 +329,10 @@ fn infer_effects<R: Rt, E: UserEvent>(
     }
 }
 
-/// The two facts the fixpoint infers per lambda, both greatest
-/// fixpoints from an optimistic start: `effect` (`Sync` degrading to
-/// `Async`) and `stateless` (`true` degrading to `false` — the body
-/// holds no per-activation state: every builtin it reaches is
-/// `Effect::Stateless`, no `<-` targets one of its own bindings, every callee
-/// is stateless). `stateless` is what lets a tail loop reuse ONE
-/// activation across its iterations (`design/recursive_activations.md`
-/// §2); everything else about a stateful Sync body is unchanged.
+/// The two facts the fixpoint infers per lambda from an optimistic
+/// start: `effect` (`Sync` degrading to `Async`) and `stateless` (no
+/// per-activation state: every builtin reached is `Effect::Stateless`,
+/// no `<-` targets an own binding, every callee is stateless).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LambdaFacts {
     effect: EffectKind,
@@ -410,11 +351,9 @@ impl LambdaFacts {
     }
 }
 
-/// Fold the facts over one lambda body. `for_each_node` does not descend
-/// nested lambda bodies, so this sees only THIS body's own operations.
+/// Fold the facts over one lambda body (nested lambda bodies excluded).
 /// A `<-` counts as state only when its target is one of the body's own
-/// bindings: writes to an outer variable land in the same cell whether
-/// one activation or many performs them.
+/// bindings.
 fn body_facts<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     eff: &IntMap<LambdaId, LambdaFacts>,
@@ -443,21 +382,9 @@ fn body_facts<R: Rt, E: UserEvent>(
     acc
 }
 
-/// The intrinsic effect of a single node. `Async` means "delivers a
-/// value on a LATER cycle than its trigger" — a call into an async
-/// callee, a sample/`any`, a TryCatch (its catch reads an error variable
-/// next cycle), a fused kernel that may pend. A variable WRITE
-/// (`connect`, a handler-ful `?`'s error delivery) is NOT async: the
-/// write happens this cycle, and the cross-cycle boundary is the READ of
-/// the written variable (a feeder, a separate kernel). So those, and
-/// same-cycle error handling (`$`, handler-less `?`), are `Sync` — which
-/// lets them fuse (their `emit_clif` performs the write) and lets the
-/// interpreter tail-loop a recursion containing them. The match is
-/// exhaustive on purpose — a new node variant is a compile error here,
-/// forcing a sync/async decision rather than a silent default. (Note:
-/// EffectKind is orthogonal to `stmt_subtree_effect_free` — a connect is
-/// *sync* yet NOT effect-free; dead-statement elimination must still keep
-/// it.)
+/// The intrinsic facts of a single node. A variable write is not
+/// async: the write happens this cycle and the cross-cycle boundary is
+/// the read. Exhaustive on purpose: a new node variant must decide.
 fn node_facts<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     eff: &IntMap<LambdaId, LambdaFacts>,
@@ -467,30 +394,15 @@ fn node_facts<R: Rt, E: UserEvent>(
 ) -> LambdaFacts {
     match n.view() {
         NodeView::CallSite(cs) => callee_facts(cs, eff, self_ids, ctx),
-        // Genuinely cross-cycle: a sample (`~`) or `any` delivers on a
-        // later cycle than its trigger; a catch handler reads an error
-        // variable a cycle after the `?` writes it; a fused kernel may
-        // pend. These stay async. The Catch classification is also
-        // LOAD-BEARING for tail gating: a self-call after a catch is a
-        // tail LEAF, and only this Async classification (through the
-        // lambda_is_sync gate) keeps catch-covered recursion off the
-        // tail-loop machinery — do not refine it without a design pass
-        // on the handler/loop interplay.
+        // Cross-cycle. Catch's Async is also what keeps catch-covered
+        // recursion off the tail-loop machinery (a self-call after a
+        // catch is a tail leaf).
         NodeView::Sample(_)
         | NodeView::Catch(_)
         | NodeView::SeqGuard(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
-        // Variable WRITES (`connect`, a handler-ful `?`'s error delivery)
-        // and same-cycle error handling (`$`, a handler-less `?`) are
-        // SYNC: the write/log happens this cycle; the genuine boundary is
-        // the READ of a written variable (handled by feeders, a separate
-        // kernel). Classifying them sync lets them fuse and lets the
-        // interpreter tail-loop a recursion that contains them. (The
-        // *write itself* fusing is gated structurally by `emit_clif`:
-        // connect/qop-deliver emit the write; an unfusable case de-fuses
-        // gracefully.)
         NodeView::Connect(c) => {
             LambdaFacts { effect: EffectKind::Sync, stateless: !local.contains(&c.id) }
         }
@@ -498,7 +410,6 @@ fn node_facts<R: Rt, E: UserEvent>(
             LambdaFacts { effect: EffectKind::Sync, stateless: false }
         }
         NodeView::Qop(_) | NodeView::OrNever(_) => LambdaFacts::PURE,
-        // Pure same-cycle compute / construction / access / control flow.
         NodeView::Bind(_)
         | NodeView::Module(_)
         | NodeView::Block(_)
@@ -552,24 +463,16 @@ fn node_facts<R: Rt, E: UserEvent>(
     }
 }
 
-/// The effect contributed by a call: the callee's effect. A resolved or
-/// `bind_to_lambda`-known user lambda contributes its (fixpoint) effect —
-/// this is also how a `#203`-unresolved self-call resolves, so a
-/// self-recursive sync body stays `Sync`. A builtin contributes its
-/// declared `EFFECT`. Anything else (a fn-typed parameter call, a dynamic
-/// dispatch) is conservatively `Async`.
+/// The facts a call contributes: a known user lambda's fixpoint facts,
+/// a builtin's declared `EFFECT`, otherwise `Async`.
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     eff: &IntMap<LambdaId, LambdaFacts>,
     self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> LambdaFacts {
-    // A resolved lambda missing from the LOCAL fixpoint map is one a
-    // PRIOR pass analyzed (the subtree walks of `analyze_bound_callee`
-    // only cover their subtree): read
-    // its STORED fact instead of defaulting Async. Silently defaulting
-    // misclassified runtime-bound callees whose definitions live outside
-    // the local walk.
+    // A lambda missing from the local map was analyzed by a prior pass:
+    // read its stored fact.
     let known = |lid: LambdaId| -> LambdaFacts {
         eff.get(&lid).copied().unwrap_or_else(|| {
             lambda_def(ctx, lid)
@@ -583,29 +486,21 @@ fn callee_facts<R: Rt, E: UserEvent>(
     if let Some(target) = cs.static_target() {
         return known(target.definition);
     }
-    // Resolved user lambda.
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return known(g.id());
     }
     if let NodeView::Ref(r) = cs.fnode().view() {
-        // A seeded back-edge (this pass's own (callee, self_bind)
-        // pairs) — the resolution for a dynamically-bound `let rec`
-        // whose binding id is absent from `bind_to_lambda`.
-        // Checked first: where both tables know the binding, this one
-        // names the ACTUAL instance at the analyzed site (another
-        // definition in `bind_to_lambda` may not be in `eff`, so it would
-        // otherwise read as its stored fact).
+        // The seeded back-edge table names the actual instance at the
+        // analyzed site, so it is checked before `bind_to_lambda`.
         if let Some(lid) = self_ids.get(&r.id) {
             return known(*lid);
         }
-        // fnode Ref → a known user-lambda binding (incl. #203 self-calls).
         if let Some(v) = ctx.bind_to_lambda.get(&r.id) {
             if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
                 return known(d.id);
             }
         }
     }
-    // Builtin callee (resolved or via Ref) → its declared effect.
     if let ExprKind::Ref { name } = &cs.fnode().spec().kind {
         if let Some((_, bind)) =
             ctx.env.lookup_bind(&cs.scope().lexical, name).ok().flatten()
@@ -619,14 +514,11 @@ fn callee_facts<R: Rt, E: UserEvent>(
             }
         }
     }
-    // Unknown dynamic dispatch / fn-typed parameter call.
     if crate::dbgenv::gxdbg_effect() {
         eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());
     }
     LambdaFacts::ASYNC
 }
-
-// ── Phase 3: recursion + tail marking ────────────────────────────────
 
 fn mark_recursion<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
@@ -664,13 +556,8 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         let only_self = component
             .and_then(|component| component_sizes.get(&component).copied())
             == Some(1);
-        // TAIL means ALL self-calls in tail position, not merely one:
-        // a mixed body (one tail self-call, one non-tail) still
-        // recurses on the native stack at the non-tail site, and the
-        // summary is what `#[tail_recursive]` asserts — a
-        // cannot-trip-the-depth-limit guarantee. (The operational
-        // per-site gate below is unchanged: tail SITES loop
-        // regardless.)
+        // Tail means every self-call is in tail position; tail sites
+        // loop regardless.
         let tail = only_self
             && body_has_self_tail_call(g.body(), *instance)
             && !body_has_non_tail_self_call(g.body(), *instance);
@@ -700,9 +587,8 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     }
 }
 
-/// Walk the body's tail positions ([`fusion::for_each_tail_leaf`] —
-/// the shared definition, review A5) and mark each tail-position
-/// self-call. Returns whether at least one site was marked.
+/// Mark each tail-position self-call ([`fusion::for_each_tail_leaf`]).
+/// Returns whether at least one site was marked.
 fn mark_tail_sites<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,
@@ -725,10 +611,8 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
             }
             _ => false,
         },
-        // A select with a marked arm is on the TAIL SPINE — its emits
-        // ride the arm's organic tag inside evaluation frames (the
-        // interp twin of the kernel's `emit_body_tail`
-        // no-scrutinee-fold rule; see `Select::tail_position`).
+        // A select with a marked arm is on the tail spine; see
+        // `Select::tail_position`.
         &mut |s| s.tail_position.store(true, Ordering::Relaxed),
     )
 }
@@ -749,11 +633,7 @@ fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     )
 }
 
-/// Whether any self-call site sits OUTSIDE tail position: collect the
-/// tail-position self-sites by spec id, then sweep the whole body for
-/// self-sites not in that set. (Nested lambdas don't confound this —
-/// a self-call from an inner closure is an edge from the inner
-/// instance, which breaks `only_self` before this runs.)
+/// Whether any self-call site sits outside tail position.
 fn body_has_non_tail_self_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,
@@ -785,10 +665,8 @@ fn body_has_non_tail_self_call<R: Rt, E: UserEvent>(
     non_tail
 }
 
-/// The call's positional argument `BindId`s in order — the tail-loop's
-/// per-iteration rebind list. `None` unless the call is purely positional
-/// (which a self-call to an all-positional-formal callee always is — and
-/// `structural_tail_loop` already gated on all-positional formals).
+/// The call's positional argument `BindId`s in order, the tail-loop's
+/// per-iteration rebind list. `None` unless the call is purely positional.
 fn positional_arg_order<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
 ) -> Option<Box<[BindId]>> {
@@ -797,13 +675,10 @@ fn positional_arg_order<R: Rt, E: UserEvent>(
         order.push(a.id);
     }
     if order.is_empty() || cs.args.len() != order.len() {
-        // Empty, or some labeled arg present — not a simple positional call.
         return None;
     }
     Some(order.drain(..).collect())
 }
-
-// ── helpers ──────────────────────────────────────────────────────────
 
 fn rank(k: RecursionKind) -> u8 {
     match k {
@@ -840,14 +715,10 @@ fn callee_lambda<R: Rt, E: UserEvent>(
     None
 }
 
-/// Sleep an untaken arm unless it is pure computation with no
-/// recursive call: there is nothing to pause, so skip `sleep` and
-/// skip `update` while it is untaken. A `<-`, a catch, a sample, an
-/// `any`, or a stateful/async callee is not pure. A recursive arm
-/// still sleeps (shrink-on-deselect lives on the sleep walk). An
-/// unresolved callee or a fused kernel is treated as possibly
-/// recursive, so we sleep — the safe default; a kernel reclaims its
-/// own activations.
+/// Whether an untaken arm must sleep: pure computation with no
+/// recursive call has nothing to pause. A `<-`, a catch, a sample, an
+/// `any`, a stateful/async callee, an unresolved callee or a fused
+/// kernel all sleep.
 pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     node: &Node<R, E>,
@@ -879,12 +750,9 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
     !pure || recurses
 }
 
-/// The tail-loop collapse gate (`design/recursive_activations.md` §2):
-/// a tail loop reuses ONE activation only when its body is stateless
-/// (which implies Sync). Any other body — async, or Sync but reaching
-/// a stateful builtin, a `<-` to its own binding, or a stateful callee
-/// — gets an activation per iteration, exactly like non-tail recursion
-/// and like a collection slot.
+/// The tail-loop collapse gate: a tail loop reuses one activation only
+/// when its body is stateless; any other body gets an activation per
+/// iteration.
 fn lambda_is_stateless<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, lid: LambdaId) -> bool {
     lambda_def(ctx, lid)
         .map(|d| {

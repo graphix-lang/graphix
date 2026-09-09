@@ -241,10 +241,6 @@ const STR_SPLIT: &str = r#"
 }
 "#;
 
-// Fuses since the split family gained its missing EFFECT const
-// (2026-08-11). The prior storage-law attribution was wrong: the
-// builtin was accidentally Async, so fusion never got far enough to
-// hit the storage law.
 run!(str_split, STR_SPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -264,10 +260,6 @@ const STR_RSPLIT: &str = r#"
 }
 "#;
 
-// Fuses since the split family gained its missing EFFECT const
-// (2026-08-11). The prior storage-law attribution was wrong: the
-// builtin was accidentally Async, so fusion never got far enough to
-// hit the storage law.
 run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -287,10 +279,6 @@ const STR_SPLITN: &str = r#"
 }
 "#;
 
-// Fuses since the split family gained its missing EFFECT const
-// (2026-08-11). The prior storage-law attribution was wrong: the
-// builtin was accidentally Async, so fusion never got far enough to
-// hit the storage law.
 run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -308,10 +296,6 @@ const STR_RSPLITN: &str = r#"
 }
 "#;
 
-// Fuses since the split family gained its missing EFFECT const
-// (2026-08-11). The prior storage-law attribution was wrong: the
-// builtin was accidentally Async, so fusion never got far enough to
-// hit the storage law.
 run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -329,9 +313,7 @@ const STR_SPLIT_ESCAPED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -349,9 +331,7 @@ const STR_SPLITN_ESCAPED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -448,9 +428,8 @@ run!(str_parse, STR_PARSE, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// `str::parse` is a TYPED fast fn: the site bakes its resolved return
-// type and the kernel casts the parsed value to it, the interp's exact
-// `cast_value` — a struct target under `#[native]`.
+// `str::parse` is a typed fast fn: the kernel casts the parsed value to
+// the site's resolved return type, here a struct under `#[native]`.
 const STR_PARSE_STRUCT_NATIVE: &str = r#"{
   let p = |s: string| -> {x: i64, y: string} { let r = #[native] str::parse(s)$; r };
   let {x, y} = p("\[\[\"x\", 41\], \[\"y\", \"z\"\]\]");

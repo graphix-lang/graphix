@@ -38,12 +38,6 @@ use super::{
     },
 };
 
-// ─── Distributed node-emission relays ─────────────────────────────
-//
-// The per-node `Update::emit_clif` impls (node/*.rs) are thin shims
-// over these crate-internal helpers, which own the CLIF mechanics
-// (`JitEnv`/`LowerCtx` stay private to this module).
-
 /// Constant literal, dispatched on its runtime shape:
 ///
 /// - Scalar: inline `iconst`/`f64const`.
@@ -57,9 +51,7 @@ pub(crate) fn emit_const_node(
     value: &Value,
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    // A literal fires only at init, then carries a cached (stale) value
-    // (see `const_stale_gate`). The disc gate is the only flag change —
-    // a constant is never tainted.
+    // A constant fires at init only and is never tainted.
     let init = cx.init_flag();
     match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
@@ -105,13 +97,9 @@ pub(crate) fn emit_const_node(
     }
 }
 
-/// A `{k => v, ...}` map literal. Mirrors the classic path's
-/// `emit_map_new`: fuses ONLY when every key and value is a
-/// compile-time constant — the `CMap` is built at compile time
-/// (`insert_cow` in entry order, exactly as `Map::update` does at
-/// runtime) and emitted as an interned Value constant. A dynamic
-/// entry de-fuses; the runtime map producer isn't lowered on either
-/// path.
+/// A `{k => v, ...}` map literal. Fuses only when every key and value
+/// is a compile-time constant: the `CMap` is built here and emitted as
+/// an interned Value constant. A dynamic entry de-fuses.
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     keys: &[Node<R, E>],
@@ -128,24 +116,17 @@ pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     emit_const_node(cx, &v, &typ)
 }
 
-/// A binding read. Resolve the Ref's source name to the kernel param
-/// / block-let slot in the env (same name the params were bound under
-/// — see `compile_into_function`'s entry binder). Surfaces the local's
-/// disc (carrying any `TAINT`/`STALE`) alongside its payload.
+/// A binding read: the local's disc (with any `TAINT`/`STALE`) and its
+/// payload.
 pub(crate) fn emit_ref_node(
     cx: &mut BodyCx,
     spec: &Expr,
     typ: &Type,
     id: BindId,
 ) -> Result<CompiledExpr> {
-    // Resolve BindId-first (exact under shadowing — an outer capture
-    // and an inner let sharing a basename resolve to different slots,
-    // the #162/#167 bug class), then by name (id-less synthetic
-    // locals). The disc already carries the binding's #219 taint (a
-    // tainted param disc from the ABI, or a let's computed disc).
     let _ = typ;
-    // A SYNTHETIC Ref (`genn::reference` — premat/elaboration wiring)
-    // has the shared NOP spec and no name: resolve it by id alone.
+    // BindId first (exact under shadowing); a synthetic Ref has no name
+    // and resolves by id alone.
     let name = ref_local_name(spec);
     let (vv, kind) = {
         let l = match name {
@@ -170,18 +151,11 @@ pub(crate) fn emit_ref_node(
         })?;
         (l.vv, l.kind)
     };
-    // WAKE DELIVERS PRESENT-BUT-STALE: a select arm's forced init view
-    // (becoming-selected or re-selected) reads a standing binding with
-    // its honest STALE disc — the node-walk's wake view no longer
-    // upgrades standing store reads to Fired
-    // (arm-rewake-ref-fired-aug2026 regressed the other way when the
-    // interp changed and this kept the old R2 stale-clear). Genuine
-    // init needs nothing here: params arrive with boundary-upgraded
-    // discs and interior slots are computed fresh.
+    // A wake reads a standing binding with its STALE disc intact; only
+    // genuine init upgrades, and that happens at the boundary.
     let disc = cx.b.use_var(vv.disc);
     match kind {
-        // String: read the slot and refcount-bump — each consumer gets
-        // an independently-owned ArcStr; the slot keeps its own ref
+        // Each consumer gets its own ArcStr ref; the slot keeps its own
         // until scope exit.
         LocalKind::String => {
             let s = cx.b.use_var(vv.payload);
@@ -189,9 +163,8 @@ pub(crate) fn emit_ref_node(
             let call = cx.b.ins().call(clone, &[s]);
             Ok(CompiledExpr::new(disc, cx.b.inst_results(call)[0]))
         }
-        // Scalar: read both words. Composite / Variant / Nullable /
-        // Value: BORROWED read — the env still owns the slot; consumers
-        // clone via `ensure_owned_*_src` when they need ownership.
+        // Non-scalar kinds are borrowed reads: the env owns the slot and
+        // consumers clone when they need ownership.
         LocalKind::Scalar(_)
         | LocalKind::Composite
         | LocalKind::Variant
@@ -200,19 +173,10 @@ pub(crate) fn emit_ref_node(
     }
 }
 
-/// Arithmetic — compile both operands, then the shared `compile_bin`
-/// helper (including the div/mod taint/guard), propagating operand
-/// validity. A datetime/duration operand
-/// routes to the `ValueArith` mirror first (netidx `Value` arithmetic
-/// via the `graphix_value_<op>` helpers, both operands OWNED since the
-/// helpers consume).
-/// A node must emit the representation its own TYPE declares, because
-/// every consumer classifies on `abi_kind(node.typ())`. Arithmetic
-/// computes in the OPERANDS' register scalar, and a result cell that a
-/// consumer's parameter type widened (`filter_err(..)`'s
-/// `['a, Error<'e>]` unifying into an unbound `'a: Number`) classifies
-/// two words wide — so widen the scalar into its Value form. A scalar's
-/// disc IS its value disc, so only the payload moves.
+/// A node must emit the representation its own type declares, since
+/// consumers classify on `abi_kind(node.typ())`. Arithmetic computes
+/// in the operands' scalar; if the node's type froze to a Value shape,
+/// widen the payload (a scalar's disc is already its Value disc).
 fn widen_to_declared_repr(
     cx: &mut BodyCx,
     out_typ: &Type,
@@ -231,6 +195,9 @@ fn widen_to_declared_repr(
     }
 }
 
+/// Arithmetic. A datetime/duration operand routes to the
+/// `graphix_value_<op>` helpers (both operands owned); otherwise
+/// `compile_bin` on register scalars with the integer div/mod guard.
 pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: BinOp,
@@ -251,11 +218,6 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             BinOp::Mod => "graphix_value_rem",
         };
         let fref = cx.helper(helper)?;
-        // Clean the operand discs before the netidx-Value helper (a
-        // tainted disc is an invalid tag); the helper ran on the value
-        // bits regardless. #219: the result disc re-absorbs the operands'
-        // taint, guarding a garbage result a missing input produced.
-
         let call = cx.b.ins().call(fref, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
         let (rdisc, rpay) = {
             let r = cx.b.inst_results(call);
@@ -268,10 +230,8 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     let rcv = rhs.emit_clif(cx)?;
     let l = lcv.payload;
     let r = rcv.payload;
-    // Fallible prim derivation (not `prim_of`, which panics): an
-    // operand's type may be typecheck's un-normalized union (a select
-    // result) — scalar after `freeze_for_abi_normalized` (with the abstract-
-    // Ref resolution retry, #218), or Err → no fusion.
+    // Not `prim_of` (panics): the operand type may be an un-normalized
+    // union; Err means no fusion.
     let prim = freeze_node_typ(cx.ctx, lhs.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t))
@@ -279,7 +239,6 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: arith operand of non-scalar type {:?}", lhs.typ())
         })?;
     let base = scalar_disc(cx.b, prim);
-    // Integer div/mod taint/guard.
     if matches!(op, BinOp::Div | BinOp::Mod)
         && prim.is_integer()
         && node_int_div_may_bottom(lhs, rhs)
@@ -302,20 +261,12 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         let one = cx.b.ins().iconst(prim_to_clif(prim), 1);
         let safe_r = cx.b.ins().select(bad, one, r);
         let value = compile_bin(cx.b, op, prim, l, safe_r)?;
-        // #219: a div0 / signed-MIN÷-1 taints the result; so does a
-        // tainted operand. `is_tainted` resolves at the output.
+        // A div0 / signed MIN÷-1 taints the result, as does a tainted operand.
         let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         let taint_word = cx.b.ins().iconst(types::I64, TAINT);
         let zero = cx.b.ins().iconst(types::I64, 0);
         let bad_taint = cx.b.ins().select(bad, taint_word, zero);
         let disc = cx.b.ins().bor(disc, bad_taint);
-        // STRICT (Eric's ruling 2026-08-13): a div0 / MIN÷-1 is a
-        // fresh bottom — propagate, everywhere. The loop/guard ride
-        // scopes are retired with `in_ride_scope`: guard interiors
-        // poison (the FINAL-value guard ride is the designated form),
-        // and loop bodies poison (any bottomed element production
-        // taints the collection — `map` agrees with the hand-written
-        // array literal; downstream holding is the STORE's job).
         let cv = CompiledExpr::new(disc, value);
         return Ok(widen_to_declared_repr(cx, out_typ, prim, cv));
     }
@@ -326,14 +277,10 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
 }
 
 /// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
-/// operands are compiled as OWNED `(disc, payload)` Values (the same
-/// route as `emit_arith_node`'s ValueArith dispatch — the helpers
-/// consume), then the `graphix_value_checked_<op>` helper computes via
-/// the SAME netidx `Value::checked_*` + [`op::
-/// wrap_arith_error`] core the node-walk's update uses. The result is
-/// a Value: the success scalar, or the catchable `ArithError` error
-/// VALUE (`[T, Error<`ArithError(string)>]` freezes to the Nullable
-/// wire shape) — never bottom, unlike unchecked div0.
+/// operands are owned Values; `graphix_value_checked_<op>` shares the
+/// node-walk's `Value::checked_*` core. The result is a Value: the
+/// scalar, or the catchable `ArithError` (Nullable wire shape) — never
+/// bottom.
 pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: BinOp,
@@ -356,18 +303,13 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
-    // #219: propagate operand taint into the checked-arith result Value.
     let disc = propagate_flags(cx.b, rdisc, &[lcv.disc, rcv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// Comparison — `compile_cmp` (total-order floats) on scalar operands,
-/// propagating operand validity. Non-scalar `==`/`!=` (String,
-/// composite, value-shape) compiles both operands as OWNED
-/// `(disc, payload)` Values (the helper consumes them),
-/// compared via netidx `Value` PartialEq. Ordering operators on
-/// non-scalar operands aren't lowered (mirrors `kernel_abi::cmp`) — Err, the
-/// region node-walks.
+/// Comparison: `compile_cmp` on scalar operands; non-scalar `==`/`!=`
+/// via netidx `Value` equality on owned operands. Ordering on
+/// non-scalar operands is not lowered (Err, the region node-walks).
 pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: CmpOp,
@@ -418,14 +360,13 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     } else {
         eq
     };
-    // #219: a tainted operand taints the bool result.
     let base = scalar_disc(cx.b, PrimType::Bool);
     let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
     Ok(CompiledExpr::new(disc, result))
 }
 
-/// Logical — STRICT `band`/`bor` (both operands always compiled),
-/// taint-propagating, matching the node-walk's `bool_op!`.
+/// Strict `band`/`bor`: both operands always evaluated, like the
+/// node-walk's `bool_op!`.
 pub(crate) fn emit_bool_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: BoolOp,
@@ -443,7 +384,7 @@ pub(crate) fn emit_bool_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, value))
 }
 
-/// Logical NOT — taint-propagating.
+/// Logical NOT.
 pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
@@ -456,9 +397,7 @@ pub(crate) fn emit_not_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, value))
 }
 
-/// `-x` — integer `ineg` / float `fneg`, taint-propagating. The operand's
-/// PrimType drives int-vs-float; a non-register-scalar operand (e.g.
-/// `decimal`) has no `scalar_prim` and Errs, de-fusing to the node-walk.
+/// `-x`. A non-register-scalar operand (`decimal`) Errs and de-fuses.
 pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
@@ -480,19 +419,15 @@ pub(crate) fn emit_neg_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, value))
 }
 
-/// `cast<T>(x)` — `compile_cast`, taint-propagating.
+/// `cast<T>(x)`.
 pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
     target: &Type,
     expr_id: ExprId,
 ) -> Result<CompiledExpr> {
-    // Scalar→scalar fast path: pure register arithmetic, branchless,
-    // infallible — a cast in a hot loop (e.g. `cast<f64>(2*n-1)`) must
-    // stay inline, not pay a runtime call per iteration. Restricted to
-    // NUMERIC prims: `compile_cast` can't lower a `bool` cast (it
-    // `unreachable!`s), so a bool source/target falls through to the
-    // machinery call below, which casts via `Value::cast`.
+    // Numeric scalar→scalar casts stay inline (branchless, infallible).
+    // `compile_cast` cannot lower a bool cast; bool takes the call below.
     if let (Some(src), Some(tgt)) =
         (kernel_abi::scalar_prim(inner.typ()), PrimType::from_type(target))
     {
@@ -501,25 +436,16 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
             let value = compile_cast(cx.b, cv.payload, src, tgt);
             let base = scalar_disc(cx.b, tgt);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
-            // The cast NODE's static type is the fallible `[T, Error]`
-            // union, so every consumer classifies it as a 2-word Value
-            // and expects the I64 payload word — a raw F64-typed result
-            // here type-mismatched `bind_local`'s declared payload var
-            // (cranelift frontend panic; jul17c katana divergence
-            // 000000: `let v = cast<f64>(f64:0.)`). `$`/`?` only worked
-            // by accident (same-width bitcast is an identity for F64,
-            // passthrough for I64). Widen to the wire shape; the qop
-            // unwrap narrows back with `cast_u64_to_prim`.
+            // The cast node's static type is the fallible `[T, Error]`
+            // union, so consumers expect the 2-word Value payload; the
+            // qop unwrap narrows back.
             let payload = scalar_to_payload_i64(cx.b, tgt, value);
             return Ok(CompiledExpr::new(disc, payload));
         }
     }
-    // Any other cast (non-scalar source like `datetime`, or non-scalar
-    // target): the discovery pass registered a `SiteDispatch::Cast`
-    // site — a one-argument call to `target.cast_value`, the SAME fn
-    // the node-walk uses. The fallible `[T, Error]` result rides the
-    // 2-word Value wire shape; a surrounding `$`/`?` unwraps it via
-    // `emit_qop_node`.
+    // Otherwise the discovered `SiteDispatch::Cast` site calls
+    // `target.cast_value`, the node-walk's own fn; the `[T, Error]`
+    // result rides the 2-word Value shape.
     let info = match cx.builtin_site(expr_id) {
         Some(i) => i.clone(),
         None => {
@@ -531,15 +457,10 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     emit_builtin_call_node(cx, &info, &[inner])
 }
 
-/// String interpolation `"x is [x]"` — build a heap-owned
-/// `*mut String`,
-/// push each part (append-as-str for string parts — reads are already
-/// owned clones, the push consumes; Display-rendered for scalars via
-/// the shared [`string_buf_push_helper`]), finalize into an OWNED
-/// ArcStr. Keeps the restriction on part shapes: a non-scalar /
-/// non-string part (a Nullable from `a[i]`, a composite, a value-shape
-/// — see findings "StringInterpolate non-scalar part") is Err, the
-/// subtree node-walks.
+/// String interpolation `"x is [x]"`: push each part into a heap
+/// `String` (string parts consumed, scalars Display-rendered) and
+/// finalize to an owned ArcStr. Only String and scalar parts are
+/// lowered; any other shape Errs and the subtree node-walks.
 pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     args: &[Node<R, E>],
@@ -547,14 +468,11 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     let new_buf = cx.helper("graphix_string_buf_new")?;
     let call = cx.b.ins().call(new_buf, &[]);
     let buf = cx.b.inst_results(call)[0];
-    // #219: a tainted part (a div0 inside `[..]`) renders harmlessly into
-    // the buffer; its taint accumulates and forces the result at the
-    // output. Collect part discs and fold them into the result disc.
+    // A tainted part renders harmlessly; its taint folds into the result.
     let mut part_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for a in args {
         let part = a;
-        // `freeze_for_abi_normalized` so a select-valued part (whose type is
-        // the un-normalized arm union) still classifies.
+        // Normalized so a select-valued part (an arm union) still classifies.
         let frozen = kernel_abi::freeze_for_abi_normalized(part.typ());
         match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t)) {
             Some(AbiKind::String) => {
@@ -585,24 +503,18 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// Compile a `ValueArith` / `ValueEq` / bytes / map / slice operand as
-/// an OWNED `(disc, payload)` Value — the consuming helpers take both
-/// operands by value. A value-shape operand clones a Borrowed read via
-/// `ensure_owned_value_src`; a scalar widens its payload to the 8-byte
-/// Value word by inline packing (its disc already IS the Value disc);
-/// a String's owned ArcStr bits and a composite's owned ValArray bits
-/// ARE the Value payload word under the unified Value ABI — only the
-/// disc is minted, with the source's TAINT/STALE folded on.
+/// Compile an operand as an owned `(disc, payload)` Value for a
+/// consuming helper. A scalar widens its payload (its disc is already
+/// the Value disc); String/composite bits are already the Value payload
+/// word, so only the disc is minted with the source's flags folded on.
 pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     match kernel_abi::abi_kind(node.typ()) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            // #219: the disc carries the operand's taint through. A missing
-            // 2-word input is a `Value::Null` placeholder (nonzero disc), so
-            // clone and the value-arith helpers run harmlessly on it; the
-            // taint guards the garbage result, which the consumer resolves.
+            // A missing 2-word input is a `Value::Null` placeholder the
+            // helpers run harmlessly on; its taint guards the result.
             let cv = node.emit_clif(cx)?;
             let (disc, payload) = ensure_owned_value_src(
                 cx,
@@ -613,32 +525,21 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Scalar(p)) => {
-            // A scalar's disc IS its value disc (`scalar_disc` ==
-            // `prim_to_value_disc`), so taint carries forward unchanged;
-            // only the payload is widened to the 8-byte Value word.
             let cv = node.emit_clif(cx)?;
             let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
             Ok(CompiledExpr::new(cv.disc, payload))
         }
         Some(AbiKind::String) => {
-            // Const/Ref/Concat reads all produce an owned ArcStr, and
-            // its bits ARE `Value::String`'s payload word (unified
-            // Value ABI) — mint the disc inline. Fold the source's
-            // TAINT/STALE on, else a placeholder input's garbage
-            // ("" at init) computes an untainted result that escapes the
-            // output gate.
+            // Fold the source's flags on, else a placeholder input's `""`
+            // computes an untainted result.
             let cv = node.emit_clif(cx)?;
             let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             Ok(CompiledExpr::new(disc, cv.payload))
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            // Owned ValArray bits ARE `Value::Array`'s payload word
-            // (unified Value ABI) — mint the disc inline. Same flag
-            // fold as the String arm: without it, slicing the
-            // EMPTY placeholder of a not-yet-fired array input emitted a
-            // real ArrayIndexError value on the init cycle (soak finding
-            // divergence_000004, 2026-07-03).
+            // Same flag fold as the String arm: an empty placeholder must
+            // not compute an untainted result.
             let cv = node.emit_clif(cx)?;
             let bits =
                 ensure_owned_composite_src(cx, node_composite_source(node), cv.payload)?;
@@ -646,28 +547,16 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             Ok(CompiledExpr::new(disc, bits))
         }
-        // A Null node's raw (disc, payload) IS a valid Value pairing
-        // (`Value::Null` never reads its payload word, and dropping it
-        // is a no-op) — same treatment as `emit_push_field_node`.
+        // A Null node's raw pair is already a valid Value.
         Some(AbiKind::Null) => node.emit_clif(cx),
         other => Err(anyhow!("emit_clif: value operand has unexpected type {other:?}")),
     }
 }
 
-/// Widen a call result emitted per the CALLEE's return shape into the
-/// owned `(disc, payload)` Value the callsite NODE's type promises its
-/// consumers. Inference may widen a call expression's type to a union
-/// the callee's return type is one member of (`f(g())` where `g`
-/// returns `Array<i64>` and `f`'s param is `[null, Array<i64>]`);
-/// every consumer classifies the node by `node.typ()` (value-shape),
-/// so an emission left in the callee's own shape hands out a raw
-/// ValArray box pointer as a Value payload (jul18d fuzz crash_000000:
-/// the runtime later dereferenced box header words as a ThinArc).
-/// Ownership: the produced result is owned (call results and loop
-/// finalizes always are), and the wrap helpers CONSUME it — the
-/// resulting Value is owned, matching how value-shaped consumers
-/// (arg drops, scope drops, return clones) already treat callsites.
-/// Flags (TAINT/STALE) fold from the produced disc onto the fresh one.
+/// Widen a call result emitted in the callee's return shape into the
+/// owned Value the callsite node's type promises (inference may widen
+/// a call's type to a union the callee's return is one member of). The
+/// result stays owned; flags fold from the produced disc.
 pub(crate) fn widen_result_to_value(
     cx: &mut BodyCx,
     produced: &Type,
@@ -678,16 +567,11 @@ pub(crate) fn widen_result_to_value(
             Ok(cv)
         }
         Some(AbiKind::Scalar(p)) => {
-            // The scalar's disc IS its value disc — only the payload
-            // widens to the 8-byte Value word.
             let payload = scalar_to_payload_i64(cx.b, p, cv.payload);
             Ok(CompiledExpr::new(cv.disc, payload))
         }
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            // Unified Value ABI: a composite/string result's pair is
-            // ALREADY a genuine Value — the disc carries
-            // ARRAY/STRING|flags and the payload word is the
-            // ValArray/ArcStr bits. Identity.
+            // A composite/string pair is already a genuine Value.
             Ok(cv)
         }
         other => Err(anyhow!(
@@ -698,10 +582,8 @@ pub(crate) fn widen_result_to_value(
 }
 
 /// True iff a callsite whose node type is `node_typ` needs
-/// [`widen_result_to_value`] applied to a result produced per the
-/// callee's `ret` shape: the node promises a 2-word Value while the
-/// callee ABI delivers its own narrower encoding. `Null` is exempt —
-/// a Null (disc, payload) already IS a valid Value pairing.
+/// [`widen_result_to_value`] on a result produced in the callee's `ret`
+/// shape. `Null` is exempt: its pair is already a valid Value.
 pub(crate) fn call_result_needs_value_widening(node_typ: &Type, ret: &Type) -> bool {
     matches!(
         kernel_abi::abi_kind(node_typ),
@@ -712,11 +594,9 @@ pub(crate) fn call_result_needs_value_widening(node_typ: &Type, ret: &Type) -> b
     )
 }
 
-/// Compile one producer-op field and emit the matching
-/// `graphix_value_buf_push_*` call into `buf` — the Node twin of
-/// `scaffold::push_field` (same helper choice per shape, same
-/// owned/borrowed push variant via `node_composite_source`, same
-/// bottom-abort for a may-bottom (tainted-disc) field).
+/// Compile one producer field and emit its `graphix_value_buf_push_*`
+/// call into `buf`; returns the field's disc. The Node twin of
+/// `scaffold::push_field`.
 fn emit_push_field_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     buf: ClifValue,
@@ -736,9 +616,8 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
                 CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
             }
         }
-        // String SSA is the ArcStr's raw thin-pointer bits (owned);
-        // `_push_string` takes it by value (consumes). `_push_arcstr`
-        // (which derefs a `*const ArcStr`) would be UB here.
+        // String SSA is owned ArcStr bits, which `_push_string` consumes;
+        // `_push_arcstr` derefs a `*const ArcStr` and would be UB here.
         Some(AbiKind::String) => "graphix_value_buf_push_string",
         Some(AbiKind::Null) => "graphix_value_buf_push_value",
         other => {
@@ -750,20 +629,9 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     };
     let push = cx.helper(helper_name)?;
     let cv = field.emit_clif(cx)?;
-    // A tainted (bottom) field does NOT abort the kernel: the node-walk
-    // only bottoms the PRODUCER node (nothing downstream that doesn't
-    // read it is affected), so the composite must come out TAINTED, not
-    // the whole kernel bottom — the caller's `propagate_flags` ORs the
-    // field discs into the result disc, and the output path forces
-    // bottom only if it CONSUMES the tainted composite (#219). Pushing
-    // the tainted field is safe: its payload is the helper-safe
-    // placeholder, and every push helper goes through the `TagValue`
-    // gateway, which MASKS the tag byte before the value is cloned or
-    // stored (a tainted disc can never materialize as a corrupt
-    // `Value`). Previously this aborted to `pending_exit`, escalating a
-    // locally-unconsumed bottom into whole-kernel bottom
-    // (fuzz/triage-fuzzer-v2/divergence_000001: an UNUSED tuple binding
-    // with a bottom element bottomed an unrelated const output).
+    // A tainted field does not abort the kernel: the composite comes out
+    // tainted and its consumer gates. Pushing it is safe because every
+    // push helper masks the tag byte before cloning the value.
     if kernel_abi::is_value_shape(field.typ())
         || matches!(kernel_abi::abi_kind(field.typ()), Some(AbiKind::Null))
     {
@@ -771,21 +639,11 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     } else {
         cx.b.ins().call(push, &[buf, cv.payload]);
     }
-    // Return the field's disc so the composite result can OR-reduce
-    // TAINT and AND-reduce STALE (a composite bottoms if any field
-    // bottomed, and fires iff any field fired).
     Ok(cv.disc)
 }
 
-/// Tuple / array literal — build a `Vec<Value>` field-by-field via the
-/// producer helpers, then finalize into an owned `*mut ValArray`.
-/// Tuples and array literals share this emission — the runtime shape
-/// is identical, only the static type differs.
-/// `[<a, b, c>]` — build the elements as a ValArray via the tuple
-/// relay's buf machinery, then convert through the same
-/// `graphix_valarray_into_list` boundary the HOF loops use. The disc
-/// mirrors [`emit_tuple_new_node`]'s (the runtime rep IS an array
-/// value; empty = the constant stale-gate).
+/// `[<a, b, c>]`: build the elements as a ValArray, then convert through
+/// `graphix_valarray_into_list`. The disc is the tuple's.
 pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     fields: &[Node<R, E>],
@@ -797,6 +655,8 @@ pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(cv.disc, payload))
 }
 
+/// Tuple / array literal: push each field, finalize into an owned
+/// ValArray. Both share this emission; only the static type differs.
 pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     fields: &[Node<R, E>],
@@ -812,14 +672,8 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     }
     let call = cx.b.ins().call(finalize, &[buf]);
     let payload = cx.b.inst_results(call)[0];
-    // The composite fires iff any field fired → STALE = AND(field stales).
-    // ZERO fields (`[]`) is a constant: fires at init only, like
-    // `emit_const_node` — the bare ARRAY disc read as fired-every-
-    // invocation, so an empty literal feeding a HOF re-fired the HOF's
-    // `src_fired ∧ empty` rule on every unrelated kernel input event
-    // (soak jul07d divergence_000000: a dead select arm's captured
-    // async feeder re-fired `find([], …)` through the enclosing map —
-    // interp 1, jit 5).
+    // Fires iff any field fired; zero fields is a constant and fires at
+    // init only.
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     let disc = if field_discs.is_empty() {
         let init = cx.init_flag();
@@ -830,10 +684,8 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// Struct literal — an outer ValArray of inner `[name, value]` pairs,
-/// fields sorted alphabetically by name (graphix's canonical struct
-/// layout). Field names are interned lazily via
-/// [`BodyCx::interned_str`].
+/// Struct literal: an outer ValArray of `[name, value]` pairs sorted by
+/// name (the canonical struct layout).
 pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     names: &[ArcStr],
@@ -859,8 +711,7 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
         let inner = cx.b.inst_results(call)[0];
         let name_ptr = cx.interned_str(name);
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
-        // The struct fires iff any field VALUE fired — the names are
-        // interned constants, so only the value discs gate freshness.
+        // Names are interned constants; only the value discs gate freshness.
         field_discs.push(emit_push_field_node(cx, inner, field)?);
         let call = cx.b.ins().call(finalize, &[inner]);
         let inner_arr = cx.b.inst_results(call)[0];
@@ -873,22 +724,17 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// `{ source with f: v, ... }` — build a NEW struct that copies the
-/// source's sorted `[name, value]` pairs, overriding the replaced
-/// fields. Mirrors [`emit_struct_new_node`], but each unchanged field's
-/// value is READ from the source struct (one source read, N element
-/// reads) while a replaced field emits its replacement node. `Replace.index`
-/// is the field's sorted position (set by typecheck0). The outer/inner
-/// bufs and an Owned source are registered for pending-exit cleanup so a
-/// may-bottom replacement (`{s with x: a / b}`) frees them instead of
-/// leaking.
+/// `{ source with f: v, ... }`: a new struct copying the source's sorted
+/// pairs, reading unchanged fields from the source and emitting each
+/// replacement. `Replace.index` is the field's sorted position. The bufs
+/// and an owned source are registered for pending-exit cleanup so a
+/// may-bottom replacement does not leak them.
 pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     replace: &[crate::node::data::Replace<R, E>],
 ) -> Result<CompiledExpr> {
-    // Sorted (name, type) fields of the source struct — cloned out of the
-    // deref before emitting (lock discipline).
+    // Cloned out of the deref before emitting (lock discipline).
     let fields: poolshark::local::LPooled<Vec<(ArcStr, Type)>> =
         source.typ().with_deref(|t| match t {
             Some(Type::Struct(flds)) => {
@@ -898,16 +744,9 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         })?;
     let (arr_ptr, src, src_disc) =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
-    // A tainted source (a #219 placeholder — e.g. a region input that
-    // never fired) does NOT abort: the unchanged-field reads below are
-    // guarded, the built struct is shape-safe, and `src_disc`'s TAINT
-    // folds into the result disc — the with-update's consumers gate,
-    // exactly like the accessors (jul19i divergence_000087: the old
-    // whole-kernel abort here killed a fused call whose const-body
-    // callee never consumed the arg).
-    // Register an Owned source: a replaced-field bottom-abort between here
-    // and the finalize would otherwise leak it (a Borrowed source is
-    // env-owned — nothing to drop).
+    // A tainted source does not abort: the reads below are guarded and
+    // its taint folds into the result. An owned source is registered so
+    // a bottom-abort before the finalize frees it.
     let src_var = match src {
         CompositeSource::Owned => {
             let v = cx.b.declare_var(types::I64);
@@ -927,9 +766,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     let outer_var = cx.b.declare_var(types::I64);
     cx.b.def_var(outer_var, outer);
     cx.ctx.value_buf_stack.borrow_mut().push(outer_var);
-    // The struct fires iff the source fired OR any replacement fired: fold
-    // the source disc once (all unchanged fields share its freshness) and
-    // each replacement's disc.
+    // Fires iff the source or any replacement fired.
     let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> =
         smallvec::smallvec![src_disc];
     for (i, (name, field_typ)) in fields.iter().enumerate() {
@@ -943,14 +780,10 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         match replace.iter().find(|r| r.index == Some(i)) {
             Some(r) => {
-                // Replacement value — may bottom-abort (both bufs + Owned
-                // source are registered, so `emit_pending_cleanup` frees them).
                 field_discs.push(emit_push_field_node(cx, inner, &r.n)?);
             }
             None => {
-                // Unchanged field — read the value from the source struct
-                // (an owned clone; guarded — a tainted source's placeholder
-                // has no fields to read) and push it.
+                // Guarded: a tainted source's placeholder has no fields.
                 let ftyp = resolve_node_typ(cx.ctx, field_typ);
                 let idx = cx.b.ins().iconst(types::I64, i as i64);
                 let cv =
@@ -966,8 +799,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     let call = cx.b.ins().call(finalize, &[outer]);
     let payload = cx.b.inst_results(call)[0];
     cx.ctx.value_buf_stack.borrow_mut().pop(); // outer consumed by finalize
-    // Drop the Owned source on the normal path (exactly once — the pending
-    // path drops it via `owned_input_stack`).
+    // Dropped exactly once: the pending path drops it via `owned_input_stack`.
     if src_var.is_some() {
         let drop = cx.helper("graphix_valarray_drop")?;
         cx.b.ins().call(drop, &[arr_ptr]);
@@ -978,13 +810,8 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// Variant constructor. Nullary →
-/// `Value::String(tag)` — a cloned interned tag with the STRING disc
-/// (clones the interned tag — the borrowed interned pointer makes the
-/// clone mandatory). With payloads → `Value::Array([tag, p0, ...])` built
-/// via the buf helpers; the finalize'd ValArray bits are the Value's
-/// payload word (unified Value ABI). The tag is interned lazily via
-/// [`BodyCx::interned_str`].
+/// Variant constructor. Nullary: `Value::String(tag)`, a clone of the
+/// interned tag. With payloads: `Value::Array([tag, p0, ...])`.
 pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     tag: &ArcStr,
@@ -992,13 +819,11 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let tag_ptr = cx.interned_str(tag);
     if payloads.is_empty() {
-        // A nullary variant is `Value::String(tag)`: clone the interned
-        // tag (owned ArcStr bits = the payload word, unified Value ABI).
         let clone_static = cx.helper("graphix_arcstr_clone_from_static")?;
         let call = cx.b.ins().call(clone_static, &[tag_ptr]);
         let bits = cx.b.inst_results(call)[0];
         let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
-        // A nullary variant `` `Tag `` is a constant — fires once at init.
+        // A nullary variant is a constant: fires at init only.
         let init = cx.init_flag();
         let disc = const_stale_gate(cx.b, init, base);
         Ok(CompiledExpr::new(disc, bits))
@@ -1017,9 +842,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         }
         let call = cx.b.ins().call(finalize, &[buf]);
         let bits = cx.b.inst_results(call)[0];
-        // The finalize'd ValArray bits ARE `Value::Array`'s payload
-        // word (unified Value ABI) — mint the disc inline. A
-        // `Tag(a, b)` variant fires iff any payload fired.
+        // Fires iff any payload fired.
         let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
         let disc = propagate_flags(cx.b, base, &payload_discs);
         Ok(CompiledExpr::new(disc, bits))
@@ -1039,15 +862,9 @@ fn emit_accessor_source_drop(
     Ok(())
 }
 
-/// Compile an accessor's composite source to borrowed ValArray bits,
-/// returning the pointer plus its ownership classification. Shared by
-/// the tuple/struct/array element-read relays and the struct-with; the
-/// caller drops an Owned pointer after the read (the element helpers
-/// clone the slot out, so the temporary producer would otherwise leak —
-/// a Borrowed read stays owned by its env slot). The returned disc may
-/// carry TAINT (a #219 placeholder source) — callers guard the actual
-/// reads ([`emit_guarded_element_read`]) and fold the disc so taint
-/// gates at the consumer, never a whole-kernel abort.
+/// Compile an accessor's composite source: (ValArray bits, ownership,
+/// disc). The caller drops an Owned pointer after the read. The disc
+/// may carry TAINT; callers guard the read and fold it.
 fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1064,27 +881,14 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     Ok((cv.payload, src, cv.disc))
 }
 
-/// A shape-safe BOTTOM of `elem`'s ABI kind for a position that has no
-/// value this cycle — a skipped read over a tainted source, a `?` that
-/// took its error, a select whose scrutinee or guard bottomed, a call
-/// that returned the wrong shape. The payload is helper-safe and owned
-/// (#219: the consumer chain runs on it harmlessly and drops it like
-/// any other local); the TAINT bit is what gates at the output.
+/// A shape-safe, owned, tainted bottom of `elem`'s ABI kind for a
+/// position with no value this cycle.
 ///
-/// `fires` are the discs whose tags govern this production. A bottom is
-/// still a PRODUCTION, so its STALE bit follows the ordinary organic
-/// firing rule — it fired iff a consumed input fired — and folding it
-/// HERE is what keeps that decision from being forgotten: the raw disc
-/// is a FRESH bottom, and the tail-position select returned it
-/// untouched, so a standing bottom re-fired every cycle
-/// (`findings/standing-bottom-refire-sep2026`). Pass the scrutinee's
-/// disc, the operand's, the source's, the returned tag word. `&[]`
-/// says nothing reads this tag — the one such site is the interrupt /
-/// stack-budget tear-down, whose whole run is discarded.
-///
-/// The absent-delivery twin is `select::placeholder_for_kind`, which is
-/// unconditionally STANDING: a delivery that never happened is never an
-/// event, so it has no trigger to follow.
+/// `fires` are the discs governing this production: a bottom is a
+/// production, so its STALE bit folds from its triggers here (a fresh
+/// bottom returned unfolded re-fires every cycle). Pass `&[]` only where
+/// the whole run is being torn down. The absent-delivery twin,
+/// `select::placeholder_for_kind`, is unconditionally standing.
 pub(super) fn emit_bottom_placeholder(
     cx: &mut BodyCx,
     elem: &Type,
@@ -1123,14 +927,10 @@ pub(super) fn emit_bottom_placeholder(
     Ok(CompiledExpr::new(disc, cv.payload))
 }
 
-/// Taint-guarded structural element read: a tainted source carries a
-/// #219 PLACEHOLDER (e.g. the empty array a bottomed `$`/`?` now
-/// produces), which the UNCHECKED read helpers cannot touch at fixed
-/// offsets — so branch: skip the read and produce a tainted shape-safe
-/// placeholder instead (the node-walk's accessor simply doesn't fire;
-/// downstream consumers see taint and the output gates). `is_tainted`
-/// folds to const-false for proven-untainted sources, so the branch
-/// AND the placeholder path fold away entirely on the hot path.
+/// Element read guarded on the source's taint: a tainted source holds
+/// a placeholder the unchecked read helpers cannot touch, so the read
+/// is skipped for a tainted placeholder. `is_tainted` folds to false
+/// for proven-untainted sources, so the branch disappears.
 fn emit_guarded_element_read(
     cx: &mut BodyCx,
     arr_ptr: ClifValue,
@@ -1164,9 +964,6 @@ fn emit_guarded_element_read(
     Ok(CompiledExpr::new(params[0], params[1]))
 }
 
-/// `t.<idx>` — a statically-valid index, read through
-/// `compile_element_read` (owned result; Value shape for a value-shape
-/// element, Single otherwise).
 /// `T(v)`: box an owned Value operand with the abstract type's tag.
 pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
@@ -1244,37 +1041,34 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
+/// `t.<idx>`: a statically-valid index read through `compile_element_read`.
 pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     idx: usize,
     elem_typ: &Type,
 ) -> Result<CompiledExpr> {
-    // Node-carried elem types can be Refs to abstract type names
-    // (#218) — resolve before the read classifies by abi_kind.
+    // Elem types may be Refs to abstract type names; resolve before classifying.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
     let result =
         emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, false)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
-    // `t.0` fires iff the source tuple fired (the index is a constant); the
-    // element read synthesizes a fresh disc, so the source's STALE gates it.
+    // The element read's disc is fresh; the source's STALE gates it.
     let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
     Ok(CompiledExpr::new(disc, result.payload))
 }
 
-/// `s.field` — the two-level kv-pair read via the `struct_get_*`
-/// helper family. `sorted_idx` is the
-/// field's position in the struct type's canonical (sorted) layout —
-/// resolved by the node's typecheck.
+/// `s.field`: the kv-pair read via the `struct_get_*` helpers;
+/// `sorted_idx` is the field's position in the sorted layout.
 pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     sorted_idx: usize,
     elem_typ: &Type,
 ) -> Result<CompiledExpr> {
-    // Same abstract-Ref resolution as the tuple read (#218).
+    // Same abstract-Ref resolution as the tuple read.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
     let (arr_ptr, src, src_disc) =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
@@ -1282,18 +1076,14 @@ pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
     let result =
         emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, true)?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
-    // `s.field` fires iff the source struct fired (the field index is
-    // static); fold the source's STALE onto the fresh element read.
+    // The element read's disc is fresh; the source's STALE gates it.
     let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
     Ok(CompiledExpr::new(disc, result.payload))
 }
 
-/// `a[i]` / `bytes[i]` — the result type is always `Nullable<elem>`
-/// (out-of-bounds →
-/// the `ArrayIndexError` Value), produced by the shared bounds-checked
-/// helpers (`graphix_valarray_index` routes through the node-walk's
-/// own `node::array::array_index`, `graphix_bytes_index` through
-/// `bytes_index` — all backends agree bit-for-bit).
+/// `a[i]` / `bytes[i]`: always `Nullable<elem>` (out-of-bounds is the
+/// `ArrayIndexError` Value) via the bounds-checked helpers the
+/// node-walk shares.
 pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1303,10 +1093,8 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
     if matches!(kernel_abi::abi_kind(source.typ()), Some(AbiKind::Array)) {
-        // Unforced: `graphix_valarray_index` is bounds-checked (safe on
-        // a placeholder), and the source's taint folds into the result
-        // disc below — forcing here kernel-bottomed live chains through
-        // a tainted literal (triage item 23).
+        // Unforced: the helper is bounds-checked (safe on a placeholder)
+        // and the source's taint folds into the result below.
         let (arr_ptr, src, src_disc) =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
@@ -1316,19 +1104,15 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         let (rdisc, rpay) = (r[0], r[1]);
         emit_accessor_source_drop(cx, arr_ptr, src)?;
-        // #219: a tainted index taints the result. STALE folds the source
-        // array AND the index (`a[i]` fires iff a OR i fired) — both
-        // operands present now that the accessor returns the source disc.
+        // Fires iff the array or the index fired.
         let disc = propagate_flags(cx.b, rdisc, &[src_disc, idx_cv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
     }
     if lowering::is_bytes(source.typ()) {
-        // The helper consumes the bytes operand — owned.
+        // The helper consumes the bytes operand.
         let bcv = emit_owned_value_operand_node(cx, source)?;
         let idx_cv = idx.emit_clif(cx)?;
-        // Widen a narrow index to the helper's declared i64 — the raw
-        // payload made cranelift's verifier reject the whole kernel
-        // (narrow-index-operand-verifier-aug2026).
+        // The helper takes an i64; a narrow payload fails cranelift's verifier.
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_bytes_index")?;
         let call = cx.b.ins().call(helper, &[bcv.disc, bcv.payload, idx_i64]);
@@ -1336,9 +1120,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
             let r = cx.b.inst_results(call);
             (r[0], r[1])
         };
-        // A tainted bytes operand or index taints the result; STALE folds
-        // too (the index fires iff bytes OR idx fired — both operands
-        // present here, so the AND-reduce is complete).
+        // Fires iff the bytes or the index fired.
         let disc = propagate_flags(cx.b, rdisc, &[bcv.disc, idx_cv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
     }
@@ -1348,10 +1130,8 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     ))
 }
 
-/// `m{key}` — both operands as OWNED `(disc, payload)` Values (the
-/// helper consumes them);
-/// `graphix_map_ref` does the lookup (shared `node::map::map_get`
-/// semantics), returning `Nullable<V>` as two words.
+/// `m{key}`: both operands owned; `graphix_map_ref` shares
+/// `node::map::map_get` and returns `Nullable<V>`.
 pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1372,8 +1152,7 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
         let r = cx.b.inst_results(call);
         (r[0], r[1])
     };
-    // A tainted map or key taints the lookup result; STALE folds too (the
-    // lookup fires iff map OR key fired — both operands present here).
+    // Fires iff the map or the key fired.
     let disc = propagate_flags(cx.b, rdisc, &[mcv.disc, kcv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
@@ -1397,8 +1176,6 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         ));
     }
     let scv = emit_owned_value_operand_node(cx, source)?;
-    // #219: source + present-bound taint propagates into the slice
-    // result (forced at the output).
     let mut taint_discs: smallvec::SmallVec<[ClifValue; 8]> =
         smallvec::smallvec![scv.disc];
     let emit_bound = |cx: &mut BodyCx,
@@ -1420,9 +1197,8 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
                 *flags |= flag;
                 let cv = n.emit_clif(cx)?;
                 taint.push(cv.disc);
-                // Widen a narrow bound to the helper's declared i64 —
-                // the raw payload made cranelift's verifier reject the
-                // whole kernel (narrow-index-operand-verifier-aug2026).
+                // The helper takes an i64; a narrow payload fails
+                // cranelift's verifier.
                 widen_to_i64(cx.b, cv.payload, p)
             }
         }
@@ -1435,18 +1211,14 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     let call = cx.b.ins().call(helper, &[scv.disc, scv.payload, start_v, end_v, flags_v]);
     let r = cx.b.inst_results(call);
     let (rdisc, rpay) = (r[0], r[1]);
-    // The slice fires iff the source OR any present bound fired — and
-    // `taint_discs` already holds the source disc plus each present bound,
-    // so STALE folds completely (a const-bound slice fires iff the source
-    // fired).
+    // Fires iff the source or any present bound fired.
     let disc = propagate_flags(cx.b, rdisc, &taint_discs);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// Node-graph analog of `kernel_abi::int_div_may_bottom` — true unless the
-/// divisor is a non-zero constant (and, for signed, the dividend isn't
-/// the MIN/-1 overflow pair). Conservative `true` keeps the runtime
-/// guard; a provable non-bottom skips it. Sees through `ExplicitParens`.
+/// Node analog of `kernel_abi::int_div_may_bottom`: false only when the
+/// divisor is a constant that provably cannot bottom. Sees through
+/// `ExplicitParens`.
 fn node_int_div_may_bottom<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
@@ -1462,16 +1234,14 @@ fn node_int_div_may_bottom<R: Rt, E: UserEvent>(
     let Some(rv) = const_value(rhs) else {
         return true;
     };
-    // A zero divisor always bottoms.
     if value_is_zero(rv) {
         return true;
     }
-    // A non-(-1) divisor can't hit the signed MIN/-1 overflow; safe.
     if !value_is_neg_one(rv) {
         return false;
     }
-    // Divisor is -1: only the dividend == MIN bottoms. A non-MIN
-    // constant dividend is safe; anything else is conservatively unsafe.
+    // Divisor -1: only a MIN dividend bottoms; a non-constant dividend is
+    // conservatively unsafe.
     match const_value(lhs) {
         Some(lv) => value_is_int_min(lv),
         None => true,

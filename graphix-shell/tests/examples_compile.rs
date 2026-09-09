@@ -1,9 +1,5 @@
 //! Compile-check every example program under `book/src/examples`
-//! against the FULL shell environment (all stdlib packages), exactly
-//! as `graphix --check` would. The examples double as documentation
-//! and as a regression net for typing changes — the 2026-07-15
-//! env-sensitive elaboration bug broke a GUI example without any test
-//! noticing, because example compilation was manual-only.
+//! against the full shell environment, as `graphix --check` would.
 
 use anyhow::{Context, Result};
 use futures::{StreamExt, stream};

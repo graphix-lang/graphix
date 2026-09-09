@@ -1,10 +1,6 @@
-// Hand-integrated output of `graphix compile` on
-// `bench/mandelbrot_bench_annotated.gx`, copied here to measure the
-// end-to-end runtime with BOTH the iterate kernel AND the per-pixel
-// callback fused. The only manual edits from the emitter output are
-// struct and NAME renames to satisfy the bench- prefix requirement.
-//
-// See `auto_iterate.rs` for the iterate-only version.
+// Output of the graphix fusion emitter for
+// `bench/mandelbrot_bench_annotated.gx` (iterate kernel and per-pixel
+// callback both fused), with struct / NAME renamed to the `bench_` prefix.
 
 use crate::auto_iterate::fused_iterate_body;
 
@@ -76,7 +72,6 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     }
 
     fn reset_replay(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {
-        // The cached args are replay memory; there is no other state.
         self.args.clear()
     }
 }

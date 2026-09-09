@@ -54,47 +54,23 @@ struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
     ref_ids: LPooled<IntMap<usize, SmallVec<[(Arc<[Type]>, usize); 2]>>>,
     /// Per-call ref-expansion cache (ref_id → raw `lookup_ref` result).
-    /// Consumers take `reset_tvars()` copies, so cells stay fresh per
-    /// crossing exactly as per-crossing `lookup_ref` behaved, while the
-    /// CONCRETE mass is Arc-shared across crossings — `contains`'
-    /// content-identity fast path then prunes repeated pairs instead of
-    /// re-walking the expansion per crossing (the 2026-07-13 widget-type
-    /// wedge's unification leg).
+    /// Committing consumers take `reset_tvars()` copies; the concrete
+    /// mass stays Arc-shared so repeated pairs are pruned by identity.
     expansions: LPooled<IntMap<usize, Type>>,
-    /// Pure-PROBE pair memo: `contains_int` results for empty-flag
-    /// calls (no binding, no aliasing — side-effect free by the probe
-    /// contract), keyed by both sides' content-Arc identities
-    /// ([`norm_key`]). The general Set arms run O(|lhs|·|rhs|) probe
-    /// walks PER NESTING LEVEL; over widget-scale unions the probe tree
-    /// is astronomically large while the DISTINCT pair set is small.
-    /// Each entry PINS both compared types (`probe_pins`) so an address
-    /// can't be recycled into a different type while its key lives.
-    /// Entries carry the `epoch` at insert: a probe verdict reads cell
-    /// BINDINGS, and any flagged (committing) call may bind — the epoch
-    /// bumps there, invalidating prior verdicts conservatively.
+    /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
+    /// calls, keyed by both sides' content-Arc identities. Each entry
+    /// pins both types so an address cannot be recycled under its key,
+    /// and carries the `epoch` at insert: a committing call may bind a
+    /// cell a verdict read, so the epoch bumps there.
     probe_pairs: LPooled<AHashMap<(NormKey, NormKey), (u64, bool)>>,
     probe_pins: LPooled<Vec<Type>>,
-    /// Content-identity → id for NON-Ref types with a content key
-    /// (`probe_key`: Variant/Fn/Array/Set/Struct/Map). The cycle memo
-    /// (`contains_int`'s Ref arm) keys `(t0_id, t1_id)`; collapsing every
-    /// non-Ref to `None` conflated DISTINCT finite sub-problems — a
-    /// recursive `List<'a> ⊇ Cons(i64, Cons(i64, Fn))` inserted the outer
-    /// pair, then the inner `List<'a> ⊇ Cons(i64, Fn)` (a smaller,
-    /// unrelated RHS) hit the same `(_, None)` key and was assumed part
-    /// of the cycle, so the deep `Fn`-vs-`List` mismatch was never
-    /// checked (aug27a ryouko). A finite RHS shrinks and terminates on
-    /// its own — it never needed the memo — so distinguishing these ids
-    /// only removes false hits; the genuinely non-shrinking RHS types
-    /// (Any, primitives, tvars) have no content key and keep `None`,
-    /// preserving their cycle break.
+    /// Content identity → id for non-Ref types with a content key, so
+    /// the cycle memo does not conflate distinct finite sub-problems.
+    /// Content-less types (Any, primitives, tvars) keep `None`, which
+    /// preserves their cycle break.
     content_ids: LPooled<AHashMap<NormKey, usize>>,
     /// The scrutinee ids of the coverage-distribution probes in
-    /// progress (`set_covers_by_distribution`). The probe re-expands a
-    /// recursive alias through `lookup_ref` and re-asks `contains` on
-    /// each position, so a recursive field reaches the same probe one
-    /// level deeper with the cycle memo already dropped by the direct
-    /// walk's failure; a probe that depends on its own verdict claims
-    /// nothing.
+    /// progress: a probe that depends on its own verdict claims nothing.
     distributing: SmallVec<[usize; 4]>,
     epoch: u64,
     next_id: usize,
@@ -129,15 +105,13 @@ impl<H: IsoPoolable> RefHist<H> {
         }
     }
 
-    /// A flagged (possibly binding) call ran — prior probe verdicts may
-    /// be stale. See `probe_pairs`.
+    /// A committing call ran; prior probe verdicts may be stale.
     fn note_commit(&mut self) {
         self.epoch += 1;
     }
 
-    /// [`norm_key`] extended with `Variant`: a pair-VERDICT key may
-    /// include the tag's allocation identity (unlike the rebuild memos,
-    /// where the un-keyed tag made slice-only keys unsound).
+    /// [`norm_key`] extended with `Variant`: a verdict key may include
+    /// the tag's allocation identity.
     fn probe_key(t: &Type) -> Option<NormKey> {
         match t {
             Type::Variant(tag, ts) => Some((
@@ -149,8 +123,7 @@ impl<H: IsoPoolable> RefHist<H> {
         }
     }
 
-    /// Cached pure-probe verdict for `(t0, t1)`, when both sides have
-    /// content identities and the entry is current. See `probe_pairs`.
+    /// Cached pure-probe verdict for `(t0, t1)`, if current.
     fn probe_get(&self, t0: &Type, t1: &Type) -> Option<bool> {
         let k = (Self::probe_key(t0)?, Self::probe_key(t1)?);
         let (epoch, r) = self.probe_pairs.get(&k).copied()?;
@@ -166,18 +139,11 @@ impl<H: IsoPoolable> RefHist<H> {
         }
     }
 
-    /// [`Type::lookup_ref`] through the per-call expansion cache — see
-    /// the `expansions` field. `id` is the type's [`Self::ref_id`];
-    /// `None` (non-Ref, or unresolvable) falls through uncached, as does
-    /// a ref with TVar params: its expansion embeds the CALLER's live
-    /// cells (the inference channel `lookup_ref`'s substitution wires
-    /// up), which a cached/reset copy would sever.
-    ///
-    /// `raw` (pure PROBES only): hand back the cached expansion ITSELF
-    /// — probes never bind, so per-crossing cell freshness buys nothing,
-    /// and the stable addresses are what lets `probe_pairs` recognize a
-    /// repeated pair. Flagged (committing) calls take `reset_tvars()`
-    /// copies so one crossing's bindings can't infect another's.
+    /// [`Type::lookup_ref`] through the expansion cache. A non-Ref, an
+    /// unresolvable ref, or a ref with TVar params (its expansion embeds
+    /// the caller's live cells) goes uncached. `raw` (pure probes only)
+    /// hands back the cached expansion itself; committing calls take
+    /// `reset_tvars()` copies.
     fn expand_ref(
         &mut self,
         t: &Type,
@@ -185,11 +151,8 @@ impl<H: IsoPoolable> RefHist<H> {
         env: &Env,
         raw: bool,
     ) -> Result<Type> {
-        // Only a Ref expands. A non-Ref now carries a content id (for the
-        // cycle memo — see `content_ids`), but its expansion is uncached
-        // `lookup_ref`, exactly as before content ids existed: routing it
-        // through the id-keyed cache below would hand back a
-        // `reset_tvars()` copy and sever the live inference cells.
+        // A non-Ref has a content id for the cycle memo, but caching its
+        // expansion would sever its live inference cells.
         if !matches!(t, Type::Ref(_)) {
             return t.lookup_ref(env);
         }
@@ -209,17 +172,10 @@ impl<H: IsoPoolable> RefHist<H> {
         Ok(if raw { e } else { e.reset_tvars() })
     }
 
-    /// Return a stable ID for a Ref type based on (typedef identity, params).
-    /// Returns None for non-Ref types — cycle detection is driven by the
-    /// Ref side, and None collapses all non-Ref types to the same key.
-    /// Identity comes from the ref's FILLED resolution cell when
-    /// present (a cell-carried ref may be unresolvable in the ambient
-    /// env — keying it `None` would collapse distinct escaped
-    /// recursive types onto one cycle key — and after a redefinition
-    /// an old-cell ref must not share the new def's identity), else
-    /// from the env-resolved `TypeDef` address as before. Both are
-    /// per-call-live allocations, so the two address spaces can't
-    /// collide.
+    /// A stable id for a type: a Ref keys on (definition identity,
+    /// params) — the filled resolution cell when present, else the
+    /// env-resolved `TypeDef` address; a non-Ref with content keys on
+    /// its content; anything else is `None`.
     fn ref_id(&mut self, t: &Type, env: &Env) -> Option<usize> {
         match t {
             Type::Ref(tr) => {
@@ -248,12 +204,6 @@ impl<H: IsoPoolable> RefHist<H> {
                 entries.push((params.clone(), id));
                 Some(id)
             }
-            // A non-Ref with a CONTENT identity (Variant/Fn/Array/…) gets
-            // its own id so the cycle memo doesn't conflate distinct finite
-            // sub-problems (see `content_ids`). A content-less type
-            // (Any/primitive/tvar) stays `None` — it never has a stable
-            // shrinking structure, so collapsing it is both harmless and
-            // required for the Any-style cycle break.
             _ => {
                 let k = Self::probe_key(t)?;
                 if let Some(&id) = self.content_ids.get(&k) {
@@ -268,11 +218,9 @@ impl<H: IsoPoolable> RefHist<H> {
     }
 }
 
-/// A unique id for an abstract type. Like the `atomic_id!` types, but with a
-/// custom `Pack` impl (in [`crate::expr::serialize`]) that remaps a packed id
-/// to a fresh one per decode unit — abstract ids from different packed modules
-/// are each numbered from 0, so raw decode would collide. The rest of the API
-/// mirrors `atomic_id!`.
+/// The identity of an abstract type: the low 64 bits of
+/// [`abstract_uuid`] of its canonical path. Its `Pack` impl lives in
+/// [`crate::expr::serialize`].
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -280,29 +228,22 @@ pub struct AbstractId(u64);
 
 impl nohash::IsEnabled for AbstractId {}
 
-/// The UUID namespace every abstract type's identity is derived from:
-/// `abstract_uuid(path)` is the v5 UUID of the type's canonical path
-/// (`package::module::Name`) in this namespace — deterministic across
-/// parses, processes and builds, so the compile-time [`AbstractId`]
-/// and the runtime tag of a value agree everywhere
-/// (`design/nominal_abstract_types.md`).
+/// The v5 UUID namespace abstract type identities are derived from,
+/// so the compile-time [`AbstractId`] and a value's runtime tag agree
+/// across processes and builds.
 const ABSTRACT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x1f, 0x64, 0x9a, 0x2e, 0x7b, 0xd5, 0x4c, 0x8a, 0x9f, 0x3e, 0x21, 0xb7, 0x5c, 0x0d,
     0xe6, 0x42,
 ]);
 
-/// The runtime UUID of the abstract type at `path`. Rust-backed abstract
-/// types register their `AbstractWrapper` under this so that a type test
-/// (`T as t`) can recognize their values by the type's path alone.
+/// The UUID of the abstract type at `path` (`package::module::Name`).
+/// Rust-backed abstract types register their wrapper under it.
 pub fn abstract_uuid(path: &str) -> uuid::Uuid {
     uuid::Uuid::new_v5(&ABSTRACT_NAMESPACE, path.as_bytes())
 }
 
 /// The names of every abstract type minted in this process, for
-/// diagnostics: `Type::Abstract` carries only the id, and the id is a
-/// path hash, so without this a type error prints the word "abstract"
-/// instead of the type's name. Ids are path-deterministic, so two
-/// mints of one id always record the same name.
+/// diagnostics (`Type::Abstract` carries only the id).
 static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, ArcStr>>> =
     LazyLock::new(|| Mutex::new(IntMap::default()));
 
@@ -332,10 +273,8 @@ impl AbstractId {
 }
 
 /// The identity of a trait: the low 64 bits of a v5 UUID of its
-/// canonical path (`package::module::Name`), minted at declaration
-/// like [`AbstractId`] — so an interface's declaration and its
-/// implementation's re-declaration name ONE trait, and the global impl
-/// table keys on it (`design/traits.md` §4).
+/// canonical path, so an interface's declaration and the
+/// implementation's re-declaration name one trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TraitId(u64);
 
@@ -358,13 +297,9 @@ impl TraitId {
 
 impl nohash::IsEnabled for TraitId {}
 
-/// What a `TypeRef`'s name means: the snapshot of everything
-/// [`Type::lookup_ref`] reads from the env via `find_visible`. Held in
-/// the ref's write-once `resolved` cell so a ref first resolved in its
-/// NATIVE env becomes an env-independent value — later consumers get
-/// the same answer regardless of which env they hold (the def env's
-/// resolution survives past the def env). Substitution of the ref's
-/// `params` into `typ` stays per-call (pure given this snapshot).
+/// What a `TypeRef`'s name means: the snapshot [`Type::lookup_ref`]
+/// reads from the env, held in the ref's write-once `resolved` cell so
+/// a ref resolved once in its native env is env-independent after.
 #[derive(Debug)]
 pub(crate) struct ResolvedRef {
     canonical_scope: ModPath,
@@ -375,13 +310,8 @@ pub(crate) struct ResolvedRef {
 }
 
 impl ResolvedRef {
-    /// Same definition? Independently-filled cells for one `TypeDef`
-    /// hold distinct `Arc<ResolvedRef>` allocations but SHARE the
-    /// def's content Arcs (`d.typ.clone()`/`d.params.clone()`), so
-    /// the equality walks shortcut to pointer comparisons; only
-    /// genuinely different definitions (cross-env views of an
-    /// interface name, REPL redefinition) walk further, and those
-    /// differ near the top.
+    /// Same definition? Cells filled from one `TypeDef` share its
+    /// content Arcs, so this is usually a pointer comparison.
     pub(crate) fn same_def(&self, other: &Self) -> bool {
         (Arc::ptr_eq(&self.params, &other.params) || self.params == other.params)
             && self.typ == other.typ
@@ -397,26 +327,17 @@ impl ResolvedRef {
 }
 
 /// A reference to a named typedef, e.g. `Foo` or `Result<i64, string>`.
-/// `pos` and `ori` are IDE metadata recording where this reference
-/// was written in source — they're populated by the parser and
-/// ignored for type-system equality, ordering and hashing so they
-/// don't affect type identity. `resolved` is the write-once name
-/// resolution cell ([`ResolvedRef`]) — also identity-excluded and
-/// dropped from the packed form (a decoded ref re-resolves in the
-/// loading env). The cell is a function of (scope, name, resolving
-/// env) only — NOT of `params` — so param-substituting rebuilds share
-/// it ([`TypeRef::with_params`]) while a scope change must mint fresh
-/// ([`TypeRef::with_scope`]). It is never overwritten in place: clones
-/// share the cell, so refilling would leak one context's view into
-/// another's type.
+/// `pos`/`ori` are IDE metadata and `resolved` is the write-once name
+/// resolution cell ([`ResolvedRef`]); neither is part of type identity
+/// or the packed form. The cell depends on (scope, name, env) but not
+/// `params`: [`TypeRef::with_params`] shares it, [`TypeRef::with_scope`]
+/// mints fresh. Never overwrite a filled cell — clones share it.
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub struct TypeRef {
     pub scope: ModPath,
     pub name: ModPath,
     pub params: Arc<[Type]>,
-    // pos/ori are IDE metadata, excluded from type identity and dropped from
-    // the packed form (decode to None).
     #[pack(skip)]
     pub pos: Option<crate::SourcePosition>,
     #[pack(skip)]
@@ -436,33 +357,20 @@ impl TypeRef {
         Self { scope, name, params, pos, ori, resolved: Arc::default() }
     }
 
-    /// Build a `TypeRef` with no source-position info — for synthetic
-    /// type references created during type inference, set operations,
-    /// stdlib type literals, etc.
+    /// A `TypeRef` with no source-position info.
     pub fn synthetic(scope: ModPath, name: ModPath, params: Arc<[Type]>) -> Self {
         Self::new(scope, name, params, None, None)
     }
 
-    /// This ref with different `params`, SHARING the resolution cell:
-    /// the cell caches the name resolution, which does not depend on
-    /// params (substitution happens per lookup).
+    /// This ref with different `params`, sharing the resolution cell.
     pub(crate) fn with_params(&self, params: Arc<[Type]>) -> Self {
         Self { params, ..self.clone() }
     }
 
-    /// This ref re-scoped, with a fresh resolution cell — PRE-FILLED
-    /// from this ref's cell when that is already resolved: a filled
-    /// cell is the name's FINAL target (env-independent by design),
-    /// so a scope change cannot alter what it means, and dropping it
-    /// re-derived the resolution in the NEW scope — where a private
-    /// type of the defining module is not reachable at all when the
-    /// re-scope is an instance graft (the admin-TUI Toast recurrence
-    /// of module-system finding 1, 2026-08-31: a connect target's
-    /// declared type, re-scoped into a per-callsite instance whose
-    /// root-block id differs from the def compile's, failed
-    /// "undefined type" though the def had resolved it). An UNFILLED
-    /// cell stays fresh — the name can genuinely resolve differently
-    /// from a new scope.
+    /// This ref re-scoped, with a fresh resolution cell pre-filled from
+    /// this ref's cell when that is resolved (a filled cell is the
+    /// name's final target; a new scope may not even reach it). An
+    /// unfilled cell stays fresh.
     pub(crate) fn with_scope(&self, scope: ModPath, params: Arc<[Type]>) -> Self {
         Self {
             scope,
@@ -474,13 +382,9 @@ impl TypeRef {
         }
     }
 
-    /// Expand this ref through its FILLED cell — env-free (the whole
-    /// point of the cell), substituting the ref's params into the
-    /// snapshot body exactly as `lookup_ref` would. `None` when the
-    /// cell is empty or the arity mismatches. No constraint checks —
-    /// those ran at typecheck; this exists for fusion-side shape
-    /// classification (`abi_kind`/`freeze_for_abi`), which is sizing,
-    /// not checking.
+    /// Expand this ref through its filled cell, env-free, substituting
+    /// params as `lookup_ref` would. `None` when the cell is empty or
+    /// the arity mismatches. No constraint checks.
     pub fn expand_cell(&self) -> Option<Type> {
         let r = self.resolved()?;
         if r.params.len() != self.params.len() {
@@ -497,12 +401,9 @@ impl TypeRef {
         self.resolved.lock().clone()
     }
 
-    /// Do two same-named refs demonstrably mean the same definition?
-    /// True unless both cells are filled with DIFFERENT definitions
-    /// (cross-env views of an interface name, REPL redefinition) —
-    /// the name-equality fast paths in `contains`/`union`/`diff`/
-    /// `could_match` must fall through to the expansion arms there,
-    /// or their verdict would contradict what the expansions say.
+    /// Do two same-named refs mean the same definition? True unless
+    /// both cells are filled with different definitions, in which case
+    /// the name-equality fast paths must fall through to expansion.
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
             (Some(a), Some(b)) => a.same_def(&b),
@@ -510,9 +411,8 @@ impl TypeRef {
         }
     }
 
-    /// PURE compute of what this ref's name means in `env` — never
-    /// reads or writes the cell (a def-gate probe must not fill a
-    /// cell at a mid-compile registration horizon).
+    /// What this ref's name means in `env`; never reads or writes the
+    /// cell.
     pub(crate) fn resolve_pure(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
         env.resolve_visible(&self.scope, &self.name, crate::env::NameNs::Type, |s, n| {
             env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
@@ -528,21 +428,18 @@ impl TypeRef {
             })
         })
         .map_err(|e| {
-            // resolution failures surface as UnresolvableRef at the
-            // consumer; without this, a structural error (ambiguous
-            // glob) would masquerade as "undefined type"
+            // Logged so an ambiguous glob does not read as "undefined type".
             log::warn!("resolving type `{}` in `{}`: {e:#}", self.name, self.scope)
         })
         .ok()
         .flatten()
     }
 
-    /// Resolve this ref's name in `env` and fill the cell (write-once)
-    /// if it is empty; `None` iff the name is not visible AND the cell
-    /// is empty. An existing resolution always wins — the snapshot is
-    /// computed WITHOUT the cell lock held (resolution can re-enter
-    /// through constraint checking, and callers may hold TVar guards).
-    /// Returns whether THIS call performed the fill.
+    /// Resolve this ref's name in `env` and fill the cell if empty;
+    /// `None` iff the name is not visible and the cell is empty. An
+    /// existing resolution wins. The snapshot is computed without the
+    /// cell lock held (resolution can re-enter). Returns whether this
+    /// call filled the cell.
     fn resolve_in_raw(&self, env: &Env) -> Option<(Arc<ResolvedRef>, bool)> {
         if let Some(r) = self.resolved() {
             return Some((r, false));
@@ -558,16 +455,9 @@ impl TypeRef {
         }
     }
 
-    /// [`Self::resolve_in_raw`] without the fill flag. Fills ONLY
-    /// this ref — deliberately NOT transitive: an eager seed of the
-    /// snapshot's nested refs resolves names at the TOUCHING walk's
-    /// time, and mid-compile the registration horizon is incomplete
-    /// (a sibling submodule's type referenced from a union body
-    /// resolves to an outer shadow — tui's `list::List` captured the
-    /// list PACKAGE's type during an earlier sibling's def gate).
-    /// Lazy expansion is order-correct: nested refs fill when a walk
-    /// genuinely needs them, which happens at typecheck time under
-    /// the full env.
+    /// [`Self::resolve_in_raw`] without the fill flag. Fills only this
+    /// ref, not the snapshot's nested refs: mid-compile the env is
+    /// incomplete, and a nested name can resolve to an outer shadow.
     pub(crate) fn resolve_in(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
         self.resolve_in_raw(env).map(|(r, _)| r)
     }
@@ -604,8 +494,6 @@ impl PartialOrd for TypeRef {
 
 impl std::hash::Hash for TypeRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Mirror PartialEq — skip pos/ori (they're source-position
-        // metadata, not part of type identity).
         self.scope.hash(state);
         self.name.hash(state);
         self.params.hash(state);
@@ -633,10 +521,8 @@ pub enum Type {
     TVar(TVar),
     Error(Arc<Type>),
     Array(Arc<Type>),
-    /// The native linked list — a compiler-known constructor like
-    /// `Array` (`design/list_native.md`). The runtime rep is private
-    /// to `node::collection::list`: cons = `Value::Array([head,
-    /// tail])`, nil = the static empty `ValArray`.
+    /// The native linked list. The runtime rep is private to
+    /// `node::collection::list`.
     List(Arc<Type>),
     ByRef(Arc<Type>),
     Tuple(Arc<[Type]>),
@@ -650,27 +536,19 @@ pub enum Type {
         id: AbstractId,
         params: Arc<[Type]>,
     },
-    /// A type constructor applied to one argument — `self<'a>` in a
-    /// trait signature, `'c<i64>` in generic code. The constructor is a
-    /// type variable that binds to a type with a [`Type::Hole`] in its
-    /// last parameter; once it is bound the application normalizes to
-    /// the filled type ([`Type::app`]). `design/recursive_activations.md`
-    /// §7.
+    /// A type constructor applied to one argument (`self<'a>`,
+    /// `'c<i64>`). The constructor is a type variable that binds to a
+    /// type with a [`Type::Hole`] in its last parameter; once bound the
+    /// application is its filled type ([`Type::app`]).
     App(Arc<Type>, Arc<Type>),
-    /// The hole in a type constructor, written `'_`: the last parameter
-    /// of a constructor trait's impl head (`impl Collection for
-    /// Array<'_>`), and what a constructor variable binds to. Legal
-    /// nowhere else.
+    /// The hole in a type constructor, written `'_` (`impl Collection
+    /// for Array<'_>`). Legal nowhere else.
     Hole,
 }
 
-/// Structural equality (the derived relation), with content-Arc pointer
-/// SHORTCUTS: the copy-on-write type walks share aggressively, so equal
-/// types are routinely pointer-identical — the derived tree walk paid
-/// full structural comparison (and `FnType`'s constraint-view machinery)
-/// per shared occurrence, which went super-linear over widget-scale
-/// unions (2026-07-13). Same relation, exhaustive on `self` so a new
-/// variant fails to compile rather than silently comparing unequal.
+/// Structural equality with content-Arc pointer shortcuts (the
+/// copy-on-write walks share aggressively). Exhaustive on `self` so a
+/// new variant fails to compile.
 impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
         fn slice_eq(a: &Arc<[Type]>, b: &Arc<[Type]>) -> bool {
@@ -733,7 +611,7 @@ impl Default for Type {
     }
 }
 
-/// See [`Type::lookup_ref`] — the classifiable resolution failure.
+/// A classifiable resolution failure from [`Type::lookup_ref`].
 #[derive(Debug)]
 pub struct UnresolvableRef {
     pub name: ModPath,
@@ -749,18 +627,10 @@ impl std::fmt::Display for UnresolvableRef {
 impl std::error::Error for UnresolvableRef {}
 
 impl Type {
-    /// Read-only walk over this type's IMMEDIATE structural children:
-    /// `Ref`/`Abstract` params, collection element types, struct field
-    /// types, and (via [`FnType::try_for_each_type`]) fn signature
-    /// components. `TVar` is a LEAF — cell contents (binding,
-    /// constraints) are per-walk policy, never walked here. This is
-    /// the single exhaustive child enumeration for query walks: a
-    /// recursive walk matches its interesting arms (TVar, and any arm
-    /// whose traversal policy differs — e.g. skipping `Ref` params)
-    /// and routes everything else through this. See also
-    /// [`Self::cow_children`] for rebuild walks, and the "Invariants
-    /// for future type walks" section of
-    /// `design/type_operation_scaling.md`.
+    /// Read-only walk over this type's immediate structural children.
+    /// `TVar` is a leaf: cell contents are per-walk policy. A recursive
+    /// walk matches its interesting arms and routes the rest here; see
+    /// [`Self::cow_children`] for rebuild walks.
     pub(crate) fn try_for_each_child<B>(
         &self,
         f: &mut impl FnMut(&Type) -> ControlFlow<B>,
@@ -816,16 +686,10 @@ impl Type {
         });
     }
 
-    /// Rebuild this type's IMMEDIATE structural children through `f`
-    /// (`None` from `f` = child unchanged); `None` = nothing changed,
-    /// keep the original (shared) — the COW discipline every rebuild
-    /// walk must follow (`design/type_operation_scaling.md`). Leaves
-    /// (including `TVar` — cell handling is per-walk) return `None`.
-    /// `Ref` params rebuild through [`TypeRef::with_params`], SHARING
-    /// the resolution cell: a params-only rewrite does not change what
-    /// the name means (load-bearing for `reset_tvars` — expand_ref's
-    /// commit copies must keep their seeded resolutions). A walk that
-    /// re-scopes or rebinds refs overrides the `Ref` arm.
+    /// Rebuild this type's immediate structural children through `f`
+    /// (`None` from `f` means unchanged); `None` when nothing changed.
+    /// Leaves, `TVar` included, return `None`. `Ref` params rebuild
+    /// through [`TypeRef::with_params`], sharing the resolution cell.
     pub(crate) fn cow_children(
         &self,
         f: &mut impl FnMut(&Type) -> Option<Type>,
@@ -898,9 +762,8 @@ impl Type {
     }
 
     /// The reference behind a type variable: a cell bound (through
-    /// other cells) to a reference, or to a constructor application
-    /// whose constructor has since bound — `with_deref` reports that
-    /// as its filled reference.
+    /// other cells) to a reference or to a filled constructor
+    /// application.
     pub(crate) fn ref_behind(&self) -> Option<Type> {
         match self {
             Type::TVar(_) => self.with_deref(|t| match t {
@@ -911,9 +774,9 @@ impl Type {
         }
     }
 
-    /// The other side of a constructor application: dereferenced, then
-    /// [`Self::decompose`]d — a reference with parameters by name, a
-    /// bare alias through its expansion.
+    /// The other side of a constructor application, dereferenced and
+    /// [`Self::decompose`]d: a reference by name, a bare alias through
+    /// its expansion.
     pub(crate) fn app_split(t: &Type, env: &Env) -> Result<Option<(Type, Type)>> {
         let Some(t) = t.with_deref(|t| t.cloned()) else { return Ok(None) };
         if let Some(parts) = t.decompose() {
@@ -925,13 +788,11 @@ impl Type {
         }
     }
 
-    /// [`Self::app_split`] for a receiver that lost its name: a cell
-    /// bound through `contains` holds a typedef's EXPANSION (a list's
-    /// union), which decomposes to nothing. The constructor variable's
-    /// trait bounds name the candidates — each registered head of such
-    /// a trait, filled with a fresh element, is unified against the
-    /// receiver on a fresh instantiation, and the one that contains it
-    /// and thereby determines the element is the constructor.
+    /// [`Self::app_split`] for a receiver that lost its name (a cell
+    /// holding a typedef's expansion): each registered head of the
+    /// constructor variable's trait bounds is tried, and the one that
+    /// contains the receiver and determines the element is the
+    /// constructor.
     pub(crate) fn app_split_for(
         ctor: &Type,
         t: &Type,
@@ -954,9 +815,8 @@ impl Type {
                 let head = im.target.reset_tvars();
                 let elem = Type::empty_tvar();
                 let Some(filled) = head.fill_hole(&elem) else { continue };
-                // the head contains the receiver AND that determined the
-                // element: a proper subtype (`[`Nil]` under `List<'_>`)
-                // leaves the element open and is not this constructor
+                // A proper subtype (`[`Nil]` under `List<'_>`) leaves the
+                // element open and is not this constructor.
                 if filled.contains(env, &t)? && elem.with_deref(|e| e.is_some()) {
                     let r = (head.resolve_tvars(), elem.resolve_tvars());
                     if crate::dbgenv::graphix_dbg_bind() {
@@ -995,11 +855,10 @@ impl Type {
         }
     }
 
-    /// A call site's pre-unification of a declared parameter type with
-    /// an argument's type, run BEFORE the argument typechecks so an
-    /// unannotated callback's parameters take the declared types. A
-    /// function-typed argument unifies its parameter positions only
-    /// ([`FnType::pre_unify_params`]); anything else unifies whole.
+    /// Pre-unify a declared parameter type with an argument's type
+    /// before the argument typechecks, so an unannotated callback's
+    /// parameters take the declared types. A function-typed argument
+    /// unifies its parameter positions only; anything else whole.
     pub(crate) fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
         let d = declared.with_deref(|t| t.cloned());
         let a = actual.with_deref(|t| t.cloned());
@@ -1034,11 +893,9 @@ impl Type {
         }
     }
 
-    /// The constructor form of this type — its last parameter replaced
-    /// by a hole — with that parameter; `None` if the outermost form
-    /// has no parameters (it is not a constructor). Decomposition is
-    /// syntactic, on the outermost form only: a reference is taken by
-    /// name, never expanded.
+    /// The constructor form of this type (last parameter replaced by a
+    /// hole) with that parameter; `None` if the outermost form has no
+    /// parameters. Syntactic: a reference is taken by name.
     pub fn decompose(&self) -> Option<(Type, Type)> {
         match self {
             Type::Array(t) => Some((Type::Array(Arc::new(Type::Hole)), (**t).clone())),
@@ -1097,11 +954,8 @@ impl Type {
         }
     }
 
-    /// No TVar anywhere beneath (not following Refs — a ref's own
-    /// expansion embeds params, so param tvar-freedom is what callers
-    /// gate on; the walker's Ref arm yields exactly the params). A
-    /// tvar-free type's identity is stable under `PartialEq`, so it
-    /// can key a cache. Cheap short-circuiting walk.
+    /// No TVar anywhere beneath (Ref params, not expansions). A
+    /// tvar-free type's identity is stable, so it can key a cache.
     pub(crate) fn tvar_free(&self) -> bool {
         match self {
             Type::TVar(_) => false,
@@ -1117,16 +971,11 @@ impl Type {
         }
     }
 
-    /// Deterministically fill the resolution cell of every `Type::Ref`
-    /// reachable from this type against `env` — the closure-conversion
-    /// moment for a type about to outlive the env that gives its names
-    /// meaning (LambdaDef signatures, a sig'd module's private typedef
-    /// store, the abstract registry's private bodies). Names not
-    /// visible in `env` are skipped silently (forward references fill
-    /// later at their first in-context lookup). Recurses through
-    /// filled cells' snapshot bodies so nested named types seed
-    /// transitively; the permanent visited set (composite addresses +
-    /// ref/tvar cell addresses) makes recursive typedefs terminate.
+    /// Fill the resolution cell of every `Type::Ref` reachable from
+    /// this type against `env`, for a type about to outlive the env
+    /// that gives its names meaning. Names not visible are skipped
+    /// (they fill at their first in-context lookup). Recurses through
+    /// filled snapshot bodies.
     pub fn seed_refs(&self, env: &Env) {
         struct Seen {
             cells: poolshark::local::LPooled<AHashSet<usize>>,
@@ -1163,9 +1012,7 @@ impl Type {
                     for p in tr.params.iter() {
                         go(p, env, seen);
                     }
-                    // Keyed on the CELL, not the ref: with_params
-                    // clones share the cell, and the cell (not the
-                    // params) is what seeding fills.
+                    // Keyed on the cell: with_params clones share it.
                     if !seen.cells.insert(Arc::as_ptr(&tr.resolved).addr()) {
                         return;
                     }
@@ -1290,13 +1137,8 @@ impl Type {
         }
     }
 
-    /// Walk this type tree and, for every `Type::Ref` carrying
-    /// parser-populated `pos`/`ori`, push a `TypeRefSite` to the
-    /// IDE side-channel. Used at typedef-registration time so
-    /// references inside typedef bodies (which the type system
-    /// never auto-derefs) still show up in find-references results.
-    /// Caller is responsible for gating on `env.lsp_mode`; this
-    /// method recurses unconditionally once entered.
+    /// Push a `TypeRefSite` for every `Type::Ref` beneath that carries
+    /// a source position. The caller gates on `env.lsp_mode`.
     pub fn record_ide_refs(&self, env: &Env, fallback_scope: &ModPath) {
         match self {
             Type::Ref(tr) => {
@@ -1421,8 +1263,8 @@ impl Type {
         }
     }
 
-    /// remove the outer error type and return the inner payload, fail if self
-    /// isn't an error or contains non error types
+    /// The payload of the outer error type; `None` if self is not an
+    /// error or contains non-error members.
     pub fn strip_error(&self, env: &Env) -> Option<Self> {
         self.strip_error_int(
             env,
@@ -1452,11 +1294,8 @@ impl Type {
         }
     }
 
-    /// True when the type can never produce a value: `Bottom`, or a
-    /// union whose every member (through bound tvar chains) is. An
-    /// unbound tvar is NOT provably bottom. Used by display claiming
-    /// (`is_custom`) — a never-producing expression vacuously unifies
-    /// with any display type, so `contains` alone over-claims it.
+    /// `Bottom`, or a union whose every member (through bound tvars)
+    /// is. An unbound tvar is not provably bottom.
     pub fn all_bottom(&self) -> bool {
         crate::stack::ensure_sufficient(|| {
             self.with_deref(|t| match t {
@@ -1467,11 +1306,9 @@ impl Type {
         })
     }
 
-    /// True when a `Bottom` sits anywhere in the type's own structure
-    /// (parameters included; function signatures and references are
-    /// leaves) — the diagnostic test for a type predicate that spelled
-    /// `_`, which is bottom in type position, where a wildcard was
-    /// meant.
+    /// A `Bottom` anywhere in the type's own structure (fn signatures
+    /// and references are leaves): the diagnostic for `_` written in
+    /// type position where a wildcard was meant.
     pub fn has_bottom(&self) -> bool {
         crate::stack::ensure_sufficient(|| {
             self.with_deref(|t| match t {
@@ -1491,10 +1328,7 @@ impl Type {
 
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {
         match self {
-            // A constructor application whose constructor has bound IS
-            // its filled type (`app_filled`) — every walk sees `self<'b>`
-            // with `self := Array` as `Array<'b>`; only an open
-            // constructor stays an application.
+            // A filled application is its filled type to every walk.
             Self::App(c, a) => match Self::app_filled(c, a) {
                 Some(filled) => filled.with_deref(f),
                 None => f(Some(self)),
@@ -1522,14 +1356,9 @@ impl Type {
         }
     }
 
-    /// Apply the trait-in-type-position rule (`design/traits.md` §1):
-    /// a trait named as a PARAMETER's type (`fn(s: Read)`) is a fresh
-    /// bounded quantifier — `fn<'s: Read>(s: 's)`, one variable per
-    /// parameter, named `#s` so it cannot collide with a written name
-    /// and prints back as the trait — and a trait anywhere else (a
-    /// return type, a field, an element) is an error, because no value
-    /// has a trait as its type. Returns the rewritten type; the same
-    /// type when nothing changed.
+    /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
+    /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
+    /// trait anywhere else is an error. Returns the rewritten type.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
         if self.holes() > 0 {
             bail!(
@@ -1630,9 +1459,7 @@ impl Type {
         self.scope_refs_int(scope).unwrap_or_else(|| self.clone())
     }
 
-    /// `None` = no `Ref` or `TVar` anywhere beneath — the caller keeps
-    /// the original (shared); cell-free ref-free structure has nothing
-    /// to re-scope or re-mint.
+    /// `None` when no `Ref` or `TVar` is beneath.
     fn scope_refs_int(&self, scope: &ModPath) -> Option<Type> {
         crate::stack::ensure_sufficient(|| self.scope_refs_int_inner(scope))
     }
@@ -1649,13 +1476,9 @@ impl Type {
                     None => TVar::empty_named(tv.name.clone()),
                     Some(typ) => TVar::named(tv.name.clone(), typ.scope_refs(scope)),
                 };
-                // The re-minted cell keeps the conjunction: a
-                // quantifier bound written in an annotation
-                // (`fn<'a: Number>(x: 'a)`) lives only on the cell, and
-                // dropping it here made every annotated bound vacuous
-                // (2026-08-22). A conjunct that reaches this very cell
-                // is copied unscoped — re-scoping it would re-mint the
-                // cell inside it without end.
+                // The re-minted cell keeps the conjunction (an annotated
+                // bound lives only there). A conjunct reaching this very
+                // cell is copied unscoped, or re-minting never ends.
                 let addr = tv.cell_addr();
                 for c in cons.iter() {
                     let c = if crate::typ::tvar::would_cycle_inner(addr, c) {
@@ -1676,32 +1499,19 @@ impl Type {
         }
     }
 
-    /// A unification VIEW of this type with every `Any` leaf replaced by a
-    /// fresh (throwaway) TVar, sharing everything else — in particular the
-    /// existing TVar CELLS, so bindings made through the view land in the
-    /// original type.
-    ///
-    /// Select's arm typecheck unifies each pattern predicate against the
-    /// scrutinee with a bool-discarding `contains` walk whose composite
-    /// arms short-circuit on the first false pair. A pattern `_` infers
-    /// `Type::Any` (load-bearing for exhaustiveness / dead-arm analysis /
-    /// runtime dispatch — a catch-all must match everything), but
-    /// `T.contains(Any)` is false, so the walk stopped at a `_` slot and
-    /// every LATER slot's bind TVars never narrowed to the scrutinee's
-    /// slot types (which also kept those selects from fusing: their arm
-    /// types carried unbound TVars that `freeze_region_return` refuses).
-    /// Unifying through this view instead makes the `_` slot bind its
-    /// throwaway TVar (→ true) and the walk continue, without changing
-    /// what the stored predicate means anywhere else.
+    /// A unification view of this type with every `Any` leaf replaced
+    /// by a throwaway TVar, sharing the existing cells so bindings made
+    /// through the view land in the original. Select's arm typecheck
+    /// unifies pattern predicates through it: `T.contains(Any)` is
+    /// false, which would stop the walk at a `_` slot before later
+    /// slots' binds narrowed.
     pub fn any_as_tvar(&self) -> Type {
         self.any_as_tvar_int().unwrap_or_else(|| self.clone())
     }
 
-    /// `None` = no `Any` beneath — keep the original (shared). `Ref`
-    /// params, `Abstract` params, and `Fn` signatures are LEAVES here
-    /// (preserved from the pre-walker code): the unification view
-    /// exists for the select arm walk's structural pairs, which never
-    /// descend those.
+    /// `None` when no `Any` is beneath. `Ref`/`Abstract` params and
+    /// `Fn` signatures are leaves: the select arm walk never descends
+    /// them.
     fn any_as_tvar_int(&self) -> Option<Type> {
         match self {
             Type::Any => Some(Type::empty_tvar()),

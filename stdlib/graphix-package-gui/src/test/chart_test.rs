@@ -30,18 +30,14 @@ async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
     GuiTestHarness::new(&code).await
 }
 
-// ── auto_range ──────────────────────────────────────────────────────
-
 #[test]
 fn auto_range_normal() {
     let data: &[(f64, f64)] = &[(0.0, 1.0), (5.0, 10.0), (10.0, 3.0)];
     let (xmin, xmax) = auto_range([data], |p| p.0);
-    // min=0, max=10, pad=0.5 → (-0.5, 10.5)
     assert!(xmin < 0.0);
     assert!(xmax > 10.0);
 
     let (ymin, ymax) = auto_range([data], |p| p.1);
-    // min=1, max=10, pad=0.45 → (0.55, 10.45)
     assert!(ymin < 1.0);
     assert!(ymax > 10.0);
 }
@@ -50,7 +46,7 @@ fn auto_range_normal() {
 fn auto_range_single_point() {
     let data: &[(f64, f64)] = &[(5.0, 5.0)];
     let (xmin, xmax) = auto_range([data], |p| p.0);
-    // Single point: 5-1=4, 5+1=6, then pad → < 4 and > 6
+    // A single point expands to (4, 6) before padding.
     assert!(xmin < 4.0);
     assert!(xmax > 6.0);
 }
@@ -59,7 +55,7 @@ fn auto_range_single_point() {
 fn auto_range_identical_values() {
     let data: &[(f64, f64)] = &[(3.0, 7.0), (3.0, 7.0), (3.0, 7.0)];
     let (xmin, xmax) = auto_range([data], |p| p.0);
-    // All x=3 → expand to (2, 4), pad → < 2 and > 4
+    // Identical values expand to (2, 4) before padding.
     assert!(xmin < 2.0);
     assert!(xmax > 4.0);
 }
@@ -72,7 +68,6 @@ fn auto_range_empty() {
     assert!(xmax.is_finite());
     assert!(xmin < xmax);
 
-    // Also with no slices at all
     let (xmin, xmax) = auto_range(std::iter::empty::<&[(f64, f64)]>(), |p| p.0);
     assert!(xmin.is_finite());
     assert!(xmax.is_finite());
@@ -95,8 +90,6 @@ fn auto_range_multiple_datasets() {
     assert!(xmin < 0.0);
     assert!(xmax > 20.0);
 }
-
-// ── Chart with new constructor syntax ───────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn axis_range_renders() -> Result<()> {

@@ -1,6 +1,4 @@
-//! Test-only accessors on `DataTableW`. Exposes internal state so
-//! `GuiTestHarness::dt()` helpers can inspect widths, sparkline
-//! histories, and the grid snapshot without doing a full render pass.
+//! Test-only accessors on `DataTableW` for `GuiTestHarness::dt()`.
 
 use super::{
     DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY,
@@ -14,27 +12,19 @@ use poolshark::local::LPooled;
 use std::time::Instant;
 
 impl<X: GXExt> DataTableW<X> {
-    /// The width currently dictated by the column's `width` ref (the
-    /// graphix-controlled width), if any. Independent of user drags or
-    /// auto-sizing.
+    /// The width set by the column's `width` ref, if any.
     pub fn dt_ref_width(&self, col: &str) -> Option<f32> {
         self.columns.get(col).and_then(|c| c.ref_width)
     }
 
-    /// Snapshot of the viewport metrics written by the responsive
-    /// closure during the most recent layout. Tests assert these to
-    /// verify that resize-only events propagate — the horizontal-
-    /// scrollbar-on-shrink bug surfaced here before the `responsive`
-    /// refactor because this state never updated when content fit
-    /// initially.
+    /// The viewport metrics from the most recent layout.
     pub fn dt_viewport_metrics(&self) -> (f32, f32, usize, usize) {
         let m = self.viewport_metrics.lock();
         (m.viewport_width, m.viewport_height, m.rows_in_view, m.cols_in_view)
     }
 
-    /// Number of points currently retained in the sparkline history for
-    /// the cell at (row_basename, col). Returns None if the row or column
-    /// is not a sparkline cell.
+    /// Points retained in the sparkline history at (row_basename, col);
+    /// `None` when it is not a sparkline cell.
     pub fn dt_sparkline_len(&self, row: &str, col: &str) -> Option<usize> {
         let key = self.sparkline_key_for(row, col)?;
         self.cells.inner.lock().sparklines.get(&key).map(|h| h.len())
@@ -52,10 +42,8 @@ impl<X: GXExt> DataTableW<X> {
             .map(|h| h.iter().map(|(_, v)| *v).collect())
     }
 
-    /// Direct injection of a sparkline data point. Bypasses netidx
-    /// publishing so decimation can be exercised deterministically with
-    /// thousands of points. Triggers the same `decimate_sparkline` path
-    /// invoked by the runtime when MAX_SPARKLINE_POINTS is exceeded.
+    /// Inject a sparkline point directly, bypassing netidx; decimates
+    /// like the runtime path.
     pub fn dt_push_sparkline(&self, row: &str, col: &str, when: Instant, v: f64) {
         let key = match self.sparkline_key_for(row, col) {
             Some(k) => k,
@@ -83,14 +71,10 @@ impl<X: GXExt> DataTableW<X> {
         Some((row_path, col_arc))
     }
 
-    /// Index of `col` in the col_meta vector built by `view()` — i.e.,
-    /// the value `handle_column_resize_start` expects. Returns None if
-    /// the column is not currently visible.
+    /// Index of `col` in the visible column metadata, as
+    /// `handle_column_resize_start` expects; `None` when not visible.
     pub fn dt_meta_col_idx(&self, col: &str) -> Option<usize> {
         let show_name = self.show_row_name.t.unwrap_or(true);
-        // Test-facing convenience: treat the bare string "name" as the
-        // synthesized row-name column so tests don't need to know the
-        // internal `ROW_NAME_KEY` sentinel.
         if col == "name" || col == ROW_NAME_KEY {
             return if show_name { Some(0) } else { None };
         }
@@ -103,10 +87,8 @@ impl<X: GXExt> DataTableW<X> {
         Some(offset + (pos - vis_start))
     }
 
-    /// Pixel bounds of the cell at (row_idx, col), computed from
-    /// `cached_col_widths` populated by the most recent `view()`. Tests
-    /// must call `view()` once before this to populate the cache. Returns
-    /// None if the column is not visible or the cache is empty.
+    /// Pixel bounds of the cell at (row_idx, col). Requires a prior
+    /// `view()` to have populated the width cache.
     pub fn dt_cell_bounds(
         &self,
         row_idx: usize,
@@ -137,21 +119,19 @@ impl<X: GXExt> DataTableW<X> {
             }
             w = cache.get(col).copied()?;
         }
-        // Header cell is one ROW_HEIGHT_ESTIMATE plus container padding (3+3).
+        // Header height includes the container padding.
         let header_h = ROW_HEIGHT_ESTIMATE + 6.0;
         let y = header_h + row_idx as f32 * ROW_HEIGHT_ESTIMATE;
         Some(iced_core::Rectangle { x, y, width: w, height: ROW_HEIGHT_ESTIMATE })
     }
 
-    /// The width currently set in `user_widths` (from drag resize or
-    /// auto-fit), if any. Independent of ref-controlled widths.
+    /// The user width (drag or auto-fit), if any.
     pub fn dt_user_width(&self, col: &str) -> Option<f32> {
         self.user_widths.lock().get(col).copied()
     }
 
-    /// Manually populate the cached column widths so scroll-math
-    /// tests can predict `first_col` without waiting for a render
-    /// pass to measure text. Returns the previous value if any.
+    /// Set a cached column width without a render pass. Returns the
+    /// previous value.
     pub fn dt_set_cached_width(&self, col: &str, w: f32) -> Option<f32> {
         self.cached_col_widths.lock().insert(ArcStr::from(col), w)
     }
@@ -162,10 +142,7 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// Sort indicator suffix (e.g. `" ▲"`, `" ▼₂"`) for `col`, or
-    /// `None` if the column isn't currently in `sort_by`. Tests use
-    /// this to check that header arrows and subscript priorities
-    /// track the `sort_by` ref without having to rummage through the
-    /// iced tree for the actual rendered text.
+    /// `None` if it is not in `sort_by`.
     pub fn dt_sort_indicator(&self, col: &str) -> Option<String> {
         self.build_sort_indicators().get(col).map(|s| s.to_string())
     }

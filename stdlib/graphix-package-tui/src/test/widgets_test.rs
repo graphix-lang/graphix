@@ -1,23 +1,10 @@
-//! Smoke tests for every widget the TUI package exposes.
-//!
-//! Each test compiles a minimal graphix expression that produces the
-//! widget, builds the widget tree through `TuiTestHarness`, and
-//! renders into a `TestBackend`. The render call exercises the same
-//! ratatui code path the live runtime takes — so anything in ratatui
-//! that would panic on our default inputs surfaces here.
-//!
-//! Conventions:
-//! - The graphix wrapper is `use tui::*; use tui::<widget>; let result = ...`.
-//! - Smoke tests just assert `render()` returns Ok (no panic, no
-//!   widget-side error). Content assertions are reserved for the few
-//!   cases where exact output is stable and meaningful.
-//! - Panic-input regression tests live alongside the smoke test for
-//!   the same widget so the failure mode is documented in one place.
+//! Smoke tests for every widget the TUI package exposes: each compiles
+//! a minimal graphix expression producing the widget and renders it
+//! through `TuiTestHarness`, so a ratatui panic on default inputs
+//! surfaces here. Content assertions only where output is stable.
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
-
-// ── text ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn text_compiles_and_renders() -> Result<()> {
@@ -34,8 +21,6 @@ async fn text_compiles_and_renders() -> Result<()> {
     Ok(())
 }
 
-// ── paragraph ────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn paragraph_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -50,8 +35,6 @@ async fn paragraph_compiles_and_renders() -> Result<()> {
     );
     Ok(())
 }
-
-// ── block ────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn block_compiles_and_renders() -> Result<()> {
@@ -69,8 +52,6 @@ let result = block(#border: &`All, #title: &line("T"), &inner)
     Ok(())
 }
 
-// ── scrollbar ────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn scrollbar_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -86,8 +67,6 @@ let result = scrollbar(#position: &0, &inner)
     h.render()?;
     Ok(())
 }
-
-// ── layout ───────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn layout_compiles_and_renders() -> Result<()> {
@@ -112,8 +91,6 @@ let result = layout(
     Ok(())
 }
 
-// ── tabs ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn tabs_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -134,8 +111,6 @@ let result = tabs(
     Ok(())
 }
 
-// ── barchart (bar_chart in graphix) ──────────────────────────────────
-
 #[tokio::test]
 async fn barchart_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -150,8 +125,6 @@ let result = bar_chart(&[bar_group(#label: line("G"), [b])])
     h.render()?;
     Ok(())
 }
-
-// ── chart ────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn chart_compiles_and_renders() -> Result<()> {
@@ -173,8 +146,6 @@ let result = chart(
     Ok(())
 }
 
-// ── sparkline ────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn sparkline_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -189,8 +160,6 @@ let result = sparkline(#max: &100, &data)
     h.render()?;
     Ok(())
 }
-
-// ── line_gauge ───────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn line_gauge_compiles_and_renders() -> Result<()> {
@@ -212,8 +181,6 @@ async fn line_gauge_out_of_range_does_not_panic() -> Result<()> {
     Ok(())
 }
 
-// ── gauge ────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn gauge_in_range_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -226,9 +193,7 @@ async fn gauge_in_range_renders() -> Result<()> {
 
 #[tokio::test]
 async fn gauge_out_of_range_does_not_panic() -> Result<()> {
-    // Without the clamp_ratio fix this would panic inside ratatui's
-    // Gauge::ratio assert. The harness exists in part to keep this
-    // regression test alive.
+    // Pins the ratio clamp: ratatui's `Gauge::ratio` asserts on [0, 1].
     let mut h = TuiTestHarness::new(
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&5.0)",
     )
@@ -237,13 +202,10 @@ async fn gauge_out_of_range_does_not_panic() -> Result<()> {
     Ok(())
 }
 
-// ── input_handler ────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn input_handler_compiles_and_renders() -> Result<()> {
-    // input_handler's `#handle` arg isn't optional, so we have to
-    // supply a callable. Wrap a simple text widget so it has
-    // something to render.
+    // `#handle` isn't optional, so supply a callable; the text widget
+    // gives it something to render.
     let mut h = TuiTestHarness::new(
         r#"
 use tui::*;
@@ -259,8 +221,6 @@ let result = input_handler(#handle: &on_event, &inner)
     Ok(())
 }
 
-// ── list ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn list_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -275,8 +235,6 @@ let result = list(#selected: &0, &items)
     h.render()?;
     Ok(())
 }
-
-// ── table ────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn table_compiles_and_renders() -> Result<()> {
@@ -294,8 +252,6 @@ let result = table(#selected: &0, &[&r1, &r2])
     Ok(())
 }
 
-// ── calendar ─────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn calendar_compiles_and_renders() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
@@ -307,8 +263,6 @@ async fn calendar_compiles_and_renders() -> Result<()> {
     h.render()?;
     Ok(())
 }
-
-// ── canvas ───────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn canvas_compiles_and_renders() -> Result<()> {
@@ -328,8 +282,6 @@ let result = canvas(
     h.render()?;
     Ok(())
 }
-
-// ── overlay ──────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn overlay_renders_base_and_layer() -> Result<()> {
@@ -449,8 +401,6 @@ let result = overlay(#layers: &layers, base)
     );
     Ok(())
 }
-
-// ── line_edit ────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn line_edit_types_moves_and_deletes() -> Result<()> {

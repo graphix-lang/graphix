@@ -86,8 +86,7 @@ where
 }
 
 /// A type variable's bound: one type, or a `+`-joined conjunction of
-/// traits (`'a: Read + Write`). Every member becomes its own conjunct
-/// on the variable's cell.
+/// traits (`'a: Read + Write`), one conjunct per member.
 pub(super) fn bound<I>() -> impl Parser<I, Output = LPooled<Vec<Type>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -170,8 +169,7 @@ where
 }
 
 /// The receiver type of a trait method signature: the type variable
-/// spelled `self`. Same-named occurrences in one signature alias to one
-/// cell like any quantifier, and the trait declaration constrains it.
+/// spelled `self`.
 pub(crate) fn self_tvar() -> Type {
     Type::TVar(TVar::empty_named(literal!("self")))
 }
@@ -252,11 +250,9 @@ where
                 quantifiers: quantifier_names(constraints.iter().map(|(tv, _)| tv)),
                 ..Default::default()
             };
-            // Quantifier constraints seed CELLS (phase C — the cells
-            // are the only store). Alias the signature's same-named
-            // tvars to the quantifier tvars FIRST so the conjunct
-            // lands in the one cell every occurrence shares; the
-            // constraint types' own tvars go through the same map.
+            // Alias the signature's same-named tvars to the quantifier tvars
+            // first so each conjunct lands in the one cell every occurrence
+            // shares.
             {
                 let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
                 for (tv, _) in constraints.iter() {

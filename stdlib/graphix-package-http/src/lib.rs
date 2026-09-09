@@ -33,8 +33,6 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-// ── Abstract ClientValue ─────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 struct ClientValue {
     client: Arc<reqwest::Client>,
@@ -82,8 +80,6 @@ fn get_client(cached: &CachedVals, idx: usize) -> Option<Arc<reqwest::Client>> {
         _ => None,
     }
 }
-
-// ── Abstract ServerValue ─────────────────────────────────────────
 
 #[derive(Debug)]
 struct ServerHandle {
@@ -134,8 +130,6 @@ graphix_package_core::abstract_wrapper!(
     ServerValue,
     static SERVER_WRAPPER = "http::Server"
 );
-
-// ── Shared helpers ───────────────────────────────────────────────
 
 fn value_to_header_map(v: &Value) -> reqwest::header::HeaderMap {
     let mut map = reqwest::header::HeaderMap::new();
@@ -213,13 +207,9 @@ static DEFAULT_CLIENT: LazyLock<Arc<reqwest::Client>> = LazyLock::new(|| {
     )
 });
 
-// ── HttpClient ───────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct HttpClientEv;
 
-// http::client constructs a client config — pure value computation.
-// The actual requests go through HttpRequestEv (async). Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_client";
@@ -256,8 +246,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
 
 pub(crate) type HttpClient = CachedArgs<HttpClientEv>;
 
-// ── HttpDefaultClient ────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct HttpDefaultClientEv;
 
@@ -272,8 +260,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
 }
 
 pub(crate) type HttpDefaultClient = CachedArgs<HttpDefaultClientEv>;
-
-// ── HttpServerAddr ──────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct HttpServerAddrEv;
@@ -295,8 +281,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
 }
 
 pub(crate) type HttpServerAddr = CachedArgs<HttpServerAddrEv>;
-
-// ── HttpRequest / HttpRequestBin ─────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct RequestArgs<B> {
@@ -422,8 +406,6 @@ impl EvalCachedAsync for HttpRequestBinEv {
 }
 
 pub(crate) type HttpRequestBin = CachedArgsAsync<HttpRequestBinEv>;
-
-// ── HttpServe (server) ───────────────────────────────────────────
 
 struct HttpReqEvent {
     request: Value,
@@ -745,19 +727,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         let (keyv, key_fired) = seam_arg(ctx, &mut from[2], event);
         let (maxv, max_fired) = seam_arg(ctx, &mut from[3], event);
         let (fv, f_fired) = seam_arg(ctx, &mut from[4], event);
-        // update handler function reference
         if f_fired && let Some(v) = fv {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
             event.variables.insert(self.pid, TagValue::fired(v));
         }
-        // start/restart server when addr/cert/key/max_connections changes
         let mut server_result = None;
         if addr_fired || cert_fired || key_fired || max_fired {
             if let Some(abort) = self.abort.take() {
                 abort.abort();
             }
             if let Some(Value::String(addr)) = &addrv {
-                // build TLS acceptor if cert and key are provided
                 let tls = match (&certv, &keyv) {
                     (Some(Value::Bytes(cert)), Some(Value::Bytes(key))) => {
                         match build_tls_acceptor(cert, key) {
@@ -831,7 +810,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 }));
             }
         }
-        // receive incoming requests from the server
         if let Some(mut cbt) = event.custom.remove(&self.id) {
             if let Some(req) = (&mut *cbt as &mut dyn Any).downcast_mut::<HttpReqEvent>()
             {
@@ -840,7 +818,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 self.queue.push_back((request, reply));
             }
         }
-        // set up first queued request for handler processing
         if self.ready && !self.queue.is_empty() {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
@@ -848,7 +825,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
-        // process handler responses
         loop {
             match graphix_package_core::seam_tick(self.handler.update(ctx, event))
                 .map(|tv| tv.clone())

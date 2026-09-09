@@ -33,12 +33,7 @@ const ARRAY_MAP1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — the body is a nested `array::map(b,
-// |y| x + y)` that captures the outer element `x`; that nested HOF
-// doesn't lower yet (its captured `x` + inner array input `b` aren't
-// threaded into the inner kernel), so the outer map's body fails to
-// emit. `array_map_tuple` below exercises composite-output map without
-// the nesting.
+// ASPIRE: Jit — a nested `array::map` capturing the outer element.
 run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[[i64; 2]; 2]>() {
@@ -49,14 +44,8 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Nested map with a CONST callback body over a loop-invariant captured
-// source: the inner loop claims a state word despite being nested
-// (`SlotFlags::src_invariant` — `b` is identical on every outer
-// iteration), giving it MapQ's exact firing rule instead of the
-// stateless approximation that over-fired when `b` was stream-fed
-// (findings/firing-jul2026/03). This fixture asserts the shape still
-// FUSES with the claim in place; the multi-cycle firing parity is the
-// findings pin's job.
+// A nested map with a constant callback body over a loop-invariant
+// captured source still fuses.
 const ARRAY_MAP_NESTED_CONST: &str = r#"
 {
   let a = [1, 2];
@@ -75,9 +64,7 @@ run!(array_map_nested_const, ARRAY_MAP_NESTED_CONST, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Composite-output `array::map`: the body produces a tuple per element,
-// so the output is `Array<(i64, i64)>`. Exercises the map loop's
-// composite-output push (`compile_and_push_field`) without nesting.
+// Composite-output `array::map`: `Array<(i64, i64)>`.
 const ARRAY_MAP_TUPLE: &str = r#"
 {
   let a = [1, 2, 3];
@@ -95,11 +82,7 @@ run!(array_map_tuple, ARRAY_MAP_TUPLE, |v: Result<&Value>| {
     }
 });
 
-// Composite-element *input* with a `|(k, v)|` destructure callback.
-// The element `(i64, i64)` binds into the loop's composite slot (both
-// backends); the callback's tuple pattern lowers to per-leaf `TupleGet`
-// lets. The JIT loop gets each element via `graphix_valarray_get_array`,
-// binds it, runs the body, then drops the owned per-iter element.
+// A composite element with a `|(k, v)|` destructure callback.
 const ARRAY_MAP_DESTRUCTURE: &str = r#"
 {
   let a = [(1, 2), (3, 4)];
@@ -114,9 +97,8 @@ run!(array_map_destructure, ARRAY_MAP_DESTRUCTURE, |v: Result<&Value>| {
     }
 });
 
-// `array::fold` with a `|acc, (k, v)|` destructure callback over a
-// composite element — the accumulator stays scalar, the element binds
-// into the composite slot (interp + JIT, same split as map).
+// `array::fold` with a `|acc, (k, v)|` destructure over a composite
+// element.
 const ARRAY_FOLD_DESTRUCTURE: &str = r#"
 {
   let a = [(1, 2), (3, 4)];
@@ -128,11 +110,8 @@ run!(array_fold_destructure, ARRAY_FOLD_DESTRUCTURE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
 
-// `array::filter` with a `|(k, v)|` destructure over a composite
-// element. Keeps the *original* composite elements where the predicate
-// holds. The JIT loop gets each element (owned `*ValArray`), binds it,
-// evals the predicate, and on keep moves it into the output / on
-// not-keep drops it (the conditional-drop split).
+// `array::filter` with a `|(k, v)|` destructure keeps the original
+// composite elements.
 const ARRAY_FILTER_DESTRUCTURE: &str = r#"
 {
   let a = [(1, 2), (3, 4), (5, 6)];
@@ -231,9 +210,7 @@ const ARRAY_FILTER_MAP: &str = r#"
 }
 "#;
 
-// The `false => x ~ null` arm uses the sample operator `~`; in a fully-
-// sync fused kernel `a ~ b` lowers to `b` (the trigger always fires), so
-// the body fuses+JITs.
+// `x ~ null` in a fully sync kernel lowers to `null`, so the body fuses.
 run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -244,10 +221,7 @@ run!(array_filter_map, ARRAY_FILTER_MAP, |v: Result<&Value>| {
     }
 });
 
-// Scalar `array::filter_map` whose body is an option-typed `select`
-// with no sample operator — lowers to the filter-map loop and JITs
-// (the Nullable-collecting loop checks each body result's discriminant
-// against `null` and pushes the non-null payload).
+// Scalar `array::filter_map` whose body is an option-typed `select`.
 const ARRAY_FILTER_MAP_SCALAR: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -276,11 +250,8 @@ const ARRAY_FIND: &str = r#"
 }
 "#;
 
-// Composite element `(string, i64)` + `|(k, _)|` destructure + composite
-// *output*: `array::find` returns the matched element, so the result is
-// `Nullable<(string, i64)>`. The array-find loop's found edge wraps the
-// owned `*ValArray` element into a value-shape Value (consumes it); the
-// advance edge drops it (conditional consume, like `array::filter`).
+// A composite `(string, i64)` element with destructure; `find` returns
+// the matched element as `Nullable<(string, i64)>`.
 run!(array_find, ARRAY_FIND, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -308,7 +279,7 @@ run!(array_find_scalar, ARRAY_FIND_SCALAR, |v: Result<&Value>| {
     }
 });
 
-// No element matches — `array::find` returns `null`.
+// No element matches: `null`.
 const ARRAY_FIND_SCALAR_NONE: &str = r#"
 {
   let a = [1, 2, 3];
@@ -320,10 +291,7 @@ run!(array_find_scalar_none, ARRAY_FIND_SCALAR_NONE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 });
 
-// Composite element + composite output, all-prim — exercises the
-// array-find found-edge `graphix_value_new_from_array` wrap +
-// advance-edge `graphix_valarray_drop` without a string leaf. Result is
-// the matched `(i64, i64)` element as a `Nullable<(i64, i64)>`.
+// A composite element and composite output without a string leaf.
 const ARRAY_FIND_COMPOSITE: &str = r#"
 {
   let a = [(1, 10), (2, 20), (3, 30)];
@@ -338,10 +306,7 @@ run!(array_find_composite, ARRAY_FIND_COMPOSITE, |v: Result<&Value>| {
     }
 });
 
-// No element matches — every composite element is fetched + dropped on the
-// advance edge, then `not_found` returns `null`. Exercises the
-// array-find conditional-drop path with zero wraps (the most likely
-// place a leak or double-free in the owned-element drop would surface).
+// No composite element matches: every element is fetched and dropped.
 const ARRAY_FIND_COMPOSITE_NONE: &str = r#"
 {
   let a = [(1, 10), (2, 20), (3, 30)];
@@ -364,11 +329,8 @@ const ARRAY_FIND_MAP: &str = r#"
 }
 "#;
 
-// Composite element `(string, i64)` + `|(k, v)|` destructure + the
-// `false => v ~ null` Sample arm — all fuse + JIT, via
-// the array-find-map loop (early-exit, first-non-null `Nullable<i64>`).
-// The string leaf (`k`) binds as a string local in the destructure
-// Block — which JITs since the Block-let-String codegen gap was fixed.
+// A composite `(string, i64)` element, a destructure and a `v ~ null`
+// arm through the find-map loop.
 run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(2)) => true,
@@ -376,9 +338,7 @@ run!(array_find_map, ARRAY_FIND_MAP, |v: Result<&Value>| {
     }
 });
 
-// All-prim composite element — exercises the array-find-map JIT
-// path (composite element + destructure + early-exit Nullable merge)
-// without the string field that keeps `array_find_map` on the interp.
+// An all-prim composite element through the find-map loop.
 const ARRAY_FIND_MAP_PRIM: &str = r#"
 {
   let a = [(1, 10), (2, 20), (3, 30)];
@@ -397,9 +357,7 @@ const ARRAY_ITER: &str = r#"
    filter(array::iter([1, 2, 3, 4]), |x| x == 4)
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_iter, ARRAY_ITER, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(4)) => true,
@@ -418,9 +376,7 @@ const ARRAY_ITERQ: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
@@ -442,10 +398,7 @@ run!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
     }
 });
 
-// A may-bottom predicate (`10 / x` can div0) over a runtime-clean array
-// still fuses: the scaffold routes the predicate through `emit_forced`,
-// which runtime-aborts to bottom only if the predicate actually taints
-// (here it never does → real filtered array, both modes agree).
+// A may-bottom predicate (`10 / x`) over a runtime-clean array fuses.
 const ARRAY_FILTER_MAY_BOTTOM: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -462,8 +415,7 @@ run!(array_filter_may_bottom, ARRAY_FILTER_MAY_BOTTOM, |v: Result<&Value>| {
     }
 });
 
-// A may-bottom fold body (`acc / x`) over a runtime-clean array fuses the
-// same way (the scaffold `emit_forced`s the body).
+// A may-bottom fold body (`acc / x`) over a runtime-clean array fuses.
 const ARRAY_FOLD_MAY_BOTTOM: &str = r#"
 {
   let a = [2, 5, 10];
@@ -475,13 +427,9 @@ run!(array_fold_may_bottom, ARRAY_FOLD_MAY_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
 
-// The fold's firing is PER-SLOT, not the acc carry: slot 0 (v=1)
-// consumes each fired init through its `_ => acc` arm while slot 1
-// (v=2) takes the constant arm, so the final carry is stale on every
-// init re-fire. FoldQ fires (`any_trig`); the kernel derived its
-// firing bit from the carry alone (ba524ee8 #9) and swallowed all
-// four re-fires. The counter pins the CADENCE, not just the value
-// (findings/fold-midchain-fired-aug2026, aug31c).
+// The fold's firing is per slot, not the acc carry: slot 0 consumes
+// each fired init while the final carry stays stale, and the fold
+// still fires per init re-fire. The counter pins the cadence.
 const ARRAY_FOLD_MIDCHAIN_FIRE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -499,12 +447,8 @@ run!(array_fold_midchain_fire, ARRAY_FOLD_MIDCHAIN_FIRE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A VALUE-shaped fold acc (the slice init types it `[Array, Error]`)
-// whose body's OWN shape is a narrower union member. The body's raw
-// emission is a composite box pointer — pairing it as a Value payload
-// was a type confusion that SIGSEGV'd every downstream consumer
-// (jul16h/jul17a, findings/value-shape-seam-jul2026). The init and
-// body now normalize through `emit_owned_value_operand_node`.
+// A Value-shaped fold acc (`[Array, Error]` from a slice init) whose
+// body's own shape is a narrower union member.
 const ARRAY_FOLD_VALUE_ACC_ELEM_BODY: &str = r#"
 {
   let a = [1, 2, 3, 4];
@@ -521,7 +465,7 @@ run!(array_fold_value_acc_elem_body, ARRAY_FOLD_VALUE_ACC_ELEM_BODY, |v: Result<
     }
 });
 
-// Same seam, fresh-literal body (jul17a crash_000002).
+// The same seam with a fresh-literal body.
 const ARRAY_FOLD_VALUE_ACC_LITERAL_BODY: &str = r#"
 {
   let a = [1, 2, 3, 4];
@@ -540,8 +484,7 @@ run!(
     }
 );
 
-// Same seam, scalar body: the acc is `[i64, Error]` (index init), the
-// body a bare scalar — its payload widens through the same normalize.
+// The same seam with a scalar body over an `[i64, Error]` acc.
 const ARRAY_FOLD_VALUE_ACC_SCALAR_BODY: &str = r#"
 {
   let a = [1, 2, 3];
@@ -555,8 +498,7 @@ run!(array_fold_value_acc_scalar_body, ARRAY_FOLD_VALUE_ACC_SCALAR_BODY, |v: Res
     matches!(v, Ok(Value::I64(5)))
 });
 
-// A may-bottom find predicate fuses (runtime-aborts via `emit_forced`);
-// `10 / x > 4` matches the first x with 10/x > 4, i.e. x = 2.
+// A may-bottom find predicate: `10 / x > 4` matches x = 2.
 const ARRAY_FIND_MAY_BOTTOM: &str = r#"
 {
   let a = [4, 2, 1];
@@ -568,9 +510,7 @@ run!(array_find_may_bottom, ARRAY_FIND_MAY_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
 });
 
-// A may-bottom flat_map body (`[10 / x]` — the element div can bottom)
-// fuses; the array-literal body's internal bottom-abort + `emit_forced`
-// runtime-abort the kernel only if it actually taints.
+// A may-bottom flat_map body (`[10 / x]`) fuses.
 const ARRAY_FLAT_MAP_MAY_BOTTOM: &str = r#"
 {
   let a = [1, 2, 5];
@@ -587,12 +527,8 @@ run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
     }
 });
 
-// A scalar `array::fold` result flowing directly into a `connect` once
-// SIGSEGV'd (fold wrapped its scalar result in an ARRAY disc → the connect's
-// set_var deref'd the scalar as a *ValArray) and over-fired (no source STALE
-// → the self-connect busy-spun while the node-walk quiesced). Now it fuses,
-// sets `s` once, and quiesces. See findings/hof-connect-jun2026 and the
-// `fold_into_connect_quiesces` stream test.
+// A scalar `array::fold` result flowing into a `connect` sets `s` once
+// and quiesces.
 const FOLD_INTO_CONNECT: &str = r#"
 { let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); s }
 "#;
@@ -601,14 +537,7 @@ run!(fold_into_connect, FOLD_INTO_CONNECT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 });
 
-// A fold whose input array GROWS each cycle (reactive-size init) must
-// re-emit per resize. FoldQ conflated the per-cycle emit gate with the
-// held chain state in `inits`: a resize left the old slots quiet
-// (closed callback — `x` unused), the reset wiped the chain, and the
-// fold went permanently silent after its first emission while the JIT
-// re-ran the loop per resize (soak jul07e, pinned
-// findings/foldq-reactive-size-jul2026/01). The separate `held` vec
-// primes new slots from their predecessor's last produced acc.
+// A fold whose input array grows each cycle re-emits per resize.
 const FOLD_REACTIVE_SIZE: &str = r#"
 {
   let a = array::init(array::iter([1, 2, 3, 4]), |i| i + 1);
@@ -627,11 +556,8 @@ run!(fold_reactive_size, FOLD_REACTIVE_SIZE, |v: Result<&Value>| {
     }
 });
 
-// The SHRINK sibling: sizes [1, 2, 1, 4] shrink mid-stream. After a
-// shrink every remaining slot is quiet (closed callback), so the chain
-// gate is empty — FoldQ must emit the HELD chain tail (a resize is a
-// firing event; the fused loop re-runs and fires). Pinned at
-// findings/foldq-reactive-size-jul2026/02.
+// The shrink sibling: sizes [1, 2, 1, 4]; a resize is a firing event
+// even when every remaining slot is quiet.
 const FOLD_REACTIVE_SHRINK: &str = r#"
 {
   let a = array::init(array::iter([1, 2, 1, 4]), |i| i + 1);
@@ -707,15 +633,8 @@ run!(array_push_front, ARRAY_PUSH_FRONT, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A select-union callback ([string, Spec]) whose result array feeds
-// push_front with a bare Spec. The callback's CLOSED inferred rtype
-// must survive its def gate BOUND — re-opened to an upper-bound
-// constraint, whichever consumer unified first claimed the cell
-// (push_front narrowed it to bare Spec before the map instance's
-// recheck re-derived the union), so compilability depended on
-// typecheck order and therefore on env contents: the shell rejected
-// what the fuzz driver accepted, same build (2026-07-15, the
-// data_table_virtual break).
+// A select-union callback (`[string, Spec]`) whose result array feeds
+// push_front with a bare Spec compiles regardless of typecheck order.
 const ARRAY_MAP_UNION_CALLBACK_PUSH_FRONT: &str = r#"
 {
   type Spec = { name: string };
@@ -780,12 +699,8 @@ const ARRAY_LEN: &str = r#"
 }
 "#;
 
-// Builtins called by their UNQUALIFIED imported names (`use array::*; len(…)`)
-// now fuse: builtin-call discovery resolves the name in the CALL SITE's own
-// lexical scope (which carries the `use array`), not the region root's — so
-// `len`/`concat` register as DynCall sites and the whole body fuses. Before
-// the scope fix, root-scope lookup couldn't see the unqualified name and the
-// region de-fused.
+// Builtins called by their unqualified imported names (`use array::*;
+// len(…)`) fuse.
 run!(array_len, ARRAY_LEN, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
@@ -793,22 +708,13 @@ run!(array_len, ARRAY_LEN, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A per-slot HOF callback whose body is a non-numeric `cast` (bool → i64,
-// excluded from the inline scalar fast path, so it lowers to a cast-machinery
-// DynCall). `build_lambda_kernel` discovers the cast in the callback body and
-// installs its slot, so the WHOLE callback fuses to one per-slot kernel that
-// dispatches the cast in-kernel — instead of splitting around it. Values agree
-// across modes.
+// A per-slot HOF callback whose body is a non-numeric `cast` (bool ->
+// i64).
 const CAST_CALLBACK_PER_SLOT: &str = r#"
   array::map([true, false, true], |b| cast<i64>(b))
 "#;
 
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// ASPIRE: Jit — a non-tail Value producer in a callee body.
 run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
@@ -841,9 +747,7 @@ const ARRAY_GROUP0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -907,9 +811,7 @@ run!(array_init1, ARRAY_INIT1, |v: Result<&Value>| {
     }
 });
 
-// Negative count → empty array (clamped to 0). Both fused backends used
-// to abort: interp `as_usize()` and the JIT `buf_new(neg)` reserve
-// usize::MAX and panic. Both now clamp `n.max(0)` like the node-walk.
+// A negative count clamps to an empty array.
 const ARRAY_INIT_NEGATIVE: &str = r#"
 {
   let k = -1;
@@ -980,8 +882,7 @@ run!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Both labels defaulted: the site marshals its compiled default nodes,
-// so the plain spelling is a native fastcall.
+// Both labels defaulted: the plain spelling is a native fastcall.
 const ARRAY_SORT_NATIVE_DEFAULTS: &str = r#"{
    let f = |a: Array<i64>| { let r = #[native] array::sort(a); r };
    f([3, 1, 2])
@@ -1115,11 +1016,9 @@ run!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ─── Phase 3: HOF over String / Value-shape ELEMENTS (#150) ──────────
-// String arrays are ubiquitous; these de-fused before the bind_elem
-// String/Value arms + drop_owned_elem landed. interp==jit agreement is
-// the drop-exactly-once proof (the value harness can't see a leak, so
-// the adversarial no-match / found-at-last / used-twice paths matter).
+// HOFs over String / Value-shape elements. interp==jit agreement is the
+// drop-exactly-once proof, so the no-match / found-at-last / used-twice
+// paths matter.
 
 const HOF_STR_MAP_LEN: &str = r#"array::map(["a", "bb", "ccc"], |s| str::len(s))"#;
 run!(hof_str_map_len, HOF_STR_MAP_LEN, |v: Result<&Value>| matches!(
@@ -1127,44 +1026,34 @@ run!(hof_str_map_len, HOF_STR_MAP_LEN, |v: Result<&Value>| matches!(
     Ok(Ok([1, 2, 3]))
 ));
 
-// String element AND String output — the element is dropped, the upper
-// String is pushed.
+// A String element and String output.
 const HOF_STR_MAP_UPPER: &str = r#"array::map(["hi", "yo"], |s| str::to_upper(s))"#;
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// ASPIRE: Jit — a non-tail String producer in a loop body.
 run!(hof_str_map_upper, HOF_STR_MAP_UPPER, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "HI" && &*b == "YO")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// filter MOVES the kept string element into the output; drops the rest.
+// filter moves the kept string element into the output.
 const HOF_STR_FILTER: &str = r#"array::filter(["a", "bb", "ccc"], |s| str::len(s) > 1)"#;
 run!(hof_str_filter, HOF_STR_FILTER, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "bb" && &*b == "ccc")
 });
 
-// No-match filter: EVERY string element hits the drop edge (the most
-// likely place a leak/double-free in the owned-element drop would show).
+// A no-match filter: every string element is dropped.
 const HOF_STR_FILTER_NONE: &str = r#"array::filter(["a", "b"], |s| str::len(s) > 5)"#;
 run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
     v,
     Ok(Value::Array(a)) if a.is_empty()
 ));
 
-// P4 firing rework (2026-07-10 late): kernels now run for this shape
-// (the fired-element delivery + first-call priming unblocked it).
 const HOF_STR_FOLD: &str =
     r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
 run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6)));
     graphix_package_core::testing::FuseExpect::Jit);
 
-// find RETURNS the matched string element (moved into the Nullable result);
-// non-matches drop every iteration.
+// find returns the matched string element; non-matches drop.
 const HOF_STR_FIND: &str = r#"array::find(["a", "bb", "ccc"], |s| str::len(s) == 2)"#;
 run!(hof_str_find, HOF_STR_FIND, |v: Result<&Value>| matches!(
     v,
@@ -1183,20 +1072,14 @@ run!(hof_str_flatmap, HOF_STR_FLATMAP, |v: Result<&Value>| {
         Ok(Ok([a, b, c, d])) if &*a == "a" && &*b == "a" && &*c == "b" && &*d == "b")
 });
 
-// Element used TWICE in the body (interpolation reads `s` twice → two
-// refcount clones vs the single element drop).
+// The element is read twice in the body.
 const HOF_STR_USED_TWICE: &str = r#"array::map(["a", "b"], |s| "[s][s]")"#;
 run!(hof_str_used_twice, HOF_STR_USED_TWICE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "aa" && &*b == "bb")
 });
 
-// Value-shape (Nullable) ELEMENT read path: bind_elem's Value arm +
-// drop_owned_elem exercised on the node-walk. The BODY here `select`s over
-// the owned value element, and fuses via THE UNIFIED RIDE's index dispatch
-// (Eric's ruling 2026-08-28): a value-shaped scrutinee's bind reads the
-// disc/payload directly, so it needs no scrutinee resident — the old
-// value-ride storage de-fuse is gone.
+// A Value-shape (nullable) element whose body selects over it.
 const HOF_NULLABLE_MAP: &str = r#"
 array::map([1, null], |v| select v { i64 as n => n, null as _ => i64:0 })
 "#;
@@ -1205,9 +1088,7 @@ run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
     Ok(Ok([1, 0]))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// Value-shape (variant) ELEMENT in a filter whose predicate is a `==`
-// (ValueEq, fuses) rather than a select — so the value-element read + the
-// keep-push Value arm fuse now (no owned-scrutinee dependency).
+// A Value-shape (variant) element in a filter whose predicate is `==`.
 const HOF_VARIANT_FILTER: &str = r#"
 array::filter([`Red, `Green, `Red], |v| v == `Red)
 "#;
@@ -1215,8 +1096,8 @@ run!(hof_variant_filter, HOF_VARIANT_FILTER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a.len() == 2)
 });
 
-// Value-shape variant element RETURNED by find (the find Value pack arm,
-// pass-through) with the preceding non-match dropped (drop_owned_elem Value).
+// A Value-shape variant element returned by find after a dropped
+// non-match.
 const HOF_VARIANT_FIND: &str = r#"
 array::find([`Red, `Green, `Blue], |v| v == `Green)
 "#;
@@ -1277,10 +1158,7 @@ run!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ─── Phase 5: composite / string / value destructure LEAVES ──────────
-// `|(k, v)|` callbacks whose leaf is itself composite/string/value now
-// fuse: the leaf is an OWNED clone bound as an env local (pending-exit
-// drop for free) and dropped at body end on every edge.
+// `|(k, v)|` callbacks whose leaf is itself composite/string/value.
 
 const HOF_LEAF_COMPOSITE: &str = r#"
 array::map([((1, 2), 10), ((3, 4), 20)], |(pt, n)| pt.0 + pt.1 + n)
@@ -1290,7 +1168,6 @@ run!(hof_leaf_composite, HOF_LEAF_COMPOSITE, |v: Result<&Value>| matches!(
     Ok(Ok([13, 27]))
 ));
 
-// P4 firing rework (2026-07-10 late): kernels now run for this shape.
 const HOF_LEAF_STRING: &str = r#"
 array::fold([("a", 1), ("bb", 2)], 0, |acc, (s, n)| acc + str::len(s) + n)
 "#;
@@ -1299,8 +1176,7 @@ run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
     Ok(Value::I64(6))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// filter: the leaf drops pre-branch on BOTH edges (kept elements move,
-// leaves never do) — no-match + all-match covered by the two predicates.
+// filter: the leaf drops on both edges; no-match and all-match covered.
 const HOF_LEAF_FILTER: &str = r#"
 array::filter([((1, 2), 0), ((5, 6), 1)], |(pt, n)| pt.1 > 3)
 "#;
@@ -1309,8 +1185,7 @@ run!(hof_leaf_filter, HOF_LEAF_FILTER, |v: Result<&Value>| matches!(
     Ok(Value::Array(a)) if a.len() == 1
 ));
 
-// A string leaf read TWICE in the body (two refcount clones vs one leaf
-// drop), through interpolation.
+// A string leaf read twice in the body.
 const HOF_LEAF_STRING_TWICE: &str = r#"
 array::map([("x", 1), ("y", 2)], |(s, n)| "[s][s][n]")
 "#;
@@ -1319,31 +1194,18 @@ run!(hof_leaf_string_twice, HOF_LEAF_STRING_TWICE, |v: Result<&Value>| {
         Ok(Ok([a, b])) if &*a == "xx1" && &*b == "yy2")
 });
 
-// A nullable (value-shape) leaf: `==` over the two-word leaf fuses
-// (ValueEq); the leaf's owned clone drops at body end.
+// A nullable (value-shape) leaf compared with `==`.
 const HOF_LEAF_NULLABLE: &str = r#"
 array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false => null })
 "#;
-// INTERPRETS since the value-taint-cache storage law
-// (callee-value-taint-passthrough-aug2026): a non-tail Value/String/
-// composite producer in a callee body or loop has no taint-cache
-// storage channel and refuses rather than pass a bottom through
-// unridden. ASPIRE: value residents in slot chains / site blocks
-// restore this.
+// ASPIRE: Jit — a non-tail Value producer in a loop body.
 run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
     Ok(Ok([20]))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// COMPOSITE-returning callbacks through the per-slot template kernel
-// (soak jul05 items 5/10/13). The callback's declared rtype
-// `['b, null]` freezes to the value-shape (in-band 2-word) return
-// convention, but a composite body emits the composite convention
-// (payload = *mut ValArray box pointer) — returning the raw pair
-// handed the runtime decode a box pointer as the in-band ValArray
-// word: SIGSEGV/SIGABRT. `emit_return_from_node` now widens the body
-// to a genuine owned Value pair (via graphix_value_new_from_array),
-// so these fuse AND return correctly.
+// Composite-returning callbacks: a `['b, null]` return over a composite
+// body widens to an owned Value.
 const FIND_MAP_CAPTURED_ARRAY: &str = r#"
 {let a = [i64:1, i64:2]; array::find_map(a, |x: i64| a)}
 "#;
@@ -1362,9 +1224,7 @@ run!(filter_map_fresh_array, FILTER_MAP_FRESH_ARRAY, |v: Result<&Value>| {
         Ok(Ok([[1, 2], [2, 3], [3, 4]])))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The select-arm variant: null in one arm, a tuple in the other — the
-// widening runs per tail-select arm (emit_body_tail → the same
-// emit_return_from_node seam).
+// The select-arm variant: null in one arm, a tuple in the other.
 const FIND_MAP_TUPLE_ARM: &str = r#"
 {let a = [i64:1, i64:2]; array::find_map(a, |x: i64| select x { i64:1 => null, _ => (x, "s") })}
 "#;

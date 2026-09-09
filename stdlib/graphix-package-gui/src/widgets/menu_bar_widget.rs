@@ -28,18 +28,13 @@ pub(crate) struct MenuGroupDesc {
 #[derive(Default)]
 pub(crate) struct State {
     pub open_menu: Option<usize>,
-    /// `true` while the dropdown overlay is visible. The overlay
-    /// flips this to `false` when a menu item is clicked; the parent
-    /// widget observes the flip and clears `open_menu` on its next
-    /// `update` so the dropdown closes. Kept in sync with
-    /// `open_menu.is_some()` at all open/close transitions.
+    /// `true` while the dropdown overlay is visible; the overlay flips
+    /// it to `false` on item click and `update` clears `open_menu`.
     pub menu_visible: bool,
 }
 
 /// Overlay that renders the dropdown menu below a menu bar label.
-/// When `open` is `Some`, the overlay sets it to `false` when an item
-/// is clicked (used by context menus). Menu bar passes `None` since
-/// it manages open state in its own `update()`.
+/// When `open` is `Some` it is set to `false` on item click.
 pub(crate) struct MenuOverlay<'a> {
     pub menu: &'a MenuGroupDesc,
     pub position: Point,
@@ -101,7 +96,6 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
     ) {
         let palette = theme.palette();
         let bounds = layout.bounds();
-        // Drop shadow
         <Renderer as renderer::Renderer>::fill_quad(
             renderer,
             renderer::Quad {
@@ -112,7 +106,6 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
             },
             iced_core::Color::from_rgba(0.0, 0.0, 0.0, 0.3),
         );
-        // Background
         <Renderer as renderer::Renderer>::fill_quad(
             renderer,
             renderer::Quad {
@@ -127,7 +120,6 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
             },
             palette.background,
         );
-        // Items
         let text_size = <Renderer as iced_core::text::Renderer>::default_size(renderer);
         for (item, child_layout) in self.menu.items.iter().zip(layout.children()) {
             let item_bounds = child_layout.bounds();
@@ -441,9 +433,6 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
-        // The overlay flips `menu_visible` to false when an item is
-        // clicked. Reconcile here so the next `overlay()` call stops
-        // rendering the dropdown.
         if state.open_menu.is_some() && !state.menu_visible {
             state.open_menu = None;
         }
@@ -536,9 +525,6 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         }
         let label_bounds = layout.children().nth(idx)?.bounds();
         let position = Point::new(label_bounds.x, label_bounds.y + label_bounds.height);
-        // Hand the overlay a `&mut bool` so it can signal close when
-        // an item is clicked. The next `update` call reconciles
-        // `open_menu` from `menu_visible`.
         Some(overlay::Element::new(Box::new(MenuOverlay {
             menu: &self.descs[idx],
             position,

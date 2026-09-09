@@ -1,6 +1,4 @@
-//! Convert winit events to iced events.
-//!
-//! Based on iced_winit/src/conversion.rs but adapted for our event loop.
+//! Convert winit events to iced events (after iced_winit's conversion.rs).
 
 use iced_core::{Event, Point, Size, keyboard, mouse, window};
 use keyboard::key::NativeCode;

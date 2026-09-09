@@ -6,8 +6,6 @@ use log::error;
 use netidx::publisher::{FromValue, Value};
 use poolshark::local::LPooled;
 
-// ── Dataset types ───────────────────────────────────────────────────
-
 #[derive(Clone, Copy)]
 pub enum XYKind {
     Line,
@@ -199,8 +197,6 @@ pub async fn compile_datasets<X: GXExt>(
     Ok(entries)
 }
 
-// ── Chart mode detection ────────────────────────────────────────────
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChartMode {
     Numeric,
@@ -289,7 +285,6 @@ pub fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
     if has_3d {
         return ChartMode::ThreeD;
     }
-    // Determine numeric vs timeseries from first non-empty dataset
     for ds in datasets {
         match ds {
             DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {

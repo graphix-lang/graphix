@@ -24,8 +24,6 @@ pub use interact::{ChartState, PlotInfo, SnapPoint};
 pub use ranges::*;
 pub use types::*;
 
-// ── ChartW ──────────────────────────────────────────────────────────
-
 pub(crate) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
     datasets_ref: Ref<X>,

@@ -167,8 +167,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
 
 pub(crate) type BytesLen = CachedArgs<BytesLenEv>;
 
-// ── Encode ────────────────────────────────────────────────────────
-
 fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
     match v {
         Value::Array(a) if !a.is_empty() => match &a[0] {
@@ -179,13 +177,11 @@ fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
     }
 }
 
-/// # Safety: the type checker proves the variant payloads, so
-/// get_as_unchecked is sound here.
 fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
     let (tag, args) = variant_tag(v)?;
     let a = &args[0];
-    // SAFETY: the graphix type checker guarantees each variant tag
-    // carries the declared payload type.
+    // SAFETY: the type checker guarantees each variant tag carries
+    // the declared payload type.
     unsafe {
         match &**tag {
             "I8" => buf.put_i8(*a.get_as_unchecked::<i8>()),
@@ -208,13 +204,8 @@ fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
             "F64LE" => buf.put_f64_le(*a.get_as_unchecked::<f64>()),
             "Bytes" => buf.put_slice(a.get_as_unchecked::<PBytes>()),
             "Pad" => {
-                // A runaway pad (`Pad(u64:MAX)` — the fuzzer's crash
-                // corpus) must not reach `put_bytes`: the reserve
-                // panics on capacity overflow, ABORTING the process
-                // (panic-in-panic through the FFI-ish call path), and
-                // anything short of that OOM-bombs. `encode` returns
-                // bare `bytes` (no error union), so an absurd pad
-                // logs and bottoms like other hot-path failures.
+                // `put_bytes` panics on capacity overflow, so an
+                // absurd pad logs and bottoms instead.
                 const MAX_PAD: u64 = 64 * 1024 * 1024;
                 let n = *a.get_as_unchecked::<u64>();
                 if n > MAX_PAD {
@@ -262,10 +253,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
 
 pub(crate) type BufferEncode = CachedArgs<EncodeEv>;
 
-// ── Decode ────────────────────────────────────────────────────────
-
-/// # Safety: the type checker guarantees refs are represented as U64.
 fn get_bind_id(v: &Value) -> BindId {
+    // SAFETY: the type checker guarantees refs are represented as U64.
     BindId::from(*unsafe { v.get_as_unchecked::<u64>() })
 }
 
@@ -280,13 +269,9 @@ fn resolve_ref(byref_chain: &ByRefChain, ref_id: BindId) -> Result<BindId, Value
         .ok_or_else(|| decode_err("ref does not point to a let binding"))
 }
 
-/// Resolve a ref BindId through the byref chain, returning the target
-/// variable's current u64 value — from this decode pass's own
-/// `written` record first (a length var an earlier field in the SAME
-/// pass wrote; the store only advances at delivery), else from
-/// the store (written in a previous cycle and since delivered).
-/// Returns `Err` with a decode error if the ref isn't in the byref
-/// chain, `Ok(None)` if the value hasn't arrived yet (bottom).
+/// Resolve a ref BindId through the byref chain to the target's current
+/// u64: this pass's own `written` record first, else the store. `Err` if
+/// the ref isn't in the chain, `Ok(None)` if the value hasn't arrived.
 fn resolve_u64<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     written: &IntMap<BindId, Value>,
@@ -306,8 +291,8 @@ macro_rules! decode_fixed {
         if $buf.len() - $pos < $sz {
             return Some(decode_err("not enough bytes"));
         }
-        // SAFETY: we checked buf.len() - pos >= $sz above, and $sz always
-        // matches the byte width of $ty.
+        // SAFETY: buf.len() - pos >= $sz was checked above, and $sz is
+        // the byte width of $ty.
         let val =
             <$ty>::$from_bytes(unsafe { *($buf[$pos..].as_ptr() as *const [u8; $sz]) });
         let ref_id = get_bind_id(&$args[0]);
@@ -335,12 +320,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
             _ => return None,
         };
         let byref_chain = ctx.env.byref_chain.clone();
-        // Within ONE decode pass, later fields read length vars that
-        // earlier fields in the SAME pass wrote (`UTF8` after `U32`).
-        // the store now advances at DELIVERY (next cycle), so the
-        // pass keeps its own record of what it wrote; `resolve_u64`
-        // consults it before falling back to cached (a value written
-        // in a previous cycle and since delivered).
+        // The store only advances at delivery, so later fields in this
+        // pass read length vars earlier fields wrote from `written`.
         let mut written: poolshark::local::LPooled<IntMap<BindId, Value>> =
             poolshark::local::LPooled::take();
         let mut pos = 0usize;

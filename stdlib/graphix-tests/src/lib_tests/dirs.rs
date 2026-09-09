@@ -11,9 +11,7 @@ run!(home_dir, HOME_DIR, |v: Result<&Value>| match v {
     Ok(Value::Null) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
-// ^ None: the dirs builtins are once-latched (fire once per instance)
-// and therefore NOT replayable — EffectKind::Async de-fuses them (soak
-// jul07b, findings/hof-once-latch-jul2026).
+// None: the dirs builtins are once-latched, so Async.
 
 const CONFIG_DIR: &str = r#"
     sys::dirs::config_dir()

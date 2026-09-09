@@ -1,7 +1,4 @@
-// End-to-end fusion tests: drive `rt.load()` with small graphix
-// programs and verify the resulting Value. Exercises the synthetic
-// Do-wrap path in `gx.load()` and (where applicable) the splice
-// of zero-input Region kernels in `fusion::fuse`.
+// End-to-end fusion tests over `rt.load()`.
 
 use crate::init;
 use anyhow::{Result, bail};
@@ -45,13 +42,8 @@ async fn load_and_await(code: &str) -> Result<Value> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn load_qop_unwraps_result() -> Result<()> {
-    // Qop on a `Result` return — the qop-unwrap CLIF emission
-    // extracting the success value. Re-pointed under STRICT FUSION
-    // (design/strict_fusion.md): the old `re::is_match(...)?` carrier
-    // is a non-fastcall DynCall and node-walks now, so the unwrap is
-    // pinned over checked arith (`(1 +? 1)?` — a pure emitted op
-    // returning the same Nullable shape). JIT must fire because
-    // there's no Block-with-let wrapper here.
+    // A `?` over checked arith: the unwrap emits in-kernel and the JIT
+    // fires.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
@@ -91,11 +83,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn load_variadic_and_jits() -> Result<()> {
-    // `and(true, true, false)` — variadic builtin (`@args: bool`)
-    // through the `BuiltinSlot::Variadic` DynCall slot path. Under
-    // STRICT FUSION (design/strict_fusion.md) that path refuses and
-    // the call node-walks — this test now pins the refusal (the
-    // machinery is deletion inventory); the value must be identical.
+    // A variadic builtin call node-walks; the value is unchanged.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
@@ -133,10 +121,7 @@ async fn load_variadic_and_jits() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn load_array_literal_jits() -> Result<()> {
-    // `[1, 2, 3]` as a program body — exercises `ExprKind::Array`
-    // lowering via the new `emit_array_new` path, which reuses
-    // the tuple-new CLIF emission and tags the outer type as an i64 array.
-    // Counter > 0 proves the JIT'd kernel ran.
+    // `[1, 2, 3]` as a program body; the counter proves the kernel ran.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
@@ -179,30 +164,19 @@ async fn load_array_literal_jits() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn load_single_arith() -> Result<()> {
-    // Smallest possible fusable program: one top-level expression
-    // with no free variables. After the load-wrap this becomes a
-    // Do block containing one Region candidate (the `1 + 2`); the
-    // fusion phase replaces it with a kernel-backed FusedKernel.
+    // The smallest fusable program: one expression, no free variables.
     let v = load_and_await("1 + 2").await?;
     assert_eq!(v, Value::I64(3));
     Ok(())
 }
 
-/// End-to-end test of the builtin-call DynCall path. Loads a
-/// program that calls `core::bit_and` — a sync builtin with two
-/// `i64` args and an `i64` return. Discovery should register the
-/// call site as a `FnSource::Builtin` slot; the JIT-compiled
-/// kernel issues a DynCall that dispatches into the
-/// builtin's `Apply::update` through `dispatch_typed`. The
-/// counter assertion proves the JIT'd wrapper ran (so the
-/// builtin's DynCall actually executed natively).
+/// A sync builtin call (`core::bit_and`) in a fused region.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn load_calls_builtin_bit_and() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    // Reset AFTER init so we count only fixture JIT, not stdlib
-    // root-module compilation.
+    // Reset after init so only fixture invocations are counted.
     graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let res = ctx
         .rt
@@ -237,12 +211,8 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
     Ok(())
 }
 
-/// Positive verification of the test-harness's JIT-invocation
-/// counter. Reset the counter, drive a fixture that should JIT
-/// end-to-end (`1 + 2` through `rt.load()`), then read the
-/// counter — must be `> 0` after the cycle. Proves the counter
-/// itself works, independently of the `run!` macro's three-mode
-/// expansion which doesn't reach the wrap-Do path today.
+/// The JIT-invocation counter itself: `1 + 2` through `rt.load()`
+/// counts.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn jit_counter_bumps_on_load() -> Result<()> {
@@ -261,8 +231,7 @@ async fn jit_counter_bumps_on_load() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn load_arith_chain() -> Result<()> {
-    // A slightly more interesting Region: nested arithmetic, still
-    // zero free variables.
+    // Nested arithmetic, zero free variables.
     let v = load_and_await("(2 * 3) + (4 * 5)").await?;
     assert_eq!(v, Value::I64(26));
     Ok(())
@@ -270,14 +239,7 @@ async fn load_arith_chain() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn load_bind_then_expr() -> Result<()> {
-    // A file with a Bind followed by an output expression. The
-    // walker registers the Bind as a ValueBind (currently skipped
-    // — no kernel, just stays as the normal Bind Node) and the
-    // trailing `x + 1` as a Region. The Region has a free-var
-    // Ref to `x`, so today's zero-input-only build path will
-    // refuse to fuse it (build_region returns Err); the
-    // expression still evaluates correctly via the regular
-    // interpreter.
+    // A Bind followed by an output expression referencing it.
     let v = load_and_await("let x = 5; x + 1").await?;
     assert_eq!(v, Value::I64(6));
     Ok(())
@@ -285,18 +247,11 @@ async fn load_bind_then_expr() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn compile_then_compile_external_scalar() -> Result<()> {
-    // Sanity check the underlying "compile registers a binding,
-    // subsequent compile sees it" property without invoking the
-    // load-wrap path. If this fails the wrap-based test would too
-    // for unrelated reasons.
+    // A compile registers a binding a subsequent compile sees.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    // Keep the first compile's result alive — `CompExp::drop` sends
-    // ToGX::Delete which calls Bind::delete and unbinds `foo` from
-    // env. `let _ = ...` would drop the result immediately, racing
-    // the Delete against the second compile. Binding to `_first`
-    // (or any non-`_` name) keeps it alive through the second
-    // compile.
+    // `CompExp::drop` unbinds `foo`; keep the first result alive through
+    // the second compile.
     let _first = ctx.rt.compile(ArcStr::from("let foo = 7;")).await?;
     let res = ctx.rt.compile(ArcStr::from("foo * 6")).await?;
     let eid = res.exprs[0].id;
@@ -321,14 +276,8 @@ async fn compile_then_compile_external_scalar() -> Result<()> {
     }
 }
 
-/// End-to-end string region-input param: an external (cross-compile)
-/// string binding `s` flows into a fused kernel as a real
-/// `string_params` slot, consumed by `str::len`. Proves the discovery
-/// → `populate_kernel_inputs` → runtime arg-packing chain for a String
-/// kernel parameter (not const-inlined, since the binding lives in a
-/// separate compilation unit). The direct ABI round-trip lives in
-/// `fusion::{kernel,emit}::tests::*string_and_value_kernel_params`; this
-/// closes the discovery + native-dispatch half.
+/// An external string binding flows into a fused kernel as a string
+/// param consumed by `str::len`.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn external_string_region_param() -> Result<()> {
@@ -363,10 +312,8 @@ async fn external_string_region_param() -> Result<()> {
     }
 }
 
-/// End-to-end value-shape region-input param: an external `datetime`
-/// binding flows into a fused kernel as a `value_params` slot and is
-/// consumed by the value-arith CLIF emission (`d + duration:1.s`). The result is
-/// a `datetime`, decoded back through the two-register value boundary.
+/// An external `datetime` binding flows into a fused kernel as a value
+/// param consumed by `d + duration:1.s`.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn external_datetime_region_param() -> Result<()> {
@@ -411,23 +358,12 @@ async fn external_datetime_region_param() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn load_uses_external_scalar() -> Result<()> {
-    // First inline-compile a binding so it lives at root scope:
-    // `let foo = 7`. Then load a file `foo * 6`. The load wraps the
-    // file in a synthetic Do block, but `foo` is bound OUTSIDE the
-    // wrap (at root scope from the earlier compile). That makes
-    // `foo` a free-var Ref inside the wrap-Do's body — exactly the
-    // case `fusion::fuse` is supposed to handle: discover the
-    // external ref, build a scalar kernel input slot for it, splice
-    // a `FusedKernel` whose `Ref` feeder subscribes to `foo`'s
-    // BindId, pack the latest value into the wrapper's u64 args,
-    // and invoke native code.
+    // `foo` is bound at root scope by an earlier compile, so it is a
+    // free-var Ref inside the loaded file: a scalar kernel input.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    // Stage 1: register `foo = 7` at root scope.
-    // Keep first compile result alive — see note in
-    // `compile_then_compile_external_scalar`.
+    // Keep the first compile's result alive (see above).
     let _first = ctx.rt.compile(ArcStr::from("let foo = 7;")).await?;
-    // Stage 2: load a file referring to it.
     let res = ctx.rt.load(Source::Internal(ArcStr::from("foo * 6"))).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -453,17 +389,11 @@ async fn load_uses_external_scalar() -> Result<()> {
     }
 }
 
-// ─── Closure conversion (Phase C) ────────────────────────────────
-//
-// A capturing lambda's body references an outer binding. Closure
-// conversion lifts each capture to an extra positional kernel arg;
-// the caller forwards the capture's current value. These tests drive
-// the full load() pipeline and assert the produced Value. Where the
-// closure should fuse, a JIT_INVOCATIONS assertion proves the
-// kernel actually ran natively (not an interpreter fall-back).
+// Closure conversion: a capturing lambda's captures become extra kernel
+// args the caller forwards.
 
-/// Load `code`, return both the produced Value and the
-/// JIT-invocation delta across the load (reset before, read after).
+/// Load `code`, returning the produced Value and the JIT-invocation
+/// delta across the load.
 #[cfg(debug_assertions)]
 async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
@@ -495,10 +425,7 @@ async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
     Ok((value, inv))
 }
 
-/// C1 — single primitive capture. `let y = 7; let f = |x| x + y;
-/// f(3)` → 10. The lambda `f` captures `y`; closure conversion
-/// lifts `y` to `f`'s kernel as a second positional arg, and the
-/// parent forwards its current value (7) at the call site.
+/// A single primitive capture: `let y = 7; let f = |x| x + y; f(3)` is 10.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn closure_primitive_capture() -> Result<()> {
@@ -508,14 +435,8 @@ async fn closure_primitive_capture() -> Result<()> {
     Ok(())
 }
 
-/// C2 — composite capture (tuple). `let t = (1, 2); let g = |x|
-/// t.0 + t.1 + x; g(10)` → 13. The capture `t` is a tuple, so the
-/// call passes a composite arg across the kernel boundary. The
-/// interpreter routes it into the callee's tuple slot
-/// (`eval_kernel_full`); the JIT's cross-kernel-call emission doesn't lower
-/// composite args yet, so in jit mode `fuse()` falls back to the
-/// interpreter. Either way the value is correct. When #131-JIT lands,
-/// upgrade this to `load_value_and_jit` + assert `JIT_INVOCATIONS > 0`.
+/// A composite (tuple) capture passed across the kernel boundary:
+/// `g(10)` is 13.
 #[tokio::test(flavor = "current_thread")]
 async fn closure_tuple_capture_falls_back() -> Result<()> {
     let v = load_and_await("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)").await?;
@@ -523,10 +444,7 @@ async fn closure_tuple_capture_falls_back() -> Result<()> {
     Ok(())
 }
 
-/// C3 — nested closures. `let z = 100; let outer = |x| { let inner =
-/// |y| y + z; inner(x) }; outer(5)` → 105. Both `outer` and `inner`
-/// capture `z`; the cascade is automatic via the recursive `Refs`
-/// walk.
+/// Nested closures both capturing `z`: `outer(5)` is 105.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn closure_nested_capture() -> Result<()> {
@@ -538,10 +456,8 @@ async fn closure_nested_capture() -> Result<()> {
     Ok(())
 }
 
-/// C7 — capture vs same-named parent shadow. `let y = 7; let f = |x|
-/// x + y; { let y = 100; f(5) }` → 12 (f captures the OUTER y=7, not
-/// the inner y=100). This is the BindId-keyed-lookup correctness
-/// test: a name-keyed capture lookup would forward 100 and yield 105.
+/// A capture resolves by BindId, not name: `f` captures the outer y=7
+/// past an inner `let y = 100`, so `f(5)` is 12.
 #[tokio::test(flavor = "current_thread")]
 async fn closure_capture_respects_shadow() -> Result<()> {
     let v = load_and_await("let y = 7; let f = |x| x + y; { let y = 100; f(5) }").await?;
@@ -549,11 +465,8 @@ async fn closure_capture_respects_shadow() -> Result<()> {
     Ok(())
 }
 
-/// C8 — fn-typed external (statically resolved). `let f = |x| x + 1;
-/// let g = |y| f(y) * 2; g(5)` → 12. `g` references `f` (a function),
-/// which is NOT a value capture — the body's CallSite resolves to
-/// `f`'s kernel and emits a cross-kernel call. Verifies fn externals
-/// don't break closure conversion.
+/// A fn-typed external resolves statically to a cross-kernel call:
+/// `g(5)` is 12.
 #[tokio::test(flavor = "current_thread")]
 async fn closure_fn_external_static() -> Result<()> {
     let v = load_and_await("let f = |x| x + 1; let g = |y| f(y) * 2; g(5)").await?;
@@ -561,17 +474,8 @@ async fn closure_fn_external_static() -> Result<()> {
     Ok(())
 }
 
-/// Cross-kernel-call arg ordering regression guard: a lambda whose
-/// formal args are `(composite, scalar)`. The callee's ABI groups
-/// params by kind (scalars first, then composite pointers — see
-/// `KernelSig::abi_params`), so a naive positional arg pass would
-/// route the scalar `5` into the tuple-pointer slot and dereference
-/// it (a misaligned-pointer crash). The interpreter buckets each arg
-/// by `AbiKind` into the right slot, so `g((10,20), 5)` = 35 with no
-/// crash. (The JIT cross-kernel-call emission returns Err for the composite
-/// arg and falls back to interp until #131-JIT; that's where this
-/// guard matters most — the JIT must assemble args in kind-grouped
-/// order.)
+/// Cross-kernel call args are bucketed by ABI kind: `g((10,20), 5)` is
+/// 35 with `(composite, scalar)` formals.
 #[tokio::test(flavor = "current_thread")]
 async fn call_arg_order_composite_then_scalar() -> Result<()> {
     let v = load_and_await(
@@ -582,14 +486,8 @@ async fn call_arg_order_composite_then_scalar() -> Result<()> {
     Ok(())
 }
 
-/// #153 — impure HOF callback, maximal sync-subgraph split. The
-/// callback `|x| { let v = x*2+1; counter <- v; v }` is impure (the
-/// `counter <- v` Connect is an async op), so the WHOLE body can't
-/// fuse. The split engine carves the sync sub-region `x*2+1` out of
-/// the body, builds a shared kernel for it, and splices that kernel
-/// into each per-slot callback body at slot construction — fusing the
-/// calc while the Connect stays interpreted. Asserts both the value
-/// AND that the sync kernel JIT-ran (`inv > 0`).
+/// An impure HOF callback (`counter <- v`): the sync sub-region fuses
+/// while the connect node-walks.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_callback_splits() -> Result<()> {
@@ -610,13 +508,8 @@ async fn impure_hof_callback_splits() -> Result<()> {
     Ok(())
 }
 
-/// #153 — impure HOF callback whose sync sub-region CAPTURES an outer
-/// binding. `let k=10; … |x| { let v = x*k; counter <- v; v }` →
-/// [10,20,30]. The in-place split fuses `x*k` with inputs `{x (element),
-/// k (capture)}`; `try_fuse`'s `collect_region_inputs` builds a feeder
-/// for each, and `clone_rebind` re-resolves them per slot by name — `k`'s
-/// feeder reads the live outer binding. Locks in the capture-feeder path
-/// the element-only fixture above doesn't exercise.
+/// The impure callback's sync sub-region captures an outer binding `k`:
+/// `[10,20,30]`.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_callback_split_captures() -> Result<()> {
@@ -634,13 +527,8 @@ async fn impure_hof_callback_split_captures() -> Result<()> {
     Ok(())
 }
 
-/// #157 — a BUILTIN call (`sys::net::publish`, async) inside an impure
-/// callback. The callback goes through MapQ's per-slot clone path; the
-/// inner `publish` CallSite is unbound in the analysis-only template, so
-/// each slot's clone re-binds it on first update → a fresh independent
-/// publication per slot (no per-builtin clone code). End-to-end guard
-/// that a builtin in a callback residue fuses + runs through clone_rebind.
-/// Map value is the tail `v` = `[2,4,6]`.
+/// An async builtin (`sys::net::publish`) inside an impure callback:
+/// each slot gets its own publication; the map value is `[2,4,6]`.
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_builtin_in_residue() -> Result<()> {
     let v = load_and_await(
@@ -658,21 +546,13 @@ async fn impure_hof_builtin_in_residue() -> Result<()> {
     Ok(())
 }
 
-// ─── clone_rebind equivalence matrix ──
-//
-// Each fixture forces a callback body through MapQ's per-slot CLONE path —
-// the `counter <- x` makes the callback async, so MapQ runs and the
-// separate-clone clones the *pristine* body through the structural
-// `clone_rebind` impls — AND captures an outer binding `k`. If any
-// structural clone has a wrong field, a dropped child, or a lost capture,
-// the produced value goes wrong and the test fails. The job is to find a
-// bug, not to pass.
+// clone_rebind equivalence: each fixture forces a callback body through
+// MapQ's per-slot clone path and captures an outer `k`.
 
 /// Map `body` (an expr over element `x: i64` and captured `k: i64 = 3`)
-/// over `[1,2,3,4]` through the clone path; return the result array.
+/// over `[1,2,3,4]` through the clone path.
 async fn clone_map(body: &str) -> Result<Value> {
-    // `counter <- x` first (makes the callback async → MapQ + clone path);
-    // `body` is the block's value, so it may itself be `let …; expr`.
+    // `counter <- x` makes the callback async; `body` may be `let …; expr`.
     let prog = format!(
         "let counter = 0; let k = 3; \
          array::map([1, 2, 3, 4], |x: i64| {{ counter <- x; {body} }})"
@@ -680,12 +560,8 @@ async fn clone_map(body: &str) -> Result<Value> {
     load_and_await(&prog).await
 }
 
-/// Reference path: the SAME `body` over the SAME inputs WITHOUT the
-/// clone — a PURE callback (no `counter <-`), so MapQ either region-
-/// fuses it into one kernel or falls back to a fresh per-slot
-/// `genn::apply` interpreted CallSite. Either way it never touches the
-/// `clone_rebind` template path. `body` must be a single expression
-/// (no leading `let`), so the bare-expression lambda body is valid.
+/// The reference path: the same `body` over the same inputs as a pure
+/// callback (no clone). `body` must be a single expression.
 async fn pure_map(body: &str) -> Result<Value> {
     let prog = format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {body})");
     load_and_await(&prog).await
@@ -725,18 +601,8 @@ fn assert_nested_i64s(v: &Value, expected: &[&[i64]]) -> Result<()> {
     Ok(())
 }
 
-// ─── #168 nested-HOF grandparent-capture regression ───────────────────
-//
-// A HOF whose INNER callback references a GRANDPARENT capture (a binding
-// outside BOTH HOFs) hung: the inner bare Lambda node fell to the
-// recompile-default `clone_rebind`, which — because `Lambda::refs` is
-// empty — never aliased the capture into the per-slot clone scope (rooted
-// in the array package, not the program), so the capture couldn't resolve
-// and the inner map produced nothing. Fixed by aliasing the lambda body's
-// def-resolvable free vars in `Lambda::clone_rebind`. The single-level and
-// outer-element-capture cases always worked (the latter is bound into the
-// per-slot scope by MapQ); these assert the grandparent case + that the
-// working cases didn't regress.
+// Nested HOFs: an inner callback referencing a grandparent capture (a
+// binding outside both HOFs) resolves.
 
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_grandparent_capture() -> Result<()> {
@@ -748,9 +614,8 @@ async fn nested_hof_grandparent_capture() -> Result<()> {
     assert_nested_i64s(&v, &[&[101], &[101]])
 }
 
-/// Inner callback captures BOTH the outer element `y` (slot-local) and a
-/// grandparent `n` — the fix must alias `n` while leaving `y` (resolvable
-/// in the per-slot scope) alone.
+/// The inner callback captures both the outer element `y` and a
+/// grandparent `n`.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_capture_element_and_grandparent() -> Result<()> {
     let v = load_and_await(
@@ -761,7 +626,7 @@ async fn nested_hof_capture_element_and_grandparent() -> Result<()> {
     assert_nested_i64s(&v, &[&[7], &[8]])
 }
 
-/// nested `fold` (not map-specific) referencing a grandparent capture.
+/// A nested `fold` referencing a grandparent capture.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_fold_grandparent_capture() -> Result<()> {
     let v = load_and_await(
@@ -773,9 +638,7 @@ async fn nested_fold_grandparent_capture() -> Result<()> {
     assert_i64s(&v, &[101, 101])
 }
 
-/// Same grandparent-capture nest under the PURE NODE WALK
-/// (`CFlag::FusionDisabled`) — the canonical model must produce the value
-/// (MapQ uses clone_rebind for the per-slot graph even with fusion off).
+/// The grandparent-capture nest under the pure node-walk.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_grandparent_capture_node_walk() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(16);
@@ -819,16 +682,8 @@ async fn nested_hof_grandparent_capture_node_walk() -> Result<()> {
     }
 }
 
-// ─── #169: function-typed grandparent capture in a nested HOF ──────────
-//
-// `let f = |z| z*2; array::map([1,2], |y| array::map([1], |x| f(x)))` —
-// the inner callback CALLS `f`, a function-typed grandparent capture.
-// Was a one-line root cause: `Expr::fold` skipped the Apply's `function`
-// position, so the #168 `Lambda::clone_rebind` alias pass never saw the
-// callee `f` and the inner callback's recompile couldn't resolve it.
-// Fixed by making `Expr::fold` a full-tree walk. Value-position captures
-// (#168) always went through fold's already-covered arms; only call-
-// position refs were dropped.
+// A function-typed grandparent capture called from a nested HOF's
+// inner callback resolves.
 
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_function_capture() -> Result<()> {
@@ -840,8 +695,7 @@ async fn nested_hof_function_capture() -> Result<()> {
     assert_nested_i64s(&v, &[&[2], &[2]])
 }
 
-/// Function capture mixed with a value capture — exercises both fold
-/// arms (call position `f` + value position `n`).
+/// A function capture mixed with a value capture.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_function_and_value_capture() -> Result<()> {
     let v = load_and_await(
@@ -852,9 +706,7 @@ async fn nested_hof_function_and_value_capture() -> Result<()> {
     assert_nested_i64s(&v, &[&[102], &[102]])
 }
 
-/// A nested ANONYMOUS lambda call capturing a grandparent — the callee is
-/// a Lambda expr in function position, which the fold fix also now
-/// descends into (collecting the inner lambda's own capture `n`).
+/// A nested anonymous lambda call capturing a grandparent.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_anon_lambda_capture() -> Result<()> {
     let v = load_and_await(
@@ -865,8 +717,7 @@ async fn nested_hof_anon_lambda_capture() -> Result<()> {
     assert_nested_i64s(&v, &[&[6], &[6]])
 }
 
-/// #169 under the PURE NODE WALK (`CFlag::FusionDisabled`) — the
-/// canonical model must produce the value.
+/// The function-typed grandparent capture under the pure node-walk.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_function_capture_node_walk() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(16);
@@ -910,17 +761,10 @@ async fn nested_hof_function_capture_node_walk() -> Result<()> {
     }
 }
 
-// ─── #170: Expr::fold completeness (StructWith.source + arg defaults) ──
-//
-// The #168/#169 capture-alias pass `fold`s the callback body to collect
-// free-var names. `Expr::fold` was silently INCOMPLETE — beyond the
-// #169 `Apply.function` gap it also skipped `StructWith.source` (via a
-// `..` pattern) and lambda labeled-arg DEFAULT expressions. So a capture
-// in those positions inside a nested HOF wasn't aliased → hang. Fixed by
-// making `Expr::fold` a true full-tree walk.
+// Captures in `StructWith.source` and labeled-arg default positions
+// inside a nested HOF resolve.
 
-/// A struct functional-update `{base with a: x}` whose `base` is a
-/// grandparent capture (StructWith.source position).
+/// `{base with a: x}` whose `base` is a grandparent capture.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_structwith_source_capture() -> Result<()> {
     let v = load_and_await(
@@ -932,8 +776,7 @@ async fn nested_hof_structwith_source_capture() -> Result<()> {
     assert_nested_i64s(&v, &[&[9], &[9]])
 }
 
-/// A labeled-arg DEFAULT that captures a grandparent (`#off = n`) — fold
-/// now visits `Arg.labeled` defaults.
+/// A labeled-arg default that captures a grandparent (`#off = n`).
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_labeled_default_capture() -> Result<()> {
     let v = load_and_await(
@@ -1045,11 +888,8 @@ async fn clone_nested_capture() -> Result<()> {
     )
 }
 
-/// #162 — a `select` with an arm BINDING (`n =>` catch-all) as a `let`
-/// value, inside the per-slot clone path. The arm body's `Ref(n)` now
-/// resolves to the scrutinee via `known_consts` (the fix in
-/// `emit_arm_condition`'s `Bind` arm); previously it lowered to a
-/// dangling local read of `n` that panicked at runtime.
+/// A `select` with an arm binding (`n =>` catch-all) as a `let` value
+/// inside the per-slot clone path.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_select_let_bound() -> Result<()> {
     assert_i64s(
@@ -1058,10 +898,7 @@ async fn clone_select_let_bound() -> Result<()> {
     )
 }
 
-/// Same body region-fused (no `counter <-`, so it never touches MapQ's
-/// clone path) — the region-fuse path also panicked before the #162 fix,
-/// confirming the defect was in `emit_select_as_expr`/`emit_arm_condition`,
-/// not the per-slot clone.
+/// The same body region-fused through `pure_map`.
 async fn region_map(body: &str) -> Result<Value> {
     let prog = format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {{ {body} }})");
     load_and_await(&prog).await
@@ -1075,15 +912,9 @@ async fn region_select_let_bound() -> Result<()> {
     )
 }
 
-// ─── #162 fused-select-with-binding regression suite ──────────────────
-//
-// The matrix's `clone_select_*` fixtures use the IMPURE `clone_map`
-// harness, whose split path does NOT fuse the callback's tail expr — so
-// the select ran INTERPRETED there, silently dodging the bug. These use
-// the PURE `pure_map` harness, which actually fuses the select into the
-// kernel, and assert BOTH the value AND that a fused kernel ran
-// (`fusion_invocations > 0`) — so a regression that makes the
-// select-with-binding stop fusing (or fuse wrong) fails loudly.
+// Fused select-with-binding through the pure `pure_map` harness, which
+// fuses the select into the kernel; asserts the value and that a kernel
+// ran.
 
 #[cfg(debug_assertions)]
 async fn pure_select_value_and_fusion(body: &str) -> Result<(Value, u64)> {
@@ -1102,8 +933,7 @@ async fn fused_select_catch_all() -> Result<()> {
     assert_i64s(&v, &[3, 6, 9, 12])
 }
 
-/// Typed capture `i64 as n =>` — structurally identical to catch-all
-/// (the `i64` is only the type predicate). `[3,6,9,12]`, fused.
+/// Typed capture `i64 as n =>`: `[3,6,9,12]`, fused.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_typed_capture() -> Result<()> {
@@ -1113,9 +943,7 @@ async fn fused_select_typed_capture() -> Result<()> {
     assert_i64s(&v, &[3, 6, 9, 12])
 }
 
-/// Typed capture used in a GUARD and the body (`a > k`, `a + k`). The
-/// binding must be visible to the guard, which is emitted after the
-/// structure predicate. `[3,6,9,7]`, fused.
+/// Typed capture used in a guard and the body: `[3,6,9,7]`, fused.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_guard_capture() -> Result<()> {
@@ -1127,8 +955,7 @@ async fn fused_select_guard_capture() -> Result<()> {
     assert_i64s(&v, &[3, 6, 9, 7])
 }
 
-/// Binding select wrapped in arithmetic (non-tail, non-let position).
-/// `1 + (select …)` → `[4,7,10,13]`, fused.
+/// A binding select in arithmetic position: `[4,7,10,13]`, fused.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_arith_wrapped() -> Result<()> {
@@ -1138,16 +965,8 @@ async fn fused_select_arith_wrapped() -> Result<()> {
     assert_i64s(&v, &[4, 7, 10, 13])
 }
 
-// ─── adversarial-review findings (scrutinee eval-once + variant shadow) ─
-
-/// Review Finding 1: a NON-IDEMPOTENT scrutinee (a `rand()` Sync DynCall)
-/// must be evaluated EXACTLY ONCE — bound to a temp — not re-evaluated at
-/// each arm-condition / pattern-binding reference. `n == n` is `true` iff
-/// `n` denotes a single draw; before the stabilize-scrutinee fix it
-/// returned `false` (the two `n` references each re-dispatched `rand`,
-/// drawing divergent values). Deterministic-true despite the random
-/// scrutinee — that's the whole point. `fusion > 0` proves it's the fused
-/// path (the bug was fusion-only; interp always evaluated once).
+/// A non-idempotent scrutinee (`rand()`) is evaluated exactly once:
+/// `n == n` is true on the fused path.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
@@ -1165,12 +984,8 @@ async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
     Ok(())
 }
 
-/// Stabilization machinery in a JIT-able kernel: a NON-Local (arith)
-/// scrutinee `x + 1` is bound to a temp, captured by `m`, referenced 3×
-/// — `m + m + m` = `3*(x+1)` → `[6,9,12,15]`. The Local-scrutinee
-/// fixtures above skip the temp path (a raw Local is left as-is); this
-/// exercises the `Block`/`Let` wrapper end-to-end with no DynCall, so it
-/// JITs. `fusion > 0`.
+/// A non-Local scrutinee `x + 1` bound to a temp and referenced three
+/// times: `[6,9,12,15]`, fused.
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_stabilize_multiref() -> Result<()> {
@@ -1180,7 +995,7 @@ async fn fused_select_stabilize_multiref() -> Result<()> {
     assert_i64s(&v, &[6, 9, 12, 15])
 }
 
-/// Same, with subtraction: `n - n` is `0` iff `n` is one draw.
+/// Same with subtraction: `n - n` is 0.
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_scrutinee_once_subtract() -> Result<()> {
     let v = load_and_await(
@@ -1192,11 +1007,8 @@ async fn fused_select_scrutinee_once_subtract() -> Result<()> {
     Ok(())
 }
 
-/// Review Finding 2: a variant payload bind whose name shadows a kernel
-/// input (here the element `x`) must NOT read the input. The shadow guard
-/// bails to the interpreter, producing the correct payload value
-/// `[14,15,16,17]` (= `(x+10) + k`); before the guard the fused kernel
-/// read the element `x` + `k` = `[4,5,6,7]`.
+/// A variant payload bind whose name shadows a kernel input reads the
+/// payload, not the input: `[14,15,16,17]`.
 #[tokio::test(flavor = "current_thread")]
 async fn fused_variant_payload_shadow() -> Result<()> {
     let v = load_and_await(
@@ -1209,16 +1021,8 @@ async fn fused_variant_payload_shadow() -> Result<()> {
     assert_i64s(&v, &[14, 15, 16, 17])
 }
 
-/// #167 (FIXED): a `select` arm BINDING (`n =>`) that shadows an outer
-/// `n` which ANOTHER arm references (`1 => n`), inside a per-slot HOF
-/// callback. Was a node-graph correctness bug: `Select::clone_rebind`
-/// (which builds the per-slot node graph) re-minted every arm's pattern
-/// in ONE shared scope instead of per-arm `sel<id>` sub-scopes (as
-/// `Select::compile` does), so a later clone resolved arm 1's `Ref(n)` to
-/// arm 2's stale sibling binding — never written when arm 1 fires — and
-/// the slot produced nothing → the map hung. Fixed by appending a fresh
-/// per-arm scope in `Select::clone_rebind`. x=1 → arm 1 → outer `n`=100;
-/// x=2..4 → arm 2 binds the scrutinee → 4,6,8. The timeout keeps a
+/// A `select` arm binding that shadows an outer `n` another arm reads,
+/// inside a per-slot callback: `[100,4,6,8]`. The timeout keeps a
 /// regression from hanging the suite.
 #[tokio::test(flavor = "current_thread")]
 async fn shadow_arm_binding_outer_ref() -> Result<()> {
@@ -1232,12 +1036,7 @@ async fn shadow_arm_binding_outer_ref() -> Result<()> {
     }
 }
 
-/// #167 under the PURE NODE WALK (`CFlag::FusionDisabled`). The node-walk
-/// interpreter is graphix's canonical execution model and must be correct
-/// independently of fusion — MapQ builds the per-slot graph via
-/// `clone_rebind` even with fusion off, so this exercises the same
-/// `Select::clone_rebind` scope fix. Asserts `[100,4,6,8]` with a timeout
-/// so a regression fails rather than hangs the suite.
+/// The same under the pure node-walk: `[100,4,6,8]`.
 #[tokio::test(flavor = "current_thread")]
 async fn shadow_arm_binding_node_walk() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(16);
@@ -1281,28 +1080,12 @@ async fn shadow_arm_binding_node_walk() -> Result<()> {
     }
 }
 
-// ─── env-accounting invariant ─────
-//
-// The clone↔delete symmetry nag: every per-slot grow mints bindings
-// (MapQ's `bind_variable("x")` + the cloned template's internal
-// bindings + their runtime ref-var edges); every shrink runs
-// `Slot::delete` (`pred.delete` + `unbind_variable`). If delete fails
-// to fully reverse clone_rebind, `env.by_id` and/or the runtime
-// `by_ref` registry grow without bound in a long-lived reactive
-// program — a leak nothing turns red for. This drives an impure HOF
-// array up and down repeatedly and asserts the registries return to
-// the SAME size at the bottom of every cycle. A per-cycle leak shows
-// as growth; the peak-vs-bottom assert proves the slots actually
-// allocate (so a trivially-passing "nothing leaks because nothing
-// binds" can't hide). Uses `GXHandle::env_stats` (the introspection
-// hook this effort added) and drives `arr` by BindId via `set`, so
-// the measurement apparatus mints no bindings of its own.
+// Env accounting: every per-slot grow mints bindings and every shrink
+// must reverse them. Drives an impure HOF array up and down and asserts
+// the registries return to the same size at the bottom of every cycle.
 
-/// Drain `rx` until the map at `eid` emits an array of `target` length
-/// (its length is fixed by the input array length the instant the set
-/// lands — the per-element values settle later, but length is
-/// immediate — so this is a clean "the grow/shrink cycle completed"
-/// signal). Times out after 5s.
+/// Drain `rx` until the map at `eid` emits an array of `target` length;
+/// times out after 5s.
 async fn await_map_len(
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     eid: graphix_compiler::expr::ExprId,
@@ -1327,7 +1110,7 @@ async fn await_map_len(
     }
 }
 
-/// Build `Value::Array([1, 2, …, n])`.
+/// `Value::Array([1, 2, …, n])`.
 fn iota(n: i64) -> Value {
     let v: Vec<Value> = (1..=n).map(Value::I64).collect();
     Value::Array(netidx_value::ValArray::from(v))
@@ -1340,19 +1123,9 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(64);
     let ctx = init(tx).await?;
 
-    // Bind `arr` (the reactive input we drive by id) at root scope. Keep
-    // `_first` alive so its `CompExp::drop`-triggered Delete doesn't race
-    // the second compile (see compile_then_compile_*).
-    //
-    // The callback impurity is `throttle(x)` — a genuinely-async builtin
-    // that stays a fusion boundary. (A connect no longer works here: a
-    // connect to an EXTERNAL variable now FUSES into the callback kernel,
-    // and a LOCAL connect-target de-fuses the WHOLE callback via the
-    // read-after-write guard rather than splitting it — either way the
-    // per-slot node-walk residue this test measures disappears; `once`
-    // played this role until the P7 Sync flip.) `throttle` forces the
-    // impure-HOF split: the async residue node-walks per slot
-    // (minting per-slot bindings), the `* 2 + 1` fuses via clone_rebind.
+    // Keep `_first` alive so its Delete does not race the second compile.
+    // `throttle(x)` is the async fusion boundary that forces the per-slot
+    // node-walk residue this test measures.
     let _first = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
     let res = ctx
         .rt
@@ -1360,8 +1133,8 @@ async fn env_accounting_grow_shrink() -> Result<()> {
         .await?;
     let eid = res.exprs[0].id;
 
-    // Resolve `arr`'s BindId from the env (no Ref node compiled — that
-    // would itself mint a binding + ref and skew the baseline).
+    // Resolve `arr`'s BindId from the env; a compiled Ref would itself
+    // mint a binding and skew the baseline.
     let env = ctx.rt.get_env().await?;
     let scope = Scope::root();
     let arr_id = env
@@ -1376,11 +1149,9 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     let mut bottoms = Vec::new();
     let mut peak = None;
     for _ in 0..CYCLES {
-        // grow → N slots
         ctx.rt.set(arr_id, iota(N))?;
         await_map_len(&mut rx, eid, N as usize).await?;
         peak = Some(ctx.rt.env_stats().await?);
-        // shrink → 0 slots
         ctx.rt.set(
             arr_id,
             Value::Array(netidx_value::ValArray::from_iter_exact(std::iter::empty())),
@@ -1391,10 +1162,7 @@ async fn env_accounting_grow_shrink() -> Result<()> {
 
     ctx.shutdown().await;
 
-    // Every bottom-of-cycle snapshot (arr=[], 0 slots) must be
-    // identical: a per-cycle clone↔delete asymmetry would show as
-    // growth across cycles. The one-time template build persists across
-    // all cycles, so it's present in every snapshot and cancels.
+    // Every bottom-of-cycle snapshot (0 slots) must be identical.
     let base = bottoms[0];
     for (i, b) in bottoms.iter().enumerate() {
         if *b != base {
@@ -1406,9 +1174,8 @@ async fn env_accounting_grow_shrink() -> Result<()> {
         }
     }
 
-    // The test is only meaningful if the slots actually allocate env
-    // bindings — otherwise the invariant holds trivially. Peak (N slots)
-    // must exceed the bottom.
+    // The peak (N slots) must exceed the bottom, or the invariant holds
+    // trivially.
     let peak = peak.unwrap();
     if !(peak.by_id_len > base.by_id_len) {
         bail!(
@@ -1420,28 +1187,12 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     Ok(())
 }
 
-// ─── env-node-in-callback fixtures ─
-//
-// The recompile-default `clone_rebind` (lib.rs) is the ONLY path that
-// `alias_variable`-pollutes the clone scope's name map (nag #1). It
-// fires for the env/reference nodes with no structural override —
-// TryCatch, Sample (~), ByRef/Deref (&/*), ConnectDeref, Module,
-// Use/TypeDef. Each fixture below plants one of those inside an impure
-// callback (the `counter <- x` in `clone_map` forces the per-slot clone
-// path) AND captures the outer binding `k`, so the recompile-default
-// must (a) re-resolve the capture correctly per slot and (b) not let
-// the alias persist into a sibling slot's resolution. A wrong value —
-// or cross-slot contamination — means a bug. The job is to break it.
+// Env/reference nodes (TryCatch, Sample, ByRef/Deref, ...) inside an
+// impure callback that captures the outer `k`: each slot must resolve
+// the capture without contaminating a sibling slot.
 
-/// TryCatch whose CATCH handler FIRES and captures both the element `x`
-/// and the outer `k`. The catch is side-effect-only (a direct-value
-/// catch surfaces nothing — try-catch evaluates to the try body's value,
-/// which is `never` when all-error), so the firing path is observed the
-/// way every real test does it (cf. CHECKED_DIV0 in lang/errors.rs): the
-/// catch drives `res <- x + k`. `res = never()` gates the slot's output
-/// until the catch settles, so the map emits `[4,5,6,7]` in one shot
-/// (no racy intermediate). Exercises the cloned catch handler RUNNING +
-/// a Connect inside it + capture of `k` AND `x`.
+/// A catch handler that fires and captures both the element `x` and
+/// the outer `k`, driving `res <- x + k`: `[4,5,6,7]`.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_trycatch_catch_capture() -> Result<()> {
     assert_i64s(
@@ -1456,45 +1207,28 @@ async fn clone_trycatch_catch_capture() -> Result<()> {
     )
 }
 
-/// A covered block whose body captures `k` and does NOT error (no `?`
-/// propagates), so the block value `x / k` is returned every slot.
+/// A covered block that captures `k` and does not error: `x / k`.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_trycatch_try_capture() -> Result<()> {
     assert_i64s(&clone_map("{ catch(e) -1; x / k }").await?, &[0, 0, 1, 1])
 }
 
-/// Sample `x ~ k`: emit `k`'s current value when the element `x` fires.
-/// NOT soundly fusable (k's external refs ⊄ x's), so it stays a
-/// structural `Sample` node → recompile-default. Captures `k` on the
-/// RHS → `[3,3,3,3]`.
+/// `x ~ k` emits `k` when the element fires: `[3,3,3,3]`.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_sample_capture() -> Result<()> {
     assert_i64s(&clone_map("x ~ k").await?, &[3, 3, 3, 3])
 }
 
-/// ByRef + Deref capturing `k`: `&k` builds a reference to the captured
-/// binding, `*r` reads it. Neither has a structural `clone_rebind`, so
-/// both ride the recompile-default. `*r + x` → `[4,5,6,7]`.
+/// ByRef + Deref capturing `k`: `*r + x` is `[4,5,6,7]`.
 #[tokio::test(flavor = "current_thread")]
 async fn clone_byref_deref_capture() -> Result<()> {
     assert_i64s(&clone_map("let r = &k; *r + x").await?, &[4, 5, 6, 7])
 }
 
-// ─── proptest swarm ───────────────
-//
-// The ceiling test: generate random valid i64-valued callback bodies
-// over the element `x` and the capture `k`, and assert the CLONE path
-// (`clone_map`, impure → per-slot clone_rebind of a fused template)
-// produces the SAME array as the non-clone REFERENCE path (`pure_map`,
-// region-fuse or fresh per-slot interpreted CallSite). Any structural
-// clone that drops a child, swaps a field, or loses a capture under
-// some composition makes the two disagree; proptest shrinks to a
-// minimal offending body. The grammar is closed over total i64
-// operations (+, -, *, literal-pattern select, tuple/struct accessors)
-// so every generated body typechecks and evaluates without error — no
-// division (zero), no array index (out-of-bounds), no string.
+// Proptest swarm: random total i64 callback bodies over `x` and `k`;
+// the clone path must agree with the reference path.
 
-/// Random single-expression i64 body over `x`, `k`, and small literals.
+/// A random single-expression i64 body over `x`, `k`, and small literals.
 fn body_strategy() -> impl proptest::strategy::Strategy<Value = String> {
     use proptest::prelude::*;
     let leaf = prop_oneof![
@@ -1507,26 +1241,19 @@ fn body_strategy() -> impl proptest::strategy::Strategy<Value = String> {
             (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a} + {b})")),
             (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a} - {b})")),
             (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("({a} * {b})")),
-            // literal-pattern select (`_` makes it exhaustive)
+            // literal-pattern select
             (inner.clone(), inner.clone(), inner.clone())
                 .prop_map(|(a, b, c)| format!("(select {a} {{ 0 => {b}, _ => {c} }})")),
-            // arm-BINDING select — exercises the #162 fix: the catch-all
-            // `q =>` binds the scrutinee, and the body reads it (`q +
-            // c`). `q` is a fresh name (never x/k and never referenced by
-            // a sibling arm), so it can't hit the #167 shadow-hang. Both
-            // the clone and reference paths must resolve `q` to the
-            // scrutinee value identically.
+            // arm-binding select; `q` is fresh so no sibling arm reads it
             (inner.clone(), inner.clone(), inner.clone()).prop_map(|(a, b, c)| format!(
                 "(select {a} {{ 0 => {b}, q => (q + {c}) }})"
             )),
-            // tuple + accessor — field access needs a binding first
-            // (`(a,b).0` is a parse error), so emit a block-expr; nesting
-            // shadows `p`, which is valid and extra coverage.
+            // tuple + accessor needs a binding (`(a,b).0` is a parse error)
             (inner.clone(), inner.clone())
                 .prop_map(|(a, b)| format!("({{ let p = ({a}, {b}); p.0 }})")),
             (inner.clone(), inner.clone())
                 .prop_map(|(a, b)| format!("({{ let p = ({a}, {b}); p.1 }})")),
-            // struct + accessor — same block-expr shape via `s`.
+            // struct + accessor
             (inner.clone(), inner.clone())
                 .prop_map(|(a, b)| format!("({{ let s = {{f: {a}, g: {b}}}; s.f }})")),
             (inner.clone(), inner.clone())
@@ -1569,13 +1296,8 @@ proptest::proptest! {
     }
 }
 
-// #124: the third test axis — assert on the *compiled artifact*, not
-// just the value (run!) or whether fusion fired (FuseExpect). A
-// `NodeShape` declares what the graph should look like; the runtime
-// checks it against the live post-fusion graph and returns a verdict.
-// `foo * 6` (foo external) is the canonical region fusion case — `foo`
-// lifts to a kernel input and the Mul splices a FusedKernel (see
-// `load_uses_external_scalar`).
+// `NodeShape` asserts on the compiled artifact: `foo * 6` with `foo`
+// external fuses into one kernel with a scalar input.
 #[tokio::test(flavor = "current_thread")]
 async fn node_shape_external_scalar() -> Result<()> {
     use graphix_compiler::{
@@ -1589,24 +1311,17 @@ async fn node_shape_external_scalar() -> Result<()> {
     let res = ctx.rt.compile(ArcStr::from("foo * 6")).await?;
     let eid = res.exprs[0].id;
 
-    // The whole expression fuses into one kernel: scalar input `foo`,
-    // returns i64. (Signature facts + the value check are the shape
-    // oracle — per-op body tags were deliberately NOT rebuilt; see
-    // node_shape.rs.)
     let spec = NodeShape::fused(
         KernelMatcher::new().returns(prim_type(PrimType::I64)).params(&["foo"]),
     );
     ctx.rt.match_shape(eid, spec).await?;
 
-    // The matcher must have teeth: a wrong criterion (the kernel's
-    // one param is `foo`, not `nope`) must produce a mismatch, not
-    // silently pass.
+    // A wrong criterion must produce a mismatch.
     let bad = NodeShape::fused(KernelMatcher::new().params(&["nope"]));
     let err = ctx.rt.match_shape(eid, bad).await;
     assert!(err.is_err(), "matcher should reject a wrong spec, but passed");
 
-    // And asserting it's a plain (non-fused) node must also fail —
-    // the root really is a Fused kernel.
+    // Asserting a plain node on a fused root must fail too.
     let bad2 = NodeShape::node("Block");
     assert!(
         ctx.rt.match_shape(eid, bad2).await.is_err(),
@@ -1619,11 +1334,8 @@ async fn node_shape_external_scalar() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn load_just_bind_no_output() -> Result<()> {
-    // A file whose last statement is a Bind. The synth-Do wraps
-    // around the file, the last child (a Bind Node) returns None
-    // from its update, so the wrap-Do's update also returns None
-    // and the runtime never emits an Updated event. `load()`
-    // reports this via `output: false` on the returned CompExp.
+    // A file whose last statement is a Bind emits nothing; `load()`
+    // reports `output: false`.
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     let res = ctx.rt.load(Source::Internal(ArcStr::from("let x = 5"))).await?;

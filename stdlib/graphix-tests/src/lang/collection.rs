@@ -1,9 +1,6 @@
-// The `Collection` trait (design/recursive_activations.md §6–§7): a
-// constructor trait — `self<'a>` is the receiver's type constructor
-// applied to the element type — implemented by core for `Array` and
-// `Map`, by the list package for `List`, and by programs for their own
-// types; `use Collection::*` makes `map(c, f)` mean the same thing
-// whatever `c` is.
+// The `Collection` constructor trait: `self<'a>` is the receiver's type
+// constructor applied to the element type; `use Collection::*` makes
+// `map(c, f)` mean the same thing whatever `c` is.
 
 use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
@@ -22,9 +19,7 @@ run!(
     "#
 );
 
-// The list implementation: the builtin `List` constructor head
-// (compiler-known since `design/list_native.md`; the impl lives in
-// core beside Array's).
+// The list implementation.
 run!(
     collection_list_fold_map_len,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(63))),
@@ -66,9 +61,8 @@ run!(
     "#
 );
 
-// Newtype delegation (pressure test 1): three required methods over
-// an abstract wrapper of an array; `filter`, `map`, `find` and `len`
-// are the trait's defaults, derived from them.
+// Newtype delegation: three required methods over an abstract wrapper
+// of an array; `filter`, `map`, `find` and `len` are the defaults.
 run!(
     collection_newtype_defaults,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(240))),
@@ -87,21 +81,13 @@ run!(
             v => len(b) * 100 + v
         }
     "#;
-    // The default bodies (`filter`/`map`/`find`) fuse now that
-    // `resolve_static` registers the fn-param before the body typecheck,
-    // so their derived callback `|x| f(x)` resolves the captured method.
-    // Still partial: `len`'s `fold(c, 0, |n,_| n+1)` and the abstract
-    // `Bag` payload paths node-walk (separate blockers), so this asserts
-    // only that fusion now happens.
+    // The default bodies fuse; `len` and the abstract payload paths
+    // node-walk, so this asserts only that fusion happens.
     FuseExpect::Jit
 );
 
-// A linear structure the program defines (pressure test 2's shape): a
-// cons list as a union typedef, its required methods written as
-// annotated recursions at module level. The head `L<'_>` names the
-// constructor; a value's annotated type `L<i64>` decomposes to it by
-// name, and a value whose cell holds the union's EXPANSION recovers it
-// by unifying against the registered heads.
+// A cons list the program defines as a union typedef; `L<'_>` names the
+// constructor and `L<i64>` decomposes to it by name.
 run!(
     collection_user_cons_list,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(122))),
@@ -150,9 +136,7 @@ run!(
             v => v
         }
     "#;
-    // The return-position `select` over `find_map`'s NULLABLE result fuses
-    // via THE UNIFIED RIDE's index dispatch (a value-shaped scrutinee's
-    // bind reads the disc/payload directly, no cache).
+    // The return-position select over `find_map`'s nullable result fuses.
     FuseExpect::Jit
 );
 
@@ -219,11 +203,8 @@ run!(
     FuseExpect::None
 );
 
-// ---- P2b cross-implementation agreement (the semantic face of
-// bench/collection/): the intrinsic, the trait default's body shape,
-// and a hand-written Graphix recursion must agree on VALUES. The
-// harness adds the cross-engine axis; bench/collection/ holds the
-// timed differential over the same shapes.
+// Cross-implementation agreement: the intrinsic, the trait default's
+// body shape, and a hand-written recursion agree on values.
 
 run!(
     collection_bodies_fold_array,
@@ -334,11 +315,8 @@ run!(
     "#
 );
 
-// A TOTAL filter_map callback (no null in its return type) can never
-// produce the Null the intrinsic drops, so the emitter routes it to
-// the map loop — the trait map DEFAULT's shape
-// (`|c, f| filter_map(c, |x| f(x))`) fuses (P2b map-default widening,
-// 2026-08-25).
+// A total filter_map callback (no null in its return type) routes to
+// the map loop, so the trait map default's shape fuses.
 const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 {
   let a = array::init(10, |i| i);
@@ -351,15 +329,9 @@ run!(filter_map_total_callback, FILTER_MAP_TOTAL_CALLBACK, |v: Result<&Value>| m
     Ok(Value::I64(145))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A collection callback with a labeled-DEFAULT parameter before its
-// positional one, instantiated against the HOF's narrow declared type
-// (`fn(x: 'a) -> 'b`), used to TRUNCATE the lambda's param patterns —
-// the zip kept `foo` (bound to its default) and dropped the positional
-// `x`, so the element was never delivered and the body's `x` fell
-// through to an outer binding of the same name (aug27a katana: interp
-// f64:0. / jit i64:0, both wrong — should be 2). The instance now
-// carries both params (a narrow instance signature bails so the
-// dynamic dispatch retries with the full definition signature).
+// A collection callback with a labeled-default parameter before its
+// positional one receives the element in the positional slot; an outer
+// binding of the same name does not leak in. Result 2.
 const LABELED_CALLBACK_OUTER_SHADOW: &str = r#"
 {
   let x = f64:0.;
@@ -374,9 +346,7 @@ run!(labeled_callback_outer_shadow, LABELED_CALLBACK_OUTER_SHADOW,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
     graphix_package_core::testing::FuseExpect::Jit);
 
-// The labeled default is actually READ in the body (foo + x): foo uses
-// its default 42, x is the element, and the outer `x` must NOT leak.
-// (42+10)+(42+20)+(42+30) = 186; the truncation bug gave 42+0. each.
+// The labeled default is read in the body: (42+10)+(42+20)+(42+30) = 186.
 const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
 {
   let x = f64:0.;
@@ -392,16 +362,8 @@ run!(labeled_callback_default_used, LABELED_CALLBACK_DEFAULT_USED,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(186)));
     graphix_package_core::testing::FuseExpect::Jit);
 
-// A HOF nested under ITS OWN callback is a nested loop, not recursion:
-// the callback premats while the outer site resolves, so the inner
-// site arrives with the outer def still active, and the recursion knot
-// (keyed on def alone) stamped it with the outer INSTANCE — the
-// analysis graph read `fold -> callback -> fold` as a cycle and the
-// emitter refused the region as mutual recursion, so the shape
-// node-walked, where every outer slot lazily instantiates the inner
-// loop (bench/collection/flatmap_list, quadratic). The knot keys on
-// instantiation identity now (`FnArgIdentity`: def + the source lambda
-// each fn arg resolves to). The harness's demand for `Jit` is the pin.
+// A HOF nested under its own callback is a nested loop, not recursion:
+// instantiation keys on identity, so the shape fuses.
 const NESTED_SAME_INTRINSIC: &str = r#"
 {
   let src = array::init(i64:200, |i| i);
@@ -428,9 +390,7 @@ run!(nested_map_in_map, NESTED_MAP_IN_MAP, |v: Result<&Value>| matches!(
     Ok(Value::I64(200))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// The same knot for a USER-written HOF: `apply` nested under its own
-// callback. Not a collection intrinsic — the fix is the identity, not a
-// special case.
+// The same for a user-written HOF: `apply` nested under its own callback.
 const USER_HOF_NESTED: &str = r#"
 {
   let apply = |f: fn(x: i64) -> i64, x: i64| f(x);
@@ -445,9 +405,8 @@ run!(user_hof_nested, USER_HOF_NESTED, |v: Result<&Value>| matches!(
     Ok(Value::I64(20100))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// Nested same-def use with DIFFERENT element types: each instantiation
-// gets its own cells (a shared knot would unify the inner fold's
-// strings against the outer's i64s).
+// Nested same-def use with different element types: each instantiation
+// gets its own cells.
 const NESTED_MIXED_TYPES: &str = r#"
 {
   let z = i64:0;

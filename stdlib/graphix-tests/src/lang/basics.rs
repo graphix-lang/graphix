@@ -121,11 +121,8 @@ run!(undefined, UNDEFINED, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A sync variadic builtin called with no positional args has no data
-// inputs — the node can never fire (#216: pre-fix this was a silent
-// bottom, and in a fused kernel the dead pending DynCall bottomed the
-// WHOLE kernel — a value divergence vs the node-walk). Now a compile
-// error pointing the user at never().
+// A sync variadic builtin called with no positional args can never fire:
+// a compile error pointing at never().
 const DEAD_VARIADIC_ZERO_ARGS: &str = r#"
 {
   let v = str::concat();
@@ -138,8 +135,8 @@ run!(dead_variadic_zero_args, DEAD_VARIADIC_ZERO_ARGS, |v: Result<&Value>| match
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Labeled args are config, not data — `join(#sep: ",")` with zero
-// varargs is just as dead as `concat()`.
+// Labeled args are config, not data: `join(#sep: ",")` is as dead as
+// `concat()`.
 const DEAD_VARIADIC_LABELED_ONLY: &str = r#"
 {
   let v = str::join(#sep: ",");
@@ -152,10 +149,7 @@ run!(dead_variadic_labeled_only, DEAD_VARIADIC_LABELED_ONLY, |v: Result<&Value>|
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// never() is the sanctioned way to write a value that never arrives —
-// it must stay legal (it's declared Async, the "later, autonomously,
-// or never" contract, so the dead-variadic check exempts it). The
-// binding never fires; the block's tail still does.
+// never() stays legal; the binding never fires and the tail still does.
 const NEVER_ZERO_ARGS_OK: &str = r#"
 {
   let v = never();
@@ -177,9 +171,7 @@ const ANY0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(any0, ANY0, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -194,7 +186,7 @@ const ANY1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: array construction and builtin selection (any) should fuse
+// ASPIRE: Jit — array construction and builtin selection (any).
 run!(any1, ANY1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s0), Value::String(s1)] => {
@@ -230,10 +222,8 @@ const WRAP_OVERFLOW: &str = r#"
 }
 "#;
 
-// Unchecked integer arith WRAPS on overflow in BOTH modes (the JIT's
-// iadd/isub/imul always did; the node-walk gained the wrapping fast
-// path 2026-07-04 — it previously errored to bottom, which stalled tail
-// loops forever). Checked `+?` keeps its catchable ArithError.
+// Unchecked integer arith wraps on overflow in both modes; checked `+?`
+// keeps its catchable ArithError.
 run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,

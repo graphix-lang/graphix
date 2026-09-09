@@ -2,13 +2,10 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// Every fixture binds with port `:0` so the OS assigns a fresh
-// ephemeral port per test invocation, then reads the actual
-// address via `sys::tcp::listener_addr` before connecting. Fixed
-// ports caused races between the three-mode expansion's
-// concurrent `interp` / `fused` / `jit` runs of the same fixture.
+// Every fixture binds port `:0` and reads the assigned address via
+// `sys::tcp::listener_addr`; the three modes run concurrently.
 
-// Basic listen + connect + accept
+// listen + connect + accept.
 const TCP_CONNECT_ACCEPT: &str = r#"
 {
   let listener = sys::tcp::listen("127.0.0.1:0")?;
@@ -19,31 +16,20 @@ const TCP_CONNECT_ACCEPT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Connect to unbound port fails. We can't easily pick a guaranteed-
-// unbound ephemeral port, so use port 1 (universally reserved
-// privileged port that nothing's listening on in a test
-// environment).
+// Connecting to port 1 (reserved, nothing listening) fails.
 const TCP_CONNECT_FAIL: &str = r#"
   is_err(sys::tcp::connect("127.0.0.1:1"))
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_connect_fail, TCP_CONNECT_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Listen on already-bound port fails. Bind once with port 0 to
-// claim a fresh ephemeral, then try to listen on the same actual
-// address — the second bind must error.
+// Listening on an already-bound address fails.
 const TCP_LISTEN_FAIL: &str = r#"
 {
   let l1 = sys::tcp::listen("127.0.0.1:0")?;
@@ -52,14 +38,11 @@ const TCP_LISTEN_FAIL: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_listen_fail, TCP_LISTEN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Write on client, read on server
+// Write on the client, read on the server.
 const TCP_WRITE_READ: &str = r#"
 {
   use sys::io::{Read, Write};
@@ -72,14 +55,11 @@ const TCP_WRITE_READ: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_write_read, TCP_WRITE_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
 
-// write_exact on client, read on server
+// write_exact on the client, read on the server.
 const TCP_WRITE_EXACT: &str = r#"
 {
   use sys::io::{Read, Write};
@@ -92,14 +72,11 @@ const TCP_WRITE_EXACT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_write_exact, TCP_WRITE_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "world")
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Write known data, read_exact on server
+// read_exact on the server.
 const TCP_READ_EXACT: &str = r#"
 {
   use sys::io::{Read, Write};
@@ -112,14 +89,11 @@ const TCP_READ_EXACT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_read_exact, TCP_READ_EXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "exact")
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Shutdown returns null (wait for accept before shutting down)
+// shutdown returns null (after accept).
 const TCP_SHUTDOWN: &str = r#"
 {
   use sys::tcp::Socket;
@@ -135,9 +109,7 @@ run!(tcp_shutdown, TCP_SHUTDOWN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// peer_addr on client returns server address. Compare the
-// returned address against the listener's bound address inside
-// graphix so the predicate doesn't need to know the exact port.
+// peer_addr on the client is the listener's bound address.
 const TCP_PEER_ADDR: &str = r#"
 {
   use sys::tcp::Socket;
@@ -149,14 +121,11 @@ const TCP_PEER_ADDR: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_peer_addr, TCP_PEER_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// local_addr on server matches listener address.
+// local_addr on the server is the listener's address.
 const TCP_LOCAL_ADDR: &str = r#"
 {
   use sys::tcp::Socket;
@@ -168,14 +137,11 @@ const TCP_LOCAL_ADDR: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_local_addr, TCP_LOCAL_ADDR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// write returns number of bytes written
+// write returns the number of bytes written.
 const TCP_WRITE_RETURNS_LEN: &str = r#"
 {
   use sys::io::Write;
@@ -187,9 +153,6 @@ const TCP_WRITE_RETURNS_LEN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
 }; graphix_package_core::testing::FuseExpect::None);

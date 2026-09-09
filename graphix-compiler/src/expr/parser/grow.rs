@@ -11,14 +11,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-/// Default [`max_nesting`].
-///
-/// Counted in parser recursion knots, not source constructs — one level
-/// of `(1 + …)` costs three (`expr`, `arith`, `arith_term`) — so the
-/// source nesting this admits is several times shallower. Hand-written
-/// graphix nests to single digits; this is the point past which a
-/// program is trying to exhaust the compiler rather than express
-/// something.
+/// Default [`max_nesting`]. Counted in parser recursion knots, not source
+/// constructs: one level of `(1 + …)` costs three.
 pub const DEFAULT_MAX_NESTING: usize = 1000;
 
 static MAX_NESTING: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_NESTING);
@@ -28,27 +22,18 @@ pub fn max_nesting() -> usize {
     MAX_NESTING.load(Ordering::Relaxed)
 }
 
-/// Raise or lower [`max_nesting`]. Process-global, like the trace flag:
-/// the parser is a free function with no `ExecCtx` to hang it off.
-///
-/// The limit is what makes stack exhaustion unreachable rather than
-/// merely expensive. [`ensure_sufficient`] moves a deep parse onto heap
-/// segments, and the compiler's tree passes are guarded the same way,
-/// but not every recursion in the pipeline can be: derived `Drop` glue
-/// tears a deep `Type` down recursively with no function to wrap. The
-/// limit bounds those too. Raising it past what the unguarded paths
-/// survive trades a clean compile error for an abort.
+/// Raise or lower [`max_nesting`]. Process-global. The limit also bounds
+/// the unguarded recursions downstream (derived `Drop` glue on a deep
+/// `Type`); raising it past what they survive trades an error for an abort.
 pub fn set_max_nesting(depth: usize) {
     MAX_NESTING.store(depth, Ordering::Relaxed)
 }
 
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// Set when a refusal happens. combine merges a committed error
-    /// with whatever the surrounding alternatives expected, so the
-    /// refusal's own message does not survive to the top — a program
-    /// past the limit reported `Unexpected \`+\`` instead. The entry
-    /// points check this flag and report the real reason.
+    /// Set when a refusal happens. combine merges a committed error into
+    /// the surrounding alternatives' expectations, so the refusal's own
+    /// message is lost; the entry points check this flag instead.
     static REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -69,29 +54,16 @@ pub(super) fn note_refused() {
 }
 
 thread_local! {
-    /// The furthest reason a parser refused something it could name —
-    /// a reserved word where a name was expected, a `[` that opens no
-    /// interpolation — kept beside its position and, for a refused
-    /// token, its length. combine merges a refused alternative's
-    /// message into the surrounding expectation set (a whole `let`
-    /// reports "Unexpected `l`" at the statement's first column), so
-    /// the reason is recorded here and reported when the failure lies
-    /// on its line — inside the token itself when one is given, since
-    /// a word refused as a name may have parsed as a literal in
-    /// another alternative (`let x = true +;` probes `true` as a name).
+    /// The furthest reason a parser refused something it could name, with
+    /// its position and, for a refused token, its length. Reported when
+    /// the failure lies on its line (inside the token when one is given).
     static REASON: RefCell<Option<Reason>> = const { RefCell::new(None) };
     /// Where the parse failed, set by the entry point's error mapping
     /// before [`parsing`] reports.
     static ERROR_POS: Cell<Option<SourcePosition>> = const { Cell::new(None) };
-    /// The furthest point any branch of the parse reached. combine
-    /// reports a failed statement at whichever alternative failed
-    /// last, and `attempt` resets the input on the way out, so the
-    /// branch that got deepest into the program — the one the author
-    /// was writing — is otherwise forgotten. Every recursion knot
-    /// records its input position here, on success as well (a failure
-    /// in the combinator right after a knot — the `]` a string
-    /// interpolation expects — is not seen by any knot, and the knot's
-    /// own end is within a token of it).
+    /// The furthest point any branch of the parse reached. Every recursion
+    /// knot records its input position here, on success too, since combine
+    /// reports a failure at whichever alternative failed last.
     static FURTHEST: Cell<Option<SourcePosition>> = const { Cell::new(None) };
 }
 
@@ -185,12 +157,9 @@ fn snippet(text: &str, pos: SourcePosition) -> String {
     format!("    {lead}{shown}{trail}\n    {}{pad}^", if start > 0 { " " } else { "" })
 }
 
-/// Wrap a parse of `text`: clears the flags first, then reports the
-/// nesting limit when that is what stopped the parse; otherwise the
-/// FURTHEST point any branch reached, with the source line and a
-/// caret — combine's own message only when it failed there too (an
-/// alternative that failed earlier reports stale expectations) — and
-/// the recorded reason when a refused name lies on that line.
+/// Wrap a parse of `text`: clears the flags, then reports the nesting
+/// limit when that stopped the parse, otherwise the furthest point any
+/// branch reached with the source line, a caret and any recorded reason.
 pub(super) fn parsing<T, E: std::fmt::Display>(
     text: &str,
     f: impl FnOnce() -> Result<T, E>,
@@ -240,9 +209,7 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
 }
 
 /// Run `p` under [`ensure_sufficient`] and count it against
-/// [`max_nesting`]. Wraps every recursion knot in the parser, so how
-/// deeply a program may nest is bounded by an explicit limit rather
-/// than by the stack of whichever thread parses it.
+/// [`max_nesting`]. Wraps every recursion knot in the parser.
 pub(super) fn grow<P>(p: P) -> GrowStack<P> {
     GrowStack(p)
 }

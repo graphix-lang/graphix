@@ -2,9 +2,6 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_open_memory, r#"{
     let db = sqlite::open(":memory:")?;
     sqlite::close(db)?;
@@ -13,10 +10,8 @@ run!(sqlite_open_memory, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// typed struct query: exec_batch creates schema, query reads back as structs
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A typed struct query: exec_batch creates the schema, query reads back
+// structs.
 run!(sqlite_typed_query, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -30,10 +25,7 @@ run!(sqlite_typed_query, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// raw map query: same data, but annotated as Map
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A raw map query: the same data annotated as Map.
 run!(sqlite_raw_map_query, r#"{
     type SqlVal = [i64, f64, string, bytes, null];
     let db = sqlite::open(":memory:")$;
@@ -52,10 +44,7 @@ run!(sqlite_raw_map_query, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// exec with params, verify via typed query
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// exec with params, verified via a typed query.
 run!(sqlite_exec_params, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(id INTEGER PRIMARY KEY, val REAL)")$;
@@ -66,10 +55,6 @@ run!(sqlite_exec_params, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// transaction commit
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_transaction, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -85,10 +70,6 @@ run!(sqlite_transaction, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// rollback
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sqlite_rollback, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -104,10 +85,7 @@ run!(sqlite_rollback, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// nullable fields: [i64, null] for a column that may be NULL
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Nullable fields: `[i64, null]` for a column that may be NULL.
 run!(sqlite_nullable_field, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "
@@ -125,10 +103,7 @@ run!(sqlite_nullable_field, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// empty result: typed query on empty table returns empty array
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A typed query on an empty table returns an empty array.
 run!(sqlite_empty_result, r#"{
     let db = sqlite::open(":memory:")$;
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(x INTEGER)")$;

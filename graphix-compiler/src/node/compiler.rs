@@ -55,13 +55,8 @@ fn compile_inner<R: Rt, E: UserEvent>(
             scope: scope.clone(),
         });
     }
-    // Attribute handling — one pass here covers the whole tree (every Expr
-    // re-enters `compile` exactly once; per-kind `compile`s recurse through
-    // here). DEFINITION-ASSERTING names (`#[tail_recursive]`/`#[sync]`/
-    // `#[async]`) are compiler-reserved (the `CollectionIntrinsic` precedent)
-    // and are stamped onto `ctx.def_assertions` below, once the node exists;
-    // everything else must be a registered attribute (dispatched later by
-    // the fusion walk) or it is an unknown-attribute error.
+    // Definition-asserting attribute names are compiler-reserved; any other
+    // attribute must be registered or it is an error.
     let mut def_asserts: smallvec::SmallVec<[crate::DefAssertionKind; 2]> =
         smallvec::SmallVec::new();
     if let Some(dec) = &spec.dec {
@@ -72,9 +67,8 @@ fn compile_inner<R: Rt, E: UserEvent>(
                     if ctx.lookup_attribute(&attr.name).is_none() {
                         crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
                     }
-                    // Honesty census: this registry attribute must be
-                    // dispatched or absorbed by the fusion walk
-                    // (`compile_stmt` reconciles; see `attr_census`).
+                    // Every registry attribute must be dispatched or absorbed
+                    // by the fusion walk (`compile_stmt` reconciles).
                     let mut census = ctx.attr_census.lock();
                     if !census.iter().any(|e| e.id == spec.id) {
                         census.push(spec.clone());
@@ -85,9 +79,6 @@ fn compile_inner<R: Rt, E: UserEvent>(
     }
     if !def_asserts.is_empty() {
         let node = compile_kind(ctx, flags, &spec, scope, top_id)?;
-        // The assertion's target: the definition the decorated statement
-        // binds (`let f = |..| ..`, `let rec f = ..`) or a bare lambda
-        // expression. Anything else can't carry a definition assertion.
         let lid = match node.view() {
             crate::NodeView::Bind(b) => match b.node.view() {
                 crate::NodeView::Lambda(l) => l.lambda_id::<R, E>(),
@@ -242,18 +233,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        // `use` and STATIC `mod` are DECLARATIONS, not expressions — they
-        // carry no value. They are compiled directly by
-        // `compile_block_children` / `compile_stmt` in statement position
-        // (a non-final `do`-block item, a module-body item, a top-level
-        // statement); reaching them HERE means they appear where a value
-        // is expected (a `let` RHS, a call arg, a block's value slot),
-        // which used to yield a `Bottom`-typed `Nop` that unified with
-        // any downstream type and defeated soundness (aug27a aieka:
-        // `let tag = use array::*` narrowed to `Array<i64>` while holding
-        // an error struct). A DYNAMIC module is different — it produces a
-        // real `[error, null]` load-status value (`let status = mod foo
-        // dynamic {..}`), so it IS a legal expression.
+        // Declarations (`use`, static `mod`, `type`, `trait`, `impl`) carry
+        // no value and are compiled in statement position only; a dynamic
+        // module produces a real `[error, null]` value, so it is an expression.
         ExprKind::Module { name, value } => match value {
             ModuleKind::Dynamic { .. } => {
                 compile_module(ctx, flags, spec.clone(), scope, top_id, name, value)
@@ -341,10 +323,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Never { typ, args } => {
             Never::compile(ctx, flags, spec.clone(), scope, top_id, typ, args)
         }
-        // `type`/`trait`/`impl` are declarations like `use`/static `mod`
-        // above — ⊥-typed, no value channel. aug31e ryouko: `let inner =
-        // type M = ..` gave `inner` type ⊥ and a connect routed arrays
-        // through it at runtime.
         ExprKind::TypeDef(_) => {
             bail!(
                 "a type definition is not an expression — it may only \

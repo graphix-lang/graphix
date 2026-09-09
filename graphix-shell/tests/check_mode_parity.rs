@@ -1,13 +1,6 @@
-//! The `--check` diagnostic for a program must be IDENTICAL with and
-//! without fusion (modulo tvar numbering): merely ATTEMPTING fusion
-//! must not rewrite the program's static types
-//! (fusion-mutates-tvars-aug2026 — `freeze_for_abi_normalized`'s old
-//! middle rung normalized shared TVar cells in place, so `--check`
-//! reported different types per mode on a program where nothing
-//! fuses), and no pass the fusion gate owns may leave the two modes
-//! with different type STATE to walk (typedef-cell-mode-parity-aug2026
-//! — `seed_typedef_refs` filled the stdlib's carried resolution cells
-//! only when fusion was enabled).
+//! The `--check` diagnostic for a program must be identical with and
+//! without fusion (modulo tvar numbering): attempting fusion must not
+//! change the program's static types.
 
 use anyhow::Result;
 use graphix_compiler::{CFlag, expr::Source};
@@ -27,8 +20,8 @@ async fn check_err(file: &Path, no_fusion: bool) -> String {
     }
 }
 
-/// Strip tvar numbers (`'_6070` → `'_N`) so fresh-counter drift
-/// between the two compiles doesn't hide or fake a difference.
+/// Strip tvar numbers (`'_6070` → `'_N`) so counter drift between the
+/// two compiles neither hides nor fakes a difference.
 fn norm(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
@@ -45,11 +38,8 @@ fn norm(s: &str) -> String {
     out
 }
 
-/// Witnesses, each a program that must FAIL `--check` identically in
-/// both modes. `fusion-mutates-tvars` is the region-classification
-/// rewrite; `typedef-cell-mode-parity` is the stdlib typedef whose
-/// resolution cells were seeded only under fusion, so the two modes
-/// walked `contains` differently through a `List<'a>` alias.
+/// Witnesses, each a program that must fail `--check` identically in
+/// both modes.
 const WITNESSES: &[&str] = &[
     "../graphix-fuzz/findings/fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx",
     "../graphix-fuzz/findings/typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx",

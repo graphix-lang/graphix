@@ -1,32 +1,20 @@
-//! The per-cycle trace outcome (oracle V2).
+//! The per-cycle trace outcome the oracle compares: for each epoch
+//! (one injection burst; epoch 0 is the compile), the `(cycle offset,
+//! value)` sequence the watched expr produced, plus whether the trace
+//! budget was hit.
 //!
-//! V1 compared the FIRST value the watched expr emitted — blind to
-//! everything multi-cycle: extra fires, missing fires, wrong pacing,
-//! and every value after the first. V2 compares the whole observable
-//! history: for each epoch (one injection burst; epoch 0 is the
-//! compile), the sequence of `(cycle offset, value)` the watched expr
-//! produced, plus whether the runtime-side trace budget was hit.
-//!
-//! Offsets are relative to each epoch's ANCHOR — the first event of
-//! its [`TraceSegment`] (the `Compiled` marker for epoch 0, an input
-//! ref's own echo for injection epochs) — because absolute runtime
-//! cycle numbers are not comparable across runs (startup and control
-//! traffic shift them; mid-burst RELATIVE pacing is deterministic).
-//!
-//! Node-walk is canonical: in a divergence, `first_difference(interp,
-//! jit)` classifies what the JIT did wrong, and that classification is
-//! part of the bug bucket so the minimizer can't morph a missing-fire
-//! bug into a value bug while reducing.
+//! Offsets are relative to each epoch's anchor, the first event of its
+//! [`TraceSegment`], because absolute cycle numbers are not comparable
+//! across runs. Node-walk is canonical: `first_difference(interp, jit)`
+//! classifies what the JIT did wrong and is part of the bug bucket.
 
 use graphix_compiler::{NoUserEvent, expr::ExprId, node::lambda::LambdaDef};
 use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
 
-/// Runtime-side trace budgets (see [`graphix_rt::GXHandle::trace_start`]):
-/// total recorded events per trace, and active cycles per segment. Both
-/// are DATA — identical in every mode by construction — so hitting a
-/// budget is deterministic and a cap mismatch is a real divergence.
-/// With schedules (Phase 3) these become per-program schedule data.
+/// Default trace budgets (see [`graphix_rt::GXHandle::trace_start`]):
+/// total recorded events per trace, and active cycles per segment. A
+/// schedule header overrides them per program.
 pub const MAX_EVENTS: usize = 512;
 pub const MAX_CYCLES: u64 = 64;
 
@@ -40,21 +28,10 @@ pub struct Epoch {
     pub capped: bool,
 }
 
-/// Recorded values must be COMPILE-STABLE, but a first-class FUNCTION
-/// value is a `LambdaDef` whose equality is its minted `LambdaId` —
-/// never equal across two compiles of the same program (the callsite
-/// rebind check needs that identity, so the compiler's equality can't
-/// change), so a program whose observable contains one flaked
-/// selfcheck under BOTH modes (`sum_to(i64:3, buffer::to_string)`,
-/// 2026-07-16). Normalize fn values — through composites — to the
-/// lambda's printed SOURCE (`LambdaDef::src`): id-free, so
-/// same-program traces compare stable, while interp and jit returning
-/// DIFFERENT lambdas still diverge honestly.
-///
-/// Iterative post-order rebuild: value nesting depth is
-/// program-controlled (a 500k-element `list::init` is a 500k-deep cons
-/// chain — the recursive version overflowed the harness's stack,
-/// jul17a crash_000003), so the walk carries explicit stacks.
+/// Fn values normalize to the lambda's printed source (`LambdaDef::src`)
+/// so traces of two compiles of one program compare equal; a
+/// `LambdaDef`'s own equality is its minted id. Iterative because value
+/// nesting depth is program-controlled.
 fn normalize(v: &Value) -> Value {
     enum Task<'a> {
         Visit(&'a Value),
@@ -140,16 +117,9 @@ impl Epoch {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trace {
     pub epochs: Vec<Epoch>,
-    /// SORTED multiset of the run's captured print-family output
-    /// lines (the stdout oracle — fuzzer gap 1, 2026-08-07). Filled
-    /// by the harness after the run, Exact tier only: effect
-    /// emissions are as deterministic as the values there, while
-    /// FinalValues pacing legitimately varies fire counts. Sorted
-    /// because within-cycle emission ORDER is an evaluation-order
-    /// artifact the backends need not share; the multiset is the
-    /// semantics. Rides `PartialEq`, so `agrees_with` (Exact) compares
-    /// it and `agrees_final` (which never derives equality except
-    /// through the capped fallback) does not.
+    /// Sorted multiset of the run's captured print-family output lines.
+    /// Filled by the harness after the run, Exact tier only. Sorted
+    /// because within-cycle emission order is not shared by the backends.
     pub stdout: Vec<String>,
 }
 
@@ -173,15 +143,10 @@ impl Trace {
         self.epochs.iter().map(|e| e.events.last().map(|(_, v)| v)).collect()
     }
 
-    /// The relaxed agreement for VALUE-DETERMINISTIC ASYNC programs
-    /// (`OracleTier::FinalValues`): each epoch drives to quiescence, so
-    /// its SETTLED value is a deterministic function of the inputs even
-    /// though intra-epoch pacing — and the intermediate values async
-    /// arrival order produces — varies run to run. Per-epoch finals
-    /// must agree; everything before them may differ. A capped trace
-    /// never quiesced (its "final" is wherever the budget cut it, which
-    /// IS pacing-dependent), so any cap on either side falls back to
-    /// exact agreement.
+    /// Agreement for value-deterministic async programs
+    /// (`OracleTier::FinalValues`): per-epoch settled values must agree;
+    /// intra-epoch pacing may differ. Any cap on either side falls back
+    /// to exact agreement, since a capped epoch never settled.
     pub fn agrees_final(&self, other: &Trace) -> bool {
         if self.epochs.iter().chain(other.epochs.iter()).any(|e| e.capped) {
             return self.agrees_with(other);
@@ -190,11 +155,9 @@ impl Trace {
             && self.final_values() == other.final_values()
     }
 
-    /// [`Self::first_difference`]'s twin at final strength — the bucket
-    /// key for final-tier divergences. The exact `TraceDiff` is
-    /// pacing-sensitive for async programs (the same bug can classify
-    /// differently run to run), so it can't key a stable bucket there;
-    /// the epoch index of the first final mismatch can.
+    /// [`Self::first_difference`] at final strength: the bucket key for
+    /// final-tier divergences is the epoch index of the first final
+    /// mismatch, since the exact `TraceDiff` is pacing-sensitive.
     pub fn first_final_difference(&self, other: &Trace) -> Option<TraceDiff> {
         if self.epochs.iter().chain(other.epochs.iter()).any(|e| e.capped) {
             return self.first_difference(other);
@@ -263,8 +226,7 @@ pub enum TraceDiff {
     /// [`Trace::first_final_difference`]).
     FinalValue(usize),
     /// Values and pacing agree but the captured print-family output
-    /// differs — an effect fired in one mode and not the other (the
-    /// stdout oracle).
+    /// differs.
     Stdout,
 }
 

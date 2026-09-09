@@ -1,27 +1,15 @@
-//! Metamorphic typecheck probes (`design/graphix_fuzz.md`, typemorph):
-//! take a program the checker ACCEPTS, apply an acceptance-preserving
-//! transform, and check acceptance again — a flip is a typechecker
-//! finding on the plane the differential oracle cannot see (a wrong
-//! rejection agrees vacuously; the aug25a class-A family, the P2 trio,
-//! and the same-cell cycle pair were all found by hand there).
+//! Metamorphic typecheck probes: take a program the checker accepts,
+//! apply an acceptance-preserving transform, and check acceptance
+//! again. A flip is a typechecker finding the differential oracle
+//! cannot see.
 //!
-//! Transforms are `Expr -> Expr` on the parsed BODY, printed back
-//! through the pretty printer. Every candidate must re-parse before it
-//! is offered — a candidate the printer can't round-trip is DROPPED
-//! and counted (`noparse`), a printer-fidelity signal, never an
-//! inference finding. Site indices live in [`crate::mutate`]'s
-//! preorder space (the same node [`mutate::replace`] addresses), and
-//! transforms are deterministic functions of the body text, so a
-//! `(kind, site)` id re-derives the identical candidate in a fresh
-//! process — the confirmation contract.
-//!
-//! Grades (the triage default, per the design doc): parens-wrap is
-//! SOUND (a flip is a compiler bug); block-wrap, let-extract,
-//! let-inline, stmt-permute and alias-swap are EXPECTED (a flip files
-//! for triage — compiler bug, transform-precondition bug, or a
-//! language-rule discovery). union-permute is AST-invisible (the
-//! parser sorts unions on entry) and eta-expand needs arity knowledge;
-//! both are deferred.
+//! Transforms are `Expr -> Expr` on the parsed body, printed back
+//! through the pretty printer; a candidate that fails to re-parse is
+//! dropped and counted (`noparse`). Site indices are [`crate::mutate`]
+//! preorder indices and transforms are deterministic in the body text,
+//! so a `(kind, site)` id re-derives the same candidate in a fresh
+//! process. Grades: parens-wrap is sound (a flip is a compiler bug);
+//! the rest are expected-preserving (a flip files for triage).
 
 use crate::mutate;
 use arcstr::ArcStr;
@@ -72,9 +60,9 @@ impl TmProbe {
     }
 }
 
-/// Reserved fresh names. A leading `__` is not legal graphix (binding
-/// names must start alphabetic), so the reserve marker is the interior
-/// double underscore; subjects already containing it are skipped.
+/// Reserved fresh names. Binding names must start alphabetic, so the
+/// reserve marker is the interior double underscore; subjects already
+/// containing it are skipped.
 const VAL: &str = "tm__0";
 const TYP: &str = "Tm__0";
 
@@ -84,9 +72,8 @@ const TYP: &str = "Tm__0";
 pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     let mut out: Vec<TmProbe> = Vec::new();
     let mut noparse = 0usize;
-    // Reserved-name collision, or attributes: `mutate::replace` drops
-    // decorations on the rebuilt path, so an attr-bearing body could
-    // flip on attribute LOSS rather than typing.
+    // `mutate::replace` drops attributes on the rebuilt path, so an
+    // attr-bearing body could flip on attribute loss rather than typing.
     if body.contains("tm__") || body.contains("Tm__") || body.contains("#[") {
         return (out, 0);
     }
@@ -102,7 +89,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             *noparse += 1;
         }
     };
-    // ── parens-wrap: `e` -> `(e)` at a value-position site ──
+    // parens-wrap: `e` -> `(e)`
     {
         let sites: Vec<usize> =
             (0..pre.len()).filter(|&i| value_pos(&pre[i].kind)).collect();
@@ -112,10 +99,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             push(&mut out, &mut noparse, TmKind::ParensWrap, i, &cand);
         }
     }
-    // ── block-wrap: `e` -> `{ let tm__0 = e; tm__0 }`. Not on lambda
-    // literals (that is let-extract's probe — wrapping one here only
-    // changes the pre-unify push, the design doc's stated exclusion)
-    // and not on blocks (noise). ──
+    // block-wrap: `e` -> `{ let tm__0 = e; tm__0 }`; not on lambda
+    // literals (let-extract's probe) or blocks
     {
         let sites: Vec<usize> = (0..pre.len())
             .filter(|&i| {
@@ -138,13 +123,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             push(&mut out, &mut noparse, TmKind::BlockWrap, i, &cand);
         }
     }
-    // Statement-level transforms need the body root to BE a block.
     let ExprKind::Do { exprs: stmts } = &root.kind else {
         return (out, noparse);
     };
     let stmts: Vec<Expr> = stmts.to_vec();
     let sizes = mutate::sizes(&root);
-    // Preorder offset of each top-level statement.
     let offsets: Vec<usize> = {
         let mut off = 1usize;
         let mut v = Vec::with_capacity(stmts.len());
@@ -154,13 +137,9 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         }
         v
     };
-    // ── let-extract: `f(.., |x| body)` -> `let tm__0 = |x| body;
-    // f(.., tm__0)` — THE unification-order probe (declared-param push
-    // vs body-first inference; the aug25a class-A shape). Only at
-    // Apply sites reachable from the statement root through
-    // non-scoping nodes: hoisting across a Lambda/Select/Catch/Do
-    // boundary would strand the lambda's captures of pattern binds or
-    // params, a name-resolution flip rather than a typing one. ──
+    // let-extract: `f(.., |x| body)` -> `let tm__0 = |x| body; f(.., tm__0)`.
+    // Only at Apply sites reachable from the statement root through
+    // non-scoping nodes, else the lambda's captures would be stranded.
     {
         let mut found: Vec<(usize, usize)> = Vec::new();
         for (si, stmt) in stmts.iter().enumerate() {
@@ -184,9 +163,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             push(&mut out, &mut noparse, TmKind::LetExtract, gi, &cand);
         }
     }
-    // ── let-inline: substitute a single-use, unannotated,
-    // non-shadowed `let x = e` into its one later use — the reverse
-    // order probe (the use site gains the pre-unify push). ──
+    // let-inline: substitute a single-use, unannotated, non-shadowed
+    // `let x = e` into its one later use
     {
         let mut done = 0usize;
         for si in 0..stmts.len() {
@@ -216,8 +194,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                     }
                     _ => (),
                 });
-                // A later top-level bind shadowing a name the value
-                // references would capture the moved expression.
+                // a later top-level bind shadowing a name the value
+                // references would capture the moved expression
                 if let ExprKind::Bind(lb) = &later.kind
                     && let StructurePattern::Bind(ln) = &lb.pattern
                     && vrefs.contains(&ln.to_string())
@@ -247,9 +225,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             done += 1;
         }
     }
-    // ── stmt-permute: swap adjacent independent statements — the
-    // tvar-allocation-order probe (the jul22e flap's program-shape
-    // face). ──
+    // stmt-permute: swap adjacent independent statements
     {
         let mut sites = Vec::new();
         for i in 0..stmts.len().saturating_sub(1) {
@@ -264,9 +240,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             push(&mut out, &mut noparse, TmKind::StmtPermute, i, &cand);
         }
     }
-    // ── alias-swap: hoist a bind's annotation into `type Tm__0 = T`
-    // and annotate the name — the Ref-vs-expansion channel probe
-    // (resolution cells, ref_id identity, the aug24a skew family). ──
+    // alias-swap: hoist a bind's annotation into `type Tm__0 = T`
     {
         let mut done = 0usize;
         for si in 0..stmts.len() {
@@ -374,17 +348,13 @@ struct StmtNames {
 
 fn stmt_names(e: &Expr) -> StmtNames {
     let bound = match &e.kind {
-        // A bind whose VALUE leaks further names (a dynamic `mod dr0`,
-        // an interior literal-`let`) binds more than its pattern says —
-        // unknown, disqualify.
+        // a bind whose value leaks further names binds more than its
+        // pattern says
         ExprKind::Bind(b) if leaks_binds(&b.value) => None,
         ExprKind::Bind(b) => match &b.pattern {
             StructurePattern::Bind(n) => Some(vec![n.clone()]),
             _ => None,
         },
-        // A non-bind statement whose subtree leaks binds (the
-        // let-inside-a-literal shape) is a binder this analysis can't
-        // name — unknown.
         _ if leaks_binds(e) => None,
         _ => Some(Vec::new()),
     };
@@ -392,10 +362,8 @@ fn stmt_names(e: &Expr) -> StmtNames {
     let mut connects = false;
     e.fold((), &mut |(), n| match &n.kind {
         ExprKind::Ref { name } => {
-            // The full spelling AND the leading segment: a statement
-            // referencing `dr0::f` depends on whichever sibling binds
-            // `dr0` (the dynmod shape — the sweep's `drN::f not
-            // defined` flip).
+            // the full spelling and the leading segment: `dr0::f` depends
+            // on whichever sibling binds `dr0`
             let s = name.to_string();
             for sep in ["::", "/"] {
                 if let Some((first, _)) = s.split_once(sep) {
@@ -444,16 +412,9 @@ fn permutable(a: &Expr, b: &Expr) -> bool {
         && bb.iter().all(|n| !na.refs.contains(&n.to_string()))
 }
 
-/// Does this subtree introduce names the ENCLOSING statement list can
-/// read? A statement binds whatever its subtree binds (the aug22c
-/// dead-elim rule): a `let` sitting directly inside a literal, a
-/// select SCRUTINEE's bind, a dynamic `mod dr0` in a bind's value —
-/// all visible to later siblings. Wrapping such a node in a block
-/// scopes those names away (an acceptance change by ruled semantics,
-/// not a typing probe), and permuting/inlining around it needs name
-/// facts this analysis doesn't enumerate — both fail SAFE by skipping.
-/// An interior `Do` or `Lambda` contains its own binds, and a select's
-/// ARMS are arm-scoped; only the scrutinee leaks.
+/// Does this subtree introduce names the enclosing statement list can
+/// read? A statement binds whatever its subtree binds; an interior `Do`
+/// or `Lambda` contains its own binds, and only a select's scrutinee leaks.
 fn leaks_binds(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Bind(_)
@@ -545,9 +506,8 @@ mod test {
 
     #[test]
     fn guard_refs_are_dependencies() {
-        // `m`'s ONLY use is inside a select GUARD: a dependency for
-        // stmt-permute, and an addressable single use for let-inline
-        // (the witness shape from quiet-frame-init-view-aug2026/05).
+        // `m`'s only use is inside a select guard: a dependency for
+        // stmt-permute and a single use for let-inline
         let body = "{ let m = i64:1; let rec f = |n: i64| -> i64 \
                     select n { i64:0 if m == i64:0 => i64:1, i64:0 => i64:2, _ => f(n - i64:1) }; \
                     f(i64:2) }";
@@ -571,8 +531,7 @@ mod test {
 
     #[test]
     fn extract_does_not_cross_scopes() {
-        // The callback lambda sits INSIDE another lambda's body —
-        // hoisting it to statement level would strand `y`.
+        // the callback lambda sits inside another lambda's body
         let body = "{ let f = |y: i64| array::map([i64:1], |x| x + y); f(i64:1) }";
         let (probes, _) = probes(body, 8);
         assert!(

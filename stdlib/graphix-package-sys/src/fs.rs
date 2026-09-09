@@ -8,8 +8,6 @@ use tokio::{io::AsyncSeekExt, sync::Mutex};
 
 use crate::{StreamKind, get_stream, metadata::convert_metadata, wrap_file};
 
-// ── FileOpen ───────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct FileOpenEv;
 
@@ -56,8 +54,6 @@ impl EvalCachedAsync for FileOpenEv {
 
 pub(crate) type FileOpen = CachedArgsAsync<FileOpenEv>;
 
-// ── FileSeek ───────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct FileSeekEv;
 
@@ -100,8 +96,6 @@ fn parse_seek_from(v: &Value) -> Option<SeekFrom> {
 
 pub(crate) type FileSeek = CachedArgsAsync<FileSeekEv>;
 
-// ── FileFstat ──────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct FileFstatEv;
 
@@ -130,8 +124,6 @@ impl EvalCachedAsync for FileFstatEv {
 }
 
 pub(crate) type FileFstat = CachedArgsAsync<FileFstatEv>;
-
-// ── FileTruncate ───────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct FileTruncateEv;
@@ -163,8 +155,6 @@ impl EvalCachedAsync for FileTruncateEv {
 }
 
 pub(crate) type FileTruncate = CachedArgsAsync<FileTruncateEv>;
-
-// ── ReadAll ────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct ReadAllOp;

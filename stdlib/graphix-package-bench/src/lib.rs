@@ -86,7 +86,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The cached args are replay memory; there is no other state.
         self.args.clear()
     }
 }

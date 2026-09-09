@@ -1,19 +1,18 @@
-//! Select generation with patterns derived FROM the scrutinee's
-//! [`GenType`] — never free-form, so exhaustiveness and dead-arm
-//! validity hold by construction:
+//! Select generation with patterns derived from the scrutinee's
+//! [`GenType`], so exhaustiveness and dead-arm validity hold by
+//! construction:
 //!
 //! ```text
 //! select scrut {
-//!   [0-2 GUARDED arms]            // first ⇒ can never be dead
+//!   [0-2 guarded arms]            // first ⇒ can never be dead
 //!   [0-1 unguarded refutable arm] // nothing unguarded before it
 //!   [final irrefutable arm]       // one refutable arm never exhausts
 //! }
 //! ```
 //!
 //! or, for a variant scrutinee, full-coverage mode: every tag exactly
-//! once, unguarded, with IRREFUTABLE payload patterns (a literal
-//! payload would leave a coverage gap) and NO trailing wildcard (which
-//! would be a dead arm).
+//! once, unguarded, with irrefutable payload patterns and no trailing
+//! wildcard.
 
 use super::{
     GenCtx, exprs,
@@ -21,17 +20,16 @@ use super::{
 };
 use crate::mutate::Rng;
 
-/// A generated pattern over one type: its text, whether it can fail to
-/// match, and (via `inner`) the names it binds.
+/// A generated pattern over one type: its text and whether it can fail
+/// to match. The names it binds are pushed into the ctx.
 struct Pat {
     text: String,
     refutable: bool,
 }
 
-/// A collision-biased bind name for a pattern position — arm-binding
-/// shadowing of OUTER names (the #167 class) is deliberate, but two
-/// binds within one arm's pattern must be distinct (`mark` is the arm's
-/// scope start; everything pushed above it is this pattern's binds).
+/// A collision-biased bind name for a pattern position: shadowing outer
+/// names is deliberate, but two binds within one arm's pattern must be
+/// distinct (`mark` is the arm's scope start).
 fn bind_name(inner: &mut GenCtx, rng: &mut Rng, mark: usize) -> String {
     let mut n = if rng.below(10) < 3 && !inner.collision_pool.is_empty() {
         inner.collision_pool[rng.below(inner.collision_pool.len())].clone()
@@ -52,7 +50,7 @@ fn gen_pattern(
     force_irrefutable: bool,
     mark: usize,
 ) -> Pat {
-    // Leaf choices shared by every type: `_`, or a bind.
+    // leaf choices shared by every type: `_`, or a bind
     let leaf = |inner: &mut GenCtx, rng: &mut Rng| {
         if rng.below(4) == 0 {
             Pat { text: "_".into(), refutable: false }
@@ -63,17 +61,14 @@ fn gen_pattern(
         }
     };
     match ty {
-        // Scalar literal leaves are the refutable base case (floats
-        // excluded — float-equality patterns are legal but a value
-        // match is vanishingly unlikely, all noise).
+        // scalar literal leaves are the refutable base case (floats
+        // excluded: a value match is vanishingly unlikely)
         t @ (GenType::Num(_) | GenType::Bool | GenType::Str) => {
             let lit_ok = !matches!(t, GenType::Num(n) if n.is_float());
             if lit_ok && !force_irrefutable && rng.below(2) == 0 {
-                // Sometimes an or-alternation of DISTINCT literals (no
-                // binds, so same-binds holds; distinct, so no
-                // duplicate-alternative refusal). Bool excluded:
-                // `true | false` completes coverage and deadens the
-                // final arm.
+                // sometimes an or-alternation of distinct literals; bool
+                // excluded, since `true | false` completes coverage and
+                // deadens the final arm
                 if !matches!(t, GenType::Bool) && rng.below(4) == 0 {
                     let a = types::literal(rng, ty);
                     let mut b = types::literal(rng, ty);
@@ -131,13 +126,12 @@ fn gen_pattern(
                     .collect();
                 format!("`{tag}({})", parts.join(", "))
             };
-            // Refutable even as the only tag pattern — our unions have
-            // ≥2 tags.
+            // refutable even as the only tag pattern: unions have ≥2 tags
             Pat { text, refutable: true }
         }
         GenType::List(e) if !force_irrefutable && depth > 0 => {
-            // Same one-slice-arm-per-select structure as Array; no
-            // suffix form exists for lists.
+            // same one-slice-arm-per-select structure as Array; no suffix
+            // form exists for lists
             match rng.below(3) {
                 0 => Pat { text: "[<>]".into(), refutable: true },
                 1 => {
@@ -153,10 +147,8 @@ fn gen_pattern(
             }
         }
         GenType::Array(e) if !force_irrefutable && depth > 0 => {
-            // Exactly one slice arm is ever emitted per select (the
-            // caller's structure), so subsumption between slice arms
-            // can't arise; each of these shapes leaves lengths
-            // uncovered, so a final bind-all is never dead after one.
+            // exactly one slice arm is ever emitted per select, and each
+            // shape leaves lengths uncovered, so a final bind-all is never dead
             match rng.below(3) {
                 0 => Pat { text: "[]".into(), refutable: true },
                 1 => {
@@ -211,7 +203,7 @@ pub(super) fn maybe_select(
         return None;
     }
     let d = depth - 1;
-    // Scrutinee: prefer a var whose type has pattern structure.
+    // scrutinee: prefer a var whose type has pattern structure
     let structured: Vec<(&str, &GenType)> = ctx
         .visible_entries()
         .into_iter()
@@ -235,8 +227,7 @@ pub(super) fn maybe_select(
         (exprs::gen_typed(ctx, rng, &I64, d), I64)
     };
     let mut arms: Vec<String> = Vec::new();
-    // Nullable coverage mode: null arm + value type-match arm cover
-    // the whole union — no wildcard (it would be a dead arm).
+    // nullable coverage mode: null arm + value type-match arm, no wildcard
     if let GenType::Nullable(t) = &scrut_ty {
         if t.is_scalar() && rng.below(2) == 0 {
             let null_body = exprs::gen_typed(ctx, rng, ty, d);
@@ -251,8 +242,7 @@ pub(super) fn maybe_select(
             ));
         }
     }
-    // List ladder mode: `[<>]` + `[<h, t..>]` cover every length —
-    // exhaustive with no wildcard (which would be a dead arm).
+    // list ladder mode: `[<>]` + `[<h, t..>]` cover every length, no wildcard
     if let GenType::List(e) = &scrut_ty {
         if rng.below(2) == 0 {
             for _ in 0..rng.below(2) {
@@ -272,7 +262,7 @@ pub(super) fn maybe_select(
             return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
         }
     }
-    // Variant full-coverage mode: every tag once, no wildcard.
+    // variant full-coverage mode: every tag once, no wildcard
     if let GenType::Variant(tags) = &scrut_ty {
         if rng.below(2) == 0 {
             for _ in 0..rng.below(2) {
@@ -290,10 +280,8 @@ pub(super) fn maybe_select(
             while i < tags.len() {
                 let mut inner = ctx.clone();
                 let mark = inner.mark();
-                // Sometimes GROUP two consecutive tags into one or-arm
-                // — the payloads bind nothing (`_` per arg), so
-                // same-binds holds by construction and coverage still
-                // counts both tags (per coverage atom).
+                // sometimes group two consecutive tags into one or-arm;
+                // the payloads bind nothing, so same-binds holds
                 if i + 1 < tags.len() && rng.below(3) == 0 {
                     let (t0, a0) = &tags[i];
                     let (t1, a1) = &tags[i + 1];
@@ -324,16 +312,15 @@ pub(super) fn maybe_select(
             return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
         }
     }
-    // General mode: guarded arms first, then ≤1 unguarded refutable,
-    // then the irrefutable final.
+    // general mode: guarded arms first, then ≤1 unguarded refutable,
+    // then the irrefutable final
     for _ in 0..rng.below(3) {
         let (a, _) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, true);
         arms.push(a);
     }
-    // A bound or-alternation over an equal-typed integer pair: both
-    // alternatives bind the same name at the same type (the shared-
-    // BindId Reuse path). Structurally distinct alternatives, so no
-    // duplicate refusal; refutable, so nothing downstream is dead.
+    // a bound or-alternation over an equal-typed integer pair: both
+    // alternatives bind the same name at the same type; structurally
+    // distinct and refutable
     if let GenType::Tuple(es) = &scrut_ty {
         if es.len() == 2
             && es[0].render() == es[1].render()

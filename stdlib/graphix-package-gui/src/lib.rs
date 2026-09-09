@@ -31,34 +31,20 @@ mod test;
 
 pub(crate) enum ToGui {
     Update(ExprId, Value),
-    /// Fires once per resize burst, 100ms after the first `Resized`
-    /// event in the burst. The payload carries only the `WindowId`;
-    /// the event loop reads the most recent size from the window's
-    /// `pending_resize` slot rather than passing it through here.
-    /// Used purely to schedule renders during a drag — never touches
-    /// the graphix size ref (see `ResizeEnd`).
+    /// Render tick during a resize drag; the size comes from the
+    /// window's `pending_resize` slot. Never touches the size ref.
     ResizeTimer(WindowId),
-    /// Fires once after a resize *burst* ends: the window has not
-    /// received a `Resized` event for `RESIZE_END_DEBOUNCE`. Carries
-    /// the final logical size the runtime's size ref should be set
-    /// to. Separate from `ResizeTimer` so that writing back to the
-    /// size ref — which echoes through the runtime and may trigger
-    /// a feedback `request_inner_size` — happens exactly once per
-    /// drag, not 10x/sec.
+    /// Fires once per resize burst with the final logical size; the
+    /// only event that writes the runtime's size ref.
     ResizeEnd(WindowId, crate::types::SizeV),
-    /// Wake the winit event loop so it runs its `about_to_wait`
-    /// render pass, picking up any widget state that was mutated
-    /// outside the iced event cycle (e.g. a netidx subscription
-    /// update setting `cells.dirty = true` on a data_table).
+    /// Wake the event loop to render widget state mutated outside
+    /// the iced event cycle.
     Redraw,
     Stop(oneshot::Sender<()>),
 }
 
-/// Thread-safe handle the event loop hands out to widgets that
-/// update their view state from background tasks (netidx
-/// subscriptions in data_table being the motivating case). Calling
-/// `.wake()` posts a `ToGui::Redraw` which the event loop processes
-/// by flagging every window for redraw. Cheap to clone.
+/// Thread-safe, cheaply cloned handle for widgets that update view
+/// state from background tasks; `wake()` posts a `ToGui::Redraw`.
 #[derive(Clone)]
 pub(crate) struct RedrawWaker {
     proxy: EventLoopProxy<ToGui>,
@@ -74,9 +60,8 @@ impl RedrawWaker {
     }
 }
 
-/// Set by the event loop after it creates its proxy, so widgets
-/// compiled before the proxy exists (compilation happens inside the
-/// same call that builds the window) can still pick it up.
+/// Set by the event loop once its proxy exists; widgets compiled
+/// earlier pick it up from here.
 pub(crate) static REDRAW_WAKER: std::sync::OnceLock<RedrawWaker> =
     std::sync::OnceLock::new();
 

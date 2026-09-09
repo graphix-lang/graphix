@@ -1,13 +1,5 @@
-//! `file://` URI ↔ filesystem path conversion.
-//!
-//! LSP transmits paths as URIs; on disk we have raw paths. RFC 3986 says
-//! the path component is percent-encoded — so a file at `/tmp/a b.gx`
-//! travels the wire as `file:///tmp/a%20b.gx`. Stripping `file://` and
-//! treating the remainder as a path (which the previous helpers did)
-//! gets `/tmp/a%20b.gx` and then fails to find the file.
-//!
-//! These helpers handle percent-encoding/decoding so paths containing
-//! spaces, `#`, `%`, `?`, etc. round-trip correctly.
+//! `file://` URI ↔ filesystem path conversion, with percent-encoding
+//! so paths containing spaces, `#`, `%`, `?` round-trip.
 
 use lsp_types::Uri;
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
@@ -16,10 +8,8 @@ use std::{
     str::FromStr,
 };
 
-/// Characters that must be percent-encoded inside a URI path segment.
-/// We keep `/` unencoded so directory separators stay readable. The set
-/// matches the WHATWG URL "path percent-encode set" plus `%` (which the
-/// `percent-encoding` crate doesn't include automatically).
+/// Characters percent-encoded inside a URI path segment: the WHATWG
+/// path percent-encode set plus `%`, with `/` left readable.
 const PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -38,9 +28,8 @@ const PATH_ENCODE: &AsciiSet = &CONTROLS
 pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;
-    // After `file://` we expect either an absolute path beginning with
-    // `/`, or `localhost/<path>`. Anything else is a remote host we
-    // can't access.
+    // After `file://`: an absolute path beginning with `/`, or
+    // `localhost/<path>`; anything else is a remote host.
     let raw = if let Some(p) = rest.strip_prefix("localhost/") {
         format!("/{p}")
     } else if rest.starts_with('/') {

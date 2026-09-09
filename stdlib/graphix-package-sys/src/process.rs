@@ -23,8 +23,6 @@ use triomphe::Arc;
 
 use crate::{StreamKind, wrap_pipe};
 
-// -- Abstract ProcValue -------------------------------------------------------
-
 type Status = Option<Result<ExitStatusValue, ArcStr>>;
 
 struct KillReq {
@@ -148,8 +146,6 @@ fn get_proc(cached: &CachedVals, idx: usize) -> Option<ProcValue> {
     }
 }
 
-// -- Process status ----------------------------------------------------------
-
 #[derive(Debug, Clone, IntoValue)]
 struct ExitStatusValue {
     code: Option<i64>,
@@ -161,8 +157,6 @@ impl From<StdExitStatus> for ExitStatusValue {
         Self { code: status.code().map(i64::from), success: status.success() }
     }
 }
-
-// -- Spawn options -----------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, FromValue)]
 enum Stdio {
@@ -271,8 +265,6 @@ fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     Ok(ChildBundle { proc, pid, stdin, stdout, stderr })
 }
 
-// -- ProcessSpawn ------------------------------------------------------------
-
 #[derive(Debug, Default)]
 pub(crate) struct ProcessSpawnEv;
 
@@ -300,8 +292,6 @@ impl EvalCachedAsync for ProcessSpawnEv {
 }
 
 pub(crate) type ProcessSpawn = CachedArgsAsync<ProcessSpawnEv>;
-
-// -- ProcessWait -------------------------------------------------------------
 
 #[derive(Debug, Default)]
 pub(crate) struct ProcessWaitEv;
@@ -333,8 +323,6 @@ impl EvalCachedAsync for ProcessWaitEv {
 
 pub(crate) type ProcessWait = CachedArgsAsync<ProcessWaitEv>;
 
-// -- ProcessKill -------------------------------------------------------------
-
 #[derive(Debug, Default)]
 pub(crate) struct ProcessKillEv;
 
@@ -357,8 +345,6 @@ impl EvalCachedAsync for ProcessKillEv {
 }
 
 pub(crate) type ProcessKill = CachedArgsAsync<ProcessKillEv>;
-
-// -- ProcessPid ------------------------------------------------------------
 
 #[derive(Debug, Default)]
 pub(crate) struct ProcessPidEv;

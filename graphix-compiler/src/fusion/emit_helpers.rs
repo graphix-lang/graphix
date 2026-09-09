@@ -1,39 +1,17 @@
 #![allow(improper_ctypes_definitions)]
-//! Stable `extern "C"` entry points the JIT calls into for ops that
-//! can't be lowered purely in CLIF (composite reads/writes, layout-
-//! sensitive operations).
+//! `extern "C"` entry points the JIT calls for ops that cannot be
+//! lowered in CLIF. Every helper is declared through [`jit_helpers!`],
+//! which derives its CLIF wire signature from the Rust types; `emit.rs`
+//! registers each symbol by pointer from [`all_helpers`].
 //!
-//! Value passing: `netidx_value::Value` is `#[repr(u64)]` with
-//! explicit discriminant values and a fixed 16-byte layout
-//! (`u64 disc`, `u64 payload`), so the SysV AMD64 ABI passes it in
-//! two integer registers — same shape Cranelift sees when a helper
-//! signature declares two `I64` params/returns. The
-//! `improper_ctypes_definitions` lint flags Value because some of
-//! its payload types (e.g. `PBytes`) are not themselves `repr(C)`,
-//! but the OUTER layout is fully specified by `repr(u64)` and
-//! stable; suppressed module-wide.
+//! `Value` is `#[repr(u64)]`, two 8-byte words `(disc, payload)`, passed
+//! in two integer registers; `improper_ctypes_definitions` is suppressed
+//! because the outer layout is stable even where a payload is not `repr(C)`.
 //!
-//! Every helper is declared through [`jit_helpers!`] — the SINGLE
-//! source of truth for its name, safety, Rust signature, body, and
-//! (derived from the Rust types) its CLIF wire signature. `emit.rs`
-//! consumes [`all_helpers`] to register each symbol by POINTER
-//! (`JITBuilder::symbol`) and to build its cranelift `Signature`;
-//! nothing resolves helpers by name, so there is no `no_mangle`.
-//!
-//! Safety contract: pointers (`arr`) must be valid for the duration
-//! of the call — that part is the caller's (the kernel's) burden.
-//! Element/field READS, however, are TOTAL: an out-of-bounds index or
-//! an unexpected slot shape reads as the return shape's PLACEHOLDER
-//! (0 / "" / the empty array / `Value::Null`) instead of trusting the
-//! typechecker's shape proof. The proof is real for values built from
-//! typed data, but #219 taint placeholders are `Value::Null` in
-//! composite element slots by design — a destructure leaf read of a
-//! placeholder element is REACHABLE from user programs (jul16a
-//! crash_000003: `str::parse("42")?` as an `Array<(string, i64)>`
-//! element SIGABRT'd `graphix_valarray_get_arcstr`), and the values
-//! read on those paths are dead under the taint discipline, so any
-//! well-formed value is correct. Totality here is the "helper-safe
-//! placeholder" contract applied to the readers themselves.
+//! Pointer arguments must stay valid for the call. Element/field reads
+//! are total: an out-of-bounds index or an unexpected slot shape reads
+//! as the return shape's placeholder (0 / "" / empty array / `Null`),
+//! because tainted placeholders are `Value::Null` in composite slots.
 
 use crate::{
     fusion::kernel_abi::SiteLeaf,
@@ -46,39 +24,11 @@ use crate::{
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 
-/// Compile-time checks pinning the Value-ABI layout the JIT relies
-/// on. If any of these fire on a netidx / upstream-crate upgrade,
-/// the by-value Value plumbing would silently mis-pack the bits —
-/// catch it at compile time instead.
-///
-/// Top check: the outer `Value` is exactly two machine words,
-/// 8-byte aligned. This is the assumption the helpers' two-`I64`
-/// CLIF signature and `Kernel::update`'s slot-pair pack/unpack
-/// depend on.
-///
-/// Per-payload checks: each non-primitive variant payload must fit
-/// in `Value`'s single 8-byte payload word. The Value-size check
-/// above catches a regression transitively, but the per-payload
-/// asserts pin each externally-defined type so a future upgrade
-/// (a `Map` that grows past one word via niche-opt collapse loss,
-/// a wider `ArcStr` rep, etc.) trips at the specific type rather
-/// than via the indirect Value-size cascade.
-///
-/// `Bytes`, `Array`, `Abstract` are in-tree (`netidx-value`)
-/// newtypes over thin-pointer types (`PArc` / `Arc`) and now carry
-/// `#[repr(transparent)]`, so their size equals the inner pointer
-/// and is guaranteed one word. `Map` and `ArcStr` come from
-/// external crates without a layout guarantee in their public
-/// contract — we assert here.
+/// The Value ABI the helpers' two-`I64` signatures depend on: two
+/// 8-byte words, and every externally-defined payload fits the second.
 const _: () = {
     assert!(std::mem::size_of::<Value>() == 16);
     assert!(std::mem::align_of::<Value>() == 8);
-    // Externally-defined payload types — assert one machine word.
-    // `Map = immutable_chunkmap::map::Map<Value, Value, 32>` is an
-    // enum that relies on Rust's niche optimization to collapse to
-    // a thin pointer; if a future chunkmap release breaks that
-    // assumption (adds a discriminant byte, etc.) this fails before
-    // we silently mis-pack the second word of Value.
     assert!(
         std::mem::size_of::<netidx_value::Map>() <= 8,
         "netidx_value::Map must fit in Value's 8-byte payload word"
@@ -89,42 +39,11 @@ const _: () = {
     );
 };
 
-// ─── TagValue: the tagged Value at the JIT↔runtime boundary ──────────
-//
-// Promoted to `crate::tval` when it became the interpreter's value
-// currency as well (design/dense_delivery.md) — the tag byte is the
-// same disc tag region the kernel uses, so the JIT↔interp seam is
-// representation-identity. Re-imported here for the helpers; the
-// layout checks above are what its transmutes rely on.
 pub use crate::tval::TagValue;
 
-// ─── The helper registry ─────────────────────────────────────────
-//
-// This is among the most safety-critical code in the runtime: a
-// helper whose registered CLIF signature disagrees with its Rust
-// definition is silent UB at the call boundary, not an error. The
-// registry therefore has exactly ONE key — the [`jit_helpers!`]
-// declaration — which emits the `extern "C"` item AND its
-// [`HelperSpec`] (name, pointer, wire signature), the signature
-// derived mechanically from the Rust parameter/return types via
-// [`HelperArg`]/[`HelperRet`]. (The old scheme kept three
-// hand-synchronized tables joined by string names: the definition, a
-// name→pointer list, and a name→`Signature` string-match in
-// `emit.rs`.)
-//
-// The C ABI requires integer arguments narrower than the register
-// (i8/i16) to be zero-/sign-extended by the CALLER; cranelift emits
-// the extension only when the `AbiParam` records it (an x86 `setcc`
-// leaves the upper register bits dirty — a `false` comparison pushed
-// into a composite once arrived as `true`). Here the extension is a
-// property of the Rust TYPE, stated once: `i8`/`i16` sign-extend,
-// `u8`/`u16` zero-extend, `i32`/`u32` need none (a 32-bit register
-// write clears the upper bits).
-
-/// One register slot of a helper's wire signature. `emit.rs`
-/// translates these to cranelift `AbiParam`s, applying the u/s
-/// extension flags to PARAMETERS only — returns are read at their
-/// narrow type, per the C ABI.
+/// One register slot of a helper's wire signature. The C ABI has the
+/// CALLER extend sub-register integers, so `emit.rs` applies the u/s
+/// flags to parameters only; returns are read at their narrow type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AbiTy {
     I64,
@@ -141,18 +60,13 @@ pub(crate) enum AbiTy {
     I8s,
 }
 
-/// The wire slots a Rust type occupies as a helper PARAMETER — one
-/// entry per register. Every one-word type (integers, pointers, the
-/// `ArcStr` / ValArray-bits words) is a single slot; [`TagValue`] and
-/// [`DynCallRet`] are the two-register `(disc, payload)` Value pair.
-/// A type without an impl cannot appear in a helper signature — a
-/// compile error, forcing a conscious mapping decision.
+/// The wire slots a Rust type occupies as a helper parameter, one per
+/// register. A type without an impl cannot appear in a helper signature.
 pub(crate) trait HelperArg {
     const ABI: &'static [AbiTy];
 }
 
-/// The wire slots of a helper RETURN. Blanket-follows [`HelperArg`];
-/// `()` returns nothing.
+/// The wire slots of a helper return; `()` returns nothing.
 pub(crate) trait HelperRet {
     const ABI: &'static [AbiTy];
 }
@@ -198,10 +112,8 @@ impl<T> HelperArg for *const T {
     const ABI: &'static [AbiTy] = &[AbiTy::I64];
 }
 
-/// One registered helper: the symbol name, its address, and its wire
-/// signature (per-Rust-parameter slot lists + return slots). Built by
-/// [`jit_helpers!`]; consumed by `emit.rs` for symbol registration
-/// and `Signature` construction.
+/// One registered helper: symbol name, address, and wire signature
+/// (per-parameter slot lists + return slots).
 pub(crate) struct HelperSpec {
     pub(crate) name: &'static str,
     pub(crate) ptr: *const u8,
@@ -219,19 +131,9 @@ macro_rules! jit_helper_ret {
 }
 
 /// Declare JIT helpers: each entry is `safe`/`unsafe` followed by an
-/// ordinary `fn` (attributes and doc comments attach to the emitted
-/// item). Emits the `pub [unsafe] extern "C"` definitions plus a
-/// `$registry()` function pushing one [`HelperSpec`] per helper —
-/// name, pointer, and the type-derived wire signature. The
-/// per-section registries are concatenated by [`all_helpers`].
-///
-/// A tt-muncher: items are parsed one at a time (the explicit
-/// `safe`/`unsafe` leading keyword keeps the grammar decidable after
-/// an attribute list), each emitting its item immediately while its
-/// registry facts accumulate into the bracketed list the terminal
-/// rule turns into the registry fn.
+/// ordinary `fn`. Emits the `pub [unsafe] extern "C"` definitions plus
+/// a `$registry()` function pushing one [`HelperSpec`] per helper.
 macro_rules! jit_helpers {
-    // Terminal: emit the registry fn from the accumulated facts.
     (@parse [$registry:ident] [$({ $name:ident; ($($t:ty),*); ($($ret:ty)?) })*]) => {
         fn $registry(v: &mut Vec<HelperSpec>) {
             $(v.push(HelperSpec {
@@ -269,8 +171,7 @@ macro_rules! jit_helpers {
     };
 }
 
-/// Every registered helper — the single registry `emit.rs` builds
-/// symbol registrations and CLIF signatures from.
+/// Every registered helper.
 pub(crate) fn all_helpers() -> Vec<HelperSpec> {
     let mut v = Vec::new();
     buf_helpers(&mut v);
@@ -284,23 +185,11 @@ pub(crate) fn all_helpers() -> Vec<HelperSpec> {
     v
 }
 
-// ─── The ValArray bits currency ──────────────────────────────────
-//
-// A composite (array/tuple/struct) travels through the JIT as ONE
-// machine word: the `ValArray` bits — `#[repr(transparent)]` over a
-// thin Arc, byte-identical to `Value::Array`'s payload word (the
-// unified Value ABI, design/unified_value_abi.md). There is no box.
-// Signatures use `u64` for the word (the `graphix_arcstr_drop`
-// pattern): `ValArray` has a NonNull niche, so a typed parameter
-// holding the 0 pending sentinel would be UB at the boundary —
-// helpers assert non-zero and transmute internally. Ownership is a
-// call-site convention exactly as the old box was: owned bits drop
-// exactly once (`graphix_valarray_drop`) or transfer into a
-// consuming helper; borrowed bits are the same word un-bumped and
-// must not be dropped.
+// A composite travels through the JIT as its `ValArray` bits in a `u64`:
+// the zero pending sentinel would violate `ValArray`'s NonNull niche as a
+// typed parameter. Owned bits drop exactly once; borrowed bits never do.
 
-/// Borrow ValArray bits for the duration of a call. Zero is always a
-/// codegen bug (the pending sentinel leaked into a read).
+/// Borrow ValArray bits for the duration of a call.
 #[inline]
 fn va_ref(bits: &u64) -> &ValArray {
     assert!(*bits != 0, "graphix: zero ValArray bits — JIT codegen bug");
@@ -320,30 +209,15 @@ fn va_bits(a: ValArray) -> u64 {
     unsafe { std::mem::transmute::<ValArray, u64>(a) }
 }
 
-/// The bits of a BORROWED `&ValArray` — same word, no refcount bump.
-/// The caller must not drop them.
+/// The bits of a borrowed `&ValArray`, no refcount bump; never dropped.
 #[inline]
 fn va_borrowed_bits(a: &ValArray) -> u64 {
     unsafe { *(a as *const ValArray as *const u64) }
 }
 
-// ─── Producer-op builder ─────────────────────────────────────────
-//
-// Producer ops (TupleNew, StructNew, VariantNew, ArrayInit, etc.)
-// build a `Vec<Value>` field-by-field then finalize into a
-// `ValArray`. The JIT emits this as:
-//
-//   buf  = call graphix_value_buf_new(cap)
-//   call graphix_value_buf_push_<T>(buf, field0_value)
-//   ...
-//   arr  = call graphix_valarray_finalize(buf)  // consumes buf
-//
-// The buf is an `LPooled<Vec<Value>>` so re-allocation is amortized
-// across calls — same shape the interp uses for the same ops.
-//
-// All pointers passed in/out are owned (Box::into_raw / Box::from_raw
-// transfers ownership across the FFI boundary). The CLIF lowering
-// must drop or transfer each owned pointer exactly once.
+// Producer ops build a `Vec<Value>` through `graphix_value_buf_*` and
+// finalize it into a `ValArray`. Every buf pointer is owned and must be
+// finalized or dropped exactly once.
 
 jit_helpers! { registry = buf_helpers;
 
@@ -373,8 +247,7 @@ unsafe fn graphix_value_buf_push_f32(buf: *mut LPooled<Vec<Value>>, v: f32) {
     unsafe { (*buf).push(Value::F32(v)) }
 }
 
-/// Push a bool. JIT passes `1` for true / `0` for false (CLIF Bool
-/// is `I8`); we treat any nonzero as true.
+/// Push a bool; any nonzero is true.
 unsafe fn graphix_value_buf_push_bool(buf: *mut LPooled<Vec<Value>>, v: u8) {
     unsafe { (*buf).push(Value::Bool(v != 0)) }
 }
@@ -399,18 +272,12 @@ unsafe fn graphix_value_buf_push_u64(buf: *mut LPooled<Vec<Value>>, v: u64) {
     unsafe { (*buf).push(Value::U64(v)) }
 }
 
-/// Push a `Value::Array(inner)` slot, taking ownership of `inner`
-/// (owned ValArray bits). Used by StructNew (each field is a
-/// `[name, value]` inner array) and by VariantNew with payload.
+/// Push a `Value::Array` slot, taking ownership of `inner`.
 unsafe fn graphix_value_buf_push_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
     unsafe { (*buf).push(Value::Array(va_owned(inner))) }
 }
 
-/// Flatten an owned ValArray (bits) into `buf`: clone each element
-/// into the buf, then drop the array. Used by the flat_map loop's
-/// JIT codegen — the body produces an owned array per element whose
-/// contents are concatenated into the output. (`ValArray` is an
-/// immutable `Arc<[Value]>`, so elements are cloned, not moved.)
+/// Extend `buf` with the elements of an owned ValArray, then drop it.
 unsafe fn graphix_value_buf_extend_from_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
     unsafe {
         let owned = va_owned(inner);
@@ -418,54 +285,31 @@ unsafe fn graphix_value_buf_extend_from_array(buf: *mut LPooled<Vec<Value>>, inn
     }
 }
 
-/// Borrow-mode array push: refcount-bumps the caller's borrowed bits
-/// and pushes `Value::Array(clone)`. Used for composite elements read
-/// from a local the caller still owns.
+/// Push a clone of borrowed ValArray bits; the caller keeps its ref.
 unsafe fn graphix_value_buf_push_array_borrowed(buf: *mut LPooled<Vec<Value>>, src: u64) {
     unsafe { (*buf).push(Value::Array(va_ref(&src).clone())) }
 }
 
-/// Borrow-mode value push: the caller passes their `Value` bits by
-/// value (Value is `#[repr(u64)]`, 16 bytes — two integer registers
-/// on the SysV ABI). We refcount-bump the inner, push the clone, and
-/// `mem::forget` the input so the caller's bits stay valid (the
-/// caller's local retains its ref).
+/// Push a clone of a borrowed Value; the caller keeps its ref.
 safe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: TagValue) {
-    // Refcount-bump the MASKED value, push the clean clone, forget the
-    // input (the caller's local keeps its ref). A tainted disc can't
-    // reach the buffer.
     let dup = v.with_value(|v| v.clone());
     std::mem::forget(v);
     unsafe { (*buf).push(dup) }
 }
 
-/// Move-mode value push: consumes `v` (the caller transfers
-/// ownership) and pushes it into the buf without an extra refcount
-/// bump. Used for value-shape elements sourced from an owned producer
-/// (VariantNew, a composite-return call) — the value isn't referenced
-/// anywhere else, so a borrow-mode push would leak the extra ref.
+/// Push an owned Value, consuming it. The buffer holds clean Values:
+/// the tag is stripped here.
 safe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
-    // Strip the tag — the buffer holds clean Values (the builtin that
-    // consumes it must never see a tagged disc). A tainted field is the
-    // JIT-side force's job to bottom; masking here is the net that turns
-    // a forgotten force from UB into a (fuzzer-caught) value divergence.
     unsafe { (*buf).push(tv.value()) }
 }
 
-/// Drop a partially-built (still-`Box`'d) `LPooled<Vec<Value>>`.
-/// Used by the JIT cleanup_stack on pending paths: a producer op
-/// that allocated a buf but never reached `finalize` needs to free
-/// it explicitly. Null is always a codegen bug (a pending sentinel
-/// leaked into a drop) — panic loudly instead of UB.
+/// Drop a buf that never reached `finalize`.
 unsafe fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
     assert!(!buf.is_null(), "graphix_value_buf_drop: null buf — JIT codegen bug");
     unsafe { drop(Box::from_raw(buf)) }
 }
 
-/// Push a `Value::String` slot cloned from an interned static: `ptr`
-/// is a stable `*const ArcStr` (a kernel strings-table slot — struct
-/// field names, variant tags); the clone bumps the refcount and the
-/// caller's table entry stays owned.
+/// Push a `Value::String` cloned from a kernel strings-table slot.
 unsafe fn graphix_value_buf_push_arcstr(
     buf: *mut LPooled<Vec<Value>>,
     ptr: *const arcstr::ArcStr,
@@ -473,17 +317,12 @@ unsafe fn graphix_value_buf_push_arcstr(
     unsafe { (*buf).push(Value::String((*ptr).clone())) }
 }
 
-/// Push an owned `ArcStr` onto a value buffer, wrapping it in
-/// `Value::String` — the caller's SSA holds an owned ArcStr
-/// (bit-equivalent to its raw thin pointer) and transfers ownership
-/// into the buf.
+/// Push an owned `ArcStr` as `Value::String`, consuming it.
 unsafe fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: arcstr::ArcStr) {
     unsafe { (*buf).push(Value::String(s)) }
 }
 
-/// Finalize the buffer into an owned `ValArray`, returned as its
-/// bits. Consumes the buf (drops the `LPooled<Vec<Value>>` so its
-/// allocation returns to the pool).
+/// Finalize the buffer into owned `ValArray` bits, consuming the buf.
 unsafe fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
     unsafe {
         let mut owned = *Box::from_raw(buf);
@@ -491,31 +330,24 @@ unsafe fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
     }
 }
 
-/// Reference-count bump of borrowed ValArray bits → owned bits. Used
-/// at kernel entry and by `ensure_owned_composite_src` to convert a
-/// borrowed composite read into an owned local — one relaxed atomic
-/// increment, no allocation.
+/// Borrowed ValArray bits → owned bits (refcount bump).
 safe fn graphix_valarray_clone(bits: u64) -> u64 {
     va_bits(va_ref(&bits).clone())
 }
 
-/// Drop owned ValArray bits. Use when a local goes out of scope or is
-/// overwritten by a tail-call rebind. Zero is always a codegen bug (a
-/// pending sentinel leaked into a drop) — panic loudly instead of UB.
+/// Drop owned ValArray bits.
 safe fn graphix_valarray_drop(bits: u64) {
     drop(va_owned(bits))
 }
 
-/// flat_map extend for LIST-valued callback results: walk the cons
-/// chain and push each element. A NON-list value pushes as a single
-/// element — `ListFlatMap::finish`'s fallback, bit-for-bit. Consumes
-/// the value (the loop wraps the body result owned).
+/// Extend `buf` with a list value's elements, consuming it; a non-list
+/// value pushes as one element, as `ListFlatMap::finish` does.
 unsafe fn graphix_value_buf_extend_from_list(
     buf: *mut LPooled<Vec<Value>>,
     tv: TagValue,
 ) {
     use crate::node::collection::list;
-    let v = tv.value(); // consume; masks the tag bits
+    let v = tv.value();
     let buf = unsafe { &mut *buf };
     if list::is_list(&v) {
         buf.extend(list::Iter::new(v));
@@ -526,31 +358,17 @@ unsafe fn graphix_value_buf_extend_from_list(
 
 }
 
-// ─── Control: pending / interrupt / call-depth / dispatch ────────
-
 jit_helpers! { registry = control_helpers;
 
-/// Read the `KERNEL_ABORT` thread-local *without clearing it*.
-/// JIT-emitted code calls this after every cross-kernel lambda call:
-/// a set flag means the CALLEE aborted (interrupt, depth trip) and
-/// returned the abort sentinel, so the caller drops its owned set and
-/// jumps to its own `pending_exit`. The flag stays set so that
-/// `Kernel::update`'s wrapper-level check sees it and discards the
-/// result. `Kernel::update` resets the flag to `false` at the top of
-/// every kernel invocation, so a stale `true` from a previous run
-/// never leaks across.
-///
-/// Returns 1 if the abort flag is set, 0 otherwise.
+/// Read `KERNEL_ABORT` without clearing it: 1 if set, else 0. Emitted
+/// after every cross-kernel call; a set flag means the callee aborted
+/// and the caller must take its own abort exit.
 safe fn graphix_abort_peek() -> u8 {
     KERNEL_ABORT.with(|c| if c.get() { 1 } else { 0 })
 }
 
-/// The fused call's return-shape mismatch path was SILENT: the emitted
-/// check drops the wrong-shaped Value and substitutes a tainted
-/// placeholder, so a stdlib builtin whose eval violates its declared
-/// return type (sprintf-error-return-shape-aug2026) — or a genuine
-/// compiler bug — silently lost a value. Called on that branch to
-/// make the loss attributable.
+/// Logged on a fused call's return-shape mismatch branch, where the
+/// wrong-shaped Value is dropped as bottom.
 safe fn graphix_shape_mismatch_warn(got_disc: u64) {
     log::warn!(
         "fused call returned a Value whose shape (disc {got_disc:#x}) doesn't \
@@ -559,24 +377,16 @@ safe fn graphix_shape_mismatch_warn(got_disc: u64) {
     );
 }
 
-/// Set `KERNEL_ABORT`. Called by the JIT-emitted code on every
-/// whole-kernel abort path (interrupt poll, depth trip, bottom abort)
-/// before it jumps to `pending_exit`.
+/// Set `KERNEL_ABORT`; emitted on every whole-kernel abort path.
 safe fn graphix_abort_set() {
     KERNEL_ABORT.with(|c| c.set(true))
 }
 
-/// Raise a handler-ful `?`'s error onto the invocation's delivery
-/// queue (`QOP_RAISES`): `site` is the interned `*const QopSite`,
-/// `(disc, payload)` the error Value's words, BORROWED — the queue
-/// takes a clone, so the site's own ownership (drop an owned inner,
-/// leave a borrowed one) is untouched. `Kernel::update` drains the
-/// queue after the run in push (= execution = node-update) order and
-/// delivers each through `deliver_error`, the interp's exact path.
+/// Raise a `?` site's error onto the invocation's delivery queue
+/// (`QOP_RAISES`). `(disc, payload)` is the error Value, borrowed: the
+/// queue takes a clone. `Kernel::update` drains the queue in order.
 unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
-    // SAFETY: the words are a valid clean `Value` the site checked is
-    // a structural Error; viewed, never owned (forgotten after the
-    // clone), exactly like `graphix_value_clone`.
+    // SAFETY: the words are a valid clean `Value`; viewed, never owned.
     let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
     let v = tv.value_cloned();
     std::mem::forget(tv);
@@ -586,33 +396,24 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     QOP_RAISES.with(|q| q.borrow_mut().push((site, v)));
 }
 
-/// Read the active runtime's interrupt/abort control (set in
-/// `INTERRUPT_PTR` by `do_cycle`). Returns 1 if a wedged loop should
-/// abort (an `interrupt()` or `abort()` is pending), else 0. Emitted at
-/// every JIT loop head; on 1 the kernel jumps to its pending-exit (drops
-/// in-flight buffers, returns the sentinel) so `Kernel::update` yields
-/// `None`.
+/// 1 if the active runtime has an `interrupt()`/`abort()` pending, else
+/// 0. Emitted at every JIT loop head.
 safe fn graphix_interrupted() -> i8 {
     INTERRUPT_PTR.with(|c| {
         let p = c.get();
         if p.is_null() {
             0
         } else {
-            // SAFETY: `do_cycle` sets `p` to its `ExecCtx.control`, which
-            // outlives the cycle; null when no cycle is running.
+            // SAFETY: `p` is the running `ExecCtx.control`, which outlives
+            // the cycle; null when no cycle is running.
             i8::from(unsafe { (*p).interrupted() })
         }
     })
 }
 
-/// The kernel twin of `stack::ensure_sufficient` — depth is bounded
-/// by memory, not a counter (`design/recursive_activations.md` §4b):
-/// at every native self-call site the kernel asks whether the
-/// remaining stack is inside the red zone. 0 = interrupted (skip the
-/// dispatch), 1 = call directly, 2 = re-enter the callee on a fresh
-/// segment through [`graphix_grow_stack`]. Same red zone and segment
-/// as the node-walk's guard, so a derivation that interleaves the two
-/// grows the same way.
+/// The kernel twin of `stack::ensure_sufficient`, asked at every native
+/// self-call: 0 = interrupted (skip the call), 1 = call directly, 2 =
+/// re-enter the callee on a fresh segment via [`graphix_grow_stack`].
 safe fn graphix_stack_check() -> i8 {
     let interrupted = INTERRUPT_PTR.with(|c| {
         let p = c.get();
@@ -633,23 +434,18 @@ safe fn graphix_stack_check() -> i8 {
     }
 }
 
-/// Run a kernel's spill thunk on a fresh stack segment. `thunk` is the
-/// address of the kernel's `__spill` entry (`jit::define_spill_thunk`),
-/// `args` the caller's spilled parameter words (one 8-byte slot per
-/// CLIF param, in signature order), `out` two words the thunk fills
-/// with the (disc, payload) result.
+/// Run a kernel's `__spill` thunk on a fresh stack segment: `args` is
+/// the caller's spilled parameter words in signature order, `out` two
+/// words the thunk fills with the (disc, payload) result.
 safe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
-    // SAFETY: `thunk` is a JIT function of the fixed spill signature
-    // this crate emits; `args`/`out` are stack slots of the calling
-    // kernel, live for the duration of the call.
+    // SAFETY: `thunk` has the fixed spill signature this crate emits;
+    // `args`/`out` are the calling kernel's stack slots, live for the call.
     let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(thunk as usize) };
     crate::stack::grow(|| f(args, out))
 }
 
-/// The fast-call path (`Effect::Stateless(Some(_))`): a stateless builtin
-/// called directly — no site identity, no inner Apply, no `CachedArgs`
-/// memo. `fn_ptr` is the registered `FastFn`; `args`/`n` is the call
-/// site's stack buffer of (disc, payload) pairs, borrowed. See
+/// Call a builtin's registered `FastFn` directly. `args`/`n` is the
+/// call site's stack buffer of (disc, payload) pairs, borrowed. See
 /// [`fast_dispatch`] for the tag rules.
 unsafe fn graphix_fastcall(
     fn_ptr: u64,
@@ -658,21 +454,15 @@ unsafe fn graphix_fastcall(
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    // SAFETY: `fn_ptr` is the `FastFn` the builtin registered
-    // (`BuiltinFacts::fastcall`), embedded by the emitter as an
-    // immediate; a fn pointer round-trips through usize.
+    // SAFETY: `fn_ptr` is the `FastFn` the emitter baked as an immediate.
     let f: crate::FastFn =
         unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
     unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) }
 }
 
-/// The TYPED fastcall path (`SiteDispatch::Typed`): a
-/// `TypedFastFn` — a builtin's `FastCall::Typed` entry, or the Cast
-/// pseudo-site's `cast_typed` — called with the site's interned
-/// `Type` (kept alive by the kernel's `KernelValues`) and the
-/// invoking kernel's env loan ([`with_kernel_env`]), so a type name
-/// resolves exactly as it would on the interp. Same buffer and tag
-/// rules as [`graphix_fastcall`].
+/// Call a `TypedFastFn` with the site's interned `Type` and the
+/// invoking kernel's env loan ([`with_kernel_env`]). Same buffer and
+/// tag rules as [`graphix_fastcall`].
 unsafe fn graphix_typedcall(
     fn_ptr: u64,
     typ: u64,
@@ -681,9 +471,8 @@ unsafe fn graphix_typedcall(
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    // SAFETY: `fn_ptr` is the `TypedFastFn` the site registered,
-    // embedded by the emitter as an immediate; `typ` is the `*const
-    // Type` it baked for this site, held for as long as its code lives.
+    // SAFETY: `fn_ptr` and `typ` are baked by the emitter and live as
+    // long as the kernel's code.
     let f: crate::TypedFastFn =
         unsafe { std::mem::transmute::<usize, crate::TypedFastFn>(fn_ptr as usize) };
     let typ = unsafe { &*(typ as *const crate::typ::Type) };
@@ -694,29 +483,20 @@ unsafe fn graphix_typedcall(
              run the wrapper under `with_kernel_env`"
         );
     }
-    // SAFETY: the loan is scoped to the wrapper call this helper runs
-    // inside of (`Kernel::update`), and `Env` is not touched mutably
-    // for its duration.
+    // SAFETY: the loan is scoped to the enclosing wrapper call, during
+    // which `Env` is not touched mutably.
     let env = unsafe { &*env };
     unsafe { fast_dispatch(|args| f(env, typ, args), args, n, taint_mask, stale_mask) }
 }
 
 }
 
-/// The direct-call trampoline core. The kernel's argument discs
-/// decide the tag: any tainted argument bottoms the result WITHOUT
-/// calling (bottom propagates — the fn never sees a bottom), all-stale
-/// arguments make the result STALE, and `None` from the fn is this
-/// cycle's bottom. Returns the production's two words with the tag
-/// in-band on the disc, so every call site's decode is shared; never
-/// touches the abort flag.
+/// The trampoline core. The argument discs decide the tag: a tainted
+/// argument bottoms the result without calling, all-stale arguments
+/// make it STALE, and `None` from the fn is this cycle's bottom.
 ///
-/// SAFETY: `args` is the call site's stack buffer of `n` (disc,
-/// payload) pairs, each a valid clean `Value` the site built for this
-/// call (scalars with their variant's discriminant, composite and
-/// string words borrowed, value shapes with a cleaned disc). Viewed,
-/// never owned: nothing here drops them; the site releases what it
-/// owned after the call.
+/// SAFETY: `args` is `n` valid clean `Value`s on the call site's stack,
+/// viewed and never owned; the site releases what it owned afterwards.
 unsafe fn fast_dispatch(
     call: impl FnOnce(&[Value]) -> Option<Value>,
     args: u64,
@@ -747,41 +527,19 @@ unsafe fn fast_dispatch(
             tv.tag()
         );
     }
-    // SAFETY: TagValue is `#[repr(C)]` (disc, payload) — the same
-    // 16-byte layout as Value, tag bits included; the bits transfer to
-    // the caller and the local's Drop is suppressed.
+    // SAFETY: TagValue is `#[repr(C)]` (disc, payload); ownership of the
+    // bits transfers to the caller.
     let tv = std::mem::ManuallyDrop::new(tv);
     let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*tv) };
     DynCallRet { word0: words[0], word1: words[1] }
 }
 
-// ─── Value-as-aggregate helpers ────────────────────────────────────
-//
-// Value is `#[repr(u64)]`, 16 bytes — a `(u64 discriminant, u64
-// payload)` aggregate that the SysV AMD64 ABI passes in two integer
-// registers (RDI/RSI for args, RAX/RDX for return). All Value-shaped
-// helpers below take/return `Value` directly via the two-register
-// `extern "C"` ABI — no `*mut Value` boxing, no separate heap
-// allocation for the outer Value (the inner ArcStr/ValArray/etc. is
-// already heap-allocated by its own refcount).
-//
-// Ownership convention: helpers that READ (`is_null`, `tag_eq`,
-// `payload_*`, the `_borrowed` push) `mem::forget` the input so the
-// caller's bits stay valid — the caller's local retains its ref.
-// Only `graphix_value_drop` actually consumes (`drop`s) the input.
-// This lets the JIT pass `b.use_var(disc), b.use_var(payload)`
-// repeatedly without worrying about ownership: every call site is
-// either an explicit drop, or implicitly borrowed.
+// Value-shaped helpers take and return `Value` by value in two registers.
+// Readers `mem::forget` their input so the caller keeps its ref; only the
+// consuming helpers (drop, arith, index) take ownership.
 
-/// The shared value-arith core: compute through netidx's Value
-/// operators (byte-identical to the non-fused arith node), with an
-/// Error result converted to BOTTOM for these UNCHECKED ops — the
-/// node-walk's BinOp converts `Value::Error` to log+None
-/// (node/op.rs), so return a tainted Null, never the Error as a
-/// value (soak finding corpus-fuzz/divergence_000018:
-/// `duration:1.s / i64:0`). The checked `+?` family keeps its
-/// catchable ArithError. Consumes both operands (netidx's operators
-/// take them by value).
+/// Unchecked value arithmetic through netidx's operators. An Error
+/// result becomes bottom, as the node-walk's BinOp does; consumes both.
 fn value_arith_op(
     l: TagValue,
     r: TagValue,
@@ -793,11 +551,8 @@ fn value_arith_op(
     }
 }
 
-/// The shared variant-payload read: slot 0 is the tag; payloads start
-/// at slot 1, so the JIT passes the 0-based payload position and we
-/// add 1. Borrowed read — the input is `mem::forget`ed so the caller
-/// retains ownership. Total: a placeholder (`Value::Null`) or short
-/// array reads as the default (see the module's totality contract).
+/// Borrowed read of payload `payload_idx` (slot 0 is the tag). A
+/// placeholder or short array reads as the default.
 fn variant_payload_read<T: Default>(
     v: TagValue,
     payload_idx: usize,
@@ -807,14 +562,11 @@ fn variant_payload_read<T: Default>(
         Value::Array(a) => a.get(payload_idx + 1).map(&read).unwrap_or_default(),
         _ => T::default(),
     });
-    std::mem::forget(v); // borrowed read — caller keeps owning it
+    std::mem::forget(v);
     r
 }
 
-/// Walk `j` cells of a list value, returning the j-th TAIL (`heads`
-/// false) or the j-th HEAD's cell (`heads` true → the head value).
-/// `None` on a short/malformed chain (the tainted placeholder) — the
-/// callers' kind-safe defaults take over.
+/// The j-th spine cell of a list value; `None` on a short or malformed chain.
 fn list_walk(v: &Value, j: usize) -> Option<&Value> {
     use crate::node::collection::list;
     let mut cur = v;
@@ -829,14 +581,9 @@ fn list_walk(v: &Value, j: usize) -> Option<&Value> {
 
 jit_helpers! { registry = value_helpers;
 
-/// Unwrap an owned `Value::Array` into owned ValArray bits — the
-/// CHECKED value→composite narrowing. Under the unified Value ABI the
-/// bits ARE `Value::Array`'s payload word, but the check must stay: a
-/// tainted `Value::Null` placeholder is reachable on `?`-unwrap paths
-/// and reinterpreting its zero payload as array bits would be UB at
-/// the first touch. A non-Array here is a CODEGEN bug (the emit's
-/// taint/shape gates failed) — abort defined rather than UB;
-/// extern "C" makes the panic a nounwind abort.
+/// Unwrap an owned `Value::Array` into owned ValArray bits. The shape
+/// check stays: a tainted `Null` placeholder is reachable here and its
+/// zero payload must never be read as array bits.
 safe fn graphix_value_into_array(v: TagValue) -> u64 {
     match v.value() {
         Value::Array(a) => va_bits(a),
@@ -844,9 +591,8 @@ safe fn graphix_value_into_array(v: TagValue) -> u64 {
     }
 }
 
-/// Borrowed-read variant of [`graphix_value_into_array`]: clones the
-/// inner ValArray (refcount bump — owned bits out) and forgets the
-/// input so the caller's bits stay valid.
+/// Borrowed form of [`graphix_value_into_array`]: owned bits out, the
+/// caller keeps its Value.
 safe fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
     let bits = v.with_value(|v| match v {
         Value::Array(a) => va_bits(a.clone()),
@@ -854,59 +600,37 @@ safe fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
             panic!("graphix_value_into_array_borrowed: expected Value::Array, got {v:?}")
         }
     });
-    std::mem::forget(v); // borrowed read — the caller keeps owning it
+    std::mem::forget(v);
     bits
 }
 
-/// Consume a Value and decrement the inner refcount (for
-/// String/Array/Variant/etc. — a no-op for scalar variants like
-/// I64/Bool/Null).  Use at scope exit for owned Value locals.
-///
-/// The all-zero pending sentinel is REJECTED before an invalid
-/// `Value` materializes: `Value`'s discriminants are bitmasks
-/// starting at 0x1, so disc 0 is never a real value. A zero disc
-/// here is always a codegen bug (a pending sentinel leaked into a
-/// drop); the panic aborts at the `extern "C"` boundary with the
-/// message printed, instead of UB.
+/// Drop an owned Value. Disc 0 is never a real Value, so the pending
+/// sentinel is rejected before an invalid `Value` materializes.
 safe fn graphix_value_drop(tv: TagValue) {
     assert!(
         !tv.is_sentinel(),
         "graphix_value_drop: zero discriminant — JIT codegen bug \
          (a pending sentinel leaked into a drop)"
     );
-    // `tv` drops here: TagValue::Drop masks the tag and drops the clean
-    // `Value`, so a tagged (tainted) disc can't corrupt the drop.
     drop(tv)
 }
 
-/// "Borrowed clone": bump the inner refcount and return a fresh
-/// `Value` with valid ownership. The caller's bits stay valid — we
-/// `mem::forget` the input so its ref isn't decremented. Net effect:
-/// caller now has two valid refs (original + returned clone) and the
-/// inner refcount has incremented by one.
+/// Clone a borrowed Value (tag preserved); the caller keeps its ref.
 safe fn graphix_value_clone(tv: TagValue) -> TagValue {
-    // Refcount-bump (preserving the tag); the input stays owned by the
-    // caller (forget, don't run our Drop which would decrement).
     let dup = tv.clone();
     std::mem::forget(tv);
     dup
 }
 
-/// Clone a `Value` from a stable `*const Value` static — a kernel's
-/// value-constants table slot (a value-shape constant:
-/// datetime/duration/bytes/map). Bumps any inner `Arc`. Returns the
-/// clone by value (two registers).
+/// Clone a `Value` from a kernel's value-constants table slot.
 ///
 /// # Safety
 /// `ptr` must point to a live `Value` that outlives the JIT'd code.
-/// The per-kernel `KernelValues` table owns it (like `KernelStrings`
-/// for `ArcStr`), kept alive on the `CachedKernel`.
 unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
     TagValue::clean(unsafe { (*ptr).clone() })
 }
 
-/// Box `tv` as a value of the Graphix-minted abstract type `id` —
-/// the constructor `T(v)` (`design/nominal_abstract_types.md`).
+/// The abstract constructor `T(v)`: box `tv` under abstract type `id`.
 /// Consumes `tv`.
 unsafe fn graphix_abstract_wrap(id: u64, name: *const arcstr::ArcStr, tv: TagValue) -> TagValue {
     let name = unsafe { (*name).clone() };
@@ -978,11 +702,7 @@ safe fn graphix_abstract_get_value(tv: TagValue) -> TagValue {
     r
 }
 
-// Value arithmetic (datetime/duration `ValueArith`) — see
-// [`value_arith_op`]. Codegen passes OWNED Values
-// (`ensure_owned_value` clones a Borrowed Local read, scalar operands
-// are freshly promoted, producer ops like a value-shape `Const` are
-// already owned), so there's no leak or double-free.
+// Value arithmetic consumes both operands; codegen passes them owned.
 
 safe fn graphix_value_add(l: TagValue, r: TagValue) -> TagValue {
     value_arith_op(l, r, |a, b| a + b)
@@ -1004,12 +724,8 @@ safe fn graphix_value_rem(l: TagValue, r: TagValue) -> TagValue {
     value_arith_op(l, r, |a, b| a % b)
 }
 
-// Checked arithmetic (`+?`/`-?`/`*?`/`/?`/`%?`) — netidx's `checked_*`
-// inherent methods, with any raw error wrapped into the catchable
-// `ArithError` error VALUE through the SAME [`wrap_arith_error`] core
-// the node-walk's checked update uses (never bottom, unlike unchecked
-// div0). Each helper CONSUMES both args, same contract as the
-// unchecked family above.
+// Checked arithmetic yields the catchable `ArithError` value, never
+// bottom; consumes both operands.
 
 safe fn graphix_value_checked_add(l: TagValue, r: TagValue) -> TagValue {
     TagValue::clean(wrap_arith_error(l.value().checked_add(r.value())))
@@ -1031,19 +747,13 @@ safe fn graphix_value_checked_rem(l: TagValue, r: TagValue) -> TagValue {
     TagValue::clean(wrap_arith_error(l.value().checked_rem(r.value())))
 }
 
-/// Value equality (`ValueEq`). Compares via netidx's
-/// `impl PartialEq for Value` — byte-identical to the non-fused `==`
-/// node. CONSUMES both args (they're dropped at function end), matching
-/// the owned-operand contract `compile_owned_value_operand` produces.
+/// Value equality; consumes both operands.
 safe fn graphix_value_eq(l: TagValue, r: TagValue) -> u8 {
     (l.value() == r.value()) as u8
 }
 
-/// `bytes[i]` indexing. Extracts the `PBytes` from a
-/// `Value::Bytes`, indexes via the shared `node::array::bytes_index`
-/// (bounds-checked, negative-from-end), and returns `Nullable<u8>`'s
-/// `Value` (the `u8` or the out-of-bounds error). CONSUMES the bytes
-/// Value (passed owned by `compile_owned_value_operand`).
+/// `bytes[i]`: the `u8` or the index error, via the shared
+/// [`bytes_index`]. Consumes `v`.
 safe fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
     TagValue::clean(match v.value() {
         Value::Bytes(b) => bytes_index(&b, i),
@@ -1051,61 +761,37 @@ safe fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
     })
 }
 
-/// Map access `m{key}`. Looks up `key` in the
-/// `Value::Map` via the shared `node::map::map_get`, returning the
-/// value or the `map key not found` error (`Nullable<V>`'s `Value`).
-/// CONSUMES both operands (passed owned by
-/// `compile_owned_value_operand`).
+/// `m{key}`: the value or the not-found error, via the shared
+/// [`map_get`]. Consumes both operands.
 safe fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
     TagValue::clean(map_get(&map.value(), &key.value()))
 }
 
-/// Array/bytes slice `a[i..j]`. `flags` bit0 =
-/// `start` present, bit1 = `end` present (absent bounds pass 0). Routes
-/// to the shared `node::array::array_slice_i64`, returning the
-/// sub-array/sub-bytes or an error (`Nullable<source>`'s `Value`).
-/// CONSUMES the source Value (passed owned by
-/// `compile_owned_value_operand`).
+/// `a[i..j]` over an array or bytes: `flags` bit0 = `start` present,
+/// bit1 = `end` present. Consumes `src`.
 safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> TagValue {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
     TagValue::clean(array_slice_i64(&src.value(), s, e))
 }
 
-/// Test whether a `Value` is `Value::Null`. Borrowed read — caller
-/// retains ownership.
-///
-/// Today is-null lowering inlines this test as `icmp_imm
-/// (disc, NULL_DISC)` rather than calling the helper; the helper
-/// remains registered so out-of-tree code and direct interp tests
-/// keep working.
+/// Borrowed `Value::Null` test. Lowering inlines the disc compare; the
+/// helper stays registered for direct callers.
 safe fn graphix_value_is_null(v: TagValue) -> u8 {
     let r = v.with_value(|v| matches!(v, Value::Null) as u8);
-    std::mem::forget(v); // borrowed read — caller keeps owning it
+    std::mem::forget(v);
     r
 }
 
-// Variant consumer ops: variants at runtime are either
-// `Value::String(tag)` for nullary or `Value::Array([tag, p0, ...])`
-// for with-payload; the JIT dispatches on the outer Value shape via
-// these helpers.
-
-/// Test whether a variant's runtime tag matches `expected`. Returns
-/// 1 (true) or 0 (false). Takes the variant `Value` by value (16
-/// bytes / two registers); we `mem::forget` after the borrowed read
-/// so the caller's bits stay valid — variant locals are dropped at
-/// scope exit via the dedicated drop helper.
+/// Borrowed test of a variant's tag AND arity against `expected`. As
+/// in `StructurePattern::is_match`, arity selects the representation
+/// (`String(tag)` at 0, else an array of arity + 1 with the tag at
+/// slot 0); the tag alone does not discriminate `` [`A, `A(i64)] ``.
 safe fn graphix_variant_tag_eq(
     v: TagValue,
     expected: *const arcstr::ArcStr,
     arity: usize,
 ) -> u8 {
-    // Mirrors `StructurePattern::is_match` (node/pattern.rs): the
-    // pattern's ARITY selects the representation — a 0-payload variant
-    // is `Value::String(tag)`, an n-payload one is `Value::Array` of
-    // n + 1 with the tag at slot 0. Tag alone is NOT a discriminator:
-    // `[`A, `A(i64)]` is a legal union whose arms differ only by arity
-    // (variant-arity-tag-only-aug2026).
     let r = v.with_value(|v| {
         let exp = unsafe { &*expected };
         match v {
@@ -1119,11 +805,9 @@ safe fn graphix_variant_tag_eq(
             _ => 0,
         }
     });
-    std::mem::forget(v); // borrowed read — caller keeps owning it
+    std::mem::forget(v);
     r
 }
-
-// Variant payload reads — see [`variant_payload_read`].
 
 safe fn graphix_variant_payload_i64(v: TagValue, payload_idx: usize) -> i64 {
     variant_payload_read(v, payload_idx, read_slot_i64)
@@ -1157,11 +841,8 @@ safe fn graphix_variant_payload_u8(v: TagValue, payload_idx: usize) -> u8 {
     variant_payload_read(v, payload_idx, read_slot_u8)
 }
 
-/// Owned clone of variant payload slot `idx` as a full two-word
-/// `Value` — the non-scalar payload bind. A shape mismatch (a tainted
-/// scrutinee's helper-safe placeholder) yields `Value::Null`, which is
-/// safe for `graphix_value_drop`; the emitter masks the bind's disc
-/// TAINT in that case, so the placeholder is never read as data.
+/// Owned clone of a variant payload slot as a Value; a shape mismatch
+/// yields the drop-safe `Value::Null`.
 safe fn graphix_variant_payload_value(v: TagValue, payload_idx: usize) -> TagValue {
     let r = v.with_value(|v| match v {
         Value::Array(a) => a.get(payload_idx + 1).cloned().unwrap_or(Value::Null),
@@ -1171,8 +852,8 @@ safe fn graphix_variant_payload_value(v: TagValue, payload_idx: usize) -> TagVal
     TagValue::clean(r)
 }
 
-/// Owned `ArcStr` clone of a string variant payload slot; the
-/// mismatch default is the static empty string (free, drop-safe).
+/// Owned `ArcStr` clone of a string variant payload slot; mismatch
+/// yields the static empty string.
 safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
     let r = v.with_value(|v| match v {
         Value::Array(a) => match a.get(payload_idx + 1) {
@@ -1185,9 +866,8 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
     unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
 }
 
-/// List-pattern structure test: walk `k` cells; `exact` also requires
-/// nil after them. Shape-safe on the tainted placeholder (a non-list
-/// simply fails the walk).
+/// List-pattern structure test: `k` cells exist; `exact` also requires
+/// nil after them. A non-list fails the walk.
 safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
     use crate::node::collection::list;
     let r = v.with_value(|v| match list_walk(v, k) {
@@ -1204,8 +884,7 @@ safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
     r
 }
 
-/// Owned clone of the j-th HEAD of a list value as a full two-word
-/// `Value`; default `Value::Null` (drop-safe) on a short chain.
+/// Owned clone of the j-th head of a list as a Value; `Null` on a short chain.
 safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
     use crate::node::collection::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
@@ -1216,8 +895,7 @@ safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
     TagValue::clean(r)
 }
 
-/// Owned `ValArray` bits of the j-th head (a composite element);
-/// default = a clone of the static empty array (drop-safe).
+/// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
 safe fn graphix_list_get_array(v: TagValue, j: usize) -> u64 {
     use crate::node::collection::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
@@ -1228,8 +906,7 @@ safe fn graphix_list_get_array(v: TagValue, j: usize) -> u64 {
     va_bits(r)
 }
 
-/// Owned `ArcStr` of the j-th head (a string element); default = the
-/// static empty string (drop-safe).
+/// Owned `ArcStr` of the j-th head; the empty string on mismatch.
 safe fn graphix_list_get_string(v: TagValue, j: usize) -> u64 {
     let r = v.with_value(|v| {
         match list_walk(v, j).and_then(|c| crate::node::collection::list::split(c)) {
@@ -1241,9 +918,8 @@ safe fn graphix_list_get_string(v: TagValue, j: usize) -> u64 {
     unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
 }
 
-/// Owned clone of the k-th TAIL — the `[<h, rest..>]` rest bind: the
-/// value IS the k-th spine cell, O(1) shared structure. Default
-/// `Value::Null` (drop-safe; an unmatched arm never reads it).
+/// Owned clone of the k-th tail (the `[<h, rest..>]` rest bind), O(1)
+/// shared structure; `Null` on a short chain.
 safe fn graphix_list_tail(v: TagValue, k: usize) -> TagValue {
     let r = v.with_value(|v| match list_walk(v, k) {
         Some(cur) => cur.clone(),
@@ -1253,9 +929,8 @@ safe fn graphix_list_tail(v: TagValue, k: usize) -> TagValue {
     TagValue::clean(r)
 }
 
-/// Owned `ValArray` bits of a composite (array/tuple/struct) variant
-/// payload slot; the mismatch default is a refcount clone of the
-/// static empty array (drop-safe).
+/// Owned `ValArray` bits of a composite variant payload slot; the
+/// empty array on mismatch.
 safe fn graphix_variant_payload_array(v: TagValue, payload_idx: usize) -> u64 {
     let r = v.with_value(|v| match v {
         Value::Array(a) => match a.get(payload_idx + 1) {
@@ -1282,22 +957,10 @@ safe fn graphix_variant_payload_bool(v: TagValue, payload_idx: usize) -> u8 {
 
 }
 
-// ─── String / ArcStr helpers ──────────────────────────────────────
-//
-// `ArcStr` is `repr(transparent)` over a thin pointer, so it travels
-// across the JIT/Rust boundary as a single 8-byte value. Codegen
-// treats `Type::String` SSA values as `i64` CLIF values holding
-// the ArcStr's raw pointer. Lifetime tracking matches the variant /
-// nullable scheme — every owned ArcStr SSA either feeds a consumer
-// helper that takes ownership (e.g. `graphix_string_buf_push_arcstr`
-// drops on push) or is returned across the kernel boundary (the
-// wrapper hands it to `Kernel::update` which wraps it into a
-// `Value::String`). On the pending path the in-flight string buf
-// (still owned by the kernel) drops via `graphix_string_buf_drop`.
+// A String SSA value is the raw `ArcStr` pointer; every owned one is
+// consumed by a helper or returned across the kernel boundary.
 
-/// The shared Display-render core of the `string_buf_push_<prim>`
-/// family — matches `Value::<T>(v).to_string()` for every primitive
-/// (netidx `Value`'s Display delegates to the inner type's Display).
+/// Render a primitive as `Value::<T>(v).to_string()` does.
 fn push_display<T: std::fmt::Display>(buf: *mut String, v: T) {
     use std::fmt::Write;
     let _ = write!(unsafe { &mut *buf }, "{v}");
@@ -1305,84 +968,54 @@ fn push_display<T: std::fmt::Display>(buf: *mut String, v: T) {
 
 jit_helpers! { registry = string_helpers;
 
-/// Clone an interned static `ArcStr` — refcount bump on the slot at
-/// `p`, returning a fresh owned ArcStr. Caller has ownership; drops
-/// when no longer needed via `graphix_arcstr_drop`. Used by
-/// string-constant lowering.
+/// Owned clone of a kernel strings-table slot.
 unsafe fn graphix_arcstr_clone_from_static(p: *const arcstr::ArcStr) -> arcstr::ArcStr {
     unsafe { (*p).clone() }
 }
 
-/// Drop an owned ArcStr. Refcount decrement; frees the underlying
-/// buffer when the last clone goes away.
-///
-/// Takes the raw pointer bits rather than `ArcStr` itself
-/// (bit-identical ABI — `repr(transparent)` over a pointer) so the
-/// zero pending sentinel can be REJECTED before an invalid `ArcStr`
-/// materializes (zero violates its `NonNull` niche — a typed
-/// parameter holding it would be UB at the boundary). Zero here is
-/// always a codegen bug (a pending sentinel leaked into a drop);
-/// the panic aborts at the `extern "C"` boundary with the message
-/// printed, instead of UB. This was #214's crash site —
-/// `drop_in_place(NULL)` SIGSEGV.
+/// Drop an owned ArcStr. Takes raw bits so the zero pending sentinel is
+/// rejected before an invalid `ArcStr` (NonNull) materializes.
 safe fn graphix_arcstr_drop(s: u64) {
     assert!(
         s != 0,
         "graphix_arcstr_drop: null ArcStr — JIT codegen bug \
          (a pending sentinel leaked into a drop)"
     );
-    // SAFETY: nonzero, and JIT'd code only ever passes bits it
-    // received from an ArcStr-producing helper (same decode as
-    // `Kernel::update`'s String return path).
+    // SAFETY: nonzero bits that came from an ArcStr-producing helper.
     drop(unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(s) })
 }
 
-/// Borrowed-clone an ArcStr by value: bump the refcount, return the
-/// fresh clone. The caller's bits stay valid (we `mem::forget` so
-/// the input's ref isn't decremented). Net effect: caller now has
-/// two valid refs (original + returned clone). Used by
-/// local reads of String slots and by anywhere else we
-/// need to take an additional ref to an in-register ArcStr.
+/// Clone a borrowed ArcStr; the caller keeps its ref.
 safe fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
     let dup = s.clone();
     std::mem::forget(s);
     dup
 }
 
-/// The empty-`ArcStr` placeholder for a tainted String position — the
-/// static empty (clone/drop are no-ops on it), returned as the raw
-/// thin-pointer bits the String ABI uses. Helper-safe by construction.
+/// The empty-`ArcStr` placeholder for a tainted String position, as bits.
 safe fn graphix_arcstr_empty() -> u64 {
     unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(arcstr::ArcStr::new()) }
 }
 
-/// The empty-`ValArray` placeholder for a tainted composite position —
-/// an owned refcount clone of the static empty (the consumer chain
-/// drops it through the normal scope machinery; the static never
-/// reaches zero). No allocation.
+/// The empty-`ValArray` placeholder for a tainted composite position,
+/// as owned bits.
 safe fn graphix_valarray_empty() -> u64 {
     va_bits(EMPTY_ARR.clone())
 }
 
-/// Start a fresh string-buffer for interpolation/concat. Returns a
-/// heap-owned `*mut String`; caller eventually pairs with
-/// `graphix_string_buf_finalize` (success) or
-/// `graphix_string_buf_drop` (pending path).
+/// Start an owned string buffer; pair with `graphix_string_buf_finalize`
+/// or `graphix_string_buf_drop`.
 safe fn graphix_string_buf_new() -> *mut String {
     Box::into_raw(Box::new(String::new()))
 }
 
-/// Drop a string buf without finalizing — used on abort paths that
-/// short-circuit an in-flight Concat. Null is
-/// always a codegen bug (a pending sentinel leaked into a drop) —
-/// panic loudly instead of UB.
+/// Drop a string buf without finalizing.
 unsafe fn graphix_string_buf_drop(buf: *mut String) {
     assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");
     drop(unsafe { Box::from_raw(buf) })
 }
 
-/// Finalize a string buf into an owned ArcStr. Consumes the buf
-/// (frees the Box) and returns the resulting ArcStr.
+/// Finalize a string buf into an owned ArcStr, consuming the buf.
 unsafe fn graphix_string_buf_finalize(buf: *mut String) -> arcstr::ArcStr {
     let s = unsafe { *Box::from_raw(buf) };
     arcstr::ArcStr::from(s.as_str())
@@ -1391,10 +1024,7 @@ unsafe fn graphix_string_buf_finalize(buf: *mut String) -> arcstr::ArcStr {
 /// Append an ArcStr's contents to the buf, consuming the ArcStr.
 unsafe fn graphix_string_buf_push_arcstr(buf: *mut String, s: arcstr::ArcStr) {
     unsafe { &mut *buf }.push_str(&s);
-    // s drops here.
 }
-
-// Per-prim Display renders — see [`push_display`].
 
 unsafe fn graphix_string_buf_push_i64(buf: *mut String, v: i64) {
     push_display(buf, v)
@@ -1442,52 +1072,32 @@ unsafe fn graphix_string_buf_push_bool(buf: *mut String, v: u8) {
 
 }
 
-// ─── List / Map collection HOF boundary ───────────────────────────
-//
-// The scaffold loops iterate a ValArray; List (a Cons/Nil chain) and
-// Map (a CMap) sources cross this seam by FLATTENING on entry and
-// REBUILDING on exit, through the same canonical functions the
-// interpreted MapQ/FoldQ use (`node::collection::list`,
-// `make_pair`/`split_pair`) — one semantic seam, so the two
-// evaluators agree bit-for-bit. Semantically `list::map(l, f)`
-// lowers as `from_array(array::map(to_array(l), f))`, and the
-// SlotFlags firing rule over the flattened length IS the interpreted
-// ordinal-slot rule (the interpreted MapQ/FoldQ walk is
-// collection-generic).
+// The scaffold loops iterate a ValArray; List and Map sources flatten on
+// entry and rebuild on exit through the same `node::collection`
+// functions the interpreted MapQ/FoldQ use.
 
 jit_helpers! { registry = collection_helpers;
 
-/// Flatten a graphix List value into an owned ValArray of its
-/// elements. CONSUMES the value (callers marshal via
-/// `emit_owned_value_operand_node`, like the map/value-arith
-/// helpers). A non-list input — the #219 tainted placeholder (Null),
-/// or a malformed chain (unreachable through the typechecker) —
-/// yields an EMPTY array: the source disc's TAINT rides the loop's
-/// SlotFlags, so the result taints and its payload is unobservable,
-/// matching the interpreted forced-taint semantics.
+/// Flatten a List value into owned ValArray bits, consuming it. A
+/// non-list (the tainted placeholder) yields the empty array; the
+/// source disc's taint rides the loop's SlotFlags.
 safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
-    let v = tv.value(); // consume; masks the tag bits
+    let v = tv.value();
     let arr =
         crate::node::collection::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
     va_bits(arr)
 }
 
-/// The exit boundary for list-returning HOF loops: consume the
-/// finalize'd ValArray and build the cons chain via
-/// `list::from_iter` — the same constructor the interpreted finishes
-/// use.
+/// Consume finalized ValArray bits and build the List value.
 safe fn graphix_valarray_into_list(bits: u64) -> TagValue {
     let arr = va_owned(bits);
     TagValue::clean(crate::node::collection::list::from_iter(arr.iter().cloned()))
 }
 
-/// Flatten a Map value into an owned ValArray of 2-element `[k, v]`
-/// pair arrays in key-sorted order — exactly the interpreted
-/// `ValueMap::values` element encoding (`make_pair`). Consumes the
-/// value; non-map input (the tainted placeholder) → empty array, see
-/// [`graphix_list_to_valarray`].
+/// Flatten a Map value into owned ValArray bits of `[k, v]` pairs in
+/// key order, consuming it; a non-map yields the empty array.
 safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
-    let v = tv.value(); // consume; masks the tag bits
+    let v = tv.value();
     let arr = match &v {
         Value::Map(m) => ValArray::from_iter(
             m.into_iter().map(|(k, v)| crate::node::collection::make_pair(k, v)),
@@ -1497,12 +1107,8 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
     va_bits(arr)
 }
 
-/// The exit boundary for map-returning HOF loops: consume a
-/// finalize'd ValArray of `[k, v]` pairs and build a `Value::Map` via
-/// the same `split_pair` + `CMap::from_iter` the interpreted
-/// `MapMap::finish` uses (identical duplicate-key semantics). A
-/// malformed element is unreachable through the typechecker —
-/// contribute nothing and log rather than abort.
+/// Consume finalized ValArray bits of `[k, v]` pairs and build a
+/// `Value::Map`; a malformed pair is logged and skipped.
 safe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
     let arr = va_owned(bits);
     let m = netidx_value::Map::from_iter(arr.iter().filter_map(|v| {
@@ -1517,18 +1123,8 @@ safe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
 
 }
 
-// ─── Element / slot-state reads ───────────────────────────────────
-
-/// Total scalar slot readers: the slot's payload if it carries the
-/// named primitive family (fixed-width and varint encodings of the
-/// same width read alike — the unchecked reads they replace read the
-/// raw payload word regardless of encoding), the shape's placeholder
-/// (0) otherwise. One reader per family; every scalar element / struct
-/// field / variant payload helper composes these over a bounds-checked
-/// `.get()`.
-/// A BORROWED read of a Graphix-minted abstract value's payload (`.0`):
-/// the caller keeps owning `tv`. A non-abstract value reads as the
-/// shape's placeholder (the TOTAL-reads contract).
+/// Borrowed read of an abstract value's payload (`.0`); a non-abstract
+/// value reads as the shape's placeholder.
 fn abstract_payload_read<T: Default>(tv: TagValue, f: fn(&Value) -> T) -> T {
     let r =
         tv.with_value(|v| crate::abstract_value::payload(v).map(f).unwrap_or_default());
@@ -1547,6 +1143,8 @@ macro_rules! slot_readers {
     };
 }
 
+// Total scalar slot readers: the payload if the slot carries the
+// family (fixed-width and varint alike), else 0.
 slot_readers! {
     read_slot_i64, i64, [I64 | Z64];
     read_slot_u64, u64, [U64 | V64];
@@ -1567,19 +1165,14 @@ fn read_slot_bool(v: &Value) -> u8 {
     }
 }
 
-/// The canonical borrowed-array placeholder — what a shape-mismatched
-/// or out-of-bounds composite read returns (see the module's totality
-/// contract). Static so borrowed interior pointers stay valid forever.
+/// The placeholder a mismatched or out-of-bounds composite read returns;
+/// static so borrowed pointers into it stay valid.
 static EMPTY_ARR: std::sync::LazyLock<ValArray> =
     std::sync::LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
 
-/// Free a slot-state chain: `word` is (0 or) a `Box<Vec<u64>>` raw
-/// pointer. `own_levels == 0` means the Vec holds plain data (leaf
-/// selection words) UNLESS `leaf` is given, in which case the Vec is
-/// per-slot call-site BLOCKS whose anchor words own further chains
-/// (see [`SiteLeaf`]); `own_levels > 0` means each entry is itself a
-/// chain with one less level (same leaf at the bottom). Shared by the
-/// resize helpers' truncate paths and `Kernel::drop`.
+/// Free a slot-state chain: `word` is 0 or a `Box<Vec<u64>>`. With
+/// `own_levels > 0` each entry is a chain one level down; at 0 the Vec
+/// is plain words, or call-site blocks owning chains when `leaf` is given.
 pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
     if word == 0 {
         return;
@@ -1594,13 +1187,9 @@ pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
     }
 }
 
-/// Free a PER-ACTIVATION block tree ([`kernel_abi::SelfBlock`]) rooted
-/// at `vecptr` — one `Box<Vec<u64>>` per activation, each holding its
-/// own children at `slots`. Iterative over an explicit worklist: the
-/// tree is as deep as the recursion was, and depth is bounded by
-/// memory. Called from `Kernel::drop` (whole-tree teardown) and from
-/// [`reclaim_self_block_tree`] (a shed subtree). Returns the number of
-/// blocks freed.
+/// Free a per-activation block tree rooted at `vecptr` (one
+/// `Box<Vec<u64>>` per activation, children at `slots`). Iterative:
+/// the tree is as deep as the recursion was. Returns the blocks freed.
 pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
     let mut freed = 0u64;
     let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
@@ -1617,42 +1206,25 @@ pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
     freed
 }
 
-/// Global count of live per-activation `SelfBlock`s (test instrument):
-/// `graphix_site_child_block` bumps it on allocation,
-/// `free_self_block_tree` drops it per block freed. A fused
-/// deep-then-shallow recursion must return this toward its shallow
-/// depth — proof the reclaim actually runs — not hold the high-water.
+/// Live per-activation `SelfBlock` count (a test instrument for the
+/// reclaim).
 pub static LIVE_SELF_BLOCKS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 
 thread_local! {
-    /// The reach GENERATION of the currently-executing fused
-    /// recursion's invocation. [`graphix_site_child_block`] stamps every
-    /// activation block it reaches with this; `Kernel::update`'s reclaim
-    /// frees any block NOT stamped with the current generation — the JIT
-    /// twin of the interp's shrink-delete (a depth not reached this
-    /// cycle is shed). Saved/restored around every kernel invocation so
-    /// a nested kernel does not clobber its caller's.
+    /// The reach generation of the running kernel invocation; every
+    /// activation block reached is stamped with it and the reclaim
+    /// frees the rest. Saved/restored around every kernel invocation.
     pub(crate) static SELF_BLOCK_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// Count of activation reaches this invocation (one per
-    /// [`graphix_site_child_block`] call). `Kernel::update` compares it
-    /// to the tree size to GATE the reclaim: no walk unless the tree
-    /// shrank. Same save/restore discipline as [`SELF_BLOCK_GEN`].
+    /// Activation reaches this invocation; the reclaim runs only when
+    /// it is below the tree size. Saved/restored like [`SELF_BLOCK_GEN`].
     pub(crate) static SELF_BLOCK_REACHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Reclaim the parts of a per-activation block tree NOT reached this
-/// invocation — the JIT twin of the interp's shrink-delete. `root` is
-/// the address of the word holding the tree's root pointer (an entry in
-/// the kernel's `state`/`site` buffer). A block stamped with `gen` was
-/// reached this invocation → recurse into its children; a block stamped
-/// otherwise is a shed depth → free its whole subtree
-/// ([`free_self_block_tree`]) and NULL the word that pointed at it, so
-/// `Kernel::drop`/`reset_replay` see 0 and never double-free. `words` is
-/// the block's emitted size; the gen stamp lives one past it (at index
-/// `words`, allocated by [`graphix_site_child_block`] and invisible to
-/// emitted code). Returns the number of blocks freed. Iterative — depth
-/// is bounded by memory.
+/// Free the subtrees of a per-activation block tree not stamped with
+/// `generation`, nulling each freed subtree's root word. `root` is the
+/// address of the tree's root word; the stamp lives at index `words`,
+/// one past the block's emitted layout. Returns the blocks freed.
 pub fn reclaim_self_block_tree(
     root: *mut u64,
     words: usize,
@@ -1669,8 +1241,8 @@ pub fn reclaim_self_block_tree(
             continue;
         }
         let v: &mut Vec<u64> = unsafe { &mut *(p as *mut Vec<u64>) };
-        // A block with no stamp word (should not happen post-alloc) is
-        // treated as reached — never free what we cannot prove is shed.
+        // A block with no stamp word counts as reached: never free what
+        // is not proven shed.
         let stamp = v.get(words).copied().unwrap_or(generation);
         if stamp != generation {
             unsafe { *wp = 0 };
@@ -1698,9 +1270,8 @@ fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     }
 }
 
-/// The struct field's VALUE slot: `arr[sorted_idx]` is a
-/// `Value::Array([name, value])` kv-pair; slot 1 is the value.
-/// Total — `None` on OOB or a non-pair slot (a placeholder struct).
+/// The value of struct field `sorted_idx` (`arr[sorted_idx]` is a
+/// `[name, value]` pair); `None` on OOB or a non-pair slot.
 fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
     match p.get(sorted_idx)? {
         Value::Array(kv) => kv.get(1),
@@ -1708,8 +1279,7 @@ fn struct_field(p: &ValArray, sorted_idx: usize) -> Option<&Value> {
     }
 }
 
-/// Total slot-as-array reads (see the module's totality contract):
-/// the placeholder is the static EMPTY array.
+/// A slot as an array; the static empty array on mismatch.
 fn slot_array(v: Option<&Value>) -> &ValArray {
     match v {
         Some(Value::Array(a)) => a,
@@ -1724,14 +1294,8 @@ fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
     }
 }
 
-// Non-primitive element reads mirror the scalar families: composite
-// (Array/Tuple/Struct → ValArray bits), String (→ ArcStr bits), and
-// value-shape (Variant/Nullable/DateTime/Duration/Bytes → a
-// two-register `Value`). Each returns an OWNED value — a
-// refcount-bumped clone (except the explicitly `_borrowed` variants)
-// — so the source ValArray keeps its own ref and the kernel's
-// scope-exit drop of the source plus the consumer's drop of the
-// result don't double-free.
+// Element reads return an owned clone (except the `_borrowed` variants),
+// so the source array keeps its own ref.
 
 jit_helpers! { registry = elem_helpers;
 
@@ -1783,37 +1347,18 @@ safe fn graphix_valarray_len(bits: u64) -> usize {
     va_ref(&bits).len()
 }
 
-/// `arr[idx]` with the full source-level `array[i]` semantics — bounds
-/// check, negative-from-end indexing, and the `ArrayIndexError` value
-/// on out-of-bounds — by delegating to the shared [`array_index`].
-/// Used by the JIT's `ArrayGet` (whose result type is
-/// `Nullable<elem>`); returns the element on success or the error
-/// Value otherwise, as a two-register `Value`. `idx` is a signed
-/// `i64` (negatives index from the end).
+/// Source-level `arr[idx]` via the shared [`array_index`]: the element
+/// or the index error; negative `idx` counts from the end.
 safe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
     TagValue::clean(array_index(va_ref(&bits), idx))
 }
 
-/// Per-slot cross-invocation state table for a scaffold loop (see
-/// `BodyCx::open_slot_tables`). The word at `word` — a claimed static
-/// state word, or an entry of an enclosing loop's directory table —
-/// owns a boxed `Vec<u64>`, one word per slot ordinal, zero = "no
-/// previous observation", resized here with prefix retention: exactly
-/// the interpreted MapQ/FoldQ slot rule (shrink truncates — dropped
-/// slots' memory is gone; regrow re-creates FRESH zeroed slots).
-/// `own_levels == 0` is a LEAF table of selection words; `own_levels
-/// > 0` is a DIRECTORY whose entries own the next nesting level's
-/// tables (one owning level per enclosing loop), so truncation frees
-/// the dropped slots' subtrees — the interp rule applied per level.
-/// `valid == 0` (tainted source — the node-walk saw no event) skips
-/// the logical resize, mirroring `SlotFlags::apply`'s prev-len word;
-/// the table still GROWS zero-filled so in-loop accesses up to `len`
-/// stay in bounds. The chain is freed by `Kernel::drop` via
-/// `WrappedKernel::slot_table_words`.
-/// `leaf` is 0 for plain chains (selection-word leaves), or a baked
-/// `*const SiteLeaf` (kept alive by the kernel cache) when the chain
-/// bottoms out in per-slot call-site BLOCKS — truncation at any
-/// directory level must free through it.
+/// Resize a scaffold loop's per-slot state table (a boxed `Vec<u64>`
+/// owned by `*word`, one word per slot, 0 = no prior observation) to
+/// `len` with prefix retention; truncation frees the dropped slots'
+/// subtrees (`own_levels`, `leaf` as in [`free_slot_chain`]). With
+/// `valid == 0` (tainted source) the table only grows, zero-filled,
+/// so in-loop accesses up to `len` stay in bounds.
 unsafe fn graphix_slot_state_table(
     word: *mut u64,
     len: u64,
@@ -1842,15 +1387,11 @@ unsafe fn graphix_slot_state_table(
     v.as_mut_ptr()
 }
 
-/// The per-activation block for a SELF-CALL
-/// ([`kernel_abi::SelfBlock`]): allocate-on-first-use, retained
-/// thereafter, so a recursive activation gets the instance memory a
-/// statically-carved call-site block cannot give it. `word` is the
-/// root word in the CALLER's own block (null when the caller has no
-/// block — the no-memory degrade stands); `desc` points at the
-/// callee's `KernelSig::site_desc`, which is where the block's size
-/// lives because a self-call's size is its own body's, unknown while
-/// that body is still emitting.
+/// The per-activation block for a self-call, allocated on first use
+/// and stamped with the reach generation. `word` is the root word in
+/// the caller's block (null = no memory); `desc` is the callee's
+/// `KernelSig::site_desc`, read at run time because a self-call's
+/// block size is unknown while its body is still emitting.
 unsafe fn graphix_site_child_block(word: *mut u64, desc: *const u64) -> *mut u64 {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
     if word.is_null() {
@@ -1862,27 +1403,19 @@ unsafe fn graphix_site_child_block(word: *mut u64, desc: *const u64) -> *mut u64
     }
     let word = unsafe { &mut *word };
     if *word == 0 {
-        // One word PAST the emitted layout (index `words`) holds the
-        // reach GENERATION stamp — invisible to emitted code (which uses
-        // `0..words`) and to the free walk (which uses `slots`, all
-        // `< words`). `Kernel::update`'s reclaim reads it to shed the
-        // subtrees this invocation did not reach (recursion shrink).
+        // Index `words`, past the emitted layout, holds the generation stamp.
         *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
         LIVE_SELF_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
-    // Reached this invocation: stamp the current generation and count
-    // the reach (the reclaim gate in `Kernel::update`).
     v[words] = SELF_BLOCK_GEN.get();
     SELF_BLOCK_REACHED.set(SELF_BLOCK_REACHED.get() + 1);
     v.as_mut_ptr()
 }
 
-/// The chain-leaf resize for per-slot CALL-SITE BLOCKS (`SiteLeaf` —
-/// `stride` words per slot ordinal): the Vec's logical length is
-/// `slots * stride`, resized with prefix retention at BLOCK
-/// granularity; truncation frees the dropped blocks' anchor-owned
-/// chains. Same `valid` rule as `graphix_slot_state_table`.
+/// [`graphix_slot_state_table`] for a chain leaf of per-slot call-site
+/// blocks (`stride` words each); truncation frees the dropped blocks'
+/// anchor-owned chains.
 unsafe fn graphix_slot_state_blocks(
     word: *mut u64,
     slots: u64,
@@ -1904,9 +1437,6 @@ unsafe fn graphix_slot_state_blocks(
     }
     v.as_mut_ptr()
 }
-
-// Two-level struct field reads by sorted index — total, composing
-// [`struct_field`] with the slot readers.
 
 safe fn graphix_struct_get_i64(bits: u64, sorted_idx: usize) -> i64 {
     struct_field(va_ref(&bits), sorted_idx).map(read_slot_i64).unwrap_or_default()
@@ -1952,25 +1482,18 @@ safe fn graphix_struct_get_u64(bits: u64, sorted_idx: usize) -> u64 {
     struct_field(va_ref(&bits), sorted_idx).map(read_slot_u64).unwrap_or_default()
 }
 
-/// `arr[idx]` as OWNED ValArray bits (Array/Tuple/Struct elem —
-/// refcount clone of the slot).
+/// `arr[idx]` as owned ValArray bits.
 safe fn graphix_valarray_get_array(bits: u64, idx: usize) -> u64 {
     va_bits(slot_array(va_ref(&bits).get(idx)).clone())
 }
 
-/// `arr[idx]` as BORROWED ValArray bits — the slot's own handle word
-/// (or the static empty placeholder), no refcount bump. Valid for
-/// exactly as long as the parent array is alive; used by select's
-/// nested structural patterns, whose scrutinee is a borrowed env slot
-/// pinned across the whole arm chain (values are immutable, so the
-/// slot word is stable). NEVER pass this to a consuming/dropping
-/// helper.
+/// `arr[idx]` as borrowed ValArray bits: valid only while the parent
+/// array is alive, never passed to a consuming or dropping helper.
 safe fn graphix_valarray_get_array_borrowed(bits: u64, idx: usize) -> u64 {
     va_borrowed_bits(slot_array(va_ref(&bits).get(idx)))
 }
 
-/// Struct field read (`arr[sorted_idx]` is a `[name, value]` kv-pair;
-/// slot 1) as BORROWED ValArray bits — same lifetime contract as
+/// A struct field as borrowed ValArray bits; same lifetime contract as
 /// [`graphix_valarray_get_array_borrowed`].
 safe fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64 {
     va_borrowed_bits(slot_array(struct_field(va_ref(&bits), sorted_idx)))
@@ -1981,13 +1504,12 @@ safe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> arcstr::ArcStr {
     slot_arcstr(va_ref(&bits).get(idx))
 }
 
-/// `arr[idx]` as an owned `Value` (value-shape elem). Clones the slot.
+/// `arr[idx]` as an owned `Value`.
 safe fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
     TagValue::clean(va_ref(&bits).get(idx).cloned().unwrap_or(Value::Null))
 }
 
-/// Struct field read (two-level: `arr[sorted_idx]` is a `[name,
-/// value]` kv-pair; read slot 1) producing OWNED ValArray bits.
+/// A struct field as owned ValArray bits.
 safe fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
     va_bits(slot_array(struct_field(va_ref(&bits), sorted_idx)).clone())
 }
@@ -2007,43 +1529,23 @@ safe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
 #[cfg(debug_assertions)]
 jit_helpers! { registry = debug_helpers;
 
-/// Emission-gated disc probe (GXDBG_CALLRET at COMPILE time): prints
-/// a tagged disc word from inside JIT'd code. Debug builds only.
+/// Print a tagged disc word from inside JIT'd code (`GXDBG_CALLRET`).
 safe fn graphix_dbg_disc(tag: u64, disc: u64) {
     eprintln!("CLIF-DISC tag={tag} disc={disc:x}");
 }
 
-/// JIT-emitted code calls this at the start of every wrapper
-/// function to bump the per-thread `JIT_INVOCATIONS` counter.
-/// `cfg(debug_assertions)`-gated; in release builds the helper
-/// is absent, the registration is dead-coded out, and the
-/// codegen call site is `#[cfg]`-disabled — zero overhead.
+/// Bump `JIT_INVOCATIONS`; emitted at the start of every wrapper.
 safe fn graphix_record_jit_invocation() {
     JIT_INVOCATIONS.with(|c| c.set(c.get().wrapping_add(1)));
 }
 
 }
 
-// ─── Kernel-invocation plumbing ──────────────────────────────────
-//
-// Everything a JIT'd kernel needs from the runtime it runs under is
-// loaned for the duration of one `Kernel::update` wrapper call through
-// scoped thread-locals — per-invocation data, never global state:
-// the abort flag (`KERNEL_ABORT`), the type environment
-// (`KERNEL_ENV`, for typed fastcall sites), the interrupt control
-// (`INTERRUPT_PTR`) and the core-trait value hooks
-// (`coretraits::with_value_hooks`).
-
 use std::cell::Cell;
 
-/// Two-word return shape for the direct-call trampolines — the
-/// unified Value ABI: `word0 = Value disc`, `word1 = the genuine
-/// Value payload word` for EVERY return type (a scalar's widened
-/// bits, a composite's ValArray bits, a string's ArcStr bits, a
-/// value-shape's payload; Unit returns the Null disc). Matches the
-/// cranelift sig `(I64, I64)` and the SysV ABI's RAX/RDX return
-/// regs. The call site adapts per its static type (narrow a scalar,
-/// adopt owned bits, discard Unit).
+/// The trampolines' return: `word0` = the Value disc (tag in-band),
+/// `word1` = the Value payload word for every return type; the call
+/// site adapts it to its static type.
 #[repr(C)]
 pub struct DynCallRet {
     pub word0: u64,
@@ -2051,79 +1553,46 @@ pub struct DynCallRet {
 }
 
 thread_local! {
-    /// Sticky abort flag: set by JIT-emitted code on a whole-kernel
-    /// abort path (interrupt poll, depth trip, bottom abort) and by a
-    /// caller propagating a callee's abort; `Kernel::update` resets it
-    /// before the wrapper call and reads it after — a set flag means
-    /// the kernel's result is the abort sentinel and is discarded.
+    /// Sticky abort flag: set on a whole-kernel abort path, reset by
+    /// `Kernel::update` before each wrapper call and read after; set
+    /// means the result is the abort sentinel.
     pub static KERNEL_ABORT: Cell<bool> = const { Cell::new(false) };
 
-    /// The invoking kernel's type environment, loaned for the
-    /// duration of one wrapper call ([`with_kernel_env`]) — what a
-    /// typed fastcall site's `graphix_typedcall` resolves type names
-    /// through. Null when no kernel is in flight.
+    /// The invoking kernel's type environment, loaned for one wrapper
+    /// call ([`with_kernel_env`]); null when no kernel is in flight.
     pub static KERNEL_ENV: Cell<*const crate::env::Env> =
         const { Cell::new(std::ptr::null()) };
 
-    /// The invocation's `?` delivery queue: errors the emitted code
-    /// raised at handler-ful `?` sites (`graphix_qop_raise`), in
-    /// execution order, drained by `Kernel::update` after the wrapper
-    /// returns ([`with_qop_raises`]). Per-invocation data — a kernel
-    /// never delivers mid-run, so a kernel is a pure function of its
-    /// inputs to (result, deliveries).
+    /// The invocation's `?` delivery queue, in execution order, drained
+    /// after the wrapper returns ([`with_qop_raises`]); a kernel never
+    /// delivers mid-run.
     pub static QOP_RAISES: std::cell::RefCell<Vec<(*const crate::node::error::QopSite, Value)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 
-    /// Raw pointer to the active runtime's [`crate::Control`], set per
-    /// cycle by `do_cycle` on the thread running the node loop. Read by
-    /// `graphix_interrupted` (emitted at every JIT loop head) so a wedged
-    /// kernel aborts on `interrupt()`/`abort()`. Null when no cycle is in
-    /// flight; valid for the runtime's lifetime when set (the `Control`
-    /// lives inside the runtime's `ExecCtx`).
+    /// The active runtime's [`crate::Control`], set per cycle by
+    /// `do_cycle`; null when no cycle is in flight.
     pub static INTERRUPT_PTR: Cell<*const crate::Control> =
         const { Cell::new(std::ptr::null()) };
 
-    /// Per-thread JIT invocation counter, debug-build only.
-    /// Bumped by `graphix_record_jit_invocation` (called inline
-    /// at the start of every JIT'd wrapper). Read by the test
-    /// harness's `jit` mode to prove the JIT actually ran for
-    /// each fixture — kernels that silently fell back to interp
-    /// would leave this at zero and the test asserts `> 0`.
-    ///
-    /// `cfg(debug_assertions)`-gated so production release builds
-    /// pay no instrumentation overhead. The codegen call site and
-    /// the helper registration are gated the same way.
+    /// Per-thread count of JIT'd wrapper runs; the test harness's `jit`
+    /// mode asserts it is nonzero.
     #[cfg(debug_assertions)]
     pub static JIT_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 
-    /// Per-thread *fused-kernel* execution counter, debug-build only.
-    /// Bumped by [`record_fusion_invocation`] at the commit point of
-    /// every fused-kernel execution — `Kernel::update` once it has
-    /// decided to run — regardless of whether the kernel runs via the
-    /// JIT or the interpreter. Together with [`JIT_INVOCATIONS`] this
-    /// lets the test harness distinguish three observable fusion
-    /// outcomes for a fixture: `FUSION > 0 && JIT > 0` (fused + JIT),
-    /// `FUSION > 0 && JIT == 0` (fused but ran on interp — the JIT
-    /// can't lower this shape yet), and `FUSION == 0` (no fusion at
-    /// all). A JIT'd kernel bumps both (its `Kernel::update` runs,
-    /// then its JIT wrapper runs); an interp-fused kernel bumps only
-    /// this one.
+    /// Per-thread count of fused-kernel executions
+    /// ([`record_fusion_invocation`]).
     #[cfg(debug_assertions)]
     pub static FUSION_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Point `graphix_interrupted` at `control` on the CURRENT thread. The
-/// runtime calls this at the start of each cycle (on whatever worker the
-/// cycle runs on, since the task may migrate) so JIT kernels poll the
-/// right runtime's control. The pointer stays valid because `control`
-/// lives in the runtime's `ExecCtx` for its whole lifetime.
+/// Point `graphix_interrupted` at `control` on the current thread;
+/// called at the start of each cycle since the task may migrate.
 pub fn set_interrupt_ptr(control: &crate::Control) {
     INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
 }
 
-/// Abort the runtime whose control this thread is running under (the
-/// stack budget's containment — `stack::grow`). No runtime on this
-/// thread: nothing to abort.
+/// Abort the runtime this thread is running under (the stack budget's
+/// containment); a no-op with no runtime on this thread.
 pub(crate) fn abort_current_control_budget() {
     INTERRUPT_PTR.with(|c| {
         let p = c.get();
@@ -2134,9 +1603,8 @@ pub(crate) fn abort_current_control_budget() {
     });
 }
 
-/// Bump the per-thread fused-kernel execution counter. Called from
-/// `Kernel::update` once a fused kernel commits to running (after
-/// the "did any input update" gate). `cfg(debug_assertions)`-gated.
+/// Bump the per-thread fused-kernel execution counter once a kernel
+/// commits to running.
 #[cfg(debug_assertions)]
 pub fn record_fusion_invocation() {
     FUSION_INVOCATIONS.with(|c| c.set(c.get().wrapping_add(1)));
@@ -2154,16 +1622,13 @@ pub fn reset_fusion_invocations() {
     FUSION_INVOCATIONS.with(|c| c.set(0));
 }
 
-/// Read the current thread's JIT invocation count. Returns `0`
-/// if no JIT'd kernel has run since the last reset. Available
-/// only under `cfg(debug_assertions)`.
+/// Read the current thread's JIT invocation count.
 #[cfg(debug_assertions)]
 pub fn jit_invocations() -> u64 {
     JIT_INVOCATIONS.with(|c| c.get())
 }
 
 /// Reset the current thread's JIT invocation count to zero.
-/// Available only under `cfg(debug_assertions)`.
 #[cfg(debug_assertions)]
 pub fn reset_jit_invocations() {
     JIT_INVOCATIONS.with(|c| c.set(0));
@@ -2171,19 +1636,13 @@ pub fn reset_jit_invocations() {
 
 #[cfg(debug_assertions)]
 thread_local! {
-    /// Per-thread fusion-bail reason log (debug-build only,
-    /// instrumentation for the gap-map harvest). Each `record_fuse_bail`
-    /// call pushes a short tag (e.g. `node:Sample`, `dostmt:Connect`,
-    /// `call:json::read`) at a site where fusion lowering gives up.
-    /// Harvested per-fixture by the `run!` discovery branch to map every
-    /// `None` fixture to its actual blocker. Capped to avoid unbounded
-    /// growth on a deeply-recursive failing compile.
+    /// Per-thread log of fusion-bail tags (e.g. `node:Sample`,
+    /// `call:json::read`), capped; harvested per fixture by `run!`.
     static FUSE_BAILS: std::cell::RefCell<Vec<arcstr::ArcStr>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Record a fusion-bail reason (debug instrumentation). No-op in
-/// release (the call sites are `cfg(debug_assertions)`-gated).
+/// Record a fusion-bail reason.
 #[cfg(debug_assertions)]
 pub fn record_fuse_bail(reason: arcstr::ArcStr) {
     FUSE_BAILS.with(|b| {
@@ -2200,8 +1659,7 @@ pub fn take_fuse_bails() -> Vec<arcstr::ArcStr> {
     FUSE_BAILS.with(|b| std::mem::take(&mut *b.borrow_mut()))
 }
 
-/// Clear the current thread's fusion-bail log (called after runtime
-/// init in the test harness, so only the fixture's own bails count).
+/// Clear the current thread's fusion-bail log.
 #[cfg(debug_assertions)]
 pub fn reset_fuse_bails() {
     FUSE_BAILS.with(|b| b.borrow_mut().clear());
@@ -2260,13 +1718,12 @@ mod tests {
         let tv =
             decode(unsafe { graphix_fastcall(none as *const () as u64, ap, n, 0, 0) });
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
-        // The view never took ownership: the array is still ours.
         assert_eq!(args.len(), 1);
     }
 }
 
-/// Loan `env` to the JIT'd code `f` runs (`KERNEL_ENV`), restoring
-/// the previous loan after — nested kernel invocations stack.
+/// Loan `env` (`KERNEL_ENV`) to the JIT'd code `f` runs; nested
+/// invocations stack.
 pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -> T {
     let prev = KERNEL_ENV.with(|c| c.replace(env as *const _));
     let r = f();
@@ -2274,10 +1731,8 @@ pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -
     r
 }
 
-/// Run one kernel invocation `f` against a fresh `?` delivery queue
-/// and hand back what it raised, in order. An enclosing invocation's
-/// queue (a kernel reached through a core-trait value hook) is set
-/// aside and restored, so deliveries never cross invocations.
+/// Run `f` against a fresh `?` delivery queue and return what it raised,
+/// in order; an enclosing invocation's queue is set aside and restored.
 pub(crate) fn with_qop_raises<T>(
     f: impl FnOnce() -> T,
 ) -> (T, Vec<(*const crate::node::error::QopSite, Value)>) {

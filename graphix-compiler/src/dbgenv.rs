@@ -1,12 +1,6 @@
-//! Process-lifetime caches for the GRAPHIX_DBG_* / GXDBG_* debug
-//! env flags. `std::env::var` takes the global env lock and scans
-//! environ on every call, and several flags gate prints on
-//! typecheck/dispatch hot paths (GRAPHIX_DBG_BIND runs per
-//! unification act, GXDBG_CS per CallSite dispatch), so each flag
-//! is read once per process. Set flags at launch — mid-process
-//! changes are not observed, the same contract as the existing
-//! cached flags (GRAPHIX_DBG_VARS in graphix-rt, GRAPHIX_DUMP_CLIF,
-//! GRAPHIX_DBG_PERF).
+//! Process-lifetime caches for the GRAPHIX_DBG_* / GXDBG_* debug env
+//! flags. Each flag is read once per process because several gate
+//! prints on hot paths; set them at launch.
 
 macro_rules! dbg_flag {
     ($name:ident, $env:literal) => {
@@ -45,8 +39,8 @@ dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
 dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
 
-/// GRAPHIX_DBG_BIND_BT doubles as a VALUE read (a target TVarId for
-/// per-cell write backtraces) — cached like the flags.
+/// The value of GRAPHIX_DBG_BIND_BT: a target TVarId for per-cell
+/// write backtraces.
 pub(crate) fn graphix_dbg_bind_bt_id() -> Option<&'static str> {
     static V: std::sync::LazyLock<Option<String>> =
         std::sync::LazyLock::new(|| std::env::var("GRAPHIX_DBG_BIND_BT").ok());

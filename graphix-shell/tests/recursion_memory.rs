@@ -1,17 +1,6 @@
-//! A recursion's dynamic scope must not grow with its depth.
-//!
-//! `Scope.dynamic` is the chain of error handlers visible at a point,
-//! and an instantiated body starts from its call site's — so a
-//! representation that re-spelled the whole chain per activation made
-//! every level cost O(depth): 2GB for 20,000 activations of a body that
-//! installs no handler (2026-08-25). This runs such a recursion under
-//! `--no-fusion` (the JIT never instantiates activations) in a child
-//! process and bounds its peak RSS at a level the per-activation
-//! constant fits with room and the quadratic cannot.
-//!
-//! 20,000 interpreted activations take ~10s in a dev build and peak at
-//! ~420MB (release: ~1s, ~240MB); the string representation peaked past
-//! 2GB in either.
+//! A recursion's dynamic scope must not grow with its depth: a deep
+//! interpreted recursion under `--no-fusion` runs in a child process
+//! with its peak RSS bounded.
 
 #![cfg(target_os = "linux")]
 

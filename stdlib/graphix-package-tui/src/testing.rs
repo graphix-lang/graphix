@@ -2,26 +2,12 @@
 //! and any external package building a TUI app (enable the `testing`
 //! feature).
 //!
-//! Compiles graphix code that produces a `Tui` value, builds the
-//! widget tree the same way the runtime does, then drives it through
-//! a `ratatui::Terminal<TestBackend>` so we can render and inspect
-//! the resulting `Buffer` without a TTY.
-//!
-//! Mirrors the GUI test harness in `graphix-package-gui/src/test/mod.rs`
-//! in spirit, with two differences:
-//! - No GPU / iced UserInterface — we only need a `TestBackend`.
-//! - Events are crossterm `Event`s, dispatched directly into the
-//!   widget's `handle_event` (the same path the live runtime takes).
-//!
-//! The harness compiles a wrapper expression `{ mod test; test::result }`
-//! against the user-supplied graphix source, waits for the first
-//! reactive update, and feeds that value into `crate::compile` to get
-//! a live widget tree. Subsequent updates flow through `drain()` to
-//! `widget.handle_update`, the same as in production.
-//!
-//! External packages register themselves via [`TuiTestHarness::with_register`]
-//! — pass the crate's `defpackage!`-generated register (or a hand-built
-//! slice) so the program under test can `use` the package's modules.
+//! Compiles graphix code that produces a `Tui` value, builds the widget
+//! tree the same way the runtime does, and drives it through a
+//! `ratatui::Terminal<TestBackend>`. Events are crossterm `Event`s
+//! dispatched into the widget's `handle_event`, the live runtime's path.
+//! External packages register themselves via
+//! [`TuiTestHarness::with_register`].
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
@@ -54,10 +40,7 @@ const DEFAULT_REGISTER: &[PackageRef] = &[
     &crate::P,
 ];
 
-/// Default render area used by the harness when the test doesn't pick
-/// its own. 40 cols × 10 rows is wide enough that most widget types
-/// have something visible to assert on but small enough for cheap
-/// diffing.
+/// Default render area when the test doesn't pick its own.
 const DEFAULT_VIEWPORT: (u16, u16) = (40, 10);
 
 /// Test harness for a single TUI widget tree.
@@ -137,8 +120,7 @@ impl TuiTestHarness {
     }
 
     /// Drain pending reactive updates into the widget tree. Returns
-    /// once no new updates have arrived for ~50ms (mirrors the GUI
-    /// harness's quiescence heuristic).
+    /// once no new updates have arrived for ~50ms.
     pub async fn drain(&mut self) -> Result<()> {
         let timeout = tokio::time::sleep(Duration::from_millis(100));
         tokio::pin!(timeout);
@@ -201,10 +183,8 @@ impl TuiTestHarness {
     }
 
     /// Deliver a crossterm event and report how long the runtime took
-    /// to settle after it: the time from dispatch to the LAST update
-    /// batch that arrived, with the quiescence wait itself excluded
-    /// (zero when the event produced no update). The measurement
-    /// behind the milestone latency numbers.
+    /// to settle after it: dispatch to the LAST update batch, with the
+    /// quiescence wait excluded (zero when the event produced no update).
     pub async fn dispatch_event_timed(&mut self, e: Event) -> Result<Duration> {
         let start = std::time::Instant::now();
         let v = event_to_value(&e);
@@ -295,10 +275,8 @@ impl TuiTestHarness {
     }
 
     /// Compile a graphix-defined function (lambda) by its module-qualified
-    /// name into a `CallableId` we can invoke from tests. Mirrors the
-    /// GUI harness method of the same name. The retained `Ref` and
-    /// `Callable` keep the runtime side alive — dropping the
-    /// `Callable` invalidates the id.
+    /// name into a `CallableId`. The retained `Ref` and `Callable` keep the
+    /// runtime side alive — dropping the `Callable` invalidates the id.
     pub async fn compile_named_callable(
         &mut self,
         name: &str,
@@ -334,10 +312,8 @@ impl TuiTestHarness {
         self.drain().await
     }
 
-    /// Convenience for the panic-input pattern: drive the widget
-    /// through several reactive update cycles, rendering after each.
-    /// Used by panic-surface tests where we only care that the render
-    /// doesn't blow up.
+    /// Drive the widget through several reactive update cycles,
+    /// rendering after each.
     pub async fn render_through_updates(&mut self, ticks: usize) -> Result<()> {
         for _ in 0..ticks {
             self.drain().await?;
@@ -373,8 +349,7 @@ async fn wait_for_update(
 }
 
 /// Look up a `BindId` for a module-qualified name like `"test::clicks"`.
-/// Same logic as the GUI harness — env scope keys are generated paths
-/// (`/do…/test`), so we suffix-match.
+/// Env scope keys are generated paths (`/do…/test`), so we suffix-match.
 fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> {
     use netidx::path::Path;
     let parts: Vec<&str> = name.split("::").collect();
@@ -394,12 +369,8 @@ fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> 
 }
 
 /// Render a `Buffer` into one `String` per row by concatenating each
-/// cell's `symbol()`. Empty / overdrawn cells naturally render as a
-/// single space (ratatui's contract for `Cell::symbol`).
-///
-/// Multi-width glyphs (CJK, some emoji) currently produce a trailing
-/// space for the cell ratatui marks empty after the wide char — fine
-/// for current TUI tests, all ASCII so far.
+/// cell's `symbol()`. Empty / overdrawn cells render as a single space;
+/// a wide glyph leaves a trailing space for the cell after it.
 fn buffer_lines(buf: &Buffer) -> Vec<String> {
     let mut out = Vec::with_capacity(buf.area.height as usize);
     for y in 0..buf.area.height {

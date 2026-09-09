@@ -1,15 +1,13 @@
-// seq (`design/seq_blocks.md`): pc-machine atoms, then the surface
-// construct. Straight-line only — no if/loop.
+// seq (design/seq_blocks.md): pc-machine atoms, then the surface
+// construct. Straight-line only.
 
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
 use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
-// §7.2: a nested presence-watch samples a FREE read of `pc`. `pc`
-// fires at entry while the inner scrutinee is bottom; the inner select
-// has no arm taken, so its tracker holds the bit; when the delayed
-// value arrives the catch-up injects `pc` FIRED and the sample pays.
+// A nested presence-watch samples a free read of `pc`: the catch-up
+// delivers the entry when the delayed value arrives.
 const SEQ_PC_FREE_READ_WAKES_NESTED: &str = r#"
 {
   let step = 0;
@@ -35,8 +33,8 @@ run!(seq_pc_free_read_wakes_nested, SEQ_PC_FREE_READ_WAKES_NESTED, |v: Result<&V
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Contrast: a pattern bind of the OUTER scrutinee is a facet of that
-// match and is not re-raised into the nested watch.
+// A pattern bind of the outer scrutinee is a facet of that match and
+// is not re-raised into the nested watch.
 const SEQ_PC_PATTERN_BIND_NOT_RERAISED: &str = r#"
 {
   let step = 0;
@@ -62,10 +60,8 @@ run!(seq_pc_pattern_bind_not_reraised, SEQ_PC_PATTERN_BIND_NOT_RERAISED, |v: Res
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// §7.3 presence select: two runs. First run waits for `x`; second run
-// `x` is bottom-after-having-been-a-value at entry, then returns. The
-// presence watch issues both times. A bare `pc ~ x` would consume the
-// second entry's debt against a materialized bottom and stall.
+// The presence select issues on both runs, including an entry that
+// finds `x` bottom after it had been a value.
 const SEQ_PRESENCE_SECOND_RUN: &str = r#"
 {
   let step = 0;
@@ -98,10 +94,8 @@ run!(seq_presence_second_run, SEQ_PRESENCE_SECOND_RUN, |v: Result<&Value>| match
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The stall the presence select avoids: a bare `pc ~ x` at an entry
-// that finds `x` bottom consumes the sample's debt (even the first
-// wait — `never()` in the producer is a materialized bottom). Issues
-// nothing; the presence pin above is the one that counts both runs.
+// A bare `pc ~ x` at an entry that finds `x` bottom consumes the
+// sample's debt and issues nothing.
 const SEQ_BARE_SAMPLE_STALLS_SECOND_RUN: &str = r#"
 {
   let step = 0;
@@ -132,8 +126,7 @@ run!(seq_bare_sample_stalls_second_run, SEQ_BARE_SAMPLE_STALLS_SECOND_RUN, |v: R
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// R1 busy-drop: `filter(trig, |_| idle)` lets the first trigger through
-// and drops the two that arrive while the run is in `A`.
+// Busy-drop: the first trigger runs; two arriving mid-run are dropped.
 const SEQ_BUSY_DROPS_RETRIGGER: &str = r#"
 {
   let step = 0;
@@ -159,8 +152,7 @@ run!(seq_busy_drops_retrigger, SEQ_BUSY_DROPS_RETRIGGER, |v: Result<&Value>| mat
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Same-arm re-entry: writing `A` again is sampled on the trigger, not a
-// constant RHS. Three entries, three issues.
+// Same-arm re-entry sampled on the trigger: three entries, three issues.
 const SEQ_SAME_ARM_REENTRY: &str = r#"
 {
   let step = 0;
@@ -182,8 +174,7 @@ run!(seq_same_arm_reentry, SEQ_SAME_ARM_REENTRY, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// until: enter while the level is false, then it flips. The nested
-// watch's transition samples `pc`; catch-up has to deliver the entry.
+// until: enter while the level is false, then it flips.
 const SEQ_UNTIL_LEVEL_FLIPS: &str = r#"
 {
   let step = 0;
@@ -489,12 +480,9 @@ async fn do_trailing_semicolon_jit() -> Result<()> {
     do_trailing_semicolon(false).await
 }
 
-// The completion rule (design/seq_blocks.md): a step completes on a FIRED
-// production after its entry, never on a standing value. A call is
-// re-issued at entry and its own fire is the answer; a level is fired
-// at entry as it stands (R2) and tracked if absent. Each fixture runs
-// three requests; a machine that accepts the previous run's resident
-// answers one behind.
+// A step completes on a fired production after its entry, never on a
+// standing value. Each fixture runs three requests; a machine that
+// accepts the previous run's resident answers one behind.
 async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
     use arcstr::format;
 
@@ -555,10 +543,8 @@ async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
         let (values, out) = run_delta(&code, fusion_disabled).await?;
         assert_eq!(as_i64s(&values), expected, "{name}\n{out}");
     }
-    // A lambda whose result is a standing level it does not derive from
-    // its argument produces no fire when re-called, in a seq as anywhere
-    // else: the run never completes. Sampling the level on the argument
-    // is the spelling.
+    // A lambda whose result is a standing level not derived from its
+    // argument produces no fire when re-called: the run never completes.
     let stalls =
         format!("{{ {CLOCK} let k = 7; let f = |v| k; seqq request {{ f(request) }} }}");
     let (values, _) = run_delta(&stalls, fusion_disabled).await?;
@@ -581,9 +567,8 @@ async fn reentry_fired_only_jit() -> Result<()> {
     reentry_fired_only(false).await
 }
 
-// Review R3: the machine's generated calls name `core::` explicitly, so
-// a user binding called `filter` (or `once`, `hold`, `queue`) does not
-// capture them.
+// The machine's generated calls name `core::` explicitly, so a user
+// binding called `filter` does not capture them.
 const SEQ_SHADOWED_CORE_NAMES: &str = r#"
 {
   let filter = 42;
@@ -599,8 +584,7 @@ run!(seq_shadowed_core_names, SEQ_SHADOWED_CORE_NAMES, |v: Result<&Value>| match
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Review R4: `until` has no value, so where the statement's value is
-// used it is refused instead of leaving the value permanently bottom.
+// `until` has no value: using the statement's value is refused.
 #[tokio::test(flavor = "current_thread")]
 async fn until_last_refused() -> Result<()> {
     for src in [

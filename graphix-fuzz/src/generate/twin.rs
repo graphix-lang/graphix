@@ -1,33 +1,14 @@
-//! Metamorphic twin generation — stateful handler modules whose state
-//! is written through SEVERAL equivalent routes (a `&` reference
-//! parameter, a capture, a reference passed through a nested call),
-//! with an in-program verdict that settles on `` `TwinDiverged `` when
-//! the routes disagree (the reserved [`crate::TWIN_TAG`] contract).
-//!
-//! The point is symmetric-bug coverage: a reference-plumbing bug that
-//! breaks every engine and route IDENTICALLY (the ConnectDeref
-//! silent-write class, 9f9e01d0) agrees with itself in every pairwise
-//! comparison — only a program that carries its own invariant can see
-//! it, in a single run of a single mode.
-//!
-//! Each generated program is one twin MODULE (a `file-v1` section)
-//! plus a driver, emitted in one of two forms:
-//!
-//! - **schedule form**: a `schedule-v1` header injects the handler's
-//!   arguments; the body calls the handler in-language. Exercises the
-//!   pure-language reference paths (this shape, with the write inside
-//!   a select arm the init call leaves asleep, reproduces 9f9e01d0's
-//!   pure-language face).
-//! - **callable form**: a `callable-v1` header dispatches the handler
-//!   through `GXHandle::compile_callable` as well (see
-//!   [`crate::callable`]); the twin scan then covers the embedder
-//!   dispatch route, and the route/engine pairs run too.
-//!
-//! Every template quiesces by construction: state only moves when a
-//! dispatch arrives, and both twins of a pair perform the SAME update
-//! from the SAME dispatch cycle, so the verdict settles by the epoch's
-//! quiescence wait (transient skew within a cycle never reaches a
-//! final).
+//! Metamorphic twin generation: stateful handler modules whose state is
+//! written through several equivalent routes (a `&` parameter, a
+//! capture, a reference passed through a nested call), with an
+//! in-program verdict that settles on `` `TwinDiverged `` when the
+//! routes disagree ([`crate::TWIN_TAG`]). A reference-plumbing bug that
+//! breaks every engine and route identically agrees with itself in
+//! every pairwise comparison; only a program carrying its own invariant
+//! can see it. Each program is one twin module plus a driver, in
+//! schedule form (a `schedule-v1` header, in-language call) or callable
+//! form (a `callable-v1` header, both routes). Every template quiesces
+//! by construction.
 
 use netidx::publisher::Value;
 
@@ -57,10 +38,8 @@ pub struct TwinShape {
 const FIELDS: [&str; 3] = ["a", "b", "c"];
 
 fn gen_update(rng: &mut Rng, field: &str, arg: &str) -> String {
-    // Wrapping-total i64 arithmetic over the old value and the arg —
-    // both twins evaluate the identical expression, so even an
-    // overflow-to-bottom (unchecked ops log and bottom) hits both
-    // sides alike and the verdict stays quiet.
+    // both twins evaluate the identical expression, so an
+    // overflow-to-bottom hits both sides alike
     let old = format!("s.{field}");
     match rng.below(5) {
         0 => format!("{old} + {arg}"),
@@ -71,10 +50,8 @@ fn gen_update(rng: &mut Rng, field: &str, arg: &str) -> String {
     }
 }
 
-/// The body of one inner update fn: a select over the dispatch arg
-/// with a quiet arm and a writing arm, the write built from `fields`.
-/// `write` renders the connect target for this twin's route (`*st` or
-/// the captured binding name).
+/// The body of one inner update fn: a select over the dispatch arg with
+/// a quiet arm and a writing arm. `target` is this twin's connect target.
 fn gen_select_body(
     rng: &mut Rng,
     fields: &[Field],
@@ -88,11 +65,9 @@ fn gen_select_body(
         .collect::<Vec<_>>()
         .join(", ");
     let write = format!("let s = n ~ {read};\n    {target} <- {{ {upd} }};\n    null");
-    // The quiet arm decides the bug GEOMETRY: an arm matching the
-    // canonical default leaves the writing arm asleep through the
-    // driver's init call — the lazy-wake shape 9f9e01d0 needed. A
-    // wildcard-only select updates on the init call too (both twins
-    // alike). Generate both.
+    // The quiet arm decides the geometry: an arm matching the canonical
+    // default leaves the writing arm asleep through the driver's init
+    // call; a wildcard-only select updates on the init call too.
     if chance(rng, 70) {
         format!("select {arg} {{\n  i64:0 => null,\n  n => {{\n    {write}\n  }}\n}}")
     } else {
@@ -123,15 +98,14 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     if three {
         m.push_str(&format!("let sc: St = {{ {init} }};\n"));
     }
-    // Route 1: write through a & parameter.
+    // route 1: write through a & parameter
     let body_ref = gen_select_body(rng, &fields, "*st", "*st", "x");
     m.push_str(&format!("let inner_ref = |st: &St, x: i64| -> null {body_ref};\n"));
-    // Route 2: write through a capture. The SAME rng state must not
-    // desync the twins' select shape, so reuse route 1's body with the
-    // targets swapped rather than re-generating.
+    // route 2: write through a capture; reuse route 1's body with the
+    // targets swapped so the twins' select shapes stay identical
     let body_cap = body_ref.replace("*st", "sb");
     m.push_str(&format!("let inner_cap = |x: i64| -> null {body_cap};\n"));
-    // Route 3: the & parameter passed through a nested call.
+    // route 3: the & parameter passed through a nested call
     if three {
         m.push_str(&format!("let inner_deep0 = |st: &St, x: i64| -> null {body_ref};\n"));
         m.push_str("let inner_deep = |st: &St, x: i64| -> null inner_deep0(st, x);\n");
@@ -157,8 +131,7 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     TwinShape { module: m, args: vec![("cx0", "i64")], epochs }
 }
 
-/// Render a twin shape as a SCHEDULE-form wrapper: injections drive
-/// the in-language call.
+/// Render a twin shape as a schedule-form wrapper.
 pub fn render_schedule_form(shape: &TwinShape) -> String {
     let sched = Schedule {
         epochs: shape
@@ -182,8 +155,7 @@ pub fn render_schedule_form(shape: &TwinShape) -> String {
     sched.render(&body)
 }
 
-/// Render a twin shape as a CALLABLE-form wrapper: the harness
-/// synthesizes the driver and dispatches through both routes.
+/// Render a twin shape as a callable-form wrapper.
 pub fn render_callable_form(shape: &TwinShape) -> String {
     let spec = CallSpec {
         handler: "m0::handler".into(),

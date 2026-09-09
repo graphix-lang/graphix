@@ -94,11 +94,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         {
             match as_path(path.clone()) {
                 None => {
-                    // Release the old target's registration before
-                    // dropping it — overwriting leaked one Dval
-                    // registration per path change (the aug08e-era
-                    // flag; the graveyard only sees UNSUBSCRIBED
-                    // Dvals).
+                    // Release the old target's registration before dropping it;
+                    // the graveyard only sees UNSUBSCRIBED Dvals.
                     if let Either::Left((_, old)) = &self.dv {
                         let old = old.clone();
                         NetState::get(ctx).unsubscribe(old, self.id);
@@ -183,10 +180,8 @@ impl Write {
 
 #[derive(Debug)]
 pub(crate) struct Subscribe {
-    /// Wake catch-up (design/wake_catchup.md): `sleep()` tears the
-    /// subscription down, so the first update after must re-establish
-    /// it from the PRESENT path — a stale delivery at a wake is not
-    /// proof there is nothing to do.
+    /// `sleep()` tears the subscription down, so the first update after
+    /// must re-establish it from the PRESENT path.
     slept: bool,
     cur: Option<(Path, Dval)>,
     id: BindId,
@@ -428,7 +423,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         if self.cast_typ.is_none() {
             bail!("sys::net::call requires a concrete return type")
         }
-        // validate args type: must be a struct or null
         if let Some(args_arg) = resolved.args.get(1) {
             deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
                 Some(Type::Struct(_)) => Ok(()),
@@ -783,7 +777,6 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         ctx: &mut ExecCtx<R, E>,
         resolved: &FnType,
     ) -> Result<()> {
-        // validate spec: must be a struct of RpcArg fields, or null (no args)
         let (spec_is_null, spec_fields) = if let Some(spec_arg) = resolved.args.get(2) {
             deref_typ!("struct or null", ctx, &spec_arg.typ,
                 Some(Type::Struct(fields)) => Ok((false, fields.clone())),
@@ -795,7 +788,6 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         } else {
             bail!("rpc #spec type not available")
         };
-        // validate each spec field is {default: T, doc: string}
         for (name, field_typ) in spec_fields.iter() {
             deref_typ!("RpcArg {{default: 'a, doc: string}}", ctx, field_typ,
                 Some(Type::Struct(inner)) => {
@@ -810,7 +802,6 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
                 }
             )?;
         }
-        // validate callback arg
         let cb_fn = if let Some(f_arg) = resolved.args.get(3) {
             deref_typ!("fn", ctx, &f_arg.typ,
                 Some(Type::Fn(ft)) => Ok(ft.clone())
@@ -822,7 +813,6 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
             bail!("rpc #f must be a function with an argument")
         }
         let cb_arg_typ = &cb_fn.args[0].typ;
-        // if spec is null, callback arg must also be null
         if spec_is_null {
             deref_typ!("null", ctx, cb_arg_typ,
                 Some(t @ Type::Primitive(_)) => {
@@ -836,9 +826,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         let cb_fields = deref_typ!("struct", ctx, cb_arg_typ,
             Some(Type::Struct(fields)) => Ok(fields.clone())
         )?;
-        // verify same fields and matching types.
-        // the length check catches extra fields in either direction,
-        // and the name check below catches mismatched names.
+
         if spec_fields.len() != cb_fields.len() {
             bail!(
                 "rpc #spec has {} fields but #f argument has {}",

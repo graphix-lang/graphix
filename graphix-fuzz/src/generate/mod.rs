@@ -1,32 +1,9 @@
-//! Source C — type-directed program generation from scratch.
-//!
-//! Unlike Source A (mutating existing seeds), this builds valid programs
-//! out of nothing, reaching shapes no fixture contains — "test cases no
-//! one would think of." It's purely mechanical (no API), so it can run
-//! for as long as you let it.
-//!
-//! The generator is TYPE-DIRECTED: `gen_typed(ctx, ty, …)` emits a graphix
-//! expression *of type `ty`*, recursively, choosing only constructions
-//! that produce `ty` from in-scope bindings + literals. This guarantees
-//! type-correctness by construction (the killer constraint — a random
-//! parse-valid graphix program typechecks ~never). It emits TEXT (not the
-//! AST), tracking types as it goes; the oracle compiles from text.
-//!
-//! `let`-bindings introduce scoped variables that later expressions
-//! reference — producing the internal data dependencies that stress
-//! fusion's region/dataflow analysis (fusion *is* dependency-subgraph
-//! analysis). Bindings deliberately REBIND in-scope names ([`GenCfg`]'s
-//! `p_shadow`) and collide with names used in other scopes
-//! (`p_collision`) — the 2026-07 audit's bug classes were all
-//! name-vs-identity confusions the fresh-names-only V1 could never reach.
-//! Only pure, deterministic constructs are generated (no
-//! rand/time/net/fs), so the oracle's comparison is sound.
-//!
-//! Current vocabulary: i64/f64/u8/bool/string scalars, arithmetic,
-//! comparison, boolean ops, tuples, arrays, `select`, and shadowed/
-//! colliding rebinds. Growing per the fuzzer-V2 plan: lambdas +
-//! monomorphization, composites + accessors, HOF callbacks, real select
-//! patterns, error ops, reactive programs with injection schedules.
+//! Type-directed program generation from scratch. `gen_typed(ctx, ty,
+//! …)` emits a graphix expression of type `ty` from in-scope bindings
+//! and literals, so every program typechecks by construction. Programs
+//! are emitted as text. Bindings deliberately rebind visible names and
+//! collide with names from other scopes; only pure, deterministic
+//! constructs are generated so the oracle's comparison is sound.
 
 mod exprs;
 mod funcs;
@@ -55,40 +32,32 @@ pub struct GenCfg {
     pub p_annotate: f64,
     /// A statement slot emits a lambda binding instead of a value let.
     pub p_lambda: f64,
-    /// A lambda is poly (explicit `'a: Number` constraint form —
-    /// per-call-site monomorphization) rather than fully typed.
+    /// A lambda is poly (explicit `'a: Number` constraint form) rather
+    /// than fully typed.
     pub p_poly: f64,
-    /// A statement slot emits the bare-unannotated-lambda template
-    /// (wide shared tvar, two unannotated call sites — the everyday
-    /// user shape and the wide-Number JIT-blocker class).
+    /// A statement slot emits the bare-unannotated-lambda template (wide
+    /// shared tvar, two unannotated call sites).
     pub p_bare: f64,
-    /// A poly lambda is immediately called at two distinct numeric
-    /// types (the audit's bug-2 shape).
+    /// A poly lambda is immediately called at two distinct numeric types.
     pub p_mono_pair: f64,
-    /// A typed lambda's body is a block with a collision-prone local
-    /// (the audit's bug-3 shape).
+    /// A typed lambda's body is a block with a collision-prone local.
     pub p_body_block: f64,
     /// A statement slot emits a terminating `let rec` + call.
     pub p_rec: f64,
-    /// A statement slot emits the whole shadowed-lambda-name template
-    /// (the audit's bug-1 shape).
+    /// A statement slot emits the whole shadowed-lambda-name template.
     pub p_lambda_shadow_template: f64,
     /// A value let binds a TAG-UNION variant (always annotated — a
     /// bare variant literal's type is its single tag).
     pub p_variant: f64,
     /// A statement slot emits the error-arm-lambda template (a select
-    /// merging an ok arm with `error(...)` as a lambda's return — the
-    /// soak-jul06c B5 shape) plus a consumed call.
+    /// merging an ok arm with `error(...)` as a lambda's return) plus a
+    /// consumed call.
     pub p_error_lambda: f64,
-    /// A statement slot emits a `catch(e) <handler>` INSTALLATION
-    /// covering the rest of the block, with later slots biased toward
-    /// `?`-bearing expressions (2026-08-06, the catch redesign — the
-    /// handler writes a pre-declared error accumulator so coverage,
-    /// same-cycle delivery, and the strict select rule all interact).
+    /// A statement slot emits a `catch(e) <handler>` installation
+    /// covering the rest of the block.
     pub p_catch: f64,
-    /// A statement slot emits a MODULE — wrapper file sections
-    /// (`m{i}.gx` + usually `m{i}.gxi`) whose public lambdas enter the
-    /// callable vocabulary as `m{i}::f`.
+    /// A statement slot emits a module: wrapper file sections whose
+    /// public lambdas enter the callable vocabulary as `m{i}::f`.
     pub p_module: f64,
     /// A generated module carries an abstract-type round-trip
     /// (`type T;` in the interface, hidden concrete def in the impl).
@@ -96,9 +65,8 @@ pub struct GenCfg {
     /// A generated module omits its `.gxi` entirely (bare module —
     /// everything public).
     pub p_bare_module: f64,
-    /// A statement slot emits a DYNAMIC module (raw-string source
-    /// compiled at runtime against a sig in a sandbox, consumed
-    /// through the status gate).
+    /// A statement slot emits a dynamic module (raw-string source
+    /// compiled at runtime against a sig, consumed through the status gate).
     pub p_dynmod: f64,
     /// A statement slot emits a REFERENCE group (`let r = &v`, tuple
     /// storage, `*r <- lit` write-through).
@@ -108,13 +76,9 @@ pub struct GenCfg {
     pub max_lets: usize,
     /// Depth passed to `random_type` for value-let and tail types.
     pub type_depth: usize,
-    /// A statement slot embeds a whole generated SUBPROGRAM as a typed
-    /// block value (`let v: T = { …; tail: T }`) — template
-    /// composition (Eric's depth-ceiling design, 2026-07-23): blocks
-    /// are self-contained by construction, so composition adds depth
-    /// without cross-seam type obligations. 50/50 the inner block
-    /// shares the outer scope (capture-across-block-boundary shapes)
-    /// vs generating closed.
+    /// A statement slot embeds a whole generated subprogram as a typed
+    /// block value (`let v: T = { …; tail: T }`); 50/50 the inner block
+    /// shares the outer scope vs generating closed.
     pub p_subprogram: f64,
     /// Remaining nesting budget for subprogram slots (decremented per
     /// level; 0 disables the arm).
@@ -150,41 +114,31 @@ impl Default for GenCfg {
     }
 }
 
-/// The BIG profile — the same vocabulary at program scale: 4x the
-/// statement slots (longer dataflow chains, more regions, more
-/// modules per program — `p_module` raised so multi-module programs
-/// with cross-module edges are common) and one level deeper types.
-/// Scale multiplies whatever the vocabulary expresses; the
-/// multiplicative bug surface (many regions × many feeders × module
-/// boundaries) is exactly what small profiles can't reach.
+/// The big profile: 4x the statement slots, more modules per program,
+/// one level deeper types.
 pub fn big_cfg() -> GenCfg {
     GenCfg { max_lets: 24, p_module: 0.2, type_depth: 3, ..GenCfg::default() }
 }
 
-/// Which bug-class shapes one generated program contains — the
-/// shape-presence gate asserts each stays reachable at a healthy rate
-/// (a probability-weights bug silently disabling a shape is exactly
-/// the failure mode this fuzzer exists to catch in the compiler).
+/// Which bug-class shapes one generated program contains; the
+/// shape-presence gate asserts each stays reachable at a healthy rate.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GenStats {
     /// Subprogram (nested typed block) slots emitted.
     pub subprograms: usize,
-    /// A lambda name was rebound (organically or via the template) —
-    /// audit bug-1 shape.
+    /// A lambda name was rebound (organically or via the template).
     pub lambda_rebind: bool,
-    /// A poly lambda got call sites at two distinct numeric types —
-    /// audit bug-2 shape.
+    /// A poly lambda got call sites at two distinct numeric types.
     pub mono_pair: bool,
-    /// A lambda-body local reused a name bound elsewhere in the
-    /// program — audit bug-3 shape.
+    /// A lambda-body local reused a name bound elsewhere in the program.
     pub collision_local: bool,
     /// A `let rec` was emitted.
     pub rec: bool,
-    /// The error-arm-lambda template was emitted (B5 shape).
+    /// The error-arm-lambda template was emitted.
     pub error_lambda: bool,
     /// A module (wrapper file sections) was emitted.
     pub module: bool,
-    /// A DYNAMIC module was emitted.
+    /// A dynamic module was emitted.
     pub dynamic_module: bool,
     /// A module interface carried a composite (non-scalar) param or
     /// return type.
@@ -196,14 +150,13 @@ pub struct GenStats {
     /// A module declared a trait, implemented it for its abstract T,
     /// and exported a trait-bounded generic — both callable from MAIN.
     pub trait_call: bool,
-    /// a module implements `Eq`/`Display` for its abstract type and
-    /// compares/prints it
+    /// A module implements `Eq`/`Display` for its abstract type and
+    /// compares/prints it.
     pub core_trait: bool,
-    /// A module declared a SECOND abstract implementing the same
-    /// trait and exported a union-self fn (`lower_trait_union`).
+    /// A module declared a second abstract implementing the same trait
+    /// and exported a union-self fn.
     pub trait_union: bool,
-    /// A trait-bounded HOF over `Array<'a: Tr>` — dispatch inside a
-    /// collection callback.
+    /// A trait-bounded HOF over `Array<'a: Tr>`.
     pub bounded_hof: bool,
     /// A Collection-generic fn (`|c: Collection|`) registered at
     /// several constructor types.
@@ -215,9 +168,8 @@ pub struct GenStats {
     pub unannotated_ret: bool,
     /// A reference shape was emitted (`&`/`*`/ref param/`*r <-`).
     pub ref_op: bool,
-    /// A new-grammar use road was emitted (a `use super::{…}` header,
-    /// an inline `super::`/`package::` spelling, a main-scope item
-    /// import, a rename, or a module glob).
+    /// A `use super::{…}` header, an inline `super::`/`package::`
+    /// spelling, a main-scope item import, a rename, or a module glob.
     pub use_vocab: bool,
 }
 
@@ -227,14 +179,12 @@ pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
 
 #[derive(Clone)]
 pub(crate) struct GenCtx {
-    /// In-scope bindings in declaration order (inner scopes at the
-    /// tail). Shadowing = a later entry with the same name; lookups
-    /// scan in REVERSE and count only the first hit per name
-    /// (last-binding-wins), so a name rebound at a different type never
-    /// produces a reference to the dead earlier type.
+    /// In-scope bindings in declaration order. Lookups scan in reverse
+    /// and take the first hit per name, so a name rebound at a different
+    /// type never produces a reference at the dead earlier type.
     vars: Vec<(String, GenType)>,
-    /// Every name ever used for a binding, visible or not — the pool
-    /// `name_for_bind` draws targeted collisions from.
+    /// Every name ever used for a binding, visible or not: the pool
+    /// targeted collisions draw from.
     collision_pool: Vec<String>,
     next: usize,
 }
@@ -248,12 +198,7 @@ impl GenCtx {
         loop {
             let n = format!("v{}", self.next);
             self.next += 1;
-            // `v32`/`v64` are the variable-width int TYPE KEYWORDS —
-            // as binding names they're a parse error. Latent at the
-            // default profile (6 slots rarely push the counter past
-            // 31); the big profile hit it immediately (62/3000 at
-            // seed 71, all "Expected mod, use, ... let" in a module
-            // file whose param list reached v32).
+            // `v32`/`v64` are type keywords
             if n != "v32" && n != "v64" {
                 return n;
             }
@@ -278,17 +223,15 @@ impl GenCtx {
     }
 
     fn push(&mut self, name: String, ty: GenType) {
-        // Path-qualified module callables (`m0::f`) are REFERENCE-only
-        // vocabulary: never a shadow/collision candidate (`let m0::f`
-        // doesn't parse).
+        // path-qualified module callables are reference-only vocabulary
         if !name.contains("::") && !self.collision_pool.contains(&name) {
             self.collision_pool.push(name.clone());
         }
         self.vars.push((name, ty));
     }
 
-    /// Distinct visible names, innermost first — SHADOW candidates, so
-    /// path-qualified module callables are excluded (not bindable).
+    /// Distinct visible names, innermost first: shadow candidates, so
+    /// path-qualified module callables are excluded.
     fn visible_names(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
         for (n, _) in self.vars.iter().rev() {
@@ -310,8 +253,7 @@ impl GenCtx {
 
     /// Scope bracket for lambda bodies / blocks / arms: bindings pushed
     /// after `mark()` are dropped by `truncate(mark)`. The collision
-    /// pool deliberately keeps them — out-of-scope names are what
-    /// targeted collisions are made of.
+    /// pool keeps them on purpose.
     fn mark(&self) -> usize {
         self.vars.len()
     }
@@ -320,8 +262,7 @@ impl GenCtx {
         self.vars.truncate(mark);
     }
 
-    /// The visible bindings (last-binding-wins per name), innermost
-    /// first — the single lookup all the typed queries filter over.
+    /// The visible bindings (last binding wins per name), innermost first.
     fn visible_entries(&self) -> Vec<(&str, &GenType)> {
         let mut seen: Vec<&str> = Vec::new();
         let mut out = Vec::new();
@@ -367,19 +308,16 @@ impl GenCtx {
     }
 }
 
-/// Generate one complete program: ~15% draw the BIG profile
-/// ([`big_cfg`]), the rest the default. The profile choice consumes
-/// the rng, so a seed still maps to one deterministic program stream.
+/// Generate one complete program: ~15% draw the big profile
+/// ([`big_cfg`]), the rest the default.
 pub fn gen_program(rng: &mut Rng) -> String {
     let cfg = if chance(rng, 0.15) { big_cfg() } else { GenCfg::default() };
     gen_program_stats(&cfg, rng).0
 }
 
-/// Generate one complete program (a graphix expression): a run of
-/// statement slots — value lets, lambda bindings, rec skeletons,
-/// bug-shape templates — whose values reference (and rebind) earlier
-/// bindings, plus a tail expression. Also reports which bug-class
-/// shapes the program contains.
+/// Generate one complete program: a run of statement slots whose values
+/// reference (and rebind) earlier bindings, plus a tail expression. Also
+/// reports which bug-class shapes the program contains.
 pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut ctx = GenCtx::new();
     let mut stats = GenStats::default();
@@ -397,11 +335,8 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     (prog, stats)
 }
 
-/// Geometric slot draw (Eric's design, 2026-07-23): P(stop) =
-/// 1/(mean+1) per step — same mean as the old uniform draw but with a
-/// heavy tail, so occasional long dataflow chains appear organically
-/// without a separate profile. Capped to protect the minimizer and
-/// per-subject cost.
+/// Geometric slot draw: P(stop) = 1/(mean+1) per step, capped, so long
+/// dataflow chains appear organically without a separate profile.
 pub(crate) fn geo_slots(rng: &mut Rng, mean: usize, cap: usize) -> usize {
     let mut n = 0;
     while n < cap && rng.below(mean + 1) != 0 {
@@ -410,10 +345,9 @@ pub(crate) fn geo_slots(rng: &mut Rng, mean: usize, cap: usize) -> usize {
     n
 }
 
-/// One run of statement slots. `files` present = top level (module and
-/// dynamic-module arms enabled — those emit file sections and `mod`
-/// statements, which only parse at the program's top level); `None` =
-/// a nested subprogram block.
+/// One run of statement slots. `files` present = top level (module arms
+/// enabled; `mod` statements only parse at the program's top level);
+/// `None` = a nested subprogram block.
 fn gen_slots(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -486,13 +420,9 @@ fn gen_slots(
     stmts
 }
 
-/// A subprogram slot: a nested generated block bound as a typed value.
-/// The inner block either CAPTURES (shares the outer scope — its
-/// lambdas and selects can close over enclosing bindings; the scope
-/// mark keeps its own lets block-local) or generates CLOSED (a fresh
-/// ctx — fully self-contained composition). Module/file arms are
-/// disabled inside (top-level-only constructs), and the nesting budget
-/// decrements per level.
+/// A subprogram slot: a nested generated block bound as a typed value,
+/// either sharing the outer scope or generated closed in a fresh ctx.
+/// Module arms are disabled inside and the nesting budget decrements.
 fn gen_subprogram_stmt(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -522,9 +452,8 @@ fn gen_subprogram_stmt(
     stmt
 }
 
-/// A nested block with a REQUIRED tail type — the typed splice point.
-/// Zero slots degenerates to a bare typed expression (a block needs
-/// two or more elements to parse).
+/// A nested block with a required tail type. Zero slots degenerates to a
+/// bare typed expression (a block needs two or more elements).
 fn gen_block(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -542,8 +471,7 @@ fn gen_block(
 mod test {
     use super::{types::I64, *};
 
-    /// Same seed → byte-identical program stream. The whole
-    /// replay/minimize/regress pipeline rests on this.
+    /// Same seed → byte-identical program stream.
     #[test]
     fn determinism() {
         let mut a = Rng::new(0xfeed);
@@ -565,10 +493,8 @@ mod test {
             .collect()
     }
 
-    /// Subprogram composition presence: at the default profile a
-    /// healthy fraction of programs embed a nested typed block, and
-    /// nesting reaches depth 2 somewhere in the sample. Catches a
-    /// weights/budget bug silently disabling the arm.
+    /// A healthy fraction of default-profile programs embed a nested
+    /// typed block.
     #[test]
     fn subprogram_presence() {
         let mut rng = Rng::new(0xabcd);
@@ -581,9 +507,7 @@ mod test {
         assert!(n > 30, "subprogram slots over 300 programs: {n}");
     }
 
-    /// Shape presence: with the default profile a healthy fraction of
-    /// programs contain a REBIND (the same name bound twice). Catches a
-    /// weights bug silently disabling the feature.
+    /// A healthy fraction of default-profile programs contain a rebind.
     #[test]
     fn shadow_presence() {
         let mut rng = Rng::new(1);
@@ -611,10 +535,8 @@ mod test {
         );
     }
 
-    /// The Phase-1.2 acceptance gate: the generator can EXPRESS all
-    /// three 2026-07 audit bug shapes (each was hand-found because the
-    /// fresh-names-only V1 could not reach it), at a rate a campaign
-    /// will actually exercise.
+    /// Every tracked bug shape is reachable at a rate a campaign will
+    /// exercise.
     #[test]
     fn audit_bug_shapes_reachable() {
         let cfg = GenCfg::default();
@@ -674,10 +596,8 @@ mod test {
         }
     }
 
-    /// Rebinds must be sound: a name rebound at a different type must
-    /// never be referenced at its dead earlier type. Purely structural
-    /// check here (vars_of last-binding-wins); the oracle's compile
-    /// step is the end-to-end guard.
+    /// A name rebound at a different type is never referenced at its
+    /// dead earlier type.
     #[test]
     fn vars_of_last_binding_wins() {
         let mut ctx = GenCtx::new();

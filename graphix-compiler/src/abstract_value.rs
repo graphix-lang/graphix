@@ -1,10 +1,6 @@
-//! The runtime box of a Graphix-minted abstract type
-//! (`design/nominal_abstract_types.md`): a value of `type T =
-//! Abstract<rep>` is a `Value::Abstract` carrying the type's identity
-//! and its payload, minted only by the constructor `T(..)`. The tag is
-//! what makes the nominal type honest at runtime — `T as t` is a tag
-//! comparison, `T(x)` destructures the payload, and nothing else can
-//! forge one.
+//! The runtime box of a Graphix-minted abstract type: a value of
+//! `type T = Abstract<rep>` is a `Value::Abstract` carrying the type's
+//! identity and its payload, minted only by the constructor `T(..)`.
 
 use crate::typ::AbstractId;
 use arcstr::ArcStr;
@@ -20,33 +16,19 @@ use std::{
     sync::LazyLock,
 };
 
-/// THE VALUE SEAM for the core traits (`design/traits.md` §12, Eric's
-/// call 2026-08-23): `Value`'s own `eq`/`partial_cmp`/`Debug` reach a
-/// `GxAbstract` through the netidx abstract vtable, which lands in the
-/// impls below — so a user implementation of core `Eq`/`Ord`/`Display`
-/// hooked HERE is honored by every consumer of Value comparison and
-/// printing at once: chunkmap map keys, `array::sort`, `min`/`max`,
-/// `uniq`, the comparison operators, the JIT's `graphix_value_eq`
-/// helper, the typed and naked printers.
-///
-/// The hurdle is `ExecCtx` access: these impls are called from
-/// arbitrary depth inside operations that can't take a context. The
-/// answer is the [`crate::fusion::DynDispatchHandle`] pattern — the
-/// frame that HOLDS `&mut ExecCtx`/`&mut Event` and is about to run a
-/// comparing/printing operation loans them into this thread-local as
-/// a type-erased dispatch handle for the duration of that operation
-/// (`node::coretraits::with_value_hooks`). No loan installed — an
-/// off-cycle comparison on another thread, a context with no core
-/// impls — means the structural case, exactly as before.
+/// The seam through which user `Eq`/`Ord`/`Display` impls reach
+/// `Value`'s own comparison and printing. A frame holding `&mut
+/// ExecCtx` loans a type-erased dispatch handle into a thread-local
+/// for the duration of an operation (`node::coretraits::
+/// with_value_hooks`); with no loan installed the structural case
+/// applies.
 #[repr(C)]
 pub struct ValueHookDispatch {
     /// Type-erased pointer to the monomorphized dispatch state
     /// (`node::coretraits::HookState<R, E>`).
     pub state: *mut u8,
-    /// `None` = no implementation (or no answer is possible) — take
-    /// the structural case. `Some` is always a definite answer: a
-    /// bottoming implementation resolves by the bottom-key rule
-    /// (`node::coretraits`).
+    /// `None` means no implementation: take the structural case.
+    /// `Some` is always a definite answer.
     pub eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
     pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
     pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
@@ -57,10 +39,8 @@ thread_local! {
 }
 
 /// Install `h` as the thread's value-hook dispatch until the guard
-/// drops (save/restore — loans nest). The caller owns the pointed-to
-/// handle and state and must keep them alive and unmoved for the
-/// guard's lifetime; `node::coretraits::with_value_hooks` is the safe
-/// wrapper.
+/// drops (loans nest). The caller must keep the handle and its state
+/// alive and unmoved for the guard's lifetime.
 pub(crate) fn arm_value_hooks(h: *const ValueHookDispatch) -> ValueHookGuard {
     ValueHookGuard { prev: VALUE_HOOKS.with(|c| c.replace(h)) }
 }
@@ -96,11 +76,8 @@ pub struct GxAbstract {
 
 impl fmt::Debug for GxAbstract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Debug IS the printed form of an abstract value (Eric's call):
-        // every printer — the typed walk, the naked walk, netidx's own
-        // `{:?}` — converges here, so a `Display` implementation
-        // consulted here covers them all. Guarded: abstract payloads
-        // may nest abstracts, one Debug frame per level.
+        // Debug is the printed form of an abstract value; every
+        // printer converges here, so a user Display impl is consulted here.
         crate::stack::ensure_sufficient(|| {
             if let Some(s) = hooked(|h| (h.fmt)(h.state, self)) {
                 return f.write_str(&s);
@@ -201,9 +178,8 @@ pub fn payload(v: &Value) -> Option<&Value> {
 }
 
 /// Is `v` a value of the abstract type `id`? A Graphix-minted box
-/// answers by its tag; a Rust-backed abstract value answers by the
-/// wrapper UUID its package registered, which is [`crate::typ::abstract_uuid`]
-/// of the type's path.
+/// answers by its tag; a Rust-backed value by its registered wrapper
+/// UUID ([`crate::typ::abstract_uuid`] of the type's path).
 pub fn is_instance(v: &Value, id: AbstractId) -> bool {
     match v {
         Value::Abstract(a) => match a.downcast_ref::<GxAbstract>() {

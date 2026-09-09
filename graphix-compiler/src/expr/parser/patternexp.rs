@@ -23,11 +23,9 @@ use triomphe::Arc;
 
 use super::{grow::grow, not_prefix};
 
-/// Shared post-processing for slice-shaped patterns: classify the
-/// element/rest mix into Slice / SlicePrefix / SliceSuffix. `list`
-/// selects the native-list flavor; the SUFFIX form is refused there —
-/// a list's tail is O(1), its front is an O(n) walk
-/// (`design/list_native.md`).
+/// Classify a slice-shaped pattern's element/rest mix into Slice /
+/// SlicePrefix / SliceSuffix. `list` selects the native-list flavor,
+/// which refuses the suffix form (a list's front is an O(n) walk).
 pub(super) fn slice_pattern<I>(
     all: Option<ArcStr>,
 ) -> impl Parser<I, Output = StructurePattern>
@@ -389,12 +387,9 @@ parser! {
     }
 }
 
-/// One or more `|`-separated alternatives (`design/or_patterns.md`,
-/// Eric's 2026-08-31 ruling). Legal in select arms and every bracketed
-/// element position; NOT at the top level of `let` or lambda params
-/// (the lambda arg list is itself `|`-delimited). `|` binds loosest
-/// and an `@`-capture is per-alternative. Flat by construction: the
-/// chain folds into one `Or`, and an alternative is never an `Or`.
+/// One or more `|`-separated alternatives. Legal in select arms and every
+/// bracketed element position, not at the top level of `let` or lambda
+/// params. `|` binds loosest; an `@`-capture is per-alternative; flat.
 pub(super) fn structure_pattern_or<I>() -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,

@@ -8,8 +8,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-// ── TlsConnect ────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct TlsConnectEv;
 
@@ -80,13 +78,9 @@ impl EvalCachedAsync for TlsConnectEv {
                 }
             };
             match connector.connect(server_name, tcp).await {
-                // The upgrade CONSUMES the TCP handle: the session
-                // moves into a handle of its own and the caller's
-                // `TcpStream` is left empty, so a stray plaintext
-                // read on it is an error rather than a silent read of
-                // the encrypted session. (The error paths above put
-                // the socket back — a failed upgrade leaves the
-                // caller's stream exactly as it was.)
+                // The upgrade CONSUMES the TCP handle: the session moves into its
+                // own handle and the caller's `TcpStream` is left empty, so a stray
+                // plaintext read errors. A failed upgrade puts the socket back.
                 Ok(tls_stream) => {
                     wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Client(tls_stream)))
                 }
@@ -99,8 +93,6 @@ impl EvalCachedAsync for TlsConnectEv {
 }
 
 pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
-
-// ── TlsAccept ─────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct TlsAcceptEv;

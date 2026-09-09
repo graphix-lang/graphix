@@ -1,15 +1,8 @@
-//! Module emission — submodules with `.gxi` interfaces, the bread and
-//! butter of larger programs and a surface generation never touched:
-//! interface types CONSTRAIN impl inference (the instantiation path),
-//! abstract types flow through fusion's abstract registry, and
-//! visibility gates which bindings the main body may reach.
-//!
-//! A generated module is a pair of wrapper file sections (`m{i}.gx` +
-//! usually `m{i}.gxi`) plus registrations into the MAIN scope: public
-//! lambdas enter the callable vocabulary under their absolute path
-//! (`m0::f1`), so `try_call` composes module calls into arbitrary
-//! expressions for free. The module's own scope is self-contained (no
-//! captures of main bindings — a root-mounted module can't see them).
+//! Module emission: a generated module is a pair of wrapper file
+//! sections (`m{i}.gx` + usually `m{i}.gxi`) plus registrations into
+//! the main scope, where public lambdas enter the callable vocabulary
+//! under their absolute path (`m0::f1`). The module's own scope is
+//! self-contained: a root-mounted module cannot see main bindings.
 
 use super::{
     GenCfg, GenCtx, GenStats, chance, exprs,
@@ -18,18 +11,16 @@ use super::{
 use crate::mutate::Rng;
 
 pub(super) struct GenModule {
-    /// Wrapper file sections: `(name, text)` — `m{i}.gx` and, unless
-    /// the bare-module variant fired, `m{i}.gxi`.
+    /// Wrapper file sections: `m{i}.gx` and, unless the bare-module
+    /// variant fired, `m{i}.gxi`.
     pub files: Vec<(String, String)>,
-    /// Statements for the MAIN body (abstract-type round-trips bind a
-    /// value the main vocabulary can use).
+    /// Statements for the main body.
     pub stmts: Vec<String>,
 }
 
-/// A sibling-module public (`m<j>::…`) no longer resolves bare inside a
-/// later module — every name arrives by an explicit road
-/// (design/module_system.md). One road is drawn per module: 0 keeps the
-/// plain spelling and emits a `use super::{m0, …};` header, 1 rewrites
+/// A sibling module's public (`m<j>::…`) does not resolve bare inside a
+/// later module. One road is drawn per module: 0 keeps the plain
+/// spelling and emits a `use super::{m0, …};` header, 1 rewrites
 /// references to `super::m<j>::…` inline, 2 to `package::m<j>::…`.
 fn sibling_qualified(n: &str) -> bool {
     n.strip_prefix('m').and_then(|r| r.split_once("::")).is_some_and(|(digits, _)| {
@@ -37,10 +28,9 @@ fn sibling_qualified(n: &str) -> bool {
     })
 }
 
-/// Walk the abstract-type MODULE fields nested in a vocabulary entry's
-/// type. Roads 1/2 prefix them (`m0` → `super::m0`) so `m0::T` renders
-/// with its road inside the module; registration back into MAIN strips
-/// the prefix so the main vocabulary stays canonically plain.
+/// Walk the abstract-type module fields nested in a vocabulary entry's
+/// type. Roads 1/2 prefix them; registration back into main strips the
+/// prefix so the main vocabulary stays plain.
 fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
     match t {
         GenType::Abstract { module } => f(module),
@@ -78,28 +68,19 @@ pub(super) fn gen_module(
 ) -> GenModule {
     stats.module = true;
     let mname = format!("m{idx}");
-    // The module's own scope: params, locals, and EARLIER modules'
-    // path-qualified publics — `mod m0;` is declared before `mod m1;`
-    // in the compile text, so m1's body calling `m0::f` resolves
-    // (probed both directions 2026-07-08: forward works, backward is a
-    // compile error). Main-body bindings are dropped (a root-mounted
-    // module can't see them); names still come from the SHARED
-    // collision pool (a module-private binding aliasing a main-body
-    // name is exactly the name-vs-identity surface).
+    // The module's own scope: params, locals, and earlier modules'
+    // path-qualified publics (`mod m0;` is declared before `mod m1;`).
+    // Main-body bindings are dropped; names still come from the shared
+    // collision pool.
     let mut inner = ctx.clone();
     inner.vars.retain(|(n, _)| n.contains("::"));
-    // Decided up front: unannotated-return impls are legal only when
-    // the interface states the full type (a bare module registers the
-    // vocabulary from the declared type, which a body's inference may
-    // not reproduce exactly).
+    // decided up front: unannotated-return impls are legal only when the
+    // interface states the full type
     let has_gxi = !chance(rng, cfg.p_bare_module);
     let mut gx = String::new();
     let mut gxi = String::new();
-    // The cross-module ROAD (see `sibling_qualified`): drawn per
-    // module. Road 0 keeps the plain `m<j>::` spelling and emits a
-    // `use super::{…}` header (into the gxi when present — its imports
-    // apply to the impl); roads 1/2 rewrite the retained vocabulary to
-    // the inline spellings.
+    // The cross-module road (see `sibling_qualified`). Road 0's `use`
+    // header goes into the gxi when present: its imports apply to the impl.
     let road = if idx > 0 { rng.below(3) } else { 0 };
     if road != 0 {
         let prefix = if road == 1 { "super" } else { "package" };
@@ -125,10 +106,8 @@ pub(super) fn gen_module(
         stats.use_vocab = true;
     }
     let mut public: Vec<(String, GenType)> = Vec::new();
-    // Optional exported CONSTANT — a non-fn `val`. Emitted FIRST so
-    // later fn bodies can reference it organically; registered in MAIN
-    // under its path. A cross-region read of exactly this shape found
-    // the dead-eliminated-module deadlock (2026-07-08).
+    // optional exported constant, emitted first so later fn bodies can
+    // reference it
     let konst = if chance(rng, 0.5) {
         let k = format!("k{idx}");
         let kty = if chance(rng, 0.3) {
@@ -146,8 +125,8 @@ pub(super) fn gen_module(
     } else {
         None
     };
-    // Optional private helper: used by the first public lambda, absent
-    // from the interface — the visibility surface.
+    // optional private helper, used by the first public lambda and
+    // absent from the interface
     let helper = if chance(rng, 0.5) {
         let h = format!("h{idx}");
         let ht = types::numeric_type(rng);
@@ -164,12 +143,8 @@ pub(super) fn gen_module(
     } else {
         None
     };
-    // An interface-boundary type: scalars keep the majority, but
-    // composites (tuple/struct/array/map/nullable) and the occasional
-    // tag union cross too — a marshalled composite param/return is the
-    // instantiation + ABI surface a scalar-only interface never touched.
-    // Bare variant literals and `null` coerce at the annotated call
-    // site exactly like the annotated-let flow (probed 2026-07-08).
+    // An interface-boundary type: scalars keep the majority; composites
+    // and the occasional tag union cross too.
     let iface_type = |rng: &mut Rng, stats: &mut GenStats| match rng.below(10) {
         0..=4 => types::scalar_type(rng),
         5..=8 => {
@@ -184,11 +159,9 @@ pub(super) fn gen_module(
             types::random_variant(rng, 1)
         }
     };
-    // Cross-module wiring (later modules): pick an EARLIER module's
-    // public fn, pin f0's return type to the callee's, and splice the
-    // call into f0's body. Organic draws alone leave the shape under
-    // the presence gate (~0.6% — it needs ≥2 modules in one program
-    // AND `try_call` landing on the import).
+    // cross-module wiring (later modules): pick an earlier module's
+    // public fn, pin f0's return type to the callee's, splice the call
+    // into f0's body
     let cross = if idx > 0 && chance(rng, 0.6) {
         let cands: Vec<(String, Vec<GenType>, GenType)> = inner
             .visible_entries()
@@ -205,13 +178,11 @@ pub(super) fn gen_module(
     } else {
         None
     };
-    // 1-3 public typed lambdas.
     let nfns = 1 + rng.below(3);
     for i in 0..nfns {
         let fname = format!("f{i}");
         let arity = 1 + rng.below(2);
-        // Params only (never returns): `&T` across the interface is
-        // the GUI widget-arg idiom; bodies deref organically.
+        // params only, never returns: `&T` across the interface
         let params: Vec<GenType> = (0..arity)
             .map(|_| {
                 if chance(rng, 0.15) {
@@ -231,8 +202,6 @@ pub(super) fn gen_module(
         for (n, t) in names.iter().zip(params.iter()) {
             inner.push(n.clone(), t.clone());
         }
-        // Earlier PUBLIC module fns are callable from later bodies
-        // (registered plain-named in the module scope).
         let mut body = exprs::gen_typed(&inner, rng, &ret, 2);
         if i == 0
             && let Some((callee, ptys, _)) = &cross
@@ -240,8 +209,7 @@ pub(super) fn gen_module(
             let args: Vec<String> =
                 ptys.iter().map(|t| exprs::gen_typed(&inner, rng, t, 1)).collect();
             let call = format!("{callee}({})", args.join(", "));
-            // Merge with the organic body where `+` is defined;
-            // otherwise the call IS the body.
+            // merge with the organic body where `+` is defined
             body = if ret.is_numeric() { format!("({call} + ({body}))") } else { call };
         }
         if i == 0
@@ -257,13 +225,9 @@ pub(super) fn gen_module(
             .zip(params.iter())
             .map(|(n, t)| format!("{n}: {}", t.render()))
             .collect();
-        // Unannotated RETURN: the impl's return type is inferred from
-        // the body and checked against the interface's declared type —
-        // the signature-match seam annotated impls never exercise.
-        // Only where inference reproduces the type EXACTLY (the
-        // signature must MATCH the inferred type, it never narrows it:
-        // a bare tag infers its single tag, not the union — probed
-        // 2026-07-08, "signature mismatch" is a hard error).
+        // Unannotated return: the impl's return type is inferred and
+        // checked against the interface. Only where inference reproduces
+        // the type exactly: the signature must match, it never narrows.
         if has_gxi && ret.infers_exact() && chance(rng, 0.3) {
             stats.unannotated_ret = true;
             gx.push_str(&format!("let {fname} = |{}| {body};\n", sig.join(", ")));
@@ -283,16 +247,9 @@ pub(super) fn gen_module(
         public.push((fname, fty));
     }
     // Optional abstract type: `type T;` in the interface, a hidden
-    // concrete def in the impl, constructor + accessor — the
-    // abstract-registry surface fusion resolves through
-    // `resolve_abstract`/`freeze_for_abi`. `mk`/`un` register as MAIN
-    // vocabulary typed over `GenType::Abstract`, so T values flow
-    // FIRST-CLASS from here: through lets, tuples/arrays, select
-    // binds, later modules' bodies, and (via cross-module wiring
-    // pinning a later f0's return to `mk`'s) other interfaces —
-    // `m1.gxi` declaring `-> m0::T` resolves (probed 2026-07-08). In
-    // the bare-module variant the same paths hold with `m<i>::T` a
-    // PUBLIC newtype (the `Abstract<..>` body is exported).
+    // concrete def in the impl, constructor + accessor registered as main
+    // vocabulary over `GenType::Abstract`, so T values flow first-class.
+    // In the bare-module variant `m<i>::T` is a public newtype.
     let mut stmts = Vec::new();
     if chance(rng, cfg.p_abstract) {
         let concrete = match rng.below(3) {
@@ -300,8 +257,8 @@ pub(super) fn gen_module(
             1 => GenType::Tuple(vec![I64, I64]),
             _ => GenType::Array(Box::new(I64)),
         };
-        // the nominal faces (design/nominal_abstract_types.md): the
-        // constructor `T(..)`, the payload `.0`, the pattern `T(p)`
+        // the nominal faces: the constructor `T(..)`, the payload `.0`,
+        // the pattern `T(p)`
         let (mk_body, un_body) = match &concrete {
             GenType::Num(NumTy::I64) => ("T(x)".to_string(), "t.0".to_string()),
             GenType::Tuple(_) => {
@@ -315,13 +272,9 @@ pub(super) fn gen_module(
             concrete.render()
         ));
         let aty = GenType::Abstract { module: mname.clone() };
-        // A trait over T (design/traits.md): declared in the interface
-        // (with a default the impl may override), implemented for T,
-        // and a bounded generic `via` whose body dispatches per
-        // instance. Both enter the MAIN vocabulary as T -> i64 fns,
-        // so trait calls compose into arbitrary expressions: the
-        // static-dispatch, default-method, and annotation-bound
-        // (`fn<'a: Tr>`) surfaces.
+        // A trait over T: declared in the interface (with a default the
+        // impl may override), implemented for T, and a bounded generic
+        // `via`. Both enter the main vocabulary as T -> i64 fns.
         if chance(rng, 0.6) {
             let override_default = chance(rng, 0.5);
             let decl = "trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };\n";
@@ -365,9 +318,8 @@ pub(super) fn gen_module(
                 GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
             );
             stats.trait_call = true;
-            // UNION dispatch (`lower_trait_union`): a SECOND abstract
-            // implementing the same trait, and a fn whose self is the
-            // union of the two — the synthesized dispatch select.
+            // union dispatch: a second abstract implementing the same
+            // trait, and a fn whose self is the union of the two
             if chance(rng, 0.5) {
                 let decl = "type T2;\nval mk2: fn(x: i64) -> T2;\nimpl Tr for T2;\nval both: fn(v: [T, T2]) -> i64;\n";
                 let body = "type T2 = Abstract<i64>;\nlet mk2 = |x: i64| -> T2 T2(x);\nimpl Tr for T2 { let tv = |t| t.0 };\nlet both = |v: [T, T2]| -> i64 Tr::tv(v);\n";
@@ -375,9 +327,8 @@ pub(super) fn gen_module(
                     gxi.push_str(decl);
                 }
                 gx.push_str(body);
-                // `both` is callable with EITHER member; register at T
-                // so organic call sites route the first member, and
-                // seed one T2-routed call as a statement.
+                // `both` is callable with either member; register at T and
+                // seed one T2-routed call as a statement
                 ctx.push(
                     format!("{mname}::both"),
                     GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
@@ -388,8 +339,7 @@ pub(super) fn gen_module(
                 ctx.push(w, I64);
                 stats.trait_union = true;
             }
-            // A trait-bounded HOF over Array<'a: Tr>: dispatch inside
-            // a collection callback (the prototype/premat surface).
+            // a trait-bounded HOF over Array<'a: Tr>
             if chance(rng, 0.5) {
                 let decl = "val tsum: fn<'a: Tr>(xs: Array<'a>) -> i64;\n";
                 let body = "let tsum = 'a: Tr |xs: Array<'a>| -> i64 array::fold(xs, i64:0, |acc, x| acc + Tr::tv(x));\n";
@@ -411,11 +361,10 @@ pub(super) fn gen_module(
                 stats.bounded_hof = true;
             }
         }
-        // The core traits (design/traits.md §8): an `Eq` whose answer
-        // differs from the structural one (parity of the payload) and
-        // a `Display` with its own spelling, reached through `==` on
-        // T itself (the lowered static call), `==` on arrays holding
-        // T (the hooked walk), and interpolation of T bare and nested.
+        // The core traits: an `Eq` whose answer differs from the
+        // structural one (payload parity), an `Ord` to match, and a
+        // `Display` with its own spelling, reached bare, in arrays, in
+        // maps and in interpolation.
         if chance(rng, 0.5) {
             let decls = "impl Eq for T;\nimpl Ord for T;\nimpl Display for T;\nval teq: fn(a: T, b: T) -> bool;\nval teqa: fn(a: T, b: T) -> bool;\nval tshow: fn(t: T) -> string;\nval tmap: fn(a: T, b: T) -> i64;\n";
             let impls = "impl Eq for T { let eq = |a, b| un(a) % i64:2 == un(b) % i64:2 };\nimpl Ord for T { let cmp = |a, b| select (un(a) % i64:2, un(b) % i64:2) { (x, y) if x < y => `Less, (x, y) if x > y => `Greater, _ => `Equal } };\nimpl Display for T { let fmt = |t| \"T<[un(t)]>\" };\n";
@@ -444,11 +393,8 @@ pub(super) fn gen_module(
             );
             stats.core_trait = true;
         }
-        // A Collection-GENERIC fn (`|c: Collection|` — the constructor
-        // trait's sugar, design/recursive_activations.md §7),
-        // registered at BOTH an Array and a Map parameter type so call
-        // sites dispatch across constructors (decomposition on the
-        // receiver's outermost form).
+        // a Collection-generic fn (`|c: Collection|`), registered at
+        // several constructor types so call sites dispatch across them
         if chance(rng, 0.5) {
             let decl = "val csize: fn(c: Collection) -> i64;\n";
             let body = "let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1);\n";
@@ -476,15 +422,13 @@ pub(super) fn gen_module(
             format!("{mname}::un"),
             GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
         );
-        // Seed one T-typed binding; production and consumption are
-        // organic vocabulary from here (`un` via try_call at i64
-        // positions, `mk` via the Abstract arm of gen_typed).
+        // seed one T-typed binding; production and consumption are
+        // organic vocabulary from here
         let arg = exprs::gen_typed(ctx, rng, &I64, 1);
         let v = ctx.fresh();
         stmts.push(format!("let {v} = {mname}::mk({arg})"));
         ctx.push(v, aty.clone());
-        // Sometimes store T in a composite so accessors read it back
-        // out (the opaque-value-in-composite marshal surface).
+        // sometimes store T in a composite so accessors read it back out
         if chance(rng, 0.5) {
             let t_expr = exprs::gen_typed(ctx, rng, &aty, 1);
             let n_expr = exprs::gen_typed(ctx, rng, &I64, 1);
@@ -494,17 +438,13 @@ pub(super) fn gen_module(
         }
         stats.abstract_value = true;
     }
-    // Cross-module call presence — textual, but exact: `m<j>::` for an
-    // earlier j can only appear in this module's body through a
-    // vocabulary reference.
+    // textual, but exact: `m<j>::` for an earlier j can only appear
+    // through a vocabulary reference
     if (0..idx).any(|j| gx.contains(&format!("m{j}::"))) {
         stats.cross_module_call = true;
     }
-    // Register the public lambdas in MAIN under their absolute paths.
-    // With the bare-module variant (no .gxi) everything is public —
-    // same registrations, no interface to constrain the types. Road
-    // prefixes picked up from cross-pinned return types are stripped —
-    // MAIN's vocabulary stays canonically plain.
+    // Register the public lambdas in main under their absolute paths,
+    // road prefixes stripped.
     let plain = |fty: &GenType| {
         let mut fty = fty.clone();
         map_abstract(&mut fty, &|module| {
@@ -519,11 +459,8 @@ pub(super) fn gen_module(
     for (fname, fty) in &public {
         ctx.push(format!("{mname}::{fname}"), plain(fty));
     }
-    // Main-scope import vocabulary: block-scoped `use` forms over this
-    // module's publics — a plain item import (the exported constant's
-    // name is unique per module), a RENAME (`f0` collides across
-    // modules; `as` is the collision-free spelling), and for the first
-    // module a GLOB registering its publics bare.
+    // main-scope import vocabulary: a plain item import, a rename (`f0`
+    // collides across modules), and for the first module a glob
     if chance(rng, 0.4) {
         stats.use_vocab = true;
         match rng.below(3) {
@@ -549,10 +486,7 @@ pub(super) fn gen_module(
             }
         }
     }
-    // Trailing EXPRESSION statement — the module shape whose fused
-    // dead-elim/env-pop silently killed exports
-    // (modstmt-fused-no-publish-aug2026: generated module bodies
-    // always ended in a `let`, so the trigger was unreachable).
+    // a trailing expression statement
     if chance(rng, 0.15) {
         let t = types::scalar_type(rng);
         let e = exprs::gen_typed(&inner, rng, &t, 1);
@@ -565,17 +499,11 @@ pub(super) fn gen_module(
     GenModule { files, stmts }
 }
 
-/// Emit a DYNAMIC module: a raw-string-literal source compiled at
+/// Emit a dynamic module: a raw-string-literal source compiled at
 /// runtime against a declared sig inside a sandbox, consumed through
-/// the status gate (`select status { error => fallback, null =>
-/// d0::f(...) }` — the hand-seed discipline). Every outcome is
-/// deterministic at EXACT oracle strength — load, sig mismatch,
-/// sandbox violation, and source syntax errors all settle the same
-/// way in both modes (probed 2026-07-07) — so no netidx plumbing and
-/// no tier demotion is needed. Negative variants (a sig val the
-/// source doesn't define; a core-only sandbox under a vocabulary that
-/// may reach array::/str::) exercise the error arm as a first-class
-/// deterministic outcome.
+/// the status gate. Every outcome (load, sig mismatch, sandbox
+/// violation, syntax error) is deterministic at Exact strength, so
+/// negative variants exercise the error arm as first-class outcomes.
 pub(super) fn gen_dynamic_module(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -588,7 +516,7 @@ pub(super) fn gen_dynamic_module(
     let mut inner = ctx.clone();
     inner.truncate(0);
     let mut src = String::new();
-    // Optional hidden binding, used through capture — never in the sig.
+    // optional hidden binding, used through capture, never in the sig
     if chance(rng, 0.4) {
         let h = inner.fresh();
         let v = exprs::gen_typed(&inner, rng, &I64, 1);
@@ -624,23 +552,16 @@ pub(super) fn gen_dynamic_module(
         sig.push_str(&format!("val {fname}: {}; ", fty.render()));
         public.push((fname, fty));
     }
-    // Negative variant: the sig demands a val the source never defines
-    // — the load must take the error arm, identically in both modes.
+    // negative variant: the sig demands a val the source never defines
     let sig_mismatch = chance(rng, 0.12);
     if sig_mismatch {
         sig.push_str("val absent: fn(x: i64) -> i64; ");
     }
-    // The generated bodies may reach array::/str:: through gen_typed's
-    // vocabulary; a narrow sandbox turns those loads into deterministic
-    // error-arm outcomes rather than invalid programs, so both
-    // whitelists are healthy to emit.
+    // a narrow sandbox turns array::/str:: reaches into deterministic
+    // error-arm outcomes, so both whitelists are healthy to emit
     let whitelist = if chance(rng, 0.25) { "[core]" } else { "[core, array, str]" };
-    // Raw-string-escape the source: `\\` and `\'` are the only escapes
-    // a raw string recognizes, and a generated body can contain BOTH
-    // characters (the escaped-bracket string-interp shape emits `\[`,
-    // which an unescaped raw string rejects as a parse error).
-    // Counted-hash raw strings are verbatim — no escaping at all;
-    // one hash suffices unless the source itself contains `"#`.
+    // Counted-hash raw strings are verbatim (a generated body can contain
+    // both `\\` and `\[`); one hash suffices unless the source contains `"#`.
     let src = src.trim_end().trim_end_matches(';');
     let hashes = if src.contains("\"#") { "##" } else { "#" };
     let status = ctx.fresh();
@@ -649,8 +570,7 @@ pub(super) fn gen_dynamic_module(
          sig {{ {} }}; source r{hashes}\"{src}\"{hashes} }}",
         sig.trim_end().trim_end_matches(';')
     )];
-    // Consume ONE public fn through the status gate; the result enters
-    // the main vocabulary.
+    // consume one public fn through the status gate
     let (fname, fty) = &public[rng.below(public.len())];
     let GenType::Fn { params, ret } = fty else { unreachable!() };
     let args: Vec<String> =

@@ -1,6 +1,5 @@
-//! Rendering path for `DataTableW`: the `render_with_size` body,
-//! per-cell rendering, wrapper layers (keyboard, resize drag), and the
-//! sparkline canvas program.
+//! Rendering for `DataTableW`: `render_with_size`, per-cell rendering,
+//! wrapper layers, and the sparkline canvas program.
 
 use super::{
     DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, IcedElement, MIN_COL_WIDTH, Message,
@@ -23,11 +22,7 @@ use poolshark::local::LPooled;
 type Col<'a> = widget::Column<'a, Message, GraphixTheme, Renderer>;
 type Row<'a> = widget::Row<'a, Message, GraphixTheme, Renderer>;
 
-/// Unicode subscript digit (U+2080..U+2089) for 1–9, used to annotate
-/// sort-priority in the header indicator. Returns `""` outside the
-/// supported range — nine columns of tie-breaking is more than any
-/// reasonable spreadsheet workflow, and a missing digit is clearer
-/// than a wrong one if it somehow gets hit.
+/// Unicode subscript digit for 1–9, `""` outside that range.
 fn subscript_digit(n: usize) -> &'static str {
     match n {
         1 => "₁",
@@ -43,10 +38,7 @@ fn subscript_digit(n: usize) -> &'static str {
     }
 }
 
-/// Y-axis bounds for a sparkline cell. Both ends are pre-resolved
-/// during view(): the column-wide union of all rows' values for axes
-/// the caller didn't fix, and the user-supplied `min`/`max` from the
-/// `Sparkline` column type for the ones they did.
+/// Resolved y-axis bounds for a sparkline cell.
 #[derive(Clone, Copy)]
 pub(super) struct SparkBounds {
     min: f64,
@@ -57,8 +49,6 @@ pub(super) struct SparkBounds {
 struct SparklineCanvas {
     /// (time_offset_secs, value) pairs
     points: Vec<(f64, f64)>,
-    /// Y-axis bounds resolved by the caller (column-wide auto-scale or
-    /// user-fixed via the column type's `min`/`max`).
     bounds: SparkBounds,
 }
 
@@ -91,14 +81,12 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
         let v_range = max_v - min_v;
         let w = bounds.width;
         let h = bounds.height;
-        // Decimate: if more points than pixels, sample.
         let max_points = (w as usize).max(1);
         let step = if self.points.len() > max_points {
             self.points.len() / max_points
         } else {
             1
         };
-        // Build path
         let path = Path::new(|builder| {
             let mut first = true;
             for (i, &(t, v)) in self.points.iter().enumerate() {
@@ -126,12 +114,8 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
 }
 
 impl<X: GXExt> DataTableW<X> {
-    /// Build the per-column header sort indicator suffix. A column not
-    /// in `sort_by` gets no entry. A column in `sort_by` gets a leading
-    /// space and an arrow: ▲ for ascending, ▼ for descending. When
-    /// there's more than one sort column, each indicator also gets a
-    /// unicode subscript digit (₁ ₂ ₃…) showing its 1-based priority
-    /// so the user can tell primary from tie-breakers.
+    /// Header sort-indicator suffix per sorted column: an arrow, plus a
+    /// subscript priority digit when there is more than one sort column.
     pub(super) fn build_sort_indicators(
         &self,
     ) -> LPooled<AHashMap<ArcStr, CompactString>> {
@@ -156,10 +140,6 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     pub(super) fn render_with_size(&self, size: iced_core::Size) -> IcedElement<'_> {
-        // Update viewport metrics from the actual layout size. The
-        // `dirty` flag is consumed in `before_view` to trigger a
-        // deferred `update_subscriptions()` on resize — we can't call
-        // it from here because the closure only holds `&self`.
         {
             let row_h = self.row_height();
             let header_h = ROW_HEIGHT_ESTIMATE;
@@ -193,13 +173,6 @@ impl<X: GXExt> DataTableW<X> {
         };
         let (vis_row_start, vis_row_end) = self.display_row_range();
         let (vis_col_start, vis_col_end) = self.display_col_range();
-        // Snapshot cell data (need it for column width computation too).
-        // Materialize from the identity-keyed grid into a Vec<Vec<ArcStr>>
-        // sized [visible_rows][all_cols]; falling back to per-cell defaults
-        // for entries no subscription has filled in yet. ArcStr clones
-        // are refcount bumps — the grid's stored values are reused
-        // across width measurement, header rendering, and per-cell
-        // rendering without re-allocating.
         let grid_snapshot: LPooled<Vec<LPooled<Vec<ArcStr>>>> = {
             let mut inner = self.cells.inner.lock();
             (vis_row_start..vis_row_end)
@@ -233,10 +206,6 @@ impl<X: GXExt> DataTableW<X> {
         let name_col_offset = if show_row_name { 1 } else { 0 };
         let sort_indicators: LPooled<AHashMap<ArcStr, CompactString>> =
             self.build_sort_indicators();
-        // Column metadata with widths.
-        // If effective_col_width returns Some, use it directly.
-        // Otherwise auto-size from content (up to DEFAULT_MAX_COL_WIDTH)
-        // and lock the result into user_widths.
         let mut col_meta: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
         if show_row_name {
             let w = match self.effective_col_width(ROW_NAME_KEY) {
@@ -271,18 +240,12 @@ impl<X: GXExt> DataTableW<X> {
                                 .display_name
                                 .as_deref()
                                 .unwrap_or(name.as_str());
-                            // Include the sort indicator (if any) in
-                            // header-width measurement so the arrow
-                            // can't be clipped or push the text against
-                            // the resize handle when auto-sizing.
                             let header: CompactString = match sort_indicators.get(name) {
                                 Some(ind) => format_compact!("{display}{ind}"),
                                 None => display.into(),
                             };
-                            // Header text (bold, 14pt) sets minimum
                             let mut w =
                                 col_header_width(&header).max(MIN_COL_WIDTH).min(max_w);
-                            // Cell content may be wider
                             for row in &*grid_snapshot {
                                 if i < row.len() {
                                     w = w.max(col_min_width(&row[i], max_w));
@@ -311,20 +274,14 @@ impl<X: GXExt> DataTableW<X> {
                 col_meta.push((literal!("value"), w));
             }
         }
-        // Cache column widths for keyboard nav viewport calculations.
-        // Accumulated across frames (not cleared here) so columns that
-        // have scrolled out of view retain their last-known widths —
-        // virtual_width below needs an estimate of the *entire*
-        // content's width to get the horizontal scrollbar range right,
-        // not just the currently-visible slice. `apply_table` clears
-        // the cache when the column set changes.
+        // Accumulated across frames: `virtual_content_width` needs the
+        // widths of columns that have scrolled out of view.
         {
             let mut cache = self.cached_col_widths.lock();
             for (name, w) in &*col_meta {
                 cache.insert(name.clone(), *w);
             }
         }
-        // Header row — styled identically to data cells (same padding, borders)
         let mut header_row = Row::new().spacing(0);
         for (ci, (name, w)) in col_meta.iter().enumerate() {
             let is_data_col = ci >= name_col_offset;
@@ -338,19 +295,13 @@ impl<X: GXExt> DataTableW<X> {
                     None => base,
                 }
             } else {
-                // Synthesized row-name column: render the user-facing
-                // label, not the internal sentinel key.
                 literal!("name")
             };
             let is_fixed = entry
                 .map(|c| c.ref_width.is_some() && c.on_resize.is_none())
                 .unwrap_or(false);
-            // Render the header as plain text; if there's a header-click
-            // callback wrap it in a `MouseArea` so the label stays flush
-            // with the cell (a `Button` would add its own background,
-            // border, and padding, making the header row visibly taller
-            // than the row-name header cell). `Interaction::Pointer`
-            // gives the user a hover cue that the header is clickable.
+            // A `MouseArea`, not a `Button`: a button's padding would make
+            // the header row taller than the row-name header cell.
             let plain_text: IcedElement<'_> = widget::text(header_text.to_string())
                 .size(14)
                 .font(bold)
@@ -373,7 +324,6 @@ impl<X: GXExt> DataTableW<X> {
             } else {
                 plain_text
             };
-            // Use same styling as wrap_cell: same width, padding, border
             let inner: IcedElement<'_> = if !is_fixed {
                 let handle: IcedElement<'_> =
                     widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(
@@ -411,13 +361,8 @@ impl<X: GXExt> DataTableW<X> {
                 .into();
             header_row = header_row.push(cell);
         }
-        // Data rows
         let _has_on_select = self.on_select.is_some();
         let row_h = self.row_height();
-        // Resolve sparkline y-axis bounds once per column. Default
-        // behavior: union of every row's points so cells in the same
-        // column are visually comparable. The column type's `min`/`max`
-        // override either end when set.
         let spark_bounds_by_col = self.compute_sparkline_bounds();
         let mut body = Col::new()
             .spacing(0)
@@ -431,8 +376,7 @@ impl<X: GXExt> DataTableW<X> {
                 let cell_el: IcedElement<'_> = if is_name_col {
                     let name =
                         self.row_paths.get(row_idx).map(row_basename).unwrap_or("");
-                    // Name column's selection key is the row path
-                    // itself, not `<row>/<col>`.
+                    // The name column's selection key is the row path.
                     let is_sel = self
                         .row_paths
                         .get(row_idx)
@@ -483,20 +427,9 @@ impl<X: GXExt> DataTableW<X> {
             .into();
         let row_h = self.row_height();
         let header_h = ROW_HEIGHT_ESTIMATE;
-        // Virtual content size drives iced's scrollable range and its
-        // auto-hide: a bar shows iff `content_bounds > bounds` in that
-        // axis (`vendor/iced_widget/src/scrollable.rs:1949-1955`).
-        //
-        // Critical: this must reflect the **entire** content extent,
-        // not just the currently-rendered slice. `col_meta` holds only
-        // the visible column window, so summing it is wrong — once the
-        // user scrolls right, the off-screen left columns are not in
-        // `col_meta` and the sum shrinks, which iced then reads as
-        // "content fits" and hides the scrollbar mid-scroll. Instead,
-        // we sum across all `col_names`, falling back to
-        // `MIN_COL_WIDTH` for columns whose widths haven't been
-        // measured yet because they've never been rendered.
-        // `cached_col_widths` persists across frames for this purpose.
+        // iced shows a scrollbar iff content exceeds bounds, so the
+        // virtual size must cover the entire content, not the visible
+        // slice.
         let virtual_width = self.virtual_content_width();
         let virtual_height = num_rows as f32 * row_h + header_h;
         let virtual_content: IcedElement<'_> =
@@ -524,12 +457,8 @@ impl<X: GXExt> DataTableW<X> {
                 .width(iced_core::Length::Fill)
                 .height(iced_core::Length::Fill)
                 .into();
-        // Clip the final output so a partial last row (rendered because
-        // `rows_in_view` is `ceil`'d for the "more below" affordance)
-        // doesn't bleed past the table's allocated bounds into widgets
-        // below. `container::clip(true)` sets iced's scissor rect
-        // during draw only — layout, hit-testing, focus traversal and
-        // iced overlay dropdowns (pick_list, tooltips) are unaffected.
+        // Clip so the partial last row does not bleed past the table's
+        // bounds; the scissor applies to draw only, not overlays.
         let clipped: IcedElement<'_> = widget::container(stacked)
             .width(iced_core::Length::Fill)
             .height(iced_core::Length::Fill)
@@ -538,16 +467,9 @@ impl<X: GXExt> DataTableW<X> {
         self.wrap_keyboard(self.wrap_resize_drag(clipped))
     }
 
-    /// Wrap the table's rendered view in a top-level MouseArea that
-    /// emits `ColumnResizeMove` on every cursor move and
-    /// `ColumnResizeEnd` on left-button release. The event loop's
-    /// drain arm filters those against `is_column_resizing`, so there
-    /// is no per-frame cost for regular hovering — just one extra
-    /// message per mouse-move event while the cursor is over the
-    /// table. Drag state changes (start/move/end) all go through the
-    /// same message drain cycle, which is what fixes the timing bug
-    /// where `CursorMoved` events arriving in `window_event` saw a
-    /// stale `is_column_resizing()` result.
+    /// Wrap the view in a MouseArea emitting `ColumnResizeMove` on cursor
+    /// move and `ColumnResizeEnd` on release; the message drain filters
+    /// them against `is_column_resizing`.
     fn wrap_resize_drag<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
         widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(content)
             .on_move(|pt| Message::ColumnResizeMove(pt.x))
@@ -593,8 +515,7 @@ impl<X: GXExt> DataTableW<X> {
             .into()
     }
 
-    /// Wrap a cell's inner content with spreadsheet-style container:
-    /// thin border, flat background, click-to-select.
+    /// Wrap a cell's content in a bordered, click-to-select container.
     fn wrap_cell<'a>(
         &'a self,
         inner: IcedElement<'a>,
@@ -629,8 +550,6 @@ impl<X: GXExt> DataTableW<X> {
                 }
             })
             .into();
-        // Wrap in mouse_area for click-to-select.
-        // Container constrains the mouse_area to not expand.
         widget::container(
             widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(styled)
                 .on_press(Message::CellClick(row_idx, col_for_msg)),
@@ -640,15 +559,10 @@ impl<X: GXExt> DataTableW<X> {
         .into()
     }
 
-    /// Compute the y-axis bounds for every sparkline column, by row
-    /// union, so cells share a scale. Returns one entry per
-    /// `Sparkline`-typed column. The column type's `min`/`max` clamp
-    /// either end when set; otherwise the bound comes from the union
-    /// of every row's recorded points.
+    /// Y-axis bounds per sparkline column: the column type's `min`/`max`
+    /// where set, else the union of every row's points.
     fn compute_sparkline_bounds(&self) -> LPooled<AHashMap<ArcStr, SparkBounds>> {
         let mut out: LPooled<AHashMap<ArcStr, SparkBounds>> = LPooled::take();
-        // Collect column-wide value ranges by walking the sparkline
-        // history in one lock.
         let mut ranges: LPooled<AHashMap<ArcStr, (f64, f64)>> = LPooled::take();
         {
             let inner = self.cells.inner.lock();
@@ -669,9 +583,6 @@ impl<X: GXExt> DataTableW<X> {
                 ColumnType::Sparkline { min, max, .. } => (min, max),
                 _ => continue,
             };
-            // Auto-scale fallback: use the column's union range if
-            // we've seen any points; otherwise an arbitrary unit
-            // window the canvas's degenerate-range guard widens.
             let (auto_min, auto_max) = ranges
                 .get(col_name)
                 .copied()
@@ -733,7 +644,6 @@ impl<X: GXExt> DataTableW<X> {
                     .padding(2)
                     .into()
                 } else if is_selected && callback_id.is_some() {
-                    // Selected editable cell: click again to edit
                     let col_for_msg = col_name.clone();
                     widget::Button::<'_, Message, GraphixTheme, Renderer>::new(
                         widget::text(truncate_to_width(&text, w).into_owned())

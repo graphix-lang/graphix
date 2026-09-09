@@ -109,9 +109,7 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        // Handle focus BEFORE propagating to children, so a captured
-        // click (e.g. from a MouseArea inside a cell) still grants
-        // keyboard focus to this area.
+        // Focus before children so a click a child captures still focuses this area.
         let state: &mut State = tree.state.downcast_mut();
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
             if cursor.is_over(layout.bounds()) {

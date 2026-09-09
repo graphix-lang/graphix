@@ -12,9 +12,7 @@ const IS_ERR: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
@@ -27,8 +25,8 @@ const FILTER_ERR: &str = r#"
 }
 "#;
 
-// `filter_err` node-walks by rule (its ride on a non-error is a partial
-// production); the kernel here is the array literal's `error("foo")`.
+// `filter_err` node-walks by rule; the kernel is the array literal's
+// `error("foo")`.
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
@@ -51,9 +49,6 @@ const ONCE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(once, ONCE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -66,9 +61,6 @@ const SKIP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(skip, SKIP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -86,9 +78,6 @@ const SKIP_ZERO: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -106,9 +95,6 @@ const SKIP_ALL: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
@@ -121,9 +107,6 @@ const TAKE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(take, TAKE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -141,9 +124,6 @@ const TAKE_ZERO: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
@@ -156,9 +136,6 @@ const TAKE_MORE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(take_more, TAKE_MORE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -178,9 +155,7 @@ const ALL: &str = r#"
 }
 "#;
 
-// Not fused, by design: `all: fn(@args: Any) -> Any` is fully dynamic
-// (`Any` args + return). The dynamism is explicit in the signature, so
-// the user gets the compatible-but-slow path predictably.
+// None: `all: fn(@args: Any) -> Any` is dynamic by signature.
 run!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -193,13 +168,8 @@ const SUM: &str = r#"
 }
 "#;
 
-// Not fused, by design: `sum: fn(@args: Array<Number>) -> Number`. A
-// `Number` array is heterogeneous — each element may be a different
-// number type — so the result type is genuinely dynamic and can't be a
-// concrete kernel return. The dynamism is visible in the type, so the
-// user gets the compatible-but-slow path predictably. (A monomorphic
-// `'a: Number` signature would mean a *homogeneous* array — a different,
-// narrower promise than `sum` makes.)
+// None: `sum` over a heterogeneous `Array<Number>` has a dynamic result
+// type.
 run!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
@@ -212,10 +182,8 @@ const PRODUCT: &str = r#"
 }
 "#;
 
-// Not fused, by design: same as `sum` — `product: fn(@args:
-// Array<Number>) -> Number` is dynamic over a heterogeneous numeric
-// array. This fixture's `[5, 2, 2, 1.05]` is literally mixed (i64 +
-// f64), so the runtime element type isn't statically known.
+// None: `product` over a heterogeneous `Array<Number>`; the fixture
+// mixes i64 and f64.
 run!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
@@ -228,18 +196,13 @@ const DIVIDE: &str = r#"
 }
 "#;
 
-// Not fused, by design: same as `sum` — `divide` over a heterogeneous
-// `Array<Number>` is dynamic.
+// None: `divide` over a heterogeneous `Array<Number>`.
 run!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// min/max are VALUE-LEVEL (Eric's ruling 2026-07-08): each argument
-// compares as a whole value under graphix's total order — the old
-// recursive flatten was a bscript holdover that contradicted the
-// declared type (`min([1,2],[3])` promised an Array and returned a
-// scalar, breaking the JIT return ABI — soak jul07b).
+// min/max compare each argument as a whole value under the total order.
 const MIN_VALUE_LEVEL: &str = r#"
    min([1, 9], [3, 4])
 "#;
@@ -310,9 +273,7 @@ const INDEX: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(index, INDEX, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -325,8 +286,7 @@ const SLICE: &str = r#"
 }
 "#;
 
-// Not fused, by design: uses `sum` over `Array<Number>` slices —
-// dynamic by design (see the `sum` fixture above).
+// None: uses `sum` over `Array<Number>` slices.
 run!(slice, SLICE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -344,9 +304,7 @@ const FILTER0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(filter0, FILTER0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
@@ -400,9 +358,6 @@ const QUEUEFN_IMMEDIATE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(70)) => true,
@@ -420,9 +375,6 @@ const QUEUEFN_QUEUE_POP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -445,9 +397,6 @@ const QUEUEFN_MULTI_ARG: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -469,9 +418,6 @@ const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -482,9 +428,8 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Verify #count writes when the queue grows. The wrapper writes count
-// every time it pushes (pops happen via the queuefn node when triggered).
-// With #trigger=never(), nothing pops, so depth ramps up.
+// `#count` is written each time the queue grows; with `#trigger=never()`
+// nothing pops, so depth ramps up.
 const QUEUEFN_COUNT_REF: &str = r#"
 {
   let depth = 0;
@@ -497,9 +442,6 @@ const QUEUEFN_COUNT_REF: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -510,14 +452,8 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// SOUNDNESS BOUNDARY (folding `static_resolve_fn_args` into `typecheck1`):
-// a queuefn (async wrapper) passed as a HOF callback must NOT be statically
-// resolved/fused — that would inline the inner lambda and BYPASS the queue.
-// `qf`'s bind value is a CallSite (`queuefn(...)`), not a `Lambda`, so the
-// value-based discovery in `try_static_resolve` skips it, so the collection
-// callback remains dynamic (`FuseExpect::None`). A regression that fused it
-// would flip this to `Jit`. Single-element map so the first (immediate)
-// call produces a value: `qf(7) -> 70`.
+// A queuefn passed as a HOF callback must not be statically resolved
+// (that would bypass the queue): the callback stays dynamic, `qf(7) -> 70`.
 const QUEUEFN_HOF_CALLBACK: &str = r#"
 {
   let qf = queuefn(#trigger: never(), |x: i64| -> i64 x * 10);
@@ -535,9 +471,8 @@ run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Verify the wrapped fn is called when the wrapper output is fed back to
-// the trigger. Each pop allows the next to fire, so all queued
-// invocations eventually drain.
+// Feeding the wrapper output back to the trigger drains every queued
+// invocation.
 const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
 {
   let feedback: Any = never();
@@ -548,9 +483,6 @@ const QUEUEFN_FEEDBACK_DRAIN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -563,8 +495,8 @@ run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Trigger arriving before any wrapper invocations should bank pop_count, so
-// later calls dispatch immediately rather than queueing.
+// A trigger arriving before any invocation banks pop_count, so later
+// calls dispatch immediately.
 const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 {
   // Three triggers arrive on init via array::iter — they bank pop_count
@@ -576,9 +508,6 @@ const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_trigger_before_fn,
     QUEUEFN_TRIGGER_BEFORE_FN,
@@ -592,9 +521,8 @@ run!(
         }
     }; graphix_package_core::testing::FuseExpect::None);
 
-// Verify a wrapped fn with a trigger-style arg (`tick ~ x + 1000`) is not
-// fooled by queueing: each tick/x pair emits exactly once, no spurious
-// emissions when one of the two fires alone.
+// A wrapped fn with a trigger-style arg (`tick ~ x + 1000`) emits once
+// per tick/x pair and never when one fires alone.
 const QUEUEFN_TRIGGER_ARG: &str = r#"
 {
   let feedback: Any = never();
@@ -610,9 +538,6 @@ const QUEUEFN_TRIGGER_ARG: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_trigger_arg,
     QUEUEFN_TRIGGER_ARG,
@@ -626,12 +551,8 @@ run!(
         }
     }; graphix_package_core::testing::FuseExpect::None);
 
-// The point of queuefn is to protect an async-side-effecting fn from being
-// re-entered before its current invocation has produced a result. This test
-// puts an actual netidx subscription inside the wrapped lambda: each call
-// subscribes to a different path. Without queuefn, all three iter values
-// would fire same-cycle and three subscribes would race; with queuefn they
-// serialize via feedback (each subscription's value triggers the next pop).
+// A netidx subscription inside the wrapped lambda: queuefn serializes
+// the three subscribes via feedback.
 const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 {
   use sys::*;
@@ -654,9 +575,6 @@ const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_net_subscribe,
     QUEUEFN_NET_SUBSCRIBE,
@@ -670,12 +588,8 @@ run!(
         }
     }; graphix_package_core::testing::FuseExpect::None);
 
-// Verify the per-cycle delta semantics. Wrapped fn only emits when its tick
-// arg fires (`tick ~ x + 1000`). Two ticks pair with two of three x values;
-// the third x fires alone and gets queued without a tick. On pop, NEW impl
-// sets only bid_x; pred sees x without a fresh tick, so no spurious emit.
-// Total emits should be 2. (Old impl re-fires a cached tick on every pop and
-// would emit a third spurious 1030.) After a delay, sample the count.
+// Per-cycle delta semantics: a pop sets only the queued arg, so an x
+// queued without a tick emits nothing. Total emits: 2.
 const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 {
   use sys::*;
@@ -695,9 +609,6 @@ const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(
     queuefn_delta_per_cycle,
     QUEUEFN_DELTA_PER_CYCLE,
@@ -715,9 +626,6 @@ const COUNT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(count, COUNT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -736,9 +644,6 @@ const SAMPLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(sample, SAMPLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -758,9 +663,6 @@ const UNIQ: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(uniq, UNIQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(1)) => true,
@@ -772,9 +674,6 @@ const RANGE: &str = r#"
   array::group(range(0, 4), |n, _| n == 4)
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(range, RANGE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -793,9 +692,6 @@ const THROTTLE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(throttle, THROTTLE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -838,9 +734,6 @@ const RAND: &str = r#"
   rand::rand(#clock:null)
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(rand, RAND, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(v)) if *v >= 0. && *v < 1.0 => true,
@@ -897,10 +790,8 @@ const HOLD_MULTIPLE: &str = r#"
 }
 "#;
 
-// The hold call itself node-walks (hold is deliberately Async: it is
-// update-history-sensitive and the DynCall protocol re-delivers every
-// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
-// the scalar sub-regions around it fuse.
+// The hold call node-walks (hold is Async); Jit means the scalar
+// sub-regions around it fuse.
 run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -914,10 +805,7 @@ const HOLD_NO_TRIGGER: &str = r#"
 }
 "#;
 
-// The hold call itself node-walks (hold is deliberately Async: it is
-// update-history-sensitive and the DynCall protocol re-delivers every
-// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
-// the scalar sub-regions around it fuse.
+// The hold call node-walks; the scalar sub-regions around it fuse.
 run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
@@ -932,10 +820,7 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 }
 "#;
 
-// The hold call itself node-walks (hold is deliberately Async: it is
-// update-history-sensitive and the DynCall protocol re-delivers every
-// arg per dispatch — findings/hold-relatch-jul2026); Jit here means
-// the scalar sub-regions around it fuse.
+// The hold call node-walks; the scalar sub-regions around it fuse.
 run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,
@@ -943,9 +828,6 @@ run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
 
 const NOW: &str = r#"sys::time::now(null)"#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,
     _ => false,
@@ -997,12 +879,8 @@ const TVAL_UNION_BLIND_PRINT: &str = r#"
 }
 "#;
 
-// TVal's union-member selection must prefer INFORMATIVE members: the
-// never() arm's cell terminal-settles to ⊥, which (like Any and an
-// unbound tvar) is_a-matches ANY value, so first-match printed the
-// tuple element type-blind (as an array) — and mode-dependently, since
-// fusion's binding checks settle the cell differently (jul19f
-// divergence_000000, pinned tval-union-blind-print-jul2026).
+// The typed printer prefers informative union members: a never() arm's
+// ⊥ member must not print the tuple element type-blind.
 run!(
     tval_union_blind_print,
     TVAL_UNION_BLIND_PRINT,

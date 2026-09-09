@@ -61,12 +61,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            // Empty producer = a constant: FIRED at init, the STALE
-            // value channel inside frames (the Constant frame rule —
-            // a per-site instance's `let res = []` seed died after
-            // frame resets and its For bottomed on the missing init,
-            // firing-jul2026/03).
-            // Frame depth first — frames force init (see Constant).
+            // An empty literal is a constant and follows the Constant frame rule.
             if ctx.frame_depth > 0 {
                 return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
@@ -314,10 +309,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             }
             _ => bail!("BUG: miscompiled structwith"),
         };
-        // clone the deref'd type out BEFORE recursing — the typecheck0 and
-        // unification calls below take TVar write locks, and with_deref
-        // holds read guards on the source type's whole deref chain for the
-        // closure's duration (a same-thread deadlock, not just a race)
+        // Clone the type out of `with_deref` before unifying: the closure
+        // holds TVar read guards that the writes below would deadlock on.
         let styp = self.source.typ().with_deref(|typ| typ.cloned());
         let check = || -> Result<()> {
             match styp {
@@ -502,9 +495,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // `field` is the position in the struct type's canonical
-        // (sorted) layout, resolved by typecheck; unresolved → the
-        // subtree node-walks.
+        // `field` is the position in the struct type's sorted layout.
         let sorted_idx = self
             .field
             .ok_or_else(|| anyhow::anyhow!("emit_clif: struct field index unresolved"))?;
@@ -543,12 +534,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            // Empty producer = a constant: FIRED at init, the STALE
-            // value channel inside frames (the Constant frame rule —
-            // a per-site instance's `let res = []` seed died after
-            // frame resets and its For bottomed on the missing init,
-            // firing-jul2026/03).
-            // Frame depth first — frames force init (see Constant).
+            // An empty literal is a constant and follows the Constant frame rule.
             if ctx.frame_depth > 0 {
                 return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
@@ -749,9 +735,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
 }
 
-/// `T(v)`: the constructor of a Graphix-minted abstract type
-/// (`design/nominal_abstract_types.md`) — boxes its argument with the
-/// type's tag. Compiles only where the definition is visible.
+/// `T(v)`: the constructor of an abstract type — boxes its argument with
+/// the type's tag. Compiles only where the definition is visible.
 #[derive(Debug)]
 pub struct Construct<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,

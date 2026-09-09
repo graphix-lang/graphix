@@ -9,12 +9,9 @@ use netidx::publisher::Value;
 use ratatui::{Frame, layout::Rect, widgets::Gauge};
 use tokio::try_join;
 
-/// Clamp `raw` into the [0, 1] range ratatui requires (it panics on
-/// out-of-range ratios). Logs a warning the first time we see each
-/// distinct out-of-range value, so a stuck-bad input warns once
-/// instead of on every redraw. `last` carries the previously warned
-/// value's bit pattern so the dedup is reliable across NaN and signed
-/// zero. NaN clamps to 0.0 since ratatui can't draw it either.
+/// Clamp `raw` into the [0, 1] range ratatui requires, warning once per
+/// distinct out-of-range value: `last` holds the previously warned
+/// value's bit pattern (reliable across NaN and signed zero). NaN → 0.0.
 pub(super) fn clamp_ratio(widget: &str, last: &mut Option<u64>, raw: f64) -> f64 {
     if (0.0..=1.0).contains(&raw) {
         *last = None;
@@ -100,9 +97,7 @@ mod tests {
 
     #[test]
     fn dedupes_repeated_out_of_range_value() {
-        // Same input twice → `last` should still record the bit
-        // pattern (so the caller's log!/warn! only fires the first
-        // time a given value is seen).
+        // Same input twice: `last` still records the bit pattern.
         let mut last = None;
         clamp_ratio("g", &mut last, 1.7);
         let after_first = last;

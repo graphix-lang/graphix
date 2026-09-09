@@ -50,8 +50,6 @@ pub(crate) mod time;
 pub(crate) mod tls;
 pub(crate) mod watch;
 
-// ── StreamKind ─────────────────────────────────────────────────
-
 pub enum StreamKind {
     File(tokio::fs::File),
     Tcp(tokio::net::TcpStream),
@@ -173,18 +171,13 @@ impl AsyncWrite for StreamKind {
     }
 }
 
-// ── Streams ────────────────────────────────────────────────────
-
 /// Which kind of stream a handle is.
 ///
-/// ONE representation, FIVE nominal types: read/write/close are the
-/// same code whatever is behind the descriptor, so [`StreamKind`]
-/// stays one enum — but `sys::fs::File`, `sys::tcp::TcpStream`,
-/// `sys::tls::TlsStream`, `sys::process::Pipe` and `sys::io::Stdio`
-/// are five distinct types in Graphix, each carrying the trait
-/// implementations that say what it can do (`design/traits.md` §6).
-/// The marker is what makes each a distinct RUST type, which is what
-/// the abstract registry keys a UUID on.
+/// One representation, five nominal Graphix types (`sys::fs::File`,
+/// `sys::tcp::TcpStream`, `sys::tls::TlsStream`, `sys::process::Pipe`,
+/// `sys::io::Stdio`): the io code is shared, each type carries the trait
+/// impls that say what it can do, and the marker is what the abstract
+/// registry keys a UUID on.
 pub trait StreamMark: 'static + Send + Sync {
     /// The type's canonical Graphix path. Its UUID is derived from it
     /// ([`abstract_uuid`]), so a type test (`File as f`) recognizes
@@ -277,10 +270,8 @@ macro_rules! stream_kinds {
             }
         )*
 
-        /// The stream behind `v`, whatever kind of handle it is. The
-        /// io builtins are shared by every kind — the TYPE says which
-        /// operations are legal, and the trait implementations in the
-        /// `.gx` files are what enforce it.
+        /// The stream behind `v`, whatever kind of handle it is; the Graphix
+        /// type and its trait impls decide which operations are legal.
         pub fn stream_of(v: &Value) -> Option<Arc<Mutex<Option<StreamKind>>>> {
             let Value::Abstract(a) = v else { return None };
             $(
@@ -307,8 +298,6 @@ pub fn get_stream(
 ) -> Option<Arc<Mutex<Option<StreamKind>>>> {
     stream_of(cached.0.get(idx)?.as_ref()?)
 }
-
-// ── TempDir ────────────────────────────────────────────────────
 
 #[derive(Debug)]
 struct TempDirValue {
@@ -432,8 +421,6 @@ fn fc_tempdir_path(args: &[Value]) -> Option<Value> {
     }
 }
 
-// sys::tempdir_path returns a path string from a TempDir handle. Pure
-// transform, sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_tempdir_path)));
     const NAME: &str = "sys_tempdir_path";
@@ -499,8 +486,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
 
 pub(crate) type JoinPath = CachedArgs<JoinPathEv>;
 
-// ── Args ──────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub(crate) struct Args {
     fired: bool,
@@ -508,11 +493,8 @@ pub(crate) struct Args {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
-    // Fires once on init with the cmd-line args — same-cycle output,
-    // but NOT replayable (the `fired` latch), so it must not be Sync:
-    // a fused HOF loop's shared DynCall slot instance would pend after
-    // the first element (the sys::dirs class, soak jul07b). Async
-    // de-fuses it.
+    // Fires once per instance (the `fired` latch), so it is not
+    // replayable and must not be `Sync`.
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_args";
 
@@ -555,14 +537,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-// ── Exit ──────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub(crate) struct Exit;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
-    // exit consumes its arg and terminates the process; no future-cycle
-    // output. Sync.
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "sys_exit";
 

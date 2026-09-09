@@ -1,16 +1,9 @@
-//! Reactive program generation (fuzzer-v2 Phase 3.2) — multi-cycle,
-//! injection-driven programs built from quiescing-by-construction
-//! templates, paired with a generated [`Schedule`].
-//!
-//! Every template quiesces on its own (bounded counters stop at a
-//! literal limit; accumulators only move when an injected input
-//! fires) EXCEPT the deliberate runaway (a few percent), which the
-//! schedule's trace budget cuts deterministically. The injected
-//! inputs are pushed into the [`GenCtx`] vocabulary first, so the
-//! whole Phase-1 sync surface (typed lets, selects, calls) can
-//! reference them — and `name_for_bind` can SHADOW them, which is a
-//! deliberate shape (the injection still hits the root decl; later
-//! body uses see the shadow, identically in both modes).
+//! Reactive program generation: multi-cycle, injection-driven programs
+//! built from quiescing-by-construction templates, paired with a
+//! generated [`Schedule`]. Every template quiesces on its own except
+//! the deliberate runaway, which the trace budget cuts. The injected
+//! inputs enter the [`GenCtx`] vocabulary first, so the sync surface
+//! can reference (and shadow) them.
 
 use netidx::publisher::Value;
 
@@ -21,8 +14,7 @@ use super::{
 use crate::mutate::Rng;
 use crate::schedule::Schedule;
 
-/// Which reactive shapes one generated program contains — the
-/// shape-presence gate for this module.
+/// Which reactive shapes one generated program contains.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ReactiveStats {
     pub inputs: usize,
@@ -33,19 +25,15 @@ pub struct ReactiveStats {
     pub runaway: bool,
     pub dyn_reload: bool,
     pub slept_arms: usize,
-    /// Sync subprogram slots embedded (template composition).
+    /// Sync subprogram slots embedded.
     pub subprograms: usize,
-    /// Block-valued bindings whose body CONNECTS to an outer target —
-    /// the connect-across-block-boundary shape.
+    /// Block-valued bindings whose body connects to an outer target.
     pub nested_connects: usize,
 }
 
-/// Generate one reactive WRAPPER (schedule header + body) with the
-/// default profile.
+/// Generate one reactive wrapper (schedule header + body) with the
+/// default profile. A slice of the lane is metamorphic twin programs.
 pub fn gen_reactive_program(rng: &mut Rng) -> String {
-    // A slice of the reactive lane carries metamorphic twin programs
-    // (schedule- or callable-form) — the symmetric-bug and embedder-
-    // dispatch coverage (see `generate::twin`).
     if rng.below(100) < 15 {
         return super::twin::gen_twin_program(rng);
     }
@@ -53,22 +41,17 @@ pub fn gen_reactive_program(rng: &mut Rng) -> String {
 }
 
 pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats) {
-    // Runaway programs are generated WITHOUT inputs or epochs: a
-    // free-running program's cycles never pause, so where an injection
-    // lands in its active-cycle stream is wall-clock timing — no driver
-    // protocol can make that deterministic (the extended selfcheck
-    // caught runaway+injection wobbling run-to-run). A single-burst
-    // runaway IS deterministic (cap-cut from the Compiled anchor — the
-    // trace_runaway_cap_determinism probe pins it).
+    // Runaways are generated without inputs or epochs: where an
+    // injection lands in a free-running program's cycle stream is
+    // wall-clock timing, but a single-burst runaway is cap-cut
+    // deterministically from the Compiled anchor.
     if chance(rng, 0.03) {
         return gen_runaway_burst(rng);
     }
     let mut ctx = GenCtx::new();
     let mut stats = ReactiveStats::default();
     let mut stmts: Vec<String> = Vec::new();
-    // Inputs: 1–2, weighted toward i64 (the widest template
-    // vocabulary). Registered in the ctx BEFORE anything else so every
-    // later expression can consume them.
+    // inputs: 1–2, weighted toward i64, registered before anything else
     let n_inputs = 1 + rng.below(2);
     stats.inputs = n_inputs;
     let mut inputs: Vec<(String, GenType)> = Vec::new();
@@ -82,30 +65,20 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
         ctx.push(name.clone(), ty.clone());
         inputs.push((name, ty));
     }
-    // Reactive statements: 1–3 templates, each binding results into
-    // the ctx. Sync lets from the Phase-1 vocabulary interleave.
-    // `live` collects the i64 results that fire on EVERY injection of
-    // their input (accumulators, sample chains) — the tail is biased
-    // through one of them so injections stay observable at the traced
-    // result (the epochs-advance health metric's whole subject).
-    // `runaways` are forced into the tail: an unobserved runaway spins
-    // in cycles that never emit a traced value, so the ACTIVE-cycle
-    // budget never trips and the program burns its whole wall-clock
-    // backstop; an observed one is cut by the cap deterministically.
+    // `live` collects the i64 results that fire on every injection of
+    // their input; the tail is biased through one so injections stay
+    // observable. Runaways are forced into the tail: an unobserved one
+    // spins in cycles that never emit, so the active-cycle budget never
+    // trips.
     let mut live: Vec<String> = Vec::new();
     let mut ndyn = 0usize;
     let n_templates = 1 + rng.below(3);
     for _ in 0..n_templates {
         if chance(rng, 0.25) {
             if cfg.subprogram_depth > 0 && chance(rng, 0.4) {
-                // A composed sync SUBPROGRAM slot (template
-                // composition): a nested typed block, optionally
-                // capturing the reactive bindings in scope. The
-                // OUTER binding never shadows (p_shadow/p_collision
-                // zeroed): reactive's live/tail machinery references
-                // bindings by NAME, so a shadow at a different type
-                // breaks the tail's typing — the sync lane keeps the
-                // full shadow vocabulary, this lane's contract can't.
+                // A composed sync subprogram slot. The outer binding never
+                // shadows: the live/tail machinery references bindings by
+                // name, so a shadow at a different type breaks the tail's typing.
                 let mut sub_cfg = cfg.clone();
                 sub_cfg.p_shadow = 0.0;
                 sub_cfg.p_collision = 0.0;
@@ -113,7 +86,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
                 stmts.push(super::gen_subprogram_stmt(&mut ctx, rng, &sub_cfg, &mut gs));
                 stats.subprograms += gs.subprograms;
             } else {
-                // A plain sync let over the enriched vocabulary.
+                // a plain sync let over the enriched vocabulary
                 let ty = types::random_type(rng, 2);
                 let val = exprs::gen_typed(&ctx, rng, &ty, 2);
                 let name = ctx.fresh();
@@ -136,13 +109,12 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
             _ => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
         }
     }
-    // If nothing input-driven landed, add one scalar accumulator so
-    // injections are observable.
+    // if nothing input-driven landed, add one scalar accumulator
     if live.is_empty() {
         accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live);
     }
-    // Tail: start from an input-driven result, mix in other visible
-    // scalars, and force every runaway in.
+    // tail: start from an input-driven result, mix in other visible
+    // scalars, force every runaway in
     let tail = {
         let i64s: Vec<String> =
             ctx.vars_of(&I64).into_iter().map(|s| s.to_string()).collect();
@@ -161,15 +133,9 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     } else {
         format!("{{ {}; {} }}", stmts.join("; "), tail)
     };
-    // The schedule: 1–4 epochs, each injecting a non-empty subset of
-    // the inputs. Values stay mild here — pushing them toward edges is
-    // the M3 mutation's job.
-    // Geometric epoch draw (mean 4, tail to 12): the remaining known
-    // residual classes are all CROSS-EPOCH phenomena, so schedule
-    // length is the exploration axis that buys coverage where the
-    // open risk sits. Budgets scale with the schedule (they ride the
-    // header as data — identical in both modes, so a cap mismatch
-    // stays a real divergence).
+    // The schedule: a geometric epoch draw (mean 4, tail to 12), each
+    // epoch injecting a non-empty subset of the inputs. Values stay
+    // mild; edges are mutation's job. Budgets scale with the schedule.
     let n_epochs = 1 + super::geo_slots(rng, 3, 11);
     stats.epochs = n_epochs;
     let mut epochs: Vec<Vec<(String, Value)>> = Vec::with_capacity(n_epochs);
@@ -183,10 +149,8 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
         }
         epochs.push(ep);
     }
-    // Coverage post-pass: the DRIVER derives the input decls from the
-    // schedule, so an input the body references but no epoch injects
-    // would be undeclared — a guaranteed compile reject. Every input
-    // lands in at least one epoch.
+    // the driver derives the input decls from the schedule, so every
+    // input must land in at least one epoch
     for (name, ty) in &inputs {
         if !epochs.iter().any(|ep| ep.iter().any(|(n, _)| n == name)) {
             let i = rng.below(epochs.len());
@@ -214,7 +178,7 @@ fn injection_value(rng: &mut Rng, ty: &GenType) -> Value {
     }
 }
 
-/// A self-clocked bounded counter — moves without any injection,
+/// A self-clocked bounded counter: moves without any injection,
 /// quiesces at a literal limit.
 fn counter(
     ctx: &mut GenCtx,
@@ -233,15 +197,8 @@ fn counter(
     st.counters += 1;
 }
 
-/// An input-gated accumulator through the connect lift — scalar,
-/// array (the sliding-window idiom), string, or struct, by the
-/// input's type and the roll.
-/// A block-valued binding whose BODY connects to an outer target —
-/// the connect-across-block-boundary shape (the fusion lift machinery
-/// must hoist the target out of the enclosing region; arm-lifted
-/// connects in nested positions are a known coverage seam). The
-/// target rides `live`: it accumulates on every injection of its
-/// input, so the tail stays observable.
+/// A block-valued binding whose body connects to an outer target. The
+/// target rides `live`: it accumulates on every injection of its input.
 fn nested_connect(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -324,8 +281,8 @@ fn accumulator(
             }
         },
         GenType::Num(NumTy::F64) => {
-            // The f64 accumulator itself can't join the i64 tail, so a
-            // count over the same input carries the observable pulse.
+            // the f64 accumulator can't join the i64 tail, so a count over
+            // the same input carries the observable pulse
             let a = ctx.fresh();
             let m = ctx.fresh();
             stmts.push(format!("let {a} = f64:0.0"));
@@ -336,7 +293,7 @@ fn accumulator(
             ctx.push(m, I64);
         }
         GenType::Bool => {
-            // Count the true injections.
+            // count the true injections
             let a = ctx.fresh();
             stmts.push(format!("let {a} = i64:0"));
             stmts.push(format!(
@@ -370,7 +327,6 @@ fn cross_cycle(
             5 => (format!("skip(#n: i64:{}, {input})", 1 + rng.below(3)), I64),
             _ => {
                 let x = ctx.fresh();
-                // `filter(v, pred)` — value first, predicate second.
                 (format!("filter({input}, |{x}: i64| {x} > i64:{})", rng.below(5)), I64)
             }
         },
@@ -405,20 +361,10 @@ fn sample_chain(
     ctx.push(t, I64);
 }
 
-/// A TOGGLING node-walked select — the sleep/wake coverage the
-/// vocabulary lacked entirely (nothing exercised de-selected-arm
-/// sleep + re-selection). The scrutinee is an injected input's
-/// parity, so epochs flip which arm is live; the `once(...)` arm is
-/// ASYNC, which keeps the whole select (and everything under its
-/// arms) on the node-walk — TODAY nothing fused can sit under a
-/// sleepable arm (fusion's descent never enters arms; verified
-/// 2026-07-20, the C3 reachability sweep), so this exercises the
-/// interp sleep/wake semantics against fusion-mode's block-level
-/// kernels feeding the arms. It is ALSO the ready-made witness
-/// generator for the day arm-region fusion lands: the live arm's
-/// builtin variant carries a per-epoch BOTTOMING arg
-/// (`i64:100 / (in % i64:3)` — injected 0/3/12/100 bottom it), the
-/// post-wake partial-args shape the dyn-slot sleep gap needs.
+/// A toggling node-walked select: the scrutinee is an injected input's
+/// parity, so epochs flip which arm is live, and the `once(...)` arm is
+/// async, which keeps the select on the node-walk. The live arm's
+/// builtin variant carries a per-epoch bottoming arg.
 fn slept_arm(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -430,9 +376,8 @@ fn slept_arm(
         return;
     };
     st.slept_arms += 1;
-    // The live arm: a locally-defined lambda call (arm-interior call
-    // site — an interpreted instance today), a sync builtin over a
-    // bottoming arg, or a mix through the enriched vocabulary.
+    // the live arm: a locally-defined lambda call, a sync builtin over a
+    // bottoming arg, or a mix through the enriched vocabulary
     let live_arm = match rng.below(3) {
         0 => {
             let h = ctx.fresh();
@@ -456,22 +401,15 @@ fn slept_arm(
     stmts.push(format!(
         "let {s} = select ({input} % i64:2) {{ i64:0 => {live_arm}, _ => once({input}) }}"
     ));
-    // NOT pushed into `live`: the select fires only on its live-arm
-    // epochs (parity-gated), so it can't satisfy fire-per-injection.
+    // not pushed into `live`: the select fires only on its live-arm epochs
     ctx.push(s, I64);
 }
 
-/// A HOT-RELOADING dynamic module: the source is selected from an
-/// array of raw-string variants by an INJECTED index, so each epoch
-/// can swap the module's implementation and downstream values must
-/// re-settle — the runtime recompile path under the differential
-/// oracle. `srcs[in % n]$` is total for ANY injected i64 (graphix's
-/// negative indexing spans -n..n-1 and `%` follows the dividend's
-/// sign), so mutated edge values (MIN/MAX) stay in-bounds. Probed
-/// deterministic in both modes 2026-07-07 (epoch finals and pacing).
-/// The result is NOT pushed into `live`: two injections can select the
-/// SAME source (idx mod n collides), and an unchanged source need not
-/// re-fire downstream — live demands fire-per-injection.
+/// A hot-reloading dynamic module: the source is selected from an array
+/// of raw-string variants by an injected index, so each epoch can swap
+/// the implementation. `srcs[in % n]$` is total for any injected i64.
+/// Not pushed into `live`: two injections can select the same source,
+/// and an unchanged source need not re-fire downstream.
 fn dyn_reload(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -497,12 +435,8 @@ fn dyn_reload(
             let body = exprs::gen_typed(&inner, rng, &I64, 1);
             inner.truncate(m);
             if chance(rng, 0.5) {
-                // Internal (non-exported) block-level computation:
-                // fuses into module-body kernels carrying a DynCall
-                // slot (`array::len`), so every reload swap DELETES a
-                // kernel with live slot applies — the C3 delete-path
-                // coverage (reload leaks were invisible while module
-                // bodies held nothing but a lambda def).
+                // internal block-level computation, so a reload swap
+                // deletes a module-body kernel with live slots
                 let k = 1 + rng.below(5) as i64;
                 format!(
                     "r#\"let f = |{p}: i64| -> i64 {body}; \
@@ -529,11 +463,8 @@ fn dyn_reload(
     ctx.push(v, I64);
 }
 
-/// The deliberate runaway — an INPUT-FREE single burst (no schedule):
-/// it never quiesces, the trace's cycle budget cuts it, and the cut is
-/// deterministic only when nothing races the free-running cycles (see
-/// `gen_reactive_stats`). A bounded counter and a sync tail keep some
-/// vocabulary in the mix.
+/// The deliberate runaway: an input-free single burst (no schedule)
+/// that never quiesces; the trace's cycle budget cuts it deterministically.
 fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
     let mut ctx = GenCtx::new();
     let mut stats = ReactiveStats::default();
@@ -555,9 +486,8 @@ fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
 mod test {
     use super::*;
 
-    /// Composition presence: subprogram slots and nested connects both
-    /// appear at the default profile. Catches a weights/budget bug
-    /// silently disabling either.
+    /// Subprogram slots and nested connects both appear at the default
+    /// profile.
     #[test]
     fn reactive_composition_presence() {
         let mut rng = Rng::new(0x5150);
@@ -580,9 +510,7 @@ mod test {
         }
     }
 
-    /// Every generated wrapper parses back through the schedule format
-    /// (the generator renders through Schedule, so a failure here is a
-    /// format drift).
+    /// Every generated wrapper parses back through the schedule format.
     #[test]
     fn wrappers_parse() {
         let mut rng = Rng::new(7);
@@ -608,15 +536,10 @@ mod test {
             slept += (st.slept_arms > 0) as usize;
         }
         assert!(acc * 100 / N >= 25, "accumulators in only {acc}/{N}");
-        // 30% → 25%: the 2026-07-23 composition arms (subprogram +
-        // nested-connect) fund their probability by diluting the
-        // template match — deliberate retune, not a silent weights bug.
         assert!(cc * 100 / N >= 25, "cross-cycle in only {cc}/{N}");
         assert!(ctr * 100 / N >= 10, "counters in only {ctr}/{N}");
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
-        // 15% -> 12% -> 10%: same composition-arm dilution retunes (the
-        // 2026-08-06 catch-statement arm funds its 7% the same way).
         assert!(slept * 100 / N >= 10, "slept-arm selects in only {slept}/{N}");
     }
 }

@@ -9,9 +9,7 @@ use netidx::{protocol::valarray::ValArray, publisher::Value};
 use tokio::try_join;
 
 /// Generate the struct, compile(), and handle_update helper for a boolean
-/// toggle widget (Checkbox or Toggler). The `$state` ident is the name
-/// of the boolean field (e.g. `is_checked` or `is_toggled`). The trait
-/// impl with view() is written separately for each widget.
+/// toggle widget; `$state` names the boolean field.
 macro_rules! toggle_widget {
     ($name:ident, $label:literal, $state:ident) => {
         pub(crate) struct $name<X: GXExt> {

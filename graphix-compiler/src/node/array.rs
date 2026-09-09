@@ -61,25 +61,13 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 }
 
-/// The runtime semantics of `array[i]` — the single source of truth
-/// shared by the node-walk ([`ArrayRef::update`]) and the JIT (via
-/// `graphix_valarray_index`). On success returns the bare element; on
-/// The largest `n` `array::init(n, f)` will build — 16M elements
-/// (256MB of `Value`s). Beyond it BOTH evaluators log and produce
-/// bottom, like the other hot-path failures: `init(i64:MAX, …)` used
-/// to capacity-overflow-panic the node-walk's slot Vec (ABORTING the
-/// process — the fuzzer's crash corpus) and would panic the JIT's
-/// result-buffer reserve the same way. One shared constant so the two
-/// backends bottom at the same length.
+/// The largest `n` `array::init(n, f)` will build; beyond it both
+/// evaluators log and produce bottom.
 pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 
-/// an out-of-bounds index returns the `ArrayIndexError` value (the
-/// access type is `[elem, Error<…>]`, so callers wrap the result in
-/// `Nullable<elem>`).
-///
-/// Negative indices count from the end: `a[-1]` is the last element and
-/// `a[-len]` is the first (element 0). The shared single source of
-/// truth, so node-walk / JIT agree bit-for-bit.
+/// `array[i]`, shared by the node-walk and the JIT. Returns the bare
+/// element, or the `ArrayIndexError` value when out of bounds. Negative
+/// indices count from the end.
 pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
     if i >= 0 {
         let i = i as usize;
@@ -98,10 +86,8 @@ pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
     }
 }
 
-/// Shared `bytes[i]` indexing — the same bounds-check / negative-from-end
-/// rule as [`array_index`], returning `Value::U8` or the out-of-bounds
-/// error (the access type is `[u8, Error<…>]` → `Nullable<u8>`). Single
-/// source of truth for node-walk / JIT.
+/// `bytes[i]`, with the same rules as [`array_index`]; returns
+/// `Value::U8` or the out-of-bounds error.
 pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
     let idx = if i >= 0 { i } else { b.len() as i64 + i };
     if idx >= 0 && (idx as usize) < b.len() {
@@ -111,10 +97,8 @@ pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
     }
 }
 
-/// Shared `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` slicing for arrays
-/// and bytes, given pre-parsed `usize` bounds. Returns the sub-array /
-/// sub-bytes or an error (`[T, Error<…>]` → `Nullable<T>`). Single source
-/// of truth for node-walk / JIT.
+/// `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` for arrays and bytes, given
+/// `usize` bounds. Returns the sub-array / sub-bytes or an error.
 pub(crate) fn array_slice(
     src: &Value,
     start: Option<usize>,
@@ -149,14 +133,9 @@ pub(crate) fn array_slice(
     }
 }
 
-/// `array_slice` with `i64` bounds (the fused-kernel representation).
-/// A negative bound wraps to `usize::MAX` via `i as usize`, exactly
-/// matching the node-walk's `cast_to::<usize>()` (whose `FromValue for
-/// usize` does `Value::I64(v) => Ok(v as usize)`). So an out-of-range
-/// (incl. negative) bound surfaces the SAME "out of bounds" error in
-/// both backends — this is just `array_slice` (the node-walk's own
-/// function) with the i64→usize wrap applied. Shared by the JIT
-/// slice path.
+/// [`array_slice`] with `i64` bounds, for the JIT. A negative bound
+/// wraps via `as usize`, matching the node-walk's `cast_to::<usize>()`,
+/// so it surfaces the same out-of-bounds error.
 pub(crate) fn array_slice_i64(
     src: &Value,
     start: Option<i64>,
@@ -499,7 +478,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use crate::node::collection::list;
         if self.n.is_empty() {
-            // Empty producer = a constant (see Array's empty case).
+            // an empty producer is a constant (see Array)
             if ctx.frame_depth > 0 {
                 return self.resident.set(if ctx.frame_init {
                     TagValue::fired(list::nil())
@@ -579,12 +558,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            // Empty producer = a constant: FIRED at init, the STALE
-            // value channel inside frames (the Constant frame rule —
-            // a per-site instance's `let res = []` seed died after
-            // frame resets and its For bottomed on the missing init,
-            // firing-jul2026/03).
-            // Frame depth first — frames force init (see Constant).
+            // an empty producer is a constant: fired at init, stale
+            // inside frames (see Constant)
             if ctx.frame_depth > 0 {
                 return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
@@ -659,8 +634,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // `[a, b, c]` — the runtime shape (a flat ValArray) is
-        // identical to a tuple literal's; share the producer relay.
+        // the runtime shape is a tuple literal's
         emit_tuple_new_node(cx, &self.n)
     }
 }

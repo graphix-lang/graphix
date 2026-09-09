@@ -23,8 +23,6 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-// ── Transaction types ─────────────────────────────────────────────
-
 type TxnMsg = (TxnCommand, oneshot::Sender<Value>);
 
 enum TxnCommand {
@@ -67,8 +65,6 @@ fn get_txn(cached: &CachedVals, idx: usize) -> Option<Arc<TxnInner>> {
     }
 }
 
-// -- TxnTreeValue --
-
 pub(crate) struct TxnTreeInner {
     txn: Arc<TxnInner>,
     tree_idx: usize,
@@ -101,8 +97,6 @@ fn get_txn_tree(cached: &CachedVals, idx: usize) -> Option<Arc<TxnTreeInner>> {
     }
 }
 
-// ── Transaction thread machinery ──────────────────────────────────
-
 async fn txn_send_recv(cmd_tx: &mpsc::Sender<TxnMsg>, cmd: TxnCommand) -> Value {
     let (reply_tx, reply_rx) = oneshot::channel();
     if cmd_tx.send((cmd, reply_tx)).is_err() {
@@ -113,8 +107,6 @@ async fn txn_send_recv(cmd_tx: &mpsc::Sender<TxnMsg>, cmd: TxnCommand) -> Value 
         Err(_) => errf!("DbErr", "transaction thread gone"),
     }
 }
-
-// -- Phase 2: data operations inside a sled transaction --
 
 struct TxnCtx<'a> {
     trees: &'a [sled::transaction::TransactionalTree],
@@ -284,8 +276,6 @@ fn run_transaction(
     }
 }
 
-// -- Phase 1: tree opens and metadata, before any data operations --
-
 struct BeginTxnCtx {
     trees: GPooled<Vec<sled::Tree>>,
     pending_meta: GPooled<AHashMap<ArcStr, (ArcStr, ArcStr)>>,
@@ -423,10 +413,6 @@ fn txn_thread(db: sled::Db, cmd_rx: mpsc::Receiver<TxnMsg>) {
     BeginTxnCtx::new(db, cmd_rx).run();
 }
 
-// ── Transaction builtins ──────────────────────────────────────────
-
-// -- DbTxnBegin --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnBeginEv;
 
@@ -452,8 +438,6 @@ impl EvalCachedAsync for DbTxnBeginEv {
 }
 
 pub(crate) type DbTxnBegin = CachedArgsAsync<DbTxnBeginEv>;
-
-// -- DbTxnTree --
 
 #[derive(Debug)]
 pub(crate) struct DbTxnTreeArgs {
@@ -553,8 +537,6 @@ impl EvalCachedAsync for DbTxnTreeEv {
 
 pub(crate) type DbTxnTree = CachedArgsAsync<DbTxnTreeEv>;
 
-// -- DbTxnGet --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnGetEv;
 
@@ -579,8 +561,6 @@ impl EvalCachedAsync for DbTxnGetEv {
 }
 
 pub(crate) type DbTxnGet = CachedArgsAsync<DbTxnGetEv>;
-
-// -- DbTxnInsert --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnInsertEv;
@@ -612,8 +592,6 @@ impl EvalCachedAsync for DbTxnInsertEv {
 
 pub(crate) type DbTxnInsert = CachedArgsAsync<DbTxnInsertEv>;
 
-// -- DbTxnRemove --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnRemoveEv;
 
@@ -639,8 +617,6 @@ impl EvalCachedAsync for DbTxnRemoveEv {
 
 pub(crate) type DbTxnRemove = CachedArgsAsync<DbTxnRemoveEv>;
 
-// -- DbTxnCommit --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnCommitEv;
 
@@ -660,8 +636,6 @@ impl EvalCachedAsync for DbTxnCommitEv {
 
 pub(crate) type DbTxnCommit = CachedArgsAsync<DbTxnCommitEv>;
 
-// -- DbTxnRollback --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnRollbackEv;
 
@@ -680,8 +654,6 @@ impl EvalCachedAsync for DbTxnRollbackEv {
 }
 
 pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
-
-// -- DbTxnBatch --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnBatchEv;

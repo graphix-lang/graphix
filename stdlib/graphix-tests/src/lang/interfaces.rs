@@ -1,24 +1,12 @@
-// Tests for abstract types and interface files (.gxi)
-//
-// An abstract type is declared in an interface without a definition
-// and defined in the implementation as `type T = Abstract<rep>` — a
-// NOMINAL type whose values are boxes minted only by the constructor
-// `T(..)`, read through `.0` or the pattern `T(x)` where the definition
-// is visible (`design/nominal_abstract_types.md`). A Rust-backed type
-// declares `type T;` on both sides.
+// Abstract types and interface files (.gxi). An abstract type is nominal:
+// values are minted only by `T(..)` and read through `.0` or `T(x)`
+// where the definition is visible (design/nominal_abstract_types.md).
 
 use anyhow::Result;
 use graphix_package_core::run;
 use netidx::publisher::Value;
 
-// =============================================================================
-// Basic Abstract Type Tests
-// =============================================================================
-
-// Basic abstract type: interface declares abstract type, implementation provides concrete.
-// Fuses+JITs: fusion resolves the abstract `T` to its concrete `i64`
-// rep (registered by `check_sig`) via `resolve_abstract`, so the
-// cross-module `get(make(42))` lowers to a kernel.
+// The interface declares an abstract type; the implementation defines it.
 run!(
     abstract_type_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -37,11 +25,8 @@ run!(
         let get = |t: T| -> i64 t.0
     "#);
 
-// Abstract type implemented as a struct
-// ASPIRE: Jit (currently None) — blocked on: cross-module struct-arg / string-return fn (i64 twin abstract_type_basic fuses)
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// An abstract type implemented as a struct.
+// ASPIRE: Jit — cross-module struct-arg / string-return fn.
 run!(
     abstract_type_struct_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
@@ -60,7 +45,7 @@ run!(
         let get_name = |h: Handle| h.0.value
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Interface without abstract types (regression test - should still work)
+// An interface without abstract types.
 run!(
     interface_no_abstract_types,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(30))),
@@ -75,11 +60,7 @@ run!(
         let add = |a: i64, b: i64| -> i64 a + b
     "#);
 
-// =============================================================================
-// Multiple Abstract Types
-// =============================================================================
-
-// Multiple abstract types in same interface
+// Multiple abstract types in one interface.
 run!(
     abstract_type_multiple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
@@ -103,7 +84,7 @@ run!(
         let combine = |a: A, b: B| -> i64 a.0.x + b.0.y
     "#);
 
-// Two modules using same abstract type name with different definitions
+// Two modules using the same abstract type name with different definitions.
 run!(
     abstract_type_different_modules,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(142))),
@@ -133,7 +114,7 @@ run!(
         let get = |t: T| -> i64 t.0
     "#);
 
-// Abstract type used in exported type definition
+// An abstract type used in an exported type definition.
 run!(
     abstract_type_in_typedef,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(77))),
@@ -154,14 +135,8 @@ run!(
         let get_first = |p: Pair| -> i64 p.first.0
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// =============================================================================
-// Abstract Types in Compound Types
-// =============================================================================
-
-// Abstract type in variant (exported type references abstract type)
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// An abstract type in a variant.
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_in_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -185,7 +160,7 @@ run!(
         }
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Abstract type in tuple
+// An abstract type in a tuple.
 run!(
     abstract_type_in_tuple,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
@@ -205,7 +180,7 @@ run!(
         let sum_pair = |p: Pair| -> i64 p.0.0 + p.1.0
     "#);
 
-// Abstract type in array
+// An abstract type in an array.
 run!(
     abstract_type_in_array,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -224,14 +199,8 @@ run!(
         let sum_array = |arr: Array<Elem>| -> i64 array::fold(arr, 0, |acc, x| acc + x.0)
     "#);
 
-// =============================================================================
-// Abstract Type used in Recursive Type
-// =============================================================================
-
-// Abstract type used in recursive type
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// An abstract type in a recursive type.
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_recursive,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -256,11 +225,7 @@ run!(
         }
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// =============================================================================
-// Abstract Types with ByRef
-// =============================================================================
-
-// Abstract type with byref parameter - collects values to verify update
+// An abstract type behind a byref parameter.
 run!(
     abstract_type_byref,
     |v: Result<&Value>| match v {
@@ -288,11 +253,7 @@ run!(
         let increment = |c: &Counter| -> null { *c <- Counter(once(*c).0 + 1); null }
     "#);
 
-// =============================================================================
-// Nested Modules with Abstract Types
-// =============================================================================
-
-// Nested module with abstract type
+// A nested module with an abstract type.
 run!(
     abstract_type_nested_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(99))),
@@ -317,11 +278,7 @@ run!(
         let get = |t: T| -> i64 t.0.v
     "#);
 
-// =============================================================================
-// Dynamic Modules with Abstract Types
-// =============================================================================
-
-// Dynamic module with abstract type in signature
+// A dynamic module with an abstract type in its signature.
 run!(
     abstract_type_dynamic_module,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
@@ -347,11 +304,7 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::Jit);
 
-// =============================================================================
-// Error Cases
-// =============================================================================
-
-// Error: missing concrete definition for abstract type
+// Error: missing concrete definition for an abstract type.
 run!(
     abstract_type_missing_definition,
     |v: Result<&Value>| v.is_err(),
@@ -368,7 +321,7 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
-// Abstract type in implementation is allowed (type stays opaque)
+// An abstract type in the implementation is allowed (stays opaque).
 run!(
     abstract_type_still_abstract,
     |v: Result<&Value>| v.map(|v| v == &Value::I64(0)).unwrap_or(false),
@@ -386,7 +339,7 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::Jit);
 
-// Error: signature type mismatch (function returns wrong type)
+// Error: the function returns the wrong type.
 run!(
     abstract_type_sig_mismatch,
     |v: Result<&Value>| v.is_err(),
@@ -404,7 +357,7 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
-// Error: abstract type parameter constraint mismatch
+// Error: abstract type parameter constraint mismatch.
 run!(
     abstract_type_constraint_mismatch,
     |v: Result<&Value>| v.is_err(),
@@ -422,10 +375,9 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
-// Abstract type constraint is automatically enforced on functions
-// The constraint on type Box<'a: Number> should propagate to wrap/unwrap
-// without needing to repeat the constraint in the val declarations
-// ASPIRE: Jit (currently None) — blocked on: constrained abstract-type fn (unconstrained twin abstract_type_parameterized_basic fuses)
+// The constraint on `Box<'a: Number>` propagates to wrap/unwrap without
+// repeating it in the val declarations.
+// ASPIRE: Jit — constrained abstract-type fn.
 run!(
     abstract_type_constraint_auto_enforced,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -446,8 +398,7 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::Jit);
 
-// Error: abstract type constraint violation - string doesn't satisfy Number
-// The constraint from type Box<'a: Number> should reject non-Number types
+// Error: string does not satisfy `Box<'a: Number>`.
 run!(
     abstract_type_constraint_auto_enforced_error,
     |v: Result<&Value>| v.is_err(),
@@ -468,7 +419,7 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
-// Error: extra type parameter in implementation
+// Error: extra type parameter in the implementation.
 run!(
     abstract_type_extra_param,
     |v: Result<&Value>| v.is_err(),
@@ -486,8 +437,8 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
-// Error: function argument type doesn't match abstract type
-// Signature says get takes T, but implementation's concrete type doesn't match
+// Error: the implementation's argument type does not match the
+// signature's abstract type.
 run!(
     abstract_type_wrong_arg,
     |v: Result<&Value>| v.is_err(),
@@ -505,14 +456,8 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
-// =============================================================================
-// Parameterized Abstract Types
-// =============================================================================
-
-// Basic parameterized abstract type
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A parameterized abstract type.
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_parameterized_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -532,10 +477,8 @@ run!(
         let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Parameterized abstract type instantiated with different concrete types
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A parameterized abstract type at different concrete types.
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_parameterized_multi_instantiation,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
@@ -556,9 +499,8 @@ run!(
         let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Parameterized abstract type with constraint - use concrete type in interface
-// Note: Constrained type parameters in val declarations use a different syntax.
-// This test uses a concrete instantiation to sidestep that complexity.
+// A parameterized abstract type with a constraint, instantiated
+// concretely in the interface.
 run!(
     abstract_type_parameterized_constrained,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(84))),
@@ -578,7 +520,7 @@ run!(
         let double = |w: IntWrapper| -> i64 w.0 + w.0
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Parameterized abstract type in nested position (Array of Box)
+// A parameterized abstract type in nested position (Array of Box).
 run!(
     abstract_type_parameterized_nested,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -599,10 +541,8 @@ run!(
             array::fold(boxes, 0, |acc, b| acc + b.0.value)
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Parameterized abstract type with two type parameters
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// Two type parameters.
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_parameterized_two_params,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
@@ -624,11 +564,7 @@ run!(
         let get_second = |p: Pair<'a, 'b>| -> 'b p.0.second
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// =============================================================================
-// Abstract Types in Map
-// =============================================================================
-
-// Abstract type as Map key
+// An abstract type as a Map key.
 run!(
     abstract_type_map_key,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "found"),
@@ -652,7 +588,7 @@ run!(
         let lookup = |m: KeyMap, k: Key| m{k}?
     "#);
 
-// Abstract type as Map value
+// An abstract type as a Map value.
 run!(
     abstract_type_map_value,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -705,13 +641,7 @@ run!(
         let get_val = |v: V| -> i64 v.0
     "#);
 
-// =============================================================================
-// Abstract Types in Throws Clause
-// =============================================================================
-
-// Abstract type as error payload in throws clause. Fuses now: the
-// the covered call fuses (block statements fuse around the catch) and
-// the handler-ful `?` delivers in-kernel (variable-write-in-kernel).
+// An abstract type as an error payload in a throws clause.
 run!(
     abstract_type_in_throws,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -736,12 +666,8 @@ run!(
         let risky = |x: i64| -> i64 x
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// Abstract type used with a function that has throws clause.
-// Fuses now (Stage 2): `get_value` is a transitive callee whose body holds a
-// handler-ful `?` (`a[0]?`, caught by the enclosing catch) — a qop-deliver
-// DynCall. That DynCall is delivered through the region-wide combined
-// `dyn_slots` table (the callee's slot offset by its base), so the whole
-// covered block fuses.
+// An abstract type with a throwing function whose `?` is caught by the
+// enclosing catch.
 run!(
     abstract_type_with_throws_clause,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -771,15 +697,7 @@ run!(
         }
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
-// =============================================================================
-// Cross-Module Abstract Type Usage
-// =============================================================================
-
-// NOTE: Cross-module abstract type references (where one module's interface
-// references another module's abstract type) require careful module path
-// resolution. The following tests demonstrate simpler patterns that work.
-
-// Two modules with separate abstract types, combined at the caller level
+// Two modules with separate abstract types, combined by the caller.
 run!(
     abstract_type_two_modules_combined,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(15))),
@@ -809,9 +727,7 @@ run!(
         let get = |t: T| -> i64 t.0
     "#);
 
-// =============================================================================
-// Nominal abstract types: the tag at runtime (design/nominal_abstract_types.md)
-// =============================================================================
+// Nominal abstract types: the tag at runtime.
 
 // A hidden abstract's constructor, payload and pattern are usable
 // only where the definition is visible: the caller gets a compile

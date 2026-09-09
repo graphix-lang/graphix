@@ -1,24 +1,12 @@
-//! Panic-surface regression tests.
-//!
-//! Each test drives a widget with an input that — without a clamp /
-//! sanitize wrapper somewhere — would or could trigger an assert in
-//! ratatui (or in a downstream cast). The harness renders the widget
-//! through a `TestBackend`, which exercises the real ratatui code
-//! path: any panic surfaces here as a test failure with the original
-//! `panicked at ...` message intact.
-//!
-//! Tests grouped by widget. A test that PASSES means the input is
-//! either safe by construction (ratatui silently ignores it) or
-//! we've clamped it on our side. A test that FAILS means a clamp is
-//! still missing.
+//! Panic-surface regression tests: each drives a widget with an input
+//! that, unclamped, would trigger an assert in ratatui or a downstream
+//! cast. A failure means a clamp is still missing.
 
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
 
-// ── gauge / line_gauge ───────────────────────────────────────────────
-//
-// ratio outside [0, 1] panics in ratatui's Gauge::ratio /
-// LineGauge::ratio. Fixed by clamp_ratio in gauge.rs.
+// gauge / line_gauge: a ratio outside [0, 1] must be clamped
+// (ratatui's Gauge::ratio / LineGauge::ratio assert).
 
 #[tokio::test]
 async fn gauge_ratio_above_one_does_not_panic() -> Result<()> {
@@ -70,11 +58,8 @@ async fn line_gauge_ratio_above_one_does_not_panic() -> Result<()> {
     Ok(())
 }
 
-// ── barchart ─────────────────────────────────────────────────────────
-//
-// bar_width / bar_gap / group_gap are u16 in ratatui; we cast from
-// i64. max is u64. Negative i64 → underflow on cast → wraps to a huge
-// value that may panic when ratatui multiplies it into layout.
+// barchart: bar_width / bar_gap / group_gap (u16) and max (u64) are
+// cast from i64; a negative must clamp, not wrap.
 
 #[tokio::test]
 async fn barchart_bar_width_negative_does_not_panic() -> Result<()> {
@@ -151,8 +136,6 @@ let result = bar_chart(&[bar_group(#label: line("G"), [b])])
     Ok(())
 }
 
-// ── sparkline ────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn sparkline_max_zero_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -182,8 +165,6 @@ let result = sparkline(#max: &-100, &data)
     h.render()?;
     Ok(())
 }
-
-// ── scrollbar ────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn scrollbar_position_negative_does_not_panic() -> Result<()> {
@@ -217,8 +198,6 @@ let result = scrollbar(#position: &0, #content_length: &-10, &inner)
     Ok(())
 }
 
-// ── tabs ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn tabs_selected_negative_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -250,8 +229,6 @@ let result = tabs(#selected: &99, &[(line("A"), one)])
     h.render()?;
     Ok(())
 }
-
-// ── list ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn list_selected_negative_does_not_panic() -> Result<()> {
@@ -298,8 +275,6 @@ let result = list(#scroll: &-5, &items)
     Ok(())
 }
 
-// ── table ────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn table_selected_negative_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -330,10 +305,8 @@ let result = table(#selected: &50, &[&r1])
     Ok(())
 }
 
-// ── chart ────────────────────────────────────────────────────────────
-//
-// Axis::bounds([min, max]) reversed (min > max), NaN values, and NaN
-// dataset coordinates can break chart's internal coordinate math.
+// chart: reversed bounds and NaN values must not break the
+// coordinate math.
 
 #[tokio::test]
 async fn chart_axis_bounds_reversed_does_not_panic() -> Result<()> {
@@ -419,8 +392,6 @@ let result = chart(
     Ok(())
 }
 
-// ── canvas ───────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn canvas_bounds_reversed_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -479,8 +450,6 @@ let result = canvas(
     Ok(())
 }
 
-// ── paragraph ────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn paragraph_scroll_negative_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
@@ -509,10 +478,8 @@ let result = paragraph(#scroll: &{x: 99999, y: 99999}, &"body")
     Ok(())
 }
 
-// ── calendar ─────────────────────────────────────────────────────────
-//
-// `date(year, month, day)` accepts arbitrary i64s. Invalid combos
-// (month=13, day=31 in February, etc.) might panic in the time crate.
+// calendar: `date(year, month, day)` accepts arbitrary i64s; invalid
+// combinations must clamp rather than panic in `time`.
 
 #[tokio::test]
 async fn calendar_invalid_month_does_not_panic() -> Result<()> {

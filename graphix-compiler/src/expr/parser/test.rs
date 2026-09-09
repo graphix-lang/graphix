@@ -22,8 +22,6 @@ fn parse_typexpr(s: &str) -> anyhow::Result<Type> {
 
 #[allow(unused)]
 fn parse_dynamic_module(s: &str) -> anyhow::Result<ModuleKind> {
-    // dynamic_module parser may have moved or been renamed
-    // This function may need updating based on current parser structure
     todo!("dynamic_module parser needs to be located")
 }
 
@@ -73,8 +71,7 @@ fn escaped_string() {
 
 #[test]
 fn raw_string() {
-    // No escapes at all: brackets, backslashes, and quotes (with
-    // enough hashes) pass through verbatim.
+    // No escapes: everything passes through verbatim.
     let cases: &[(&str, &str)] = &[
         (r####"r"[]asd[[][]askj""####, "[]asd[[][]askj"),
         (r####"r"no hashes""####, "no hashes"),
@@ -92,28 +89,22 @@ fn raw_string() {
             "case: {src}"
         );
     }
-    // A quote followed by MORE hashes than the opener is a terminator
-    // plus stray hashes — an error, exactly Rust's rule.
+    // A quote followed by more hashes than the opener is an error.
     assert!(parse_one(r####"r#"x"##"####).is_err());
-    // The retired r'…' form no longer parses.
     assert!(parse_one("r'old form'").is_err());
 }
 
 #[test]
 fn triple_string() {
-    // The TEMPLATE form: literal text is the common case, so the
-    // marking flips — brackets are plain content, the splice is
-    // `\[expr]`. Bare `"` is legal, one newline straight after the
-    // opener is stripped.
+    // Template form: brackets are content, the splice is `\[expr]`, bare
+    // `"` is legal, one newline after the opener is stripped.
     let cases: &[(&str, &str)] = &[
         ("\"\"\"say \"hi\" and 'hi'\"\"\"", "say \"hi\" and 'hi'"),
         ("\"\"\"\nfirst\nsecond\"\"\"", "first\nsecond"),
         ("\"\"\"\\nreal leading newline\"\"\"", "\nreal leading newline"),
         ("\"\"\"\"\"\"", ""),
         ("\"\"\"a \"\" b \\\"\"\" c\"\"\"", "a \"\" b \"\"\" c"),
-        // Brackets are literal content — no escapes needed or allowed.
         ("\"\"\"keys: [a]pprove [x] done\"\"\"", "keys: [a]pprove [x] done"),
-        // An escaped backslash then a bracket: literal `\[`, not a splice.
         ("\"\"\"lit \\\\[nope] end\"\"\"", "lit \\[nope] end"),
     ];
     for (src, want) in cases {
@@ -124,25 +115,19 @@ fn triple_string() {
             "case: {src}"
         );
     }
-    // The marked splice is live interpolation.
     let e = parse_one("\"\"\"v = \\[x]\"\"\"").unwrap();
     assert!(matches!(&e.kind, ExprKind::StringInterpolate { .. }), "{e:?}");
-    // Bare brackets are NOT interpolation in templates.
     let e = parse_one("\"\"\"v = [x]\"\"\"").unwrap();
     assert!(
         matches!(&e.kind, ExprKind::Constant(Value::String(s)) if &**s == "v = [x]"),
         "{e:?}"
     );
-    // A content quote may not touch the closing delimiter unescaped.
     assert!(parse_one("\"\"\"x\"\"\"\"").is_err());
-    // `\]` is an error in templates — bare `]` is always writable.
     assert!(parse_one("\"\"\"a \\] b\"\"\"").is_err());
 }
 
-// ── retained comments ──
 // A comment is legal only on its own line directly above an expression,
-// where it is captured into that expression's `dec`. Every other position
-// is a parse error, so "every comment is preserved in the AST" holds.
+// where it is captured into that expression's `dec`.
 
 #[test]
 fn comment_above_expr_captured() {
@@ -153,7 +138,6 @@ fn comment_above_expr_captured() {
 
 #[test]
 fn comment_block_round_trips() {
-    // A run of `//` lines above an expr survives print -> parse, verbatim.
     let e = parse_one("// first\n// second\n42").unwrap();
     let e2 = parse_one(&e.to_string()).unwrap();
     let c = e2.dec.as_ref().expect("comments lost on round-trip");
@@ -162,7 +146,6 @@ fn comment_block_round_trips() {
 
 #[test]
 fn comment_above_block_item() {
-    // A comment above an item inside a do block attaches to that item.
     let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
     match &e.kind {
         ExprKind::Do { exprs } => {
@@ -178,13 +161,11 @@ fn comment_above_block_item() {
 
 #[test]
 fn interior_comment_is_error() {
-    // Between an operator and its operand — not above an expression.
     assert!(parse_one("1 +\n// nope\n2").is_err());
 }
 
 #[test]
 fn trailing_block_comment_is_error() {
-    // Dangling after the last item of a block (nothing below to attach to).
     assert!(parse_one("{ let x = 1; x\n// nope\n}").is_err());
 }
 
@@ -203,8 +184,8 @@ fn arm_comments(e: &Expr) -> Vec<Vec<ArcStr>> {
 
 #[test]
 fn comment_above_select_arm() {
-    // Above an arm's pattern the comment belongs to the arm's body; both
-    // printers put it back above the pattern.
+    // A comment above an arm's pattern belongs to the arm's body and
+    // prints back above the pattern.
     let e = parse_one("select x {\n// zero\n0 => 1,\n// rest\n_ => 2\n}").unwrap();
     let want = vec![vec![literal!(" zero")], vec![literal!(" rest")]];
     assert_eq!(arm_comments(&e), want);
@@ -282,9 +263,8 @@ fn field_comments(e: &Expr) -> Vec<(ArcStr, Vec<ArcStr>)> {
 
 #[test]
 fn comment_above_struct_field() {
-    // Explicit and shorthand fields alike: the comment belongs to the
-    // field's value (the shorthand's synthesized reference), and the
-    // printers keep the shorthand.
+    // A comment above a field belongs to its value; the printers keep the
+    // shorthand.
     let e = parse_one("{\n// the host\nhost: \"h\",\n// the port\nport\n}").unwrap();
     let want = vec![
         (literal!("host"), vec![literal!(" the host")]),
@@ -318,9 +298,8 @@ fn reserved_shorthand_field_still_needs_explicit_form() {
     assert!(parse_one("{ x: 1, type: 2 }").is_ok());
 }
 
-// The pretty round trips use a ZERO width: at any width a short expression
-// fits on one line and prints through `Display`, never reaching the
-// pretty layouts these pin.
+// Zero width forces the pretty layouts; a short expression fits any
+// other width and prints through `Display`.
 #[test]
 fn block_item_comment_pretty_round_trips() {
     let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
@@ -333,9 +312,8 @@ fn block_item_comment_pretty_round_trips() {
     }
 }
 
-// ── attributes ──
-// `#[name]` / `#[name(args)]` on its own line above an expression, captured
-// into `dec.attrs` exactly where a comment would be captured.
+// `#[name]` / `#[name(args)]` above an expression is captured into
+// `dec.attrs` exactly where a comment would be.
 
 #[test]
 fn attr_above_expr_captured() {
@@ -357,9 +335,8 @@ fn attr_with_args_captured() {
 
 #[test]
 fn whitespace_in_empty_delimiters() {
-    // The empty-list terminator look-ahead skips whitespace, so each loose
-    // form must parse identically to its tight twin. The printer never emits
-    // the loose forms, so the pretty round-trip can't cover this.
+    // Each loose form must parse identically to its tight twin; the printer
+    // never emits the loose forms.
     for (loose, tight) in [
         ("any( )", "any()"),
         ("any(\n)", "any()"),
@@ -385,7 +362,6 @@ fn whitespace_in_empty_delimiters() {
 
 #[test]
 fn attr_round_trips() {
-    // print -> parse preserves attributes verbatim (args included).
     let e = parse_one("#[native]\n#[foo(1, 2)]\n42").unwrap();
     let e2 = parse_one(&e.to_string()).unwrap();
     let dec = e2.dec.as_ref().expect("attributes lost on round-trip");
@@ -397,7 +373,6 @@ fn attr_round_trips() {
 
 #[test]
 fn comment_and_attr_interleave() {
-    // A comment and an attribute above the same expr both land in `dec`.
     let e = parse_one("// note\n#[native]\n42").unwrap();
     let dec = e.dec.as_ref().expect("decorations lost");
     assert_eq!(&dec.comments[..], &[literal!(" note")]);
@@ -420,7 +395,6 @@ fn attr_above_block_item() {
 
 #[test]
 fn interior_attr_is_error() {
-    // Between an operator and its operand — not above an expression.
     assert!(parse_one("1 +\n#[native]\n2").is_err());
 }
 
@@ -1056,8 +1030,6 @@ fn pattern0() {
 #[test]
 fn pattern1() {
     let s = r#"[a.., b]"#;
-    // slice_pattern is private - commenting out for now
-    // dbg!(super::slice_pattern().easy_parse(position::Stream::new(s)).unwrap());
     let _ = s; // silence unused warning
 }
 
@@ -1653,9 +1625,8 @@ fn tupleref() {
     assert_eq!(e, pe)
 }
 
-// Postfix chaining (a.b.c, f(x)(y), a[i][j], m{k}.f, …) is a deliberate
-// language superset added by the primary + postfix-loop parser. The loop folds
-// postfix operators LEFT, so each chain link's source is the accumulated expr.
+// Postfix operators fold left: each chain link's source is the accumulated
+// expression.
 
 fn refx(name: &str) -> Expr {
     ExprKind::Ref { name: [name].into() }.to_expr_nopos()
@@ -1703,7 +1674,6 @@ fn array_ref_chain() {
 
 #[test]
 fn map_then_struct_chain() {
-    // m{k}.f  =>  StructRef(MapRef(m, k), f)
     let mk = ExprKind::MapRef { source: Arc::new(refx("m")), key: Arc::new(refx("k")) }
         .to_expr_nopos();
     let mkf = ExprKind::StructRef { source: Arc::new(mk), field: literal!("f") }
@@ -1713,7 +1683,6 @@ fn map_then_struct_chain() {
 
 #[test]
 fn apply_then_struct_ref() {
-    // f(x).b  =>  StructRef(Apply(f, [x]), b)  — apply is a chain base
     let fx = ExprKind::Apply(ApplyExpr {
         function: Arc::new(refx("f")),
         args: Arc::from_iter([(None, refx("x"))]),
@@ -1726,7 +1695,7 @@ fn apply_then_struct_ref() {
 
 #[test]
 fn paren_strip_before_postfix() {
-    // (a).b strips the parens: StructRef(a, b), not StructRef(ExplicitParens(a), b)
+    // (a).b strips the parens.
     let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
         .to_expr_nopos();
     assert_eq!(ab, parse_one("(a).b").unwrap());
@@ -1740,7 +1709,6 @@ fn paren_no_postfix_is_explicit() {
 
 #[test]
 fn nested_parens_linear() {
-    // ((((1)))) parses to nested ExplicitParens around a constant — linearly.
     let mut e = ExprKind::Constant(Value::I64(1)).to_expr_nopos();
     for _ in 0..4 {
         e = ExprKind::ExplicitParens(Arc::new(e)).to_expr_nopos();
@@ -1750,7 +1718,6 @@ fn nested_parens_linear() {
 
 #[test]
 fn qop_wraps_whole_chain() {
-    // a.b?  =>  Qop(StructRef(a, b))
     let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
         .to_expr_nopos();
     let q = ExprKind::Qop(Arc::new(ab)).to_expr_nopos();
@@ -1759,8 +1726,8 @@ fn qop_wraps_whole_chain() {
 
 #[test]
 fn print_bare_chains_round_trip() {
-    // The printer emits bare chains for chain-node sources and parenthesizes
-    // non-chain sources; both must round-trip to the same AST.
+    // Bare chains and parenthesized non-chain sources round-trip to the
+    // same AST.
     for (src, expect) in [
         ("a.b.c", "a.b.c"),
         ("f(x)(y)", "f(x)(y)"),
@@ -1845,7 +1812,6 @@ fn checked_mod() {
 
 #[test]
 fn checked_precedence() {
-    // *? has higher precedence than +?, so 1 +? 2 *? 3 => CheckedAdd(1, CheckedMul(2, 3))
     let e = ExprKind::CheckedAdd {
         lhs: Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos()),
         rhs: Arc::new(
@@ -1862,7 +1828,6 @@ fn checked_precedence() {
 
 #[test]
 fn checked_mixed_precedence() {
-    // * has higher precedence than +?, so 1 +? 2 * 3 => CheckedAdd(1, Mul(2, 3))
     let e = ExprKind::CheckedAdd {
         lhs: Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos()),
         rhs: Arc::new(
@@ -1879,7 +1844,6 @@ fn checked_mixed_precedence() {
 
 #[test]
 fn checked_associativity() {
-    // left-associative: 1 -? 2 -? 3 => CheckedSub(CheckedSub(1, 2), 3)
     let e = ExprKind::CheckedSub {
         lhs: Arc::new(
             ExprKind::CheckedSub {
@@ -1894,9 +1858,7 @@ fn checked_associativity() {
     assert_eq!(e, parse_one("1 -? 2 -? 3").unwrap());
 }
 
-// ── `<-` connect vs `< -` (less-than of a negation) ──
-// Unary minus (`Neg`) made `<-` ambiguous with `< -`. `<` must not swallow
-// the `-` of a connect.
+// `<` must not swallow the `-` of a connect.
 
 #[test]
 fn connect_not_lt_neg() {
@@ -1912,18 +1874,13 @@ fn lt_neg_with_space() {
 
 #[test]
 fn parenthesized_connect_round_trips() {
-    // The regression the round-trip proptest caught: a (derefed)
-    // parenthesized connect must survive print -> parse as a connect,
-    // not collapse to `< -`.
+    // A parenthesized connect survives print -> parse as a connect.
     let e = parse_one("*(a <- b)").unwrap();
     let e2 = parse_one(&e.to_string()).unwrap();
     assert_eq!(e.kind, e2.kind);
 }
 
-// ── reserved words as struct FIELD names (2026-08-18) ──
-// Reserved-ness protects bindings and type names; field positions are
-// unambiguous, so keywords are legal there. Shorthand refers to a
-// binding a keyword cannot name, so keyword shorthand stays refused.
+// Keywords are legal struct field names; keyword shorthand stays refused.
 
 #[test]
 fn keyword_field_in_struct_literal() {
@@ -1985,10 +1942,8 @@ fn keyword_field_in_structwith() {
     assert_eq!(e.kind, e2.kind);
 }
 
-// ── type keywords as BINDING names (2026-08-18, same day) ──
-// The completion of the field relaxation: `duration`/`string`/… may
-// name bindings (let, params, labeled args, pattern binds), so field
-// shorthand works too. Control keywords and literals stay reserved.
+// Type keywords may name bindings; control keywords and literals stay
+// reserved.
 
 #[test]
 fn keyword_bindings_and_shorthand() {
@@ -2017,8 +1972,7 @@ fn keyword_bindings_and_shorthand() {
 #[test]
 fn control_keyword_bindings_still_refused() {
     assert!(parse_one("let select = 5").is_err());
-    // NB `let true = 5` parses — as a refutable LITERAL-pattern let,
-    // not a binding — so it doesn't belong in this list
+    // `let true = 5` parses as a literal-pattern let, so it is not listed.
     assert!(parse_one("let cast = 5").is_err());
     assert!(parse_one("{ true, x: 1 }").is_err());
     assert!(parse_one("{ s with cast }").is_err());
@@ -2027,8 +1981,7 @@ fn control_keyword_bindings_still_refused() {
 
 #[test]
 fn type_as_pattern_beats_keyword_bind() {
-    // `duration as d` is a type test; bare `duration` is a bind — the
-    // attempt on `typ() .. as` backtracks cleanly
+    // `duration as d` is a type test; bare `duration` is a bind.
     let p = parse_one("select x { duration as d => d, duration => duration }").unwrap();
     match &p.kind {
         ExprKind::Select(sel) => {
@@ -2045,17 +1998,14 @@ fn type_as_pattern_beats_keyword_bind() {
 
 #[test]
 fn keyword_field_does_not_shadow_literals() {
-    // a block whose first statement is a duration literal must still be
-    // a block — the struct attempt backtracks on `;`
+    // A block whose first statement is a duration literal is still a block.
     let e = parse_one("{ duration:1.0s; 42 }").unwrap();
     assert!(matches!(&e.kind, ExprKind::Do { .. }), "got {:?}", e.kind);
 }
 
 #[test]
 fn bytes_binds_nowhere_but_fields_work() {
-    // `bytes:` is the base64-payload literal prefix — an annotated bind
-    // would be ambiguous with a literal pattern, so `bytes` stays
-    // unbindable (the 32k round-trip hunt's find)
+    // `bytes` stays unbindable: `bytes:` is the base64 literal prefix.
     assert!(parse_one("let bytes = 3").is_err());
     assert!(parse_one("{ bytes, x: 1 }").is_err());
     let e = parse_one("{ bytes: 1 }").unwrap();
@@ -2066,8 +2016,7 @@ fn bytes_binds_nowhere_but_fields_work() {
 
 #[test]
 fn use_groups() {
-    // Grouped use expands to the same AST as the ungrouped statements;
-    // the parser accepts both, the printer regroups.
+    // Grouped use expands to the same AST as the ungrouped statements.
     let cases: &[(&str, &[&[&str]])] = &[
         ("use a", &[&["a"]]),
         ("use a::b", &[&["a", "b"]]),
@@ -2088,7 +2037,6 @@ fn use_groups() {
             assert_eq!(&n.path, *w, "case: {src}");
             assert_eq!(n.rename, None, "case: {src}");
         }
-        // print-parse round trip through the GROUPED printer
         let printed = e.to_string();
         let e2 = parse_one(&printed).unwrap();
         let ExprKind::Use { reexport: false, names: names2 } = &e2.kind else {
@@ -2096,7 +2044,6 @@ fn use_groups() {
         };
         assert_eq!(names, names2, "roundtrip: {src} -> {printed}");
     }
-    // Refusals: empty groups, top-level self.
     assert!(parse_one("use a::{}").is_err());
     assert!(parse_one("use self").is_err());
     assert!(parse_one("use {self}").is_err());
@@ -2104,8 +2051,7 @@ fn use_groups() {
 
 #[test]
 fn use_new_grammar() {
-    // The module-system grammar (design/module_system.md P1): renames,
-    // globs, keyword path roots, pub use — as (path segments, rename).
+    // Renames, globs, keyword path roots, pub use — as (segments, rename).
     let cases: &[(&str, &[(&[&str], Option<&str>)])] = &[
         ("use a::b as c", &[(&["a", "b"], Some("c"))]),
         ("use a::{b as c, d}", &[(&["a", "b"], Some("c")), (&["a", "d"], None)]),
@@ -2123,7 +2069,6 @@ fn use_new_grammar() {
             &[(&["package", "a"], None), (&["package", "b"], Some("c"))],
         ),
         ("use {self::a, super::b}", &[(&["self", "a"], None), (&["super", "b"], None)]),
-        // type names (uppercase) are legal segments and rename targets
         (
             "use super::{Client, Response}",
             &[(&["super", "Client"], None), (&["super", "Response"], None)],
@@ -2154,7 +2099,6 @@ fn use_new_grammar() {
         };
         assert_eq!(names, names2, "roundtrip: {src} -> {printed}");
     }
-    // pub use parses, carries the flag, and round trips
     let e = parse_one("pub use a::b").unwrap();
     let ExprKind::Use { reexport: true, names } = &e.kind else {
         panic!("not a pub use: {e:?}")
@@ -2162,7 +2106,6 @@ fn use_new_grammar() {
     assert_eq!(&names[0].path, &["a", "b"]);
     let printed = e.to_string();
     assert_eq!(parse_one(&printed).unwrap().kind, e.kind);
-    // Positional refusals.
     assert!(parse_one("use a::self::b").is_err(), "self mid-path");
     assert!(parse_one("use a::super::b").is_err(), "super mid-path");
     assert!(parse_one("use a::package::b").is_err(), "package mid-path");
@@ -2171,11 +2114,10 @@ fn use_new_grammar() {
     assert!(parse_one("use super::{self}").is_err(), "keyword-only via group self");
     assert!(parse_one("use a::* as b").is_err(), "renamed glob");
     assert!(parse_one("use a::{b, c} as d").is_err(), "renamed group");
-    // Path keywords are reserved as ordinary identifiers.
     assert!(parse_one("let package = 5").is_err(), "package binds");
     assert!(parse_one("let super = 5").is_err(), "super binds");
     assert!(parse_one("let pub = 5").is_err(), "pub binds");
-    // Expression paths accept the roots (resolution is P2's job).
+    // Expression paths accept the roots; resolution checks them later.
     let e = parse_one("super::a::b").unwrap();
     assert!(matches!(&e.kind, ExprKind::Ref { name } if name == &["super", "a", "b"]));
     let e = parse_one("package::a(1)").unwrap();
@@ -2184,18 +2126,14 @@ fn use_new_grammar() {
 
 #[test]
 fn list_is_a_reserved_type_name() {
-    // `List` is compiler-known like `Array`/`Map`: a user typedef of any
-    // of the three refuses at parse rather than dying later in typecheck
-    // with a mismatch against the native type.
+    // A user typedef of a compiler-known type name refuses at parse.
     assert!(parse_one("type List<'a> = [`Cons('a, List<'a>), `Nil]").is_err());
     assert!(parse_one("type List = { cursor: i64 }").is_err());
     assert!(parse_one("type Array<'a> = i64").is_err());
     assert!(parse_one("type Map<'k> = i64").is_err());
     parse_typexpr("List<i64>").unwrap();
-    // Variant TAGS are backtick-namespaced, not type names: a reserved
-    // word is a legal tag in expression, type and pattern position alike
-    // (the pattern parser used to refuse what the other two accept —
-    // tui's browser matches on a `List mode tag).
+    // A reserved word is a legal variant tag in expression, type and
+    // pattern position alike.
     assert!(parse_one("`List").is_ok());
     assert!(parse_one("select x { `List(n) => n, `Array => 2, _ => 0 }").is_ok());
     assert!(parse_one("type T = [`List(i64), `N]").is_ok());
@@ -2203,8 +2141,7 @@ fn list_is_a_reserved_type_name() {
 
 #[test]
 fn or_patterns_parse() {
-    // Arm-level alternation, nested alternation, per-alternative
-    // capture (design/or_patterns.md, ruled 2026-08-31).
+    // Arm-level alternation, nested alternation, per-alternative capture.
     parse_one("select x { `A | `B => 0, _ => 1 }").unwrap();
     parse_one("select x { `C(1 | 2, y) => y, _ => 0 }").unwrap();
     parse_one("select x { (0, y) | (y, 0) if y > 10 => y, _ => 0 }").unwrap();
@@ -2212,36 +2149,28 @@ fn or_patterns_parse() {
     parse_one("select x { [a | b, c] => a, _ => 0 }").unwrap();
     parse_one("select x { [<h | i, r..>] => h, _ => 0 }").unwrap();
     parse_one("select x { {f: 1 | 2, ..} => 0, _ => 1 }").unwrap();
-    // Top-level or-patterns are select-arm-only: let refuses, and a
-    // lambda param cannot express one (the arg list is |-delimited).
+    // Top-level or-patterns are select-arm-only.
     assert!(parse_one("let a | b = x").is_err());
     assert!(parse_one("let rec a | b = x").is_err());
     assert!(parse_one("|a | b| e").is_err());
-    // NESTED or in an irrefutable position parses (refutability is
-    // the compile-time check, not the parser's).
+    // A nested or in an irrefutable position parses; refutability is
+    // checked at compile time.
     parse_one("let (a | b, c) = x").unwrap();
 }
 
-// ── a reserved word in a name position names itself (2026-09-02) ──
-// combine merges a refused alternative's message into the surrounding
-// expectation set: a `let` after another statement reported
-// "Unexpected `l`" at the statement's first column, and a package of
-// nine modules read that as a mystery. The refusal records its reason
-// and position, and the parse's failure reports it when the failure
-// lies on that line or before it.
+// A reserved word in a name position is named in the error when the
+// failure lies on its line or before it.
 
 #[test]
 fn reserved_word_as_a_name_is_named() {
     let msg = parse_program("let x = 1;\nlet ok = 2");
     assert!(msg.contains("`ok` is a reserved word"), "{msg}");
     assert!(msg.contains("line: 2, column: 5"), "{msg}");
-    // a construct keyword is what a statement parser probes first, so
-    // its refusal as a name says nothing about the program
+    // A construct keyword's refusal as a name earns no note.
     let msg = parse_program("let x = { let mod = 1; mod }");
     assert!(!msg.contains("reserved word"), "{msg}");
     let msg = parse_program("let x = 1;\nlet self = 2");
     assert!(msg.contains("`self` is a reserved word"), "{msg}");
-    // an unrelated failure carries no stale note
     let msg = parse_program("let y = 1;\nlet z = (1 +");
     assert!(!msg.contains("reserved word"), "{msg}");
 }
@@ -2258,11 +2187,9 @@ fn parse_program(text: &str) -> String {
 
 #[test]
 fn parse_errors_report_the_furthest_point() {
-    // combine reports the last alternative to fail — the statement
-    // probe at the select's head, line 2 column 15 for every mistake
-    // below — and `attempt` resets the input on the way out; the
-    // reporter names the furthest point any branch reached, with the
-    // source line and a caret, and the site notes ride along.
+    // The error names the furthest point any branch reached, with the
+    // source line, a caret and any site note, not the last alternative
+    // to fail (the select's head for every mistake below).
     let arm = |body: &str| {
         format!(
             "let x = 1;\nlet r = select x {{\n  1 => {{\n    {body}\n    y\n  }},\n  _ => 2\n}};\nr"
@@ -2282,8 +2209,8 @@ fn parse_errors_report_the_furthest_point() {
     assert!(msg.contains("line: 4, column: 23"), "{msg}");
     let msg = parse_program("/// the doc\nlet x = 1;\nx");
     assert!(msg.contains("`///` is a doc comment"), "{msg}");
-    // a word probed as a name that parsed as a literal in another
-    // alternative explains nothing: the note is scoped to its word
+    // A note for a word that parsed as a literal elsewhere is scoped to
+    // that word.
     let msg = parse_program("let x = true +;\nx");
     assert!(!msg.contains("reserved word"), "{msg}");
     assert!(msg.contains("line: 1, column: 15"), "{msg}");
@@ -2294,8 +2221,8 @@ fn parse_errors_report_the_furthest_point() {
 
 #[test]
 fn never_parses() {
-    // `never` is syntax: bare, typed, with arguments; it round-trips
-    // through the printer and is refused as a name.
+    // `never` parses bare, typed and with arguments, round-trips, and is
+    // refused as a name.
     for s in [
         "never()",
         "never<i64>()",

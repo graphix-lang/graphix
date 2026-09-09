@@ -1,7 +1,6 @@
-//! TEMPORARY investigation instrumentation for the transient-recursion
-//! perf class (jul22b pending-ruling). Gated by GRAPHIX_DBG_PERF=1; a
-//! background thread dumps cumulative phase counters to stderr every
-//! 250ms while they change. Remove when the investigation closes.
+//! Phase counters for the interpreter's lazy-bind path, gated by
+//! GRAPHIX_DBG_PERF=1; a background thread dumps them to stderr every
+//! 250ms while they change.
 use std::{
     sync::{
         LazyLock,

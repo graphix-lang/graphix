@@ -227,8 +227,8 @@ async fn multiple_errors(fusion_disabled: bool) -> Result<()> {
             );
             let (values, out) = run_delta(&code, fusion_disabled).await?;
             assert_eq!(as_i64s(&values), [2, 4, 5], "{form}: {body}\n{out}");
-            // Three `?` raise in one cycle; the with body sees the first
-            // and rethrows it once. The other two are consumed (§7.9).
+            // three `?` raise in one cycle; the with body sees the first
+            // and rethrows it once
             let expected = [1, 3]
                 .into_iter()
                 .map(|v| format!("cleanup {v} First\ncaught First"))

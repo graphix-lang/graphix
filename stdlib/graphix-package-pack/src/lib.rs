@@ -18,8 +18,6 @@ use graphix_package_core::{
 use netidx_core::pack::Pack;
 use netidx_value::{PBytes, Value};
 
-// ── PackRead (async) ─────────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct PackReadEv {
     cast_typ: Option<Type>,
@@ -89,8 +87,6 @@ impl EvalCachedAsync for PackReadEv {
 
 type PackRead = CachedArgsAsync<PackReadEv>;
 
-// ── PackWriteBytes (sync) ────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct PackWriteBytesEv;
 
@@ -104,7 +100,6 @@ fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     })
 }
 
-// pack::write_bytes is a pure Value→bytes conversion. Sync.
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
     const NAME: &str = "pack_write_bytes";
@@ -115,8 +110,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
 }
 
 type PackWriteBytes = CachedArgs<PackWriteBytesEv>;
-
-// ── Package registration ─────────────────────────────────────
 
 graphix_derive::defpackage! {
     builtins => [

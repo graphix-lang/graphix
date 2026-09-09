@@ -1,7 +1,5 @@
-//! The runtime carrier for a fused region: [`FusedKernel`] wraps the
-//! JIT artifact + its input feeder Nodes as an ordinary `Update`
-//! node. Built by `fusion::try_fuse`; the actual kernel executor is
-//! [`Kernel`].
+//! [`FusedKernel`]: the `Update` node wrapping a JIT artifact and its
+//! input feeder Nodes. Built by `fusion::try_fuse`; [`Kernel`] executes it.
 
 use crate::{
     Apply, Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
@@ -12,21 +10,12 @@ use crate::{
 use anyhow::{Result, anyhow};
 use std::sync::Arc as StdArc;
 
-/// Wrapper that turns a compiled kernel into an
-/// `Update`-implementing Node. Holds the compiled kernel + JIT
-/// artifact and dispatches at `update()` time.
-///
+/// An `Update` node over a compiled kernel.
 pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
-    /// One feeder Node per kernel input slot. Driven by
-    /// `Kernel::update` via the `from` slice.
+    /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
-    /// The actual kernel executor — handles JIT/interp dispatch,
-    /// `DYN_DISPATCH_HANDLE` setup, builtin slot pre-binding,
-    /// pending-flag propagation, composite-return marshalling.
-    /// Routing through `Kernel` (instead of re-implementing the
-    /// dispatch surface) keeps FusedKernel minimal.
     inner: Kernel,
 }
 
@@ -45,11 +34,8 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         feeders: Box<[Node<R, E>]>,
     ) -> Result<Node<R, E>> {
         let n_args = feeders.len();
-        // A fused node REQUIRES a JIT. There is no interpreter fallback —
-        // if JIT compilation failed, refuse
-        // to construct. Every splice site treats this `Err` as "don't
-        // splice — leave the original nodes to node-walk", which is
-        // the universal fallback.
+        // No interpreter fallback: without a JIT the caller leaves the
+        // original nodes to node-walk.
         let wrapped = match wrapped {
             Some(w) => w,
             None => {
@@ -63,14 +49,12 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         Ok(Node::new(Self { spec, typ, feeders, inner }))
     }
 
-    /// The compiled kernel IR this region fused into. Used by graph
-    /// introspection (`node_shape`) to assert what fused.
+    /// The kernel signature this region fused into.
     pub fn kernel(&self) -> &StdArc<KernelSig> {
         self.inner.kernel()
     }
 
-    /// The per-input feeder nodes — the kernel's children in the
-    /// graph. Each drives one kernel input slot.
+    /// The feeder nodes, one per kernel input slot.
     pub fn feeders(&self) -> &[Node<R, E>] {
         &self.feeders
     }
@@ -82,16 +66,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> &crate::TagValue {
-        // Delegate to Kernel (Apply) — drives the feeders, invokes the
-        // JIT, and decodes the return value. The production is HONEST (the 5c
-        // output flip): Fired/Stale results carry their in-band tag, a
-        // bottomed result is the shared FreshBottom/StaleBottom, a
-        // quiet poll rides the resident. Forward it — Kernel's
-        // resident IS this node's return slot; dense consumers read
-        // staleness and bottomness off the tag.
         let res = self.inner.update(ctx, &mut self.feeders, event);
-        // TAKE (Kernel::update only peeked — its production decision
-        // left the flag for this diagnostic).
         res
     }
 
@@ -106,12 +81,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
         }
-        // Delegates: `Kernel::sleep` KEEPS both the input slots (the
-        // arm-wake cached replay — a re-selected arm's kernel must
-        // fire from its retained inputs) and the interior-bottom ride
-        // caches (sleep is PAUSE), and sleeps the dyn slots' bound
-        // applies (the `CallSite::sleep` twin). Contrast
-        // `reset_replay` below, which clears both.
         self.inner.sleep(ctx);
         for feeder in self.feeders.iter_mut() {
             feeder.sleep(ctx);
@@ -119,10 +88,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // Unlike sleep (which leaves the kernel's input slots for the
-        // arm-wake cached replay), a frame reset clears them: a
-        // partially-fused loop body's kernel must not fire iteration i
-        // from iteration i−1's marshalled inputs.
         self.inner.reset_replay(ctx);
         for feeder in self.feeders.iter_mut() {
             feeder.reset_replay(ctx);

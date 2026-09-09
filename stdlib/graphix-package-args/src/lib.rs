@@ -12,8 +12,6 @@ use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 
-// ── Value helpers ─────────────────────────────────────────────
-
 fn get_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
     match v {
         Value::Array(a) => {
@@ -70,8 +68,6 @@ fn get_variant_tag(v: &Value) -> Option<&ArcStr> {
         _ => None,
     }
 }
-
-// ── Build clap from spec ──────────────────────────────────────
 
 fn build_clap_arg(spec: &Value) -> Result<clap::Arg, String> {
     let name = get_field(spec, "name").and_then(get_str).ok_or("arg missing name")?;
@@ -160,8 +156,6 @@ fn build_clap_command(spec: &Value) -> Result<clap::Command, String> {
     Ok(cmd)
 }
 
-// ── Extract matches ───────────────────────────────────────────
-
 fn extract_matches(
     matches: &clap::ArgMatches,
     spec: &Value,
@@ -204,8 +198,6 @@ fn extract_matches(
     }
 }
 
-// ── Parse builtin ─────────────────────────────────────────────
-
 #[derive(Debug)]
 struct Parse {
     fired: bool,
@@ -213,10 +205,8 @@ struct Parse {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
-    // NOT Sync: fires once per instance (the `fired` latch) — not
-    // replayable, so a fused HOF loop's shared DynCall slot instance
-    // would pend after the first element (the sys::dirs class, soak
-    // jul07b). Async de-fuses it.
+    // Fires once per instance (the `fired` latch), so it is not
+    // replayable and must not be `Sync`.
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "args_parse";
 
@@ -285,10 +275,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         self.fired = false;
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The fired latch is once-per-instance semantics (the same
-        // class as `once`'s flag), not replay memory.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 graphix_derive::defpackage! {

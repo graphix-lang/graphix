@@ -1,20 +1,9 @@
-//! Declarative graph-shape assertions — the third test axis.
-//!
-//! `run!` checks a program's *value*; `FuseExpect` checks *whether*
-//! fusion fired. Neither can see *what fused into what*. A [`NodeShape`]
-//! is a declarative *specification* of a compiled (sub)graph: either a
-//! standard node (a `NodeView` kind plus child shapes), a fused kernel
-//! matched by partial [`KernelMatcher`] criteria, or [`NodeShape::Any`]
-//! (a don't-care wildcard). [`match_node`] checks a real `Node` against
-//! a spec and returns a precise mismatch reason on failure.
-//!
-//! The runtime drives this via `GXHandle::match_shape(eid, spec)`: the
-//! walk-and-compare runs once, in-task, against the *live* post-fusion
-//! graph — so the spec is checked against exactly what the compiler
-//! produced, and can't drift from reality the way a hand-reconstructed
-//! expectation can. `GXHandle::describe_shape(eid)` renders the actual
-//! graph as text — an authoring aid for writing the spec in the first
-//! place, not part of the assertion path.
+//! Declarative graph-shape assertions for tests. A [`NodeShape`]
+//! specifies a compiled (sub)graph — a node kind with child shapes, a
+//! fused kernel matched by [`KernelMatcher`], or a wildcard — and
+//! [`match_node`] checks a live post-fusion `Node` against it, naming
+//! the first mismatch. Driven by `GXHandle::match_shape`;
+//! `GXHandle::describe_shape` renders the actual graph as an authoring aid.
 
 use crate::{Node, NodeView, Rt, UserEvent, fusion::kernel_abi::KernelSig, typ::Type};
 use arcstr::ArcStr;
@@ -32,10 +21,7 @@ pub enum NodeShape {
     Node { kind: Option<ArcStr>, children: Vec<NodeShape> },
     /// A fused kernel matched against partial [`KernelMatcher`] criteria.
     Fused(KernelMatcher),
-    /// Matches if *any* node in the subtree (this node or a
-    /// descendant) matches the inner spec. Lets a test assert "this
-    /// program contains a kernel shaped like X" without spelling out
-    /// the path through wrapper nodes (module Do, binds, …).
+    /// Matches if any node in the subtree matches the inner spec.
     Contains(Box<NodeShape>),
 }
 
@@ -58,14 +44,12 @@ impl NodeShape {
         NodeShape::Fused(m)
     }
 
-    /// Matches if any node in the subtree matches `inner`. Use to find
-    /// a kernel anywhere under the wrapper nodes a fixture compiles to.
+    /// Matches if any node in the subtree matches `inner`.
     pub fn contains(inner: NodeShape) -> Self {
         NodeShape::Contains(Box::new(inner))
     }
 
-    /// Convenience: `contains(fused(m))` — a kernel matching `m`
-    /// somewhere in the program.
+    /// `contains(fused(m))`.
     pub fn contains_fused(m: KernelMatcher) -> Self {
         NodeShape::contains(NodeShape::fused(m))
     }
@@ -79,9 +63,8 @@ impl NodeShape {
     }
 }
 
-/// Partial match criteria for a fused kernel. Every field is optional
-/// (or additive); an unset field is a wildcard, so a spec asserts only
-/// what it cares about — no brittle full-IR transcript.
+/// Partial match criteria for a fused kernel; an unset field is a
+/// wildcard.
 #[derive(Debug, Clone, Default)]
 pub struct KernelMatcher {
     /// Require this exact kernel return type.
@@ -124,19 +107,9 @@ impl KernelMatcher {
                 return Err(format!("param names: expected {names:?}, got {actual:?}"));
             }
         }
-        // There is deliberately NO body-op matcher (the old F4/#213
-        // "EmitTags" idea — per-op tags recorded during emission —
-        // was retired unbuilt). Threading a closed op-tag enum through
-        // every `emit_clif` would resurrect the deleted GIR IR's
-        // vocabulary tax to assert internal structure that the
-        // differential value check, these signature facts, and the
-        // `#[native]` attribute (an expr fully fused, zero node-walk
-        // residue, usable at any source location) already cover.
         Ok(())
     }
 }
-
-// ─── Matching ─────────────────────────────────────────────────────
 
 /// Check a compiled node against a [`NodeShape`] spec. `Ok(())` on
 /// match; `Err(reason)` names the path and the first mismatch.
@@ -224,11 +197,8 @@ fn find_match<R: Rt, E: UserEvent>(node: &Node<R, E>, spec: &NodeShape) -> bool 
     }
 }
 
-// ─── Authoring aid: render the actual graph ───────────────────────
-
-/// Render a compiled node as an indented text tree — for *writing* a
-/// [`NodeShape`] spec (run it once, read the real shape). Not part of
-/// the assertion path.
+/// Render a compiled node as an indented text tree, for writing a
+/// [`NodeShape`] spec.
 pub fn describe_node<R: Rt, E: UserEvent>(node: &Node<R, E>) -> String {
     let mut out = String::new();
     describe_at(node, 0, &mut out);
@@ -263,19 +233,14 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
     }
 }
 
-// ─── Graph traversal primitives ───────────────────────────────────
-
-/// The child nodes of a non-fused view, in a deterministic order, or
-/// `None` if this variant carries children that aren't enumerated here
-/// (then a `Node` spec with children can't match it — the mismatch
-/// reason says so). True leaves return `Some(empty)`.
+/// The child nodes of a view in a deterministic order; `None` for a
+/// variant whose children are not enumerated here. Leaves return
+/// `Some(empty)`.
 fn node_children<'a, R: Rt, E: UserEvent>(
     view: &NodeView<'a, R, E>,
 ) -> Option<SmallVec<[&'a Node<R, E>; 4]>> {
     use NodeView as V;
 
-    // Arithmetic / comparison / boolean ops all share `lhs`/`rhs`;
-    // handle the whole family in one place.
     macro_rules! binop {
         ($n:expr) => {{
             let mut s: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
@@ -308,7 +273,6 @@ fn node_children<'a, R: Rt, E: UserEvent>(
 
     let mut kids: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
     match view {
-        // Containers / navigation.
         V::Block(b) => kids.extend(b.children.iter()),
         V::Bind(b) => kids.push(&b.node),
         V::MapQ(m) => {
@@ -323,8 +287,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Module(m) => kids.push(m.source()),
         V::CallSite(cs) => {
             kids.push(cs.fnode());
-            // Args live in a hashmap; sort by key (positional by index,
-            // then named) for a stable child order.
+            // Sorted by key for a stable child order.
             let mut entries: SmallVec<[(_, &'a Node<R, E>); 4]> = cs
                 .args
                 .iter()
@@ -337,7 +300,6 @@ fn node_children<'a, R: Rt, E: UserEvent>(
             kids.push(&s.arg.node);
             kids.extend(s.arms.iter().map(|(_, c)| c));
         }
-        // Single/double-child wrappers.
         V::ExplicitParens(n) => kids.push(&n.n),
         V::TypeCast(n) => kids.push(&n.n),
         V::Qop(n) => kids.push(&n.n),
@@ -359,7 +321,6 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         }
         V::ByRef(n) => kids.push(&n.child),
         V::Deref(n) => kids.push(&n.child),
-        // Producers.
         V::Struct(n) => kids.extend(n.n.iter()),
         V::Tuple(n) => kids.extend(n.n.iter()),
         V::Variant(n) => kids.extend(n.n.iter()),
@@ -377,7 +338,6 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::StringInterpolate(n) => kids.extend(n.args.iter()),
         V::Any(n) => kids.extend(n.n.iter()),
         V::Never(n) => kids.extend(n.n.iter()),
-        // Accessors.
         V::StructRef(n) => kids.push(&n.source),
         V::TupleRef(n) => kids.push(&n.source),
         V::ArrayRef(n) => {
@@ -397,13 +357,10 @@ fn node_children<'a, R: Rt, E: UserEvent>(
             kids.push(&n.source);
             kids.push(&n.key);
         }
-        // A fused kernel's children are its input feeders (lets
-        // `Contains` descend through a kernel into what feeds it).
+        // A kernel's children are its input feeders.
         V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
-        // True leaves — no child nodes.
         V::Impl(i) => kids.push(&i.body),
         V::Ref(_) | V::Constant(_) | V::TypeDef(_) | V::Nop(_) | V::Lambda(_) => {}
-        // Binops returned above via the first match.
         V::Add(_)
         | V::Sub(_)
         | V::Mul(_)

@@ -1,11 +1,7 @@
 //! Workspace scanner that turns a set of root directories into a
-//! project graph.
-//!
-//! For each `.gx` and `.gxi` file under the workspace, we parse just
-//! enough to extract every `mod foo;` declaration, then resolve each
-//! declaration to the concrete file the module resolver would have
-//! picked. Files with no incoming edges are project roots; everything
-//! reachable from a root forms that project.
+//! project graph: each `.gx`/`.gxi` file's `mod foo;` declarations are
+//! resolved as the module resolver would; files with no incoming edges
+//! are project roots and everything reachable from a root is its project.
 
 use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
@@ -37,11 +33,9 @@ pub struct WorkspaceFile {
 pub struct Project {
     pub root: PathBuf,
     pub files: AHashSet<PathBuf>,
-    /// If `root` lives at `<crate>/src/graphix/mod.gx` of a Cargo crate
-    /// named `graphix-package-<x>`, this is `Some("<x>")` — the
-    /// graphix-side namespace under which the crate's modules
-    /// register. Tells the runtime to typecheck the project as if the
-    /// source were the body of `mod <x> { ... }`.
+    /// For a root at `<crate>/src/graphix/mod.gx` of a Cargo crate named
+    /// `graphix-package-<x>`, `Some("<x>")`: the scope the project is
+    /// typechecked under.
     pub package_scope: Option<ArcStr>,
 }
 
@@ -56,10 +50,9 @@ pub struct WorkspaceModel {
 
 const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor"];
 
-/// Walk each root and collect the project graph. Errors from
-/// individual files (parse failures, I/O) are recorded inline as
-/// empty `mod_decls` so partially-broken workspaces still produce a
-/// useful graph.
+/// Walk each root and collect the project graph. Per-file errors are
+/// recorded as empty `mod_decls` so a partially broken workspace still
+/// yields a graph.
 pub fn scan(roots: &[PathBuf]) -> WorkspaceModel {
     let mut files: AHashMap<PathBuf, WorkspaceFile> = AHashMap::default();
     for root in roots {
@@ -119,11 +112,8 @@ pub fn extract_mod_decls(
     Ok(out)
 }
 
-/// Recursively walk an `ExprKind` tree collecting external module
-/// declarations. We descend into nested `Resolved` modules so that
-/// inner `mod` decls aren't missed (though right now graphix's
-/// parser doesn't produce nested-on-parse mods — every `mod foo;`
-/// from source is `Unresolved`).
+/// Collect external module declarations from an `ExprKind` tree,
+/// descending into nested `Resolved` modules.
 fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
     if let ExprKind::Module { name, value } = kind {
         match value {
@@ -137,17 +127,14 @@ fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
             }
         }
     }
-    // Otherwise: parse output is shallow at the top level (mods only
-    // appear at top-level positions), so we don't need to walk other
-    // kinds. If that ever changes we'll add visitor cases here.
+    // mods only appear at top-level positions
 }
 
 /// Compute the reachable file set for every potential project root
 /// (every `.gx` file), mark files imported by any project, and
 /// declare project roots as the unimported `.gx` files.
 fn build_projects(files: AHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
-    // Pre-compute reachable sets for every .gx file as if it were a
-    // project root.
+    // Reachable sets for every .gx file as if it were a project root.
     let mut reachable: AHashMap<PathBuf, AHashSet<PathBuf>> = AHashMap::default();
     for (path, wf) in &files {
         if wf.kind == FileKind::Gxi {
@@ -192,10 +179,8 @@ fn build_projects(files: AHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
 }
 
 /// BFS from a hypothetical project root, mirroring the runtime's
-/// filesystem resolver: `mod foo` declared at scope `<rel>` from
-/// the root resolves to `<base>/<rel>/foo.gx` (or `.gxi`, or
-/// `<base>/<rel>/foo/mod.gx`). The scope path accumulates as we
-/// descend.
+/// filesystem resolver: `mod foo` at scope `<rel>` resolves to
+/// `<base>/<rel>/foo.gx` (or `.gxi`, or `<base>/<rel>/foo/mod.gx`).
 fn bfs_from_root(
     root: &Path,
     files: &AHashMap<PathBuf, WorkspaceFile>,
@@ -217,8 +202,7 @@ fn bfs_from_root(
                 out.insert(sibling);
             }
         }
-        // Resolve every external `mod foo` declared in either the
-        // .gx or its .gxi sibling and queue the targets.
+        // Resolve every external `mod foo` from the .gx or its .gxi sibling.
         let to_walk = [&file, &file.with_extension("gxi"), &file.with_extension("gx")];
         for f in to_walk {
             let Some(wf) = files.get(f) else { continue };
@@ -234,10 +218,7 @@ fn bfs_from_root(
 }
 
 /// If `root` is `<crate>/src/graphix/mod.gx` (or `mod.gxi`) and the
-/// crate's `Cargo.toml` declares a `graphix-package-<x>` package, return
-/// `Some("<x>")`. Used to typecheck the crate's source under that
-/// scope so its modules don't collide with the runtime's pre-loaded
-/// copy of the same package.
+/// crate's `Cargo.toml` names a `graphix-package-<x>`, return `Some("<x>")`.
 pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
     let stem = root.file_stem().and_then(|s| s.to_str())?;
     if stem != "mod" {
@@ -254,11 +235,8 @@ pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
     let crate_dir = src_dir.parent()?; // crate root
     let manifest = crate_dir.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest).ok()?;
-    // Tiny scanner: find `name = "..."` inside the `[package]` section
-    // (or before any other `[...]` table). Avoids pulling in a TOML
-    // parser dependency just for this one field. The contents of
-    // `name` are a TOML basic string — no escapes used in any cargo
-    // package name in practice, so naive split-on-`"` is safe.
+    // Finds `name = "..."` inside `[package]` without a TOML parser;
+    // cargo package names use no escapes.
     let mut in_package = false;
     let mut started_section = false;
     let mut pkg_name: Option<&str> = None;
@@ -271,8 +249,7 @@ pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
             continue;
         }
         if !started_section {
-            // Pre-table area only happens for non-Cargo TOMLs; cargo
-            // manifests always put `[package]` first.
+            // cargo manifests always put `[package]` first
             continue;
         }
         if in_package {

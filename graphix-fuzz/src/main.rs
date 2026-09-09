@@ -1,11 +1,7 @@
-//! `graphix-fuzz` — differential model-checking fuzzer CLI.
-//!
-//! V1 subcommands:
-//!   graphix-fuzz check <file>   run interp vs jit, report any divergence
-//!   graphix-fuzz run   <file>   run all three modes, print each outcome
-//!
-//! `check` is the primitive both the mechanical fuzzer (forthcoming) and
-//! the adversarial agent sources depend on. See design/graphix_fuzz.md.
+//! `graphix-fuzz`: the differential fuzzer CLI. `check <file>` runs
+//! interp vs jit and reports a divergence; `run <file>` prints every
+//! mode's outcome; the rest are campaigns, gates and hidden workers
+//! (see the usage string). See design/graphix_fuzz.md.
 
 use anyhow::{Result, bail};
 use graphix_fuzz::{
@@ -17,23 +13,13 @@ use std::{
     time::Duration,
 };
 
-// The harness allocates like the compiler it drives, and subjects are
-// re-execs of this binary — mimalloc cuts the glibc malloc tail (~12%
-// of subject CPU in the prof22 profiling round; the cold-start alloc
-// storm is exactly what a modern allocator absorbs). Harness-only:
-// the shell/compiler crates are untouched.
+// Harness-only: subjects are re-execs of this binary and allocate like
+// the compiler they drive.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Default soak mix, as CPU shares `fuzz:generate:reactive`.
-///
-/// Weighted by measured yield per CPU-second, not by taste. Over the
-/// five days to 2026-08-17 the three sources produced 14/7/14 findings
-/// while drawing 14%/19%/67% of the box — so per unit of CPU, mutation
-/// is ~4.8x the reactive generator and ~2.7x the plain one. The mix
-/// still funds both generators well past their share of findings,
-/// because they explore shapes mutation cannot reach and the yield
-/// estimate is noisy (14 vs 7 is only ~1.7 sigma).
+/// Default soak mix, as CPU shares `fuzz:generate:reactive`, weighted
+/// by measured findings per CPU-second.
 const DEFAULT_MIX: &str = "50:25:25";
 
 /// Parse a `fuzz:generate:reactive` CPU-share mix. Shares are relative;
@@ -72,12 +58,8 @@ fn fmt_iters(iters: Option<usize>) -> String {
     iters.map_or_else(|| "forever".to_string(), |n| n.to_string())
 }
 
-// The base budgets below are tuned for ryouko; the soak fleet's other
-// machines are slower and non-uniform, so every budget scales by
-// GRAPHIX_FUZZ_TIMEOUT_SCALE (an integer multiplier, default 1, set
-// per machine at campaign launch like GRAPHIX_FUZZ_PAR). Scaling at
-// the source keeps every derived margin — the isolated child's outer
-// deadline, the check() escalation floor's *relative* part — coherent.
+// Every budget scales by GRAPHIX_FUZZ_TIMEOUT_SCALE (integer, default 1,
+// set per machine) so every derived margin stays coherent.
 static TIMEOUT_SCALE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("GRAPHIX_FUZZ_TIMEOUT_SCALE")
         .ok()
@@ -90,17 +72,14 @@ fn timeout() -> Duration {
     Duration::from_secs(10) * *TIMEOUT_SCALE
 }
 
-// A regression surfaces fast (crash / value mismatch); a legitimately-
-// bottom program just needs to confirm "still all-Timeout", so a short
-// per-program timeout keeps the gate quick even as the corpus grows.
+// A regression surfaces fast; a legitimately-bottom program only has to
+// confirm "still all-Timeout".
 fn regress_timeout() -> Duration {
     Duration::from_secs(3) * *TIMEOUT_SCALE
 }
 
-// Campaign timeout: generated/mutated programs terminate in milliseconds
-// or produce bottom — a short timeout means a bottom program doesn't sleep
-// 30s (3 modes × 10s), so the worker pool refills fast and the cores stay
-// busy. A real divergence (value mismatch / crash) surfaces well within 3s.
+// Generated programs terminate in milliseconds or produce bottom; a
+// real divergence surfaces well within 3s.
 fn campaign_timeout() -> Duration {
     Duration::from_secs(3) * *TIMEOUT_SCALE
 }
@@ -153,14 +132,9 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-/// Per-FEATURE compile rates for gen-check/reactive-check: bucket the
-/// sample by source markers (v1 — substring buckets, not generator-rule
-/// attribution) and report each bucket's compile rate. The aggregate
-/// rate hides a dead arm when the arm is a few percent of output — the
-/// try/catch migration left the error-lambda arm emitting deleted
-/// syntax for WEEKS behind a healthy-looking 99% (fuzzer gap 2,
-/// 2026-08-07). A 0%% row is a dead arm; an "absent" row is an arm
-/// that stopped firing at all.
+/// Per-feature compile rates for gen-check/reactive-check, bucketed by
+/// source substrings. A 0% row is a dead generator arm; an "absent" row
+/// is an arm that stopped firing.
 fn feature_report(progs: &[String], ok: &[bool]) {
     const FEATURES: &[(&str, &str)] = &[
         ("catch", "catch("),
@@ -212,7 +186,7 @@ fn feature_report(progs: &[String], ok: &[bool]) {
 
 /// Parse `check-batch`'s stdin framing: `{n}\n` then, per subject,
 /// `{byte_len}\n{bytes}`. Length-prefixed because programs are
-/// arbitrary text (delimiters are corruptible).
+/// arbitrary text.
 fn parse_batch_frames(input: &str) -> Result<Vec<String>> {
     let mut progs = Vec::new();
     let (head, mut rest) = input
@@ -242,53 +216,25 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
-// The driver stays at TWO worker threads, deliberately.
-//
-// It looks wrong — one process coordinating up to `par` children on a
-// 20-core box — and sizing it per-core is a 7.5x THROUGHPUT REGRESSION,
-// measured on hz0 at par=160: 2 threads gave 70% box utilization and
-// 2.59M subjects/120s, 6 threads 56% and 586k, 20 threads 37% and 347k.
-// The work is in the CHILDREN, each with its own runtime; every thread
-// the parent takes is one it steals from them, on a box already
-// oversubscribed 8x. The parent's own job is coordination, which is
-// I/O-bound and fits in two.
+// Two worker threads on purpose: the work is in the children, each
+// with its own runtime, and every parent thread is one stolen from them
+// (measured: per-core sizing was a 7.5x throughput regression).
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    // `--reactive` selects the reactive (scheduled) generator wherever
-    // a generator is used; it's stripped before positional parsing so
-    // `generate --reactive 500 42` and `generate 500 42 --reactive`
-    // both work.
     // Before anything allocates: the child half of the sandbox's
-    // address-space limit (the parent can no longer install it through
-    // `pre_exec` without losing posix_spawn — see `sandbox_cwd`).
+    // address-space limit.
     graphix_fuzz::apply_mem_limit();
-    // Children get GRAPHIX_STACK_BUDGET at spawn (lib.rs); the MASTER
-    // never did, so an in-process runaway recursion — the regress gate
-    // (`"$binary" regress`), `generate`, the oracle — grew stack
-    // segments at ~350MB/s until the per-program timeout. At
-    // TIMEOUT_SCALE=4 that is ~14GB per runaway before it aborts, and
-    // enough overlap OOMs the process: the aug27a startup gate died mid
-    // sequential-retry on aieka (scale 4) while a scale-1 run passed.
-    // Cap this process like the children so a runaway aborts to Timeout.
+    // Cap this process like the children so an in-process runaway
+    // recursion aborts to Timeout instead of growing stack segments.
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");
-    // Generated/mutated programs freely call `sys::fs::write_all` &
-    // co. with arbitrary short strings as paths — executed with an
-    // inherited cwd they litter the campaign launch directory (the
-    // repo root filled with files named `bar`, `hello world`, `,` …).
-    // The per-subject WORKER processes (program on stdin, no path
-    // args) are sandboxed by the SPAWNING campaign (lib.rs
-    // `sandbox_cwd`: parent-owned tempdir as the child's cwd, removed
-    // after the child exits, signalled via GRAPHIX_FUZZ_SANDBOXED). A
-    // child-owned tempdir here leaked on `process::exit` (worker arms
-    // skip drops) and a soak's millions of subjects exhausted /tmp's
-    // INODES (jul10d). The self-sandbox below covers MANUAL
-    // invocations only; for the single-file commands (`check`/`run`)
-    // the file argument is made absolute first.
+    // Generated programs call `sys::fs::write_all` & co. with arbitrary
+    // paths. Worker processes are sandboxed by the spawning campaign
+    // (GRAPHIX_FUZZ_SANDBOXED); this covers manual invocations.
     let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none()
         && match args.get(1).map(String::as_str) {
             Some(
@@ -306,8 +252,7 @@ async fn main() -> Result<()> {
             }
             _ => false,
         };
-    // Captured BEFORE the sandbox chdir: file outputs that belong in
-    // the invoking directory (fusecheck --bless) resolve against it.
+    // captured before the sandbox chdir: `fusecheck --bless` writes here
     let orig_cwd = std::env::current_dir()?;
     let cwd_guard = if sandbox_cwd {
         let d = tempfile::tempdir()?;
@@ -325,8 +270,7 @@ async fn main() -> Result<()> {
     };
     match args.get(1).map(String::as_str) {
         Some("gen") => {
-            // Debug: print N generated programs (no oracle) to eyeball the
-            // generator's output.
+            // print N generated programs, no oracle
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let mut rng = graphix_fuzz::mutate::Rng::new(seed);
@@ -335,10 +279,8 @@ async fn main() -> Result<()> {
             }
         }
         Some("gen-check") => {
-            // Generator health: compile rate + reject reasons. The
-            // generator is type-correct by construction, so every
-            // reject is a generator bug or a rule to tune — this is
-            // the instrument for every vocabulary stage.
+            // generator health: compile rate + reject reasons; the
+            // generator is type-correct by construction
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let progs: Vec<String> = {
@@ -351,10 +293,8 @@ async fn main() -> Result<()> {
                 tokio::task::JoinSet::new();
             let mut next = 0usize;
             let mut compiled = 0usize;
-            // Bucket by the innermost anyhow cause (the last line) — the
-            // outer layers are per-program position context. Keep one
-            // example program per bucket: the reject is only actionable
-            // next to the text that provoked it.
+            // bucket by the innermost anyhow cause (the last line), with
+            // one example program per bucket
             let mut rejects: std::collections::BTreeMap<String, (usize, String)> =
                 std::collections::BTreeMap::new();
             let spawn = |set: &mut tokio::task::JoinSet<_>, i: usize, p: String| {
@@ -371,10 +311,7 @@ async fn main() -> Result<()> {
                 next += 1;
             }
             // `GRAPHIX_FUZZ_DUMP_REJECTS=<dir>`: write each rejected
-            // program (with its full error as a trailing comment) to
-            // `<dir>/reject_<i>.gx` — the inline one-example-per-bucket
-            // print mangles multi-line programs (dynmod raw strings),
-            // so byte-exact repro needs the file.
+            // program with its full error to `<dir>/reject_<i>.gx`
             let dump_dir = std::env::var_os("GRAPHIX_FUZZ_DUMP_REJECTS");
             let mut ok = vec![false; progs.len()];
             while let Some(res) = set.join_next().await {
@@ -442,13 +379,9 @@ async fn main() -> Result<()> {
             }
         }
         Some("leakcheck") => {
-            // RSS leak lane (fuzzer gap 5): run each embedded
-            // long-running witness under BOTH modes on the given
-            // graphix shell binary, sample VmRSS at 5s and 5+secs,
-            // and require the fused slope within headroom of the
-            // interp slope. qop-scalar-error-leak (+11MB/90s) is the
-            // class this exists for — invisible to every value
-            // oracle. Manual/CI gate; Linux only (/proc).
+            // RSS leak lane: run each witness under both modes on the
+            // given shell binary and require the fused RSS slope within
+            // headroom of the interp slope. Linux only (/proc).
             let bin = args.get(2).cloned().unwrap_or_else(|| {
                 eprintln!("usage: graphix-fuzz leakcheck <graphix-bin> [secs]");
                 std::process::exit(2)
@@ -481,10 +414,8 @@ async fn main() -> Result<()> {
                     slopes[i] = (b as f64 - a as f64) / secs as f64;
                 }
                 let [interp, jit] = slopes;
-                // Headroom: the pin's leak was ~+120 kB/s over a
-                // ~30 kB/s shared timer baseline; 50 kB/s of slack
-                // rides load noise without hiding a real leak at
-                // 60s (3MB vs 7MB delta).
+                // 50 kB/s of slack rides load noise without hiding a
+                // real leak at 60s
                 let ok = jit <= interp + 50.0;
                 if !ok {
                     bad += 1;
@@ -501,14 +432,10 @@ async fn main() -> Result<()> {
             }
         }
         Some("fusecheck") => {
-            // Fusion-coverage manifest gate (fuzzer gap 6): per-corpus
-            // fused-region counts vs the checked-in manifest — a
-            // silent de-fusion regression fails LOUD. Manual/CI gate;
-            // run from the repo root. `--bless` rewrites the manifest
-            // (rebuild afterward — the compare reads the EMBEDDED
-            // copy). Counts are measured COMPILE-only; an unmeasurable
-            // count is a gate failure, never a 0 — bless refuses to
-            // write anything rather than bake one in.
+            // fused-region counts per corpus program vs the checked-in
+            // manifest. `--bless` rewrites the manifest (rebuild afterward:
+            // the compare reads the embedded copy). An unmeasurable
+            // count is a failure, never a 0.
             let bless = args.iter().any(|a| a == "--bless");
             let timeout = Duration::from_secs(60) * *TIMEOUT_SCALE;
             let counts = graphix_fuzz::run_fusecheck(timeout).await;
@@ -581,14 +508,9 @@ async fn main() -> Result<()> {
             }
         }
         Some("reactive-check") => {
-            // Reactive-generator health beyond compile rate: programs
-            // must QUIESCE within their trace budget (runaways are the
-            // deliberate few percent) and injection epochs must
-            // actually ADVANCE the trace (an all-quiet epoch tail is
-            // this stage's silent-loss mode — a generator that stopped
-            // wiring inputs into observable results would still
-            // compile fine). Runs each program under interp only (the
-            // health of the GENERATOR, not the differential).
+            // reactive-generator health: programs must quiesce within
+            // their trace budget and injection epochs must advance the
+            // trace. Interp only.
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let progs: Vec<String> = {
@@ -648,8 +570,8 @@ async fn main() -> Result<()> {
                             if !t.epochs.iter().any(|e| e.capped) {
                                 quiesced += 1;
                             }
-                            // Injection epochs advanced iff any epoch
-                            // past the compile burst produced events.
+                            // advanced iff any epoch past the compile
+                            // burst produced events
                             let has_inj = t.epochs.len() > 1;
                             if !has_inj
                                 || t.epochs[1..].iter().any(|e| !e.events.is_empty())
@@ -682,19 +604,15 @@ async fn main() -> Result<()> {
             }
         }
         Some("selfcheck") => {
-            // Oracle-soundness gate: per-mode trace determinism over the
-            // corpus + generated programs. Must be 100% before any
-            // interp-vs-jit trace finding is trusted.
+            // oracle-soundness gate: per-mode trace determinism; must be
+            // 100% before any interp-vs-jit finding is trusted
             let iters = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            let total = regression_corpus_len(); // corpus part; rest generated
+            let total = regression_corpus_len();
             println!(
                 "selfcheck: {iters} generated (seed={seed}) + corpus \
                  (≥{total} seeds), twice per mode"
             );
-            // The generous per-run timeout keeps loaded-gate JIT runs
-            // (which pay compile cost under heavy parallelism) from
-            // breaching the backstop and reading as flakes.
             let flaky = graphix_fuzz::selfcheck(iters, seed, timeout()).await;
             if flaky.is_empty() {
                 println!("selfcheck OK — every trace deterministic in both modes");
@@ -706,28 +624,11 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // Hidden: the isolated-check worker the campaign pool spawns
-        // (program on stdin). The verdict rides the EXIT CODE (0 =
-        // agree, 10 = diverge), NOT stdout: the program under test can
-        // write to stdout itself (`sys::io::stdout`) and corrupt any
-        // in-band line protocol — a write_exact mutant read as "no
-        // VERDICT line" and recorded a false crash (soak jul06g). A
-        // program that kills the evaluator kills only this process
-        // (any other status) — the parent records a crash finding.
-        // See lib.rs `check_isolated`.
-        // Hidden: the detcheck child (program on stdin; the parent sets
-        // GRAPHIX_DUMP_CLIF=1 and reads the dump from OUR stderr). The
-        // program is DRIVEN to quiescence, not just compiled: per-slot
-        // HOF kernels compile lazily as slots populate at runtime, and
-        // a compile-only child raced the runtime's first cycles against
-        // shutdown — whether those kernels appeared in the dump was a
-        // scheduling coin flip. Driving every epoch to quiescence
-        // saturates the lazy-compile set, which for an Exact-tier
-        // program is a pure function of the text (the parent only feeds
-        // Exact tier). Exit 0 = ran, 3 = compile reject (the reject
-        // message prints to stderr and is part of the compared output —
-        // rejection must be deterministic too), 4 = wall-clock timeout
-        // (the cut is inherently racy; the parent skips the pair).
+        // Hidden workers. The verdict rides the exit code or a named
+        // file, never stdout: the program under test can write to
+        // stdout itself. detcheck-one drives the program to quiescence
+        // so the lazily compiled per-slot kernels all appear in the
+        // CLIF dump; exit 0 = ran, 3 = compile reject, 4 = timeout.
         Some("detcheck-one") => {
             let code = read_stdin()?;
             match graphix_fuzz::run_program(code.trim(), Mode::Jit, timeout()).await {
@@ -740,10 +641,8 @@ async fn main() -> Result<()> {
                 | graphix_fuzz::Outcome::RuntimeErr(_) => std::process::exit(0),
             }
         }
-        // Hidden: the typemorph child — base program on stdin, verdict
-        // lines to the FILE named by argv[2] (never stdout: the checked
-        // program can own the process streams). One warmed runtime
-        // checks the base and every transform candidate.
+        // typemorph child: base program on stdin, verdict lines to the
+        // file named by argv[2]
         Some("typemorph-one") => {
             let out = args
                 .get(2)
@@ -757,9 +656,8 @@ async fn main() -> Result<()> {
                 };
             std::fs::write(&out, text)?;
         }
-        // One-shot triage: apply every applicable transform to <file>,
-        // report acceptance flips (each confirmed in a second fresh
-        // child before it is believed).
+        // one-shot triage: every applicable transform on <file>, flips
+        // confirmed in a fresh child
         Some("typemorph") => {
             let f = args
                 .get(2)
@@ -777,9 +675,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // The acceptance-plane gate (design/graphix_fuzz.md, typemorph):
-        // corpus + n generated subjects, every applicable transform
-        // probed per subject, flips confirmed in a fresh process.
+        // the acceptance-plane gate: corpus + n generated subjects
         Some("typemorph-scan") => {
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -806,15 +702,9 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // The determinism gate: run every Exact-tier corpus finding
-        // (plus N generated programs) in TWO fresh child processes each
-        // — each child gets its own ASLR — and compare normalized CLIF
-        // dumps. Fusion shape must be a pure function of the program
-        // text; a flap here is an allocation-order dependence in
-        // typing/resolution/fusion (the #19 class). Non-Exact tiers are
-        // skipped: IO pacing legitimately varies which slots ever
-        // populate, so their lazy-compile set is not a function of the
-        // text alone.
+        // the determinism gate: every Exact-tier program in two fresh
+        // child processes, normalized CLIF dumps compared. Non-Exact
+        // tiers are skipped: IO pacing varies which slots populate.
         Some("detcheck") => {
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -848,14 +738,9 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // Hidden: the batch worker (length-prefixed programs on stdin;
-        // per-subject verdicts appended + flushed to the FILE named by
-        // the extra argument — stdout is corruptible by the programs
-        // under test, and incremental flushing means a mid-batch death
-        // leaves the completed prefix on record for the parent's
-        // individual-re-run fallback). One warmed runtime pair serves
-        // the whole batch — the per-subject stdlib-compile constant is
-        // the fleet throughput bound.
+        // batch worker: length-prefixed programs on stdin, verdicts
+        // appended and flushed to the file named by argv[2] so a
+        // mid-batch death leaves the completed prefix on record
         Some("check-batch") => {
             use std::io::Write;
             let verdict_path = args
@@ -875,11 +760,9 @@ async fn main() -> Result<()> {
                 let _ = out.flush();
             })
             .await;
-            // What this batch cost, for the source that asked for it.
             graphix_fuzz::report_self_cpu();
         }
-        // The aggregator's worker: it is told WHAT to make, not what to
-        // run, so the parent never generates or ships program text.
+        // the aggregator's worker: told what to make, not what to run
         Some("gen-batch") => {
             let out_path = args
                 .get(2)
@@ -891,8 +774,8 @@ async fn main() -> Result<()> {
         }
         Some("check-one") => {
             let code = read_stdin()?;
-            // 0 = agree; 7 = agree AND both modes produced runtime
-            // traces (the parent's ring-admission bar); 10 = diverge.
+            // 0 = agree; 7 = agree and both modes produced runtime
+            // traces; 10 = diverge
             let status =
                 match graphix_fuzz::check_classified(code.trim(), campaign_timeout())
                     .await
@@ -904,12 +787,8 @@ async fn main() -> Result<()> {
             graphix_fuzz::report_self_cpu();
             std::process::exit(status);
         }
-        // Hidden: the isolated selfcheck worker (program on stdin;
-        // verdict in the EXIT CODE for the same stdout-pollution
-        // reason: 0 = clean, 40+mask with bit 1 = interp flaky, bit 2 =
-        // jit flaky). Child-per-subject keeps the deliberate JIT leak
-        // from accumulating in the gate process — see lib.rs
-        // `selfcheck_isolated`.
+        // isolated selfcheck worker: 0 = clean, 40+mask (bit 1 interp
+        // flaky, bit 2 jit flaky), 50 = inconclusive
         Some("selfcheck-one") => {
             let code = read_stdin()?;
             let mut mask = 0;
@@ -918,9 +797,7 @@ async fn main() -> Result<()> {
                 match mode {
                     "interp" => mask |= 1,
                     "jit" => mask |= 2,
-                    // Timed out at 4x on the confirm pair: the budget,
-                    // not the engine, decided. Reported separately so a
-                    // gate that stops covering subjects says so.
+                    // timed out on the confirm pair: the budget decided
                     "inconclusive" => inconclusive = true,
                     _ => mask |= 3,
                 }
@@ -933,11 +810,8 @@ async fn main() -> Result<()> {
                 0
             });
         }
-        // Hidden: the isolated minimizer (program on stdin, the reduced
-        // program written to the FILE named by the extra argument —
-        // stdout can be polluted by the programs the minimizer runs). A
-        // reduction that crashes kills only this process — the parent
-        // falls back to recording the unminimized mutant.
+        // isolated minimizer: program on stdin, reduced program written
+        // to the file named by argv[2]
         Some("minimize-one") => {
             let out_path = args
                 .get(2)
@@ -949,23 +823,13 @@ async fn main() -> Result<()> {
             std::fs::write(&out_path, min)?;
         }
         Some(cmd @ ("generate" | "fuzz")) => {
-            // `iters` may be `forever`/`0` to run until killed, surfacing new
-            // divergences live. The corpus is loaded up front so a campaign
-            // never re-reports a finding it (or a prior run) already saved.
+            // `forever`/`0` runs until killed; the corpus is loaded up
+            // front so a finding is never re-reported
             let iters = parse_iters(args.get(2), if cmd == "fuzz" { 50 } else { 100 });
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            // `GRAPHIX_FUZZ_CORPUS` overrides the corpus dir — concurrent
-            // soak campaigns must NOT share one: each process loads the
-            // max index at startup and writes findings with its own
-            // counter, so two campaigns on one dir silently clobber
-            // each other's findings at colliding indices.
-            // The DEFAULT lives OUTSIDE the repo: the repo's fuzz/ dir
-            // is synced across machines (syncthing), and a campaign is
-            // an artifact firehose — the jul10d environment breakage
-            // wrote garbage findings into the repo at 300MB/s.
-            // ~/tmp/target is build scratch (never synced, cleaned
-            // freely) — durable triage summaries still belong in the
-            // repo, written by hand.
+            // `GRAPHIX_FUZZ_CORPUS` overrides the corpus dir. Concurrent
+            // campaigns must not share one (colliding finding indices),
+            // and the default lives outside the synced repo.
             let out = match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
                 Some(p) => std::path::PathBuf::from(p),
                 None => std::env::home_dir()
@@ -978,8 +842,7 @@ async fn main() -> Result<()> {
                 corpus.len(),
                 out.display()
             );
-            // Regression gate first: re-check every saved finding so a fixed
-            // bug coming back is caught loudly before we hunt for new ones.
+            // regression gate first
             let regressions = print_regression().await;
             let before = corpus.len();
             println!(
@@ -993,7 +856,6 @@ async fn main() -> Result<()> {
                 generate_campaign(iters, seed, campaign_timeout(), &corpus, reactive)
                     .await
             };
-            // (Only reached in finite mode; `forever` runs until killed.)
             let new = corpus.len() - before;
             println!(
                 "done: {} programs, {} divergences, {} crashes \
@@ -1008,13 +870,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // A whole campaign in ONE process: all three sources through one
-        // pool, divided by MEASURED CPU. Three lane processes could only
-        // divide a box through the OS scheduler, which arbitrates
-        // between runnable processes, so equal worker counts bought
-        // wildly unequal CPU (13/19/66 measured, reactive taking two
-        // thirds while looking evenly provisioned). Weights are CPU
-        // shares, not slot counts.
+        // a whole campaign in one process: all three sources through one
+        // pool, divided by measured CPU
         Some("soak") => {
             let iters = parse_iters(args.get(2), 100);
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -1039,12 +896,8 @@ async fn main() -> Result<()> {
                 fmt_iters(iters),
                 out.display()
             );
-            // Per-source seed streams are kept SEPARATE (the same
-            // +1000/+2000 offsets the three lanes used), so a subject
-            // stays reproducible from its source and seed even though
-            // the interleaving is now resource-dependent.
-            // The parent aggregates; the children generate. Its cost is
-            // per batch and per finding, never per subject.
+            // per-source seed streams stay separate so a subject is
+            // reproducible from its source and seed
             let per_source =
                 graphix_fuzz::run_aggregator(&corpus, iters, campaign_timeout(), w).await;
             let new = corpus.len() - before;
@@ -1068,10 +921,7 @@ async fn main() -> Result<()> {
                 Some(p) => p,
                 None => bail!("usage: graphix-fuzz minimize <file> [budget]"),
             };
-            // The budget is oracle CHECKS, and a big finding wants a big
-            // one: reduction is greedy per round, so the last bytes cost
-            // the most checks. Interactive, so the default is generous
-            // (the campaign's `minimize-one` keeps its own tight budget).
+            // the budget is oracle checks; interactive, so generous
             let budget = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(4000);
             let code = std::fs::read_to_string(path)?;
             let (min, calls) = minimize(code.trim(), timeout(), budget).await;
@@ -1114,8 +964,6 @@ async fn main() -> Result<()> {
                         )
                         .await;
                         println!("{mode:?}/{route:?}: {}", render(&o));
-                        // Stats are compile-time fusion counters; only the
-                        // fusing modes have anything to say.
                         if !matches!(mode, Mode::Interp) {
                             println!(
                                 "  fusion: attempted={} fused={} jit_generations={}",
@@ -1165,14 +1013,11 @@ fn vm_rss_kb(pid: u32) -> Option<u64> {
         .ok()
 }
 
-/// Long-running leak witnesses for `leakcheck` — reactive programs a
-/// value oracle can never leak-check. Each pairs with the finding
-/// that motivated it; the control rows keep the gate honest (a shared
-/// baseline drift fails nothing).
+/// Long-running leak witnesses for `leakcheck`. The control rows keep
+/// the gate honest: a shared baseline drift fails nothing.
 const LEAK_WITNESSES: &[(&str, &str)] = &[
     (
-        // qop-scalar-error-leak-aug2026: the fused handler-less `$`
-        // minted an owned ArithError every tick and never dropped it.
+        // fused handler-less `$` minting an owned error every tick
         "qop-scalar-error",
         "let clk = sys::time::timer(duration:0.001s, true);\n\
          let x = i64:0;\n\
@@ -1182,7 +1027,7 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          s\n",
     ),
     (
-        // Control: same shape, divisor never 0 — no error is minted.
+        // control: same shape, divisor never 0
         "qop-scalar-control",
         "let clk = sys::time::timer(duration:0.001s, true);\n\
          let x = i64:0;\n\
@@ -1192,9 +1037,7 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          s\n",
     ),
     (
-        // String-churn steady state: a fresh owned ArcStr per tick
-        // through a fused DynCall result — the owned-result drop
-        // discipline under sustained fire.
+        // a fresh owned string per tick through a fused result
         "string-churn",
         "let clk = sys::time::timer(duration:0.001s, true);\n\
          let x = i64:0;\n\
@@ -1202,10 +1045,7 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          str::to_upper(\"[x]abc\")\n",
     ),
     (
-        // select-arm-bind-leak-aug2026: a fused select arm's owned
-        // variant-payload bind (`PayloadValue` clone) was never
-        // dropped on any value-position arm exit — ~55MB/s on a hot
-        // select.
+        // a fused select arm's owned variant-payload bind
         "select-payload-bind",
         "let clk = sys::time::timer(duration:0.001s, true);\n\
          let x = i64:0;\n\
@@ -1213,8 +1053,7 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          select `A([x, i64:2, i64:3]) { `A(xs) => array::len(xs) }\n",
     ),
     (
-        // The list face of the same class: `ListHead`/`ListTail`
-        // clones in a value-position list-pattern arm (~80MB/s).
+        // the list face: `ListHead`/`ListTail` clones in a list-pattern arm
         "select-list-binds",
         "let clk = sys::time::timer(duration:0.001s, true);\n\
          let x = i64:0;\n\

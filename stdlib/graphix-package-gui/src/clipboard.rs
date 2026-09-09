@@ -16,9 +16,7 @@ pub(crate) trait ClipboardOp: Debug + Default + Send + Sync + 'static {
 }
 
 /// Generic [`EvalCachedAsync`] impl wrapping any [`ClipboardOp`].
-///
-/// All clipboard operations create a fresh `arboard::Clipboard` inside
-/// `spawn_blocking` (it's `!Send`, so we can't hold one across awaits).
+/// `arboard::Clipboard` is `!Send`, so each op creates one inside `spawn_blocking`.
 #[derive(Debug, Default)]
 pub(crate) struct ClipboardBuiltin<Op: ClipboardOp>(PhantomData<Op>);
 
@@ -53,8 +51,6 @@ fn with_clipboard(
     }
 }
 
-// ── ReadText ────────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct ReadTextOp;
 
@@ -74,8 +70,6 @@ impl ClipboardOp for ReadTextOp {
 }
 
 pub(crate) type ReadText = CachedArgsAsync<ClipboardBuiltin<ReadTextOp>>;
-
-// ── WriteText ───────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct WriteTextOp;
@@ -99,8 +93,6 @@ impl ClipboardOp for WriteTextOp {
 
 pub(crate) type WriteText = CachedArgsAsync<ClipboardBuiltin<WriteTextOp>>;
 
-// ── ReadImage ───────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct ReadImageOp;
 
@@ -123,8 +115,6 @@ impl ClipboardOp for ReadImageOp {
 }
 
 pub(crate) type ReadImage = CachedArgsAsync<ClipboardBuiltin<ReadImageOp>>;
-
-// ── WriteImage ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct ImageArgs {
@@ -160,8 +150,6 @@ impl ClipboardOp for WriteImageOp {
 
 pub(crate) type WriteImage = CachedArgsAsync<ClipboardBuiltin<WriteImageOp>>;
 
-// ── ReadHtml ────────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct ReadHtmlOp;
 
@@ -181,8 +169,6 @@ impl ClipboardOp for ReadHtmlOp {
 }
 
 pub(crate) type ReadHtml = CachedArgsAsync<ClipboardBuiltin<ReadHtmlOp>>;
-
-// ── WriteHtml ───────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct HtmlArgs {
@@ -214,8 +200,6 @@ impl ClipboardOp for WriteHtmlOp {
 
 pub(crate) type WriteHtml = CachedArgsAsync<ClipboardBuiltin<WriteHtmlOp>>;
 
-// ── ReadFiles ───────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct ReadFilesOp;
 
@@ -235,8 +219,6 @@ impl ClipboardOp for ReadFilesOp {
 }
 
 pub(crate) type ReadFiles = CachedArgsAsync<ClipboardBuiltin<ReadFilesOp>>;
-
-// ── WriteFiles ──────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct WriteFilesOp;
@@ -261,8 +243,6 @@ impl ClipboardOp for WriteFilesOp {
 
 pub(crate) type WriteFiles = CachedArgsAsync<ClipboardBuiltin<WriteFilesOp>>;
 
-// ── Clear ───────────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct ClearOp;
 
@@ -285,8 +265,6 @@ impl ClipboardOp for ClearOp {
 }
 
 pub(crate) type Clear = CachedArgsAsync<ClipboardBuiltin<ClearOp>>;
-
-// ── Value conversion helpers ────────────────────────────────────────
 
 pub(crate) fn image_to_value(img: arboard::ImageData<'_>) -> Value {
     use arcstr::literal;

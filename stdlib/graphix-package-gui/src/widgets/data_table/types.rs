@@ -1,8 +1,4 @@
 //! Pure data types, parsers, and small helpers for the data table.
-//!
-//! Nothing in here depends on `DataTableW` state; the widget methods
-//! live in the sibling modules. Keeping these in one file avoids
-//! sprinkling `parse_*` helpers across every impl block that calls them.
 
 use super::{CELL_H_PADDING, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH, Renderer};
 use ahash::{AHashMap, AHashSet};
@@ -54,10 +50,8 @@ pub(super) fn col_min_width(name: &str, max_w: f32) -> f32 {
     col_text_width(name).max(MIN_COL_WIDTH).min(max_w)
 }
 
-/// Truncate text to fit within a pixel width, appending "..." if needed.
-/// Uses actual text measurement for accuracy. Returns the input as a
-/// borrow when no truncation is required — the common case for short
-/// numeric cells — so no allocation happens in that path.
+/// Truncate text to fit within a pixel width, appending "..." if
+/// needed. Borrows the input when no truncation is required.
 pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     let avail = max_px - CELL_H_PADDING - RESIZE_HANDLE_WIDTH;
     if avail <= 0.0 || text.is_empty() {
@@ -67,7 +61,6 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     if full_w <= avail {
         return Cow::Borrowed(text);
     }
-    // Binary search for the longest prefix that fits with "..."
     let ellipsis_w = measure_text("...", 13.0, iced_core::Font::DEFAULT);
     let target = avail - ellipsis_w;
     if target <= 0.0 {
@@ -77,7 +70,6 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     let mut hi = text.len();
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
-        // Snap to char boundary
         let mid = if mid >= text.len() {
             text.len()
         } else {
@@ -98,7 +90,6 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
             }
         } else {
             hi = mid - 1;
-            // Snap hi to char boundary
             while hi > 0 && !text.is_char_boundary(hi) {
                 hi -= 1;
             }
@@ -114,10 +105,8 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     }
 }
 
-/// Viewport-derived layout metrics. Written by the `responsive`
-/// closure on each layout pass, read by keyboard nav, scroll handling,
-/// subscription updates. `dirty` drives the deferred
-/// `update_subscriptions()` hook in `before_view`.
+/// Layout metrics written on each layout pass. `dirty` requests a
+/// subscription reconcile in `before_view`.
 #[derive(Clone, Copy)]
 pub(super) struct ViewportMetrics {
     pub(super) viewport_width: f32,
@@ -142,17 +131,11 @@ impl Default for ViewportMetrics {
 /// State for an active column resize drag.
 pub(super) struct ResizeDrag {
     pub(super) col_name: ArcStr,
-    /// Last cursor x in whatever coordinate system ColumnResizeMove
-    /// uses (widget-local, per MouseArea::on_move). We track deltas
-    /// between successive moves so the drag is robust regardless of
-    /// whether the cursor position is window-absolute or local —
-    /// all that matters is that consecutive samples use the same
-    /// frame. `None` until the first move sample arrives.
+    /// Last cursor x; only deltas between samples are used, so the
+    /// coordinate frame does not matter. `None` before the first move.
     pub(super) last_x: Option<f32>,
     pub(super) current_width: f32,
 }
-
-// ── Sort / column types ────────────────────────────────────────────
 
 #[derive(Clone, FromValue)]
 pub(super) struct SortBy {
@@ -180,38 +163,26 @@ pub(super) enum ColumnType {
     Progress,
     /// Clickable button showing cell value.
     Button,
-    /// Mini line chart accumulating recent values. `min`/`max`, when
-    /// `Some`, fix the y-axis bounds for every cell in the column;
-    /// otherwise the column auto-scales to the union of all rows'
-    /// values (so cells in the same column can be compared visually).
+    /// Mini line chart of recent values. `min`/`max` fix the y-axis;
+    /// an unset end auto-scales to the union of the column's rows.
     Sparkline { history_seconds: f64, min: Option<f64>, max: Option<f64> },
 }
 
-/// Parsed column spec from one entry of the graphix
-/// `Array<[string, ColumnSpec]>` columns array. A bare-string entry
-/// (`Value::String`) inflates to a `ColumnSpec` with `typ = Text`,
-/// `source` reffing `` `Netidx ``, and no callback — the equivalent of
-/// the netidx-published cell behavior the column would have had under
-/// the old `column_types` API.
+/// Parsed column spec from one entry of the columns array. A bare
+/// string inflates to a `Text` column with a `` `Netidx `` source and
+/// no callback.
 pub(super) struct ColumnSpec {
     pub(super) name: ArcStr,
     pub(super) typ: ColumnType,
     pub(super) display_name: Option<ArcStr>,
-    /// Raw `source` ref bind ID — compiled separately into the
-    /// `ColumnState::source` entry. `0` for bare-string columns,
-    /// which inflate to a synthetic `&\`Netidx` ref with no bid.
+    /// `source` ref bind id; `0` for bare-string columns.
     pub(super) source_bid: u64,
-    /// Raw width ref bind ID — compiled separately into the
-    /// `ColumnState::width_ref` slot.
+    /// Width ref bind id.
     pub(super) width_bid: u64,
-    /// Raw on_resize ref bind ID. The .gxi types the field as
-    /// `&[fn(f64) -> Any, null]`, so the runtime value is a u64 bid
-    /// pointing at the callable (or null).
+    /// `on_resize` ref bind id.
     pub(super) on_resize_bid: u64,
     pub(super) callback_value: Option<Value>,
 }
-
-// ── Parsing ────────────────────────────────────────────────────────
 
 pub(super) fn parse_sort_by(v: &Value) -> LPooled<Vec<SortBy>> {
     v.clone().cast_to().unwrap_or_default()
@@ -274,8 +245,6 @@ fn parse_column_type(v: &Value) -> (ColumnType, Option<Value>) {
         "Button" => (ColumnType::Button, extract_struct1_callback(&payload)),
         "Sparkline" => {
             // struct { history_seconds, max, min } — 3 fields alphabetical.
-            // `min`/`max` are `[f64, null]` so cast_to::<f64>() returns
-            // Err for `null` — that's how we get None.
             let (hs, max_o, min_o) = match payload.cast_to::<[(ArcStr, Value); 3]>() {
                 Ok([(_, hs_v), (_, max_v), (_, min_v)]) => {
                     let hs_raw = hs_v.cast_to::<f64>().unwrap_or(60.0);
@@ -293,9 +262,8 @@ fn parse_column_type(v: &Value) -> (ColumnType, Option<Value>) {
     }
 }
 
-/// Extract the lone field of a one-field struct (e.g. `Text({on_edit})`),
-/// returning `None` for `null` so callers don't compile callbacks for
-/// the absent case.
+/// The lone field of a one-field struct such as `Text({on_edit})`;
+/// `None` when it is null.
 fn extract_struct1_callback(payload: &Value) -> Option<Value> {
     match payload.clone().cast_to::<[(ArcStr, Value); 1]>() {
         Ok([(_, v)]) => non_null(v),
@@ -339,9 +307,8 @@ pub(super) fn value_to_display(v: &Value) -> ArcStr {
     }
 }
 
-/// Strip null bytes from a column name so user-supplied input can't
-/// collide with the `ROW_NAME_KEY` / `VALUE_COL_KEY` sentinels (both
-/// of which carry leading `\0`).
+/// Strip null bytes so a user column name cannot collide with the
+/// `ROW_NAME_KEY` / `VALUE_COL_KEY` sentinels.
 fn sanitize_col_name(raw: ArcStr) -> ArcStr {
     if raw.contains('\0') {
         let cleaned: CompactString = raw.chars().filter(|ch| *ch != '\0').collect();
@@ -351,10 +318,8 @@ fn sanitize_col_name(raw: ArcStr) -> ArcStr {
     }
 }
 
-/// Parse one entry of the columns array. Bare strings inflate to a
-/// default Text column with `` `Netidx `` source. Structs cast to the
-/// 6-field ColumnSpec shape (name, typ, display_name, source,
-/// on_resize, width — alphabetical).
+/// Parse one entry of the columns array; bare strings inflate to a
+/// default `Text` column with a `` `Netidx `` source.
 fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
     if let Value::String(name) = v {
         return Some(ColumnSpec {
@@ -394,12 +359,9 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
     })
 }
 
-/// Parse the columns array of a `Table` value. Returns the specs in
-/// the user-supplied order; for duplicate names, the column appears
-/// in the position of the first occurrence but the *last* spec wins.
-/// This lets callers append explicit `ColumnSpec` overrides to a
-/// `sys::net::list_table`-derived bare-string columns list without
-/// having to filter the original out first.
+/// Parse the columns array of a `Table` value, in user order. For a
+/// duplicate name the first occurrence's position and the last spec
+/// win, so appended overrides work.
 pub(super) fn parse_table_columns(v: &Value) -> LPooled<Vec<ColumnSpec>> {
     let mut raw = match v.clone().cast_to::<LPooled<Vec<Value>>>() {
         Ok(r) => r,
@@ -420,39 +382,26 @@ pub(super) fn parse_table_columns(v: &Value) -> LPooled<Vec<ColumnSpec>> {
     out
 }
 
-// ── Filter / sort ──────────────────────────────────────────────────
-
 pub(super) fn numeric_key(s: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
-/// Return the basename of a row path as `&str`, falling back to the
-/// full path string when it has no separator. Zero-allocation — the
-/// result borrows from the path's backing `ArcStr`.
+/// The basename of a row path, or the whole path when it has no
+/// separator.
 pub(super) fn row_basename(p: &Path) -> &str {
     Path::basename(p).unwrap_or(&**p)
 }
 
-/// Pre-parsed cache for a column's `source` ref. Built once when the
-/// ref updates so the per-cell display path can look up by `&str`
-/// without rebuilding a `Value::String(ArcStr)` key per call.
-/// `PerRow` uses `AHashMap<ArcStr, Value>` because `ArcStr: Borrow<str>`
-/// enables the cheap lookup.
-///
-/// `Netidx(fallback)` means the column subscribes to
-/// `<row_path>/<col_name>` for every absolute row. The fallback
-/// is what's rendered for cells whose subscription is still
-/// pending or `Unsubscribed`, AND for virtual rows (non-absolute
-/// paths) that never subscribe. `Static(fallback)` means no
-/// subscription on any row — the fallback IS the cell's value.
+/// A column's parsed `source` ref. `Netidx` subscribes every absolute
+/// row to `<row_path>/<col_name>` and shows the fallback for pending,
+/// unsubscribed and virtual cells; `Static` shows the fallback for
+/// every cell.
 pub(super) enum Source {
     Netidx(Fallback),
     Static(Fallback),
 }
 
-/// Where placeholder / fallback values come from. Shared between
-/// `Source::Netidx` (used for pending subs and virtual rows) and
-/// `Source::Static` (used for every cell).
+/// Where a cell's fallback value comes from.
 pub(super) enum Fallback {
     None,
     Uniform(Value),
@@ -474,9 +423,7 @@ impl Fallback {
         }
     }
 
-    /// Per-row stored value, or `None` for `Fallback::None`.
-    /// `Uniform` returns the same value for every row;
-    /// `PerRow` looks up by row basename.
+    /// The fallback for `row_name` (a row basename).
     pub(super) fn lookup(&self, row_name: &str) -> Option<&Value> {
         match self {
             Fallback::None => None,
@@ -489,33 +436,21 @@ impl Fallback {
 impl Source {
     fn parse(v: Option<&Value>) -> Self {
         match v {
-            // Missing / null source ref → default Netidx with no
-            // fallback (bare-string columns inflate to this via
-            // the parser).
             None | Some(Value::Null) => Source::Netidx(Fallback::None),
-            // Variant with payload arrives as a 2-element tuple
-            // (tag, payload) — `\`Netidx(p)` casts to ("Netidx", p).
             Some(v) => match v.clone().cast_to::<(ArcStr, Value)>() {
                 Ok((tag, payload)) if tag.as_str() == "Netidx" => {
                     Source::Netidx(Fallback::from_value(payload))
                 }
-                // Bare string / Map at top level → no subscription.
                 _ => Source::Static(Fallback::from_value(v.clone())),
             },
         }
     }
 
-    /// True when this source drives a netidx subscription. The
-    /// subscription path is `<row_path>/<col_name>` per absolute row;
-    /// non-Netidx sources skip subscription on every row.
     pub(super) fn is_netidx(&self) -> bool {
         matches!(self, Source::Netidx(_))
     }
 
-    /// Per-row fallback value used when a cell has no live
-    /// subscription value. For `Netidx` this covers virtual rows and
-    /// pending / `Unsubscribed` cells; for `Static` it covers every
-    /// cell.
+    /// The fallback for a cell with no live subscription value.
     pub(super) fn lookup(&self, row_name: &str) -> Option<&Value> {
         match self {
             Source::Netidx(f) | Source::Static(f) => f.lookup(row_name),
@@ -540,11 +475,8 @@ impl<X: GXExt> SourceEntry<X> {
     }
 }
 
-/// Per-column state. One entry per column in the table's `columns`
-/// array, in display order. Always carries a `ColumnSpec` (bare
-/// strings inflate to a default Text + `` `Netidx `` source spec
-/// during parsing); compiled callables and refs are populated as
-/// `apply_table` resolves the per-column bind ids.
+/// Per-column state: the parsed spec plus the compiled callables and
+/// refs, filled in by `apply_table`.
 pub(super) struct ColumnState<X: GXExt> {
     pub(super) spec: ColumnSpec,
     pub(super) callback: Option<Callable<X>>,
@@ -556,9 +488,6 @@ pub(super) struct ColumnState<X: GXExt> {
 }
 
 impl<X: GXExt> ColumnState<X> {
-    /// Build a fresh `ColumnState` from a parsed spec. Compiled
-    /// callables/refs start `None` and are filled in by
-    /// `apply_column_recompile`.
     pub(super) fn new(spec: ColumnSpec) -> Self {
         Self {
             spec,
@@ -571,9 +500,8 @@ impl<X: GXExt> ColumnState<X> {
         }
     }
 
-    /// True when this column subscribes to netidx — derived from the
-    /// source ref's parsed value when known, defaulting to true (the
-    /// `` `Netidx `` variant is what bare-string columns inflate to).
+    /// True when this column subscribes to netidx; true until the
+    /// source ref has a value.
     pub(super) fn is_subscribed(&self) -> bool {
         match self.source.as_ref() {
             Some(s) => s.parsed.is_netidx(),
@@ -590,12 +518,8 @@ impl std::fmt::Display for NakedValue<'_> {
 }
 
 pub(super) fn format_value(v: &Value) -> ArcStr {
-    // Strings are displayed bare (no surrounding quotes). fmt_naked
-    // quotes strings for parser round-tripping, but spreadsheet cells
-    // look much better without the quotes, and Combo's value lookup
-    // matches raw ids. Returns ArcStr because cell values are stored
-    // long-term (in `cells.grid`) and read many times per frame —
-    // refcount-bump clones beat per-read String allocs.
+    // Strings are shown without quotes; Combo's value lookup matches
+    // raw ids.
     match v {
         Value::Null => ArcStr::new(),
         Value::String(s) => s.clone(),
@@ -603,19 +527,15 @@ pub(super) fn format_value(v: &Value) -> ArcStr {
     }
 }
 
-/// Parse the user-typed edit buffer as a graphix value. If parsing
-/// succeeds we commit the typed value (e.g. `42` → `i64`, `true` →
-/// `bool`, `duration:1.s` → `Duration`). If parsing fails we commit
-/// the buffer as a bare string, so users can type `hello` without
-/// needing to wrap it in quotes.
+/// Parse an edit buffer as a graphix value, falling back to a bare
+/// string so `hello` needs no quotes.
 pub(super) fn parse_or_quote(s: &str) -> Value {
     netidx::protocol::value_parser::parse_value(s)
         .unwrap_or_else(|_| Value::String(ArcStr::from(s)))
 }
 
-/// Check whether `sel` equals the cell path `<row>/<col>` without
-/// allocating a temporary string. Used by selection-position lookups
-/// in keyboard nav and cell-selection rendering.
+/// Whether `sel` equals the cell path `<row>/<col>`, without
+/// allocating.
 pub(super) fn cell_path_matches(sel: &ArcStr, row: &str, col: &str) -> bool {
     let s = sel.as_str();
     let n = row.len();
@@ -625,10 +545,8 @@ pub(super) fn cell_path_matches(sel: &ArcStr, row: &str, col: &str) -> bool {
         && &s[n + 1..] == col
 }
 
-/// Decimate a sparkline history by merging adjacent pairs.
-/// For each pair, keeps the point with greater absolute deviation
-/// from the pair's mean value, preserving peaks and valleys.
-/// Halves the number of points.
+/// Halve a sparkline history: of each adjacent pair, keep the point
+/// farther from the pair's mean, preserving peaks and valleys.
 pub(crate) fn decimate_sparkline(history: &mut VecDeque<(Instant, f64)>) {
     let points: Vec<(Instant, f64)> = history.drain(..).collect();
     let mut i = 0;
@@ -639,7 +557,6 @@ pub(crate) fn decimate_sparkline(history: &mut VecDeque<(Instant, f64)>) {
             let mean = (a.1 + b.1) / 2.0;
             let da = (a.1 - mean).abs();
             let db = (b.1 - mean).abs();
-            // Keep the point with greater deviation, use midpoint time.
             let mid_t = a.0 + (b.0 - a.0) / 2;
             if da >= db {
                 history.push_back((mid_t, a.1));

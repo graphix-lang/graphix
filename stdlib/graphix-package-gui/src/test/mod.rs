@@ -28,11 +28,9 @@ const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
     &crate::P,
 ];
 
-/// Test harness for GUI widget integration tests.
-///
-/// Compiles graphix code that produces a Widget value, builds the
-/// widget tree, and provides helpers for simulating interactions
-/// through the reactive loop.
+/// Test harness for GUI widget integration tests: compiles graphix
+/// code producing a Widget value, builds the widget tree, and drives
+/// interactions through the reactive loop.
 struct GuiTestHarness {
     _ctx: TestCtx,
     gx: graphix_rt::GXHandle<NoExt>,
@@ -48,11 +46,8 @@ struct GuiTestHarness {
 }
 
 impl GuiTestHarness {
-    /// Compile graphix code that produces a Widget value.
-    ///
-    /// `code` is module-level graphix code. The last binding should be
-    /// named `result` and evaluate to a Widget value.
-    /// Example: `"use gui::*; let result = gui::text(content: &\"hello\")"`.
+    /// Compile module-level graphix code whose last binding, `result`,
+    /// is a Widget value.
     async fn new(code: &str) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel(100);
         let tbl = AHashMap::from_iter([(
@@ -68,10 +63,8 @@ impl GuiTestHarness {
             .context("compile graphix code")?;
         let expr_id = compiled.exprs[0].id;
 
-        // Wait for the initial value
         let initial_value = wait_for_update(&mut rx, expr_id).await?;
 
-        // Compile the widget value into a widget tree
         let widget = widgets::compile(gx.clone(), initial_value)
             .await
             .context("compile widget tree")?;
@@ -112,7 +105,6 @@ impl GuiTestHarness {
                             )?;
                         }
                     }
-                    // Reset timeout after each batch
                     timeout.as_mut().reset(
                         tokio::time::Instant::now() + Duration::from_millis(50)
                     );
@@ -123,12 +115,9 @@ impl GuiTestHarness {
         Ok(changed)
     }
 
-    /// Watch a graphix variable by name and return its initial value.
-    ///
-    /// The name should be a module-qualified path like "test::released".
-    /// Looks up the BindId in the compiled env and creates a Ref to
-    /// track updates. Use `get_watched()` to read the latest value
-    /// after calling `drain()`.
+    /// Watch a module-qualified variable such as "test::released" and
+    /// return its initial value; `get_watched()` reads it after a
+    /// `drain()`.
     async fn watch(&mut self, name: &str) -> Result<Value> {
         let bid = find_bind_id(&self.compiled.env, name)
             .with_context(|| format!("watch: lookup {name}"))?;
@@ -141,7 +130,6 @@ impl GuiTestHarness {
         self.watched.insert(r.id, initial.clone());
         self.watch_names.insert(name.to_string(), r.id);
         self._refs.push(r);
-        // Drain to pick up the ref's initial update event
         self.drain().await?;
         Ok(initial)
     }
@@ -151,16 +139,11 @@ impl GuiTestHarness {
         self.watch_names.get(name).and_then(|eid| self.watched.get(eid))
     }
 
-    /// Dispatch iced Messages back through the runtime and widget,
-    /// mirroring `GuiHandler::about_to_wait` in src/event_loop.rs so
-    /// tests see the same effects as production. Drains resulting
-    /// reactive updates at the end.
+    /// Dispatch iced Messages through the runtime and widget as
+    /// `GuiHandler::about_to_wait` does, then drain.
     async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
-        // Mirror the event loop: `Call` hits the graphix runtime
-        // directly, everything else goes through `on_message` and
-        // any follow-up messages the shell emits are fed back in.
-        // FIFO (same as the real event loop) so message ordering
-        // like CellEdit → CellEditSubmit is preserved.
+        // FIFO like the real event loop, so CellEdit precedes
+        // CellEditSubmit.
         let mut pending: std::collections::VecDeque<Message> =
             msgs.iter().cloned().collect();
         while let Some(msg) = pending.pop_front() {
@@ -169,10 +152,8 @@ impl GuiTestHarness {
                 Message::Call(id, args) => {
                     self.gx.call(id, args)?;
                 }
-                // ColumnResize messages are host-handled in production
-                // (the event loop snapshots the cursor position before
-                // dispatch); tests that care invoke widget helpers
-                // directly.
+                // Host-handled in production; tests call the widget
+                // helpers directly.
                 Message::ColumnResizeStart(_)
                 | Message::ColumnResizeMove(_)
                 | Message::ColumnResizeEnd => {}
@@ -187,30 +168,21 @@ impl GuiTestHarness {
         Ok(())
     }
 
-    /// Call view() on the widget. Panicking here means the widget
-    /// tree is in an inconsistent state.
+    /// Call `view()` on the widget.
     fn view(&self) -> crate::widgets::IcedElement<'_> {
         self.widget.view()
     }
 
-    /// Mirror what the iced event loop does between a wake and the next
-    /// render: flush any deferred per-widget state (e.g. data_table
-    /// re-sort triggered by sort-column subscription updates that
-    /// arrived since the last drain). Tests that publish values to a
-    /// sort column should call this before reading `dt_snapshot()`.
+    /// Flush deferred per-widget state as the event loop does before a
+    /// render. Call before `dt_snapshot()` after publishing to a sort
+    /// column.
     #[allow(dead_code)]
     fn before_view(&mut self) -> bool {
         self.widget.before_view()
     }
 
-    /// Drain + before_view in a loop until `pred(self)` returns true
-    /// or `within` elapses. Panics on timeout with a diagnostic
-    /// message — preferred to the fragile manual `for _ in 0..N`
-    /// polling pattern because a missed condition produces a clear
-    /// failure instead of falling through to an assertion that
-    /// doesn't know polling was involved. Every iteration flushes
-    /// both the runtime queue and the widget's `before_view` hooks,
-    /// so tests see the same state a redraw would.
+    /// Drain and `before_view` in a loop until `pred(self)` holds;
+    /// panics when `within` elapses.
     #[allow(dead_code)]
     async fn wait_until<F>(
         &mut self,
@@ -240,15 +212,13 @@ impl GuiTestHarness {
         }
     }
 
-    /// Get a DataTableSnapshot from the widget, if it is a data table.
+    /// The widget's `DataTableSnapshot`, if it is a data table.
     fn dt_snapshot(&self) -> crate::widgets::DataTableSnapshot {
         self.widget.data_table_snapshot().expect("widget is not a DataTableW")
     }
 
-    /// Downcast the root widget to `DataTableW<NoExt>` for direct
-    /// access to test-only accessors. Panics if the widget is not a
-    /// data table — every test using this helper compiles a `data_table`
-    /// at the root of its graphix code.
+    /// Downcast the root widget to `DataTableW<NoExt>`; panics if it is
+    /// not a data table.
     fn dt(&self) -> &crate::widgets::data_table::DataTableW<NoExt> {
         self.widget
             .as_any()
@@ -256,9 +226,7 @@ impl GuiTestHarness {
             .expect("widget is not a DataTableW")
     }
 
-    /// Mutable downcast to `DataTableW<NoExt>` — needed by tests that
-    /// call the widget's `handle_*` helpers (kept as inherent methods
-    /// after `on_message` became the trait entry point).
+    /// Mutable downcast to `DataTableW<NoExt>`.
     fn dt_mut(&mut self) -> &mut crate::widgets::data_table::DataTableW<NoExt> {
         self.widget
             .as_any_mut()
@@ -266,12 +234,8 @@ impl GuiTestHarness {
             .expect("widget is not a DataTableW")
     }
 
-    /// Dispatch a callback through the runtime by its CallableId and
-    /// drain resulting reactive updates. Used by data_table tests to
-    /// invoke per-cell callbacks (on_edit/on_click/on_resize) without
-    /// going through pixel-layout: the widget itself fires the same
-    /// callable internally, so calling it through the bridge mirrors
-    /// the runtime's behavior.
+    /// Call a callable through the runtime and drain, as the widget
+    /// itself would.
     async fn call_callback(
         &mut self,
         id: graphix_rt::CallableId,
@@ -282,12 +246,9 @@ impl GuiTestHarness {
         Ok(())
     }
 
-    /// Compile a graphix-defined function (lambda) by its module-qualified
-    /// name into a `CallableId`. Mirrors the existing `watch` lookup but
-    /// returns a callable rather than a tracked ref. The `Ref` and
-    /// `Callable` are retained on the harness — dropping the
-    /// `Callable` immediately sends `DeleteCallable` to the runtime,
-    /// invalidating the returned id.
+    /// Compile a graphix lambda by module-qualified name into a
+    /// `CallableId`. The `Callable` is retained on the harness because
+    /// dropping it invalidates the id.
     async fn compile_named_callable(
         &mut self,
         name: &str,
@@ -337,15 +298,11 @@ async fn wait_for_update(
     }
 }
 
-/// Find a BindId by a short name like "test::released" in the env.
-///
-/// The env stores bindings under generated scope prefixes (e.g.
-/// `/do1234/test`), so we can't use `lookup_bind` with a root scope.
-/// Instead, scan all scopes for one whose suffix matches the module
-/// path and contains the variable name.
+/// Find a BindId by a name like "test::released". Bindings live under
+/// generated scope prefixes, so this scans for a scope whose suffix
+/// matches the module path.
 fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> {
     use netidx::path::Path;
-    // Split "test::released" into module = "test", var = "released"
     let parts: Vec<&str> = name.split("::").collect();
     let (module, var) = match parts.as_slice() {
         [module, var] => (*module, *var),
@@ -362,15 +319,12 @@ fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> 
     bail!("no binding {name} found in env")
 }
 
-// ── Headless GPU ────────────────────────────────────────────────────
-
 use iced_core::{Event, Point, Size, clipboard, mouse};
 use iced_runtime::user_interface::{self, UserInterface};
 use iced_wgpu::{graphics::Shell, wgpu};
 use tokio::sync::OnceCell;
 
-/// Shared headless wgpu adapter + device. Creating GPU resources is
-/// expensive, so we initialize once and share across all tests.
+/// Shared headless wgpu adapter and device, created once for all tests.
 struct HeadlessGpu {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -387,7 +341,6 @@ async fn headless_gpu() -> &'static HeadlessGpu {
                 backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
                 ..Default::default()
             });
-            // Try hardware adapter first, fall back to software
             let adapter = match instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     compatible_surface: None,
@@ -438,11 +391,9 @@ impl HeadlessGpu {
     }
 }
 
-// ── Interaction Harness ─────────────────────────────────────────────
-
-/// Test harness that wraps `GuiTestHarness` with a headless renderer
-/// and iced `UserInterface` to simulate user interactions (clicks,
-/// typing, drags) and collect the resulting `Message`s.
+/// `GuiTestHarness` plus a headless renderer and iced `UserInterface`,
+/// for simulating clicks, typing and drags and collecting the
+/// resulting `Message`s.
 struct InteractionHarness {
     inner: GuiTestHarness,
     renderer: widgets::Renderer,
@@ -469,8 +420,8 @@ impl InteractionHarness {
         })
     }
 
-    /// Build a UserInterface, feed events, and return the messages
-    /// produced by widget callbacks.
+    /// Build a UserInterface, feed events, and return the messages the
+    /// widgets produced.
     fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
         let element = self.inner.widget.view();
         let cache = std::mem::take(&mut self.cache);
@@ -490,28 +441,18 @@ impl InteractionHarness {
         self.inner.drain().await
     }
 
-    /// Simulate a window resize. Changes the layout viewport so the
-    /// next `process_events`/`view` pass lays out at the new size, and
-    /// delivers an empty-events pass so the responsive-wrapped widgets
-    /// see the new size immediately.
+    /// Simulate a window resize; runs one layout pass so
+    /// responsive-wrapped widgets see the new size immediately.
     #[allow(dead_code)]
     fn resize(&mut self, viewport: Size) {
         self.viewport = viewport;
-        // Invalidate the cache; bounds changed, so the cached tree is
-        // stale.
         self.cache = user_interface::Cache::default();
         let _ = self.process_events(&[]);
     }
 
     fn view(&mut self) -> crate::widgets::IcedElement<'_> {
-        // Some widgets (notably `data_table`) wrap their view in
-        // `iced_widget::responsive`, so size-dependent state like
-        // `cached_col_widths` is populated by the closure during
-        // layout, not by the `view()` call itself. Run an empty-events
-        // pass first so that layout executes — side effects (cache
-        // writes through interior mutability) persist even though the
-        // first UserInterface is discarded — then return a fresh
-        // element for the caller.
+        // A `responsive`-wrapped widget fills its size-dependent state
+        // during layout, not in `view()`, so lay out once first.
         let _ = self.process_events(&[]);
         self.inner.view()
     }
@@ -538,13 +479,10 @@ impl InteractionHarness {
         self.inner.dispatch_calls(msgs).await
     }
 
-    // ── Interaction helpers ─────────────────────────────────────
-
     fn click(&mut self, pos: Point) -> Vec<Message> {
         self.cursor_position = pos;
         let mut all = Vec::new();
-        // Each event needs its own UI frame so widget state machines
-        // (pressed → released) transition correctly.
+        // One UI frame per event so pressed → released transitions.
         all.extend(self.process_events(&[Event::Mouse(mouse::Event::CursorMoved {
             position: pos,
         })]));
@@ -574,7 +512,6 @@ impl InteractionHarness {
         let mut all_msgs = Vec::new();
         for ch in text.chars() {
             let s: iced_core::SmolStr = ch.to_string().into();
-            // Each character as a separate frame
             all_msgs.extend(self.process_events(&[Event::Keyboard(
                 keyboard::Event::KeyPressed {
                     key: keyboard::Key::Character(s.clone()),
@@ -631,10 +568,8 @@ impl InteractionHarness {
         self.process_events(&[Event::Mouse(mouse::Event::CursorMoved { position: pos })])
     }
 
-    /// Drive `Message::EditorAction` messages through the widget's
-    /// `on_message` and collect the `Call` messages the editor
-    /// publishes. The matching editor widget publishes a single
-    /// `Message::Call(callable_id, [value])` per edit.
+    /// Drive `Message::EditorAction`s through `on_message` and collect
+    /// the `Call` messages the editor publishes, one per edit.
     fn process_editor_actions(&mut self, msgs: &[Message]) -> Vec<(CallableId, Value)> {
         let mut out = Vec::new();
         for m in msgs {
@@ -676,8 +611,6 @@ impl InteractionHarness {
         all_msgs
     }
 }
-
-// ── Message assertion helpers ───────────────────────────────────────
 
 use graphix_rt::CallableId;
 

@@ -14,8 +14,6 @@ use tokio::{
 
 use crate::{StreamKind, get_stream, wrap_tcp};
 
-// ── Abstract TcpListenerValue ──────────────────────────────────
-
 #[derive(Debug, Clone)]
 pub(crate) struct TcpListenerValue {
     listener: Arc<TcpListener>,
@@ -64,8 +62,6 @@ fn get_listener(cached: &CachedVals, idx: usize) -> Option<Arc<TcpListener>> {
     }
 }
 
-// ── TcpConnect ─────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct TcpConnectEv;
 
@@ -89,8 +85,6 @@ impl EvalCachedAsync for TcpConnectEv {
 }
 
 pub(crate) type TcpConnect = CachedArgsAsync<TcpConnectEv>;
-
-// ── TcpListen ──────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct TcpListenEv;
@@ -117,8 +111,6 @@ impl EvalCachedAsync for TcpListenEv {
 
 pub(crate) type TcpListen = CachedArgsAsync<TcpListenEv>;
 
-// ── TcpAccept ──────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct TcpAcceptEv;
 
@@ -143,8 +135,6 @@ impl EvalCachedAsync for TcpAcceptEv {
 }
 
 pub(crate) type TcpAccept = CachedArgsAsync<TcpAcceptEv>;
-
-// ── TcpShutdown ────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct TcpShutdownEv;
@@ -175,8 +165,6 @@ impl EvalCachedAsync for TcpShutdownEv {
 }
 
 pub(crate) type TcpShutdown = CachedArgsAsync<TcpShutdownEv>;
-
-// ── TcpPeerAddr ────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct TcpPeerAddrEv;
@@ -212,8 +200,6 @@ impl EvalCachedAsync for TcpPeerAddrEv {
 
 pub(crate) type TcpPeerAddr = CachedArgsAsync<TcpPeerAddrEv>;
 
-// ── TcpLocalAddr ───────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct TcpLocalAddrEv;
 
@@ -247,8 +233,6 @@ impl EvalCachedAsync for TcpLocalAddrEv {
 }
 
 pub(crate) type TcpLocalAddr = CachedArgsAsync<TcpLocalAddrEv>;
-
-// ── TcpListenerAddr ────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct TcpListenerAddrEv;

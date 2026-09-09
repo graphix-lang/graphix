@@ -4,7 +4,7 @@ use netidx::subscriber::Value;
 use std::collections::HashSet;
 use tokio::fs;
 
-/// Helper to extract DirEntry array from Result value
+/// The DirEntry array out of a result value.
 fn extract_direntry_array(v: &Value) -> Result<Vec<&Value>> {
     if let Value::Array(arr) = v {
         Ok(arr.iter().collect())
@@ -13,7 +13,7 @@ fn extract_direntry_array(v: &Value) -> Result<Vec<&Value>> {
     }
 }
 
-/// Helper to extract field from DirEntry struct
+/// A field of a DirEntry struct.
 fn get_field<'a>(entry: &'a Value, field: &str) -> Result<&'a Value> {
     if let Value::Array(arr) = entry {
         for item in arr.iter() {
@@ -33,8 +33,6 @@ fn get_field<'a>(entry: &'a Value, field: &str) -> Result<&'a Value> {
     }
 }
 
-// ===== Basic readdir tests =====
-
 run_with_tempdir! {
     name: test_readdir_basic,
     code: r#"sys::fs::readdir("{}")"#,
@@ -49,14 +47,12 @@ run_with_tempdir! {
         let entries = extract_direntry_array(&v)?;
         assert_eq!(entries.len(), 3, "expected 3 entries");
 
-        // Check that we have the expected file names
         let mut names = HashSet::new();
         for entry in &entries {
             let file_name = get_field(entry, "file_name")?;
             if let Value::String(s) = file_name {
                 names.insert(s.to_string());
             }
-            // Verify depth is 1 (immediate children)
             let depth = get_field(entry, "depth")?;
             assert!(matches!(depth, Value::I64(1)), "expected depth=1, got: {depth:?}");
         }
@@ -90,8 +86,6 @@ run_with_tempdir! {
     expect_error
 }
 
-// ===== Depth tests =====
-
 run_with_tempdir! {
     name: test_readdir_max_depth_2,
     code: r#"sys::fs::readdir(#max_depth: 2, "{}")"#,
@@ -106,7 +100,6 @@ run_with_tempdir! {
     },
     expect: |v: Value| -> Result<()> {
         let entries = extract_direntry_array(&v)?;
-        // Should have: root.txt, sub1, sub1/file1.txt, sub1/sub2
         assert!(entries.len() >= 4, "expected at least 4 entries, got {}", entries.len());
 
         let mut names = HashSet::new();
@@ -125,7 +118,6 @@ run_with_tempdir! {
         assert!(names.contains("root.txt"), "missing root.txt");
         assert!(names.contains("file1.txt"), "missing file1.txt");
         assert_eq!(max_depth, 2, "should not traverse beyond depth 2");
-        // file2.txt should NOT be in the results (it's at depth 3)
         assert!(!names.contains("file2.txt"), "file2.txt should not be included (depth 3)");
         Ok(())
     }
@@ -145,8 +137,6 @@ run_with_tempdir! {
     },
     expect: |v: Value| -> Result<()> {
         let entries = extract_direntry_array(&v)?;
-        // Should skip depth 0 (root) and depth 1 (root.txt, sub1)
-        // Should include depth 2 (file1.txt, sub2) and depth 3 (file2.txt)
 
         let mut names = HashSet::new();
         let mut min_depth = i64::MAX;
@@ -169,8 +159,6 @@ run_with_tempdir! {
     }
 }
 
-// ===== Ordering tests =====
-
 run_with_tempdir! {
     name: test_readdir_contents_first,
     code: r#"sys::fs::readdir(#max_depth: 2, #contents_first: true, "{}")"#,
@@ -184,7 +172,6 @@ run_with_tempdir! {
         let entries = extract_direntry_array(&v)?;
         assert!(entries.len() >= 2, "expected at least 2 entries");
 
-        // With contents_first, file.txt should appear before dir1
         let mut file_idx = None;
         let mut dir_idx = None;
         for (i, entry) in entries.iter().enumerate() {
@@ -208,8 +195,6 @@ run_with_tempdir! {
     }
 }
 
-// ===== Symlink tests (Unix only) =====
-
 #[cfg(unix)]
 run_with_tempdir! {
     name: test_readdir_follow_symlinks,
@@ -232,8 +217,8 @@ run_with_tempdir! {
             }
         }
 
-        // With follow_symlinks=true, we should see file.txt twice:
-        // once under real_dir and once under link_dir
+        // with follow_symlinks=true file.txt appears under real_dir and
+        // under link_dir
         let file_count = entries.iter().filter(|e| {
             if let Ok(Value::String(s)) = get_field(e, "file_name") {
                 &**s == "file.txt"
@@ -297,7 +282,6 @@ run_with_tempdir! {
             }
         }
 
-        // By default, follow_root_symlink is true, so we should see the contents
         assert!(names.contains("file.txt"), "should follow root symlink and see file.txt");
         Ok(())
     }
@@ -315,15 +299,13 @@ run_with_tempdir! {
         root.join("link_to_dir")
     },
     expect: |v: Value| -> Result<()> {
-        // With follow_root_symlink=false, walkdir returns an empty array
-        // rather than an error when the root is a symlink
+        // with follow_root_symlink=false walkdir returns an empty array,
+        // not an error
         let entries = extract_direntry_array(&v)?;
         assert_eq!(entries.len(), 0, "expected empty result when not following root symlink");
         Ok(())
     }
 }
-
-// ===== FileType tests =====
 
 run_with_tempdir! {
     name: test_readdir_file_types,
@@ -376,8 +358,6 @@ run_with_tempdir! {
     }
 }
 
-// ===== Path tests =====
-
 run_with_tempdir! {
     name: test_readdir_full_paths,
     code: r#"sys::fs::readdir("{}")"#,
@@ -400,8 +380,6 @@ run_with_tempdir! {
         Ok(())
     }
 }
-
-// ===== Error handling tests =====
 
 run_with_tempdir! {
     name: test_readdir_invalid_depth_params,
@@ -430,15 +408,12 @@ run_with_tempdir! {
     expect_error
 }
 
-// ===== Complex structure test =====
-
 run_with_tempdir! {
     name: test_readdir_complex_structure,
     code: r#"sys::fs::readdir(#max_depth: 3, "{}")"#,
     setup: |temp_dir| {
         let root = temp_dir.path();
 
-        // Create a complex directory structure
         fs::write(root.join("root1.txt"), "root").await?;
         fs::write(root.join("root2.txt"), "root").await?;
 
@@ -457,7 +432,6 @@ run_with_tempdir! {
     expect: |v: Value| -> Result<()> {
         let entries = extract_direntry_array(&v)?;
 
-        // Count entries at each depth
         let mut depth_counts = std::collections::HashMap::new();
         for entry in &entries {
             let depth = get_field(entry, "depth")?;
@@ -466,9 +440,6 @@ run_with_tempdir! {
             }
         }
 
-        // Depth 1: root1.txt, root2.txt, a, b = 4
-        // Depth 2: a1.txt, a2.txt, b1.txt, aa = 4
-        // Depth 3: aa1.txt = 1
         assert_eq!(depth_counts.get(&1).copied().unwrap_or(0), 4, "expected 4 entries at depth 1");
         assert_eq!(depth_counts.get(&2).copied().unwrap_or(0), 4, "expected 4 entries at depth 2");
         assert_eq!(depth_counts.get(&3).copied().unwrap_or(0), 1, "expected 1 entry at depth 3");

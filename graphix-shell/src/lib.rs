@@ -39,12 +39,8 @@ pub fn stdlib_packages<X: GXExt>() -> Vec<Box<dyn Package<X>>> {
     graphix_package::packages!()
 }
 
-/// Print the script's fusion profile: the delta between the stats
-/// snapshot taken after the stdlib root loaded (`base`) and after the
-/// script compiled (`after`), so stdlib compilation noise is excluded.
-/// `failed` is a blocker profile, not a gap count — the
-/// attempt-then-recurse protocol logs structural misses (Module/Bind
-/// wrappers) even when everything beneath them fused.
+/// Print the script's fusion profile: the stats delta between `base`
+/// (after the stdlib root loaded) and `after` (after the script compiled).
 fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
     let attempted = after.attempted - base.attempted;
     let fused = after.fused - base.fused;
@@ -55,9 +51,6 @@ fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
     );
     let mut by_reason: LPooled<AHashMap<&str, usize>> = LPooled::take();
     for failure in failed {
-        // reasons embed the region's spec text, which can span many
-        // lines — the first line identifies the blocker and keeps the
-        // grouping tight
         let reason = failure.reason.lines().next().unwrap_or("").trim_end();
         *by_reason.entry(reason).or_insert(0) += 1;
     }
@@ -84,8 +77,6 @@ impl<X: GXExt> Output<X> {
         run_on_main: &MainThreadHandle,
         packages: &[Box<dyn Package<X>>],
     ) -> Self {
-        // Offer the value to each package in turn; the first to claim it
-        // (returning `Custom`) wins, otherwise it falls through to text.
         let mut e = e;
         for pkg in packages {
             match pkg.maybe_init_custom(gx, env, e, run_on_main).await {
@@ -354,14 +345,8 @@ impl<X: GXExt> Shell<X> {
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
-        // Arm CANCEL before the first cycle runs. A program may wedge on
-        // the very first cycle (a top-level infinite tail recursion —
-        // recursion evaluates atomically within a cycle, so the engine
-        // does not bound it), and that cycle runs inside `load_env`,
-        // long before the input loop below exists. Independent of the
-        // input path so it lands either way: in script mode the
-        // terminal is cooked and ^C is a SIGINT; in the REPL, reedline
-        // owns ^C in raw mode and the loop's own branch handles it.
+        // Armed before the first cycle: a program may wedge inside
+        // `load_env`, before the input loop exists.
         let sigint = {
             let gx = gx.clone();
             tokio::spawn(async move {
@@ -396,10 +381,7 @@ impl<X: GXExt> Shell<X> {
                                     env = e;
                                     newenv = Some(env.clone());
                                 }
-                                // A bottom the user must hear about (a
-                                // call-depth-limit trip): nothing
-                                // arrives on the value channel, so
-                                // report it directly.
+                                // A bottom with no value-channel event; report it directly.
                                 GXEvent::Diagnostic(_, d) => {
                                     eprintln!("runtime: {d}")
                                 }
@@ -412,16 +394,7 @@ impl<X: GXExt> Shell<X> {
                         Err(e) => eprintln!("error reading line {e:?}"),
                         Ok(Signal::CtrlC) if script => break Ok(()),
                         Ok(Signal::CtrlC) => {
-                            // CANCEL: break any in-flight loop first.
-                            // A program can legally spin forever inside
-                            // one cycle (an infinite tail recursion —
-                            // recursion evaluates atomically, so the
-                            // engine does not bound it), and a wedged
-                            // runtime can't serve `output.clear()`, so
-                            // clearing before interrupting would hang
-                            // the prompt we are trying to recover. The
-                            // interrupt aborts the loop to bottom and
-                            // leaves the runtime running.
+                            // Interrupt first: a wedged runtime cannot serve `output.clear()`.
                             gx.interrupt();
                             output.clear().await;
                         }
@@ -458,14 +431,8 @@ impl<X: GXExt> Shell<X> {
                 },
             }
         };
-        // Shut the runtime down explicitly on the way out. The tokio
-        // runtime's drop waits for the `block_in_place` section
-        // `do_cycle` runs in, so a program still spinning inside a
-        // cycle (an infinite tail recursion) made Ctrl-C/Ctrl-D at the
-        // prompt hang the PROCESS — the only way out was SIGKILL.
-        // `abort()` breaks the loop first, then stops the runtime; it
-        // takes `&self`, so it works with handle clones still alive
-        // (a drop could not).
+        // `abort()` breaks a cycle still spinning before stopping the
+        // runtime; the tokio runtime's drop would block on it.
         gx.abort();
         sigint.abort();
         exit

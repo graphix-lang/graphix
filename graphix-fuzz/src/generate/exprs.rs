@@ -12,11 +12,8 @@ pub(super) fn pick<'a>(rng: &mut Rng, xs: &[&'a str]) -> &'a str {
     xs[rng.below(xs.len())]
 }
 
-/// A call to a visible lambda producing `ty`, if one is in scope: a
-/// typed lambda whose return type is `ty` (args generated recursively
-/// at its param types), or — for numeric `ty` — a poly lambda with all
-/// args at `ty` (its numeric body makes the result type follow the
-/// arguments, so each distinct arg type is a distinct monomorphization).
+/// A call to a visible lambda producing `ty`: a typed lambda returning
+/// `ty`, or, for numeric `ty`, a poly lambda with all args at `ty`.
 fn try_call(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<String> {
     let typed = ctx.fns_returning(ty);
     let polys = if ty.is_numeric() { ctx.poly_fns() } else { Vec::new() };
@@ -35,12 +32,10 @@ fn try_call(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<S
     Some(format!("{name}({})", args.join(", ")))
 }
 
-/// An accessor over a visible composite producing `ty`: a struct field
-/// read, a tuple index, a bounds-checked array index / slice, a map key
-/// lookup, or a numeric cast — each fallible one consumed by `$`
-/// (bounds misses and narrowing overflows drop to bottom; kept to a
-/// small budgeted fraction because a bottom program burns the campaign
-/// timeout in every mode).
+/// An accessor over a visible composite producing `ty`: a struct field,
+/// a tuple index, a bounds-checked array index / slice, a map lookup, or
+/// a numeric cast, each fallible one consumed by `$`. Misses are kept to
+/// a small fraction because a bottom program burns the campaign timeout.
 fn try_accessor(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -51,7 +46,6 @@ fn try_accessor(
     let reffed = GenType::Ref(Box::new(ty.clone()));
     for (name, t) in ctx.visible_entries() {
         match t {
-            // Deref a visible `&ty` binding.
             GenType::Ref(inner) => {
                 if **inner == *ty {
                     cands.push(format!("*{name}"));
@@ -62,8 +56,8 @@ fn try_accessor(
                     if ft == ty {
                         cands.push(format!("{name}.{f}"));
                     }
-                    // Field-projection deref (`*(p.f)`) statically
-                    // resolves — the one composite read refs support.
+                    // field-projection deref is the one composite read
+                    // refs support
                     if *ft == reffed {
                         cands.push(format!("*({name}.{f})"));
                     }
@@ -81,8 +75,7 @@ fn try_accessor(
             }
             GenType::Array(e) => {
                 if **e == *ty {
-                    // Literal arrays are 1-3 long: 0 and -1 always hit;
-                    // 1 / -4 sometimes / always miss (the bottom budget).
+                    // literal arrays are 1-3 long: 0 and -1 always hit
                     let idx = match rng.below(10) {
                         0..=5 => "0",
                         6..=7 => "-1",
@@ -90,17 +83,13 @@ fn try_accessor(
                         _ => "-4",
                     };
                     cands.push(format!("{name}[{idx}]$"));
-                    // Narrow-int index — the widen seam
-                    // (narrow-index-operand-verifier-aug2026: a raw
-                    // narrow payload failed cranelift's verifier and
-                    // silently de-fused whole regions).
+                    // narrow-int index
                     if rng.below(8) == 0 {
                         let nt = pick(rng, &["u8", "i16", "u32"]);
                         cands.push(format!("{name}[{nt}:1]$"));
                     }
                 }
-                // Element deref over an array of refs (ref arrays are
-                // built 2 long, so 0/-1 always hit).
+                // ref arrays are built 2 long, so 0/-1 always hit
                 if **e == reffed {
                     let idx = if rng.below(2) == 0 { "0" } else { "-1" };
                     cands.push(format!("*({name}[{idx}]$)"));
@@ -108,7 +97,7 @@ fn try_accessor(
                 if ty == t {
                     let slice = if rng.below(2) == 0 { "..1" } else { "1.." };
                     cands.push(format!("{name}[{slice}]$"));
-                    // Narrow-int slice bound (the other verifier leg).
+                    // narrow-int slice bound
                     if rng.below(8) == 0 {
                         let nt = pick(rng, &["u8", "i16", "u32"]);
                         cands.push(format!("{name}[{nt}:1..]$"));
@@ -121,9 +110,7 @@ fn try_accessor(
                     cands.push(format!("{name}{{\"{k}\"}}$"));
                 }
             }
-            // A visible list read through the pattern ladder — the
-            // accessor doubles as list-pattern coverage. Fixed bind
-            // names shadow-safely (arm binds shadow by design).
+            // a visible list read through the pattern ladder
             GenType::List(e) => {
                 if **e == *ty && ty.is_scalar() {
                     let dflt = gen_typed(ctx, rng, ty, depth);
@@ -132,17 +119,15 @@ fn try_accessor(
                     ));
                 }
                 if ty == t {
-                    // A BOUND head (never `_` — a wildcard's inferred
-                    // predicate is Any, which poisons the completed
-                    // tail type; a bind completes from the scrutinee).
+                    // a bound head, never `_`: a wildcard's inferred
+                    // predicate is Any, which poisons the completed tail type
                     cands.push(format!(
                         "select {name} {{ [<>] => {name}, [<h1, tl0..>] => tl0 }}"
                     ));
                 }
             }
-            // A visible option unwrapped to its value type via a
-            // two-arm type-match select. (`?` is error-only — it
-            // rejects [T, null], so there is no try/catch consumer.)
+            // an option unwrapped via a two-arm type-match select (`?`
+            // is error-only)
             GenType::Nullable(t) => {
                 if **t == *ty && ty.is_scalar() {
                     let dflt = gen_typed(ctx, rng, ty, depth);
@@ -162,9 +147,7 @@ fn try_accessor(
             | GenType::Opaque => {}
         }
     }
-    // Numeric casts: mostly widening (lossless per `fits_in` — never
-    // fails); the rest arbitrary, exercising the narrowing/overflow
-    // error path at a budgeted rate.
+    // numeric casts: mostly lossless widening, the rest arbitrary
     if let GenType::Num(t) = ty
         && rng.below(2) == 0
     {
@@ -188,9 +171,8 @@ fn try_accessor(
     Some(cands.swap_remove(rng.below(cands.len())))
 }
 
-/// A callback parameter name: collision-pool-biased like every binding
-/// (an HOF-callback local aliasing another function's binding is the
-/// audit's bug-3 surface), unique within the param list.
+/// A callback parameter name, collision-pool-biased, unique within the
+/// param list.
 fn callback_param(inner: &mut GenCtx, rng: &mut Rng, taken: &[String]) -> String {
     let mut n = if rng.below(10) < 3 && !inner.collision_pool.is_empty() {
         inner.collision_pool[rng.below(inner.collision_pool.len())].clone()
@@ -234,9 +216,7 @@ fn callback_binder(
 
 /// An array HOF producing `ty`: `map`/`filter`/`flat_map`/`init` for
 /// array targets, `fold` for scalar targets. Callbacks are generated in
-/// a CLONED scope (params + everything outer visible — captures come
-/// free, and nested HOFs arise naturally through the body's own
-/// `gen_typed` recursion).
+/// a cloned scope, so captures and nested HOFs arise naturally.
 fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<String> {
     if depth == 0 {
         return None;
@@ -245,7 +225,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
     match ty {
         GenType::Array(e) => match rng.below(6) {
             0 => {
-                // map: element type = ours (50%) or a random scalar.
+                // map: element type = ours (50%) or a random scalar
                 let d_ty = if rng.below(2) == 0 {
                     (**e).clone()
                 } else {
@@ -255,10 +235,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let mut inner = ctx.clone();
                 let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
                 let body = gen_typed(&inner, rng, e, d.min(2));
-                // The trait road (a third of draws): `Collection::map`
-                // on the Array receiver dispatches through the
-                // constructor trait to the blessed impl — and map IS a
-                // trait DEFAULT, the wrapper-body surface.
+                // a third of draws take the trait road: `Collection::map`
+                // dispatches through the constructor trait
                 Some(if rng.below(3) == 0 {
                     format!("Collection::map({src}, |{binder}| {body})")
                 } else {
@@ -276,11 +254,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                     format!("array::filter({src}, |{binder}| {body})")
                 })
             }
-            // LIST HOFs, roundtrip-wrapped so the target type stays
-            // Array (from_array → list HOF → to_array). Exercises the
-            // flatten/rebuild boundary, the cons-chain value shape,
-            // and the list loop lowering (2026-07-14) against the
-            // interpreted per-slot semantics.
+            // list HOFs, roundtrip-wrapped so the target type stays Array
             4 => {
                 let d_ty = if rng.below(2) == 0 {
                     (**e).clone()
@@ -304,11 +278,9 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                     "list::to_array(list::filter(list::from_array({src}), |{binder}| {body}))"
                 ))
             }
-            // flat_map's callback returns ['b, Array<'b>]. The checker
-            // binds 'b to whatever the body IS without backtracking, so
-            // an Array-typed body lands on the first union member and
-            // the result comes out one Array deeper than intended —
-            // only a scalar element body ('b = e, unambiguous) is safe.
+            // flat_map's callback returns ['b, Array<'b>] and the checker
+            // binds 'b to the body without backtracking, so only a scalar
+            // element body is unambiguous
             2 if e.is_scalar() => {
                 let d_ty = types::scalar_type(rng);
                 let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
@@ -318,11 +290,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             _ => {
-                // Occasionally an OVER-LIMIT count (> MAX_ARRAY_INIT_LEN
-                // = 16777216): bottom-with-retained-state on both
-                // engines, fast to evaluate
-                // (init-over-limit-aug2026 — small counts never reach
-                // the limit seam).
+                // occasionally an over-limit count (> MAX_ARRAY_INIT_LEN):
+                // bottom on both engines, fast to evaluate
                 let n = if rng.below(24) == 0 {
                     pick(rng, &["16777217", "99999999"]).to_string()
                 } else {
@@ -334,9 +303,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 Some(format!("array::init({n}, |{binder}| {body})"))
             }
         },
-        // A LIST target: literal / from_array / cons / the list HOFs
-        // producing a List directly (no roundtrip wrap) — the
-        // phase-B/B3 surface (`design/list_native.md`).
+        // a List target: literal / from_array / cons / the list HOFs
         GenType::List(e) => match rng.below(5) {
             0 => {
                 let src =
@@ -369,18 +336,14 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             }
             _ => None,
         },
-        // find: the union return `[e, null]` IS the Nullable type. The
-        // empty/no-match answer (Null) is the soak-jul06c B7 seam
-        // (MapQ's empty-input shortcut vs the JIT find loop).
+        // find: the union return `[e, null]` is the Nullable type
         GenType::Nullable(e) if e.is_scalar() => {
             let src = gen_typed(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
             let mut inner = ctx.clone();
             let binder = callback_binder(&mut inner, rng, e, &[]);
             let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
             if rng.below(3) == 0 {
-                // The list twin (same `[e, null]` return; the
-                // no-match Null is the B7 seam over the FLATTENED
-                // length).
+                // the list twin
                 Some(format!("list::find(list::from_array({src}), |{binder}| {body})"))
             } else if rng.below(3) == 0 {
                 Some(format!("Collection::find({src}, |{binder}| {body})"))
@@ -398,12 +361,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             inner.push(acc.clone(), ty.clone());
             let binder = callback_binder(&mut inner, rng, &d_ty, &[acc.clone()]);
             let body = if *ty == I64 && rng.below(8) == 0 {
-                // A terminating tail-recursive `let rec` INSIDE the
-                // callback: the per-slot pred lazy-binds at runtime, a
-                // dispatch path with its own resolution/marking pipeline
-                // (soak-jul06c B8 — the rec-in-HOF-slot depth-guard trip
-                // was unreachable while recs only appeared at statement
-                // level).
+                // a terminating tail-recursive `let rec` inside the
+                // callback: the per-slot pred lazy-binds at runtime
                 let lp = inner.fresh();
                 let ln = inner.fresh();
                 let la = inner.fresh();
@@ -418,8 +377,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 gen_typed(&inner, rng, ty, d.min(2))
             };
             if rng.below(4) == 0 {
-                // The list twin: same acc/element/firing semantics
-                // over the flattened cons chain.
+                // the list twin
                 Some(format!(
                     "list::fold(list::from_array({src}), {init}, |{acc}, {binder}| {body})"
                 ))
@@ -440,8 +398,7 @@ pub(super) fn gen_typed(
     ty: &GenType,
     depth: usize,
 ) -> String {
-    // Base case: a literal, or an in-scope ref of this type. Bias toward
-    // refs when available (they create dataflow).
+    // base case: a literal, or an in-scope ref (preferred: dataflow)
     let recurse = depth > 0 && rng.below(3) != 0;
     if !recurse {
         let vars = ctx.vars_of(ty);
@@ -451,9 +408,8 @@ pub(super) fn gen_typed(
         return types::literal(rng, ty);
     }
     let d = depth - 1;
-    // Any type — a composite-returning lambda (module interfaces carry
-    // them since the composite-iface stage) is only exercised if calls
-    // generate at composite-typed positions too.
+    // any type: composite-returning lambdas are only exercised if calls
+    // generate at composite-typed positions too
     if rng.below(5) == 0 {
         if let Some(call) = try_call(ctx, rng, ty, d) {
             return call;
@@ -482,9 +438,8 @@ pub(super) fn gen_typed(
     }
     match ty {
         GenType::Num(n) => {
-            // Checked arithmetic, consumed by one of the three legal
-            // forms: `$` (error -> bottom), a type-match select with an
-            // error arm, or `?` under a catch statement.
+            // checked arithmetic, consumed by `$`, a type-match select
+            // with an error arm, or `?` under a catch
             if rng.below(8) == 0 {
                 let op = pick(rng, &["+?", "-?", "*?", "/?", "%?"]);
                 let a = gen_typed(ctx, rng, ty, d);
@@ -496,13 +451,8 @@ pub(super) fn gen_typed(
                         "select ({a} {op} {b}) {{ error as _ => {dflt}, {} as n => n }}",
                         ty.render()
                     ),
-                    // The bare-wildcard form: success consumed by a
-                    // TYPE PREDICATE, the error member by `_`. The
-                    // explicit `error as _` arm above DE-FUSES the
-                    // select (error predicates aren't lowerable), so
-                    // only this form reaches the kernel's result-union
-                    // predicate lowering — the shape that hid
-                    // result-union-nullable-abi-aug2026 for weeks.
+                    // the bare-wildcard form is the only one that reaches
+                    // the kernel's result-union predicate lowering
                     2 => format!(
                         "select ({a} {op} {b}) {{ {} as n => n, _ => {dflt} }}",
                         ty.render()
@@ -510,17 +460,13 @@ pub(super) fn gen_typed(
                     _ => format!("{{ catch(e) {dflt}; (({a} {op} {b}))? }}"),
                 };
             }
-            // Unary minus (a real `Neg` node, exercising `ineg`/`fneg`). Only
-            // for signed/float — `-` on an unsigned type is a compile error
-            // (Part B's signed/float/decimal constraint). Parenthesize the
-            // operand so `-(i64:5)` stays a `Neg` rather than re-parsing as a
-            // negative literal.
+            // unary minus: signed/float only; parenthesized so `-(i64:5)`
+            // stays a `Neg` rather than a negative literal
             if n.is_signed() && rng.below(6) == 0 {
                 return format!("(-({}))", gen_typed(ctx, rng, ty, d));
             }
-            // Bias toward +/-/* over //% — a generated `/0` or `%0` drops to
-            // bottom (Timeout in all modes), which is slow to check. Div/mod
-            // are still ~25% of ops, so the div0/overflow paths get exercised.
+            // bias toward +/-/* : a generated `/0` or `%0` bottoms and is
+            // slow to check
             let op = pick(rng, &["+", "+", "-", "-", "*", "*", "/", "%"]);
             format!(
                 "({} {} {})",
@@ -552,12 +498,8 @@ pub(super) fn gen_typed(
             _ => format!("(!{})", gen_typed(ctx, rng, &GenType::Bool, d)),
         },
         GenType::Str => match rng.below(3) {
-            // Computed interpolation: 1-2 [expr] parts, mostly scalar
-            // but occasionally COMPOSITE (array/tuple/struct/map/
-            // nullable — the type-directed TVal formatting walk, whose
-            // union/fallback paths type-prefixed nested numerics until
-            // soak-jul06c B4), occasionally with escaped literal
-            // brackets around them.
+            // computed interpolation: 1-2 [expr] parts, occasionally
+            // composite, occasionally inside escaped literal brackets
             0 => {
                 let n = 1 + rng.below(2);
                 let parts: Vec<_> = (0..n)
@@ -581,9 +523,7 @@ pub(super) fn gen_typed(
             format!("({})", parts.join(", "))
         }
         GenType::Array(elem) => {
-            // Occasionally EMPTY (annotated via a block binding — a bare
-            // `[]` doesn't infer): the zero-length path through HOFs,
-            // slices, and folds (array::find([]) was soak-jul06c B7).
+            // occasionally empty (annotated: a bare `[]` doesn't infer)
             if rng.below(10) == 0 {
                 return format!("{{ let mt: {} = []; mt }}", ty.render());
             }
@@ -592,17 +532,15 @@ pub(super) fn gen_typed(
             format!("[{}]", parts.join(", "))
         }
         GenType::List(elem) => {
-            // Occasionally EMPTY (annotated — a bare `[<>]` leaves the
-            // element cell free): the nil path through the ladder
-            // selects and the list HOFs.
+            // occasionally empty (annotated: a bare `[<>]` leaves the
+            // element cell free)
             if rng.below(10) == 0 {
                 return format!("{{ let mt: {} = [<>]; mt }}", ty.render());
             }
             let n = 1 + rng.below(3);
             let parts: Vec<_> = (0..n).map(|_| gen_typed(ctx, rng, elem, d)).collect();
-            // Nullable-bearing elements must be ANNOTATED (the
-            // contains_nullable rule): a `null` part infers the bare
-            // null, not the union.
+            // nullable-bearing elements must be annotated: a `null` part
+            // infers the bare null, not the union
             if ty.contains_nullable() {
                 format!("{{ let mt: {} = [<{}>]; mt }}", ty.render(), parts.join(", "))
             } else {
@@ -610,8 +548,8 @@ pub(super) fn gen_typed(
             }
         }
         GenType::Struct(fields) => {
-            // Functional update over a visible same-shaped struct, or a
-            // fresh literal with recursive field values.
+            // functional update over a visible same-shaped struct, or a
+            // fresh literal
             let sources = ctx.vars_of(ty);
             if !sources.is_empty() && rng.below(3) == 0 {
                 let src = sources[rng.below(sources.len())];
@@ -658,9 +596,8 @@ pub(super) fn gen_typed(
                 gen_typed(ctx, rng, t, d)
             }
         }
-        // A reference: a visible `&T` binding, `&` of a visible
-        // T-typed binding, or `&(<expr>)` / `&<literal>` (all probed
-        // working, incl. `&24.0`-style literal refs).
+        // a visible `&T` binding, `&` of a visible T-typed binding, or
+        // `&(<expr>)`
         GenType::Ref(inner) => {
             let ref_vars = ctx.vars_of(ty);
             if !ref_vars.is_empty() && rng.below(2) == 0 {
@@ -672,9 +609,7 @@ pub(super) fn gen_typed(
             }
             format!("&({})", gen_typed(ctx, rng, inner, d.min(1)))
         }
-        // An abstract T: a T-typed binding, or the constructor over a
-        // recursive i64 (the only producers — `un` consumption arises
-        // organically through `try_call` at i64 positions).
+        // an abstract T: a T-typed binding, or the constructor over an i64
         GenType::Abstract { module } => {
             let vars = ctx.vars_of(ty);
             if !vars.is_empty() && rng.below(2) == 0 {
@@ -689,10 +624,8 @@ pub(super) fn gen_typed(
     }
 }
 
-/// A `map::` builtin call producing `ty` — the map package was
-/// entirely outside the vocabulary until the gap-2 per-feature report
-/// flagged it absent (2026-08-07). Keys come from the shared pool so
-/// gets/removes mostly hit.
+/// A `map::` builtin call producing `ty`. Keys come from the shared
+/// pool so gets/removes mostly hit.
 fn try_map_builtin(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -723,8 +656,7 @@ fn try_map_builtin(
 }
 
 /// A `str::` builtin call producing `ty`: length, predicates with
-/// labeled args, and string transforms (the labeled-arg + DynCall
-/// surface).
+/// labeled args, and string transforms.
 fn try_str_builtin(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -737,15 +669,12 @@ fn try_str_builtin(
             Some(format!("str::len({})", gen_typed(ctx, rng, &GenType::Str, d)))
         }
         GenType::Bool => {
-            // Sometimes a regex match instead — the re:: package was
-            // entirely outside the vocabulary (gap-2 report,
-            // 2026-08-07). Patterns from a VALID pool plus one
-            // malformed (the `$`-consumed ReError path).
+            // sometimes a regex match; patterns from a valid pool plus one
+            // malformed (the `$`-consumed ReError path)
             if rng.below(4) == 0 {
                 let pat = pick(rng, &["a+", "[a-z]+", "x|y", "^g", "[0-9]", "(("]);
                 let s = gen_typed(ctx, rng, &GenType::Str, d);
-                // Raw string: `[...]` in a plain literal is
-                // INTERPOLATION.
+                // raw string: `[...]` in a plain literal is interpolation
                 return Some(format!("re::is_match(#pat: r\"{pat}\", {s})$"));
             }
             let (f, lbl) =
@@ -756,11 +685,8 @@ fn try_str_builtin(
             Some(format!("str::{f}(#{lbl}: {needle}, {s})"))
         }
         GenType::Str => match rng.below(6) {
-            // sprintf — valid AND malformed formats (missing arg,
-            // unknown verb); the Result return is `$`-consumed either
-            // way (sprintf-error-return-shape-aug2026: generated
-            // formats were previously always well-formed, so the
-            // error path was unreachable).
+            // sprintf, valid and malformed formats; the Result return is
+            // `$`-consumed either way
             5 => Some(match rng.below(4) {
                 0 => format!("str::sprintf(\"%d\", i64:{})$", rng.below(100)),
                 1 => format!(
@@ -775,11 +701,8 @@ fn try_str_builtin(
                 Some(format!("str::{f}({})", gen_typed(ctx, rng, &GenType::Str, d)))
             }
             // sub: labeled args + a Result return consumed by `$`.
-            // Occasionally a labeled arg is itself `$`-consumed checked
-            // arith that never fires (div0 → error → `$` drops it) — a
-            // builtin invoked with a PERMANENTLY missing labeled arg
-            // must not fire at all (soak-jul06c B6: the node-walk fired
-            // str::sub with len=None and returned its SubError).
+            // Occasionally a labeled arg is `$`-consumed checked arith
+            // that never fires: the builtin must not fire at all then.
             4 => {
                 let start = rng.below(3);
                 let len = if rng.below(6) == 0 {

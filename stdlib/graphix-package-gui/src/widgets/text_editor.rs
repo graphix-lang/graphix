@@ -16,8 +16,7 @@ pub(crate) struct TextEditorW<X: GXExt> {
     content_ref: TRef<X, String>,
     on_edit: Ref<X>,
     on_edit_callable: Option<Callable<X>>,
-    /// Last text we pushed via callback, used to suppress the echo
-    /// in handle_update so we don't destroy cursor/selection/undo state.
+    /// Last text pushed via callback; its echo must not rebuild `Content`.
     last_set_text: Option<String>,
     placeholder: TRef<X, String>,
     width: TRef<X, Option<f64>>,
@@ -89,8 +88,6 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         if let Some(new_text) =
             self.content_ref.update(id, v).context("text_editor update content")?
         {
-            // If this is the echo of text we just pushed, skip the
-            // destructive Content rebuild to preserve cursor/selection/undo.
             if self.last_set_text.take().as_ref() != Some(new_text) {
                 self.content = text_editor::Content::with_text(new_text.as_str());
                 changed = true;
@@ -168,9 +165,6 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                 }
                 true
             }
-            // Variants `text_editor` does not handle — enumerated
-            // exhaustively so a new `Message` variant forces a
-            // deliberate decision here.
             Message::Nop
             | Message::Call(..)
             | Message::Scroll(..)

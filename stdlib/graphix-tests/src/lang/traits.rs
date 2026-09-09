@@ -1,8 +1,5 @@
-// Traits (design/traits.md): declarations with required and default
-// methods, implementations over abstract types and (in the trait's own
-// package) structural types, traits as bounds, static dispatch through
-// per-callsite elaboration, and dispatch over a union self type as a
-// generated select.
+// Traits: declarations, implementations, bounds, static dispatch, and
+// dispatch over a union self type.
 
 use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
@@ -136,10 +133,9 @@ run!(
     ; FuseExpect::None
 );
 
-// Dispatch over a union self type: the generated select picks the
-// member's implementation at runtime.
-// ASPIRE: Jit (currently None) — the generated select's arms test an
-// abstract type, and abstract patterns de-fuse a select for now.
+// Dispatch over a union self type picks the member's implementation at
+// runtime.
+// ASPIRE: Jit — abstract patterns de-fuse the generated select.
 run!(
     trait_union_dispatch,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "int 5 Counter(6)"),
@@ -167,21 +163,9 @@ run!(
     ; FuseExpect::None
 );
 
-// A `never()` arm types as a cell that resolves to bottom, and the
-// select's type is the union of its arms' CELLS — so the narrowing
-// idiom `select opt { null as _ => never(), s => s }` hands dispatch a
-// self type of `[⊥, Counter]`. Bottom is the identity of the union, so
-// there is one member to dispatch on; resolving the cells without
-// normalizing left the bottom standing and demanded an impl for it
-// (`sys::process`'s `[Pipe, null]` stdin, through Write).
-// An INTERFACE-DECLARED Collection-generic fn: `fn(c: Collection)`
-// elaborates to `App('#c, '_elem)` on both the gxi and the impl side,
-// and `sig_matches_int` had no App arm — the pair fell to the
-// catch-all and no module could export such a fn (found by gen-check
-// the day the generator learned the constructor-trait vocabulary:
-// collection-generic-call 0/8 DEAD ARM). Called at BOTH an Array and
-// a Map so the dispatch decomposes two constructors through one
-// export.
+// A `never()` arm is the identity of the dispatch union: `[⊥, Counter]`
+// dispatches on Counter. An interface-declared `fn(c: Collection)`
+// exports and dispatches on both an Array and a Map.
 run!(
     collection_generic_interface_declared,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
@@ -195,10 +179,6 @@ val csize: fn(c: Collection) -> i64;
     "/test/m.gx" => r#"
 let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1)
 "#
-    // The `c: Collection` param is `App(self, 'e)`; `abi_kind`/
-    // `freeze_for_abi` now reduce that constructor application, so the
-    // fold kernel builds and the generic function fuses over both the
-    // Array and Map call.
     ; graphix_package_core::testing::FuseExpect::Jit);
 
 run!(
@@ -226,10 +206,9 @@ run!(
     "#
 );
 
-// A parameterized head: the bound on the element discharges through
-// the implementation table.
-// ASPIRE: Jit (currently None) — the impl body's `array::map(xs, Show::show)`
-// callback prototype resolves statically but the map does not lower yet.
+// A parameterized head: the element bound discharges through the
+// implementation table.
+// ASPIRE: Jit — the impl body's map over `Show::show` does not lower.
 run!(
     trait_parameterized_head,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[int 1, int 2]"),
@@ -267,8 +246,7 @@ run!(
 );
 
 // A program is one package: a sibling module may implement the trait
-// for a primitive (the orphan rule bites only ACROSS packages — a
-// stranger package's structural impl is what it forbids).
+// for a primitive.
 run!(
     trait_impl_in_sibling_module,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "int 1"),
@@ -316,8 +294,7 @@ run!(
     "#
 );
 
-// A quantifier bound written in a `let` annotation is enforced
-// (`scope_refs` used to drop the cell conjunct, 2026-08-22).
+// A quantifier bound written in a `let` annotation is enforced.
 run!(
     annotation_bound_enforced,
     |v: Result<&Value>| v.is_err(),
@@ -328,11 +305,8 @@ run!(
     ; FuseExpect::None
 );
 
-// A polymorphic binding used as a VALUE is instantiated per
-// occurrence, like a call: two uses at different types do not pin
-// each other through the definition's cells.
-// ASPIRE: Jit (currently None) — one lambda instantiated at two
-// element types in one region does not lower yet.
+// A polymorphic binding used as a value is instantiated per occurrence.
+// ASPIRE: Jit — one lambda at two element types in one region.
 run!(
     poly_value_two_types,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[1] [1.5]"),
@@ -360,13 +334,8 @@ run!(
     "#
 );
 
-// ── The core traits: Eq, Ord, Display (design/traits.md §8) ─────────
-//
-// `==`/`!=`, `<`/`>`/`<=`/`>=` and printing consult an implementation
-// of the core trait wherever one sits in the STATIC type, and take the
-// structural case everywhere else. A whole-type implementation lowers
-// to a static call (fuses); one nested inside a composite runs the
-// hooked walk (interprets).
+// The core traits Eq, Ord, Display: operators and printing consult an
+// implementation wherever one sits in the static type.
 
 // A case-insensitive key: `==` calls the implementation.
 run!(
@@ -502,10 +471,8 @@ async fn core_display_println_jit() -> Result<()> {
     core_display_println(false).await
 }
 
-// A trait call on a union self type INSIDE a lambda: the lowered
-// select binds the call's argument nodes, it does not recompile their
-// source (the lambda's parameters are out of lexical scope by the
-// time the call is lowered at typecheck1).
+// A trait call on a union self type inside a lambda: the lowered select
+// binds the call's argument nodes rather than recompiling their source.
 run!(
     trait_union_dispatch_in_lambda,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "A1 Bx"),
@@ -540,10 +507,8 @@ run!(
     ; FuseExpect::None
 );
 
-// THE VALUE SEAM (design/traits.md §12): `Value`'s own eq/cmp reach a
-// core implementation through the abstract vtable, so a MAP is keyed
-// by the user's Ord — Eric's motivating example: a reversed order
-// reverses the key order, and lookups agree.
+// `Value`'s own eq/cmp reach a core implementation, so a map is keyed
+// by the user's Ord: a reversed order reverses the key order.
 run!(
     core_map_keyed_by_ord,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "{T(2) => 2, T(1) => 1, T(0) => 0}|0|2"),
@@ -601,12 +566,8 @@ run!(
     ; graphix_package_core::testing::FuseExpect::Jit
 );
 
-// THE BOTTOM-KEY RULE (Eric's ruling 2026-08-23): a bottoming
-// implementation resolves per KEY, like NaN — a key the impl bottoms
-// on (here payload 0: 1 /? 0 errors, `$` drops it) sorts below every
-// real key and equal to its fellow bottom keys; pairs of real keys
-// answer by the impl. A structural fallback per pair would break the
-// total order.
+// A bottoming Ord resolves per key like NaN: a bottom key sorts below
+// every real key and equal to its fellow bottom keys.
 run!(
     core_bottom_key_rule,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[T(0), T(1), T(2)]|false|true|true"),
@@ -626,13 +587,8 @@ run!(
     ; graphix_package_core::testing::FuseExpect::Jit
 );
 
-// An implementation method may be a BUILTIN reference. This is how a
-// package gives a Rust-backed abstract type its io methods
-// (`impl Read for File { let read = |s, n| 'sys_io_read }`), and it
-// works because the trait's signature, instantiated at the target, is
-// pushed into the lambda — a builtin body needs every argument and
-// the return annotated, and the trait declaration is where they come
-// from.
+// An implementation method may be a builtin reference; the trait's
+// signature, instantiated at the target, annotates the lambda.
 run!(
     trait_builtin_bodied_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
@@ -659,12 +615,7 @@ run!(
 );
 
 // An interface's `impl` declaration does not displace the type
-// declarations that follow it. The interface's types/mods/uses are
-// spliced into the implementation anchored on the item BEFORE them,
-// and an `impl` is never spliced (the implementation writes its own),
-// so it must anchor nothing — otherwise everything after it landed at
-// the end of the module body, invisible to the code above (found
-// migrating `sys::process` to the io traits, 2026-08-23).
+// declarations that follow it.
 run!(
     interface_type_after_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
@@ -686,9 +637,8 @@ run!(
     "#
 );
 
-// A core trait rides the value, and a Rust-backed abstract type has no
-// payload for the implementation to read — so an implementation for
-// one would compile and never be consulted. Refused (2026-08-23).
+// A core-trait implementation for a Rust-backed abstract type is
+// refused (no payload to consult).
 run!(
     core_impl_rust_backed_refused,
     |v: Result<&Value>| {
@@ -701,10 +651,8 @@ run!(
     ; FuseExpect::None
 );
 
-// THE POINT OF THE FEATURE (`design/traits.md` §0): a stream written
-// in Graphix. `Mem` supplies `read` and nothing else — `read_all` is
-// the trait's own default, written over `read`, so it works on a
-// stream the io package has never heard of.
+// A stream written in Graphix: `Mem` supplies `read` and the trait's
+// default `read_all` works over it.
 run!(
     graphix_defined_read,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello world"),
@@ -756,12 +704,8 @@ run!(
     "#
 );
 
-// ── Dynamic modules ─────────────────────────────────────────────────
-//
-// A dynamic module's signature declares an impl exactly as a gxi does;
-// the consumer compiles against the declaration before any source has
-// loaded, so its calls must reach whatever implementation the loaded
-// source registers — and re-reach it after a reload.
+// Dynamic modules: a signature declares an impl as a gxi does; the
+// consumer's calls reach the loaded implementation, also after reload.
 
 const DYNAMIC_IMPL_DISPATCH: &str = r#"
 {
@@ -1148,13 +1092,8 @@ run!(
     ; FuseExpect::None
 );
 
-// A constructor-trait call's result type is `App(self, 'b)` with `self`
-// bound to the receiver's constructor. Every consumer that derefs a
-// type must see the FILLED type (`Type::app_filled`, through
-// `with_deref`): the select's coverage check refused this program
-// ("no unguarded arm irrefutably covers '_: Array<'b: i64>"), `cast`
-// refused the value, and the typed printer logged a mismatch and fell
-// back to naked printing. Fusion already filled it (kernel_abi).
+// A constructor-trait call's filled result type is what select
+// coverage, `cast` and the typed printer see.
 const TRAIT_RESULT_IS_FILLED: &str = r#"
 {
   use core::Collection::{self, *};

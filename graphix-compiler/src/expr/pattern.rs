@@ -16,14 +16,13 @@ pub enum StructurePattern {
     Bind(ArcStr),
     Slice {
         /// true = a list pattern `[<..>]` over the native List; false
-        /// = an array slice (`design/list_native.md`).
+        /// = an array slice.
         list: bool,
         all: Option<ArcStr>,
         binds: Arc<[StructurePattern]>,
     },
     SlicePrefix {
-        /// true = `[<h, rest..>]` — `tail` binds the TAIL as a List,
-        /// O(1), sharing structure.
+        /// true = `[<h, rest..>]` — `tail` binds the tail as a List, O(1).
         list: bool,
         all: Option<ArcStr>,
         prefix: Arc<[StructurePattern]>,
@@ -44,7 +43,7 @@ pub enum StructurePattern {
         binds: Arc<[StructurePattern]>,
     },
     /// `T(p)` — destructure a value of the abstract type at `name`
-    /// into its payload (`design/nominal_abstract_types.md`)
+    /// into its payload
     Abstract {
         all: Option<ArcStr>,
         name: ModPath,
@@ -55,11 +54,9 @@ pub enum StructurePattern {
         all: Option<ArcStr>,
         binds: Arc<[(ArcStr, StructurePattern)]>,
     },
-    /// Or-alternatives `p1 | p2 | …` (select arms and nested element
-    /// positions; `design/or_patterns.md`). Flat by construction: ≥ 2
-    /// alternatives, none itself an `Or`. Every alternative binds the
-    /// same names at the same types (enforced at node compile), so
-    /// name-set walks read alternative 0.
+    /// Or-alternatives `p1 | p2 | …`. Flat: ≥ 2 alternatives, none itself
+    /// an `Or`. Every alternative binds the same names at the same types,
+    /// so name-set walks read alternative 0.
     Or(Arc<[StructurePattern]>),
 }
 
@@ -167,14 +164,8 @@ impl StructurePattern {
 
     fn infer_type_predicate_inner(&self, env: &Env, scope: &ModPath) -> Result<Type> {
         match self {
-            // `Any` is load-bearing here: a catch-all `_` arm's
-            // predicate must match EVERYTHING for exhaustiveness,
-            // dead-arm analysis, and runtime dispatch. It does make
-            // select's unification-by-contains walk short-circuit at
-            // `_` slots (`T.contains(Any)` is false) — the select
-            // typecheck compensates by unifying through a view that
-            // substitutes fresh TVars for Any (`Type::any_as_tvar`),
-            // so slots AFTER a `_` still narrow.
+            // `_` must match everything for exhaustiveness and dispatch;
+            // select unifies through `Type::any_as_tvar` to narrow past it.
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
             Self::Literal(v) => Ok(Type::Primitive(Typ::get(v).into())),
@@ -236,9 +227,8 @@ impl StructurePattern {
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
             }
             Self::Or(alts) => {
-                // The RAW (uncollapsed) Set keeps one member per
-                // alternative so `complete_type_predicate` can zip
-                // them; semantically it is the union.
+                // The uncollapsed Set keeps one member per alternative so
+                // `complete_type_predicate` can zip them.
                 let a = alts
                     .iter()
                     .map(|p| p.infer_type_predicate(env, scope))
@@ -248,19 +238,10 @@ impl StructurePattern {
         }
     }
 
-    /// Complete a PARTIAL struct pattern's inferred type against the
-    /// scrutinee. `{x, ..}` infers `{x: 'a}` — an exact one-field
-    /// struct that can never match the real `{x: .., y: ..}` member —
-    /// because inference is bottom-up and the pattern doesn't name the
-    /// rest. When the scrutinee type is known, the rest IS known: for
-    /// each scrutinee member that is a struct carrying all the named
-    /// fields, take the member's full field list with the named
-    /// fields' types replaced by the pattern's, and union the results.
-    /// Recurses through tuples, variants, exhaustive structs, and
-    /// slices so a partial pattern completes at any nesting depth.
-    /// Returns `None` when nothing changed (no partial struct below,
-    /// or no scrutinee member fits — the coverage checks then report
-    /// as before).
+    /// Complete a partial struct pattern's inferred type (`{x, ..}` infers
+    /// `{x: 'a}`) against the scrutinee: the union, over scrutinee members
+    /// carrying the named fields, of the member with those fields replaced
+    /// by the pattern's. Recurses through composites. `None` if unchanged.
     pub fn complete_type_predicate(
         &self,
         env: &Env,

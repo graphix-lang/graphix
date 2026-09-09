@@ -1,26 +1,14 @@
-//! Helpers for clamping user-supplied numeric values into the ranges
-//! ratatui (or downstream type casts) require, with deduplicated
-//! `log::warn!` so a stuck-bad value doesn't spam the log.
-//!
-//! All helpers follow the same shape as `clamp_ratio` in `gauge.rs`:
-//! the caller threads through an `Option<u64>` field on the widget
-//! struct that records the bit pattern of the last-warned value;
-//! returning to the valid range resets it.
+//! Clamp user-supplied numeric values into the ranges ratatui (or a
+//! downstream cast) requires, warning once per distinct bad value: the
+//! caller threads an `Option<u64>` holding the last-warned bit pattern.
 
-/// Visual upper bound for "size of a single visual element in a row /
-/// column" parameters (bar widths, gaps, scroll offsets). Picked
-/// well below `u16::MAX` so ratatui's internal sums (e.g.
-/// `n_bars * bar_width + (n_bars - 1) * bar_gap + group_gap`) can't
-/// overflow u16 for any realistic group size, while still being
-/// larger than any conceivable terminal dimension.
+/// Upper bound for per-element visual sizes (bar widths, gaps, scroll
+/// offsets): well below `u16::MAX` so ratatui's internal sums cannot
+/// overflow u16, yet larger than any terminal dimension.
 pub(crate) const VISUAL_DIMENSION_CAP: i64 = 1024;
 
-/// Clamp an `i64` (graphix's native integer type) into the
-/// `[0, VISUAL_DIMENSION_CAP]` range. ratatui's u16 parameters wouldn't
-/// strictly fail until `u16::MAX`, but its internal layout arithmetic
-/// (multiplying group sizes, summing widths and gaps) overflows well
-/// before that. The visual cap keeps the math safe; values larger
-/// than any real terminal width get clamped + warned.
+/// Clamp an `i64` into `[0, VISUAL_DIMENSION_CAP]`. ratatui's layout
+/// arithmetic overflows u16 well before `u16::MAX`.
 pub(crate) fn clamp_u16(
     widget: &str,
     label: &str,
@@ -61,10 +49,8 @@ pub(crate) fn clamp_u64(
     0
 }
 
-/// Clamp an `i64` into the `[0, usize::MAX]` range. Negative values
-/// become 0. On 64-bit targets `usize::MAX == u64::MAX` so the
-/// positive side is also safe; on 32-bit targets we additionally
-/// truncate to `usize::MAX`.
+/// Clamp an `i64` into `[0, usize::MAX]`. Negative values become 0;
+/// 32-bit targets additionally truncate to `usize::MAX`.
 pub(crate) fn clamp_usize(
     widget: &str,
     label: &str,

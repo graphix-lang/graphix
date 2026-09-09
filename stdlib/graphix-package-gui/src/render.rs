@@ -1,12 +1,5 @@
-//! wgpu + iced renderer setup.
-//!
-//! Each window gets its own wgpu Surface and iced Renderer. The Renderer
-//! owns an iced Engine which in turn owns the wgpu Device and Queue.
-//! GpuState keeps clones of Device for surface configuration (wgpu
-//! handles are internally reference-counted, so clones are cheap).
-//!
-//! We use `iced_wgpu::wgpu` (re-exported) rather than a direct wgpu
-//! dependency to ensure type compatibility with iced.
+//! wgpu + iced renderer setup: one Surface and Renderer per window.
+//! Use `iced_wgpu::wgpu`, never a direct wgpu dependency.
 
 use anyhow::{Context, Result};
 use iced_wgpu::{

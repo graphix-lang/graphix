@@ -40,9 +40,7 @@ fn coerce_date(year: i64, month: i64, day: i64) -> (Date, Option<(i64, i64, i64)
     if d_clamped != day {
         clamped = true;
     }
-    // After clamping all three components we should always succeed,
-    // but if `time` rejects it for another reason fall back to
-    // 1970-01-01 — better than panicking.
+    // If `time` still rejects the clamped triple, fall back to 1970-01-01.
     let date = Date::from_calendar_date(y, m, d_clamped as u8)
         .unwrap_or_else(|_| Date::from_calendar_date(1970, Month::January, 1).unwrap());
     if clamped { (date, Some((year, month, day))) } else { (date, None) }

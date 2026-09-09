@@ -18,14 +18,6 @@ use std::{
 };
 use triomphe::Arc;
 
-// ─── Scalar operator taxonomy ────────────────────────────────────
-//
-// The arithmetic / comparison / boolean operators, named once and
-// shared by both evaluators: the node-walk in this module constructs
-// them and the JIT (`fusion::emit`) consumes them when emitting CLIF.
-// They live with the node-walk — the canonical evaluator that defines
-// these operators' semantics — and the JIT imports them from here.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
@@ -143,22 +135,11 @@ macro_rules! compare_op {
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                // `fn('a, 'a) -> bool` (Eric's ruling, 2026-07-12):
-                // both operands are ONE type. The old asymmetric
-                // `lhs ⊇ rhs` admitted direction-dependent cross-type
-                // compares whose runtime meaning is the netidx
-                // Typ-DISCRIMINANT order — numeric nonsense for
-                // `i64:1 < f64:2.` (and the instance-elaboration
-                // acceptance witnesses rode exactly that looseness).
-                // PROBE both directions first (empty flags — no
-                // binding: a failed binding walk has no backtracking,
-                // so committing the losing direction first would
-                // pollute cells), then COMMIT the widening direction.
+                // Both operands share one type. Probe both directions
+                // without binding (a failed binding walk cannot be undone),
+                // then commit the widening direction.
                 let lt = self.lhs.typ().clone();
                 let rt = self.rhs.typ().clone();
-                // RigidCheck as in the arith tail: a rigid declared
-                // formal never binds from a comparison during its def
-                // gate; inert at sites.
                 use $crate::typ::ContainsFlags as CF;
                 let rc = CF::RigidCheck.into();
                 let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
@@ -262,14 +243,7 @@ macro_rules! bool_op {
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
             ) -> &TagValue {
-                // STRICT — like every other binary op, `&&`/`||` need
-                // BOTH operands. A bottom operand makes the result
-                // bottom: `false && ⊥ = ⊥`, `true || ⊥ = ⊥`. NOT
-                // short-circuit: in a dataflow language a value must
-                // reflect all its inputs, so a downstream consumer
-                // never commits to a decision before every input is
-                // known. Recompute gate and bottom join as in the
-                // comparison ops.
+                // Strict, not short-circuit: `false && ⊥ = ⊥`.
                 let woke = std::mem::take(&mut self.slept);
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
@@ -486,10 +460,7 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Unchecked negation: integers wrap (two's-complement, matching the
-        // JIT's `ineg`); floats/decimal negate directly. `Value` equality
-        // collapses Z32/I32 and Z64/I64, so producing the operand's own
-        // variant agrees with the JIT's I32/I64-discriminated result.
+        // Integers wrap, matching the JIT's `ineg`.
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
         if tag.is_bottom() {
@@ -539,16 +510,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
-        // The operand must be a signed-negatable number, so `-x` on an
-        // unsigned type is a compile-time error rather than a silent
-        // runtime underflow. Output type = operand type.
         let negatable =
             Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal);
         if self.n.typ().with_deref(|t| t.is_some()) {
             wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))?;
         } else if let Type::TVar(tv) = self.n.typ() {
-            // constrain, don't bind — the check re-runs at typecheck1
-            // once the cell settles (design/tvar_constraints.md phase B)
             tv.add_cell_constraint(negatable);
         }
         wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
@@ -606,12 +572,9 @@ impl fmt::Display for Op {
 
 defetyp!(ARITH_ERR, ARITH_ERR_TAG, "ArithError", "Error<`{}(string)>");
 
-/// Wrap a checked-arith result: a raw `Value::Error` from netidx's
-/// `checked_*` ops (overflow / underflow / div-by-zero) becomes the
-/// catchable `ArithError` error VALUE the checked operators produce
-/// (`[T, Error<`ArithError(string)>]`); success passes through. The
-/// single semantic core shared by the node-walk update (canonical) and
-/// the JIT's `graphix_value_checked_*` helpers — the two can't drift.
+/// Convert a raw `Value::Error` from netidx's `checked_*` ops into the
+/// catchable `ArithError` value; success passes through. Shared by the
+/// node-walk and the JIT's `graphix_value_checked_*` helpers.
 pub(crate) fn wrap_arith_error(result: Value) -> Value {
     match result {
         Value::Error(e) => {
@@ -624,15 +587,9 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
     }
 }
 
-/// Unchecked integer `+`/`-`/`*` WRAP on overflow — the documented
-/// semantics, matching the JIT's `iadd`/`isub`/`imul` and [`Neg`]'s
-/// two's-complement `wrapping_neg`. netidx's `Value` operators return an
-/// overflow Error instead, which the unchecked path converts to bottom —
-/// and a bottomed tail-call argument stalls its loop FOREVER (soak
-/// finding 2026-07-04; Eric's ruling: the node-walk was wrong here).
-/// Same-variant integer pairs only; every other shape (floats, mixed
-/// coercions, datetime/duration, div/mod which keep bottom-on-div0)
-/// falls through to the netidx operator.
+/// Unchecked integer `+`/`-`/`*` wrap on overflow, matching the JIT.
+/// Same-variant integer pairs only; every other shape returns `None`
+/// and falls through to the netidx operator.
 fn wrapping_int_arith(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
     macro_rules! w {
         ($va:ident, $a:expr, $b:expr) => {
@@ -754,34 +711,15 @@ macro_rules! arith_op {
                 }))
             }
 
-            /// Homogeneous arithmetic — `fn('a: Number, 'a) -> 'a`
-            /// (Eric's ruling, 2026-07-12): both operands are ONE
-            /// numeric type and the result IS that type. The old
-            /// promotion table (union results, absorber obligations,
-            /// datetime/duration special cases) is gone: runtime
-            /// promotion is unreachable from well-typed graphix,
-            /// datetime/duration arithmetic is explicit `sys::time`
-            /// functions, and concrete literals are inference ANCHORS
-            /// (`2` is always i64 — `x * 2.0` is required when x is
-            /// f64, and `|x| x + i64:1` infers fn(x: i64) -> i64,
-            /// which keeps the interface / fn-subsumption matchers
-            /// structural). Probe both directions without binding,
-            /// commit the widening one (the comparison ops' shape);
-            /// unbound×unbound operands ALIAS into one cell, so
-            /// `|a, b| a + b` is fn('a, 'a) -> 'a with a single cell
-            /// and arith is type-preserving by construction.
-            /// Idempotent — runs at typecheck0, and again from
-            /// typecheck1 after the operand cells settle.
+            /// `fn('a: Number, 'a) -> 'a`: both operands and the result
+            /// are one numeric type. Idempotent; runs at typecheck0 and
+            /// again at typecheck1 after the operand cells settle.
             fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 let num = Type::Primitive(Typ::number());
                 let lt = self.lhs.typ().clone();
                 let rt = self.rhs.typ().clone();
-                // Number acceptance: a KNOWN operand must be numeric
-                // NOW (the def-time acceptance gate for a lambda body
-                // is typecheck0-only — `x + "hello"` must reject here
-                // or the JIT emits an i64 add on the string's payload
-                // word and leaks a pointer; #16, soak jul04). An
-                // unbound operand records the conjunct for settle.
+                // A known operand must be numeric at typecheck0; the
+                // def-time acceptance gate for a lambda body runs only there.
                 for (known, t) in [
                     (lt.with_deref(|t| t.is_some()), &lt),
                     (rt.with_deref(|t| t.is_some()), &rt),
@@ -792,14 +730,8 @@ macro_rules! arith_op {
                         tv.add_cell_constraint(num.clone());
                     }
                 }
-                // RigidCheck rides BOTH the probe and the commit: a
-                // DECLARED `'a: Number` formal is rigid while its def
-                // gate is open, and the body must be well-typed for
-                // ARBITRARY 'a — `x + f64:0.` must reject at the def,
-                // not bind the rigid cell to f64 (the
-                // rigid_tvar_body_escape discipline). Outside the gate
-                // rigid counters are zero, so the flag is inert at
-                // sites.
+                // A declared `'a: Number` formal is rigid while its def
+                // gate is open: `x + f64:0.` must reject, not bind 'a.
                 use $crate::typ::ContainsFlags as CF;
                 let rc = CF::RigidCheck.into();
                 let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
@@ -877,10 +809,7 @@ macro_rules! arith_op {
                 } else {
                     match result {
                         Value::Error(e) => {
-                            // a FRESH evaluation failure logs at
-                            // every depth (dense Q2); a standing
-                            // bottom re-derived from stale rides
-                            // never re-logs
+                            // only a fresh failure logs
                             if trig {
                                 log::error!(
                                     "arith error in {} at {} {e}",
@@ -936,23 +865,12 @@ macro_rules! arith_op {
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                // The homogeneous unification IS the whole check now —
-                // it subsumes the retired operand pre-bind (an unbound
-                // formal binds to the concrete operand through the
-                // commit direction), the retired promotion-obligation
-                // recording (there is no promotion), and the retired
-                // fresh-result-cell logic (the result IS the unified
-                // operand type — same-cell type preservation falls out
-                // of unbound×unbound aliasing instead of being a
-                // special case).
                 self.typecheck_tail(ctx)
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
-                // Settle still-unbound operand cells to their
-                // conjunction, then run the deferred `ut`.
                 if let Type::TVar(tv) = self.lhs.typ() {
                     wrap!(self.lhs, tv.settle(&ctx.env))?;
                 }
@@ -969,13 +887,6 @@ macro_rules! arith_op {
     };
 }
 
-// Unchecked ops use the operator trait methods (`add` = wrapping for ints,
-// `div`/`rem` error on divide-by-zero). Checked ops use the `checked_*`
-// inherent methods, which return `Value::Error` on integer overflow /
-// underflow / divide-by-zero — the `arith_op!` body then wraps that error as
-// the `ArithError` union. Using the bare `+`/`-`/`*` operators for the checked
-// variants (the previous behavior) silently wrapped on overflow, so `+?`/`-?`/
-// `*?` never produced an error.
 arith_op!(Add, Op::Add, false, add, Add);
 arith_op!(Sub, Op::Sub, false, sub, Sub);
 arith_op!(Mul, Op::Mul, false, mul, Mul);

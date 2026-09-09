@@ -50,17 +50,14 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     }
     let root = graphix_package::root_module_source(&root_mods);
     let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
-    // Cache the stdlib (+ later, GRAPHIX_MODPATH) layer so per-project
-    // checks can prepend it under their own BufferOverride resolver.
+    // The stdlib layer, shared by every per-project check.
     let base_resolvers = resolvers.clone();
     for root in roots {
         resolvers.push(FilesResolver::new(root, None));
     }
-    // lsp_mode (set below) forces fusion off in compile() — a check-only
-    // runtime never executes, so it must never fuse. No flag needed here.
+    // lsp_mode forces fusion off in compile().
     let flags = CFlag::WarnUnhandled | CFlag::WarnUnused;
-    // We don't consume runtime events in the LSP — drain them on a task
-    // so the channel doesn't fill and stall the runtime.
+    // Drain runtime events so the channel never stalls the runtime.
     let (tx, rx) = mpsc::channel(100);
     task::spawn(drain(rx));
     let gx = GXConfig::builder(ctx, tx)
@@ -86,8 +83,7 @@ async fn drain(mut rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>) {
     while rx.recv().await.is_some() {}
 }
 
-/// Collect filesystem roots the editor told us about. Prefers
-/// `workspaceFolders` (multi-root capable) and falls back to the
+/// Filesystem roots from the editor: `workspaceFolders`, else the
 /// deprecated `rootUri` / `rootPath`.
 fn project_roots(init: &InitializeParams) -> Vec<PathBuf> {
     let mut roots = Vec::new();
@@ -122,25 +118,16 @@ fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
 struct ShellLspBackend {
     gx: GXHandle<NoExt>,
     rt_handle: Handle,
-    /// Stdlib + GRAPHIX_MODPATH-derived resolvers. Anything that should
-    /// be in scope regardless of which project we're checking. The
-    /// per-call `BufferOverride` (rooted at the file's parent dir) is
-    /// appended in `typecheck_project`.
+    /// Stdlib + GRAPHIX_MODPATH resolvers, in scope for every project.
     base_resolvers: Vec<ResolverRef>,
-    /// Shared open-buffer override map. Mutated by the LSP on every
-    /// `did_open` / `did_change` / `did_close`. Layered into every
-    /// resolver chain, so unsaved edits in any open buffer are visible
-    /// to all check calls.
+    /// Open-buffer overrides, layered into every resolver chain so
+    /// unsaved edits are visible to all checks.
     buffer_overrides: BufferOverrides,
 }
 
 impl ShellLspBackend {
-    /// Build the resolver chain for checking a project rooted at
-    /// `file`. Appends a `BufferOverride` whose base is the file's
-    /// parent dir — the override map shadows on-disk text per path,
-    /// and falls through to the disk for anything not in the map.
-    /// Sibling-module imports work the same way they do when running
-    /// the file directly, plus the editor-buffer view is honored.
+    /// Resolver chain for checking `file`: the base resolvers plus a
+    /// `BufferOverride` rooted at the file's parent dir.
     fn resolvers_for(&self, file: &Path) -> Vec<ResolverRef> {
         let mut resolvers = self.base_resolvers.clone();
         if let Some(parent) = file.parent() {

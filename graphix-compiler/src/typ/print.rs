@@ -269,7 +269,6 @@ impl PrettyDisplay for Type {
                 writeln!(buf, "]")
             }
             Self::Primitive(_) => {
-                // Primitives are simple enough to just use Display
                 writeln!(buf, "{self}")
             }
         }

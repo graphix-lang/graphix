@@ -70,9 +70,7 @@ const MAP_CHANGE_PRESENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_present, MAP_CHANGE_PRESENT, |v: Result<&Value>| match v {
     Ok(Value::I64(12)) => true,
     _ => false,
@@ -85,9 +83,7 @@ const MAP_CHANGE_ABSENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_absent, MAP_CHANGE_ABSENT, |v: Result<&Value>| match v {
     Ok(Value::I64(110)) => true,
     _ => false,
@@ -101,9 +97,7 @@ const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_preserves_others, MAP_CHANGE_PRESERVES_OTHERS, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -119,9 +113,7 @@ const MAP_CHANGE_CHAINED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_chained, MAP_CHANGE_CHAINED, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -134,7 +126,6 @@ const MAP_MAP: &str = r#"
 }
 "#;
 
-// Lowers natively (2026-07-14): const map literal + flattened pair loop.
 run!(map_map, MAP_MAP, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 3
@@ -151,7 +142,6 @@ const MAP_FILTER: &str = r#"
 }
 "#;
 
-// Lowers natively (2026-07-14).
 run!(map_filter, MAP_FILTER, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
@@ -167,7 +157,6 @@ const MAP_FILTER_MAP: &str = r#"
 }
 "#;
 
-// Lowers natively (2026-07-14).
 run!(map_filter_map, MAP_FILTER_MAP, |v: Result<&Value>| match v {
     Ok(Value::Map(m)) =>
         m.len() == 2
@@ -183,7 +172,6 @@ const MAP_FOLD: &str = r#"
 }
 "#;
 
-// Lowers natively (2026-07-14): flattened pair loop, scalar acc.
 run!(map_fold, MAP_FOLD, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
@@ -197,9 +185,6 @@ const MAP_ITER: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_iter, MAP_ITER, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2)] => true,
@@ -221,9 +206,6 @@ const MAP_ITERQ: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(map_iterq, MAP_ITERQ, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2), Value::I64(3), Value::I64(4), Value::I64(5)] =>
@@ -261,11 +243,10 @@ run!(map_remove, MAP_REMOVE, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// ─── Direct Map-HOF lowering (2026-07-14) ──────────────────────────
+// Direct Map-HOF lowering.
 
-// The whole HOF as one kernel — `#[native]` proves the loop is IN the
-// kernel (the plain fixtures above can satisfy FuseExpect::Jit via
-// sub-region fusion alone).
+// The whole HOF as one kernel; `#[native]` proves the loop is in the
+// kernel.
 const MAP_FOLD_NATIVE: &str = r#"
 {
   let m = {"a" => 1, "b" => 2, "c" => 3};
@@ -290,9 +271,8 @@ run!(map_map_native, MAP_MAP_NATIVE, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// Key collision through map::map: both entries map to the same key —
-// the rebuild goes through the ONE CMap::from_iter seam in both
-// evaluators, so whatever the duplicate policy is, they agree.
+// A key collision through map::map: both engines rebuild through the
+// one CMap::from_iter seam, so they agree on the duplicate policy.
 const MAP_MAP_KEY_COLLISION: &str = r#"
 {
   let m = {"a" => 1, "b" => 2};

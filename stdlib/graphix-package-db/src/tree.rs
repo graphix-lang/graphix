@@ -18,10 +18,6 @@ use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
-// ── Abstract types ────────────────────────────────────────────────
-
-// -- DbValue --
-
 #[derive(Debug, Clone)]
 pub struct DbValue {
     pub(crate) inner: Arc<sled::Db>,
@@ -42,15 +38,11 @@ pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<sled::Db> {
     }
 }
 
-// -- TreeInner --
-
 #[derive(Debug)]
 pub(crate) struct TreeInner {
     pub(crate) tree: sled::Tree,
     pub(crate) key_typ: Option<Typ>,
 }
-
-// -- TreeValue --
 
 #[derive(Debug, Clone)]
 pub struct TreeValue {
@@ -76,15 +68,11 @@ pub(crate) fn wrap_tree(tree: sled::Tree, key_typ: Option<Typ>) -> Value {
     TREE_WRAPPER.wrap(TreeValue { inner: Arc::new(TreeInner { tree, key_typ }) })
 }
 
-// ── Tree metadata ─────────────────────────────────────────────────
-
 pub(crate) static META_TREE: ArcStr = literal!("$$__graphix_meta__$$");
 pub(crate) static DEFAULT_TREE_META: ArcStr = literal!("$$__graphix_default__$$");
 
-// ── MetaStore trait ──────────────────────────────────────────────
-//
-// Unifies sled::Tree (CAS-based) and TransactionalTree (get+insert)
-// so that check_or_store_meta works in both contexts.
+// Unifies sled::Tree (CAS) and TransactionalTree (get+insert) so
+// check_or_store_meta works in both.
 
 pub(crate) trait MetaStore {
     fn get(&self, key: &[u8]) -> Result<Option<sled::IVec>>;
@@ -162,8 +150,6 @@ pub(crate) fn check_or_store_meta(
     }
 }
 
-// ── Type extraction helpers ──────────────────────────────────────
-
 fn prim_typ(t: &Type) -> Option<Typ> {
     match t {
         Type::Primitive(flags) if flags.iter().count() == 1 => flags.iter().next(),
@@ -218,10 +204,6 @@ pub(crate) fn types_are_concrete(key_typ_str: &str, val_typ_str: &str) -> bool {
     concrete(key_typ_str) && concrete(val_typ_str)
 }
 
-// ── Builtins ──────────────────────────────────────────────────────
-
-// -- DbGetType --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbGetTypeEv;
 
@@ -264,8 +246,6 @@ impl EvalCachedAsync for DbGetTypeEv {
 
 pub(crate) type DbGetType = CachedArgsAsync<DbGetTypeEv>;
 
-// -- DbOpen --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbOpenEv;
 
@@ -290,8 +270,6 @@ impl EvalCachedAsync for DbOpenEv {
 }
 
 pub(crate) type DbOpen = CachedArgsAsync<DbOpenEv>;
-
-// -- DbFlush --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbFlushEv;
@@ -318,8 +296,6 @@ impl EvalCachedAsync for DbFlushEv {
 
 pub(crate) type DbFlush = CachedArgsAsync<DbFlushEv>;
 
-// -- DbGenerateId --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbGenerateIdEv;
 
@@ -344,8 +320,6 @@ impl EvalCachedAsync for DbGenerateIdEv {
 }
 
 pub(crate) type DbGenerateId = CachedArgsAsync<DbGenerateIdEv>;
-
-// -- DbTreeNames --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbTreeNamesEv;
@@ -381,8 +355,6 @@ impl EvalCachedAsync for DbTreeNamesEv {
 
 pub(crate) type DbTreeNames = CachedArgsAsync<DbTreeNamesEv>;
 
-// -- DbDropTree --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbDropTreeEv;
 
@@ -410,8 +382,6 @@ impl EvalCachedAsync for DbDropTreeEv {
 }
 
 pub(crate) type DbDropTree = CachedArgsAsync<DbDropTreeEv>;
-
-// -- DbTree --
 
 #[derive(Debug)]
 pub(crate) struct DbTreeArgs {
@@ -530,10 +500,6 @@ impl EvalCachedAsync for DbTreeEv {
 
 pub(crate) type DbTree = CachedArgsAsync<DbTreeEv>;
 
-// ── Key-encoding builtins ─────────────────────────────────────────
-
-// -- DbGet --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbGetEv;
 
@@ -565,8 +531,6 @@ impl EvalCachedAsync for DbGetEv {
 }
 
 pub(crate) type DbGet = CachedArgsAsync<DbGetEv>;
-
-// -- DbInsert --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbInsertEv;
@@ -605,8 +569,6 @@ impl EvalCachedAsync for DbInsertEv {
 
 pub(crate) type DbInsert = CachedArgsAsync<DbInsertEv>;
 
-// -- DbRemove --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbRemoveEv;
 
@@ -639,8 +601,6 @@ impl EvalCachedAsync for DbRemoveEv {
 
 pub(crate) type DbRemove = CachedArgsAsync<DbRemoveEv>;
 
-// -- DbContainsKey --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbContainsKeyEv;
 
@@ -669,8 +629,6 @@ impl EvalCachedAsync for DbContainsKeyEv {
 }
 
 pub(crate) type DbContainsKey = CachedArgsAsync<DbContainsKeyEv>;
-
-// -- DbGetMany --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbGetManyEv;
@@ -721,8 +679,6 @@ impl EvalCachedAsync for DbGetManyEv {
 
 pub(crate) type DbGetMany = CachedArgsAsync<DbGetManyEv>;
 
-// ── Key-value decode helper ─────────────────────────────────────
-
 fn decode_kv_result(
     tree: &TreeInner,
     result: sled::Result<Option<(sled::IVec, sled::IVec)>>,
@@ -736,10 +692,6 @@ fn decode_kv_result(
         },
     }
 }
-
-// ── Ordered access builtins ─────────────────────────────────────
-
-// -- DbFirst --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbFirstEv;
@@ -770,8 +722,6 @@ impl EvalCachedAsync for DbFirstEv {
 
 pub(crate) type DbFirst = CachedArgsAsync<DbFirstEv>;
 
-// -- DbLast --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbLastEv;
 
@@ -800,8 +750,6 @@ impl EvalCachedAsync for DbLastEv {
 }
 
 pub(crate) type DbLast = CachedArgsAsync<DbLastEv>;
-
-// -- DbPopMin --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbPopMinEv;
@@ -832,8 +780,6 @@ impl EvalCachedAsync for DbPopMinEv {
 
 pub(crate) type DbPopMin = CachedArgsAsync<DbPopMinEv>;
 
-// -- DbPopMax --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbPopMaxEv;
 
@@ -862,8 +808,6 @@ impl EvalCachedAsync for DbPopMaxEv {
 }
 
 pub(crate) type DbPopMax = CachedArgsAsync<DbPopMaxEv>;
-
-// -- DbGetLt --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbGetLtEv;
@@ -897,8 +841,6 @@ impl EvalCachedAsync for DbGetLtEv {
 
 pub(crate) type DbGetLt = CachedArgsAsync<DbGetLtEv>;
 
-// -- DbGetGt --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbGetGtEv;
 
@@ -930,10 +872,6 @@ impl EvalCachedAsync for DbGetGtEv {
 }
 
 pub(crate) type DbGetGt = CachedArgsAsync<DbGetGtEv>;
-
-// ── Atomic operations ───────────────────────────────────────────
-
-// -- DbCompareAndSwap --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbCompareAndSwapEv;
@@ -999,8 +937,6 @@ impl EvalCachedAsync for DbCompareAndSwapEv {
 
 pub(crate) type DbCompareAndSwap = CachedArgsAsync<DbCompareAndSwapEv>;
 
-// -- DbBatch --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbBatchEv;
 
@@ -1033,10 +969,6 @@ impl EvalCachedAsync for DbBatchEv {
 
 pub(crate) type DbBatch = CachedArgsAsync<DbBatchEv>;
 
-// ── Collection introspection ────────────────────────────────────
-
-// -- DbLen --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbLenEv;
 
@@ -1061,8 +993,6 @@ impl EvalCachedAsync for DbLenEv {
 
 pub(crate) type DbLen = CachedArgsAsync<DbLenEv>;
 
-// -- DbIsEmpty --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbIsEmptyEv;
 
@@ -1086,10 +1016,6 @@ impl EvalCachedAsync for DbIsEmptyEv {
 }
 
 pub(crate) type DbIsEmpty = CachedArgsAsync<DbIsEmptyEv>;
-
-// ── Database-level operations ───────────────────────────────────
-
-// -- DbSizeOnDisk --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbSizeOnDiskEv;
@@ -1116,8 +1042,6 @@ impl EvalCachedAsync for DbSizeOnDiskEv {
 
 pub(crate) type DbSizeOnDisk = CachedArgsAsync<DbSizeOnDiskEv>;
 
-// -- DbWasRecovered --
-
 #[derive(Debug, Default)]
 pub(crate) struct DbWasRecoveredEv;
 
@@ -1141,8 +1065,6 @@ impl EvalCachedAsync for DbWasRecoveredEv {
 }
 
 pub(crate) type DbWasRecovered = CachedArgsAsync<DbWasRecoveredEv>;
-
-// -- DbChecksum --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbChecksumEv;
@@ -1169,8 +1091,6 @@ impl EvalCachedAsync for DbChecksumEv {
 
 pub(crate) type DbChecksum = CachedArgsAsync<DbChecksumEv>;
 
-// -- DbExport / DbImport serialization format --
-
 #[derive(Pack)]
 struct ExportTree {
     typ: Vec<u8>,
@@ -1182,8 +1102,6 @@ struct ExportTree {
 struct ExportData {
     trees: Vec<ExportTree>,
 }
-
-// -- DbExport --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbExportEv;
@@ -1234,8 +1152,6 @@ impl EvalCachedAsync for DbExportEv {
 }
 
 pub(crate) type DbExport = CachedArgsAsync<DbExportEv>;
-
-// -- DbImport --
 
 #[derive(Debug, Default)]
 pub(crate) struct DbImportEv;

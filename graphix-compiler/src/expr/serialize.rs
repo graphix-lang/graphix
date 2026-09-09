@@ -1,18 +1,13 @@
-//! Binary (pre-parsed) serialization of the module AST — for shipping packed
-//! stdlib ASTs in packages (Part D), so a package deserializes its AST at load
-//! instead of re-parsing its `.gx` source.
+//! Binary serialization of the module AST, so a package deserializes its
+//! AST at load instead of re-parsing its `.gx` source.
 //!
-//! The codec is netidx [`Pack`]: most AST types `#[derive(Pack)]`, so the
-//! encoding tracks the AST automatically as it grows. This module holds the
-//! few hand-written impls for types that can't derive — `Expr` (restores
-//! `ori` from the decode-unit thread-local and `id` fresh), `AbstractId`
-//! (its path-derived inner word), and `TVar`/`FnType` (interior
-//! `RwLock`/`LPooled` snapshotting) — plus the per-module decode setup
-//! and the `pack_module`/`unpack_module` (and `_sig`) entry points.
+//! The codec is netidx [`Pack`]; most AST types derive it. This module
+//! holds the hand-written impls (`Expr`, `AbstractId`, `TVar`, `FnType`),
+//! the per-module decode setup and the `pack_module`/`unpack_module`
+//! (and `_sig`) entry points.
 //!
-//! There is NO version field and NO parse fallback: the same in-tree compiler
-//! builds the package and regenerates the blob, so a mismatch is impossible by
-//! construction and a decode error is a hard internal bug, not a normal path.
+//! There is no version field and no parse fallback: the same compiler
+//! build writes and reads a blob, so a decode error is an internal bug.
 
 use crate::{
     SourcePosition,
@@ -32,13 +27,11 @@ use netidx_core::{
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-/// Magic header on every packed blob — a cheap guard against feeding the
-/// decoder something that isn't a graphix AST.
+/// Magic header on every packed blob.
 const MAGIC: &[u8; 4] = b"GXAS";
 
-/// Brackets a decode unit: installs the module's `Origin` (so decoded `Expr`s
-/// pick it up via `get_origin`) and restores the previous one on `Drop` —
-/// even if decoding errors or panics.
+/// Brackets a decode unit: installs the module's `Origin` for decoded
+/// `Expr`s and restores the previous one on `Drop`.
 struct DecodeUnit {
     prev_origin: Option<Arc<Origin>>,
 }
@@ -55,8 +48,6 @@ impl Drop for DecodeUnit {
         swap_origin(self.prev_origin.take());
     }
 }
-
-// ── manual Pack impls ──────────────────────────────────────────────────────
 
 impl Pack for AbstractId {
     fn encoded_len(&self) -> usize {
@@ -127,8 +118,8 @@ impl Pack for TVar {
         let name = <ArcStr as Pack>::decode(buf)?;
         let bound = <Option<Type> as Pack>::decode(buf)?;
         let constraints = <Vec<Type> as Pack>::decode(buf)?;
-        // Fresh `TVarId` either way (id is identity-only; the typechecker
-        // re-aliases same-named tvars within a scope, so a fresh id is sound).
+        // A fresh id is sound: the typechecker re-aliases same-named tvars
+        // within a scope.
         let tv = match bound {
             Some(t) => TVar::named(name, t),
             None => TVar::empty_named(name),
@@ -145,19 +136,11 @@ impl Pack for TVar {
 }
 
 impl Pack for FnType {
-    // The retired constraints LIST keeps its WIRE SLOT for format
-    // compatibility: the cells are the only store (phase C) and the
-    // TVar codec already round-trips each cell's conjunction, so the
-    // slot encodes the derived view (redundant on the wire) and
-    // decode re-seeds any entries onto the cells (a no-op for data
-    // this codec wrote — `add_cell_constraint` dedups).
+    // The constraints wire slot is a derived view of the cells: decode
+    // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
     fn encoded_len(&self) -> usize {
-        // The FULL cell pairs, not the declared-quantifier view: the
-        // wire slot transports INFERENCE facts (an unannotated
-        // formal's arith conjunct included), and dropping anonymous
-        // cells let a sandboxed dynamic-module impl cross the wire
-        // fact-free — `|x| x + 1.` matched a `fn(i64) -> i64` sig
-        // (dynamic_module1, 2026-07-12).
+        // The full cell pairs, not the declared-quantifier view: anonymous
+        // cells carry inference facts that must cross the wire.
         let constraints = self.cell_constraint_pairs();
         self.args.encoded_len()
             + self.vargs.encoded_len()
@@ -184,9 +167,8 @@ impl Pack for FnType {
         let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
-        // Named pairs are the declared quantifiers; anonymous '_N
-        // pairs are transported inference facts (re-seeded below,
-        // never header-printed).
+        // Named pairs are the declared quantifiers; anonymous '_N pairs are
+        // inference facts, re-seeded below.
         let quantifiers = Arc::from_iter(
             constraints
                 .iter()
@@ -203,13 +185,11 @@ impl Pack for FnType {
             throws,
             explicit_throws,
             quantifiers,
-            // Provenance only — excluded from FnType identity, rebuilt fresh.
+            // Provenance only; excluded from FnType identity.
             lambda_ids: LambdaIds::default(),
         })
     }
 }
-
-// ── module / sig entry points ──────────────────────────────────────────────
 
 fn map_err(e: PackError) -> anyhow::Error {
     anyhow::anyhow!("packed AST codec error: {e:?}")
@@ -234,10 +214,9 @@ pub fn pack_module(exprs: &[Expr]) -> Result<Bytes> {
     Ok(buf.freeze())
 }
 
-/// Deserialize a module's top-level expressions from a packed blob, restoring
-/// every node's `ori` to `ori` (so diagnostics point at the right module) and
-/// minting fresh ids. `bytes` must have been produced by [`pack_module`] from
-/// the SAME compiler build.
+/// Deserialize a module's top-level expressions from a packed blob, setting
+/// every node's `ori` to `ori` and minting fresh ids. `bytes` must come from
+/// [`pack_module`] in the same compiler build.
 pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> {
     check_magic(&mut bytes)?;
     let _unit = DecodeUnit::new(ori);
@@ -264,12 +243,9 @@ pub fn unpack_sig(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Sig> {
     Sig::decode(&mut bytes).map_err(map_err)
 }
 
-/// Serialize a whole package's modules as one self-contained blob — a list of
-/// `(vfs_path_key, source, packed_module_ast)`. Used by a package's `build.rs`
-/// (via `graphix-ast-pack`) to embed the pre-parsed stdlib; the per-module AST
-/// (`ast`) is itself a `pack_module`/`pack_sig` blob, decoded LAZILY at module
-/// resolution. The whole index is small (no AST decode), so the package's
-/// `register` can decode it at startup cheaply.
+/// Serialize a whole package's modules as one blob: a list of
+/// `(vfs_path_key, source, packed_module_ast)`, each `ast` a
+/// `pack_module`/`pack_sig` blob decoded lazily at module resolution.
 pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
     let mut buf = BytesMut::new();
     buf.put_slice(MAGIC);
@@ -284,9 +260,7 @@ pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
 }
 
 /// Decode a package index blob (see [`pack_index`]) into `(Path, VfsEntry)`
-/// pairs ready to insert into a VFS modules map. Each entry's per-module AST
-/// stays packed in `VfsEntry.packed` — it is decoded later, when the module is
-/// actually resolved.
+/// pairs; each entry's AST stays packed in `VfsEntry.packed`.
 pub fn unpack_index(mut bytes: &[u8]) -> Result<Vec<(Path, VfsEntry)>> {
     check_magic(&mut bytes)?;
     let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
@@ -324,8 +298,7 @@ mod test {
             text: ArcStr::new(),
         });
         let unpacked = unpack_module(&packed, dummy).expect("unpack");
-        // `Expr` equality is kind-only (ignores id/ori/pos), so this verifies
-        // the whole tree round-trips structurally.
+        // `Expr` equality is kind-only, so this checks structure.
         assert_eq!(&exprs[..], &unpacked[..], "round-trip mismatch for: {src}");
     }
 
@@ -371,10 +344,8 @@ mod test {
 
     #[test]
     fn roundtrip_preserves_dec() {
-        // `Expr` equality is kind-only (ignores `dec`), so the structural
-        // round-trips above can't see whether comments/attributes survive —
-        // and `#[native]` attrs are semantic (Part C3), so they MUST. Check
-        // `dec` directly.
+        // `Expr` equality ignores `dec`; attributes are semantic and must
+        // survive, so check `dec` directly.
         let ori = Origin {
             parent: None,
             source: Source::Internal(ArcStr::from("dec")),

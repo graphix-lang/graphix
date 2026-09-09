@@ -198,9 +198,7 @@ pub fn pad_range(min: f64, max: f64) -> (f64, f64) {
     (min - pad, max + pad)
 }
 
-/// Estimate the number of decimal places needed for tick labels
-/// given the axis range. Plotters generates ~10 ticks, so the step
-/// is roughly range/10. We need enough precision to distinguish ticks.
+/// Decimal places needed to distinguish ~10 plotters ticks over the range.
 pub fn tick_precision(range: f64) -> usize {
     let step = range / 10.0;
     if step >= 1.0 {

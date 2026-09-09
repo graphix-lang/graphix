@@ -15,17 +15,10 @@ use super::{
     scalar::prim_to_clif,
 };
 
-// ─── Value-shape ABI ─────────────────────────────────────────────
-//
-// `Value` is `#[repr(u64)]` with explicit discriminant values
-// (`Value::Null = 0x0000_8000`, `Value::I64(_) = 0x0000_0400`, etc.)
-// and a fixed 16-byte layout — `(u64 disc, u64 payload)`. The JIT
-// represents Value-shaped expressions as a pair of CLIF `I64` SSA
-// values; the SysV AMD64 ABI passes them in two integer registers
-// when crossing the helper boundary. Discriminant constants below
-// mirror the values in `netidx_value::Value`'s definition; the
-// const block at the bottom of `emit_helpers.rs` keeps Value's
-// layout pinned at 16 bytes, so these stay coherent.
+/// `Value` discriminants, mirroring `netidx_value::Value`'s
+/// `#[repr(u64)]` tags. A Value-shaped expression is a
+/// `(disc, payload)` pair of `I64`s; `emit_helpers.rs` pins the
+/// 16-byte layout.
 pub(super) mod value_disc {
     pub const U8: i64 = 0x0000_0001;
     pub const I8: i64 = 0x0000_0002;
@@ -43,10 +36,7 @@ pub(super) mod value_disc {
     pub const ARRAY: i64 = 0x1000_0000;
 }
 
-/// Map a [`PrimType`] to the `Value` discriminant for boxing a
-/// scalar into a `Value::T(x)`. Used by `IfChain` widening to
-/// `Nullable<T>` — the arm packs `(prim_to_value_disc(T), scalar)`
-/// inline rather than calling a helper.
+/// The `Value` discriminant for a scalar of `p`.
 pub(crate) fn prim_to_value_disc(p: PrimType) -> i64 {
     match p {
         PrimType::I8 => value_disc::I8,
@@ -63,65 +53,31 @@ pub(crate) fn prim_to_value_disc(p: PrimType) -> i64 {
     }
 }
 
-/// A Variant or Nullable local in the JIT: two `Variable`s holding
-/// the (disc, payload) words of a `repr(u64)` Value. Reads return
-/// both via `b.use_var`; writes (tail-call rebind, IfChain merge
-/// via phi) update both.
+/// The two `Variable`s holding a local's `(disc, payload)` words.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ValueVar {
     pub(super) disc: Variable,
     pub(super) payload: Variable,
 }
 
-/// Result of emitting one expression node: a `Value`-shaped
-/// `(disc, payload)` register pair, mirroring netidx's `#[repr(u64)]`
-/// `Value` layout. `disc` is always an `I64` discriminant word;
-/// `payload` keeps its NATURAL cranelift type within a kernel (`F64`
-/// for floats, `I8` for bools, `I64` for ints / pointers / the value
-/// word of a two-word Value).
-///
-/// `disc` doubles as the **taint channel** (#219). A real discriminant
-/// only occupies bits 0..31 (a bitmask — see [`value_disc`]), so bit 62
-/// ([`TAINT`]) is reserved to mark a value that MAY be a bottom (a div0,
-/// a `?`-error, a missing region input the taken path never consumes).
-/// Pure ops OR their operands' taint into the result disc
-/// ([`propagate_taint`]); the kernel FORCES at the output (and at
-/// destructuring consumers) via [`is_tainted`] — a tainted output makes
-/// `Kernel::update` return `None`, moving the abort from the producing
-/// site to the output so an intermediate bottom an un-taken arm never
-/// consumes can't abort the whole kernel (`design/representable_bottom.md`).
-///
-/// For a non-tainted value the disc is a compile-time constant cranelift
-/// folds out, so the uniform two-register shape costs nothing on the hot
-/// path while letting every consumer treat every value identically.
+/// One emitted expression: a `(disc, payload)` register pair. `disc`
+/// is the `I64` discriminant and carries the [`TAINT`] and [`STALE`]
+/// bits; `payload` keeps its natural CLIF type. Taint is forced only
+/// at the kernel output and at destructuring consumers, so a bottom an
+/// untaken arm never consumes cannot abort the kernel.
 #[derive(Debug, Clone, Copy)]
 pub struct CompiledExpr {
     pub disc: ClifValue,
     pub payload: ClifValue,
 }
 
-/// The reserved taint bit of a [`CompiledExpr`]'s `disc`. Outside the
-/// [`value_disc`] bitmask range (bits 0..31) so it never collides with a
-/// real discriminant; set = "this value MAY be a bottom" (#219). Shared
-/// with the runtime dispatch (`kernel.rs`), which sets it for a missing
-/// input's disc word.
+/// Disc bit 62: this value may be a bottom. The runtime dispatch also
+/// sets it for a missing input.
 pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 
-/// The reserved "did not fire this cycle" bit of a [`CompiledExpr`]'s
-/// `disc` (bit 61, inside the JIT tag region [`emit_helpers::TagValue`]
-/// reserves, below [`TAINT`]). Set = "this value carries a CACHED value
-/// from a prior cycle — it did not update this cycle." It is the JIT
-/// twin of the node-walk's `Cached` reporting `false` from `update`
-/// (`node/mod.rs`): a node fires (publishes / writes a variable) only
-/// when at least one of its inputs fired this cycle. Leaves set it
-/// (a non-firing feeder, a constant after init); ops AND-reduce it
-/// ([`propagate_stale`] — a result fires iff ANY operand fired); and the
-/// kernel FORCES freshness at exactly one consumer — the output
-/// ([`emit_kernel_return`], via [`is_not_fresh`]). Mid-expression a stale
-/// value is USED (its cached payload), never aborted — that is what
-/// makes combineLatest agree with the node-walk. Invariant `TAINT ⟹
-/// STALE` (a value that bottoms this cycle reads as not-fired
-/// downstream) is maintained by [`propagate_flags`].
+/// Disc bit 61: the value did not fire this cycle and carries a cached
+/// payload. Leaves set it, ops AND-reduce it ([`propagate_stale`]), and
+/// only the kernel output forces freshness. Invariant: `TAINT ⟹ STALE`.
 pub(crate) const STALE: i64 = 0x2000_0000_0000_0000;
 
 impl CompiledExpr {
@@ -135,10 +91,8 @@ pub(super) fn scalar_disc(b: &mut FunctionBuilder, prim: PrimType) -> ClifValue 
     b.ins().iconst(types::I64, prim_to_value_disc(prim))
 }
 
-/// OR the [`TAINT`] bit of each operand disc into `base`, yielding the
-/// result disc. The fast path (every operand a non-tainted const disc)
-/// folds back to `base`. Mirrors the interp's `?`-absorb: any consumed
-/// bottom taints the result.
+/// OR each operand's [`TAINT`] into `base`: any consumed bottom taints
+/// the result.
 pub(super) fn propagate_taint(
     b: &mut FunctionBuilder,
     base: ClifValue,
@@ -152,12 +106,8 @@ pub(super) fn propagate_taint(
     disc
 }
 
-/// AND-reduce the [`STALE`] bit of `operands` into `base`. The dual of
-/// [`propagate_taint`]: a node FIRES this cycle iff at least one of its
-/// inputs fired, so its result is stale (not-fired) ONLY when EVERY
-/// operand is stale. Folds to `base` for a single operand and, when all
-/// operands carry compile-time-fresh discs, cranelift constant-folds the
-/// whole chain away.
+/// AND-reduce the operands' [`STALE`] into `base`: the result is stale
+/// only when every operand is.
 pub(super) fn propagate_stale(
     b: &mut FunctionBuilder,
     base: ClifValue,
@@ -172,10 +122,8 @@ pub(super) fn propagate_stale(
     b.ins().bor(base, all)
 }
 
-/// The result-disc flag combinator for an op that consumes `operands`:
-/// [`TAINT`] is OR-reduced (any consumed bottom taints the result) and
-/// [`STALE`] is AND-reduced (the result fired iff any operand fired).
-/// The single call every binary/unary op uses to build its result disc.
+/// [`propagate_taint`] then [`propagate_stale`]: the result disc of an
+/// op consuming `operands`.
 pub(super) fn propagate_flags(
     b: &mut FunctionBuilder,
     base: ClifValue,
@@ -185,9 +133,7 @@ pub(super) fn propagate_flags(
     propagate_stale(b, d, operands)
 }
 
-/// Fold `base` with a conditional taint: when `cond` (an I8 0/1) is
-/// true, OR [`TAINT`] into the disc. Used where a computed condition
-/// signals bottom (a div0, a `?`-error).
+/// OR [`TAINT`] into `base` when `cond` (I8 0/1) is true.
 pub(super) fn taint_if(
     b: &mut FunctionBuilder,
     base: ClifValue,
@@ -203,33 +149,27 @@ pub(super) fn is_tainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue 
     b.ins().icmp_imm(IntCC::NotEqual, t, 0)
 }
 
-/// True (I8 bool) iff the disc's [`TAINT`] bit is CLEAR — the
-/// "continue / has-a-value" bit consumed by [`emit_bottom_abort`].
+/// True (I8 bool) iff the disc's [`TAINT`] bit is clear.
 pub(super) fn is_untainted(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let t = b.ins().band_imm(disc, TAINT);
     b.ins().icmp_imm(IntCC::Equal, t, 0)
 }
 
-/// [`is_untainted`] widened to `I64` — the helper-argument form
-/// ([`BodyCx::open_slot_tables`]'s resize gate).
+/// [`is_untainted`] widened to `I64` for a helper argument.
 pub(super) fn emit_untainted_i64(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let v = is_untainted(b, disc);
     b.ins().uextend(types::I64, v)
 }
 
-/// True (I8 bool) iff neither [`TAINT`] nor [`STALE`] is set — this
-/// value FIRED this cycle (the gate a handler-ful `?`'s delivery
-/// keys on: a stale or phantom error is not an event).
+/// True (I8 bool) iff neither [`TAINT`] nor [`STALE`] is set: the value
+/// fired this cycle.
 pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     let m = b.ins().band_imm(disc, TAINT | STALE);
     b.ins().icmp_imm(IntCC::Equal, m, 0)
 }
 
-/// OR [`STALE`] into a constant's `disc` on every NON-init cycle: a
-/// constant node fires only at init (`event.init`, wire slot 0), then
-/// reports not-fired (a cached value) — the node-walk's `Constant`
-/// `update` returning `Some` once then `None`. `init_flag` is the
-/// kernel's [`LowerCtx::init_flag`] (1 at init).
+/// OR [`STALE`] into a constant's `disc` when `init_flag` is 0: a
+/// constant fires only at init.
 pub(super) fn const_stale_gate(
     b: &mut FunctionBuilder,
     init_flag: ClifValue,
@@ -240,73 +180,50 @@ pub(super) fn const_stale_gate(
     b.ins().select(not_init, staled, disc)
 }
 
-/// Strip the [`TAINT`] and [`STALE`] flag bits, yielding the real netidx
-/// discriminant. Used before a disc crosses into a netidx-`Value` helper
-/// (a flagged disc is an invalid tag) and before a structural disc
-/// compare (we compare on the underlying tag, stale or not).
+/// Strip [`TAINT`] and [`STALE`], leaving the netidx discriminant: a
+/// flagged disc is an invalid tag to a `Value` helper or a tag compare.
 pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     b.ins().band_imm(disc, !(TAINT | STALE))
 }
 
-// ─── Env: name → Variable lookup ─────────────────────────────────
-
-/// What a [`Local`]'s `payload` word means and how it is owned/dropped
-/// at scope exit. The `disc` word always carries the netidx
-/// discriminant (and #219 taint); `kind` says how to read and free the
-/// `payload`.
+/// What a [`Local`]'s `payload` word holds and how it is dropped at
+/// scope exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalKind {
-    /// `payload` is the scalar value at its natural CLIF type; nothing
-    /// to drop.
+    /// The scalar at its natural CLIF type; nothing to drop.
     Scalar(PrimType),
-    /// `payload` is owned ValArray bits (array / tuple / struct);
-    /// dropped via `graphix_valarray_drop`. Reads are BORROWED (the env
-    /// keeps owning); consumers clone when they need ownership.
+    /// Owned ValArray bits, dropped via `graphix_valarray_drop`; reads
+    /// borrow.
     Composite,
-    /// `payload` is an owned `ArcStr` thin pointer; dropped via
-    /// `graphix_arcstr_drop`. Reads CLONE (refcount bump) so each
-    /// consumer gets an independently-owned ArcStr.
+    /// An owned `ArcStr` pointer, dropped via `graphix_arcstr_drop`;
+    /// reads clone.
     String,
-    /// `payload` is the value word of a two-word `repr(u64)` Value;
-    /// dropped via `graphix_value_drop(disc, payload)`; reads BORROWED.
-    /// Variant / Nullable / bare value-shape stay distinct for
-    /// consumer-op well-typedness (`IsNull` vs `VariantTagEq`).
+    /// The value word of a two-word Value, dropped via
+    /// `graphix_value_drop`; reads borrow. The three stay distinct so
+    /// consumer ops stay well-typed (`IsNull` vs `VariantTagEq`).
     Variant,
     Nullable,
     Value,
 }
 
-/// One in-scope kernel local. Every local is a two-register Value
-/// (`vv` = disc + payload Variables) tagged by `kind`; the disc carries
-/// #219 taint uniformly, so there is no separate validity slot. The
-/// `payload` Variable's CLIF type follows `kind` (a scalar's natural
-/// type, else `I64` for a pointer / value word).
+/// One in-scope kernel local: a two-register Value tagged by `kind`.
+/// The payload Variable's CLIF type follows `kind`.
 pub(super) struct Local {
     pub(super) name: ArcStr,
     pub(super) vv: ValueVar,
     pub(super) kind: LocalKind,
-    /// `Some` for params and lets carrying a source BindId, so a `Ref`
-    /// resolves BindId-first (exact under shadowing — the #162/#167 bug
-    /// class). `None` for synthetic locals (e.g. an HOF loop element
-    /// bound only by name).
+    /// `Some` for params and lets; a `Ref` resolves BindId-first, which
+    /// is exact under shadowing. `None` for synthetic locals.
     pub(super) bind_id: Option<BindId>,
-    /// Scaffold-loop nesting depth at bind time. 0 = bound outside
-    /// every loop (a kernel param or a region-level let) — such a
-    /// binding is LOOP-INVARIANT: identical on every iteration of
-    /// every open loop. Loop elements/indices/accs bind at depth ≥ 1
-    /// (the scaffolds bracket their binds inside `enter_loop`).
+    /// Scaffold-loop depth at bind time; 0 means loop-invariant.
     pub(super) depth: u32,
 }
 
 pub(crate) struct JitEnv {
-    /// All in-scope locals in binding order. Lookups walk back-to-front
-    /// so an inner binding shadows an outer one. `mark`/`truncate` track
-    /// the single Vec length — a block / select-arm / loop-body scope
-    /// pops back to its entry length on exit.
+    /// In binding order; lookups walk back to front so an inner binding
+    /// shadows an outer one.
     pub(super) locals: Vec<Local>,
-    /// Current scaffold-loop nesting depth (mirrors the EmitCtx
-    /// counter; bumped by `BodyCx::enter_loop`/`exit_loop`). Stamped
-    /// on each `Local` at bind time — see [`Local::depth`].
+    /// Current scaffold-loop depth, stamped on each `Local` at bind time.
     pub(super) loop_depth: u32,
 }
 
@@ -326,17 +243,9 @@ impl JitEnv {
         self.locals.push(Local { name, vv, kind, bind_id, depth });
     }
 
-    /// Resolve a local BindId-first (exact under shadowing), then by
-    /// name — but ONLY to id-LESS (synthetic) locals. A same-named
-    /// local carrying a DIFFERENT real id is a distinct binding: a
-    /// capture whose id missed must fail here (the site Errs and the
-    /// region de-fuses — a perf loss, never a wrong answer), not
-    /// silently read an unrelated variable. The unrestricted fallback
-    /// let a fold callback's captured `x` resolve to the fold ELEMENT
-    /// (which FoldQ name-binds as "x") whenever the capture's
-    /// instantiation id drifted — a nondeterministic wrong VALUE
-    /// (interp 19 / jit 17, soak jul07h fuzz/divergence_000001).
-    /// Walks back-to-front.
+    /// BindId first, then by name but only to id-less synthetic locals:
+    /// a same-named local with a different id is a distinct binding and
+    /// must miss here (the region de-fuses) rather than be read.
     pub(super) fn lookup(&self, id: BindId, name: &str) -> Option<&Local> {
         if let Some(l) = self.locals.iter().rev().find(|l| l.bind_id == Some(id)) {
             return Some(l);
@@ -344,30 +253,19 @@ impl JitEnv {
         self.locals.iter().rev().find(|l| l.bind_id.is_none() && l.name.as_str() == name)
     }
 
-    /// Resolve a local by name only — for sites with no BindId (string /
-    /// variant / nullable / value reads via `ref_local_name`).
+    /// By name only, for sites with no BindId.
     pub(super) fn lookup_name(&self, name: &str) -> Option<&Local> {
         self.locals.iter().rev().find(|l| l.name.as_str() == name)
     }
 
-    /// Resolve a local by BindId alone — for SYNTHETIC `Ref`s
-    /// (`genn::reference`, the premat/elaboration wiring) whose spec
-    /// is the shared NOP constant and names nothing. Exact match, no
-    /// name fallback.
+    /// By BindId alone, for synthetic `Ref`s that name nothing.
     pub(super) fn lookup_id(&self, id: BindId) -> Option<&Local> {
         self.locals.iter().rev().find(|l| l.bind_id == Some(id))
     }
 
-    /// Snapshot the binding list length. Pair with [`Self::truncate`] to
-    /// pop every binding introduced since the mark, so a block /
-    /// select-arm / loop-body scope doesn't leak names into its
-    /// enclosing scope.
-    ///
-    /// `truncate` does NOT emit any runtime drops. Dropping owned
-    /// composite / string / value locals is the scope-exit code's job
-    /// (`emit_scope_drops`) or the terminating return
-    /// (`drop_owned_composites`); `truncate` is purely compile-time env
-    /// hygiene.
+    /// Pair with [`Self::truncate`] to pop the bindings introduced since
+    /// the mark. Compile-time only: runtime drops are `emit_scope_drops`'
+    /// and the return path's job.
     pub(super) fn mark(&self) -> usize {
         self.locals.len()
     }
@@ -377,8 +275,7 @@ impl JitEnv {
     }
 }
 
-/// The CLIF payload type for a local of `kind` — a scalar's natural
-/// type, else `I64` (pointer / value word).
+/// The CLIF payload type for a local of `kind`.
 pub(super) fn local_payload_ty(kind: LocalKind) -> ClifType {
     match kind {
         LocalKind::Scalar(p) => prim_to_clif(p),
@@ -386,10 +283,8 @@ pub(super) fn local_payload_ty(kind: LocalKind) -> ClifType {
     }
 }
 
-/// Declare fresh disc + payload Variables holding `disc`/`payload`, then
-/// bind them as a [`Local`] of `kind`. The single end-state bind path —
-/// every local is a two-register Value carrying its own taint in the
-/// disc.
+/// Declare disc and payload Variables holding `disc`/`payload` and bind
+/// them as a [`Local`] of `kind`.
 pub(super) fn bind_local(
     cx: &mut BodyCx,
     name: ArcStr,
@@ -418,12 +313,8 @@ pub(crate) fn bind_scalar_var_with_disc(
     cx.env.bind(name, ValueVar { disc, payload }, LocalKind::Scalar(prim), bind_id);
 }
 
-/// Emit an HOF operand and FORCE its #219 taint (a tainted operand
-/// bottoms the whole HOF), returning the payload word. Used by the
-/// stdlib array HOF `emit_clif` impls for operands whose scaffold has no
-/// per-value taint channel — the source array, a scalar predicate /
-/// body, a composite flat_map body, the `init` count. Folds to no branch
-/// for an untainted operand.
+/// Emit an operand and abort the kernel if it is tainted, returning the
+/// payload word. For HOF operands that have no per-value taint channel.
 pub fn emit_forced<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
@@ -434,20 +325,15 @@ pub fn emit_forced<R: Rt, E: UserEvent>(
     Ok(cv.payload)
 }
 
-/// Wrap owned ValArray bits as a composite [`CompiledExpr`]
-/// (const `ARRAY` disc). The result of an HOF that produces an array.
+/// Wrap owned ValArray bits as a composite [`CompiledExpr`].
 pub fn array_result(cx: &mut BodyCx, ptr: ClifValue) -> CompiledExpr {
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     CompiledExpr::new(disc, ptr)
 }
 
-/// Wrap a register-scalar payload as a [`CompiledExpr`] with the prim's
-/// natural (taint-clear) disc. The result of an HOF that produces a
-/// scalar (`array::fold` over a scalar accumulator). Unlike
-/// [`array_result`], the disc's tag matches the payload's shape, so the
-/// value survives a `connect`'s `set_var` (which reconstructs a `Value`
-/// from the disc) — an ARRAY disc over a scalar payload would deref the
-/// scalar as a `*ValArray`.
+/// Wrap a scalar payload as a [`CompiledExpr`] with the prim's disc.
+/// The disc must match the payload's shape: `set_var` rebuilds a
+/// `Value` from it.
 pub fn scalar_result(
     cx: &mut BodyCx,
     prim: PrimType,
@@ -456,10 +342,8 @@ pub fn scalar_result(
     CompiledExpr::new(scalar_disc(cx.b, prim), payload)
 }
 
-/// Like [`emit_forced`] but returns the whole [`CompiledExpr`] (disc +
-/// payload) rather than just the payload. The abort guarantees the
-/// continue path is reached only when [`TAINT`] is clear, so the returned
-/// disc carries just the operand's [`STALE`] bit.
+/// [`emit_forced`] returning the whole [`CompiledExpr`]; on the continue
+/// path the disc carries only the operand's [`STALE`] bit.
 pub fn emit_forced_keep<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,

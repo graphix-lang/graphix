@@ -107,11 +107,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const NAME: &str = "array_window";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        // window requires ALL its args before producing anything
-        // (Eric's ruling 2026-07-20, dyncall-partial-args-jul2026):
-        // the old per-branch presence tracking let the degenerate
-        // `#n: 0` case emit `[]` with the val slot still absent (the
-        // window needed zero elements from it).
+        // window requires ALL its args before producing anything.
         match &from.0[..] {
             [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..]
                 if tl.iter().all(|v| v.is_some()) =>
@@ -325,7 +321,6 @@ struct Group<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
-    // Intrinsic sync; predicate effect joins at the call site (M6).
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_group";
 
@@ -455,11 +450,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The published pred-fn/length/element values are
-        // per-invocation replay memory (the same ids `delete`
-        // removes); the queue, the group buffer, and the ready flag
-        // are the grouping contract — they aggregate across events
-        // and survive.
+        // The published pred-fn/length/element values are replay memory;
+        // the queue, the group buffer and the ready flag aggregate across
+        // events and survive.
         self.pred.reset_replay(ctx);
     }
 }
@@ -521,10 +514,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         self.2 = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Delivery rides set_var (async); the only state is the wake
-        // registration, which reset_replay never touches.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -610,10 +600,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The queue and trigger debt are semantic buffering; delivery
-        // rides set_var (async, so never inside a sync frame anyway).
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 fn fc_iota(args: &[Value]) -> Option<Value> {

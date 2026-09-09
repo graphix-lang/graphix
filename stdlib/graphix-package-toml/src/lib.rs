@@ -20,8 +20,6 @@ use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc as TArc;
 
-// ── TOML ↔ Value conversion ──────────────────────────────────────
-
 fn toml_to_value(v: toml::Value) -> Value {
     match v {
         toml::Value::String(s) => Value::String(ArcStr::from(s.as_str())),
@@ -112,8 +110,6 @@ fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
         Value::Abstract(_) => Err("cannot serialize abstract type to TOML".into()),
     }
 }
-
-// ── TomlRead (async) ─────────────────────────────────────────────
 
 #[derive(Debug)]
 enum ReadInput {
@@ -207,8 +203,6 @@ impl EvalCachedAsync for TomlReadEv {
 
 type TomlRead = CachedArgsAsync<TomlReadEv>;
 
-// ── TomlWriteStr (sync) ──────────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct TomlWriteStrEv;
 
@@ -241,8 +235,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
 
 type TomlWriteStr = CachedArgs<TomlWriteStrEv>;
 
-// ── TomlWriteBytes (sync) ────────────────────────────────────────
-
 #[derive(Debug, Default)]
 struct TomlWriteBytesEv;
 
@@ -274,8 +266,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
 }
 
 type TomlWriteBytes = CachedArgs<TomlWriteBytesEv>;
-
-// ── Package registration ─────────────────────────────────────────
 
 graphix_derive::defpackage! {
     builtins => [

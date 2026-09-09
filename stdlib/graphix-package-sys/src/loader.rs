@@ -1,8 +1,5 @@
-//! The netidx module loader — graphix modules served as netidx
-//! published values. Extracted from the compiler's resolver (the core
-//! has no networking since the 2026-07 netidx extraction,
-//! design/netidx_extraction.md); Atlas and the shell's `netidx:`
-//! script prefix thread it in as an ordinary [`ModuleResolver`].
+//! The netidx module loader: graphix modules served as netidx
+//! published values, threaded in as an ordinary [`ModuleResolver`].
 use crate::netstate::NetHandles;
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
@@ -49,10 +46,9 @@ impl NetidxResolver {
         })
     }
 
-    /// A GRAPHIX_MODPATH factory for `netidx:<base>` entries. The
-    /// netidx handles come from the context's libstate at first use:
-    /// the same universe sys::net's builtins use, materialized from
-    /// the seeded [`NetConfig`] (Internal when unseeded).
+    /// A GRAPHIX_MODPATH factory for `netidx:<base>` entries. The netidx
+    /// handles come from the context's libstate at first use — the same
+    /// universe sys::net's builtins use.
     pub fn factory(timeout: Option<Duration>) -> ResolverFactory {
         std::sync::Arc::new(move |libstate: &mut LibState, rest: &str| {
             let handles = libstate.get_or_default::<NetHandles>().clone();

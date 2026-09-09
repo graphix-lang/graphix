@@ -34,27 +34,19 @@ pub struct SnapPoint {
 /// Interactive chart state, held as `Program::State`.
 pub struct ChartState {
     pub cache: iced_canvas::Cache<Renderer>,
-    // cursor position (canvas-relative)
     pub cursor: Option<Point>,
-    // zoom/pan — overrides to base axis ranges
     pub x_view: Option<(f64, f64)>,
     pub y_view: Option<(f64, f64)>,
-    // drag state for pan
     pub drag_origin: Option<Point>,
     drag_x_view: Option<(f64, f64)>,
     drag_y_view: Option<(f64, f64)>,
-    // 3D rotation drag
     drag_yaw: Option<f64>,
     drag_pitch: Option<f64>,
-    // 3D interactive rotation offsets
     pub yaw_offset: f64,
     pub pitch_offset: f64,
     pub scale_factor: f64,
-    // plot area info set during draw() via Cell
     pub plot_info: Cell<Option<PlotInfo>>,
-    // nearest point for tooltip
     pub snap_point: Option<SnapPoint>,
-    // double-click detection
     last_click: Option<std::time::Instant>,
 }
 
@@ -107,7 +99,6 @@ impl ChartState {
                     return Some(Action::request_redraw().and_capture());
                 }
 
-                // Find nearest data point for tooltip
                 if let Some(info) = self.plot_info.get() {
                     if mode != ChartMode::ThreeD {
                         self.snap_point =
@@ -140,11 +131,9 @@ impl ChartState {
                     Some(p) => p,
                     None => return None,
                 };
-                // Check for double-click
                 let now = std::time::Instant::now();
                 if let Some(last) = self.last_click {
                     if now.duration_since(last).as_millis() < DOUBLE_CLICK_MS {
-                        // Reset zoom/pan
                         self.x_view = None;
                         self.y_view = None;
                         self.yaw_offset = 0.0;
@@ -191,7 +180,6 @@ impl ChartState {
     fn handle_drag(&mut self, mode: ChartMode, dx: f32, dy: f32) {
         match mode {
             ChartMode::ThreeD => {
-                // Drag rotates yaw/pitch
                 if let (Some(base_yaw), Some(base_pitch)) =
                     (self.drag_yaw, self.drag_pitch)
                 {
@@ -200,7 +188,6 @@ impl ChartState {
                 }
             }
             ChartMode::Bar => {
-                // Bar charts: drag only pans Y axis
                 if let Some(info) = self.plot_info.get() {
                     let y_range = self.drag_y_view.unwrap_or(info.y_range);
                     let y_span = y_range.1 - y_range.0;
@@ -210,7 +197,6 @@ impl ChartState {
             }
             ChartMode::Pie | ChartMode::Empty => {}
             _ => {
-                // Numeric / TimeSeries: drag pans both axes
                 if let Some(info) = self.plot_info.get() {
                     let x_range = self.drag_x_view.unwrap_or(info.x_range);
                     let y_range = self.drag_y_view.unwrap_or(info.y_range);
@@ -236,13 +222,11 @@ impl ChartState {
 
         match mode {
             ChartMode::ThreeD => {
-                // Scroll zooms scale
                 self.scale_factor *=
                     if lines > 0.0 { ZOOM_FACTOR } else { 1.0 / ZOOM_FACTOR };
                 self.scale_factor = self.scale_factor.clamp(0.1, 10.0);
             }
             ChartMode::Bar => {
-                // Bar: zoom Y only, centered on cursor Y
                 let y_range = self.y_view.unwrap_or(info.y_range);
                 let t_y = (cursor.y - info.rect.y) / info.rect.height;
                 let data_y = y_range.1 - t_y as f64 * (y_range.1 - y_range.0);
@@ -253,7 +237,6 @@ impl ChartState {
             }
             ChartMode::Pie | ChartMode::Empty => {}
             _ => {
-                // Zoom both axes centered on cursor
                 let x_range = self.x_view.unwrap_or(info.x_range);
                 let y_range = self.y_view.unwrap_or(info.y_range);
 
@@ -341,7 +324,6 @@ fn find_nearest_point<X: GXExt>(
     cursor: Point,
     mode: ChartMode,
 ) -> Option<SnapPoint> {
-    // Only snap within the plot area
     if cursor.x < info.rect.x
         || cursor.x > info.rect.x + info.rect.width
         || cursor.y < info.rect.y
@@ -464,11 +446,8 @@ fn find_nearest_point<X: GXExt>(
             }
             DatasetEntry::Bar { data, style } => {
                 if let Some(bd) = data.t.as_ref() {
-                    // Bar charts use x_range (0, N) with one bar per
-                    // integer segment. Pick the bar by cursor X alone
-                    // (the entire vertical strip counts as a hit) and
-                    // snap the tooltip anchor to the bar's X-center
-                    // at the bar's top-Y — not to the cursor.
+                    // The whole vertical strip of a bar is a hit; the anchor
+                    // snaps to the bar's top-center.
                     let (data_x, _) = match pixel_to_data(cursor, info) {
                         Some(p) => p,
                         None => continue,
@@ -507,10 +486,7 @@ fn find_nearest_point<X: GXExt>(
                     let radius = (info.rect.width.min(info.rect.height) * 0.35).max(10.0);
                     let dx = cursor.x - cx;
                     let dy = cursor.y - cy;
-                    // Hover activates anywhere in the wedge sector,
-                    // not only inside the pie itself — any cursor
-                    // angle that lands in a slice selects it, no
-                    // matter the radial distance.
+                    // Any cursor angle inside a slice selects it, whatever the radius.
                     let start = style.start_angle.unwrap_or(0.0);
                     let angle =
                         ((dy.atan2(dx) as f64).to_degrees() - start).rem_euclid(360.0);
@@ -519,10 +495,6 @@ fn find_nearest_point<X: GXExt>(
                         let slice_angle = (*val / total) * 360.0;
                         if angle >= cumulative && angle < cumulative + slice_angle {
                             let pct = (*val / total) * 100.0;
-                            // Snap the tooltip anchor to the wedge
-                            // centroid at half-radius on the slice's
-                            // mid-angle, so the dot sits inside the
-                            // slice regardless of cursor position.
                             let mid_deg = cumulative + slice_angle / 2.0 + start;
                             let mid_rad = (mid_deg as f64).to_radians();
                             let anchor_r = (radius * 0.5) as f64;
@@ -544,7 +516,6 @@ fn find_nearest_point<X: GXExt>(
                     }
                 }
             }
-            // No tooltip for 3D datasets
             DatasetEntry::Scatter3D { .. }
             | DatasetEntry::Line3D { .. }
             | DatasetEntry::Surface { .. } => {}
@@ -563,23 +534,19 @@ pub fn draw_tooltip(
     use iced_core::{Color, Size};
     use iced_widget::canvas::{Path, Stroke};
 
-    // Highlight circle at snap point
     let highlight = Path::circle(snap.pixel, 5.0);
     frame.fill(&highlight, Color::from_rgba8(255, 100, 100, 0.78));
     frame.stroke(&highlight, Stroke::default().with_color(Color::WHITE).with_width(1.5));
 
-    // Tooltip text
     let text = format!("{}: {}", snap.label, snap.value);
     let font_size = 12.0_f32;
     let text_w = text.len() as f32 * font_size * 0.6 + 16.0;
     let text_h = font_size + 12.0;
     let pad = 8.0_f32;
 
-    // Position tooltip near snap point, offset so it doesn't obscure the point
     let mut tx = snap.pixel.x + 12.0;
     let mut ty = snap.pixel.y - text_h - 8.0;
 
-    // Keep tooltip on-screen
     if tx + text_w > bounds_size.width {
         tx = snap.pixel.x - text_w - 12.0;
     }
@@ -590,7 +557,6 @@ pub fn draw_tooltip(
         tx = pad;
     }
 
-    // Background
     let bg_rect = Path::rectangle(Point::new(tx, ty), Size::new(text_w, text_h));
     frame.fill(&bg_rect, Color::from_rgba8(40, 40, 50, 0.9));
     frame.stroke(
@@ -600,7 +566,6 @@ pub fn draw_tooltip(
             .with_width(1.0),
     );
 
-    // Text
     frame.fill_text(iced_widget::canvas::Text {
         content: text,
         position: Point::new(tx + pad, ty + pad / 2.0),

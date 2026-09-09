@@ -157,9 +157,7 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         msg: &super::Message,
         shell: &mut super::MessageShell,
     ) -> bool {
-        // `table` has two child groups (header row + data cells) that
-        // don't fit a single `&mut [GuiW<X>]`, so we forward manually
-        // instead of implementing `children_mut`.
+        // Two child groups do not fit one `&mut [GuiW<X>]`, so forward manually.
         let mut changed = false;
         for col in &mut self.columns {
             changed |= col.header.on_message(msg, shell);

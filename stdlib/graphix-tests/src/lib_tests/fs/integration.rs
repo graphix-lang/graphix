@@ -2,7 +2,6 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// Test that writes and then reads a file using Graphix
 const WRITE_THEN_READ: &str = r#"{
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "write_read_test.txt");
@@ -10,16 +9,12 @@ const WRITE_THEN_READ: &str = r#"{
   sys::fs::read_all(write_result ~ path)
 }"#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Test content")
 });
 
-// Test that watches a directory, writes to a file, and receives modify events.
-// On macOS, FSEvents reports file writes as Create rather than Modify, so
-// we include both in the interest set.
+// Watch a directory, write a file, receive modify events. macOS reports
+// writes as Create, so both are in the interest set.
 #[cfg(not(target_os = "macos"))]
 const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   let paths = {
@@ -70,14 +65,10 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   content_ok && modify_ok
 }"#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_then_watch_modify, WRITE_THEN_WATCH_MODIFY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Test that writes binary data and then reads it back using Graphix
 const WRITE_BIN_THEN_READ_BIN: &str = r#"{
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "binary_cycle.bin");
@@ -85,9 +76,6 @@ const WRITE_BIN_THEN_READ_BIN: &str = r#"{
   sys::fs::read_all_bin(write_result ~ path)
 }"#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(test_write_bin_then_read_bin, WRITE_BIN_THEN_READ_BIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")
 });

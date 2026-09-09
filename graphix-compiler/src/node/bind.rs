@@ -22,24 +22,20 @@ use triomphe::Arc;
 
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
-    /// wake catch-up: set by `sleep()`, taken by the next update
+    /// Set by `sleep()`, taken by the next update.
     slept: bool,
     pub(crate) spec: Expr,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
     pub(crate) node: Node<R, E>,
-    /// Has this binding ever put a value on the value channel? Until it
-    /// has, there is no store entry for a reader to fall through to, so
-    /// even a QUIET production must be published — see `update`.
+    /// Whether this binding has ever published; until it has, even a
+    /// quiet production must be published so readers find a store entry.
     published: bool,
 }
 
-/// A compiler lowering that REWRITES a node into a block: the node's
-/// already-compiled operand nodes become `let <name> = <node>`
-/// bindings (moved, never recompiled — their source may name
-/// bindings of an enclosing lambda whose lexical env is long
-/// restored), and `body` — an expression over those names, compiled
-/// and typechecked here under `scope` — is the block's value.
+/// Rewrite a node into a block: each already-compiled operand becomes a
+/// `let <name> = <node>` binding (moved, never recompiled) and `body`,
+/// an expression over those names compiled under `scope`, is the value.
 pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -93,10 +89,8 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
-    /// The single `BindId` this binding introduces, when the pattern
-    /// binds exactly one name (`let x = …`). `None` for destructuring
-    /// patterns. Used by the fusion walker (ValueBind candidates) and
-    /// the JIT block-let binder (BindId-keyed env slots).
+    /// The single `BindId` this binding introduces when the pattern
+    /// binds exactly one name; `None` for destructuring patterns.
     pub(crate) fn single_bind_id(&self) -> Option<BindId> {
         let mut id: Option<BindId> = None;
         let mut count = 0usize;
@@ -122,11 +116,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
-            // Parens are transparent everywhere else, so look through
-            // them here too: `let rec f = (|n| …)` refused while the
-            // bare spelling compiled (typemorph parens-wrap, SOUND
-            // grade — 14 corpus hits on the first sweep). The check is
-            // purely syntactic; the value compiles generically below.
             let mut v = value;
             while let ExprKind::ExplicitParens(inner) = &v.kind {
                 v = inner;
@@ -161,10 +150,8 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             let typ = match typ {
                 Some(typ) => typ.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
                 None => {
-                    // A ⊥ initializer (`let res = never()`) fixes
-                    // nothing: the binding seeds a fresh cell its
-                    // writers refine (the connect-seed idiom), settled
-                    // to ⊥ in typecheck1 if nobody does.
+                    // A ⊥ initializer seeds a fresh cell its writers
+                    // refine, settled to ⊥ in typecheck1 if none do.
                     let typ =
                         if node.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
                             Type::empty_tvar()
@@ -194,7 +181,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        // a destructuring let's binds are facets of one delivery
         let mut siblings: smallvec::SmallVec<[BindId; 4]> = smallvec::SmallVec::new();
         pattern.ids(&mut |id| siblings.push(id));
         if let Some(&rep) = siblings.first()
@@ -204,29 +190,15 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 ctx.env.mark_facet(id, rep);
             }
         }
-        // a let-bound lambda is GENERALIZED: every later reference
-        // instantiates its signature (see `instantiate`). Registered
-        // after the value compiled, so a `let rec` body's own
-        // self-references keep the definition's cells (monomorphic
-        // recursion — the def gate's knot).
+        // Registered after the value compiled so a `let rec` body's
+        // self-references keep the definition's cells.
         if matches!(node.view(), NodeView::Lambda(_)) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert_cow(id);
             });
         }
-        // If the bind's value is a builtin lambda (`let foo = |...| 'name`),
-        // stash the metadata on `ctx.builtin_bindings` so the fusion
-        // pass can recognise `Apply { function: Ref(foo) }` sites as
-        // direct calls to a builtin and lower them via
-        // `FnSource::Builtin`. Only fires for single-bind patterns
-        // (multi-bind destructure of a lambda doesn't happen in
-        // practice) and when the lambda body is the `'name` form.
-        // If the bind's value is a builtin lambda (`let foo = |...| 'name`)
-        // and the pattern is a simple `let <name> = ...`, register
-        // the builtin metadata on `ctx.builtin_bindings` keyed by
-        // (scope, name). Fusion's discovery pass looks up by
-        // (scope, name) at every `Apply` site, so it doesn't
-        // matter that sig and impl get different `BindId`s.
+        // Keyed by (scope, name), not BindId: sig and impl get
+        // different ids for one builtin binding.
         if let ExprKind::Bind(be) = &spec.kind {
             if let expr::StructurePattern::Bind(bind_name) = &be.pattern {
                 if let ExprKind::Lambda(lam) = &value.kind {
@@ -234,11 +206,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         if CollectionIntrinsic::from_name(builtin_name).is_none()
                             && let Type::Fn(fn_type) = node.typ()
                         {
-                            // Lambda Node's def field holds the
-                            // LambdaDef; downcast through NodeView::Lambda
-                            // to pull its id. Used at fusion time to
-                            // look up the lambda's env+scope when
-                            // compiling labeled-default arg expressions.
                             let lambda_id = match node.view() {
                                 NodeView::Lambda(l) => l.lambda_id::<R, E>(),
                                 _ => None,
@@ -263,10 +230,8 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         Ok(Node::new(Self { spec, typ, pattern, node, published: false, slept: false }))
     }
 
-    /// The LambdaDef `Value` this binding holds, when its value node is
-    /// a lambda (`let f = |…| …`) — `None` otherwise. The one home for
-    /// "is this a lambda binding," consumed by `Bind::typecheck0` to
-    /// populate `ctx.bind_to_lambda` (the static-resolution index).
+    /// The LambdaDef `Value` this binding holds when its value node is
+    /// a lambda; `None` otherwise.
     pub(crate) fn lambda_def_value(&self) -> Option<Value> {
         match self.node.view() {
             NodeView::Lambda(l) => Some(l.def_value().clone()),
@@ -274,7 +239,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
     }
 
-    /// Return the id if this bind has only a single binding, otherwise return None
+    /// The id if this bind has exactly one binding, otherwise `None`.
     pub(crate) fn single_id(&self) -> Option<BindId> {
         let mut id = None;
         let mut n = 0;
@@ -293,33 +258,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
-        // Publish TRIGGERING productions — a stale RHS is the value
-        // channel, already served by the bound names' store entries. A
-        // fresh bottom poisons each bound name AND persists in the
-        // store (ruled delta 7: a fresh reader must see the standing
-        // bottom, not resurrect the pre-bottom value; the store keeps
-        // at-rest bottoms, `cached` never sees the placeholder).
-        //
-        // "already served" holds only once there IS an entry, so the
-        // FIRST value-bearing production publishes whatever its tag:
-        // a binding whose RHS is constant-only, inside a select arm
-        // that was asleep for the one genuine-init dispatch, never
-        // fires again (in a frame `Constant` delivers STALE by design,
-        // node/mod.rs — frame depth is checked before `event.init`).
-        // Without this its readers MISS the store outright and ride a
-        // phantom bottom, so the arm computes nothing at all while the
-        // kernel, which recomputes constants per invocation, produces
-        // the value (fuzz/pending-triage/rec_arm_let_missing_fire.gx).
-        // The tag stays honest, so a quiet publish is value channel
-        // only and wakes nobody.
-        // A select arm's WAKE resumes the arm, it does not create one:
-        // re-running the initializer of a binding that is a `<-` target
-        // and already holds a value would throw away what the connect
-        // accumulated while the arm slept, and sleep is PAUSE (Eric
-        // 2026-07-31). Only `<-` targets are held back — every other
-        // binding's initializer is idempotent w.r.t. the value channel,
-        // and the wake's init view stays intact for everything else
-        // (kernels, call-site priming, fresh reads).
+        // A stale RHS is already served by the store, except before the
+        // first publish, which goes out whatever its tag. A fresh bottom
+        // persists in the store. A woken `<-` target keeps its value:
+        // re-running its initializer would discard what connects wrote.
         let wake_hold = event.wake_init && self.published && {
             let mut target = false;
             self.pattern.ids(&mut |id| {
@@ -337,12 +279,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom()))
             );
         }
-        // WAKE CATCH-UP (design/wake_catchup.md): the first update
-        // after this node's sleep recomputes the RHS from present
-        // values — a STALE production here may carry a value the
-        // store's standing entry has drifted behind. Re-publish it on
-        // the value channel (quiet — the tag stays honest, wakes
-        // nobody); `<-` targets stay held back exactly as above.
+        // After a sleep the store entry may lag a stale recompute;
+        // re-publish quietly (design/wake_catchup.md).
         let wake_refresh = woke && !tag.triggers() && !tag.is_bottom() && !wake_hold;
         if !wake_hold
             && (tag.triggers() || (!self.published && !tag.is_bottom()) || wake_refresh)
@@ -382,9 +320,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The static-resolution index survives across batches since the
-        // jul12 flap fix — a deleted bind's entry must go with it, or a
-        // long-lived runtime (LSP/REPL) accumulates dead LambdaDefs.
+        // The static-resolution index outlives batches; a deleted
+        // bind's entry must go with it.
         self.pattern.ids(&mut |id| {
             ctx.bind_to_lambda.remove(&id);
             ctx.connect_targets.remove(&id);
@@ -412,10 +349,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck0(ctx))?;
-        // `let g = f` with `f` generalized and no annotation: `g` IS
-        // `f`'s scheme (its recorded type shares the definition's
-        // cells) and is generalized in turn — unifying it with the
-        // occurrence's fresh instance would pin the definition
+        // `let g = f` with `f` generalized and no annotation: `g` shares
+        // `f`'s scheme; unifying with a fresh instance would pin it.
         let forwards = match &self.spec.kind {
             ExprKind::Bind(b) if b.typ.is_none() => match self.node.view() {
                 NodeView::Ref(r) => ctx.env.poly_binds.contains(&r.id),
@@ -430,11 +365,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         } else {
             wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
         }
-        // Record this binding in the static-resolution index so a
-        // `CallSite` whose `fnode` resolves to it can pre-bind in
-        // `typecheck1`. Recording faux/inside-lambda binds is harmless:
-        // lexical scoping means no outside `Ref` resolves to them, and
-        // resolution never descends lambda bodies.
         if let Some(fv) = self.lambda_def_value() {
             self.pattern.ids(&mut |id| {
                 if crate::dbgenv::gxdbg_resolve() {
@@ -461,11 +391,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // Fuse the bound VALUE, never the Bind itself: the Bind must
-        // stay live to drive the publish of the result to its BindId
-        // (the ValueBind splice shape). A whole-Bind fusion can't
-        // happen anyway — Bind has no emit_clif, so any try_fuse
-        // rooted here fails structurally.
+        // The Bind stays live to publish the fused value to its BindId.
         fuse(&mut self.node, ctx)?;
         Ok(None)
     }
@@ -492,13 +418,9 @@ fn synthesized_bind_ref(name: &ModPath) -> Option<BindId> {
 }
 
 impl Ref {
-    /// Construct a `Ref` node from its already-resolved components.
-    /// AOT codegen uses this after name resolution has already
-    /// assigned a BindId and a Type.
-    ///
-    /// Callers must ensure the runtime is told about the reference
-    /// (via `ctx.rt.ref_var(id, top_id)`) separately — this
-    /// constructor is a pure builder and does not touch ExecCtx.
+    /// Construct a `Ref` from resolved components. Does not touch the
+    /// ExecCtx: the caller must register the reference with
+    /// `ctx.rt.ref_var(id, top_id)`.
     #[allow(dead_code)]
     pub fn new<R: Rt, E: UserEvent>(
         id: BindId,
@@ -523,10 +445,8 @@ impl Ref {
         top_id: ExprId,
         name: &ModPath,
     ) -> Result<Node<R, E>> {
-        // `#bind::N` names binding N directly — the compiler's own
-        // spelling for a synthesized reference (a trait call lowered to
-        // a select over a union, `CallSite::lower_trait_union`); no
-        // source can write it, `#` not being an identifier character
+        // `#bind::N` is the compiler's spelling for a synthesized
+        // reference; no source can write it.
         if let Some(id) = synthesized_bind_ref(name) {
             let Some(bind) = ctx.env.by_id.get(&id) else {
                 bailat!(spec, "synthesized reference to an unknown binding {id:?}")
@@ -575,18 +495,7 @@ impl Ref {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // THE dense read (R2/R3): overlays first (a delivery's own tag
-        // flows through), then the store — a standing entry is the
-        // value channel, viewed Stale, or Fired under the reader's
-        // REAL init view (frames force `event.init` for re-derivation,
-        // so the framed read consults `frame_init`, the
-        // const_stale_gate convention — a capture must not re-fire on
-        // every framed pass). This read IS what every init backfill
-        // used to synthesize. A store miss rides the resident (the
-        // phantom until the first delivery ever).
-        // GXDBG_REF=1 — print every Ref read's arm + tag (the tool
-        // that found the aug13b double-read: one bind read twice in a
-        // cycle flipping STALE→FIRED through the poisoned store twin).
+        // Overlays first, then the store; a store miss rides the resident.
         let dbg = crate::dbgenv::gxdbg_ref();
         let r = match super::read_var(ctx, event, &self.id) {
             Some(super::VarRead::Delivered(tv)) => {
@@ -602,18 +511,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 self.resident.set(tv.clone())
             }
             Some(super::VarRead::Standing(tv)) => {
-                // Fresh under a GENUINE init view only. A WAKE-forced
-                // view (becoming-selected — `event.wake_init`) reads
-                // standing entries present-but-STALE (Eric's ruling
-                // 2026-08-31): the standing value of an external bind
-                // is a PAST event the rest of the graph already
-                // consumed, and delivering it fired re-raised it into
-                // the woken arm — the pump's name-modal Enter, still
-                // standing when the Secret question woke the next arm,
-                // phantom-submitted the fresh modal with "". The woken
-                // arm still evaluates: values materialize through the
-                // quiet-first-production rules, and firing comes only
-                // from inputs that fired THIS cycle.
+                // Fresh under a genuine init view only: a wake-forced
+                // view reads a standing entry stale, since its value is
+                // a past event the graph already consumed. Frames force
+                // `event.init`, so a framed read consults `frame_init`.
                 let init = if ctx.frame_depth > 0 {
                     ctx.frame_init
                 } else {
@@ -673,19 +574,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         &self.typ
     }
 
-    /// A VALUE occurrence of a GENERALIZED binding (`Env::poly_binds`)
-    /// is an instantiation site like a call: it mints fresh cells for
-    /// the signature, so two uses of one polymorphic lambda
-    /// (`array::map([1], f); array::map([1.5], f)`) do not pin each
-    /// other through the definition's own cells. Minted at typecheck
-    /// time — after the definition's gate has recorded the body's
-    /// facts in those cells — and before anything reads this
-    /// occurrence's type (`CallSite::typecheck0` typechecks a `Ref`
-    /// argument ahead of its operand pre-bind). The exemptions are the
-    /// call site's knots, where the definition's cells ARE the point:
-    /// a self-reference inside the definition's gate (monomorphic
-    /// recursion), a fn-typed parameter during its gate, and a
-    /// reference to the instance being elaborated.
+    /// A value occurrence of a generalized binding (`Env::poly_binds`)
+    /// mints fresh cells for its signature, like a call. Exempt: a
+    /// self-reference inside the definition's gate, a fn-typed
+    /// parameter during its gate, and a reference to the instance
+    /// being elaborated, which must share the definition's cells.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         if self.instantiated || !ctx.env.poly_binds.contains(&self.id) {
             return Ok(());
@@ -697,9 +590,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         if rec_knot || ctx.def_gate_params.contains(&self.id) {
             return Ok(());
         }
-        // A bare value reference has no arguments to key an
-        // instantiation identity on: it refers to the innermost
-        // instance of its def being elaborated.
+        // A bare value reference has no arguments to key an instance
+        // identity on; it takes the innermost active instance.
         let active = ft
             .lambda_ids
             .own()
@@ -874,14 +766,9 @@ pub struct ByRef<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
-    /// Construct a `ByRef` node from an already-compiled child.
-    /// AOT codegen supplies the `BindId` (allocated at codegen time,
-    /// reused when the generated tree is built) and the resolved
-    /// `Type`. Interpreter `compile` still handles the additional
-    /// byref-chain plumbing it needs — generated code that wants
-    /// ref-to-ref chaining must mirror that separately via
-    /// `ctx.env.byref_chain.insert_cow(...)` before building the
-    /// node.
+    /// Construct a `ByRef` from an already-compiled child. Does no
+    /// byref-chain plumbing: a caller wanting ref-to-ref chaining must
+    /// insert into `ctx.env.byref_chain` itself.
     #[allow(dead_code)]
     pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
         Node::new(Self {
@@ -905,10 +792,8 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     ) -> Result<Node<R, E>> {
         let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let id = BindId::new();
-        // A place reference (`&a[i]`, `&s.f`, `&t.0`, `&m{k}`, chained)
-        // types as a reference to the ELEMENT — reads apply the path,
-        // writes rebuild along it — and mints its cell like any `&` so
-        // embedders keep reading the mirror.
+        // A place reference types as a reference to the element and
+        // still mints a cell so embedders keep reading the mirror.
         let place = match Place::<R, E>::of(expr) {
             None => None,
             Some((root, specs)) => {
@@ -953,9 +838,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // A place's root and keys first: the registered path is what a
-        // deref reads through this cycle, and a moved key re-fires the
-        // reference so its readers re-resolve.
+        // A moved key re-fires the reference so readers re-resolve.
         let mut moved = false;
         if let Some(place) = &mut self.place {
             let (path, m) = place.update(ctx, event);
@@ -968,33 +851,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 moved = true;
             }
         }
-        // Fired-only write gate: a stale refresh must not re-write the
-        // referent, and a taint placeholder must never enter the
-        // cross-cycle store.
+        // A stale refresh must not re-write the referent, and a taint
+        // placeholder must never enter the cross-cycle store.
         let tv = self.child.update(ctx, event);
         if tv.is_fired() {
             let v = tv.value_cloned();
             if event.init {
-                // Seed the store WITHOUT a delivery (a STANDING write):
-                // `Deref`'s init read serves it THIS cycle via the R2
-                // store view; a queued write would arrive next cycle as
-                // a duplicate (corpus-fuzz/divergence_000027; Eric's
-                // ruling 2026-07-04: the JIT's single delivery is
-                // correct).
+                // A standing write: `Deref`'s init read serves it this
+                // cycle; a queued write would arrive again next cycle.
                 ctx.rt.store_insert_standing(self.id, TagValue::fired(v));
             } else {
                 ctx.rt.set_var(self.id, v);
             }
         } else if event.init && !tv.tag().is_bottom() && !tv.tag().is_tainted() {
-            // The wake-forced init view reads present-but-stale
-            // (2026-08-31), but the cell must still MATERIALIZE:
-            // embedders read it directly (a tui input_handler
-            // compile_refs the handler cell — unseeded, the pump's
-            // modal never received a key), and a chainless ref's cell
-            // is its only storage. A standing STALE seed is the value
-            // rule, not a firing one — the CachedArgs eval-once arm's
-            // twin at the ByRef seam. (A never-produced child is the
-            // STALE_BOTTOM phantom, excluded by the bottom gate.)
+            // A wake-forced init view reads stale, but the cell must
+            // still materialize: embedders read it directly and a
+            // chainless ref's cell is its only storage.
             ctx.rt.store_insert_standing(self.id, TagValue::stale(tv.value_cloned()));
         }
         if event.init || moved {
@@ -1071,9 +943,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 }
             });
             wrap!(self, res)?;
-            // the element type: the access's type minus its index or
-            // key failure, which a place handles at runtime (a failed
-            // read bottoms, a failed write is dropped and logged)
+            // The element type is the access's type minus its failure;
+            // a place handles the failure at runtime.
             let err = Type::Primitive(Typ::Error.into());
             let elem = wrap!(self, self.child.typ().diff(&ctx.env, &err))?;
             wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(elem))))?;
@@ -1099,10 +970,8 @@ pub struct Deref<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
-    /// Build a `Deref` node from an already-compiled child that
-    /// evaluates to a `Value::U64` / `Value::V64` holding a BindId.
-    /// AOT codegen passes the resolved type rather than leaving an
-    /// empty type variable for the interpreter to pin down later.
+    /// Build a `Deref` from an already-compiled child that evaluates to
+    /// a `Value::U64` / `Value::V64` holding a BindId.
     #[allow(dead_code)]
     pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
         Node::new(Self {
@@ -1146,21 +1015,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
                 _ => None,
             });
-            // Resolve the reference through the BYREF CHAIN, exactly as
-            // the WRITE path does (`ConnectDeref`). `&x` mints its own
-            // cell and mirrors x into it with a cross-cycle `set_var`,
-            // so reading the cell reports x's PREVIOUS value on every
-            // cycle x changes — `(x, *r)` produced `(7, 0)`. The write
-            // path never had that problem because it resolved to the
-            // referent, and the asymmetry was the whole bug: one side
-            // of the chain was being followed and the other wasn't.
-            // Interest is registered on the resolved id too, so the
-            // deref wakes with the referent instead of a cycle behind
-            // it. Chainless references (`&(a + b)`) have no entry and
-            // keep reading their own cell, which is their only storage.
-            // A place reference reads through its root and path
-            // (design/place_references.md); the path is refreshed on
-            // every delivery — a moved key re-fires the reference.
+            // Resolve through the byref chain as the write path does:
+            // `&x`'s cell mirrors x a cycle late, the referent does not.
+            // A chainless reference's own cell is its only storage.
             let id = id.map(|cell| match ctx.rt.ref_path(&cell) {
                 Some((root, path)) => {
                     self.path = Some(path.clone());
@@ -1184,8 +1041,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
             Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(super::VarRead::Standing(tv)) => {
-                // Fresh under a genuine init view only — a wake-forced
-                // view reads stale (see Ref::update above).
+                // Fresh under a genuine init view only (see Ref::update).
                 let init = if ctx.frame_depth > 0 {
                     ctx.frame_init
                 } else {
@@ -1252,14 +1108,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck0(ctx))?;
-        // Deref TVars before matching: a container/accessor read's
-        // type is a TVar BOUND to `&T`, not a bare `Type::ByRef` —
-        // `*(a[0]$)` over `Array<&i64>` was rejected here while the
-        // runtime handles it by construction (a ref VALUE is
-        // `Value::U64(bind_id)` wherever it came from; `update`
-        // re-registers lazily off the value). The structural match
-        // made container-stored refs a compile error for no semantic
-        // reason (2026-07-08).
+        // A container read's type is a TVar bound to `&T`, not a bare
+        // `Type::ByRef`.
         let typ = self.child.typ().with_deref(|t| match t {
             Some(Type::ByRef(t)) => Some((**t).clone()),
             _ => None,

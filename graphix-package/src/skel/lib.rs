@@ -10,16 +10,14 @@ use std::boxed::Box;
 
 #[derive(Debug, Default)]
 struct ExampleBuiltin {
-    // The builtin's result slot: `update` lends its production (with
-    // the fired tag riding in the value) to the caller from here.
+    // The result slot `update` lends to the caller.
     out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
-    // Async is the conservative default — override to `Sync` only if
-    // every output appears on the same cycle as the input that
-    // triggered it. See graphix_compiler::effects::EffectKind.
+    // Override to `Sync` only if every output lands on the same cycle
+    // as the input that triggered it.
     const EFFECT: Effect = Effect::Async;
 
     fn init<'a, 'b, 'c, 'd>(
@@ -41,12 +39,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        // DENSE delivery: every awake arg produces every cycle. Match
-        // the production's view exhaustively — this is the whole
-        // builtin-authoring contract (design/dense_delivery.md).
+        // Every awake arg produces every cycle; match the view exhaustively.
         match from[0].update(ctx, event).view() {
-            // An event carrying a value: compute, store in the result
-            // slot, lend the borrow.
             TagView::Fired(tv) => {
                 let v = tv.with_value(|v| match v {
                     Value::Error(_) => Value::Bool(true),
@@ -54,12 +48,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
                 });
                 self.out.set(TagValue::fired(v))
             }
-            // The value channel — nothing new: re-surface the result
-            // slot on the stale channel.
             TagView::Stale(_) => self.out.ride(),
-            // A consumed bottom bottoms the invocation (Q1 — bottom
-            // propagates); the shared statics leave the result slot's
-            // history intact for later stale re-surfacing.
+            // A consumed bottom bottoms the invocation; the result slot keeps
+            // its history for later stale re-surfacing.
             TagView::FreshBottom => TagValue::bottom_null(true),
             TagView::StaleBottom => TagValue::bottom_null(false),
         }

@@ -1,10 +1,7 @@
-//! WAKE CATCH-UP (design/wake_catchup.md, ruled by Eric 2026-09-01):
-//! a reselected arm always recomputes from the world as it stands; it
-//! never re-raises events. The differential corpus
-//! (`findings/wake-catchup-sep2026/`) pins engine AGREEMENT per
-//! shape; this test pins the RULED VALUES themselves — Eric's probe
-//! table, exactly as walked in the design conversation — so both
-//! engines drifting together is still caught.
+//! Wake catch-up (design/wake_catchup.md): a reselected arm recomputes
+//! from the world as it stands and never re-raises events. This pins
+//! the ruled values themselves (findings/wake-catchup-sep2026/ pins
+//! engine agreement).
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
@@ -23,14 +20,9 @@ n <- never(1);
 let result = select cond { true => n + i64:1, false => n + i64:42 }
 "#;
 
-/// cond=false, n=1 → 43; cond→true (n's fire long since consumed by
-/// the false arm at init) → the true arm wakes on present-but-stale
-/// n=1 and the forced recompute gives 2; n→20 live → 21; cond→false →
-/// the false arm wakes, n's 20-fire was consumed by the true arm
-/// (once per select), so it reads present-but-stale 20 — and
-/// recomputes 62. 43 here would be the ride this rule forbids; 63
-/// (a phantom re-fire path) never appears because no event is
-/// re-raised.
+/// cond=false, n=1 -> 43; cond->true wakes the true arm on stale n=1
+/// -> 2; n->20 live -> 21; cond->false wakes the false arm on stale 20
+/// -> 62 (43 would be a ride; 63 a phantom re-fire).
 #[tokio::test(flavor = "multi_thread")]
 async fn wake_recompute_table() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(100);

@@ -33,15 +33,8 @@ pub(crate) mod math;
 pub(crate) mod opt;
 pub(crate) mod queuefn;
 
-// ── Cast context for typed deserialization ────────────────────────
-
-/// Extract the success type from a resolved `Result<T, E>` return type.
-/// Returns `None` if `resolved_typ` is absent or `T` contains free tvars.
-/// The success member `T` of a `Result<T, E>` return type — the target
-/// a typed parser casts its parsed value to — in either the named form
-/// or the expanded `[T, Error<E>]` form (the Result alias expands when
-/// a TVar binds through `contains`), read through a bound cell (a call
-/// site's output type is its instantiation's cell). Shape only; the
+/// The success member `T` of a `Result<T, E>` return type, in either the
+/// named form or the expanded `[T, Error<E>]` form. Shape only; the
 /// typecheck-time validation is [`extract_cast_type`].
 pub fn cast_target(rtype: &Type) -> Option<Type> {
     rtype.with_deref(|t| match t? {
@@ -62,32 +55,8 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     if typ.has_unbound() {
         return None;
     }
-    // A ⊥-settled target is just as unusable as an unbound one: ⊥
-    // means "nothing ever constrained this cell" (never-as-Bottom's
-    // terminal settle), so there is no type to DIRECT the
-    // deserialization — and the value WOULD flow at runtime, laundering
-    // it under the never-arrives type into positions that trust the
-    // type system completely. Reject → the builtin's "type must be
-    // known, annotations needed" error, exactly as for unbound. The
-    // artifact also arrives as a ⊥ MEMBER of a set: a collection
-    // callback's cell aliasing left `str::parse`'s target as the whole
-    // `[⊥, Error<ParseError>]` union, which a top-level-only check
-    // missed — Bottom has no surface syntax, so a ⊥ member is always a
-    // settle artifact, never an annotated target (soak-jul14b 000003).
-    // The walk is RECURSIVE through set members (jul16g divergence
-    // 000000: a nested-map callback's artifact arrived as
-    // `[[⊥, Error<ParseError>], Error<ParseError>]` — the ⊥ one level
-    // inside a set MEMBER, which the one-level check accepted; the
-    // fused parse then cast through the garbage union while the
-    // interp's runtime slot instance erred). The artifact also nests
-    // inside COMPOSITE constructors: an unconstrained parse return
-    // settled as `Array<⊥>` under one unification order and stayed
-    // open under another, turning compile acceptance into a
-    // per-process coin flip (aug04d2 divergence_000000 — the Set-only
-    // walk accepted the Array form; Eric's ruling: compile-reject, no
-    // question). ⊥ anywhere in a cast target is a settle artifact for
-    // the same reason a ⊥ member is — no surface syntax can name it.
-    // Depth-capped against pathological recursive shapes.
+    // ⊥ has no surface syntax, so a ⊥ anywhere in the target is an
+    // unconstrained cell, as unusable as an unbound one.
     fn contains_bottom(t: &Type, depth: u32) -> bool {
         if depth > 64 {
             return false;
@@ -116,19 +85,14 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     Some(typ)
 }
 
-// ── Program arguments ─────────────────────────────────────────────
-
 /// Program arguments stored in LibState. Index 0 is the script filename.
 #[derive(Default)]
 pub struct ProgramArgs(pub Vec<ArcStr>);
 
-/// Print-capture sink, seeded into `ctx.libstate` by harnesses (the
-/// differential fuzzer's stdout oracle). When present, the print
-/// family's (`print`/`println`/`dbg`) Stdout AND Stderr destinations
-/// append here instead of the process streams — per-runtime capture
-/// that stays correct when two modes run concurrently in one process.
-/// Log destinations are unaffected. Each emission appends exactly the
-/// bytes the process stream would have received.
+/// Print-capture sink, seeded into `ctx.libstate` by harnesses. When
+/// present, `print`/`println`/`dbg` Stdout and Stderr output appends
+/// here (exactly the bytes the stream would receive) instead of the
+/// process streams. Log destinations are unaffected.
 #[derive(Debug, Default, Clone)]
 pub struct PrintSink(pub triomphe::Arc<parking_lot::Mutex<String>>);
 
@@ -138,8 +102,6 @@ impl PrintSink {
         std::mem::take(&mut *self.0.lock())
     }
 }
-
-// ── Shared macros ──────────────────────────────────────────────────
 
 /// Implement `netidx_core::pack::Pack` as a non-serializable stub.
 /// Use this for abstract wrapper types that should never be encoded/decoded.
@@ -234,12 +196,9 @@ macro_rules! impl_abstract_arc {
 }
 
 /// The `LazyLock<AbstractWrapper<T>>` static for a Rust-backed abstract
-/// type, registered under the UUID DERIVED FROM ITS GRAPHIX PATH
-/// (`graphix_compiler::typ::abstract_uuid`). That derivation is what
-/// makes a runtime type test (`File as f`) exact for a type whose
-/// values Rust mints: the compiler knows the type's identity from its
-/// path alone, so it can recognize the value without the package
-/// telling it anything (`design/nominal_abstract_types.md`).
+/// type, registered under the UUID derived from its Graphix path
+/// (`graphix_compiler::typ::abstract_uuid`), which is what makes a
+/// runtime type test (`File as f`) exact.
 #[macro_export]
 macro_rules! abstract_wrapper {
     ($name:ty, $wrapper_vis:vis static $wrapper:ident = $path:literal) => {
@@ -254,14 +213,10 @@ macro_rules! abstract_wrapper {
     };
 }
 
-// ── Testing infrastructure ─────────────────────────────────────────
-
 pub mod memo;
 pub mod testing;
 
 pub use memo::FastMemo;
-
-// ── Shared helpers ────────────────────────────────────────────────
 
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
@@ -289,15 +244,9 @@ pub fn is_struct(arr: &ValArray) -> bool {
     true
 }
 
-// ── Shared traits and structs ──────────────────────────────────────
-
 /// The TICK view of a production at a builtin's arg seam — `Some` iff
-/// this delivery is a consumable EVENT (one that advances the
-/// builtin's state machine: burns `once`'s shot, counts in `count`,
-/// consumes a `take`, emits a print). Only `Fired` ticks — a stale
-/// delivery is the value channel, not an event, and bottoms never
-/// tick (a bottom is no event and no value at a builtin seam, per the
-/// Q1 ruling).
+/// this delivery is an event that advances the builtin's state. Only
+/// `Fired` ticks; stale deliveries and bottoms do not.
 pub fn seam_tick<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
     match tv.view() {
         TagView::Fired(tv) => Some(tv),
@@ -307,9 +256,7 @@ pub fn seam_tick<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
 
 /// The VALUE view of a production at a builtin's arg seam — `Some` for
 /// any value-bearing delivery (fired or stale), `None` for bottoms.
-/// For config/label args (`throttle`'s duration, `take`'s `#n`, a
-/// print destination) whose consumption is value-plane tracking rather
-/// than event counting: dense and sparse agree, so it takes no gate.
+/// For config/label args whose consumption is not event counting.
 pub fn seam_value<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
     match tv.view() {
         TagView::Fired(tv) | TagView::Stale(tv) => Some(tv),
@@ -317,14 +264,10 @@ pub fn seam_value<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
     }
 }
 
-/// The per-arg dense read for raw-Apply builtins tracking their own
-/// designated state (subscriptions, queues, listeners): update the arg
-/// node and return `(value, fired)` — the production's value channel
-/// (`None` for bottoms: a bottom is no event and no value at a builtin
-/// seam, per the Q1 ruling) and whether this delivery is an EVENT
-/// (fired; bottoms never tick). Every arg must be read every cycle, so
-/// call this for each of `from` unconditionally before any early
-/// return.
+/// The per-arg read for raw-Apply builtins: update the arg node and
+/// return `(value, fired)` — `None` for bottoms, and whether this
+/// delivery is an event. Every arg must be read every cycle, so call
+/// this for each of `from` unconditionally before any early return.
 pub fn seam_arg<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     node: &mut Node<R, E>,
@@ -359,27 +302,22 @@ impl CachedVals {
         }
     }
 
-    /// True if any arg slot currently holds a taint (a poisoned value
-    /// event arrived and no clean production has overwritten it since
-    /// — the kernel's per-slot taint bit).
+    /// True if any arg slot holds a taint no clean production has
+    /// overwritten since.
     pub fn any_tainted(&self) -> bool {
         self.1.iter().any(|t| t.is_tainted())
     }
 
-    /// The Q1 wrapper-seam test (design/dense_delivery.md, BOTTOM
-    /// PROPAGATES): true if any arg slot is currently BOTTOM — either
-    /// poisoned at rest (the taint mark) or never delivered at all
-    /// (the phantom). The wrapper bottoms the invocation on this
-    /// instead of calling `eval`, so builtin authors never see a
-    /// bottomed or missing arg.
+    /// True if any arg slot is bottom — tainted or never delivered. The
+    /// wrapper bottoms the invocation on this instead of calling `eval`,
+    /// so builtin authors never see a bottomed or missing arg.
     pub fn any_bottom(&self) -> bool {
         self.0.iter().any(|v| v.is_none()) || self.any_tainted()
     }
 
     /// Update the slots from the arg nodes; `true` iff any production
-    /// TRIGGERED (fired or tainted — a merely-stale production
-    /// refreshes its slot silently). A tainted production marks the
-    /// slot's tag but keeps the previous (helper-safe) value.
+    /// fired or tainted (a stale production refreshes its slot silently).
+    /// A tainted production marks the slot's tag but keeps the value.
     pub fn update<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -390,9 +328,8 @@ impl CachedVals {
     }
 
     /// [`Self::update`] with the full production summary: `None` = no
-    /// production at all; `Some(tag)` = productions arrived — TAINT if
-    /// any tainted, else FIRED if any fired, else STALE (value-channel
-    /// refresh only).
+    /// production; `Some(tag)` = TAINT if any tainted, else FIRED if any
+    /// fired, else STALE.
     pub fn update_full<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -409,7 +346,6 @@ impl CachedVals {
                 self.0[i] = Some(tv.value_cloned());
                 self.1[i] = tag;
             }
-            // the orthogonal OR-join (taint ORs, stale ANDs)
             prod = Some(match prod {
                 None => tag,
                 Some(p) => p.join(tag),
@@ -432,15 +368,13 @@ impl CachedVals {
 
 pub type ByRefChain = graphix_compiler::env::Map<BindId, BindId>;
 
-/// Typed argument read for a fast fn — the `&[Value]` twin of
-/// [`CachedVals::get`] (clone + cast).
+/// Typed argument read for a fast fn (clone + cast).
 pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {
     args.get(i).and_then(|v| v.clone().cast_to::<T>().ok())
 }
 
-/// The cached argument slots as a fast fn's `&[Value]` view. A slot
-/// that has never been delivered means the call has no value yet
-/// (bottoms never reach here — Q1).
+/// The cached argument slots as a fast fn's `&[Value]` view; `None`
+/// if any slot has never been delivered.
 fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
     let mut args: LPooled<Vec<Value>> = LPooled::take();
     for v in from.0.iter() {
@@ -456,9 +390,8 @@ pub fn fast_eval(f: FastFn, from: &CachedVals) -> Option<Value> {
     f(&fast_args(from)?)
 }
 
-/// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the
-/// call site's resolved return type, the one `typecheck1` handed the
-/// instance (`resolved.rtype`) — the JIT bakes the same site type.
+/// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the call site's
+/// resolved return type (`resolved.rtype` from `typecheck1`).
 pub fn fast_eval_typed(
     f: TypedFastFn,
     env: &Env,
@@ -470,8 +403,7 @@ pub fn fast_eval_typed(
 
 /// The sort every collection's `sort(#dir, #numeric, c)` runs: `dir`
 /// is the `Direction` tag (`Ascending`/`Descending`, anything else is
-/// no value), `numeric` compares values cast to f64. Honors core `Ord`
-/// through the value hooks like every other comparison.
+/// no value), `numeric` compares values cast to f64.
 pub fn sort_values(
     dir: &str,
     numeric: bool,
@@ -531,16 +463,11 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
 #[derive(Debug)]
 pub struct CachedArgs<T> {
-    /// wake catch-up: set by `sleep()`, taken by the next update. The
-    /// in-kernel arm-flip wake — the one no `sleep()` call delivers —
-    /// arrives instead as the dispatch-scoped
-    /// [`graphix_compiler::dyncall_wake`].
+    /// Set by `sleep()`, taken by the next update.
     slept: bool,
     cached: CachedVals,
-    /// The last value `eval` produced — the builtin's RESULT slot on
-    /// the value channel (absent until the first result): a
-    /// merely-stale arg refresh re-surfaces it retagged STALE instead
-    /// of re-running `eval`, exactly the kernel's DynCall result temp.
+    /// The last value `eval` produced; a stale arg refresh re-surfaces
+    /// it retagged STALE instead of re-running `eval`.
     resident: TagValue,
     t: T,
 }
@@ -574,11 +501,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        // The whole EvalCached family runs under the value-hook loan
-        // (`coretraits::with_value_hooks`): a builtin whose eval
-        // compares or sorts Values — min/max, all, array::sort, the
-        // map:: operations — honors core Eq/Ord implementations at
-        // the value seam.
         let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
         let (ev, cached, resident) = (&mut self.t, &mut self.cached, &mut self.resident);
         coretraits::with_value_hooks(ctx, event, move |ctx, event| {
@@ -604,25 +526,12 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The arg slots survive sleep exactly as they survive replay
-        // resets (below): sleep is PAUSE, and the kernel twin — the
-        // DynCall site instance's cached slots — persists across arm
-        // deselection, riding on the next dispatch (Eric's ruling
-        // 2026-07-31, select_reselect_interior_bottom; witnessed via
-        // `max(in0 * 10, 1 / v0)` in a re-woken arm). The slept bit is
-        // wake catch-up (design/wake_catchup.md), not a reset.
+        // Sleep is pause: the arg slots survive it.
         self.slept = true;
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The arg slots PERSIST: they are the interpreter's VALUE
-        // channel — the kernel twin of a computed value held in an SSA
-        // temp while the FIRING channel (the slots-word) stays quiet. A
-        // const-result feeder (`f(v)` with a constant body) fires once
-        // ever; its slot value is what lets `push(res, f(v))` keep
-        // emitting per fired `res`, exactly like the kernel (the
-        // hof_const_body_prev_len pin). `t`'s own state (a tally, a
-        // memo) is the builtin's semantics and also survives.
+        // The arg slots are the value channel and survive replay resets.
     }
 }
 
@@ -688,72 +597,36 @@ impl<T> CachedArgs<T> {
         match cached.update_full(ctx, from, event) {
             None => resident.ride(),
             Some(t) if cached.any_bottom() => {
-                // Q1 BOTTOM PROPAGATES (the dense wrapper seam): an
-                // arg is bottom — standing poison or the
-                // never-delivered phantom — so the invocation bottoms
-                // WITHOUT calling eval; authors never see bottoms.
-                // FreshBottom iff a delivery triggered this cycle
-                // (`triggers()` becomes the dense fired-bit rule at
-                // the 5b flip). No resident clobber: the value channel
-                // may re-surface the last genuine result on recovery.
+                // A bottom arg bottoms the invocation without calling
+                // eval; the resident keeps the last genuine result.
                 TagValue::bottom_null(t.triggers())
             }
             Some(_) if cached.any_tainted() => {
-                // DEFENSE-IN-DEPTH: unreachable when the seams hold —
-                // the CallSite gates every builtin's tainted arg
-                // productions to silence and the fused DynCall
-                // delivers taint-masked slots as absence (Eric's
-                // rulings 2026-07-19/20), so no poisoned delivery can
-                // reach these slots. If a new channel leaks one, emit
-                // the tainted placeholder (loud downstream) rather
-                // than replaying stale state — the SHARED placeholder,
-                // so the resident keeps the last genuine result.
+                // Unreachable while the CallSite gates tainted arg
+                // productions; if one leaks, emit the tainted
+                // placeholder rather than replay stale state.
                 TagValue::tainted_null()
             }
             Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
                 Some(v) => resident.set(TagValue::fired(v)),
-                // eval produced nothing: ride the resident — the
-                // previous result re-surfaces stale, a never-set
-                // resident stays the phantom.
                 None => resident.ride(),
             },
             Some(_) if !resident.tag().is_bottom() => {
-                // WAKE CATCH-UP (design/wake_catchup.md): the first
-                // update after this site's sleep may deliver all-stale
-                // args whose VALUES drifted while it slept (the slots
-                // above are already refreshed to the present values).
-                // A stateless eval is a pure function of the slots:
-                // re-run it, result STALE — the phantom arm's "value
-                // rule, not a firing one" extended from
-                // first-production to wake. A stateful eval must NOT
-                // re-run (its resident IS its state — an accumulator
-                // re-run on stale slots would double-count; its edge
-                // catch-up arrives separately as a genuine fired
-                // delivery from the select's tracked fire bits).
+                // Wake catch-up: args may have drifted while asleep. A
+                // stateless eval re-runs from the present slots; a
+                // stateful one must not (its resident is its state).
                 if T::EFFECT.is_stateless() && woke {
                     match ev.eval(ctx, cached) {
                         Some(v) => resident.set(TagValue::stale(v)),
                         None => resident.retag(Tag::STALE),
                     }
                 } else {
-                    // stale refresh: surface the result slot on the
-                    // value channel — eval does not re-run
                     resident.retag(Tag::STALE)
                 }
             }
             Some(_) => {
-                // ...unless there is NOTHING to surface. A result slot
-                // still holding its phantom has never been filled, and
-                // "re-surface the last result" is vacuous: the call
-                // produces no value at all, so a caller that needs one
-                // (a select arm whose body is `math::to_radians(f64:45.)`
-                // — every argument a constant, hence never a triggering
-                // delivery inside a frame) computes nothing at all,
-                // while the kernel recomputes per invocation and has
-                // the value. Establish the value channel by running
-                // `eval` ONCE; the result is STALE, so this is a value
-                // rule and not a firing one
-                // (`findings/arm-local-bind-aug2026/03`).
+                // A never-filled resident has nothing to re-surface:
+                // run eval once to establish the value channel, STALE.
                 match ev.eval(ctx, cached) {
                     Some(v) => resident.set(TagValue::stale(v)),
                     None => resident.ride(),
@@ -810,10 +683,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         let mut bottomed = false;
         if self.cached.update(ctx, from, event) {
             if self.cached.any_bottom() {
-                // Q1 BOTTOM PROPAGATES: an arg is bottom, so this
-                // invocation bottoms and eval is never queued (a
-                // completed reply from a PRIOR invocation below still
-                // wins the cycle's output).
+                // A completed reply from a prior invocation still
+                // wins the cycle's output.
                 bottomed = true;
             } else if let Some(args) = self.t.prepare_args(&self.cached) {
                 self.queued.push_back(args);
@@ -869,14 +740,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.id = id;
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Async wrapper: queued results and the running flag are
-        // in-flight semantics; the arg cache feeds re-evaluation on
-        // completion. Async builtins never sit inside a sync frame.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
-
-// ── Core builtins ──────────────────────────────────────────────────
 
 fn fc_is_err(args: &[Value]) -> Option<Value> {
     match args {
@@ -968,13 +833,6 @@ struct Once {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
-    // Sync since P7 (the F2 Async flip reverted): every output
-    // appears on the same cycle as the event that triggered it, and
-    // the fused DynCall delivers per-arg truth — a non-fired slot
-    // arrives `TagValue::stale` and the seam ticks on Fired only
-    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
-    // sensitive state machine sees the same per-arg events in a
-    // kernel as in the node-walk.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_once";
 
@@ -1019,9 +877,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The fired flag is SEMANTIC (once per subscription lifetime,
-        // not once per frame) — sleep's reset is the arm-rewake
-        // restart semantics, which a frame reset must not replicate.
+        // Once per lifetime, not once per frame; only sleep restarts it.
     }
 }
 
@@ -1032,13 +888,6 @@ struct Take {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
-    // Sync since P7 (the F2 Async flip reverted): every output
-    // appears on the same cycle as the event that triggered it, and
-    // the fused DynCall delivers per-arg truth — a non-fired slot
-    // arrives `TagValue::stale` and the seam ticks on Fired only
-    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
-    // sensitive state machine sees the same per-arg events in a
-    // kernel as in the node-walk.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_take";
 
@@ -1061,9 +910,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        // seed the countdown on a TICK only: a stale ride of #n is
-        // the value channel and must not clobber the running count (a
-        // fired re-delivery is a genuine re-seed)
+        // Seed the countdown on a tick only: a stale ride of #n must
+        // not clobber the running count.
         if let Some(n) = seam_tick(from[0].update(ctx, event))
             .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
@@ -1089,8 +937,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The countdown is semantic (take/skip across the node's
-        // lifetime); only sleep's arm-rewake restarts it.
+        // The countdown spans the node's lifetime; only sleep restarts it.
     }
 }
 
@@ -1101,13 +948,6 @@ struct Skip {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
-    // Sync since P7 (the F2 Async flip reverted): every output
-    // appears on the same cycle as the event that triggered it, and
-    // the fused DynCall delivers per-arg truth — a non-fired slot
-    // arrives `TagValue::stale` and the seam ticks on Fired only
-    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
-    // sensitive state machine sees the same per-arg events in a
-    // kernel as in the node-walk.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_skip";
 
@@ -1130,9 +970,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        // seed the countdown on a TICK only: a stale ride of #n is
-        // the value channel and must not clobber the running count (a
-        // fired re-delivery is a genuine re-seed)
+        // Seed the countdown on a tick only: a stale ride of #n must
+        // not clobber the running count.
         if let Some(n) = seam_tick(from[0].update(ctx, event))
             .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
@@ -1158,8 +997,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The countdown is semantic (take/skip across the node's
-        // lifetime); only sleep's arm-rewake restarts it.
+        // The countdown spans the node's lifetime; only sleep restarts it.
     }
 }
 
@@ -1272,13 +1110,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_min";
 
-    // VALUE-LEVEL: each argument is compared as a whole value under
-    // graphix's total order — no recursive flattening. The flatten was
-    // a bscript holdover that contradicted the declared type
-    // (`fn(a: 'a, @args: 'a) -> 'a` resolves 'a := Array<i64> for
-    // `min([1,2], [3])` and promises an array back; the flattened
-    // scalar broke the JIT's return ABI — soak jul07b). Eric's ruling
-    // 2026-07-08: the impl does what the type says.
+    // Each argument is compared as a whole value; no flattening, as
+    // the declared type `fn(a: 'a, @args: 'a) -> 'a` promises.
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res: Option<&Value> = None;
         for v in from.0.iter() {
@@ -1305,7 +1138,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_max";
 
-    // VALUE-LEVEL, no flattening — see `MinEv`.
+    // Whole-value comparison, no flattening — see `MinEv`.
     fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         let mut res: Option<&Value> = None;
         for v in from.0.iter() {
@@ -1372,8 +1205,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
 }
 
 type Or = CachedArgs<OrEv>;
-
-// ── Bitwise operations ──────────────────────────────────────────
 
 macro_rules! int_binop {
     ($l:expr, $r:expr, $op:tt) => {
@@ -1537,11 +1368,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
 
 type Shr = CachedArgs<ShrEv>;
 
-/// Fire-and-forget filter: when the input produces a value we feed it
-/// into `pred`, and emit the value whenever `pred` returns `true`. If a
-/// new input arrives while `pred` is still working on the last one, the
-/// new input replaces the pending value — the caller should wrap this
-/// with `queue` if they need strict pairing between inputs and verdicts.
+/// Feeds each input value to `pred` and emits it when `pred` returns
+/// `true`. A new input arriving while `pred` is still working replaces
+/// the pending value; wrap with `queue` for strict pairing.
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
     pred: Node<R, E>,
@@ -1652,8 +1481,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // `pending` (the held candidate value) and the published
-        // pred-fn/element values are all per-invocation replay memory.
         self.pending = None;
         self.pred.reset_replay(ctx);
     }
@@ -1732,10 +1559,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The queue and trigger debt are semantic buffering; delivery
-        // rides set_var (async, so never inside a sync frame anyway).
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1746,12 +1570,6 @@ struct Hold {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
-    // Sync since P7 (the F2 Async flip reverted, same as Uniq below):
-    // hold's `current` latch re-arms only when `v` ACTUALLY fires,
-    // and the fused DynCall now delivers per-arg truth — a non-fired
-    // slot arrives `TagValue::stale` and the seam ticks on Fired only
-    // (dyncall-stale-arg-fired-aug2026) — so the jul07c re-latch
-    // divergence class is structurally closed.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_hold";
 
@@ -1804,10 +1622,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         self.current = None;
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // hold's held value and trigger debt ARE its contract (sample
-        // semantics) — not replay memory.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -1846,13 +1661,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         if self.args.update(ctx, from, event) {
             let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
-                    // Range guard (the array::init precedent, same
-                    // shared cap): each element is one queued set_var —
-                    // an unbounded range is a synchronous,
-                    // uninterruptible loop and a memory bomb
-                    // (seq(i64::MIN, 4) wedged its evaluator past every
-                    // deadline — soak jul06g). i128: j - i overflows
-                    // i64 for exactly the ranges being rejected.
+                    // Each element is one queued set_var, so the range
+                    // is capped. i128: j - i overflows i64 for exactly
+                    // the ranges being rejected.
                     let e = literal!("RangeError");
                     if *j as i128 - *i as i128
                         > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
@@ -1904,11 +1715,8 @@ struct Throttle {
     last: Option<Instant>,
     tid: Option<BindId>,
     top_id: ExprId,
-    /// The latest value of the throttled arg — the emission source
-    /// when the timer fires (async, after the arg's delivery is long
-    /// gone). An explicit OWN field, not an arg-cache slot: the value
-    /// a throttle emits is its designated semantic memory
-    /// (design/dense_delivery.md, the throttle/timer P4 item).
+    /// The latest value of the throttled arg, emitted when the timer
+    /// fires.
     last_v: Option<Value>,
     out: TagValue,
 }
@@ -1965,10 +1773,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
                 }
             }};
         }
-        // both args update up front: a fired duration retunes the
-        // wait; the throttled arg's value lands in `last_v` on ANY
-        // value-bearing delivery (the value channel), while only a
-        // FIRED delivery counts as an event to throttle.
+        // A fired duration retunes the wait; any value-bearing delivery
+        // of the throttled arg lands in `last_v`, but only a fired one
+        // is an event to throttle.
         let new_wait = match seam_value(from[0].update(ctx, event)) {
             Some(tv) if tv.is_fired() => tv.with_value(|v| match v {
                 Value::Duration(d) => Some(**d),
@@ -2024,10 +1831,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Timing state is semantic, and `last_v` feeds the in-flight
-        // timer's emission (async — never inside a sync frame).
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -2037,13 +1841,6 @@ struct Count {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
-    // Sync since P7 (the F2 Async flip reverted): every output
-    // appears on the same cycle as the event that triggered it, and
-    // the fused DynCall delivers per-arg truth — a non-fired slot
-    // arrives `TagValue::stale` and the seam ticks on Fired only
-    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
-    // sensitive state machine sees the same per-arg events in a
-    // kernel as in the node-walk.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_count";
 
@@ -2081,10 +1878,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         self.count = 0
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The tally is the canonical semantic-state example — it
-        // accumulates across frames in both backends.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Default)]
@@ -2126,13 +1920,6 @@ type Mean = CachedArgs<MeanEv>;
 struct Uniq(Option<Value>, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
-    // Sync since P7 (the F2 Async flip reverted): every output
-    // appears on the same cycle as the event that triggered it, and
-    // the fused DynCall delivers per-arg truth — a non-fired slot
-    // arrives `TagValue::stale` and the seam ticks on Fired only
-    // (dyncall-stale-arg-fired-aug2026) — so the update-history-
-    // sensitive state machine sees the same per-arg events in a
-    // kernel as in the node-walk.
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_uniq";
 
@@ -2155,8 +1942,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        // the dedup comparison runs armed: a core Eq implementation
-        // decides what "the same value" means (the value seam)
         let (last, out) = (&mut self.0, &mut self.1);
         coretraits::with_value_hooks(ctx, event, |ctx, event| {
             let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
@@ -2179,10 +1964,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         self.0 = None
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The held value is uniq's CONTRACT (dedup across time), not
-        // replay memory.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2274,8 +2056,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         };
         self.buf.clear();
         write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
-        // rendered under the value-hook loan: an abstract with a core
-        // Display implementation prints through it at the seam
         let (buf, typ) = (&mut self.buf, &self.typ);
         coretraits::with_value_hooks(ctx, event, |ctx, _| {
             write!(buf, "{}", TVal { env: &ctx.env, typ, v: &v }).unwrap()
@@ -2311,8 +2091,6 @@ fn emit_line<R: Rt, E: UserEvent>(
         LogDest::Log(_) => None,
     };
     match (dest, sink) {
-        // Captured (the harness stdout oracle) — the sink receives
-        // exactly the bytes the process stream would have.
         (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
             let mut out = sink.0.lock();
             out.push_str(line);
@@ -2462,8 +2240,6 @@ macro_rules! printfn {
 
 printfn!(Print, "core_print", "");
 printfn!(Println, "core_println", "\n");
-
-// ── Package registration ───────────────────────────────────────────
 
 /// `array::len` — registered here (the array package binds the name)
 /// because core's `Collection` implementation for `Array` needs it.
@@ -2645,15 +2421,12 @@ graphix_derive::defpackage! {
     ],
 }
 
-/// Embedder-provided netidx configuration for the `sys::net` package
-/// (and any other library that wants netidx), seeded into
-/// `ctx.libstate` BEFORE package registration. Absent → `Internal`.
-/// Lives in package-core so the test harness and embedders can seed
-/// it without depending on package-sys.
+/// Embedder-provided netidx configuration for `sys::net` (and any
+/// other library that wants netidx), seeded into `ctx.libstate` before
+/// package registration. Absent → `Internal`.
 #[derive(Debug, Clone)]
 pub enum NetConfig {
-    /// Use these pre-built handles (a real config, or a shared
-    /// InternalOnly).
+    /// Use these pre-built handles.
     Ready {
         publisher: netidx::publisher::Publisher,
         subscriber: netidx::subscriber::Subscriber,
@@ -2664,15 +2437,13 @@ pub enum NetConfig {
         auth: netidx::publisher::DesiredAuth,
         bind: Option<netidx::publisher::BindCfg>,
     },
-    /// Process-internal netidx (resolver + pub/sub) on demand — the
-    /// test/fuzz/`--no-netidx` default.
+    /// Process-internal netidx (resolver + pub/sub) built on demand.
     Internal,
 }
 
-/// Optional embedder-seeded netidx tuning (the shell's
-/// --publish-timeout). `publish` bounds the publish flusher's batch
-/// commit: a subscriber that doesn't consume updates within the
-/// timeout is dropped; None (the default) waits.
+/// Optional embedder-seeded netidx tuning. `publish` bounds the publish
+/// flusher's batch commit: a subscriber that doesn't consume updates
+/// within the timeout is dropped; None (the default) waits.
 #[derive(Debug, Clone)]
 pub struct NetTimeouts {
     pub publish: Option<std::time::Duration>,

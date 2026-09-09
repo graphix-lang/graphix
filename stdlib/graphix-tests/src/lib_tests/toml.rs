@@ -2,9 +2,6 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_i64, r#"{
     let s = toml::write_str({value: 42})$;
     let obj: {value: i64} = toml::read(s)?;
@@ -13,9 +10,6 @@ run!(toml_i64, r#"{
     matches!(v, Ok(Value::I64(42)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_f64, r#"{
     let s = toml::write_str({value: 3.14})$;
     let obj: {value: f64} = toml::read(s)?;
@@ -24,9 +18,6 @@ run!(toml_f64, r#"{
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_bool, r#"{
     let s = toml::write_str({value: true})$;
     let obj: {value: bool} = toml::read(s)?;
@@ -35,10 +26,6 @@ run!(toml_bool, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — blocked on: serialization round-trip (write_str + read) not lowered
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_string, r#"{
     let s = toml::write_str({value: "hello"})$;
     let obj: {value: string} = toml::read(s)?;
@@ -47,9 +34,6 @@ run!(toml_string, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_struct, r#"{
     type Point = {x: i64, y: i64};
     let p: Point = {x: 10, y: 20};
@@ -60,9 +44,6 @@ run!(toml_struct, r#"{
     matches!(v, Ok(Value::I64(30)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_nested_struct, r#"{
     type Inner = {label: string, value: i64};
     type Outer = {count: i64, items: Array<Inner>};
@@ -75,9 +56,6 @@ run!(toml_nested_struct, r#"{
     matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_array, r#"{
     let s = toml::write_str({items: [1, 2, 3]})$;
     let obj: {items: Array<i64>} = toml::read(s)?;
@@ -87,9 +65,6 @@ run!(toml_array, r#"{
     matches!(v, Ok(Value::I64(6)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_stream_tcp, r#"{
     use sys::io::{Read, Write};
     use sys::tcp::Socket;
@@ -106,9 +81,6 @@ run!(toml_stream_tcp, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_invalid, r#"{
     let r: Result<i64, [`TomlErr(string), `InvalidCast(string)]> = toml::read("not valid toml \[\[\[");
     is_err(r)
@@ -116,9 +88,6 @@ run!(toml_invalid, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(toml_null_err, r#"{
     let r = toml::write_str(null);
     is_err(r)

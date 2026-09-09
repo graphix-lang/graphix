@@ -47,11 +47,8 @@ where
     })
 }
 
-/// The `( args )` of a call, used as a postfix operator by `arith_term`'s
-/// postfix loop. Parses the parenthesized argument list (labeled `#name: e`
-/// and anonymous, possibly empty) and validates that labeled args precede
-/// anonymous ones. The caller pairs this with the already-parsed function
-/// expression to build the `Apply` node.
+/// The `( args )` of a call: labeled `#name: e` args before anonymous ones,
+/// possibly empty.
 pub(super) fn apply_args<I>()
 -> impl Parser<I, Output = LPooled<Vec<(Option<ArcStr>, Expr)>>>
 where
@@ -129,7 +126,6 @@ where
             }
         },
     )
-    // @args must be last
     .then(|mut v: LPooled<Vec<Arg>>| {
         match v.iter().enumerate().find(|(_, a)| match &a.pattern {
             StructurePattern::Bind(n) if n == "@args" => true,
@@ -146,7 +142,6 @@ where
             }
         }
     })
-    // labeled before anonymous args
     .then(|(v, vargs): (LPooled<Vec<Arg>>, Option<Option<Type>>)| {
         let mut anon = false;
         for a in v.iter() {

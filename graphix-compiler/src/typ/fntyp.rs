@@ -25,13 +25,9 @@ use std::{
 };
 use triomphe::Arc;
 
-/// Position vs label distinction for a function argument.
-///
-/// Positional args carry an optional source-level name (used for IDE
-/// hover/completion; positional names do not contribute to type
-/// identity). Labeled args always carry a name — the label IS the
-/// call-site key — plus a flag for whether the lambda definition
-/// supplied a default value.
+/// Positional or labeled function argument. A positional name is
+/// documentation only (not part of type identity); a label is the
+/// call-site key, and `has_default` is part of the type's shape.
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub enum FnArgKind {
@@ -67,10 +63,6 @@ impl FnArgKind {
     }
 }
 
-// Positional names are documentation; only the discriminator matters
-// for positional. Labeled args participate fully in equality/ordering
-// since the label is the call-site key and `has_default` is part of
-// the type's shape (it determines whether callers can omit the arg).
 impl PartialEq for FnArgKind {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -112,8 +104,6 @@ impl Ord for FnArgKind {
 
 impl std::hash::Hash for FnArgKind {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Mirror PartialEq: Positional ignores the documentation name;
-        // Labeled hashes name + has_default.
         match self {
             FnArgKind::Positional { .. } => 0u8.hash(state),
             FnArgKind::Labeled { name, has_default } => {
@@ -230,16 +220,9 @@ impl LambdaIds {
         self.0.write().own = Some(id)
     }
 
-    /// The fn-typed cell of a fresh instantiation: a NEW node carrying
-    /// this node's `own` id and a one-way snapshot of its links. The
-    /// def's own facts carry — a return cell still reaches the lambdas
-    /// the body returns — but what later unifies with the instance
-    /// (a call site's callback) lands on the copy, never on the def's
-    /// node, and the copy is not reachable from the def's node. Sharing
-    /// the node instead made the def's parameter cell a hub every
-    /// retained instance's callback linked into: `ids()` from any
-    /// instance walked all of them, and a site could not statically
-    /// resolve its own callback because the cell held everyone's.
+    /// The node of a fresh instantiation: carries this node's `own` id
+    /// and a one-way snapshot of its links, so what later unifies with
+    /// the instance lands on the copy and never reaches the def's node.
     pub(crate) fn instantiate(&self) -> LambdaIds {
         let inner = self.0.read();
         Self(SArc::new(RwLock::new(LambdaIdsInner {
@@ -248,12 +231,8 @@ impl LambdaIds {
         })))
     }
 
-    /// Walk the link graph, collecting every live linked id. Dead links
-    /// (the linked FnType was dropped) are pruned as the walk meets
-    /// them, so a long-lived set never accumulates the links of dropped
-    /// instance signatures. Locks one node at a time (never nested).
-    /// The walk is O(live linked nodes): every retained instance whose
-    /// signature unified with this cell is visited.
+    /// Every live linked id; dead links are pruned as the walk meets
+    /// them. Locks one node at a time. O(live linked nodes).
     pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
         let mut visited: LPooled<IntSet<usize>> = LPooled::take();
         let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();
@@ -292,11 +271,9 @@ impl LambdaIds {
     }
 }
 
-/// A function signature. Since tvar-constraints phase C the CELLS are
-/// the only constraint store: a quantifier like `fn<'a: Number>`
-/// seeds `'a`'s cell conjunction at construction, and every consumer
-/// that used to read the retired `constraints` LIST derives its view
-/// from the signature's reachable cells ([`FnType::constraint_view`]).
+/// A function signature. Constraints live only in the tvar cells: a
+/// quantifier like `fn<'a: Number>` seeds `'a`'s cell conjunction, and
+/// [`FnType::constraint_view`] derives the listing from reachable cells.
 #[derive(Debug, Clone)]
 pub struct FnType {
     pub args: Arc<[FnArgType]>,
@@ -304,27 +281,18 @@ pub struct FnType {
     pub rtype: Type,
     pub throws: Type,
     pub explicit_throws: bool,
-    /// The quantifier NAMES this fn type's `fn<...>` header declared,
-    /// in source order. Syntax, not semantics — the constraint TYPES
-    /// live in the named cells' conjunctions. Recorded because the
-    /// declaration SITE is not derivable from cells: an inner fn that
-    /// merely mentions a quantifier (`fn<'a: fn(x: 'a) -> _>`'s
-    /// constraint) reaches the same cell and conjunct as the declaring
-    /// header, and a view that can't tell them apart re-prints and
-    /// re-compares the header at every occurrence — infinite regress
-    /// on self-referential constraints. Excluded from Eq/Ord/Hash:
-    /// type identity is [`FnType::constraint_view`] (declared names ∩
-    /// reachable single-conjunct cells).
+    /// The quantifier names the `fn<...>` header declared, in source
+    /// order. Syntax only (the constraint types live in the cells), but
+    /// the declaration site is what stops a self-referential constraint
+    /// from regressing. Excluded from Eq/Ord/Hash.
     pub quantifiers: Arc<[ArcStr]>,
-    /// accumulated set of all LambdaIds this type might represent
+    /// Every LambdaId this type might represent.
     pub lambda_ids: LambdaIds,
 }
 
 impl FnType {
-    /// The tvar cells reachable from the SIGNATURE components (args /
-    /// vargs / rtype / throws), by name. The retired constraints
-    /// list's tvars shared these cells by construction (phase B), so
-    /// this is the complete cell set every list walker used to reach.
+    /// The tvar cells reachable from args / vargs / rtype / throws,
+    /// by name.
     pub(crate) fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         for arg in self.args.iter() {
@@ -338,22 +306,13 @@ impl FnType {
         known
     }
 
-    /// The display/interface view the retired list used to hold:
-    /// name-sorted `(tvar, constraint)` pairs for every reachable
-    /// cell carrying EXACTLY ONE conjunct. Multi-conjunct cells stay
-    /// unlisted (the old listing rule — one type per var; an
-    /// approximation could leak into interface matching), and their
-    /// conjunction still prints at use sites under `DerefTVars`
-    /// ("'a: unbound within A & B").
+    /// Name-sorted `(tvar, constraint)` pairs for every declared
+    /// quantifier whose cell carries exactly one conjunct.
+    /// Multi-conjunct cells are unlisted.
     pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
-        // DECLARED-driven: only names this fn's own header quantified
-        // produce pairs. An inner fn mentioning the quantifier reaches
-        // the same cell, but its `quantifiers` is empty — that is what
-        // terminates the view → conjunct-Fn → view regress on
-        // self-referential constraints (`fn<'a: fn(x: 'a) -> _>`), and
-        // with exact print fidelity where an extent guard could only
-        // elide. The WALKING guard stays as a backstop for cell graphs
-        // no surface syntax produces.
+        // Only declared names produce pairs: an inner fn mentioning a
+        // quantifier has an empty `quantifiers`, which terminates the
+        // regress on self-referential constraints.
         let key = self as *const Self as usize;
         if !Self::walking(|w| w.insert(key)) {
             return LPooled::take();
@@ -365,13 +324,8 @@ impl FnType {
                 let Some(tv) = known.get(name) else { continue };
                 let cons = tv.cell_constraints();
                 if let [tc] = &cons[..] {
-                    // NORMALIZED, like the retired list's
-                    // `normalize_int` entries: the raw stored conjunct
-                    // and its print-then-reparse twin can differ in
-                    // Set member form (`_`/Bottom members, ordering)
-                    // while denoting the same type — equality and
-                    // display must agree on the canonical form
-                    // (expr_round_trip4 at 50k cases).
+                    // Normalized so equality and display agree on the
+                    // canonical form.
                     view.push((tv.clone(), tc.normalize()));
                 }
             }
@@ -382,11 +336,9 @@ impl FnType {
         r
     }
 
-    /// EVERY reachable single-conjunct cell as (tvar, conjunct)
-    /// pairs, declared or not. The IMPL side of [`FnType::sig_matches`]
-    /// needs this: an inferred implementation carries its constraints
-    /// on auto `'_N` cells that no `fn<...>` header declared, so the
-    /// declared-driven `constraint_view` can't see them.
+    /// Every reachable single-conjunct cell as (tvar, conjunct) pairs,
+    /// declared or not (an inferred impl's constraints sit on auto
+    /// `'_N` cells).
     pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
         let known = self.sig_tvars();
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
@@ -488,13 +440,8 @@ impl Ord for FnType {
 
 impl std::hash::Hash for FnType {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Mirror PartialEq: include args, vargs, rtype, the
-        // cell-derived constraint view, throws. Skip lambda_ids
-        // (provenance) and explicit_throws (the pretty-printer
-        // doesn't preserve it through round-trip when
-        // `throws == Bottom`, so equality would break parser
-        // round-trip tests; for fusion's monomorphization cache,
-        // explicit_throws is folded into the key separately).
+        // Like PartialEq: lambda_ids is provenance and explicit_throws
+        // does not survive a print round-trip when throws is Bottom.
         let Self {
             args,
             vargs,
@@ -527,7 +474,7 @@ impl Default for FnType {
 }
 
 impl FnType {
-    /// `None` = already normal — the caller keeps the original (shared).
+    /// `None` when already normal.
     pub(super) fn normalize_int(
         &self,
         cx: &mut super::normalize::NormCx,
@@ -535,14 +482,13 @@ impl FnType {
         self.cow_walk(|t| t.normalize_int(cx))
     }
 
-    /// Snapshot with all bound TVars replaced by their concrete types.
-    /// TVar-free parts are returned SHARED — see [`Type::resolve_tvars`].
+    /// See [`Type::resolve_tvars`].
     pub fn resolve_tvars(&self) -> Self {
         self.resolve_tvars_seen_int(&mut super::normalize::ResolveTvarsCx::take())
             .unwrap_or_else(|| self.clone())
     }
 
-    /// `None` = no TVar anywhere beneath — the caller keeps the original.
+    /// `None` when no TVar is beneath.
     pub(super) fn resolve_tvars_seen_int(
         &self,
         cx: &mut super::normalize::ResolveTvarsCx,
@@ -550,7 +496,7 @@ impl FnType {
         self.cow_walk(|t| t.resolve_tvars_seen_int(cx))
     }
 
-    /// Rewrite every type position through `f` (`None` from `f` =
+    /// Rewrite every type position through `f` (`None` means
     /// unchanged), rebuilding only if something changed.
     pub(crate) fn cow_walk(
         &self,
@@ -585,12 +531,9 @@ impl FnType {
         })
     }
 
-    /// Read-only walk over the signature's component types, in
-    /// signature order: args, vargs, rtype, throws. Sig-cell
-    /// CONSTRAINTS are not visited — walks that need them use
-    /// [`Self::for_each_sig_constraint`]. This is the single component
-    /// enumeration behind both the FnType query walks and
-    /// [`Type::try_for_each_child`]'s `Fn` arm.
+    /// Read-only walk over args, vargs, rtype, throws in that order.
+    /// Cell constraints are not visited; see
+    /// [`Self::for_each_sig_constraint`].
     pub(crate) fn try_for_each_type<B>(
         &self,
         f: &mut impl FnMut(&Type) -> ControlFlow<B>,
@@ -622,11 +565,8 @@ impl FnType {
         });
     }
 
-    /// Visit each signature cell's constraint conjuncts — the walk
-    /// `alias_tvars`/`unfreeze_tvars`/`collect_tvars` need beyond the
-    /// component types (constraint TYPES live in the cells since phase
-    /// C). Guarded per `FnType` address: a conjunct Fn reaching back
-    /// here would recurse forever (see `constraint_view`).
+    /// Visit each signature cell's constraint conjuncts. Guarded per
+    /// `FnType` address: a conjunct Fn can reach back here.
     pub(crate) fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
         let key = self as *const Self as usize;
         if Self::walking(|w| w.insert(key)) {
@@ -648,39 +588,27 @@ impl FnType {
         self.for_each_type(&mut |t| t.unbind_tvars())
     }
 
-    /// [`Type::unbind_open_tvars`] over the signature — closed
-    /// def-body facts stay bound.
+    /// [`Type::unbind_open_tvars`] over the signature.
     pub fn unbind_open_tvars(&self) {
         self.for_each_type(&mut |t| t.unbind_open_tvars())
     }
 
-    /// Record the def gate's inferred facts. `closed_only` is the
-    /// NESTED-gate mode (def_gate_depth > 1): a nested lambda's cells
-    /// can still be entangled with the enclosing lambda's in-flight
-    /// inference, so only bindings with NO open interior cells are
-    /// recorded — a fully-closed fact (`'n := i64` from `n == i64:3`)
-    /// is true regardless of how the enclosing solve finishes, while a
-    /// partial one (`Array<'b-unbound>`) snapshots a mid-solve state
-    /// the enclosing gate may still revise (the 8630436f scoping
-    /// concern; recording those regressed firing-jul2026/03).
+    /// Record the def gate's inferred facts as cell constraints. With
+    /// `closed_only` (a nested gate) only bindings with no open
+    /// interior are recorded: a partial one snapshots mid-solve state
+    /// the enclosing gate may still revise.
     pub fn constrain_known(&self, closed_only: bool) {
         let mut known = LPooled::take();
         self.collect_tvars(&mut known);
-        // DETERMINISTIC order (the class-6 flap, 2026-08-20): the
-        // name-keyed AHashMap drains in per-process hash order, and
-        // the recording order lands in cell constraint lists and
-        // downstream diagnostics — sort by (name, id) like the settle
-        // walk in contains.rs.
+        // Recording order lands in constraint lists and diagnostics,
+        // so it must be deterministic.
         let mut known: LPooled<Vec<(ArcStr, TVar)>> = known.drain().collect();
         known.sort_by(|a, b| {
             a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
         });
         for (_, tv) in known.drain(..) {
-            // clone the binding OUT of the cell guards before acting —
-            // add_cell_constraint write-locks the same cell (lock
-            // discipline, see CLAUDE.md emit contracts)
-            // through an alias CHAIN (a cell bound to another tvar is
-            // not a fact about the type, its target may be)
+            // Cloned out through the alias chain: add_cell_constraint
+            // write-locks the same cell.
             let bound = Type::TVar(tv.clone()).with_deref(|t| t.cloned());
             if closed_only {
                 match &bound {
@@ -693,18 +621,8 @@ impl FnType {
                 && t != Type::Bottom
                 && t != Type::Any
             {
-                // Snapshot with PRIVATE cells (`reset_tvars`), and
-                // leave still-open leaves OPEN: a binding whose
-                // interior cell is unbound is a PARTIAL fact, and
-                // closing the leaf (the old `bind_as(Any)`) turned
-                // "an array of something not yet solved" into the
-                // false fact `Array<Any>` — `settle` then
-                // materialized it as a real binding and every
-                // instance of a nested generic def inherited an
-                // element type the body never delivers. The fresh open
-                // leaf still carries the source cell's constraint
-                // conjunction, so the obligation survives without
-                // the lie.
+                // Private cells, open leaves left open: a partial fact
+                // must not be closed to `Array<Any>`.
                 let t = t.reset_tvars();
                 let tc = t.normalize();
                 if crate::dbgenv::graphix_dbg_bind() {
@@ -714,13 +632,6 @@ impl FnType {
                         tv.cell_addr()
                     );
                 }
-                // The def-time binding is a FACT every instance must
-                // honor (observation #4): a cell conjunct — the cell
-                // is the ONLY store (phase C). It survives the
-                // def-time unbind and per-site freshening, and
-                // argument unification checks it AT THE BINDING ARG;
-                // display/interface listings derive from the cells
-                // (`constraint_view`).
                 tv.add_cell_constraint(tc);
             }
         }
@@ -730,13 +641,9 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take())
     }
 
-    /// One cell-identity freshening map across the whole signature —
-    /// see [`Type::reset_tvars_int`]. Cell constraint conjunctions
-    /// travel with the cells (the TVar-level reset copies them), so
-    /// nothing beyond the signature components needs freshening. Always
-    /// a fresh signature, even with no TVar beneath: an instantiation's
-    /// `lambda_ids` is its own ([`LambdaIds::instantiate`]), so the
-    /// fn-typed cells of two instances never alias.
+    /// One cell-identity freshening map across the whole signature
+    /// (see [`Type::reset_tvars_int`]). Always a fresh signature: an
+    /// instantiation's `lambda_ids` is its own.
     pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Self {
         let mut fresh =
             self.cow_walk(|t| t.reset_tvars_int(known)).unwrap_or_else(|| self.clone());
@@ -749,7 +656,7 @@ impl FnType {
             .unwrap_or_else(|| self.clone())
     }
 
-    /// `None` = no TVar anywhere beneath — keep the original (shared).
+    /// `None` when no TVar is beneath.
     pub(super) fn replace_tvars_int(
         &self,
         known: &AHashMap<ArcStr, Type>,
@@ -758,26 +665,15 @@ impl FnType {
         self.cow_walk(|t| t.replace_tvars_int(known, renamed))
     }
 
-    /// Replace automatically constrained type variables (those with
-    /// underscore-prefixed names like `'_23`) with their constraint type.
-    /// This is only useful for making nicer display types in IDEs and
-    /// shells.
-    ///
-    /// Ordering: when combining with `Type::resolve_tvars` to fully
-    /// pretty a function signature, call `replace_auto_constrained`
-    /// FIRST and `resolve_tvars` SECOND. `resolve_tvars` empties the
-    /// constraint table, so reversing the order leaves the auto
-    /// constraints with nothing to fold against.
+    /// Replace auto type variables (`'_23`) that carry one constraint
+    /// with that constraint, for display. Call before
+    /// `Type::resolve_tvars`, which discards the cells.
     pub fn replace_auto_constrained(&self) -> Self {
         let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
         let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
             self;
-        // Auto ('_N) single-conjunct cells fold to their constraint
-        // type for display; named quantifiers keep their cells (the
-        // constraint stays visible via `constraint_view`). Read the
-        // CELLS directly, not `constraint_view`: auto names come from
-        // INFERENCE, never from a declared `fn<...>` header, so the
-        // declared-driven view can't see them.
+        // Read the cells directly: auto names are never declared, so
+        // `constraint_view` cannot see them.
         for (name, tv) in self.sig_tvars().drain() {
             if name.starts_with('_')
                 && let [tc] = &tv.cell_constraints()[..]
@@ -827,11 +723,9 @@ impl FnType {
         self.for_each_type(&mut |x| x.bind_as(t))
     }
 
-    // The three walks below visit the sig-cell constraints BETWEEN
-    // rtype and throws — the pre-walker component order, preserved
-    // exactly: for `alias_tvars` the first-seen occurrence of a name
-    // becomes the surviving cell, so component order is observable.
-    // Hence the explicit sequence instead of `for_each_type`.
+    // The three walks below visit the cell constraints between rtype
+    // and throws; for `alias_tvars` the first-seen occurrence of a
+    // name becomes the surviving cell, so the order is observable.
 
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         let FnType {
@@ -892,30 +786,22 @@ impl FnType {
             vargs.collect_tvars(known)
         }
         rtype.collect_tvars(known);
-        // Reachability through a cell conjunct is over the conjunct's
-        // CANONICAL form: a tvar mentioned only in a portion that
-        // normalizes away (`['join, Any]` → Any) carries no constraint
-        // force, and collecting it made FnType identity depend on the
-        // raw stored form — the printed twin reparses canonical and the
-        // severed edge broke Eq (expr_round_trip3 at ~2.6M cases). The
-        // alias/unfreeze walkers stay raw: they touch the stored cells.
+        // Over the canonical form: a tvar in a portion that normalizes
+        // away carries no constraint force, and identity must not
+        // depend on the stored form.
         self.for_each_sig_constraint(&mut |tc| tc.normalize().collect_tvars(known));
         throws.collect_tvars(known);
     }
 
-    /// Index of the first positional parameter — `args.len()` when every
-    /// parameter is labeled. Labeled parameters always precede positional
-    /// ones, so `args[..first_positional()]` is the labeled prefix.
+    /// Index of the first positional parameter (`args.len()` when all
+    /// are labeled); `args[..first_positional()]` is the labeled prefix.
     pub fn first_positional(&self) -> usize {
         self.args.iter().position(|a| a.is_positional()).unwrap_or(self.args.len())
     }
 
-    /// Whether a value of type `t` could match a pattern typed `self`
-    /// — the dead-arm probe. Same arity and labels, and every
-    /// component could match; nothing is unified. Without it a
-    /// function member of a union was reported as never matching its
-    /// own type after a `null as _` arm (the admin TUI's optional
-    /// callbacks, 2026-09-02).
+    /// Whether a value of type `t` could match a pattern typed `self`:
+    /// same arity and labels, every component could match; nothing is
+    /// unified.
     pub(super) fn could_match_int(
         &self,
         env: &Env,
@@ -1042,14 +928,10 @@ impl FnType {
         Ok(())
     }
 
-    /// The PARAMETER positions of [`Self::contains`] alone — the
-    /// contravariant unification that pushes a declared signature's
-    /// parameter types into an argument function before its body is
-    /// typechecked. Its return and throws are left alone: they are what
-    /// the body determines, and unifying them here bound an open
-    /// return cell to the declared type on first contact (a
-    /// `filter_map` callback's return met `Option<'b>` before `f(x)`
-    /// had typed, and became the whole option).
+    /// The parameter positions of [`Self::contains`] alone: pushes a
+    /// declared signature's parameter types into an argument function
+    /// before its body is typechecked. Return and throws are what the
+    /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
         let flags = ContainsFlags::AliasTVars | ContainsFlags::InitTVars;
         let mut hist = RefHist::new(LPooled::take());
@@ -1068,8 +950,7 @@ impl FnType {
         Ok(())
     }
 
-    /// Return true if function signatures are contained. This is contains,
-    /// but does not allow labeled argument subtyping.
+    /// [`Self::contains`] without labeled argument subtyping.
     pub fn sig_contains(&self, env: &Env, other: &Self) -> Result<bool> {
         let Self {
             args: args0,
@@ -1200,12 +1081,9 @@ impl FnType {
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
             .context("in throws clause")?;
-        // Every bound the signature declares must be among the
-        // implementation's same-named cell's conjuncts — the WHOLE
-        // conjunction (an inference cell routinely holds the declared
-        // bound beside the def gate's recorded fact; the single-conjunct
-        // display listing skipped exactly those), compared by meaning
-        // (the two sides scope their refs independently).
+        // Every declared bound must be among the impl cell's whole
+        // conjunction, compared by meaning (refs are scoped
+        // independently on each side).
         let sig_cons = self.constraint_view();
         let impl_tvs = impl_fn.sig_tvars();
         for (sig_tv, sig_tc) in sig_cons.iter() {
@@ -1225,15 +1103,8 @@ impl FnType {
                 bail!("missing constraint {sig_tv}: {sig_tc} in implementation")
             }
         }
-        // SATISFACTION against the WHOLE conjunction, read from the
-        // CELLS: `cell_constraint_pairs`' single-conjunct rule is the
-        // display listing rule, and an inference cell routinely holds
-        // several conjuncts (the homogeneous-arith Number + the
-        // def-gate's constrain_known binding snapshot) — the old
-        // pair-list walk skipped exactly those cells, so a sandboxed
-        // impl inferred at f64 slipped under a fn(i64) -> i64 sig
-        // (dynamic_module1, 2026-07-12). Every conjunct must admit
-        // the signature's concrete choice.
+        // Every conjunct of every impl cell must admit the
+        // signature's concrete choice.
         let mut impl_tvs: LPooled<Vec<(ArcStr, TVar)>> =
             impl_fn.sig_tvars().drain().collect();
         impl_tvs.sort_by(|a, b| {
@@ -1312,15 +1183,9 @@ impl FnType {
 }
 
 impl FnType {
-    /// Should the `throws` clause be SUPPRESSED when printing? True
-    /// only for the IMPLICIT no-throw shapes — an inferred `Bottom`
-    /// ("the body observed nothing"), a TVar bound to `Bottom`, or an
-    /// unbound auto-allocated (`'_N`) inference cell — and NEVER when
-    /// the user wrote an explicit `throws` clause (`explicit_throws`
-    /// tracks intent; see the `explicit_throws_always_shown` and
-    /// `unbound_auto_throws_is_hidden` tests). The single predicate
-    /// both `Display` and `PrettyDisplay` consult — they used to
-    /// disagree (Display suppressed `Bottom` unconditionally).
+    /// Suppress the `throws` clause when printing: only for the
+    /// implicit no-throw shapes (inferred `Bottom`, a TVar bound to
+    /// `Bottom`, an unbound auto cell), never for an explicit clause.
     fn suppress_throws(&self) -> bool {
         !self.explicit_throws
             && match &self.throws {
@@ -1496,13 +1361,8 @@ mod tests {
     use crate::expr::parser::parse_fn_type;
     use poolshark::local::LPooled;
 
-    /// IDE display path: parse a polymorphic sig (`val push_front: …`),
-    /// alias same-named TVars together (what the module loader does
-    /// for sig binds), then run the same pretty pipeline the LSP
-    /// hover uses. The user-written name `'a` must survive — the
-    /// folding pass used to call `replace_tvars`, which renamed
-    /// unrelated TVars to anonymous `'_<id>` placeholders, hiding the
-    /// relationship between the two `'a` occurrences.
+    /// The pretty pipeline keeps the user-written `'a` on both
+    /// occurrences of a polymorphic sig.
     #[test]
     fn polymorphic_sig_preserves_tvar_names() {
         let ft = parse_fn_type("fn(a: Array<'a>, @args: 'a) -> Array<'a>").unwrap();
@@ -1520,12 +1380,7 @@ mod tests {
         );
     }
 
-    /// Function types with no explicit `throws` clause carry an
-    /// auto-allocated unbound TVar in their throws slot — that's how
-    /// the typechecker leaves room for call-site inference. The
-    /// printer must suppress it; otherwise hover on something like
-    /// `array::len` reads `fn(a: Array<'a>) -> i64 throws '_42`,
-    /// implying it might raise.
+    /// An implicit throws slot (an unbound auto TVar) is not printed.
     #[test]
     fn unbound_auto_throws_is_hidden() {
         let ft = parse_fn_type("fn(a: Array<'a>) -> i64").unwrap();
@@ -1536,10 +1391,8 @@ mod tests {
         assert!(!s.contains("throws"), "unbound auto throws should not appear, got: {s}");
     }
 
-    /// An *explicit* `throws T` written by the user must always be
-    /// shown, even when `T` happens to be `Bottom` or an auto TVar.
-    /// The `explicit_throws` flag tracks user intent; only the
-    /// implicit-Bottom / implicit-auto cases get suppressed.
+    /// An explicit `throws T` is always printed, even for `Bottom` or
+    /// an auto TVar.
     #[test]
     fn explicit_throws_always_shown() {
         let ft = parse_fn_type("fn(x: 'a) -> 'a throws `Boom").unwrap();

@@ -1,38 +1,21 @@
 //! Cranelift JIT backend: compile a fused region's node graph to
 //! native machine code.
 //!
-//! Body code generation is DISTRIBUTED (`design/distributed_jit.md`):
-//! each node's `Update::emit_clif` (and each builtin's
-//! `Apply::emit_clif`) emits its own computation into the open kernel,
-//! recursing into children via `child.emit_clif(cx)`. This module is
-//! the shared machinery those impls call: the per-context [`Jit`]
-//! (declare/define/wrap pipeline + `by_kernel` cache), [`BodyCx`] /
-//! [`JitEnv`] / [`LowerCtx`] (the emission context), [`CompiledExpr`]
-//! (the SSA result shape), the `emit_*_node` helpers the node impls
-//! delegate to, the kernel entry/return/pending machinery, and the
-//! scalar codegen primitives (`compile_bin`/`compile_cmp`/
-//! `compile_cast`). The loop scaffolds HOF builtins reuse live in
+//! Code generation is distributed: each node's `Update::emit_clif` (and
+//! each builtin's `Apply::emit_clif`) emits its own computation into the
+//! open kernel and recurses into its children. This module holds the
+//! shared machinery: [`Jit`] (declare/define/wrap + the `by_kernel`
+//! cache), [`BodyCx`] / [`JitEnv`] / [`LowerCtx`] (the emission
+//! context), [`CompiledExpr`] (the SSA result shape), the `emit_*_node`
+//! helpers, and the scalar codegen primitives; HOF loops live in
 //! [`scaffold`].
 //!
-//! ## Calling convention
-//!
-//! The compiled function uses the host platform's default C calling
-//! convention (SystemV on Linux, Windows-fastcall on Windows) and
-//! the unified Value ABI (`design/unified_value_abi.md`): parameters
-//! in SOURCE order — defined once by [`KernelSig::abi_params`] and
-//! consumed by every ABI site (the signature builder, the wrapper
-//! unpacker, the entry binder, and the runtime arg packer in
-//! `kernel`) — each a two-word `(disc, payload)` pair. The disc is
-//! an `I64` carrying the genuine one-hot `Value` discriminant plus
-//! the TAINT/STALE tag bits; the payload is the genuine `Value`
-//! payload word (`ValArray` bits, `ArcStr` bits, a value-shape's
-//! payload), except that a SCALAR payload keeps its natural CLIF
-//! register class (`F64`, `I32`, …) interior to and between kernels
-//! — the widened memory form appears only at the wrapper/packer
-//! seams (`scalar_to_payload_i64` / `pack_value_to_u64`).
-//!
-//! The runtime calls through the uniform-slot [`WrappedKernel`]
-//! (args*, out* — see `define_wrapper`).
+//! Calling convention: the platform's default C convention. Parameters
+//! come in source order from [`KernelSig::abi_params`], each a
+//! `(disc, payload)` pair: the disc is an `I64` holding the `Value`
+//! discriminant plus the TAINT/STALE bits; a scalar payload keeps its
+//! natural CLIF register class between kernels and is widened only at
+//! the wrapper/packer seams. The runtime calls through [`WrappedKernel`].
 
 mod abi;
 mod body;
@@ -41,9 +24,8 @@ mod flow;
 mod jit;
 mod lower;
 mod nodes;
-/// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the
-/// direct node path's HOF emitters (Stage D2 of
-/// `design/distributed_jit.md`).
+/// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the node
+/// HOF emitters.
 pub mod scaffold;
 mod scalar;
 mod select;

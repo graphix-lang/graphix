@@ -30,18 +30,9 @@ use std::{
 };
 use triomphe::Arc as TArc;
 
-/// Reject a direct call to a same-cycle (`EffectKind::Sync`) variadic
-/// builtin that supplies NO positional arguments, when the builtin's
-/// signature has no positional formals — e.g. `str::concat()`,
-/// `str::join(#sep: ",")`, `sum()`. Such a call has no data inputs:
-/// the node can never fire, so the program just contains a silent
-/// bottom the user has to debug ("where did my value go?"). If a
-/// value that never arrives is what's wanted, `never()` says so
-/// explicitly (and is exempt here — it's declared `Async`, whose
-/// contract is "later, autonomously, or never"). Only a direct `Ref`
-/// to the builtin binding is statically checkable; a builtin passed
-/// around as a first-class value degrades to the (safe) runtime
-/// bottom instead.
+/// Reject a direct call to a sync variadic builtin with no positional
+/// arguments (`str::concat()`, `sum()`): the node has no data inputs and
+/// can never fire. Only a direct `Ref` to the builtin is checkable.
 fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     scope: &Scope,
@@ -82,16 +73,9 @@ pub(crate) enum ArgKey {
     Named(ArcStr),
 }
 
-/// The call's argument nodes, keyed for signature lookups but
-/// ITERATING IN SOURCE ORDER (IndexMap, insertion-ordered). Source
-/// order is load-bearing at runtime: the compiler threads the args as
-/// a sequential scope chain (a `let` in one argument is in scope for
-/// the arguments to its right — a forward reference is a compile
-/// error), so `update` must evaluate them left to right for the
-/// bind's same-cycle delivery to reach its sibling readers. The old
-/// AHashMap iterated in per-process seeded hash order, making that
-/// delivery a coin flip (`skip(#n: let x = [...], array::iter(x))`
-/// starved in ~half of processes — the aug06 settle-flap witness 2).
+/// The call's argument nodes, keyed for signature lookups but iterating
+/// in source order. Order is load-bearing: args form a sequential scope
+/// chain, so `update` must evaluate them left to right.
 pub(crate) type ArgMap<R, E> = IndexMap<ArgKey, Arg<R, E>, ahash::RandomState>;
 
 #[derive(Debug)]
@@ -107,10 +91,8 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
     }
 }
 
-/// Collect every `Type::Fn` arm reachable in `t` into `out` — a bare
-/// `Fn`, or the `Fn` arms of a `[fn(...), null]` / Set union (the typical
-/// optional-callback shape). Used by `CallSite::typecheck1` to find the
-/// callbacks passed in a fn-typed argument.
+/// Collect every `Type::Fn` arm reachable in `t`: a bare `Fn`, or the
+/// `Fn` arms of a `[fn(...), null]` / Set union.
 fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     match t {
         Type::Fn(ft) => out.push(ft.clone()),
@@ -171,32 +153,18 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     Ok(res)
 }
 
-/// What a [`CallSite`] knows about its callee. Folds the former
-/// (`function: Option<(Value, Box<dyn Apply>)>`, `statically_resolved`,
-/// `first_static_update`) trio into one enum so the previously
-/// representable invalid state (`statically_resolved && function.is_none()`)
-/// cannot occur.
+/// What a [`CallSite`] knows about its callee.
 #[derive(Debug)]
 pub(crate) enum Callee<R: Rt, E: UserEvent> {
-    /// No callee bound yet — the just-compiled state. `fnode` is
-    /// re-evaluated every cycle; the first cycle it yields a `LambdaDef`
-    /// Value, `update()` transitions to `DynamicBound` via `bind()`.
+    /// No callee bound yet. `fnode` is re-evaluated every cycle; the
+    /// first cycle it yields a `LambdaDef`, `update()` binds.
     DynamicUnbound,
-    /// Bound to a callee that may still change cycle-to-cycle. `def` is the
-    /// `LambdaDef`-wrapped Value, kept for the per-cycle IDENTITY check
-    /// against `fnode.update()`; when it differs we re-`bind()`. A
-    /// recursive unfold's instances are RETAINED like any other binding
-    /// (Eric's structural ruling 2026-08-13 — the delete-park/snapshot/
-    /// prime machinery is gone; recursion holds its call tree of
-    /// instances, and memory is the user's).
+    /// Bound to a callee that may change cycle-to-cycle; `def` is kept
+    /// for the per-cycle identity check against `fnode.update()`.
     DynamicBound { def: Value, apply: Box<dyn Apply<R, E>> },
-    /// Pre-bound at compile time by [`CallSite::try_static_resolve`]:
-    /// `fnode` provably resolves to one `LambdaDef`, so the per-cycle
-    /// identity check + lazy bind is skipped (`fnode.update()` still runs
-    /// for side effects, value discarded). No held def `Value` — the
-    /// `ExecCtx`'s `lambda_defs` map owns every def for the ctx's
-    /// lifetime; `first_update` primes the body's external refs
-    /// exactly once.
+    /// Pre-bound at compile time by [`CallSite::try_static_resolve`]; the
+    /// per-cycle identity check is skipped (`fnode.update()` still runs
+    /// for effects). `first_update` primes the body's refs once.
     Static { apply: Box<dyn Apply<R, E>>, resolved_ftype: FnType, first_update: bool },
 }
 
@@ -231,8 +199,6 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
     }
 
     /// Reset to `DynamicUnbound`, returning the bound apply for deletion.
-    /// A dynamic def in flight — the callers replace the
-    /// binding wholesale (a fresh `bind`, or `delete`).
     fn take_apply(&mut self) -> Option<Box<dyn Apply<R, E>>> {
         match mem::replace(self, Callee::DynamicUnbound) {
             Callee::DynamicUnbound => None,
@@ -245,7 +211,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
 #[derive(Debug)]
 pub struct CallSite<R: Rt, E: UserEvent> {
-    /// wake catch-up: set by `sleep()`, taken by the next update
+    /// Set by `sleep()`, taken by the next update.
     pub(super) slept: bool,
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<FnType>,
@@ -253,60 +219,34 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(crate) fnode: Node<R, E>,
     pub(crate) args: ArgMap<R, E>,
     pub(super) arg_refs: Vec<Node<R, E>>,
-    /// The callee — static/dynamic-bound/unbound. See [`Callee`]. Replaces
-    /// the former `function` + `statically_resolved` + `first_static_update`
-    /// trio (the `Static` tag carries `first_update`; the old invalid
-    /// `statically_resolved && function == None` state is unrepresentable).
     pub(crate) callee: Callee<R, E>,
-    /// The callee is a BUILTIN: tainted arg productions are gated to
-    /// silence before delivery — taint == bottom == no input to a
-    /// builtin (Eric's rulings 2026-07-19/20). Builtin authors never
-    /// see the taint channel: a bottomed arg is ABSENCE, the builtin's
-    /// cached slot keeps its previous state, and eval decides what a
-    /// missing arg means. The kernel twin agrees by construction — a
-    /// fused arg region's tainted result forces to None at the output
-    /// boundary (dyncall-partial-args-jul2026). Lambda callees keep
-    /// the poisoned delivery (formals poison). Set at every
-    /// callee-binding site.
+    /// The callee is a builtin: a tainted arg production is withheld
+    /// from delivery (absence), where a lambda formal would be poisoned.
     pub(super) gate_tainted_args: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
-    /// A trait call over a UNION self type lowers to the select the
-    /// programmer would otherwise write — one arm per member, each a
-    /// static call to that member's implementation
-    /// (`design/traits.md` §3). Once set, this node is that select: every
-    /// `Update` method delegates to it and fusion sees a select, not a
-    /// call.
+    /// A trait call over a union self type lowered to a select, one
+    /// static call per member; once set every `Update` method delegates.
     pub(crate) lowered: Option<Node<R, E>>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
-    /// Set by `analysis::analyze` when THIS call site is a tail-position
-    /// self-call inside a sync, tail-recursive lambda body. At runtime
-    /// the interpreter (`CallSite::update`) reads it to loop in place
-    /// (stash args in `ctx.pending_tail_call`, return without dispatch)
-    /// instead of recursing on the Rust stack. Atomic because the
-    /// analysis writes it through a shared `&CallSite`.
+    /// Set by `analysis::analyze` when this is a tail-position self-call in
+    /// a sync tail-recursive body; `update` then stashes its args in
+    /// `ctx.pending_tail_call` instead of dispatching.
     pub(crate) is_self_tail_call: AtomicBool,
-    /// The recursive call's arg `BindId`s in callee-signature order —
-    /// what the tail-loop rebinds each iteration. `Some` iff
-    /// `is_self_tail_call`. Written once by the analysis.
+    /// The rebind args in callee-signature order. `Some` iff
+    /// `is_self_tail_call`.
     pub(crate) tail_arg_order: Mutex<Option<Box<[BindId]>>>,
-    /// The `LambdaId` of the tail-recursive callee — the loop key the
-    /// owning `GXLambda::update` matches `ctx.pending_tail_call` against.
-    /// `Some` iff `is_self_tail_call`.
+    /// The loop key `GXLambda::update` matches `ctx.pending_tail_call`
+    /// against. `Some` iff `is_self_tail_call`.
     pub(crate) callee_lambda_id: Mutex<Option<LambdaId>>,
     pub(super) resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
-    /// The resolved function type at this call site. Populated by
-    /// `typecheck0` during the typechecker's call-site unification
-    /// pass — after typecheck, every reachable CallSite has this set
-    /// to the lambda's FnType with the call-site's TVars unified in.
-    ///
-    /// `None` only if the typechecker hasn't run yet, or this call
-    /// site reached an error before unification.
+    /// The function type at this call site with the site's tvars unified
+    /// in. `None` before typecheck, or if this site errored first.
     pub fn ftype(&self) -> Option<&FnType> {
         self.ftype.as_ref()
     }
@@ -359,23 +299,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self.fnode
     }
 
-    /// The lexical+dynamic scope this call site was compiled in — used by
-    /// `analysis::analyze` to resolve a builtin callee's `(scope, name)`
-    /// key for its declared effect.
+    /// The scope this call site was compiled in.
     pub(crate) fn scope(&self) -> &Scope {
         &self.scope
     }
 
-    /// View the [`Apply`] this CallSite is currently bound to. Returns
-    /// `None` if the CallSite hasn't bound yet (the typical
-    /// just-compiled state — runtime `bind()` fires lazily on the
-    /// first cycle the `fnode` produces a LambdaDef Value).
-    /// `Some(view)` after either the runtime dynamic bind or the
-    /// `try_static_resolve` step in `typecheck1` has populated
-    /// `self.callee`.
-    ///
-    /// Used by fusion to descend through a resolved call site into a
-    /// user lambda's body. See [`ApplyView`] for the variants.
+    /// View the [`Apply`] this CallSite is bound to; `None` until a
+    /// runtime bind or `try_static_resolve` has populated `self.callee`.
     pub fn resolved_apply(&self) -> Option<ApplyView<'_, R, E>> {
         self.callee.apply().map(|a| a.view())
     }
@@ -385,23 +315,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply()
     }
 
-    /// Mutable counterpart to [`Self::resolved_apply`]. Fusion uses
-    /// this when it needs to splice an inner sub-kernel into a Node
-    /// reachable through the resolved Apply — e.g. a
-    /// [`ApplyViewMut::Lambda`]'s body Node.
+    /// Mutable counterpart to [`Self::resolved_apply`].
     pub fn resolved_apply_mut(&mut self) -> Option<ApplyViewMut<'_, R, E>> {
         self.callee.apply_mut().map(|a| a.view_mut())
     }
 
-    /// Signature-order `Ref` Nodes — one per formal argument in the
-    /// function's [`FnType`], with labeled defaults already resolved.
-    /// `None` until the CallSite has bound (matches
-    /// [`Self::resolved_apply`]).
-    ///
-    /// Together with [`Self::arg_positional`] / [`Self::arg_named`]
-    /// (which expose the original source-order call-site Nodes),
-    /// this gives [`crate::Apply::emit_clif`] impls both views of
-    /// the arg list.
+    /// Signature-order `Ref` Nodes, one per formal, with labeled defaults
+    /// resolved. `None` until bound. [`Self::arg_positional`] /
+    /// [`Self::arg_named`] give the source-order view.
     pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
         if self.callee.is_bound() { Some(&self.arg_refs) } else { None }
     }
@@ -486,10 +407,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         F: FnMut(&mut ExecCtx<R, E>, &Refs),
     {
         let mut flags = flags;
-        // we already warned about this
         flags.remove(CFlag::WarnUnhandled);
         self.clear_prepared_bind(ctx);
-        // Build arg_refs in function-signature order.
         let mut pos_idx = 0;
         for (i, farg) in f.typ.args.iter().enumerate() {
             if let FnArgKind::Labeled { name, has_default: default } = &farg.kind {
@@ -533,19 +452,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                                 })?
                             }
                         };
-                        // PER-CALLSITE default checking (Eric's ruling,
-                        // 2026-07-09): a default participates exactly
-                        // when the caller omits the arg, and typechecks
-                        // HERE against this SITE's instantiated
-                        // signature — never at the def gate (where the
-                        // rigid check rejected any generic-typed
-                        // default: rand's f64 seeds vs `'a: [Float,
-                        // Int]`). The containment BINDS the site's
-                        // cells, so an omitting site infers from the
-                        // default (`rand()` gets `'a := f64`) while a
-                        // providing site never sees it. Loud: a
-                        // mismatch is a compile error on the static
-                        // path and a bind error on the dynamic path.
+                        // A default typechecks against this site's instantiated
+                        // signature, so an omitting site infers from it.
                         wrap!(default_node, default_node.typecheck0(ctx))?;
                         let typ = default_node.typ().clone();
                         if let Some(site) = self.ftype.as_ref() {
@@ -566,7 +474,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     None => bail!("BUG: in bind missing required argument {name}"),
                 }
             } else {
-                // Positional argument — find the pos_idx'th positional arg.
                 let key = loop {
                     let candidate = ArgKey::Positional(pos_idx);
                     pos_idx += 1;
@@ -591,7 +498,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self.arg_refs.push(self.make_ref(arg.id, typ, spec));
             }
         }
-        // Handle vargs — remaining positional args.
         if f.typ.vargs.is_some() {
             loop {
                 let key = ArgKey::Positional(pos_idx);
@@ -668,10 +574,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply().map(|apply| apply.typ().resolve_tvars())
     }
 
-    /// Re-read the bound instance's resolved ftype and store it on
-    /// both static channels (`static_target` + `Callee::Static`);
-    /// returns it for callers that need the value. `None` = no bound
-    /// apply (nothing refreshed).
+    /// Re-read the bound instance's resolved ftype into `static_target`
+    /// and `Callee::Static`. `None` when no apply is bound.
     fn refresh_static_ftype(&mut self) -> Option<FnType> {
         let ftype = self.instance_ftype()?;
         if let Some(target) = &mut self.static_target {
@@ -683,13 +587,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Some(ftype)
     }
 
-    /// The resolution half of `typecheck1`, bracketed by the caller's
-    /// cell PROTECTION: static resolution (whose re-drives typecheck
-    /// interior call sites), per-lambda finalization, then the
-    /// labeled-default check. Split out so protection unwinds on every
-    /// error path — the ctx outlives a failed compile in check/LSP
-    /// runtimes, and a leaked protected cell would poison later
-    /// settles.
+    /// The resolution half of `typecheck1`, run under the caller's cell
+    /// protection so it unwinds on every error path.
     fn typecheck1_resolve(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -699,14 +598,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.refresh_static_ftype();
         let resolved = ftype.resolve_tvars();
         let spec = self.spec.clone();
-        // The callee's own identities, against the whole resolved type.
         for id in ftype.lambda_ids.ids().iter().copied() {
             finalize_lambda::<R, E>(ctx, id, &resolved, &spec)?;
         }
-        // Callbacks: every lambda reachable through a fn-typed argument,
-        // against that arg's resolved fn type. (Replaces the old
-        // `hof_idmap`, which only saw bare `Type::Fn` args and merged
-        // callback ids into the callee — polluting derived closures.)
+        // Callbacks reachable through a fn-typed argument.
         let mut fts: LPooled<Vec<TArc<FnType>>> = LPooled::take();
         for arg in resolved.args.iter() {
             fts.clear();
@@ -717,17 +612,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
-        // Labeled-default type check — now sound: in this second pass the
-        // closure is complete, so `len() == 1` truly means "exactly one
-        // possible callee." Runs AFTER static resolution, whose
-        // `prepare_bind` replaced the typecheck0 Nop placeholders with the
-        // per-site COMPILED default nodes — so the check reads the real
-        // default's type, and its unification is what binds a
-        // defaulted-arg cell the terminal settle deliberately left open
-        // (`rand::rand(#clock:1)`: `'a := f64` from the `0.0`/`1.0`
-        // defaults). A dynamically-dispatched site still holds Nops here
-        // (typed as the arg's own tvar — the check is vacuous) and the
-        // cell stays unbound.
+        // Runs after static resolution replaced the Nop placeholders with
+        // the compiled defaults; a dynamic site's Nops make it vacuous.
         if ftype.lambda_ids.ids().len() == 1 {
             for farg in ftype.args.iter() {
                 let name = match &farg.kind {
@@ -758,8 +644,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        // Arg count/kinds are resolution-independent — compare the raw
-        // site ftype against the definition directly.
         let same_shape = site_ftype.args.len() == f.typ.args.len()
             && site_ftype
                 .args
@@ -781,21 +665,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             BindMode::Static { instance: &instance_ftype, site: &site_ftype },
         )?;
         let instance_ftype = apply.typ().as_ref().clone();
-        // RETURN write-back: unify the instance's settled rtype into
-        // the site's LIVE rtype cell. `site_ftype` above is a
-        // `resolve_tvars` DEEP CLONE, so the instance re-drive binds
-        // its inferred return into snapshot cells only — a site rtype
-        // cell that is UNBOUND here (a REC def's gate defers body
-        // inference past tc0, so no def-gate settle preceded the
-        // site's freshen) would stay orphaned, and a later tc1
-        // constraint could bind it to anything unchecked (the fn
-        // value that read as Array<i64> —
-        // fuzz/pending-triage/fn_value_hof_compare.gx). `contains`
-        // binds an unbound site cell to the instance's truth; a bound
-        // cell gets the conflict check (the t7 "i64 does not contain
-        // fn" shape). Non-rec defs settled at the def gate, so this
-        // is a consistency no-op for them; ⊥ (never) unifies without
-        // binding per the open-cell rule.
+        // `site_ftype` is a deep clone: the instance's inferred return
+        // must be unified back into the site's live rtype cell.
         if let Some(site_ft) = self.ftype.as_ref() {
             wrap!(
                 self.fnode,
@@ -820,17 +691,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             crate::perfdbg::BIND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         let setup_span = crate::perfdbg::span(&crate::perfdbg::SETUP_NS);
-        // Build arg_refs + InitFn + typecheck. The closure primes
-        // each freshly-compiled default's external refs into
-        // `event.variables` from `ctx.cached`, so the bound function
-        // sees outer-binding values on its first update inside this
-        // same cycle.
+        // Prime each fresh default's external refs so the bound body
+        // sees outer values on its first update in this cycle.
         let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
             refs.with_external_refs(|id| {
                 if let Some(v) = ctx.rt.store_value(&id) {
                     if let Entry::Vacant(e) = event.variables.entry(id) {
-                        // FIRED: first-dispatch init semantics (a fresh
-                        // bind sees everything as new)
                         e.insert(TagValue::fired(v));
                         set.push(id);
                     }
@@ -838,17 +704,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             });
         })?;
         drop(setup_span);
-        // Defensive: if the def being bound lost its `lambda_defs`
-        // entry (its defining `Lambda` node was deleted — an escaped
-        // value from a torn-down subtree, e.g. a dyn-module reload),
-        // restore the entry for the duration of this bind's
-        // elaboration so the by-id consumers below (`finalize_lambda`
-        // via the body typecheck1, `analyze_bound_callee`'s effect
-        // resolution) see the def exactly as a compile-time
-        // elaboration would. Removed again before returning: entry
-        // lifetime stays tied to the defining node (the jul22b
-        // `lambda_defs` retention fix), and a live def's entry hits
-        // the `contains_key` and is never touched.
+        // A def whose defining Lambda node was deleted has no
+        // `lambda_defs` entry; restore it for this elaboration only.
         let restored_def = if ctx.lambda_defs.contains_key(&f.id) {
             false
         } else {
@@ -857,8 +714,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::DynamicBound { def: fv, apply };
-        // The publish loop ran before this bind resolved the callee —
-        // retract any poisoned deliveries the gate would have silenced.
+        // The publish loop ran before the callee was known; retract the
+        // poisoned deliveries the gate would have silenced.
         if self.gate_tainted_args {
             for arg in self.args.values() {
                 if event.variables.get(&arg.id).is_some_and(|tv| tv.is_tainted()) {
@@ -866,17 +723,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
-        // The lazy-bound body was compiled fresh AFTER the program-wide
-        // typecheck1 + `analysis::analyze` passes, so its nested call
-        // sites are unresolved and nothing in the subtree carries
-        // effect/recursion/tail facts. Mirror `resolve_static`'s #203
-        // cascade (resolve the body's own call sites; errors swallowed —
-        // an unresolved inner call just stays lazy), then run the
-        // analysis over the fresh subtree. Without this a tail-recursive
-        // `let rec` nested in the body (e.g. inside an HOF callback
-        // slot) stack-recursed into the call-depth guard and bottomed at
-        // ~256 where the JIT — and a compile-time-resolved node-walk
-        // site — tail-looped to the value (soak-jul06c B8).
+        // The lazy-bound body postdates the program-wide typecheck1 and
+        // analysis passes: resolve its call sites and analyze it here.
         let identity = self.fn_arg_identity(ctx);
         if let Some(apply) = self.callee.apply_mut()
             && matches!(apply.view(), ApplyView::Lambda(_))
@@ -886,8 +734,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ApplyView::BuiltIn => unreachable!(),
             };
             let instance_ftype = apply.typ();
-            // Same identity already resolving = a recursive lazy bind;
-            // its body stays lazy (see `resolve_static`'s knot).
+            // A recursive lazy bind: its body stays lazy.
             let already_active = ctx.resolving(f.id, &identity).is_some();
             ctx.push_resolving(
                 f.id,
@@ -916,11 +763,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 crate::analysis::analyze_bound_callee(g, self_bind, ctx);
             }
         }
-        // Ensure all arg values are available for the init cycle.
-        // Defaults need to be updated for the first time (with init=true
-        // since Constant only fires on init); existing args may not have
-        // changed this cycle but their cached values must be visible to
-        // the newly bound function body.
+        // Defaults update for the first time under the init view.
         let prev_init = mem::replace(&mut event.init, true);
         for arg in self.args.values_mut() {
             if arg.is_default {
@@ -928,7 +771,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     let tv = node.update(ctx, event);
                     if tv.tag().triggers() && !tv.tag().is_bottom() {
                         let v = tv.value_cloned();
-                        // R3: frames never write the store.
                         if ctx.frame_depth == 0 {
                             ctx.rt.store_insert(arg.id, TagValue::fired(v.clone()));
                         }
@@ -937,8 +779,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                 }
             }
-            // non-default args need no backfill: the fresh body's
-            // formal refs read the store under the init view (R2)
         }
         event.init = prev_init;
         if restored_def {
@@ -947,33 +787,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(())
     }
 
-    /// Pre-bind this CallSite to a statically known `LambdaDef` at
-    /// compile time, replacing the lazy "bind on first call" path
-    /// `bind()` runs from inside `update()`. Called from
-    /// [`Self::try_static_resolve`] (at the end of `typecheck1`) for
-    /// every CallSite whose function expression can be proven to resolve
-    /// to exactly one Lambda (i.e. a `Ref` to a non-`<-`-target binding
-    /// whose value is a Lambda, or a direct lambda literal `(|x|…)(42)`).
-    ///
-    /// The runtime's first update through this CallSite handles arg
-    /// init-priming via the `first_static_update` flag set here.
+    /// Pre-bind this CallSite to a statically known `LambdaDef` at compile
+    /// time, replacing the lazy bind `update()` would run. Idempotent.
     pub fn resolve_static(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         def: &LambdaDef<R, E>,
     ) -> Result<()> {
         if matches!(self.callee, Callee::Static { .. }) || self.static_target.is_some() {
-            // Idempotent.
             return Ok(());
         }
-        // The recursion knot, keyed on INSTANTIATION identity: a site
-        // reached while an instantiation of `def` with the same fn-arg
-        // identity is resolving is a self-call of that instance and
-        // shares it (bounded regress); a different identity is a
-        // distinct instantiation even mid-resolution — a callback premats
-        // while its HOF site resolves, so a use of the same HOF nested
-        // under its own callback arrives here with the def active and
-        // is a nested loop, not a cycle (`crate::FnArgIdentity`).
+        // A site reached while an instantiation with the same fn-arg
+        // identity is resolving is a self-call and shares that instance;
+        // a different identity is a fresh instantiation.
         let identity = self.fn_arg_identity(ctx);
         let active = ctx.resolving(def.id, &identity);
         if let Some(active) = active {
@@ -1010,11 +836,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             resolved_ftype: instance_ftype.clone(),
             first_update: true,
         };
-        // Per-callsite elaboration: register the fn-typed args under the
-        // instance's param BindIds BEFORE typechecking the instance body,
-        // so both direct calls to and captures of a fn parameter resolve
-        // in this one downward pass (see `register_fn_params`). Held
-        // through the whole body typecheck, removed after.
+        // Fn-typed args are registered under the instance's param
+        // BindIds for the whole body typecheck (`register_fn_params`).
         let (param_binds, trait_param_binds) =
             self.register_fn_params(ctx, &instance_ftype);
         if let Some(instance) = instance {
@@ -1056,28 +879,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         res
     }
 
-    /// Static call resolution — folded in from the deleted
-    /// `static_resolve` pass and invoked at the end of
-    /// [`Update::typecheck1`], by which point `ctx.bind_to_lambda` is
-    /// complete (built during `typecheck0`) and this site's callbacks
-    /// are finalized. If the function expression resolves to a single
-    /// known `LambdaDef` — a `Ref` to a non-`<-`-target lambda binding
-    /// (looked up in `bind_to_lambda`, with a fallback to `ctx.cached`
-    /// for separately-compiled stdlib callees), or a direct lambda
-    /// literal — pre-bind it via [`Self::resolve_static`]. Then give HOF
-    /// builtins the chance to pre-materialize their callback
-    /// `analysis_pred`s via the bound-instance firing of
-    /// [`Apply::typecheck1`] (with the discovered `fn_args`). No-op for
-    /// dynamic call sites. (`bind_to_lambda` is a compile-time analysis
-    /// map kept distinct from runtime `cached`; the `.or_else(cached)`
-    /// only READS stdlib lambdas already legitimately there.)
+    /// Pre-bind this site when its function expression resolves to one
+    /// known `LambdaDef` (a `Ref` to a non-`<-`-target lambda binding, or a
+    /// lambda literal), or dispatch a trait method by its self type.
+    /// No-op for dynamic call sites.
     fn try_static_resolve(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         if matches!(self.callee, Callee::Static { .. }) {
             return Ok(());
         }
-        // Determine the target without holding a borrow on `self.fnode`
-        // / `ctx` past the match — the cloned `Value` owns its LambdaDef,
-        // so the `&mut self` for `resolve_static` is unencumbered.
         let target: Option<Value> = match self.fnode.view() {
             NodeView::Ref(r) => {
                 if crate::dbgenv::gxdbg_resolve() {
@@ -1105,14 +914,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let fv = match target {
             Some(fv) => fv,
             None => {
-                // a TRAIT METHOD: the dispatcher binding names no
-                // lambda; the self argument's type picks one
                 if let NodeView::Ref(r) = self.fnode.view()
                     && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
                 {
-                    // Both paths funnel through `resolve_static`, which
-                    // registers the callee's fn-params before typechecking
-                    // its body (per-callsite elaboration).
                     return self.resolve_trait_call(ctx, tm);
                 }
                 return Ok(());
@@ -1124,31 +928,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.resolve_static(ctx, def)
     }
 
-    /// Register this call site's statically-known fn-typed args under the
-    /// resolved INSTANCE's param BindIds — the per-callsite elaboration
-    /// channel. [`Self::resolve_static`] calls this right BEFORE
-    /// typechecking the instance body, so the registration is in scope
-    /// for the WHOLE downward body typecheck: the instance's own call
-    /// sites resolve calls to the lambda parameter (`f(v)`) like a lambda
-    /// binding, and — crucially — a nested lambda that CLOSES OVER the
-    /// parameter (a trait-default wrapper body's `filter_map(c, |x|
-    /// f(x))`) resolves in the same pass, because its instance is created
-    /// mid-typecheck while the registration is still live. Returns the
-    /// registered BindIds for [`Self::unregister_fn_params`] to remove
-    /// after the body typecheck; records the persistent
-    /// forward-resolution snapshot the kernel cache key
-    /// (`FnResolutions`) reads once the b2l entries are gone. Per-instance
-    /// BindIds are fresh per callsite, so there is no cross-site
-    /// contamination; a recursive callee registers once (its self-calls
-    /// reuse the resolving instance without re-registering), so no
-    /// separate back-edge guard is needed. A trait-dispatched HOF needs
-    /// this exactly like a direct call, or a collection-bodied impl's
-    /// prototype can't resolve its callback and emission refuses (P2b).
-    /// This site's instantiation identity ([`crate::FnArgIdentity`]).
-    /// Resolves each argument the way [`Self::register_fn_params`]
-    /// does: a lambda literal is its own source, a `Ref` goes through
-    /// `bind_to_lambda` (a let-bound lambda, or a fn param an enclosing
-    /// premat registered), a `<-` target is dynamic.
+    /// This site's instantiation identity ([`crate::FnArgIdentity`]): per
+    /// argument, the source lambda it resolves to (a literal is its own
+    /// source; a `Ref` goes through `bind_to_lambda`; a `<-` target is
+    /// dynamic).
     fn fn_arg_identity(&self, ctx: &ExecCtx<R, E>) -> crate::FnArgIdentity {
         self.args
             .values()
@@ -1167,6 +950,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .collect()
     }
 
+    /// Register this site's statically known fn-typed args under the
+    /// instance's param BindIds. Held for the whole body typecheck so calls
+    /// to and captures of a fn parameter resolve in one pass.
     fn register_fn_params(
         &self,
         ctx: &mut ExecCtx<R, E>,
@@ -1219,9 +1005,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         (param_binds, trait_param_binds)
     }
 
-    /// Undo [`Self::register_fn_params`] after the instance body
-    /// typecheck (the `fn_forward_resolutions` snapshot is deliberately
-    /// permanent — the fingerprint reads it at fusion time).
+    /// Undo [`Self::register_fn_params`]; the `fn_forward_resolutions`
+    /// snapshot stays for the kernel cache fingerprint.
     fn unregister_fn_params(
         ctx: &mut ExecCtx<R, E>,
         mut param_binds: LPooled<Vec<BindId>>,
@@ -1235,14 +1020,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
     }
 
-    /// Resolve a call through a trait method's dispatcher to an
-    /// implementation by the self argument's type (`design/traits.md`
-    /// §2): the call site is re-pointed at the implementation's (or the
-    /// default's) binding and pre-bound statically when its lambda is
-    /// known. An open self type inside a definition gate is the
-    /// polymorphic case — each instance resolves for itself; open
-    /// anywhere else is the error the design demands. A union self
-    /// type dispatches through a generated select (§3).
+    /// Resolve a trait method call to an implementation by the self
+    /// argument's type. An open self type is an error outside a
+    /// definition gate; a union self type lowers to a select.
     fn resolve_trait_call(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1253,24 +1033,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let m = &def.methods[tm.index];
         let Some(ftype) = self.ftype.as_ref() else { return Ok(()) };
-        // NORMALIZE, not just resolve: dispatch reasons per union
-        // member, so the self type has to be in union normal form. A
-        // `never()` select arm types as a cell that resolves to `⊥`,
-        // and `resolve_tvars` alone leaves it standing as a member —
-        // `[⊥, Pipe]` then demanded an impl of Write for `⊥`.
+        // Dispatch reasons per union member, so the self type must be in
+        // union normal form with its cells settled first.
         let mut self_t = match ftype.args.get(m.self_index) {
             Some(a) => {
-                // Trait dispatch is STATIC — it must decide on the
-                // self type HERE, so it forces the otherwise-DEFERRED
-                // terminal settle of the self type's cells
-                // (`pending_settles` drains at the statement boundary;
-                // dispatch is the one mid-typecheck1 consumer of
-                // settled facts): a never() arm's open unconstrained
-                // cell settles ⊥ and the normalize below drops it from
-                // the union, exactly as the statement-boundary settle
-                // would have. A writer that would still have bound the
-                // cell meets the settled value loudly at its own
-                // check, never a silently wrong dispatch.
                 {
                     let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                     a.typ.collect_tvars(&mut tvs);
@@ -1311,8 +1077,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let members = members.clone();
             return self.lower_trait_union(ctx, &def, tm.index, &members);
         }
-        // a constructor trait selects by the receiver's outermost form:
-        // the constructor, never the element (a reference by name)
+        // A constructor trait selects by the receiver's outermost form.
         if def.hole {
             self_t = match Type::app_split(&self_t, &ctx.env)? {
                 Some((ctor, _)) => ctor,
@@ -1352,11 +1117,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(())
     }
 
-    /// Take this call's argument NODES in the spec's argument order,
-    /// each under a synthesized name (`#a<i>`, or `self_name` for the
-    /// positional self argument at `self_pos`), for a lowering over
-    /// them. Returns `(name, node)` pairs and the call-args list
-    /// (`(label, name)`) a synthesized call spells them with.
+    /// Take this call's argument nodes in spec order under synthesized
+    /// names (`#a<i>`, or `self_name` at `self_pos`). Returns the
+    /// `(name, node)` pairs and the `(label, name)` list a synthesized
+    /// call spells them with.
     fn take_operands(
         &mut self,
         self_pos: Option<usize>,
@@ -1419,10 +1183,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// A core trait's dispatcher is the operator it stands behind:
-    /// `Eq::eq(a, b)` is `a == b`, `Display::fmt(x)` is `"[x]"`, and
-    /// `Ord::cmp(a, b)` tests `<` and `>` — so the call works on every
-    /// type, and an implementation is reached exactly where the
-    /// operator would reach it (`design/traits.md` §8).
+    /// `Eq::eq(a, b)` is `a == b`, `Display::fmt(x)` is `"[x]"`,
+    /// `Ord::cmp(a, b)` tests `<` and `>`.
     fn lower_core_call(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1519,11 +1281,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ///   select #s { M1 as #t => <impl M1>(#t, #a0, ..), M2 as #t => .. } }
     /// ```
     ///
-    /// — the arguments bound once (the call's own argument NODES,
-    /// moved), then the select the programmer would have written,
-    /// with a static call in every arm. The select compiles under
-    /// this site's scope; the implementation bindings are named by id
-    /// (`#bind::N`, a form no source can spell).
+    /// The implementation bindings are named by id (`#bind::N`).
     fn lower_trait_union(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1635,35 +1393,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ) -> &TagValue {
         let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
-        // A FIRED (or tainted) arg production this cycle — the genuine
-        // -call signal (a stale production is a value-channel refresh,
-        // not an event).
         let mut arg_fired = false;
-        // Update all arg nodes every cycle, publishing TRIGGERING
-        // productions via bind IDs. A stale production is the value
-        // channel — the formal's store read already serves it (a
-        // standing entry reads Stale), so nothing is published. A
-        // fresh bottom is a genuine delivery: the formal is poisoned
-        // (the placeholder never enters the store) and the callee's
-        // seam decides — a builtin's wrapper bottoms the invocation
-        // (the P5a Q1 arms), a lambda keeps the poisoned formal. The
-        // old `gate_tainted_args` builtin silencing is gone with it.
-        // The old FRAME-ONLY stale backfill is gone too: the overlay
-        // stack's read-through IS that delivery.
-        //
-        // A SELF-TAIL-CALL site additionally keeps every arg's whole
-        // production for the stash below: stale jump plumbing is
-        // never published (triggering-only), so a map read cannot see
-        // it — the stash must consume the productions directly.
+        // Only triggering productions are published; a stale one is
+        // already served by the formal's store read. A self-tail-call
+        // site keeps every production for the stash below.
         let stash_prods = self.is_self_tail_call.load(Ordering::Relaxed);
-        // Capture the productions whenever a BIND could happen this
-        // cycle (first-ever dispatch or any dynamic callee): a bind
-        // mints/rewires arg ids, and QUIET (stale) arg productions —
-        // never published by the triggering-only loop — must be
-        // seeded onto them or the fresh callee reads phantom formals
-        // (transient-prime-park/01: the rebound chain's interior
-        // fresh callsites starved one level down). Steady-state
-        // static callsites skip the capture.
+        // A bind mints fresh arg ids, so quiet productions must be
+        // captured to seed them.
         let may_bind = match &self.callee {
             Callee::Static { first_update, .. } => *first_update,
             _ => true,
@@ -1679,19 +1415,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 if tag.triggers() {
                     arg_fired = true;
                     if tag.is_bottom() {
-                        // A fresh bottom PERSISTS in the store, exactly
-                        // like the clean value below and like the
-                        // GXLambda formal-publish twin (ruled delta 7 /
-                        // STRICT). Poisoning only the cycle-scoped
-                        // overlay left the store holding the last CLEAN
-                        // value, so the next cycle's standing read
-                        // resurrected it: `str::len(v0)` served
-                        // "graphix" to a builtin whose argument had
-                        // bottomed a cycle earlier, and the call fired
-                        // a stale 7 where the kernel stayed bottom
-                        // (aug15b hz0 reactive 000000). Same hole as
-                        // formal-bottom-persists-aug2026, in the
-                        // sibling path.
+                        // A fresh bottom persists in the store, like a value.
                         if ctx.frame_depth == 0 {
                             ctx.rt.store_insert(
                                 arg.id,
@@ -1704,10 +1428,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         );
                     } else {
                         let v = tv.value_cloned();
-                        // R3: frames never write the store (see the
-                        // GXLambda entry-publish twin) — an arg
-                        // published inside an enclosing loop's frame
-                        // is loop plumbing.
+                        // Frames never write the store.
                         if ctx.frame_depth == 0 {
                             ctx.rt.store_insert(arg.id, TagValue::fired(v.clone()));
                         }
@@ -1715,60 +1436,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     }
                     set.push(arg.id);
                 } else if woke && !tag.is_bottom() {
-                    // WAKE CATCH-UP (design/wake_catchup.md): this
-                    // site's first update after sleep recomputed the
-                    // arg — its STALE production may carry a value the
-                    // arg id's standing store entry drifted behind
-                    // while the arm slept. Refresh the standing entry
-                    // so the callee's formal read (arg_refs → store)
-                    // serves the present value; honest STALE, a
-                    // value-channel refresh, never a fire.
+                    // Wake catch-up: the standing entry may have drifted
+                    // behind while the arm slept; refresh it, stale.
                     ctx.rt.store_insert_standing(
                         arg.id,
                         TagValue::stale(tv.value_cloned()),
                     );
                 } else if ctx.frame_depth > 0 && !tag.is_bottom() {
-                    // Inside a frame the store holds the STALE pre-frame
-                    // value (R3: frames never write the store), so a
-                    // rebound loop formal read as a STALE call arg
-                    // would reach the callee as the pre-frame value: the
-                    // callee reads the distinct ARG id, which the formal
-                    // overlay read-through (the store-read premise above)
-                    // does NOT cover. Publish the current frame-overlay
-                    // value onto the arg id through the cycle-scoped
-                    // overlay (withdrawn with `set`), honest STALE tag —
-                    // a value-channel refresh, not a fire, so the callee
-                    // still fires off its own fresh operands. This is the
-                    // frame-only stale backfill, re-narrowed to the arg
-                    // channel: without it a tail loop's `f(acc, i)` read a
-                    // stale entry-formal `i` on every re-triggered
-                    // dispatch (aug28b fold_go, the aug13i shape).
+                    // In a frame the store holds the pre-frame value; publish
+                    // the frame's value on the cycle-scoped overlay, stale.
                     let tv = tv.clone();
                     event.variables.insert(arg.id, tv);
                     set.push(arg.id);
                 }
             }
         }
-        // Tail-call interception. When `analysis::analyze` flagged this
-        // call as a tail-position self-call inside a synchronous tail-recursive
-        // body, don't bind/dispatch (which would recurse on the Rust stack
-        // and overflow). Instead stash the just-evaluated rebind args and
-        // return — the enclosing `GXLambda::update` loop rebinds the
-        // formals and re-runs the body, looping in place.
-        //
-        // Gated on this being a GENUINE call this cycle: an arg fired
-        // (`set`), or we're under an init-forced view (the callsite's
-        // first dispatch, a loop re-entry, an arm wake). The cached
-        // back-fill below then completes any quiet args (combineLatest,
-        // e.g. a capture in `f(n - 1, cap)`). Ungated, a PASSIVE re-poll
-        // (nothing fired) collected an entire arg set from stale cache
-        // and re-entered the loop — an infinite pure tail loop re-wedged
-        // on EVERY cycle any event flowed, needing one interrupt per
-        // cycle where the JIT wedges once and quiesces (soak jul04
-        // items 3/4). A quiet tail self-call contributes nothing this
-        // cycle — return None WITHOUT dispatching: falling through to
-        // the normal path would consume the callee's first-dispatch
-        // init-forcing and re-create the wedge one level deeper.
+        // Tail-call interception: stash the rebind args for the enclosing
+        // `GXLambda::update` loop instead of dispatching. Only a genuine
+        // call (an arg fired, or an init view) enters the loop.
         if self.is_self_tail_call.load(Ordering::Relaxed) {
             let order = self.tail_arg_order.lock();
             let lambda = *self.callee_lambda_id.lock();
@@ -1777,37 +1462,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     for id in set.drain(..) {
                         event.variables.remove(&id);
                     }
-                    // a quiet tail self-call contributes nothing this
-                    // cycle: ride without dispatching (dispatching
-                    // would consume the callee's first-dispatch
-                    // init-forcing and re-create the jul04 wedge)
+                    // A quiet tail self-call rides without dispatching, or it
+                    // would consume the callee's first-dispatch init view.
                     return self.resident.ride();
                 }
-                // A `None` arg (bottomed this jump, never cached) makes
-                // the formal RIDE its previous value — the kernel's
-                // taint-gated rebind (`emit_tail_rebind_jump`). The old
-                // all-or-nothing gate fell through to genuine recursion
-                // here, which agreed with the kernel below the depth
-                // limit and silently depth-aborted above it.
-                //
-                // Each present arg carries its HONEST production tag
-                // (Eric's ruling 2026-07-18, tail_jump_fired_plumbing):
-                // the production published into `event.variables` just
-                // above — fired if the arg expression genuinely fired,
-                // stale for a frame backfill / value-channel refresh. A
-                // TAINTED production is the bottomed case → ride. A
-                // quiet arg with only a cross-cycle cached value rides
-                // the STALE channel — the kernel's marshaled quiet
-                // slot. Stashing bare cached Values here forced the
-                // rebind to mint FIRED unconditionally, manufacturing
-                // freshness for results that depend on nothing that
-                // fired.
-                // Stash each arg's PRODUCTION directly (honest value
-                // + tag): a stale production is the framed jump
-                // plumbing the map never carries (triggering-only
-                // publish), a bottomed one rides (None — the kernel's
-                // taint-gated rebind keeps the old loop slot). The
-                // read_var fallback serves node-less args (defaults).
+                // Each arg carries its honest production tag; a bottomed
+                // arg is `None` and the formal rides its previous value.
                 let args: SmallVec<[Option<TagValue>; 4]> = order
                     .iter()
                     .map(|id| {
@@ -1842,29 +1502,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 for id in set.drain(..) {
                     event.variables.remove(&id);
                 }
-                // the stash is consumed by the enclosing loop; this
-                // site's own production rides
                 return self.resident.ride();
             }
         }
-        // Statically resolved fast path. The `try_static_resolve` step
-        // in `typecheck1` already invoked `(def.init)(...)` and stored
-        // the Apply on `self.callee`. We still run
-        // `fnode.update` for its side effects (Ref unref-counts,
-        // downstream `ctx.cached` writes by other nodes that share
-        // the binding's update path) but ignore the value. On the
-        // very first cycle we emulate the priming the dynamic
-        // `bind=true` arm runs once when a fresh bind happens.
-        // `fnode.update` runs every cycle regardless of whether the
-        // function value can ever change — the function expression
-        // can have side effects. We only skip the value-equality
-        // check + lazy `bind()` arm when we already pre-bound the
-        // call site at compile time. Re-using `bound=true` on the
-        // first statically-resolved cycle drives the existing
-        // priming arm below.
-        // `fnode.update` runs every cycle for its side effects, regardless
-        // of variant — evaluate it before the `Static` arm that discards
-        // its value (mirrors the old tuple scrutinee's eager evaluation).
+        // `fnode.update` runs every cycle for its effects; a `Static`
+        // callee discards the value.
         let fv_new = {
             let tv = self.fnode.update(ctx, event);
             if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
@@ -1877,9 +1519,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             match fv_new {
                 None => false,
                 Some(v) => {
-                    // The immutable `matches!` borrow ends before `self.bind`'s
-                    // `&mut self` below. A parked def is "same" too — the
-                    // wake gate below decides whether it re-binds this cycle.
                     let same = matches!(
                         &self.callee,
                         Callee::DynamicBound { def, .. } if def == &v
@@ -1908,14 +1547,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         };
-        // A bind happened this cycle: seed QUIET (stale, non-bottom)
-        // arg productions onto the arg ids on the VALUE channel — the
-        // triggering-only publish never carries them, and a fresh
-        // callee (fresh ids) would read phantom formals otherwise.
-        // Cycle-scoped overlay entry for the dispatch below (any
-        // frame depth; withdrawn with `set`), standing store entry at
-        // depth 0 for later quiet cycles (R3: frames never write the
-        // store).
+        // A bind minted fresh arg ids: seed the quiet productions onto
+        // them (overlay at any depth; store only at depth 0).
         if bound {
             for (id, tv) in prods.iter() {
                 let tag = tv.tag();
@@ -1923,45 +1556,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     let is_default =
                         self.args.values().any(|a| a.id == *id && a.is_default);
                     if is_default {
-                        // A DEFAULT IS BORN WITH THE BINDING
-                        // (design/wake_catchup.md): it is not a past
-                        // event some other reader consumed, so the
-                        // fresh callee's first dispatch is its one
-                        // arrival — deliver it FIRED, cycle-scoped, at
-                        // any depth. Under the present-but-stale wake
-                        // view the standing-stale seed left a
-                        // fired-gated builtin's config channel
-                        // (str::escape) unconfigured FOREVER when the
-                        // instance was born at an arm's becoming-
-                        // selected dispatch (aug31f ryouko finding 01
-                        // — the interp emitted nothing where the jit
-                        // escaped).
+                        // A default is born with the binding: its first
+                        // dispatch is its one arrival, so it is fired.
                         event.variables.insert(*id, TagValue::fired(tv.value_cloned()));
                         set.push(*id);
                     } else if ctx.frame_depth == 0 {
-                        // The STORE standing entry serves both dispatch
-                        // views (Stale ordinarily, Fired under the
-                        // real-init arm — R2). An overlay entry here
-                        // would SHADOW that init upgrade (overlay reads
-                        // precede the store and carry STALE verbatim).
+                        // An overlay entry would shadow the init view's
+                        // standing-read upgrade to Fired.
                         ctx.rt.store_insert_standing(
                             *id,
                             TagValue::stale(tv.value_cloned()),
                         );
                     } else {
-                        // In frames the store is off-limits (R3): the
-                        // cycle-scoped overlay entry is the channel —
-                        // and it must carry the view R2 gives the store
-                        // read. A `bound` dispatch runs under the REAL
-                        // init view (below), where a standing read
-                        // upgrades to Fired; the overlay has no
-                        // read-time upgrade, so seed FIRED directly.
-                        // The entry is cycle-scoped (withdrawn with
-                        // `set`), exactly as wide as the init-view
-                        // dispatch. Seeding STALE verbatim left a woken
-                        // arm's tick-gated builtin (is_err) riding its
-                        // phantom forever — the arm had no value to
-                        // emit (aug14f iter_rec_guard).
+                        // The overlay has no read-time init upgrade, so a
+                        // frame seeds fired directly.
                         event.variables.insert(*id, TagValue::fired(tv.value_cloned()));
                         set.push(*id);
                     }
@@ -1983,28 +1591,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let res = match self.callee.apply_mut() {
             None => None,
-            // The tag rides in the borrowed production; own it here —
-            // the park/filter pipeline below reworks `self.callee`, so
-            // the callee's borrow can't be forwarded through.
             Some(f) if !bound => Some(f.update(ctx, &mut self.arg_refs, event).clone()),
             Some(f) => {
-                // A fresh bind (or parked rebind) on a REAL init view:
-                // seed the parked twin's selections if any, then
-                // dispatch under the init view — the callee's refs
-                // read standing store entries as Fired (R2), which IS
-                // the old explicit FIRED backfill.
+                // A fresh bind dispatches under the init view.
                 let init = mem::replace(&mut event.init, true);
                 let res = f.update(ctx, &mut self.arg_refs, event).clone();
                 event.init = init;
                 Some(res)
             }
         };
-        // Stale and bottom productions are first-class currency at
-        // every depth: tag-aware consumers gate on firedness themselves.
         if crate::dbgenv::gxdbg_cs() {
-            // Result-tag companion to the pre-dispatch CS line above —
-            // localized the tail-loop tag derivation and the fd0 stale
-            // escape (jul10h 000007).
             eprintln!(
                 "CS-RES spec={} res={:?} fd={}",
                 self.spec,
@@ -2012,28 +1608,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ctx.frame_depth
             );
         }
-        // RETENTION IS UNCONDITIONAL (Eric's structural ruling
-        // 2026-08-13): a transient instance never parks — it stays
-        // bound, its own live refs are the wake set, and the ordinary
-        // already-bound dispatch path serves every later cycle. That
-        // is retained-twin parity BY CONSTRUCTION: the delete-park /
-        // snapshot / rebuild machinery kept reproducing retained
-        // state channel by channel (selections, pattern binds, guard
-        // helds, formals, init views) and each hole was a soak class.
-        // Memory is the user's: a fib(28)-shaped tree materializes
-        // its full call tree of retained instances, exactly as the
-        // hand-inlined equivalent would ("you can't fix stupid").
-        // The defended semantics: whether a callee is recursive is
-        // not observable in firing — a pure function re-applied to
-        // unchanged inputs is not an event, and recursion fires like
-        // the hand-inlined chain of distinct functions.
         for id in set.drain(..) {
             event.variables.remove(&id);
         }
         match res {
             Some(tv) => self.resident.set(tv),
-            // no callee bound (unresolvable/parked-quiet): the site
-            // rides its last result on the value channel
             None => self.resident.ride(),
         }
     }
@@ -2041,9 +1620,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // two arms, each its own borrow: a conditional early return of
-        // the lowered node's production would hold `self` for the
-        // function's whole lifetime
         match self.lowered.is_some() {
             true => self.lowered.as_mut().unwrap().update(ctx, event),
             false => self.update_call(ctx, event),
@@ -2075,14 +1651,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some(n) = &mut self.lowered {
             return n.sleep(ctx);
         }
-        // A recursive edge whose ARM is being actively deselected (the
-        // recursion reached a shallower depth this cycle) is a SHRUNK
-        // slot: delete the deeper activation rather than retain it, so
-        // re-reaching this depth binds a FRESH one (the collection-slot
-        // rule, `ctx.shrink_unwind`). The delete cascades down the
-        // retained chain via `GXLambda::delete`. A whole-recursion PAUSE
-        // clears the flag (see `GXLambda::sleep`), so this only fires on
-        // a genuine shrink.
+        // A recursive edge deselected by a shrink is deleted, so
+        // re-reaching this depth binds a fresh activation.
         if ctx.shrink_unwind && self.is_recursive_edge() {
             if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
@@ -2105,26 +1675,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some(n) = &mut self.lowered {
             return n.reset_replay(ctx);
         }
-        // The published arg values (`update` inserts them into
-        // the store under this site's own per-instance arg ids) are
-        // replay memory: the dispatch back-fills quiet args from there
-        // and the tail-call interception collects its whole rebind set
-        // from there, so a frame whose arg expression bottoms would
-        // otherwise dispatch with the PREVIOUS frame's value. Removing
-        // them is safe — the ids are minted by and read only through
-        // this site; a capture-fed arg re-publishes when the caller
-        // re-primes the frame's external refs. EXCEPTION: a closed
-        // (refs-free) arg expression is frame-INVARIANT and can't
-        // re-produce without an init view — its published value is the
-        // value channel, kept for the same reason `Cached` keeps a
-        // closed subtree's cache (kernel twin: constant immediates).
         if let Some(f) = self.callee.apply_mut() {
             f.reset_replay(ctx)
         }
         self.fnode.reset_replay(ctx);
         for arg in self.args.values_mut() {
-            // arg STORE entries survive (the dense value channel — see
-            // GXLambda::reset_replay)
             if let Some(ref mut n) = arg.node {
                 n.reset_replay(ctx);
             }
@@ -2156,10 +1711,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let ftype = deref_typ!("fn", ctx, self.fnode.typ(),
                     Some(Type::Fn(ftype)) => Ok(ftype.clone())
                 )?;
-                // A self-call inside the def-time body check unifies
-                // against the def's OWN cells — monomorphic recursion
-                // (see `ExecCtx::rec_defs`). Every other site freshens
-                // for per-site monomorphization.
+                // A self-call inside the def-time body check unifies against
+                // the def's own cells (`ExecCtx::rec_defs`).
                 let is_rec_self_call = !ctx.rec_defs.is_empty()
                     && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
                 let identity = self.fn_arg_identity(ctx);
@@ -2168,9 +1721,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     .own()
                     .and_then(|id| ctx.resolving(id, &identity))
                     .map(|active| active.ftype);
-                // A call to one of the enclosing def's fn-typed PARAMS
-                // during its def gate — the param knot (see
-                // `ExecCtx::def_gate_params`).
+                // A call to the enclosing def's fn-typed param during its gate.
                 let is_param_knot = !ctx.def_gate_params.is_empty()
                     && matches!(
                         self.fnode.view(),
@@ -2179,8 +1730,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let ftype = if let Some(active) = active_ftype {
                     active
                 } else if is_rec_self_call || is_param_knot {
-                    // A shallow clone shares every TVar cell with the
-                    // def's ftype — the knot.
+                    // A shallow clone shares the def's TVar cells.
                     (*ftype).clone()
                 } else {
                     let ftype = ftype.reset_tvars();
@@ -2205,7 +1755,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                                 bail!("missing required argument {name}")
                             }
                             None => {
-                                // Will be filled with default at bind time; insert placeholder
                                 self.args.insert(
                                     ArgKey::Named(name.clone()),
                                     Arg::new(
@@ -2226,7 +1775,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         }
                     }
                 }
-                // Check we have enough positional args
                 let n_positional_required =
                     ftype.args.iter().filter(|a| a.is_positional()).count();
                 let n_positional_provided = self
@@ -2237,13 +1785,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 if n_positional_provided < n_positional_required {
                     bail!("missing required argument")
                 }
-                // Excess positionals with no vargs to absorb them. The
-                // total-count guard above can't catch this when the
-                // callee has labeled params: defaults inflate its
-                // budget, and an unmatched positional would otherwise
-                // skip the arg-typecheck loop entirely (its own
-                // compile errors never surface) and fail or be
-                // silently dropped at bind time.
+                // The total-count guard misses this when defaults inflate
+                // the callee's budget.
                 if n_positional_provided > n_positional_required && ftype.vargs.is_none()
                 {
                     bail!(
@@ -2253,7 +1796,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ftype
             }
         };
-        // Typecheck positional args in order
         let mut pos_idx = 0;
         for (i, farg) in ftype.args.iter().enumerate() {
             let key = if let FnArgKind::Labeled { name, .. } = &farg.kind {
@@ -2271,10 +1813,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             };
             if let Some(arg) = self.args.get_mut(&key) {
                 if let Some(n) = arg.node.as_mut() {
-                    // a reference instantiates its (generalized)
-                    // signature in its own typecheck0 — that must
-                    // precede the pre-bind, or the pre-bind would
-                    // unify against the definition's cells
+                    // A reference instantiates its signature in its own
+                    // typecheck0, which must precede the pre-unify.
                     if matches!(n.view(), NodeView::Ref(_)) {
                         wrap!(n, n.typecheck0(ctx))?;
                     }
@@ -2284,7 +1824,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        // Typecheck vargs
         if let Some(typ) = &ftype.vargs {
             loop {
                 let key = ArgKey::Positional(pos_idx);
@@ -2304,15 +1843,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        // Settle DERIVED result cells (design/tvar_constraints.md phase
-        // B): a constrained cell reachable from the rtype/throws but not
-        // from any arg is produced by the callee's body — narrowing it
-        // from the outside can't be checked against anything, so it
-        // settles to its constraint's witness HERE, before an annotation
-        // could narrow it unsoundly. This is the sound remnant of the
-        // old eager post-hoc constraint loop. Arg-reachable cells stay
-        // open: annotations may narrow them and the args themselves
-        // enforce the narrowing (observations #3/#4).
+        // A constrained cell reachable from the rtype/throws but no arg is
+        // produced by the callee's body: settle it to its witness before an
+        // annotation could narrow it unsoundly.
         {
             let mut arg_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for a in ftype.args.iter() {
@@ -2376,14 +1909,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         Ok(())
     }
 
-    /// Second typecheck pass. After recursing into the call's own
-    /// subtrees, finalize call-site-dependent type info: by now every
-    /// `lambda_ids` closure is complete, so we read the resolved fn type
-    /// and drive `Apply::typecheck1` for every lambda that can be
-    /// dispatched here — the callee, plus any callback passed as a
-    /// fn-typed argument (each against that arg's resolved fn type). This
-    /// is the former deferred check, now run with `&mut self` in a real
-    /// second tree pass.
+    /// Second pass: after the subtrees, drive `Apply::typecheck1` for every
+    /// lambda dispatchable here (the callee and each fn-typed callback).
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         if let Some(n) = &mut self.lowered {
             return n.typecheck1(ctx);
@@ -2398,57 +1925,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             Some(ftype) => ftype.clone(),
             None => return Ok(()),
         };
-        // A fresh settle FRAME for this site's re-drives (see
-        // `ExecCtx::pending_settles`): statement boundaries inside the
-        // re-driven bodies drain their own frame, and whatever remains
-        // when the resolution returns — entries whose cells THIS
-        // resolution owns, like a collection prototype's signature —
-        // merges up and drains only after this site's writers have
-        // run.
+        // A settle frame for this site's re-drives; leftovers merge up and
+        // drain only after this site's writers have run.
         ctx.pending_settles.push(Vec::new());
         let res = self.typecheck1_resolve(ctx, &ftype);
         let leftover = ctx.pending_settles.pop().expect("settle frame");
         ctx.pending_settles.last_mut().expect("root settle frame").extend(leftover);
         res?;
-        // Terminal settle for still-unbound constrained cells: bind each
-        // to its conjunction's witness. Deferred from typecheck0 (where
-        // the old eager version WAS the wide-binder of observations
-        // #3/#4) so annotations and settled inference get the whole
-        // typecheck0 phase to narrow the cells first — and run LAST in
-        // this pass, after the finalize loops (Eric's ruling
-        // 2026-08-26): the jul22e discriminator ("open + unconstrained
-        // at terminal settle → error/⊥") is sound only once every
-        // writer has run, and the CALLBACK finalizations above are
-        // writers — a generalized fn-valued argument's cells bind only
-        // there (inline callbacks bind in tc0's arg loop). Settling
-        // between static resolution and the finalize loops ⊥-settled
-        // find_map's `'b` before the extracted callback's return could
-        // bind it: "Option<_> does not contain [i64, null]" (typemorph
-        // let-extract, return-side face). Walks the LIVE ftype
-        // structure, never the stored constraints list — a list tvar
-        // orphans when unification re-points its arg's cell.
-        //
-        // Cells reachable from an OMITTED defaulted labeled arg are
-        // exempt: that arg's type belongs to its default EXPRESSION,
-        // which compiles at static resolution (`setup_static_bind`,
-        // driven from `try_static_resolve` above) and binds the cell
-        // through the apply's own arg unification and the
-        // labeled-default check above — a dynamically-dispatched site
-        // leaves them unbound: fusion refuses (de-fuse) and the
-        // node-walk is type-tolerant.
-        // The terminal settle is DEFERRED to the statement boundary
-        // (`compile_stmt` drains `ctx.pending_settles` once typecheck1
-        // has completed for the whole statement): a settle is sound
-        // only after every writer has run, and writers live at every
-        // level above an interior site — the parent's finalize loops,
-        // an enclosing collection node's prototype-return check
-        // (find_map's `'b`, ⊥-settled mid-resolution, failed the
-        // extracted-callback spelling with "Option<_> does not contain
-        // [i64, null]" while the inline spelling compiled — typemorph
-        // let-extract, return-side face). Each site still contributes
-        // its own resolved signature, so instance cells get their
-        // witnesses (fusion) and the μ-refusal channel fires at the
-        // drain.
+        // Terminal settle of still-unbound constrained cells, deferred to
+        // the statement boundary. Cells reachable from an omitted defaulted
+        // arg are exempt: the default expression binds them at static
+        // resolution.
         {
             let mut dtv: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for farg in ftype.args.iter() {
@@ -2461,20 +1948,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
             let defaulted: AHashSet<usize> =
                 dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
-            // The call's OWN result cell joins the settle set: a
-            // callee whose declared rtype is the LITERAL ⊥ leaves the
-            // cell out of the ftype walk — the ⊥ unifies against it
-            // WITHOUT binding (the open-cell rule in contains) — so if
-            // nothing refined it during tc0 it is the type of a value
-            // that never arrives.
-            // The defaulted-arg exemption covers it too: tc0 aliased
-            // `self.rtype` with the instance rtype, so for a callee
-            // like `rand(#start='a, #end='a) -> 'a` this IS the
-            // defaulted cell, and settling it would foreclose the
-            // default exprs binding it at static resolution. Settle
-            // ORDER is dependency-first — see
-            // `FnType::settle_terminal` (the jul22e settle-order
-            // flap).
+            // The call's own result cell joins the settle set: a literal ⊥
+            // rtype unifies without binding it.
             let rtc = match &self.rtype {
                 Type::TVar(tv) => Some(tv.clone()),
                 _ => None,
@@ -2519,21 +1994,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some(n) = &mut self.lowered {
             return n.fuse(ctx);
         }
-        // Reached only when `try_fuse` on this call site already failed
-        // (the call did NOT inline). Two jobs:
-        //
-        // 1. DESCEND into the arg value nodes via `Update::fuse` — NOT
-        //    `fusion::fuse`. `fusion::fuse` would `try_fuse` each arg,
-        //    fusing bare constant args (string/int literals to async ops)
-        //    into 0-input kernels — a marginal pessimization that drifts
-        //    the FuseExpect metric on ~90 fixtures. Plain `node.fuse`
-        //    only descends: a nested HOF in arg position (the common
-        //    `list::to_array(list::map(..))` shape — list HOFs live in
-        //    arg position) reaches its own `CallSite::fuse` and builds
-        //    its callback template, while a constant arg's `fuse` is the
-        //    no-op default. (Fusing genuinely compute-heavy args as
-        //    regions is a separate, deliberate enhancement.)
-        // 2. Give the callee its fusion-phase hook.
+        // Reached when this call did not inline. Descend via `Update::fuse`
+        // (not `fusion::fuse`, which would fuse constant args into 0-input
+        // kernels), then give the callee its hook.
         for arg in self.args.values_mut() {
             if let Some(node) = &mut arg.node {
                 if let Some(new) = node.fuse(ctx)? {
@@ -2556,12 +2019,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             if let Some(cv) = f.emit_clif(self, cx)? {
                 return Ok(cv);
             }
-            // A resolved user-lambda callee is a cross-kernel call:
-            // `try_fuse`'s analysis discovered the site and built (or
-            // cache-hit) the callee kernel — emit a CLIF `call`
-            // against it. An undiscovered site (the lambda didn't
-            // build — unsupported arg/return shape, body that doesn't
-            // lower) de-fuses and the subtree node-walks.
+            // A resolved lambda callee is a cross-kernel call; an
+            // undiscovered site de-fuses.
             if matches!(f.view(), ApplyView::Lambda(_)) {
                 if let Some(info) = cx.lambda_site(self.spec.id).cloned() {
                     return emit_lambda_call_node(cx, self, &info, false);
@@ -2576,14 +2035,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ));
             }
         }
-        // A VALUE-position self-call inside a recursive callee body
-        // (tail-position self-calls were intercepted by
-        // `emit_body_tail`): call the kernel's own FuncRef. The inner
-        // site is #203-UNRESOLVED — `self.callee` is `DynamicUnbound` —
-        // so this check lives OUTSIDE the resolved-Apply block. Matched
-        // by the self BindId (names shadow, #206; ids don't); captures
-        // forward from this kernel's own params (bound with their
-        // BindIds).
+        // A value-position self-call: `self.callee` is unresolved here, so
+        // match by the self BindId and call the kernel's own FuncRef.
         if let Some((sb, info)) = cx.self_call_info() {
             let is_self = matches!(
                 self.fnode.view(),
@@ -2597,14 +2050,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if self.is_recursive_edge() {
             bail!("emit_clif: mutually recursive static call edge is not supported")
         }
-        // A fastcall site. A `MarshalArg::Call(i)` is a position in
-        // the source-order arg list `spec_apply.args` — which spans
-        // both labeled and positional args. The Node-side lookup has
-        // to mirror that: labeled args go through `arg_named`,
-        // positional args through `arg_positional` indexed by running
-        // positional count (not source position). A
-        // `MarshalArg::Default(name)` is this site's compiled default
-        // node for a label the call left unwritten.
+        // A `MarshalArg::Call(i)` indexes the source-order arg list, which
+        // spans labeled and positional args; `Default(name)` is this site's
+        // compiled default node.
         let info = match cx.builtin_site(self.spec.id) {
             Some(info) => info.clone(),
             None => {

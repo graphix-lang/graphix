@@ -53,23 +53,10 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
     }
 }
 
-/// Structural identity for union-collapse decisions, and for the
-/// param dedup under `RefHist::ref_id`'s cycle keys — identity
-/// decisions where "equal" must not rest on None == None across
-/// distinct cells. (`contains`' Set equality fast paths instead keep
-/// loose `Type::eq` and WELD the pairs it compared — `link_equal` in
-/// contains.rs.) Exactly
-/// `Type::eq` EXCEPT that two unbound TVars are identical only when
-/// they share a cell: `TVar::eq` calls None == None equal, and a
-/// collapse on that verdict discards a cell whose future binding may
-/// diverge from the survivor's. The direct (TVar, TVar) hole dropped a
-/// select arm's `Error<_>` from the arm union (soak jul05 item 11);
-/// the same hole one level down — derived `Type::eq` recursing into
-/// `TVar::eq` — collapsed `{y: 'a} ∪ {y: 'b}` while both DynCall arms
-/// were still unresolved, the string arm's type vanished, and the
-/// fused field read leaked the string payload as an i64 (item 18).
-/// `Fn` keeps plain equality: two structurally-equal signatures are
-/// the same type (alpha equivalence), and fn-typed values don't fuse.
+/// Structural identity for union-collapse decisions: `Type::eq`,
+/// except that two unbound TVars are identical only when they share a
+/// cell (a collapse must not discard a cell whose future binding may
+/// diverge). `Fn` keeps plain equality.
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
     match (t0, t1) {
         (Type::TVar(a), Type::TVar(b)) => {
@@ -84,13 +71,8 @@ pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
                 }
             }
         }
-        // A BOUND tvar against a bare type compares through the
-        // binding — same deref the (TVar, TVar) arm already does for
-        // two bound cells, and equally safe (a bound cell never
-        // rebinds). An UNBOUND tvar stays non-identical to everything
-        // but its own cell (items 11/18 above). Without this,
-        // `'x: Array<'a: i64>` vs `Array<i64>` failed to collapse and
-        // a select-arm union over equal concrete types survived.
+        // A bound tvar compares through its binding; an unbound one
+        // is identical only to its own cell.
         (Type::TVar(a), t) | (t, Type::TVar(a)) => {
             let ai = a.read();
             let ab = ai.typ.read();
@@ -257,8 +239,6 @@ impl Type {
                     Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
                 }
             }
-            // A list beside any other shape unions as a set — no
-            // primitive-bit relationship (the type is opaque).
             (t0 @ Type::List(_), t1) | (t0, t1 @ Type::List(_)) => {
                 Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
             }
@@ -331,15 +311,9 @@ impl Type {
                 Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
             }
             (u @ Type::Variant(tg0, t0), t @ Type::Variant(tg1, t1)) => {
-                // Component-wise union of a product type is EXACT only
-                // when at most ONE position differs: `P(A) ∪ `P(B) is
-                // `P([A, B]), but `P(A, X) ∪ `P(B, Y) is NOT
-                // `P([A, B], [X, Y]) — the rectangle invents the
-                // off-diagonal `P(A, Y), and built into a select's
-                // coverage union it accepted arm sets with a runtime
-                // hole (found by the admin-TUI diagonal witness,
-                // 2026-08-31). A pair differing in two or more
-                // positions stays a two-member set.
+                // Component-wise union is exact only when at most one
+                // position differs: `P(A, X) ∪ `P(B, Y) is not
+                // `P([A, B], [X, Y]) (that invents `P(A, Y)).
                 let differing = || {
                     t0.iter()
                         .zip(t1.iter())
@@ -374,16 +348,10 @@ impl Type {
                 Ok(Type::Set(Arc::from_iter([f.clone(), t.clone()])))
             }
             (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) if union_identical(t0, t1) => {
-                // See `union_identical` — a bare `t0 == t1` here
-                // collapsed two DISTINCT unbound cells and dropped the
-                // discarded cell's future binding (item 11).
                 Ok(t0.clone())
             }
-            // A BOUND cell unions as its binding: a `never()` arm's
-            // call-site cell is bound to ⊥ by `contains`, and only the
-            // binding lets the ⊥ arm absorb (`['_a: _, '_b: _, string]`
-            // was a select over one string arm and two never() arms,
-            // 2026-09-02). An unbound cell stays its own member.
+            // A bound cell unions as its binding; an unbound cell
+            // stays its own member.
             (Type::TVar(tv), t1) => match tv.read().typ.read().typ.clone() {
                 Some(b) => b.union_int(env, hist, t1),
                 None => Ok(Type::Set(Arc::from_iter([self.clone(), t1.clone()]))),
@@ -579,12 +547,9 @@ impl Type {
                 if t0 == t1 {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
-                    // An emptied element type empties the ARRAY type:
-                    // leaving `Array<[]>` (uninhabited, but nonempty to
-                    // the containment walk) in a select residue blocked
-                    // catch-all narrowing for instantiated generics
-                    // (`Array<'b:=i64>` subtracted from
-                    // `[i64, Array<i64>]` left `[i64, Array<[]>]`).
+                    // An emptied element type empties the array type;
+                    // `Array<[]>` would be uninhabited but nonempty to
+                    // the containment walk.
                     match t0.diff_int(env, hist, t1)? {
                         Type::Primitive(p) if p.is_empty() => {
                             Ok(Type::Primitive(BitFlags::empty()))
@@ -688,11 +653,8 @@ impl Type {
     }
 }
 
-/// Positional equality through bound type variables: a select arm's
-/// predicate carries its binds' cells (`\`Bad('m)`), unified against the
-/// scrutinee's member before the residual is computed, and the member
-/// is subtracted only when the payloads agree once those cells are
-/// read. `Any` in the subtrahend (an ignored payload) covers anything.
+/// Positional equality read through bound type variables. `Any` in
+/// the subtrahend covers anything.
 fn same_resolved<'a, 'b>(
     t0: impl IntoIterator<Item = &'a Type>,
     t1: impl IntoIterator<Item = &'b Type>,

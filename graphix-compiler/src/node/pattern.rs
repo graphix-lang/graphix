@@ -17,8 +17,7 @@ use std::fmt::Debug;
 use triomphe::Arc;
 
 /// The three shapes the exact-length slice pattern compiles against:
-/// a tuple (fixed arity), an array, or the native List
-/// (`design/list_native.md` — the runtime walk follows the spine).
+/// a tuple (fixed arity), an array, or the native List.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SliceKind {
     Tuple,
@@ -38,7 +37,7 @@ pub enum StructPatternNode {
     },
     SlicePrefix {
         /// true = the native-list prefix form `[<h, rest..>]`; `tail`
-        /// binds the TAIL as a List, O(1), sharing structure.
+        /// binds the tail as a List, sharing structure.
         list: bool,
         all: Option<BindId>,
         prefix: Box<[StructPatternNode]>,
@@ -67,27 +66,20 @@ pub enum StructPatternNode {
         rep: Type,
         bind: Box<StructPatternNode>,
     },
-    /// Or-alternatives (`design/or_patterns.md`): alternatives share
-    /// alternative 0's BindIds, so the id walks (`ids`, `unbind`,
-    /// `delete`) visit alternative 0 only; `is_match` is any-of and
-    /// `bind` delivers the FIRST matching alternative's leaves.
+    /// Or-alternatives share alternative 0's BindIds, so the id walks
+    /// (`ids`, `unbind`, `delete`) visit alternative 0 only; `is_match`
+    /// is any-of and `bind` delivers the first matching alternative.
     Or {
         alts: Box<[StructPatternNode]>,
     },
 }
 
-/// How pattern-leaf names bind during compile (`design/or_patterns.md`):
-/// `Fresh` allocates; `Record` allocates AND records `name → (id, type)`
-/// (an or-pattern's first alternative); `Reuse` looks the id up instead
-/// of allocating — later alternatives share the first's BindIds and add
-/// NOTHING to the env (no shadowing, nothing to clean up). At each
-/// reused PAYLOAD leaf the exactly-equal-types rule is enforced: open
-/// cells unify (one cell serves every alternative), concrete mismatches
-/// err. A reused `@`-CAPTURE instead WIDENS to the union of the
-/// alternatives' narrowed types (Eric's ruling 2026-08-31: Graphix
-/// narrows captures where Rust binds at the enum type, so exact
-/// equality refused the keymap idiom ``kk@ `Up | kk@ `Char("k")`` —
-/// the capture is the whole matched value and the union is exact).
+/// How pattern-leaf names bind during compile: `Fresh` allocates;
+/// `Record` allocates and records `name → (id, type)` (an or-pattern's
+/// first alternative); `Reuse` looks the id up instead of allocating and
+/// adds nothing to the env. A reused payload leaf must have exactly the
+/// first alternative's type (open cells unify); a reused `@`-capture
+/// widens to the union of the alternatives' types.
 enum BindMode<'a> {
     Fresh,
     Record(&'a mut AHashMap<ArcStr, (BindId, Type)>),
@@ -139,10 +131,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
                             )
                         })?
                     }
-                    // an @-capture widens: the binding's type becomes
-                    // the union of the alternatives seen so far, in
-                    // the recorded entry AND the env binding the body
-                    // typechecks against
+                    // widen both the recorded entry and the env binding
                     let u = Type::union(&ctx.env, &[t0, typ])?;
                     map.insert(name.clone(), (id, u.clone()));
                     if let Some(b) = ctx.env.by_id.get(&id) {
@@ -162,13 +151,10 @@ fn leaf_bind<R: Rt, E: UserEvent>(
 }
 
 impl StructPatternNode {
-    /// Re-derive the struct binders' field INDEXES from a COMPLETED
-    /// type predicate. A partial pattern compiles against its inferred
-    /// (fields-it-names-only) type, so its indexes point into the wrong
-    /// layout once the select typecheck completes the predicate from
-    /// the scrutinee; nothing else about the compiled pattern depends
-    /// on the layout. Positions the completion didn't touch re-derive
-    /// to the same indexes. Bind ids and sub-patterns are untouched.
+    /// Re-derive the struct binders' field indexes from a completed
+    /// type predicate: a partial pattern compiles against the fields it
+    /// names, so its indexes are wrong once the select typecheck
+    /// completes the predicate from the scrutinee.
     pub(super) fn realign(&mut self, env: &Env, typ: &Type) -> Result<()> {
         match self {
             Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
@@ -412,10 +398,9 @@ impl StructPatternNode {
                         )
                     }
                 }
-                // Each alternative compiles against its OWN member of
-                // the inferred predicate (the raw Set is built one
-                // member per alternative, in order); under an explicit
-                // `T as p1 | p2` every alternative checks against T.
+                // each alternative compiles against its own member of the
+                // inferred predicate; under an explicit `T as p1 | p2`
+                // every alternative checks against T
                 let alt_types: Option<Arc<[Type]>> =
                     type_predicate.with_deref(|t| match t {
                         Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
@@ -807,12 +792,7 @@ impl StructPatternNode {
 
     /// For a tuple destructure pattern `(a, b, …)` with only simple
     /// `Bind`/`Ignore` leaves and no whole-binding, return each `Bind`
-    /// leaf's `(BindId, tuple position)` (skipping `Ignore`). `None` for
-    /// any other pattern shape. Used by HOF fusion to lower a `|(k, v)|`
-    /// callback's arg destructure to per-leaf `TupleGet` bindings —
-    /// `node::pattern` is `pub(crate)`, so callers outside the compiler
-    /// (e.g. `MapQ`'s `emit_clif`) reach the leaves through this accessor
-    /// rather than matching the enum.
+    /// leaf's `(BindId, tuple position)`. `None` for any other shape.
     pub fn tuple_leaves(&self) -> Option<Vec<(BindId, usize)>> {
         match self {
             Self::Slice { kind: SliceKind::Tuple, all: None, binds } => {
@@ -831,11 +811,7 @@ impl StructPatternNode {
     }
 
     /// For a single-name binding pattern (`x` in `|x| body`), the bound
-    /// `BindId`; `None` for destructures / ignores / literals. The
-    /// body's `Ref`s to the arg carry this id — HOF emission passes it
-    /// through so the direct JIT path's BindId-first resolution finds
-    /// the loop-element slot exactly (see [`Self::tuple_leaves`] for
-    /// why this is an accessor rather than a public enum match).
+    /// `BindId`; `None` for destructures / ignores / literals.
     pub fn single_bind_id(&self) -> Option<BindId> {
         match self {
             Self::Bind(id) => Some(*id),
@@ -925,8 +901,7 @@ impl StructPatternNode {
             }
             Self::Ignore | Self::Literal(_) => (),
             Self::Bind(id) => f(*id, v.clone()),
-            // The FIRST matching alternative delivers; the ids are
-            // shared, so exactly one delivery per name either way.
+            // the first matching alternative delivers the shared ids
             Self::Or { alts } => {
                 for a in alts.iter() {
                     if a.is_match(v) {
@@ -992,9 +967,8 @@ impl StructPatternNode {
                 }
                 _ => (),
             },
-            // `[<h, rest..>]` — heads bind by walking the spine; the
-            // tail bind is the k-th tail itself: O(1), shares
-            // structure (`design/list_native.md`).
+            // heads bind by walking the spine; the tail bind is the k-th
+            // tail itself
             Self::SlicePrefix { list: true, all, prefix, tail } => {
                 use crate::node::collection::list;
                 if let Some(id) = all {
@@ -1021,10 +995,7 @@ impl StructPatternNode {
             }
             Self::SliceSuffix { all, head, suffix } => match v {
                 Value::Array(a) if a.len() >= suffix.len() => {
-                    // The suffix patterns match the LAST `suffix.len()`
-                    // elements (`is_match` skips `len - N`), so the binds
-                    // must read from the same offset — and `head` is
-                    // everything BEFORE the suffix.
+                    // binds read from the same offset `is_match` skips to
                     let split = a.len() - suffix.len();
                     if let Some(id) = all {
                         f(*id, v.clone())
@@ -1138,8 +1109,7 @@ impl StructPatternNode {
                     _ => false,
                 }
             }
-            // The native-list walk: exactly `binds.len()` cells, each
-            // head matching, ending at nil.
+            // exactly `binds.len()` cells, each head matching, ending at nil
             Self::Slice { kind: SliceKind::List, all: _, binds } => {
                 use crate::node::collection::list;
                 let mut cur = v.clone();
@@ -1254,27 +1224,16 @@ impl StructPatternNode {
         }
     }
 
-    /// True when the pattern matches ANY value of the scrutinee's type
-    /// — a bind-all / destructure of binds whose inferred type
-    /// predicate is a fresh TVar (or a composite of them) carrying no
-    /// information. This is `Select`'s wildcard test. NOT the same as
-    /// `!is_refutable()`: a variant pattern with an all-bind payload is
-    /// structure-irrefutable GIVEN its tag matched (`is_refutable`'s
-    /// contract — a `let` over a single-variant type depends on it),
-    /// but its inferred type predicate carries the TAG test, so as a
-    /// select arm it must join the coverage unions, not bypass them.
-    /// Classifying `` `A ``/`` `B `` arms as wildcards skipped
-    /// exhaustiveness entirely (a select missing a tag compiled) and
-    /// left an OPEN scrutinee cell (a knotted rec self-call's rtype)
-    /// to be greedily bound by the first arm's narrowing walk.
+    /// True when the pattern matches any value of the scrutinee's type:
+    /// `Select`'s wildcard test. Not `!is_refutable()`: a variant
+    /// pattern with an all-bind payload is irrefutable given its tag
+    /// matched, but its inferred predicate still carries the tag test.
     pub fn matches_anything(&self) -> bool {
         crate::stack::ensure_sufficient(|| self.matches_anything_inner())
     }
 
-    /// Shape test only — an array slice pattern of any element
-    /// refutability. For exhaustiveness diagnostics: a slice arm that
-    /// carries a guard or refutable elements claims no coverage, and
-    /// the refusal should say why.
+    /// Shape test only: an array slice pattern of any element
+    /// refutability.
     pub fn is_array_slice(&self) -> bool {
         match self {
             Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
@@ -1285,12 +1244,9 @@ impl StructPatternNode {
         }
     }
 
-    /// The LENGTH RANGE of an array slice pattern — `Some((k, exact))`:
-    /// it can only match arrays of length == k (`exact: true`) or
-    /// >= k (a rest form) — regardless of whether its element
-    /// sub-patterns can refute. The dead-arm walk's shape test: an arm
-    /// whose whole range is already matched by earlier covering arms
-    /// can never run.
+    /// The length range of an array slice pattern, `Some((k, exact))`:
+    /// it matches only arrays of length == k (`exact`) or >= k,
+    /// regardless of whether its element sub-patterns can refute.
     pub fn array_len_range(&self) -> Option<(usize, bool)> {
         match self {
             Self::Slice { kind: SliceKind::Array | SliceKind::List, all: _, binds } => {
@@ -1304,11 +1260,9 @@ impl StructPatternNode {
         }
     }
 
-    /// The pattern's array-length coverage claim, for select's slice
-    /// exhaustiveness: the length range, but only when the pattern
-    /// STRUCTURALLY matches every array in it — i.e. every element
-    /// sub-pattern matches anything. The TYPE half of the claim (the
-    /// arm's predicate gates dispatch too) is the caller's to verify.
+    /// The pattern's array-length coverage claim: the length range, but
+    /// only when every element sub-pattern matches anything. The type
+    /// half of the claim is the caller's to verify.
     pub fn array_len_coverage(&self) -> Option<(usize, bool)> {
         let all_cover = match self {
             Self::Slice { kind: SliceKind::Array | SliceKind::List, all: _, binds } => {
@@ -1410,7 +1364,10 @@ impl StructPatternNode {
     }
 }
 
-/// See [`PatternNode::arm_match`].
+/// One arm's consultation verdict. `NoStruct`: the type/structure test
+/// failed and the guard was not consulted. `GuardBottom`: the structure
+/// matched and the guard's current channel is bottom, so the selection
+/// is undecidable and the select bottoms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ArmMatch {
     NoStruct,
@@ -1423,10 +1380,9 @@ pub(super) enum ArmMatch {
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
-    /// The O(1) shallow discriminator for an INFERRED predicate,
-    /// sealed against the select's settled scrutinee type at the
-    /// first consult ([`Type::shallow_discriminant`]); `None` = run
-    /// the full `is_a` walk.
+    /// The O(1) shallow discriminator for an inferred predicate, sealed
+    /// at the select's first consult ([`Type::shallow_discriminant`]);
+    /// `None` = run the full `is_a` walk.
     pub shallow_predicate: Option<Type>,
     pub structure_predicate: StructPatternNode,
     pub guard: Option<Held<R, E>>,
@@ -1451,17 +1407,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
                 (false, typ)
             }
         };
-        // An EXPLICIT predicate on an abstract type is a NOMINAL test:
-        // it compares the value's tag against the type's identity. A
-        // Graphix-minted box carries that identity; a Rust-backed one
-        // answers by the wrapper UUID its package registered, which is
-        // derived from the type's path
-        // (`graphix_package_core::abstract_wrapper!`) — so a package
-        // that registers an ad-hoc UUID instead has values that match
-        // NO type test, in its own tests, loudly. It is a tag test and
-        // not a full type check: an abstract type's PARAMETERS are not
-        // carried at runtime, so `Box<i64> as b` also matches a
-        // `Box<string>` (true of minted and Rust-backed alike).
+        // an explicit predicate on an abstract type is a nominal tag
+        // test; parameters are not carried at runtime, so `Box<i64> as b`
+        // also matches a `Box<string>`
         match &type_predicate {
             Type::Fn(_) => bail!("can't match on Fn type"),
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
@@ -1504,14 +1452,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
-    /// Deliver the scrutinee's destructured leaves to this arm's
-    /// binds, carrying the SCRUTINEE's production tag (Eric's ruling
-    /// 2026-07-18, tail_jump_fired_plumbing): the kernel's arm-bind
-    /// leaves carry the scrutinee's disc, so a value-channel refresh
-    /// (stale scrutinee — a framed re-derivation from a quiet entry)
-    /// binds STALE leaves instead of minting FIRED ones. The
-    /// becoming-selected FIRE comes from the selection-change rule at
-    /// the select's emit, never from poisoning the binds.
+    /// Deliver the scrutinee's destructured leaves to this arm's binds,
+    /// carrying the scrutinee's production tag: a stale scrutinee binds
+    /// stale leaves, never fired ones.
     pub(super) fn bind_event(
         &self,
         ctx: &mut ExecCtx<R, E>,
@@ -1521,16 +1464,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
             event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-            // The store twin carries the SAME honest tag as the overlay
-            // entry, and only at depth 0 (R3: frames never write the
-            // store). An unconditional `fired` here was the aug13b
-            // free-run class: the guard tick's bind/unbind window left
-            // a this-cycle-stamped FIRED store entry behind, the taken
-            // arm's body read it back Delivered(FIRED) on an otherwise
-            // quiet poll, the select emitted per the strict rule, and
-            // any result-observing writer (a ByRef's write-through)
-            // converted the phantom fire into a next-cycle wake — an
-            // unquiesceable interp livelock the trace oracle capped.
+            // the store twin carries the same tag; frames never write the store
             if ctx.frame_depth == 0 {
                 ctx.rt.store_insert(id, TagValue::tagged(v, tag));
             }
@@ -1543,14 +1477,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
-    /// Tick the guard (a live node that must see every cycle) and
-    /// return its production tag (`None` = no guard). The caller
-    /// reads the fired plane off the tag and the CHANNEL bottomness
-    /// off `guard.tag` — THE CONSULTED-GUARD RULE
-    /// (design/activation_state.md, Eric 2026-08-20): a consulted
-    /// guard whose current channel is bottom makes the selection
-    /// undecidable and the select bottoms; there is no held-verdict
-    /// ride, so the depth-trip ride block is gone with it.
+    /// Tick the guard (it must see every cycle) and return its
+    /// production tag (`None` = no guard). The caller reads channel
+    /// bottomness off `guard.tag`.
     pub(super) fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1562,21 +1491,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    /// One arm's consultation verdict — THE CONSULTED-GUARD RULE
-    /// (design/activation_state.md, Eric 2026-08-20). `NoStruct` = the
-    /// type/structure test failed, the guard was NOT consulted (its
-    /// productions are irrelevant to this select). `GuardBottom` = the
-    /// structure matched and the guard's CURRENT channel is bottom —
-    /// the selection is undecidable, the chain stops, the select
-    /// bottoms (no held-verdict ride: a previous delivery's verdict
-    /// cannot route this one). `GuardFalse`/`Matched` are definitive
-    /// sound verdicts.
-    /// Seal the shallow discriminator for this arm's INFERRED
-    /// predicate against the select's scrutinee type. Called lazily
-    /// at the select's first consult — every tvar the predicate
-    /// carries is settled by then, and the result is a pure function
-    /// of static types (not semantic state: sleep/replay never clear
-    /// it).
+    /// Seal the shallow discriminator for this arm's inferred predicate
+    /// against the select's scrutinee type. Called lazily at the
+    /// select's first consult, when every tvar in the predicate is
+    /// settled; a pure function of static types, never cleared.
     pub(super) fn seal_shallow(&mut self, env: &Env, scrutinee: &Type) {
         if !self.explicit_type_predicate {
             self.shallow_predicate =
@@ -1595,34 +1513,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(super) fn arm_match(&self, env: &Env, v: &Value) -> ArmMatch {
-        // The type predicate holds whether it was WRITTEN or INFERRED.
-        // Skipping the inferred one treated the structural test as a
-        // sufficient proxy for the type, and it is not: a tuple and an
-        // array are the SAME `Value::Array` at runtime, so `[x, y]` —
-        // whose inferred predicate is `Array<_>` — matched a 2-tuple
-        // out of a union scrutinee. The typechecker forbids exactly
-        // that ("pattern Array<..> will never match (bool, bool),
-        // unused match cases"), so the interp was binding leaves at
-        // types the arm's body had already been compiled against:
-        // `(true, true)` bound x,y:u8 and `x + y` added two bools,
-        // emitting a u32 where the arm's type said `[u8, bool]` — the
-        // node-walk even logged its own violation. A type error, so it
-        // must not match (Eric, 2026-08-15); the tuple falls through
-        // to the wildcard like any other unmatched member.
-        //
-        // An INFERRED predicate is checked PERMISSIVELY, though: it is
-        // not a claim the user made, so it must not add refusals the
-        // user never asked for. `MatchAbstract` is the difference —
-        // an abstract type's representation is hidden by design, so a
-        // runtime check cannot verify it, and refusing made ordinary
-        // destructuring of a module-opaque value stop matching
-        // (`select (m0::mk(i64:1), i64:0) {(x, _) => ..}` produced
-        // NOTHING; caught within minutes by the fleet's generate
-        // lanes). The other unverifiable leaves — `Any`, `⊥`, an
-        // unbound tvar — are already permissive without `Strict`.
-        // An EXPLICIT predicate (`x as T`) keeps the strict reading:
-        // there the check IS the user's claim, and runtime dispatch
-        // must never claim a value it cannot verify.
+        // the type predicate is checked whether written or inferred: a
+        // tuple and an array are the same `Value::Array` at runtime. An
+        // inferred predicate is checked permissively (an abstract's
+        // hidden rep cannot be verified); an explicit one strictly.
         let typed = if self.explicit_type_predicate {
             self.type_predicate.is_a(env, v)
         } else if let Some(shallow) = &self.shallow_predicate {
@@ -1641,8 +1535,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
                 }
                 match g.value.as_ref().and_then(|v| v.clone().get_as::<bool>()) {
                     Some(true) => ArmMatch::Matched,
-                    // A sound non-bool guard is a type error upstream;
-                    // read it as the legacy non-match.
+                    // a non-bool guard is a type error upstream
                     Some(false) | None => ArmMatch::GuardFalse,
                 }
             }

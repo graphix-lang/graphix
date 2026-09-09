@@ -103,8 +103,7 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
             self.on_select_callable.as_ref().map(|c| c.id())
         };
         let value_for_callback = self.value.last.clone().unwrap_or(Value::Null);
-        // Use bool as the dummy value type for iced's Radio (needs Copy + Eq).
-        // Selection state is computed by us via value/selected comparison.
+        // iced's Radio needs a Copy + Eq value type; selection is computed here.
         let mut r =
             widget::Radio::new(label, true, is_selected.then_some(true), move |_| {
                 match on_select_id {

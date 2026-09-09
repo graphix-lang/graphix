@@ -2,8 +2,6 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// ── bit_and ──────────────────────────────────────────────────────
-
 const BIT_AND_BASIC: &str = r#"
   bit_and(u8:0b1100, u8:0b1010)
 "#;
@@ -20,8 +18,6 @@ run!(bit_and_zero_mask, BIT_AND_ZERO_MASK, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(0)))
 });
 
-// ── bit_or ───────────────────────────────────────────────────────
-
 const BIT_OR_BASIC: &str = r#"
   bit_or(u8:0b1100, u8:0b1010)
 "#;
@@ -29,8 +25,6 @@ const BIT_OR_BASIC: &str = r#"
 run!(bit_or_basic, BIT_OR_BASIC, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(0b1110)))
 });
-
-// ── bit_xor ──────────────────────────────────────────────────────
 
 const BIT_XOR_BASIC: &str = r#"
   bit_xor(u8:0b1100, u8:0b1010)
@@ -45,8 +39,6 @@ const BIT_XOR_SELF: &str = r#"
 "#;
 
 run!(bit_xor_self, BIT_XOR_SELF, |v: Result<&Value>| { matches!(v, Ok(Value::U8(0))) });
-
-// ── bit_not ──────────────────────────────────────────────────────
 
 const BIT_NOT_BASIC: &str = r#"
   bit_not(u8:0)
@@ -64,8 +56,6 @@ run!(bit_not_roundtrip, BIT_NOT_ROUNDTRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(0x2A)))
 });
 
-// ── shl ──────────────────────────────────────────────────────────
-
 const SHL_BASIC: &str = r#"
   shl(u8:1, u8:4)
 "#;
@@ -78,15 +68,11 @@ const SHL_ZERO: &str = r#"
 
 run!(shl_zero, SHL_ZERO, |v: Result<&Value>| { matches!(v, Ok(Value::U8(0x2A))) });
 
-// ── shr ──────────────────────────────────────────────────────────
-
 const SHR_BASIC: &str = r#"
   shr(u8:0x10, u8:4)
 "#;
 
 run!(shr_basic, SHR_BASIC, |v: Result<&Value>| { matches!(v, Ok(Value::U8(1))) });
-
-// ── polymorphism (non-u8 types) ──────────────────────────────────
 
 const BIT_AND_U32: &str = r#"
   bit_and(u32:0xFF00, u32:0x0FF0)

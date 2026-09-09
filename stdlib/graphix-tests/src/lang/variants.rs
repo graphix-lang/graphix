@@ -15,7 +15,6 @@ const VARIANTS0: &str = r#"
 }
 "#;
 
-// Fuses since Select::fuse (2026-08-14): arm/scrutinee sub-regions.
 run!(variants0, VARIANTS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(0), Value::I64(1)] => true,
@@ -37,9 +36,7 @@ const VARIANTS1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(variants1, VARIANTS1, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,

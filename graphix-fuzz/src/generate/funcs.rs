@@ -9,9 +9,8 @@ use super::{
 };
 use crate::mutate::Rng;
 
-/// Two DISTINCT numeric types for a monomorphization pair — any
-/// combination from the full 14-type family (i16-vs-u64 pairs are
-/// exactly the sign/zero-extension narrowing surface).
+/// Two distinct numeric types for a monomorphization pair, from the
+/// full 14-type family.
 fn distinct_numeric_pair(rng: &mut Rng) -> (GenType, GenType) {
     let a = types::num_ty(rng);
     let mut b = types::num_ty(rng);
@@ -21,9 +20,8 @@ fn distinct_numeric_pair(rng: &mut Rng) -> (GenType, GenType) {
     (GenType::Num(a), GenType::Num(b))
 }
 
-/// Distinct parameter names, collision-pool-biased (a param that
-/// collides with an outer binding or another lambda's local is the
-/// point), but unique within one param list (`|x, x|` is an error).
+/// Distinct parameter names, collision-pool-biased but unique within
+/// one param list (`|x, x|` is an error).
 fn param_names(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -41,10 +39,9 @@ fn param_names(
     names
 }
 
-/// The body of a typed lambda: an expression of the return type, or —
-/// with `p_body_block` — a block with a collision-prone local (the
-/// audit's bug-3 shape: a lambda-local aliasing a transitively-called
-/// function's binding). Params are already in scope.
+/// The body of a typed lambda: an expression of the return type, or,
+/// with `p_body_block`, a block with a collision-prone local. Params are
+/// already in scope.
 fn lambda_body(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -105,15 +102,13 @@ pub(super) fn gen_typed_lambda(
     stmt
 }
 
-/// A polymorphic lambda binding in the EXPLICIT constraint form
-/// (`let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y`) plus — with
-/// `p_mono_pair` — two immediate call-site bindings at DISTINCT numeric
-/// types: the audit's bug-2 shape (two monomorphizations of one lambda
-/// in one region). The explicit form is load-bearing: a BARE
-/// unannotated lambda's params share one widening tvar across all call
-/// sites, so its results poison any annotated context ("f64 does not
-/// contain '_N: Number") — see `gen_bare_lambda` for that shape. The
-/// body is params-only `+ - *`/neg so the result type follows the args.
+/// A polymorphic lambda binding in the explicit constraint form
+/// (`let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y`) plus, with
+/// `p_mono_pair`, two immediate call-site bindings at distinct numeric
+/// types. The explicit form is load-bearing: a bare unannotated lambda's
+/// params share one widening tvar, so its results poison any annotated
+/// context (see `gen_bare_lambda`). The body is params-only `+ - *` so
+/// the result type follows the args.
 pub(super) fn gen_poly_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -152,14 +147,10 @@ pub(super) fn gen_poly_lambda(
     stmts
 }
 
-/// A BARE unannotated lambda (`let f = |a| a + a`) with two unannotated
-/// call sites at distinct numeric types. This is the everyday user
-/// shape AND the wide-tvar JIT-blocker class: the params share one
-/// WIDENING tvar, so the call results are Number-wide — legal only in
-/// unannotated contexts, and infectiously so (an op over a wide value
-/// is wide too). The results therefore never enter the typed
-/// vocabulary: the bindings exist purely to create the two
-/// instantiation sites.
+/// A bare unannotated lambda (`let f = |a| a + a`) with two unannotated
+/// call sites at distinct numeric types. The params share one widening
+/// tvar, so the results are Number-wide and never enter the typed
+/// vocabulary; the bindings exist to create the two instantiation sites.
 pub(super) fn gen_bare_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -170,9 +161,8 @@ pub(super) fn gen_bare_lambda(
     let body = poly_body(rng, &names);
     let f = ctx.name_for_bind(rng, cfg);
     let mut stmts = vec![format!("let {f} = |{}| {body}", names.join(", "))];
-    // f stays out of the callable vocabulary (a `try_call` in an
-    // annotated context would reject) but must MASK whatever it
-    // shadowed — a stale entry would offer the dead type to later refs.
+    // f stays out of the callable vocabulary but must mask whatever it
+    // shadowed
     ctx.push(f.clone(), GenType::Opaque);
     let (ta, tb) = distinct_numeric_pair(rng);
     for ty in [ta, tb] {
@@ -183,10 +173,9 @@ pub(super) fn gen_bare_lambda(
     stmts
 }
 
-/// A literal-free numeric body over exactly the params: combined with
-/// `+ - *` only. A literal or division would pin or complicate the
-/// type; unary neg constrains its operand to `[Real, Sint]`, which a
-/// `Number` tvar (u8 included) does not fit.
+/// A literal-free numeric body over exactly the params, combined with
+/// `+ - *` only: a literal or division would pin the type, and unary neg
+/// constrains its operand to `[Real, Sint]`, which `Number` does not fit.
 fn poly_body(rng: &mut Rng, params: &[String]) -> String {
     let mut acc = params[rng.below(params.len())].clone();
     let n = 1 + rng.below(3);
@@ -198,10 +187,9 @@ fn poly_body(rng: &mut Rng, params: &[String]) -> String {
     acc
 }
 
-/// The audit bug-1 template, emitted whole: bind a lambda `f`, bind a
-/// wrapper that CALLS `f`, REBIND `f`, then call the wrapper — correct
-/// resolution must use the wrapper's captured (first) `f`, not the
-/// name.
+/// The shadowed-lambda template: bind a lambda `f`, bind a wrapper that
+/// calls `f`, rebind `f`, then call the wrapper. Resolution must use the
+/// wrapper's captured first `f`, not the name.
 pub(super) fn gen_shadowed_lambda_template(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -234,7 +222,6 @@ pub(super) fn gen_shadowed_lambda_template(
         g.clone(),
         GenType::Fn { params: vec![ty.clone()], ret: Box::new(ty.clone()) },
     );
-    // The rebind of f: another lambda (same signature) or a plain value.
     if rng.below(2) == 0 {
         let p2 = ctx.fresh();
         stmts.push(format!(
@@ -253,14 +240,9 @@ pub(super) fn gen_shadowed_lambda_template(
     stmts
 }
 
-/// A lambda whose select merges an ok arm with an `error(...)` arm —
-/// its return type is the union `[T, Error<E>]` — plus a call-site
-/// binding taking either arm, consumed by one of the three legal error
-/// consumers. This is the soak-jul06c B5 shape (the error arm's payload
-/// pointer marshalled through a return frozen as Scalar(I64) — a class
-/// only reachable when a lambda RETURN carries the error union), which
-/// generation could never produce before: `error()` was not in the
-/// vocabulary at all.
+/// A lambda whose select merges an ok arm with an `error(...)` arm, so
+/// its return type is the union `[T, Error<E>]`, plus a call-site
+/// binding consumed by one of the three legal error consumers.
 pub(super) fn gen_error_arm_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -269,8 +251,8 @@ pub(super) fn gen_error_arm_lambda(
 ) -> Vec<String> {
     stats.error_lambda = true;
     let f = ctx.name_for_bind(rng, cfg);
-    // Mask any shadowed binding; the union return keeps f out of the
-    // callable vocabulary (try_call would use the bare ok type).
+    // mask any shadowed binding; the union return keeps f out of the
+    // callable vocabulary
     ctx.push(f.clone(), GenType::Opaque);
     let n = ctx.fresh();
     let ret = types::scalar_type(rng);
@@ -283,8 +265,7 @@ pub(super) fn gen_error_arm_lambda(
     let lam = format!(
         "let {f} = |{n}: i64| select {n} {{ i64:0 => {ok}, _ => error({payload}) }}"
     );
-    // Call so the ok arm or the ERROR arm is taken, then consume the
-    // union with `$`, an error-arm select, or `?` under a catch.
+    // call so the ok arm or the error arm is taken, then consume the union
     let arg = if rng.below(2) == 0 { "i64:0" } else { "i64:1" };
     let dflt = exprs::gen_typed(ctx, rng, &ret, 1);
     let consume = match rng.below(3) {
@@ -301,15 +282,11 @@ pub(super) fn gen_error_arm_lambda(
     stmts
 }
 
-/// Reference statements: bind `let r = &<target>` (a visible scalar
-/// binding, else a fresh literal — the `&24.0` GUI idiom), then
-/// sometimes store the ref in a tuple (field-projection deref,
-/// `*(p.0)`, is the one composite read refs support — an
-/// `Array<&T>` element deref is a runtime error) or write through it
-/// (`*r <- <literal>` — LITERAL RHS only: a self-reading RHS re-fires
-/// every cycle and never quiesces, probed 2026-07-08). Reads (`*r` at
-/// scalar positions, `&` args to ref-param fns) are organic
-/// vocabulary from the binding alone.
+/// Reference statements: `let r = &<target>` (a visible scalar binding,
+/// else a fresh literal), then sometimes store the ref in a tuple or
+/// write through it with a literal RHS (a self-reading RHS re-fires
+/// every cycle and never quiesces). Reads are organic vocabulary from
+/// the binding alone.
 pub(super) fn gen_ref_stmts(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -336,14 +313,11 @@ pub(super) fn gen_ref_stmts(
             stmts.push(format!("let {t} = ({r}, {other})"));
             ctx.push(t, GenType::Tuple(vec![rty, inner]));
         }
-        // Write-through requires a VARIABLE target (`*(&lit) <- v`
-        // has no binding to write).
+        // write-through requires a variable target
         1 if var_target => {
             stmts.push(format!("*{r} <- {}", types::literal(rng, &inner)));
         }
-        // Array of refs — element deref (`*(a[0]$)`) is legal since
-        // Deref::typecheck0 derefs TVars (the 2026-07-08 fix Eric's
-        // question found); try_accessor reads it back.
+        // array of refs; try_accessor reads it back
         2 => {
             let arr = ctx.fresh();
             stmts.push(format!("let {arr} = [{r}, {r}]"));
@@ -354,10 +328,9 @@ pub(super) fn gen_ref_stmts(
     stmts
 }
 
-/// A guaranteed-terminating `let rec` plus a call-site binding. The
-/// base arm's `<= 0` guard terminates any argument sign; call args are
-/// small literals (mutation perturbs them toward the edges later —
-/// runaway variants are the mutation campaign's job, not generation's).
+/// A guaranteed-terminating `let rec` plus a call-site binding: the
+/// base arm's `<= 0` guard terminates any argument sign, and call args
+/// are small literals (runaway variants are mutation's job).
 pub(super) fn gen_rec_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -366,10 +339,9 @@ pub(super) fn gen_rec_lambda(
 ) -> Vec<String> {
     stats.rec = true;
     let f = ctx.name_for_bind(rng, cfg);
-    // Inside its own body (and after it) `f` IS the rec lambda; mask
-    // any shadowed binding BEFORE generating the base expression, or
-    // the base could reference `f` at the dead outer type (or worse,
-    // `try_call` could emit an unboundedly-recursive base-arm call).
+    // Inside its own body `f` is the rec lambda: mask any shadowed
+    // binding before generating the base expression, or the base could
+    // reference `f` at the dead outer type.
     ctx.push(f.clone(), GenType::Opaque);
     let n = ctx.fresh();
     let m = ctx.fresh();
@@ -378,13 +350,13 @@ pub(super) fn gen_rec_lambda(
     let base = exprs::gen_typed(ctx, rng, &I64, 1);
     ctx.truncate(mark);
     let (sig, stmt_args, step) = match rng.below(4) {
-        // Non-tail: n + f(n - 1).
+        // non-tail
         0 => (
             format!("|{n}: i64| -> i64"),
             format!("{}", 1 + rng.below(12)),
             format!("({m} + {f}({m} - i64:1))"),
         ),
-        // Tail loop with an accumulator.
+        // tail loop with an accumulator
         1 => {
             let acc = ctx.fresh();
             (
@@ -393,28 +365,24 @@ pub(super) fn gen_rec_lambda(
                 format!("{f}({m} - i64:1, {acc} + {m})"),
             )
         }
-        // Pure tail (no accumulator).
+        // pure tail
         2 => (
             format!("|{n}: i64| -> i64"),
             format!("{}", 1 + rng.below(12)),
             format!("{f}({m} - i64:1)"),
         ),
-        // Double recursion (fib-style) — keep the argument small.
+        // double recursion: keep the argument small
         _ => (
             format!("|{n}: i64| -> i64"),
             format!("{}", 1 + rng.below(10)),
             format!("({f}({m} - i64:1) + {f}({m} - i64:2))"),
         ),
     };
-    // The tail-loop variant's acc param leaks from sig construction into
-    // scope only within the body string; body references are textual, so
-    // no ctx entry is needed beyond what the arms already read.
     let rec = format!(
         "let rec {f} = {sig} select {n} {{ {m} if {m} <= i64:0 => {base}, {m} => {step} }}"
     );
-    // The rec lambda itself is not registered as callable vocabulary —
-    // its shape is pinned; random extra call sites add little and risk
-    // deep double-recursion blowups. The single call site:
+    // the rec lambda itself is not callable vocabulary: random extra call
+    // sites risk deep double-recursion blowups
     let call = ctx.fresh();
     let stmts = vec![rec, format!("let {call} = {f}(i64:{stmt_args})")];
     ctx.push(call, I64);

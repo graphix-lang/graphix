@@ -30,8 +30,7 @@ pub fn bind<R: Rt, E: UserEvent>(
     typ: Type,
     top_id: ExprId,
 ) -> (BindId, Node<R, E>) {
-    // Generated bindings have no source position; pass defaults so IDE
-    // tooling can detect synthetic binds.
+    // default positions mark the bind as synthetic for IDE tooling
     let id = ctx
         .env
         .bind_variable(
@@ -156,7 +155,6 @@ fn apply_inner<R: Rt, E: UserEvent>(
         static_target: None,
         recursive_edge: AtomicBool::new(false),
         top_id,
-        // Synthetic call sites are never recursion sites.
         is_self_tail_call: AtomicBool::new(false),
         tail_arg_order: Mutex::new(None),
         callee_lambda_id: Mutex::new(None),

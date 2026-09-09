@@ -18,27 +18,14 @@ use std::iter;
 #[bitflags]
 #[repr(u8)]
 pub enum IsAFlags {
-    /// When set, a `Type::Abstract` test accepts any RUST-BACKED
-    /// abstract value whose wrapper UUID is not the type's
-    /// path-derived one (`abstract_uuid`) — the lenient reading for
-    /// packages that still register ad-hoc UUIDs — the stdlib registers
-    /// path-derived ones (`abstract_wrapper!`), so this only covers a
-    /// third-party package that has not. A Graphix-minted box always
-    /// answers by its tag, and a non-abstract value never matches
-    /// (`design/nominal_abstract_types.md`). Consumers: the `TVal`
-    /// printer and INFERRED select predicates; an explicit `T as t` is
-    /// strict.
+    /// A `Type::Abstract` test also accepts a Rust-backed abstract
+    /// value whose wrapper UUID is not the type's path-derived one
+    /// (packages registering ad-hoc UUIDs). A Graphix-minted box
+    /// always answers by its tag. An explicit `T as t` is strict.
     MatchAbstract,
-    /// When set, the type-blind leaves — `Any`, `⊥`, and an unbound
-    /// tvar — match NOTHING instead of everything. `is_a` answers
-    /// "could v inhabit this type"; the blind leaves answer true for
-    /// any value, which is right for dispatch but wrong for a walk
-    /// asking "does this type DESCRIBE v" — the `TVal` printer's
-    /// union-member selection uses this to prefer members whose every
-    /// leaf positively matched, so a `never()` arm's ⊥-settled cell
-    /// can't claim a value no matter how deeply it is nested (the
-    /// top-level-only informative test missed `Array<Array<[i64, ⊥]>>`
-    /// — aug04f divergence_000000).
+    /// The type-blind leaves (`Any`, `⊥`, an unbound tvar) match
+    /// nothing instead of everything: "does this type describe v"
+    /// rather than "could v inhabit it".
     Strict,
 }
 
@@ -144,10 +131,8 @@ impl Type {
                 }
                 v => Ok(Value::Array([et.cast_value_int(env, hist, v)?].into())),
             },
-            // cast<List<T>>: a list value casts element-wise in place; a
-            // plain array converts (from_array semantics); anything else
-            // becomes a singleton — mirroring Array's rules over the
-            // list rep.
+            // A list casts element-wise, an array converts, anything
+            // else becomes a singleton.
             Type::List(et) => {
                 use crate::node::collection::list;
                 if list::is_list(&v) {
@@ -345,26 +330,9 @@ impl Type {
         v: &Value,
     ) -> bool {
         match self {
-            // `hist` is the CURRENT PATH, not a visited set: the entry
-            // comes back out on the way up.
-            //
-            // It exists to stop a name that expands without consuming
-            // value structure (`type T = [T, i64]`) from recursing
-            // forever, and a repeat on the path is exactly that. A
-            // repeat OFF the path is not: `Type::Set` is a union tried
-            // with `any`, so one member descending into a child and
-            // failing is ordinary backtracking, and the next member
-            // must get to check that same child. Left in the set, the
-            // failed branch's entries answered "no match" for every
-            // later member — so a select over a recursive ADT matched
-            // NO arm, produced nothing, and the whole program wedged
-            // idle at zero CPU (bench/symbolic.gx; the wedge needed a
-            // union retry over a node a previous member had already
-            // walked, which is why it turned on depth and shape).
-            //
-            // Latent until e86d18c1 made an inferred pattern predicate
-            // load-bearing at runtime — before that nothing called
-            // `is_a` on these patterns at all.
+            // `hist` is the current path, not a visited set: a repeat
+            // on the path is a name expanding without consuming value
+            // structure; a repeat off the path is union backtracking.
             Type::App(c, a) => match Type::app_filled(c, a) {
                 Some(t) => t.is_a_int(env, hist, flags, v),
                 None => !flags.contains(IsAFlags::Strict),
@@ -385,10 +353,6 @@ impl Type {
                 }
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
-            // A Graphix-minted box answers by its tag. A Rust-backed
-            // value answers by its wrapper UUID (`abstract_uuid` of
-            // the type's path) — or leniently, for packages whose
-            // wrappers still carry an ad-hoc UUID.
             Type::Abstract { id, .. } => match v {
                 Value::Abstract(a) => {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
@@ -402,10 +366,7 @@ impl Type {
                 _ => false,
             },
             Type::Any => !flags.contains(IsAFlags::Strict),
-            // Shallowified predicates (`shallow_discriminant`) test the
-            // runtime class alone — without these two arms an
-            // `Array<Any>`/`Map<Any, Any>` test still walks every
-            // element to learn nothing.
+            // `Any` elements: test the runtime class without walking.
             Type::Array(et)
                 if matches!(&**et, Type::Any) && !flags.contains(IsAFlags::Strict) =>
             {
@@ -415,10 +376,7 @@ impl Type {
                 Value::Array(a) => a.iter().all(|v| et.is_a_int(env, hist, flags, v)),
                 _ => false,
             },
-            // A list value: walk the spine iteratively (heads recurse).
-            // The rep shapes as an array, so `Array<Any> as a` also
-            // matches a list — inherent to the shared carrier, same as
-            // the old variant rep.
+            // Walk the spine iteratively (heads recurse).
             Type::List(et) => {
                 use crate::node::collection::list;
                 let mut cur = v;
@@ -512,38 +470,23 @@ impl Type {
         }
     }
 
-    /// return true if v is structurally compatible with the type
+    /// True if v is structurally compatible with the type.
     pub fn is_a(&self, env: &Env, v: &Value) -> bool {
         self.is_a_int(env, &mut LPooled::take(), BitFlags::empty(), v)
     }
 
-    /// return true if v is structurally compatible with the type, with flags
+    /// [`Self::is_a`] with flags.
     pub fn is_a_with(&self, env: &Env, flags: BitFlags<IsAFlags>, v: &Value) -> bool {
         self.is_a_int(env, &mut LPooled::take(), flags, v)
     }
 
     /// The shallow discriminator for a select arm's INFERRED type
-    /// predicate. `Some(shallow)` when telling `self`'s values apart
-    /// from the OTHER members of `scrutinee` needs only each value's
-    /// outermost shape: the returned type is `self` with every payload
-    /// position replaced by `Any`, so `is_a` on it costs O(arity)
-    /// instead of walking the VALUE (a `Cons('a, List<'a>)` predicate
-    /// walked the whole remaining chain per consult — O(len) per
-    /// match, quadratic per traversal; P2b's fold_list fixture,
-    /// 2026-08-25). `None` = keep the full walk: the scrutinee's
-    /// members can't be enumerated (Any, an unbound tvar, a Ref
-    /// cycle), two members share an outermost shape (`[`A(i64),
-    /// `A(string)]`, the e86d18c1 tuple-vs-array class), or nothing
-    /// in the predicate carries a payload (the full walk is already
-    /// O(1) and shallowing gains nothing).
-    ///
-    /// Soundness leans on the predicate being INFERRED: typecheck
-    /// unified it against the scrutinee member it denotes, so when
-    /// exactly one member overlaps a payload-carrying shape that
-    /// member is the predicate's own, and dropping payload checks
-    /// cannot change a verdict for any value the scrutinee's static
-    /// type admits. Explicit predicates (`x as T`) are the user's
-    /// claim and keep the strict deep test at the caller.
+    /// predicate: `self` with every payload position replaced by `Any`,
+    /// when the outermost shape alone tells `self`'s values apart from
+    /// the other members of `scrutinee`. `None` keeps the full walk
+    /// (members not enumerable, two share a shape, or no payload).
+    /// Sound only for inferred predicates, which typecheck unified
+    /// against their member; explicit `x as T` stays strict.
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         let mut scrut: LPooled<Vec<Type>> = LPooled::take();
         let mut seen: LPooled<Vec<(usize, usize)>> = LPooled::take();
@@ -594,11 +537,8 @@ impl Type {
 
 /// A flattened union member's runtime footprint. Variants, tuples,
 /// structs and arrays all inhabit `Value::Array`; `arr` is the
-/// member's constraint within that class (the other classes are
-/// disjoint by representation, so only same-class members can shadow
-/// each other). `exact` = the member's full `is_a` already costs O(1)
-/// (no payload walk), so it can neither gain from shallowing nor be
-/// mis-claimed by it.
+/// member's constraint within that class. `exact`: the full `is_a` is
+/// already O(1).
 struct MemberFacts {
     arr: Option<(Option<ArcStr>, ArrCon)>,
     map: bool,
@@ -628,17 +568,15 @@ fn member_facts(t: &Type) -> MemberFacts {
         Type::Tuple(ts) => f(Some((None, ArrCon::Len(ts.len()))), false, false, false),
         Type::Struct(fs) => f(Some((None, ArrCon::Len(fs.len()))), false, false, false),
         Type::Array(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
-        // A list shapes as an array at runtime (nil = the empty array),
-        // so beside an Array member the shallow test is ambiguous and
-        // arr_overlap forces the deep walk — honest, never wrong.
+        // A list shapes as an array at runtime, so beside an Array
+        // member the deep walk is forced.
         Type::List(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
         Type::Map { .. } => f(None, true, false, false),
         Type::Error(_) => f(None, false, true, false),
         Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(_) | Type::Bottom => {
             f(None, false, false, true)
         }
-        // `flatten_union_members` never yields these; exact = never
-        // shallowed, never a footprint — inert either way.
+        // `flatten_union_members` never yields these.
         Type::Any
         | Type::Set(_)
         | Type::Ref(_)
@@ -658,8 +596,8 @@ fn arr_overlap(
             a == b
                 && match (ptag, mtag) {
                     (Some(pt), Some(mt)) => pt == mt,
-                    // a tuple/struct of the right length can shape
-                    // like a variant (slot 0 a string) — conservative
+                    // A tuple/struct of the right length can shape
+                    // like a variant.
                     _ => true,
                 }
         }

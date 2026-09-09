@@ -7,21 +7,12 @@ use std::{
 // vendor.py must only run once — concurrent runs would clobber each other.
 static VENDOR_ONCE: Once = Once::new();
 
-// Serialize tests that spawn cargo builds. They're expensive in CPU,
-// memory, and disk, and concurrent cargo invocations sharing a target
-// dir will fight over the lock file.
-//
-// Those builds — and the one test that downloads a released crate — are
-// most of this workspace's test time and are the reason for the
-// `slow-tests` feature: they are marked `ignore` unless it is on, so
-// `cargo test --workspace` skips them and the release gate
-// (`--features slow-tests`) runs them. They still COMPILE either way.
+// Concurrent cargo invocations sharing a target dir fight over the lock
+// file, and the builds are the `slow-tests` cost.
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
-// Acquire BUILD_LOCK, recovering it if a previous holder panicked. The lock
-// guards nothing but mutual exclusion, so a poisoned lock is fine to reuse —
-// without this, a panic in one build test cascades into an opaque PoisonError
-// in the next, masking the original failure.
+// The lock guards only mutual exclusion, so a poisoned lock is reused
+// rather than cascading one panic into the next test.
 fn build_lock() -> std::sync::MutexGuard<'static, ()> {
     BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -76,10 +67,8 @@ fn skel_cargo_toml_versions_match_workspace() {
     let ws_doc: toml_edit::DocumentMut = ws_content.parse().unwrap();
     let skel_doc: toml_edit::DocumentMut = super::SKEL.cargo_toml.parse().unwrap();
     let mut mismatches = vec![];
-    // Check both [dependencies] and [build-dependencies]: graphix-ast-pack
-    // is a build-dependency whose version must track the workspace, else a
-    // created package's build.rs would request a version that isn't vendored
-    // (nor published), breaking the build with no other warning.
+    // graphix-ast-pack is a build-dependency; an unvendored version would
+    // break a created package's build.rs with no other warning.
     for section in ["dependencies", "build-dependencies"] {
         let Some(deps) = skel_doc.get(section).and_then(|t| t.as_table()) else {
             continue;
@@ -153,9 +142,8 @@ async fn download_source_extracts_package_at_expected_root() {
     );
 }
 
-// C2: the package manager only adds external deps to Cargo.toml — the permanent
-// stdlib optional deps and the entire [features] table must survive untouched
-// (regressing this would break feature-selected builds).
+// The package manager only adds external deps: the stdlib optional deps
+// and the [features] table must survive untouched.
 #[tokio::test]
 async fn update_cargo_toml_preserves_stdlib_and_features() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -183,9 +171,8 @@ async fn update_cargo_toml_preserves_stdlib_and_features() {
     assert_eq!(nd["graphix-package-widgets"].as_str(), Some("1.2.3"));
 }
 
-// C3: the marquee "removal really works" test — build the workspace shell with a
-// reduced feature set and confirm dropped packages are genuinely gone from the
-// binary (not just absent from a recorded list). Real build, no stubs.
+// Build the shell with a reduced feature set and confirm dropped packages
+// are gone from the binary.
 #[test]
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 fn reduced_feature_build_drops_packages() {
@@ -289,14 +276,9 @@ async fn build_standalone_produces_working_binary() {
     super::create_package(tmp.path(), "graphix-package-testpkg").await.unwrap();
     let pkg_dir = tmp.path().join("graphix-package-testpkg");
     let gx_dir = pkg_dir.join("src").join("graphix");
-    // main.gx imports the package's OWN graphix module (src/graphix/mod.gx,
-    // which the package build.rs parses and packs into the pre-parsed AST
-    // blob). Reaching `testpkg::var` (a pure .gx value = 42) and
-    // `testpkg::example` (the rust builtin bound in mod.gx) proves the
-    // created package's packed AST was decoded and the module resolved at
-    // runtime — the end-to-end build.rs → blob → unpack_index → unpack_module
-    // path, exercised through a freshly created package rather than the
-    // in-tree stdlib.
+    // main.gx imports the package's own graphix module; reaching
+    // `testpkg::var` and `testpkg::example` proves the packed AST decoded
+    // and the module resolved at runtime.
     let main_gx = "\
 let v = testpkg::var;
 let ex = testpkg::example(v);
@@ -321,8 +303,7 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
         .copy_tree(&vendored, &source_dir)
         .expect("copy vendored graphix-shell");
     write_vendor_config(&source_dir, ws);
-    // Build standalone. Surface a build_standalone error directly rather than
-    // letting it manifest later as a confusing "binary not found".
+    // Surface a build_standalone error directly rather than as "binary not found".
     let pm = super::GraphixPM::new().await.unwrap();
     pm.build_standalone(&pkg_dir, Some(&source_dir)).await.expect("build_standalone");
     // Run the binary
@@ -371,19 +352,16 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
             captured_stdout, captured_stderr
         )
     });
-    // The sentinel line embeds values read from the created package's packed
-    // graphix module: var=42 (a pure .gx value) and ex=false (the rust builtin
-    // `example` applied to 42, a non-error). Their presence proves the packed
-    // AST decoded correctly and the module resolved end-to-end.
+    // var=42 and ex=false are read from the created package's packed
+    // graphix module.
     assert!(
         line.contains("var=42") && line.contains("ex=false"),
         "created package's packed module decoded incorrectly.\n\
          line: {line:?}\nstderr: {:?}",
         captured_stderr
     );
-    // C6: the standalone binary is minimal — built with only the embedded
-    // package's dependency closure (testpkg depends on core only), so a package
-    // it never depended on (gui) is genuinely absent.
+    // The standalone binary is built with only the embedded package's
+    // dependency closure, so gui is absent.
     let gui_prog = tmp.path().join("use_gui.gx");
     tokio::fs::write(&gui_prog, "use gui\n").await.unwrap();
     let gui_status = tokio::process::Command::new(&bin_path)
@@ -398,7 +376,6 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
     assert!(!gui_status.success(), "standalone binary should not resolve `use gui`");
 }
 
-// ---- Pure-function unit tests (no stdin / network / filesystem) ----
 mod pure {
     use super::super::{
         DEFAULT_PACKAGES, PackageEntry, Packages, Selection, UpdatePlan, apply_selection,
@@ -460,8 +437,7 @@ mod pure {
 
     #[test]
     fn migrate_remaps_legacy_packages_to_sys() {
-        // a pre-`sys` file: fs/net/time were the old way to get that
-        // functionality, now merged into sys.
+        // fs/net/time are merged into sys
         let toml = "[packages]\n\
                     core = \"0.4.0\"\narray = \"0.4.0\"\n\
                     fs = \"0.4.0\"\nnet = \"0.4.0\"\ntime = \"0.4.0\"\n\
@@ -731,8 +707,6 @@ anyhow = \"1\"\n";
         assert_eq!(sel.external, sset(&["widgets"]));
     }
 
-    // ----- C1: BuildPlan + the feature dependency graph -----
-
     #[test]
     fn build_plan_features_exclude_core_sorted() {
         let pkgs = Packages {
@@ -774,8 +748,6 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         deps.sort();
         assert_eq!(deps, ["hbs", "json", "tui"].map(String::from).to_vec());
     }
-
-    // ----- C5/C7: the committed shell's feature wiring + files -----
 
     fn shell_cargo_toml() -> String {
         let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -819,9 +791,7 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         assert!(!feature_depends_on("krb5_iov", "http", &edges));
     }
 
-    // Registration is now done entirely by the `packages!()` macro scraping
-    // Cargo.toml — the old generated `packages.rs` and static `deps.rs` are gone,
-    // and main.rs no longer declares `mod packages;`.
+    // Registration is done entirely by the `packages!()` macro.
     #[test]
     fn shell_has_no_generated_registration_files() {
         let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();

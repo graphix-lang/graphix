@@ -36,8 +36,6 @@ use super::{
     scalar::prim_to_clif,
 };
 
-// ─── JIT context ─────────────────────────────────────────────────
-
 /// Owns the Cranelift JIT module plus reusable per-function builder
 /// contexts. One `JitCtx` can compile many kernels; the compiled
 /// function pointers live on it and stay valid until the ctx is
@@ -46,24 +44,16 @@ pub struct JitCtx {
     module: JITModule,
     builder_ctx: FunctionBuilderContext,
     func_ctx: Context,
-    /// Increments per call to [`Self::compile_kernel`] so each
-    /// declared function gets a unique symbol — useful when a single
-    /// graphix-level name (e.g. `iterate`) shows up across multiple
-    /// fused lambdas in a single program.
+    /// Symbol suffix; one graphix name can occur in several fused lambdas.
     counter: u32,
-    /// Pre-declared FuncIds for the `emit_helpers::*` runtime
-    /// helpers — registered once at construction so per-function
-    /// codegen can materialize FuncRefs to them without re-declaring.
+    /// FuncIds for the `emit_helpers::*` runtime helpers, declared once.
     helper_ids: HelperFuncIds,
 }
 
 impl JitCtx {
     pub fn new() -> Result<Self> {
         let mut flag_builder = settings::builder();
-        // Speed > size on the assumption that a JIT'd kernel is hot
-        // by definition. PIC off (cranelift-jit requires it), no
-        // colocated libcalls (we don't need any libm helpers for the
-        // v1 op set).
+        // cranelift-jit requires PIC off.
         flag_builder.set("opt_level", "speed").context("set opt_level")?;
         flag_builder
             .set("use_colocated_libcalls", "false")
@@ -75,26 +65,9 @@ impl JitCtx {
             .finish(settings::Flags::new(flag_builder))
             .context("isa_builder.finish")?;
         let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
-        // One contiguous up-front reservation for ALL of this module's
-        // code and data, instead of the default provider's scattered
-        // per-chunk mmaps. This is CORRECTNESS, not tuning: intra-module
-        // calls (wrapper→kernel, cross-kernel) are colocated
-        // (Linkage::Local), which lowers to a ±2GiB PC-relative
-        // relocation that cranelift-jit applies with
-        // `i32::try_from(dist).unwrap()` — with scattered chunks, two
-        // functions can land >2GiB apart and finalize PANICS, killing
-        // the runtime (the fuzzer's in-process selfcheck, ~100
-        // concurrent JIT contexts, hit this reliably; an unlucky
-        // single-runtime mmap layout can too). Host-helper calls were
-        // never at risk (Linkage::Import lowers to movabs/Abs8). The
-        // arena is a PROT_NONE reservation — real memory is committed
-        // page-by-page as kernels are emitted — and exhausting it is a
-        // clean error ("jit memory region exhausted") that de-fuses the
-        // region onto the node-walk rather than a crash.
-        // Overridable for testing the GENERATIONAL rotation path
-        // (`GRAPHIX_JIT_ARENA` in bytes): a tiny arena forces
-        // rotations constantly, so the whole differential corpus
-        // exercises the retire-and-retry seam instead of trusting it.
+        // One contiguous reservation: colocated (Linkage::Local) calls use a
+        // ±2GiB PC-relative relocation and finalize panics if two functions
+        // land further apart. `GRAPHIX_JIT_ARENA` (bytes) overrides the size.
         const JIT_ARENA_RESERVE: usize = 256 * 1024 * 1024;
         static ARENA_SIZE: std::sync::LazyLock<usize> =
             std::sync::LazyLock::new(|| match std::env::var("GRAPHIX_JIT_ARENA") {
@@ -105,10 +78,8 @@ impl JitCtx {
             cranelift_jit::ArenaMemoryProvider::new_with_size(*ARENA_SIZE)
                 .map_err(|e| anyhow!("jit arena reservation failed: {e}"))?,
         ));
-        // Make the emit_helpers entry points resolvable from JIT'd
-        // code — registered BY POINTER under the registry's symbol
-        // name (the same name `declare_function` uses); nothing
-        // resolves helpers through the process symbol table.
+        // Helpers resolve by pointer under the registry's symbol name, never
+        // through the process symbol table.
         for h in all_helpers() {
             builder.symbol(h.name, h.ptr);
         }
@@ -129,28 +100,13 @@ impl JitCtx {
     }
 }
 
-// ─── Public entry point ──────────────────────────────────────────
-
-/// Define the typed kernel function in the JIT module without
-/// finalizing. Returns the FuncId and Signature; the caller is
-/// responsible for finalizing before extracting fn pointers.
-/// Splitting this out from `compile_kernel` lets us emit a typed
-/// kernel and a wrapper that calls it in the same module before a
-/// single `finalize_definitions` call.
-///
-/// Push the kernel's parameter `AbiParam`s onto `sig` in ABI (=
-/// source) order. Derives the order + wire footprint from
-/// [`KernelSig::abi_params`] — the single source of truth — so this
-/// and [`ensure_declared`] can't drift.
+/// Push the kernel's parameter `AbiParam`s onto `sig` in the order
+/// [`KernelSig::abi_params`] gives: the context words, then a
+/// `(disc, payload)` pair per parameter.
 fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
-    // The leading cycle-context word(s) — currently the `event.init`
-    // flag (see `CTX_WIRE_SLOTS`). Read by every constant's STALE gate.
     for _ in 0..kernel_abi::CTX_WIRE_SLOTS {
         sig.params.push(AbiParam::new(types::I64));
     }
-    // Every param is two words: a disc (`I64`, carrying #219 taint) and
-    // a payload at its natural CLIF type (a scalar's prim, else `I64`
-    // for a pointer / value word).
     for d in kernel.abi_params() {
         sig.params.push(AbiParam::new(types::I64)); // disc
         let payload_ty = match d.kind {
@@ -161,10 +117,8 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
     }
 }
 
-/// Push the kernel's return `AbiParam`s onto `sig` — the unified
-/// Value ABI: every kernel returns two `I64` words, the genuine
-/// `(disc, payload)` Value pair. Errors on the invalid bare-`Null`
-/// return shape.
+/// Push the return `AbiParam`s onto `sig`: every kernel returns the
+/// `(disc, payload)` Value pair. Errors on a bare-`Null` return.
 fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
     match kernel.abi_return() {
         Some(AbiReturn::Pair) => {
@@ -181,12 +135,9 @@ fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
     Ok(())
 }
 
-/// When the `GRAPHIX_DUMP_CLIF` env var is set, print the just-built
-/// CLIF function to stderr with a `;; clif <label>` header. The dump
-/// runs after `FunctionBuilder::finalize` but before
-/// `define_function`, so it shows exactly what emission produced.
-/// Baked pointer constants (interned strings/values) vary run-to-run;
-/// normalize large `iconst` immediates before diffing two captures.
+/// Print the CLIF to stderr when `GRAPHIX_DUMP_CLIF` is set. Baked
+/// pointer constants vary run to run; normalize large `iconst`
+/// immediates before diffing two dumps.
 fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
     static DUMP: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_DUMP_CLIF").is_some());
@@ -195,81 +146,36 @@ fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
     }
 }
 
-/// A compiled kernel exposed through a uniform calling convention,
-/// suitable for dispatch from runtime code that doesn't know the
-/// kernel's specific signature.
-///
-/// The `wrapper` field is `extern "C" fn(args: *const u64, out: *mut u64)`:
-/// - `args` is a pointer to a slice of u64 slots — the context words
-///   then a (disc, payload) pair per kernel parameter.
-/// - `out` is a pointer to two u64 slots receiving the result's
-///   genuine (disc, payload) Value pair (unified Value ABI).
-///
-/// The wrapper itself is JIT-compiled cranelift code that loads each
-/// arg from the slot at the correct CLIF type, calls the typed
-/// kernel, and stores the result into `*out` as raw bits. Pack and
-/// unpack helpers ([`pack_value_to_u64`], [`unpack_u64_to_value`])
-/// handle the Rust-side bit-fiddling.
-///
-/// Owns its `JitCtx` (for the local-module path) or holds `None` (for
-/// the per-context cross-kernel-call path, where the owning `ExecCtx`'s
-/// [`Jit`] module keeps the mmap'd code alive for the program's lifetime).
+/// A compiled kernel behind the uniform [`WrapperFn`] convention:
+/// `args` points at the context words then a `(disc, payload)` pair
+/// per parameter, `out` receives the result's `(disc, payload)` pair.
+/// [`pack_value_to_u64`] / [`unpack_u64_to_value`] do the Rust-side
+/// packing.
 pub struct WrappedKernel {
-    /// Type-erased entry point. Cast via transmute to the
-    /// canonical `WrapperFn` signature for invocation.
+    /// Cast through [`Self::fn_ptr`].
     pub wrapper_fn_ptr: *const u8,
-    /// `Some(_)` for kernels compiled into a private JIT module (no
-    /// cross-kernel calls); the ctx keeps the mmap'd code alive. `None`
-    /// for kernels compiled into the per-context [`Jit`] module — that
-    /// module (owned by the `ExecCtx`) keeps them mapped for the
-    /// program's lifetime, so no per-kernel ownership is needed.
+    /// `Some` when the kernel owns a private module; `None` when the
+    /// `ExecCtx`'s [`Jit`] keeps the code mapped.
     _ctx: Option<JitCtx>,
-    /// Number of `u64` cross-invocation state words the parent's ROOT
-    /// body claimed during emission (0 = stateless — the common case).
-    /// The runtime `Kernel` allocates a zeroed per-INSTANCE buffer of
-    /// this size and passes its pointer in wire slot 1 (see
-    /// [`kernel_abi::CTX_WIRE_SLOTS`]).
+    /// Per-instance state words the root body claimed. The runtime
+    /// `Kernel` passes a zeroed buffer of this size in wire slot 1.
     pub state_words: usize,
-    /// `(word index, own_levels)` of the ROOT body's per-slot
-    /// state-table ANCHORS: each word holds (0 or) a `Box<Vec<u64>>`
-    /// raw pointer managed by the `graphix_slot_state_table` helper,
-    /// the root of a chain of owning tables mirroring the select
-    /// site's loop nesting (`own_levels` directory levels, then a
-    /// leaf with one selection word per slot ordinal — see
-    /// [`BodyCx::open_slot_tables`]). The runtime `Kernel`'s `Drop`
-    /// frees the chains (`free_slot_chain`); `reset_replay` never
-    /// touches them (semantic state, like the static select memory
-    /// word).
+    /// The root body's per-slot state-table anchors: each word holds a
+    /// `Box<Vec<u64>>` chain owned by `graphix_slot_state_table` and
+    /// freed by `Kernel`'s `Drop`.
     pub slot_table_words: Vec<kernel_abi::SiteAnchor>,
-    /// This body's OWN per-call-site claims, when it was compiled to
-    /// the callee ABI (any body reachable by a cross-kernel call —
-    /// including a self-call — puts its interior taint caches in SITE
-    /// space, because one compiled body serves every call site and
-    /// state-space claims would alias across them).
-    ///
-    /// A CALLER normally supplies that block. When this kernel is the
-    /// REGION PARENT there is no kernel caller, so the runtime
-    /// [`crate::fusion::kernel::Kernel`] supplies it from its own
-    /// per-instance storage and honors it — without which the parent's
-    /// own caches sat inert forever and its scrutinee rides silently
-    /// degraded to no-history (aug15b hz0 fuzz 000000).
+    /// The body's own per-call-site block layout. A caller supplies the
+    /// block; for a region parent the runtime `Kernel` supplies it from
+    /// its own per-instance storage.
     pub(crate) own_site: Option<SiteLayout>,
-    /// PER-ACTIVATION block-tree roots ([`kernel_abi::SelfBlock`]) that
-    /// live in the parent's own STATE buffer — a recursive callee whose
-    /// block this body carved out of its instance words. The runtime
-    /// `Kernel` frees and resets these alongside the ones in its own
-    /// site block.
+    /// Per-activation block-tree roots living in the parent's state
+    /// buffer; `Kernel` frees and resets them with its own site block.
     pub(crate) state_self_blocks: Vec<kernel_abi::SelfBlock>,
-    /// Per-kernel ArcStr slots that the JIT'd code references via
-    /// stable `*const ArcStr` pointers. Held here so the slots live
-    /// as long as the compiled function does. When this struct
-    /// drops, the strings drop, decrementing the global intern
-    /// table's `Arc<str>` refcounts — letting the GC pass reclaim
-    /// entries whose last consumer is gone.
+    /// Strings the code references by stable `*const ArcStr`; they must
+    /// outlive the compiled function.
     _strings: KernelStrings,
-    /// Per-kernel datetime/duration `Value` constants the JIT'd code
-    /// references via stable `*const Value` pointers. Same lifetime
-    /// discipline as `_strings`.
+    /// Datetime/duration constants referenced by stable `*const Value`;
+    /// same lifetime as `_strings`.
     _values: KernelValues,
 }
 
@@ -280,74 +186,34 @@ unsafe impl Sync for WrappedKernel {}
 pub type WrapperFn = unsafe extern "C" fn(args: *const u64, out: *mut u64);
 
 impl WrappedKernel {
-    /// Cast the raw fn pointer to the canonical [`WrapperFn`]. Marked
-    /// unsafe at the call site because `wrapper_fn_ptr` must come from
-    /// a successful `compile_kernel_with_wrapper` invocation; passing
-    /// a bogus pointer produces UB.
+    /// `wrapper_fn_ptr` must come from a successful compile; any other
+    /// pointer is UB.
     pub unsafe fn fn_ptr(&self) -> WrapperFn {
         unsafe { std::mem::transmute(self.wrapper_fn_ptr) }
     }
 }
 
-// ─── Per-context JIT module: cross-kernel CLIF calls ─────────────
-//
-// All kernels from a given `ExecCtx` go into a
-// single JIT module owned by that ExecCtx, so that one kernel's
-// compiled code can `call` another's directly via a CLIF `call`
-// instruction. The module lives as long as the ExecCtx; when the
-// ExecCtx drops, the module drops and the mapped code goes with it.
-//
-// `by_kernel` keys by `(Arc<KernelSig> raw-pointer identity, interned
-// region layout)` so the same `Arc<KernelSig>` referenced from
-// multiple parent kernels reuses one compilation within a single
-// ExecCtx. Names alone aren't unique enough — two distinct programs
-// can both have a binding `foo` with a different fused kernel.
-//
-// The `layout` id is the soundness half of the key (soak jul07c
-// generate/crash_000000). A callee body may bake CLIF calls to
-// SIBLING kernels' FuncIds, and which FuncId a sibling resolves to
-// depends on the whole region's callee layout. The region's interned
-// layout — the ordered kernel list, parent first — is therefore part
-// of the key: identical layouts resolve every sibling to the same
-// FuncId and may share; different layouts compile fresh. Kernels
-// that bake no sibling FuncIds (no non-self lambda sites) are
-// layout-INDEPENDENT and use layout 0 — a true leaf shares one
-// compilation everywhere.
-//
-// (Was a process-global `SHARED_JIT` static before May 2026; moved
-// to per-context to align with the runtime's documented "multiple
-// ExecCtxes can hold different modes without racing on shared
-// global state" guarantee.)
-
+/// The per-`ExecCtx` JIT module. Kernels call each other with direct
+/// CLIF calls, so they share one module that lives as long as the
+/// `ExecCtx`.
+///
+/// `by_kernel` keys on `(Arc<KernelSig> pointer, base, region layout)`:
+/// a body bakes its sibling kernels' FuncIds, which depend on the
+/// region's ordered kernel list, so only identical layouts may share a
+/// compilation. A body with no sibling sites uses layout 0.
 pub struct Jit {
-    /// Boxed because cranelift's `Context` alone is ~5KB: inline, the
-    /// whole `JitCtx` rides `FusionCtx` → `ExecCtx` → `GXConfig` →
-    /// every `async fn` that moves one, and the resulting coroutine
-    /// sizes overflow libtest's 2MB thread stack in unoptimized
-    /// builds. One allocation per context; the JIT is compile-time
-    /// only, so the indirection is free.
+    /// Boxed: cranelift's `Context` is ~5KB and this rides every
+    /// `async fn` that moves a `GXConfig`.
     ctx: Box<JitCtx>,
-    /// Per-kernel cache: `(Arc<KernelSig> raw pointer, base, interned
-    /// region layout)` → cached entry (`base` is always 0 now). We keep the Arc
-    /// alive in the entry so the raw pointer key stays valid for the
-    /// lifetime of the ExecCtx. Without it, Arc-allocator reuse could
-    /// land a different KernelSig at the same address and we'd return a
-    /// stale FuncId pointing at code with the wrong signature. See the
-    /// module comment above for why `base` and the layout are part of
-    /// the key.
+    /// The entry holds the `Arc` so the pointer key cannot be reused by
+    /// a later allocation.
     by_kernel: BTreeMap<(usize, u32, u32), CachedKernel>,
-    /// Interned region layouts (the ordered `(kernel ptr, base)` list,
-    /// parent first) → layout id. Ids start at 1; 0 is reserved for
-    /// layout-INDEPENDENT kernels (see the module comment). The keyed
-    /// pointers stay valid because every layout's kernels are pinned by
-    /// their `by_kernel` entries' `_kernel` Arcs.
+    /// Region layout → id, from 1; 0 is the layout-independent id.
     layouts: BTreeMap<Vec<(usize, u32)>, u32>,
 }
 
 impl Jit {
-    /// Construct a fresh per-context JIT. Initializes the cranelift
-    /// module + ISA. Returns `Err` if cranelift initialization fails
-    /// (rare; only happens if the target ISA isn't supported).
+    /// Errs if cranelift cannot target the host ISA.
     pub fn new() -> Result<Self> {
         Ok(Self {
             ctx: Box::new(JitCtx::new()?),
@@ -369,52 +235,30 @@ struct CachedKernel {
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
     /// See [`WrappedKernel::state_self_blocks`]; filled in phase 2.
     state_self_blocks: Vec<kernel_abi::SelfBlock>,
-    /// The kernel's per-call-site state-block layout ([`SiteLayout`]),
-    /// filled when its body is DEFINED (phase 2, callees before
-    /// parents). `None` = not yet defined — a caller emitting against
-    /// a `None` layout is a recursive back-edge and passes 0.
+    /// Filled when the body is defined. `None` at a caller's emission
+    /// is a recursive back-edge, which passes 0.
     site_layout: Option<SiteLayout>,
-    /// [`kernel_abi::SiteLeaf`]s whose addresses the compiled code
-    /// baked in — kept alive with the code, like `_strings`.
+    /// Leaves whose addresses the code baked in; live with the code.
     _site_leaves: Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
-    /// Holds the Arc alive so its raw pointer can't be reused by a
-    /// later allocation.
+    /// Holds the Arc so its pointer cannot be reused by a later allocation.
     _kernel: std::sync::Arc<KernelSig>,
-    /// Per-kernel string table. The JIT'd code for this kernel bakes
-    /// in `*const ArcStr` pointers into this table's `Box<[ArcStr]>`
-    /// (struct field names, variant tags). The module's code lives
-    /// for the lifetime of the owning `Jit` (which lives for the
-    /// lifetime of the `ExecCtx`), so the table must too — kept
-    /// here, alongside the kernel's `FuncId`. Populated empty in
-    /// phase 1 (`ensure_declared`); the real table is moved in
-    /// during phase 2 (`define_kernel_body`). Moving the
-    /// `KernelStrings` struct around the `BTreeMap` is fine — only
-    /// the `Box` pointer moves, not the heap allocation the baked-in
-    /// pointers reference.
+    /// Strings the code references by pointer; must outlive the code.
+    /// Moved in by `define_kernel_body`.
     _strings: KernelStrings,
-    /// Per-kernel datetime/duration `Value` constants table — same
-    /// role and lifetime as `_strings`, baked `*const Value` pointers.
+    /// Datetime/duration constants; same lifetime as `_strings`.
     _values: KernelValues,
-    /// Cross-invocation state words this kernel's body claimed when it
-    /// was defined (see [`WrappedKernel::state_words`]). Recorded here
-    /// so a region whose parent comes back from the cache still learns
-    /// the buffer size its runtime `Kernel` must allocate.
+    /// See [`WrappedKernel::state_words`]; kept so a cached parent still
+    /// sizes its runtime buffer.
     state_words: usize,
 }
 
 unsafe impl Send for Jit {}
 
-/// Compile `kernel`, emitting BODIES by walking Nodes via
-/// `emit_clif` recursion.
-/// The kernel ABI (params / return / wrapper) still comes from each
-/// `KernelSig`; only body codegen changes. The parent emits from
-/// `root`; each callee with an entry in `callee_bodies` (keyed by
-/// `Arc::as_ptr`, recorded by `discover_lambda_calls`) emits from its
-/// body Node with its OWN discovered lambda sites (`CalleeBody.sites` —
-/// #203 Phase C, so a callee's body emits ITS nested cross-kernel calls)
-/// AND its own discovered fastcall/cast sites (`CalleeBody.apply_sites`).
-/// A callee WITHOUT a recorded body bails (the whole region de-fuses);
-/// discovery records a body for every callee it returns.
+/// Compile `kernel` and its callees by walking their Nodes' `emit_clif`.
+/// The parent emits from `root`; each callee emits from its
+/// `callee_bodies` entry (keyed by `Arc::as_ptr`) with its own lambda
+/// and builtin sites. A callee without a recorded body fails the
+/// whole region.
 pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     jit: &mut Jit,
     kernel: &std::sync::Arc<KernelSig>,
@@ -430,16 +274,13 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     let parent_spec = BodySpec {
         builtin_apply_sites: Some(apply_sites),
         lambda_call_sites: Some(lambda_sites),
-        // None for region parents (a region can't self-call); the
-        // collection callback path's "parent" IS a lambda kernel and passes
-        // its own self info here.
+        // `None` for a region parent; the collection callback path's parent
+        // is a lambda kernel with its own self info.
         self_call: parent_self_call,
         type_env: Some(type_env),
         allow_state: true,
     };
-    // A callee that IS the parent (a self-recursive per-slot callback)
-    // shares the parent's FuncId/body — skip it, matching the phase-1
-    // declare loop.
+    // A callee that is the parent shares the parent's body, as in phase 1.
     let parent_ptr = kernel_abi::kernel_key(kernel);
     let callee_emitters: Vec<(usize, NodeBodyEmitter<R, E>, BodySpec)> = callees
         .iter()
@@ -490,28 +331,9 @@ fn compile_kernel_with_callees_impl(
         &mut defined,
     );
     if r.is_err() {
-        // Evict every freshly-declared cache entry. On the direct path
-        // a failed compile is the COMMON "doesn't fuse" signal (any
-        // node without an emit_clif impl), and a kernel `Arc` can be
-        // re-submitted later (lambda kernels are cached and shared
-        // across call sites) — a stale entry would hand out a `FuncId`
-        // whose body was never defined. It would also pin the kernel
-        // `Arc` (and its declared symbol) forever.
-        //
-        // Entries whose bodies were never defined (not in `defined` —
-        // recorded per-key, so this can't drift when the phase-2
-        // definition order changes; the count-plus-forward-order
-        // inference it replaces broke silently when definition
-        // reversed for SiteLayout availability) also get a TRAP STUB:
-        // the module is shared across every fusion attempt in this
-        // ExecCtx, and cranelift's next `finalize_definitions` — from
-        // any LATER successful compile — panics on a declared-but-
-        // undefined Local symbol ("can't resolve symbol …"), killing
-        // the runtime. An already-defined sibling body from this
-        // abandoned attempt may carry a call relocation to the
-        // undefined symbol, so the stub is load-bearing even though
-        // nothing ever calls it (the region wasn't spliced and the
-        // cache entry is gone).
+        // Evict the fresh entries (a stale one would hand out an undefined
+        // FuncId) and trap-stub every declared-but-undefined body: the next
+        // `finalize_definitions` panics on an undefined Local symbol.
         for (k, base, layout) in to_define.iter() {
             let key = (std::sync::Arc::as_ptr(k) as usize, *base, *layout);
             if let Some(entry) = jit.by_kernel.remove(&key)
@@ -529,17 +351,12 @@ fn compile_kernel_with_callees_impl(
     r
 }
 
-/// Define `fid` as a signature-conformant body that immediately traps.
-/// Used when a kernel-closure build is ABANDONED after declaration: the
-/// shared module must not carry declared-but-undefined Local symbols
-/// into the next `finalize_definitions` (a panic), and a defined
-/// sibling body may hold a call relocation to this symbol. The stub is
-/// never executed — the abandoned region node-walks and its cache
-/// entries are evicted.
+/// Define `fid` as a body that traps, for a kernel abandoned after
+/// declaration: the shared module must not carry an undefined Local
+/// symbol into the next `finalize_definitions`. Never executed.
 fn define_stub_body(jit: &mut JitCtx, fid: FuncId, sig: &Signature) -> Result<()> {
     use cranelift_codegen::ir::TrapCode;
-    // Same hygiene as `define_kernel_body`: the failed build that got
-    // us here may have left `func_ctx`/`builder_ctx` mid-function.
+    // The failed build may have left `func_ctx` mid-function.
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig.clone();
@@ -569,21 +386,11 @@ fn compile_kernel_with_callees_inner(
     to_define: &mut Vec<(std::sync::Arc<KernelSig>, u32, u32)>,
     defined: &mut Vec<(usize, u32, u32)>,
 ) -> Result<WrappedKernel> {
-    // Phase 1 — declare every kernel in the closure (parent + all
-    // transitively-reachable callees). Cached entries reuse their
-    // `FuncId`; fresh ones get a freshly-declared FuncId and queue
-    // for phase-2 body definition.
-    //
-    // `funcids` is keyed by kernel IDENTITY (`kernel_key`) — a callee
-    // that IS the parent (a self-recursive per-slot callback) lands on
-    // the parent's entry by pointer equality, which is how
-    // self-recursion resolves to a CLIF call back to the parent.
+    // Phase 1: declare every kernel in the closure. `funcids` keys on
+    // kernel identity, so a self-recursive callee lands on the parent's
+    // entry.
     let parent_ptr = kernel_abi::kernel_key(kernel);
-    // The region's layout — the ordered `(ptr, base)` list, parent
-    // first — interned once; each kernel keys on it UNLESS its body is
-    // layout-independent (bakes neither fn_indices nor sibling
-    // FuncIds), which keys on the shared layout 0. See the module
-    // comment on `by_kernel`.
+    // A body with no sibling sites keys on layout 0.
     let layout_id = {
         let mut layout: Vec<(usize, u32)> = Vec::with_capacity(callees.len() + 1);
         layout.push((parent_ptr, 0));
@@ -605,23 +412,13 @@ fn compile_kernel_with_callees_inner(
         if !ext_sites { 0 } else { layout_id }
     };
     let parent_layout = layout_of(kernel);
-    // Insertion-ordered (parent first, then callee discovery order):
-    // `define_kernel_body` imports FuncRefs by walking this list, and
-    // funcref indices (fn0, fn1, …) are assigned in import order — a
-    // pointer-ordered map here made the numbering ASLR-dependent (#19).
+    // Insertion order fixes the funcref numbering; a pointer-ordered map
+    // makes it ASLR-dependent.
     let mut funcids: poolshark::local::LPooled<Vec<(usize, (FuncId, Signature))>> =
         poolshark::local::LPooled::take();
-    // Already-defined callee layouts, keyed by kernel identity — seeded
-    // from THIS REGION'S OWN cache keys as they are declared (a cache
-    // hit means the body was defined by a prior compile under exactly
-    // the (ptr, base, layout) this region calls), then overwritten by
-    // each fresh define below. NEVER collapse over all of `by_kernel`:
-    // a body re-emitted under a new (base, layout) can claim a
-    // DIFFERENT SiteLayout while an old variant's entry survives, and
-    // a caller sizing state blocks from the stale variant while the
-    // callee's code writes per the fresh one is an out-of-bounds heap
-    // write (the jul31baieka TVar-corruption crash — a whole-cache
-    // seed plus first-found-wins kept exactly that stale layout).
+    // Seeded only from this region's own cache keys: another (base, layout)
+    // variant of a body may have a different SiteLayout, and sizing blocks
+    // from it is an out-of-bounds write.
     let mut callee_layouts: BTreeMap<usize, SiteLayout> = BTreeMap::new();
     let seed_layout = |jit: &Jit,
                        callee_layouts: &mut BTreeMap<usize, SiteLayout>,
@@ -647,41 +444,9 @@ fn compile_kernel_with_callees_inner(
         funcids.push((*ptr, entry));
         seed_layout(jit, &mut callee_layouts, *ptr, base, layout);
     }
-    // Phase 2 — define each freshly-declared body. Bodies that came
-    // back from the cache already had `define_function` called for
-    // them on a prior compile and need no re-definition. New bodies
-    // can reference any other declared FuncId (including each other,
-    // for mutual recursion).
-    //
-    // Each body's `KernelStrings` carries the stable `*const ArcStr`
-    // addresses its code baked in; store it back into the per-kernel
-    // cache entry so it lives as long as the per-context module's
-    // code.
-    //
-    // `emitters` keys body emitters by kernel identity (the parent +
-    // every callee whose body discovery recorded). A kernel WITHOUT
-    // an entry cannot compile — there is no other body source — so
-    // bail (the whole region de-fuses). This can't fire today:
-    // `discover_lambda_calls` records a body for every callee it
-    // returns; the check guards the invariant rather than a known
-    // path.
-    // Definition order is TOPOLOGICAL over the recorded static call
-    // edges, callees before callers: a caller's body emission reads
-    // its callees' per-call-site state-block layouts ([`SiteLayout`],
-    // recorded at definition) to size the blocks it supplies. The old
-    // reverse-declaration-order approximation broke on sibling
-    // discovery: a callee discovered BEFORE its caller at the same
-    // scan level (`g("bb") + f(2)` with f's body calling g) defined
-    // AFTER it, the caller's site-block emission found no layout, and
-    // the callee's activations inside the caller ran with no interior
-    // memory — a silent Ruling-2 multiplicity hole
-    // (design/activation_state.md, 2026-08-20). The only
-    // layout legitimately missing at a caller's definition is now its
-    // OWN (self-calls — resolved at runtime through the `site_desc`
-    // cell); mutual cycles refuse upstream, and `emit_site_block`
-    // Errs loudly if either invariant breaks. Edges are sorted by
-    // declaration position and the walk is over declaration order —
-    // fully deterministic (#19 detcheck).
+    // Phase 2: define the fresh bodies in topological order over the
+    // static call edges, callees first, so a caller can read its callees'
+    // `SiteLayout`s. The only layout missing at definition is a self-call's.
     let def_order: Vec<usize> = {
         use std::collections::BTreeMap;
         let mut pos: BTreeMap<usize, usize> = BTreeMap::new();
@@ -735,7 +500,6 @@ fn compile_kernel_with_callees_inner(
     for ti in def_order {
         let (k, base, layout) = &to_define[ti];
         let ptr = std::sync::Arc::as_ptr(k) as usize;
-        // The emitter is keyed by pointer identity.
         let body: &BodySource = emitters.get(&ptr).ok_or_else(|| {
             anyhow!(
                 "no body emitter recorded for kernel `{}` — \
@@ -756,25 +520,16 @@ fn compile_kernel_with_callees_inner(
             cached._site_leaves = db.site_leaves;
         }
     }
-    // Phase 3 — compile the uniform wrapper for the parent and
-    // finalize the module so the new code is mapped read-execute.
+    // Phase 3: the parent's wrapper, then finalize.
     let wrapper_id = define_wrapper(&mut jit.ctx, kernel, parent_entry.0)?;
     jit.ctx
         .module
         .finalize_definitions()
         .context("finalize_definitions (per-context jit)")?;
     let wrapper_fn_ptr = jit.ctx.module.get_finalized_function(wrapper_id);
-    // _ctx: None — the per-context module is kept alive by the Jit
-    // field on ExecCtx.
-    // _strings: empty here — for the cross-kernel-call path each
-    // kernel's string table lives in `Jit::by_kernel[key]._strings`
-    // (stored in phase 2), since the compiled code outlives this
-    // `WrappedKernel` and is owned by the ExecCtx's `Jit`.
-    // The parent's claimed state footprint — from its cache entry, so
-    // a parent that came back from the cache (its body defined by a
-    // prior compile) still sizes the runtime buffer correctly. Only
-    // the parent's ROOT body may claim (callee claims would alias
-    // across call sites), so callees' entries stay 0 by construction.
+    // The code and its string tables are owned by `jit.by_kernel`; the
+    // parent's state footprint comes from its cache entry so a cached
+    // parent sizes its buffer correctly.
     let (state_words, slot_table_words, state_self_blocks, own_site) = jit
         .by_kernel
         .get(&(parent_ptr, 0, parent_layout))
@@ -799,10 +554,8 @@ fn compile_kernel_with_callees_inner(
     })
 }
 
-/// Phase-1 helper: ensure `k` has a `FuncId` declared in the shared
-/// module for this region layout. Cached kernels reuse their existing
-/// entry; freshly-declared kernels are pushed onto `to_define` so
-/// phase 2 compiles their body.
+/// Ensure `k` has a `FuncId` under this layout; a fresh declaration is
+/// queued on `to_define` for phase 2.
 fn ensure_declared(
     jit: &mut Jit,
     k: &std::sync::Arc<KernelSig>,
@@ -829,7 +582,7 @@ fn ensure_declared(
             func_id: fid,
             signature: sig.clone(),
             _kernel: k.clone(),
-            // Filled in during phase 2 by `define_kernel_body`.
+            // Filled by `define_kernel_body`.
             _strings: KernelStrings::empty(),
             _values: KernelValues::empty(),
             state_self_blocks: Vec::new(),
@@ -855,17 +608,10 @@ struct DefinedBody {
     site_leaves: Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
 }
 
-/// Phase-2 helper: compile `kernel`'s body and call `define_function`
-/// on its pre-declared `FuncId`. `funcids` must contain entries for
-/// the kernel itself and every callee its body's discovered lambda
-/// call sites reference.
-/// Declare a recursion target's SPILL THUNK: `fn(args: *const u64,
-/// out: *mut u64)` — the fixed-signature entry `graphix_grow_stack`
-/// re-enters the kernel through on a fresh stack segment when a
-/// self-call finds the remaining stack inside the red zone
-/// (`design/recursive_activations.md` §4b). Declared before the kernel
-/// body so the body can take its address; defined after it
-/// (`define_spill_thunk`), since it calls the kernel.
+/// Declare the `fn(args: *const u64, out: *mut u64)` thunk
+/// `graphix_grow_stack` re-enters a recursive kernel through on a fresh
+/// stack segment. Declared before the body (which takes its address),
+/// defined after it (it calls the body).
 fn declare_spill_thunk(jit: &mut JitCtx, fn_name: &str) -> Result<FuncId> {
     use cranelift_codegen::ir::{AbiParam, Signature, types};
     let symbol = jit.next_symbol(&format!("{fn_name}__spill"));
@@ -877,10 +623,8 @@ fn declare_spill_thunk(jit: &mut JitCtx, fn_name: &str) -> Result<FuncId> {
         .context("declare_function (spill thunk)")
 }
 
-/// Define a spill thunk's body: load every kernel parameter from the
-/// caller's spill block at an 8-byte stride (typed as the kernel's
-/// signature declares it), call the kernel, store its two result
-/// words to `out`.
+/// Load each kernel parameter from `args` at an 8-byte stride, call the
+/// kernel, store its two result words to `out`.
 fn define_spill_thunk(
     jit: &mut JitCtx,
     thunk_id: FuncId,
@@ -924,6 +668,9 @@ fn define_spill_thunk(
         .context("define_function (spill thunk)")
 }
 
+/// Compile `kernel`'s body and define it on its pre-declared `FuncId`.
+/// `funcids` must hold the kernel itself and every callee its lambda
+/// call sites reference.
 fn define_kernel_body(
     jit: &mut JitCtx,
     kernel: &std::sync::Arc<KernelSig>,
@@ -942,17 +689,13 @@ fn define_kernel_body(
                 )
             },
         )?;
-    // Defensive: a *prior* kernel compile that returned `Err` before
-    // its end-of-function `clear_context` leaves `func_ctx` dirty,
-    // which makes the next `FunctionBuilder::new` panic
-    // (`assertion failed: func_ctx.is_empty()`). Clear here so one
-    // failed compile can't poison every subsequent kernel in the
-    // same per-context module.
     let self_thunk_id = match body_emitter.spec.self_call {
         Some(_) => Some(declare_spill_thunk(jit, &kernel.fn_name)?),
         None => None,
     };
     let kernel_sig = sig.clone();
+    // A prior failed compile may have left `func_ctx` dirty, and
+    // `FunctionBuilder::new` asserts it is empty.
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig;
@@ -967,19 +710,9 @@ fn define_kernel_body(
         site_layout,
         site_leaves,
     ) = {
-        // Declare each lambda call site's callee as a FuncRef in this
-        // function. Done before constructing the FunctionBuilder
-        // because both `declare_func_in_func` and `FunctionBuilder::new`
-        // borrow `jit.func_ctx.func` mutably.
-        //
-        // Exactly the kernels the body's discovered lambda call sites
-        // reference (the parent carries the region's direct callee
-        // set; a CALLEE's map is empty — its inner sites are
-        // #203-unresolved, so its only cross-kernel reference is
-        // itself). Keyed by kernel identity, so shadowed same-name
-        // targets and sibling monomorphizations each resolve to their
-        // OWN FuncId. The kernel itself is excluded from sites; a
-        // self-recursive body imports its own FuncRef via `self_call`.
+        // Callee FuncRefs are declared before the FunctionBuilder borrows
+        // `func_ctx.func`. The set is the body's lambda sites plus its
+        // self-call, keyed by kernel identity.
         let needed: poolshark::local::LPooled<nohash::IntSet<usize>> = {
             let mut s: poolshark::local::LPooled<nohash::IntSet<usize>> = body_emitter
                 .spec
@@ -996,10 +729,7 @@ fn define_kernel_body(
             }
             s
         };
-        // Import in `funcids` order (parent first, then callee
-        // discovery order): funcref indices (fn0, fn1, …) are assigned
-        // by import order, and iterating `needed` directly — a set of
-        // POINTERS — made the numbering ASLR-dependent (#19).
+        // Import in `funcids` order so the funcref numbering is deterministic.
         let mut callee_refs: BTreeMap<usize, FuncRef> = BTreeMap::new();
         for (ptr, (fid, _)) in funcids {
             if !needed.contains(ptr) {
@@ -1017,10 +747,8 @@ fn define_kernel_body(
                 kernel.fn_name
             ));
         }
-        // Lazy interning arenas — filled during emission via
-        // `BodyCx::interned_str` / `interned_value`, merged into the
-        // returned tables below so the baked addresses live as long
-        // as the compiled code.
+        // Filled during emission; returned so the baked addresses outlive
+        // the compiled code.
         let lazy_strings: std::cell::RefCell<Vec<Box<ArcStr>>> =
             std::cell::RefCell::new(Vec::new());
         let lazy_values: std::cell::RefCell<Vec<Box<Value>>> =
@@ -1050,11 +778,6 @@ fn define_kernel_body(
             )?;
         builder.finalize();
         maybe_dump_clif(&jit.func_ctx.func, &kernel.fn_name);
-        // Hand `strings`/`values` back to the caller, which stores
-        // them in the shared module's per-kernel cache entry — the
-        // JIT'd code baked in `*const ArcStr` / `*const Value`
-        // pointers into these tables and the shared module's code
-        // outlives this function.
         (
             KernelStrings::empty().with_lazy(lazy_strings.into_inner()),
             KernelValues::empty()
@@ -1095,11 +818,8 @@ fn define_kernel_body(
     })
 }
 
-/// Define the (args*, out*) wrapper that adapts the typed kernel to a
-/// uniform Rust-side calling convention. The wrapper:
-/// 1. Loads each arg from the raw u64 slot at the correct CLIF type.
-/// 2. Calls the typed kernel.
-/// 3. Stores the result into the out slot as raw bits.
+/// Define the `(args, out)` wrapper: load each arg from its u64 slot
+/// at the kernel's CLIF type, call the kernel, store the result words.
 fn define_wrapper(
     jit: &mut JitCtx,
     kernel: &KernelSig,
@@ -1116,9 +836,8 @@ fn define_wrapper(
         .module
         .declare_function(&symbol, Linkage::Local, &sig)
         .context("declare_function (wrapper)")?;
-    // A failure past this point leaves `wrapper_id` declared-but-
-    // undefined in the shared module — stub it so the next
-    // `finalize_definitions` doesn't panic (see `define_stub_body`).
+    // A failure here leaves `wrapper_id` declared but undefined; stub it
+    // so the next `finalize_definitions` does not panic.
     match define_wrapper_body(jit, kernel, typed_func_id, wrapper_id, &sig, &symbol) {
         Ok(()) => Ok(wrapper_id),
         Err(e) => {
@@ -1140,8 +859,7 @@ fn define_wrapper_body(
     sig: &Signature,
     symbol: &str,
 ) -> Result<()> {
-    // Defensive clear — see `define_kernel_body`. A prior failed
-    // compile must not poison the wrapper build.
+    // A prior failed compile may have left `func_ctx` dirty.
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
     jit.func_ctx.func.signature = sig.clone();
@@ -1151,10 +869,6 @@ fn define_wrapper_body(
     {
         let typed_ref =
             jit.module.declare_func_in_func(typed_func_id, &mut jit.func_ctx.func);
-        // Debug-build instrumentation: declare a FuncRef for the
-        // JIT invocation counter helper so we can emit a call at
-        // the start of the wrapper. Production release builds skip
-        // both the FuncRef declaration and the call.
         #[cfg(debug_assertions)]
         let record_ref = {
             let fid = jit
@@ -1171,9 +885,8 @@ fn define_wrapper_body(
         b.switch_to_block(entry);
         b.seal_block(entry);
 
-        // Bump the per-thread JIT invocation counter (debug builds
-        // only). The test harness's `jit` mode reads this after
-        // running a fixture to verify the JIT actually executed.
+        // The test harness's `jit` mode reads this counter to verify the
+        // JIT ran.
         #[cfg(debug_assertions)]
         {
             b.ins().call(record_ref, &[]);
@@ -1182,28 +895,17 @@ fn define_wrapper_body(
         let args_ptr = b.block_params(entry)[0];
         let out_ptr = b.block_params(entry)[1];
 
-        // Load each kernel param from the `args` slot buffer in ABI
-        // (= source) order (see `KernelSig::abi_params`): two slots
-        // per param — the disc at `I64`, then the payload at its
-        // natural CLIF type (a scalar's prim — sound because the
-        // packer stores the sign/zero-extended Value form — else
-        // `I64`). `d.wire_slot` is the param's starting 8-byte slot
-        // offset.
+        // Loading a scalar payload at its narrow CLIF type is sound because
+        // the packer stores the sign/zero-extended form. `wire_slot` is
+        // already offset past the context words.
         let mut typed_args: poolshark::local::LPooled<Vec<cranelift_codegen::ir::Value>> =
             poolshark::local::LPooled::take();
-        // The leading cycle-context word(s) (the `event.init` flag) sit
-        // at the front of the args buffer, BEFORE the params — load and
-        // forward them first so `d.wire_slot` (already offset past them
-        // in `abi_params`) indexes the params correctly.
         for i in 0..kernel_abi::CTX_WIRE_SLOTS {
             let v =
                 b.ins().load(types::I64, MemFlags::trusted(), args_ptr, (i as i32) * 8);
             typed_args.push(v);
         }
         for d in kernel.abi_params() {
-            // Every param is two slots: disc (`I64`) then payload at its
-            // narrow CLIF type (a scalar's prim, else `I64`). #219 taint
-            // rides in the disc word.
             let base = (d.wire_slot as i32) * 8;
             let disc = b.ins().load(types::I64, MemFlags::trusted(), args_ptr, base);
             let payload_ty = match d.kind {
@@ -1217,10 +919,6 @@ fn define_wrapper_body(
         }
 
         let call = b.ins().call(typed_ref, &typed_args);
-        // Unified Value ABI: every kernel returns the two-word
-        // `(disc, payload)` Value pair — store both slots. (`registry`
-        // stays a parameter for the signature build's abi_return
-        // error path.)
         let (r0, r1) = {
             let results = b.inst_results(call);
             (results[0], results[1])
@@ -1242,17 +940,10 @@ fn define_wrapper_body(
     Ok(())
 }
 
-/// Pack a scalar [`Value`] into a u64 slot for passing into a JIT'd
-/// wrapper, extracting the scalar according to the declared `prim`.
-/// The bits represent the primitive's value; for narrower primitives
-/// the upper bits are unused (the wrapper loads at the CLIF type and
-/// ignores them). `None` if `v` isn't a scalar of `prim`'s shape — a
-/// kernel built against a typechecker decision the runtime disagrees
-/// with (the never-tvar / obs-4 unsoundness class,
-/// fuzz/triage-fuzzer-v2/typecheck_observations.md); the caller
-/// substitutes the tainted missing-input placeholder so the runtime
-/// SURVIVES those programs until the typechecker is sound.
-/// (`Z32`/`Z64`/`V32`/`V64` accepted for the matching fixed-width prim.)
+/// Pack a scalar [`Value`] into a u64 slot as `prim`. `None` when `v`
+/// is not a scalar of `prim`'s shape; the caller substitutes the
+/// tainted placeholder. `Z32`/`Z64`/`V32`/`V64` pack as their
+/// fixed-width prim.
 pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     macro_rules! bad {
         () => {
@@ -1307,8 +998,7 @@ pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     })
 }
 
-/// Unpack a u64 slot from a JIT'd wrapper's `out` parameter into the
-/// scalar [`Value`] of the declared `prim`.
+/// Unpack a u64 slot into the scalar [`Value`] of `prim`.
 pub fn unpack_u64_to_value(bits: u64, prim: PrimType) -> Value {
     match prim {
         PrimType::I8 => Value::I8(bits as i8),

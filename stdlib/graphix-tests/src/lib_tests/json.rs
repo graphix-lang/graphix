@@ -2,46 +2,26 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_i64, r#"{let v: i64 = json::read(json::write_str(42)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_f64, r#"{let v: f64 = json::read(json::write_str(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
 }; graphix_package_core::testing::FuseExpect::None);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// Same identity-kernel-for-a-leaf-type structure as json_string, but
-// the degenerate sub-case: `v: null`. Even with String/value-shape
-// kernel params, bare `Null` is by-design not a kernel shape (always
-// widened to `Nullable<T>` before binding), and a null→null identity
-// kernel carries zero information — so this is borderline correct-None.
 run!(json_null, r#"{let v: null = json::read(json::write_str(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_string, r#"{let v: string = json::read(json::write_str("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::None);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_array, r#"{
     let arr: Array<i64> = json::read(json::write_str([1, 2, 3])$)?;
     arr
@@ -56,15 +36,12 @@ run!(json_array, r#"{
     }
 }; graphix_package_core::testing::FuseExpect::None);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_struct, r#"{
     type S = {x: i64, y: string};
     let obj: S = json::read(json::write_str({x: 42, y: "hi"})$)?;
     obj
 }"#, |v: Result<&Value>| {
-    // struct comes back as sorted array of pairs
+    // a struct comes back as a sorted array of pairs
     if let Ok(Value::Array(arr)) = v {
         arr.len() == 2
     } else {
@@ -88,9 +65,6 @@ run!(json_pretty, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_invalid, r#"{
     let r: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("not json{{{");
     is_err(r)
@@ -98,9 +72,6 @@ run!(json_invalid, r#"{
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(json_nested, r#"{
     type Nested = {items: Array<i64>, meta: {count: i64}};
     let obj: Nested = json::read(json::write_str({items: [1, 2], meta: {count: 2}})$)?;
@@ -109,10 +80,7 @@ run!(json_nested, r#"{
     matches!(v, Ok(Value::Array(_)))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// write json to a tcp stream, read it back from the other end
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// json over a tcp stream, read back from the other end.
 run!(json_stream_tcp, r#"{
     use sys::io::{Read, Write};
     use sys::tcp::Socket;
@@ -129,10 +97,7 @@ run!(json_stream_tcp, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// write json to a tcp stream, read back and cast to nested struct
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// json over a tcp stream, read back into a nested struct.
 run!(json_stream_nested, r#"{
     use sys::io::{Read, Write};
     use sys::tcp::Socket;
@@ -152,10 +117,7 @@ run!(json_stream_nested, r#"{
     matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// struct round-trip: write as json string, read back with typed read
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A struct round-trip through a json string with a typed read.
 run!(json_struct_cast, r#"{
     type Point = {x: i64, y: i64};
     let p: Point = {x: 10, y: 20};
@@ -166,10 +128,7 @@ run!(json_struct_cast, r#"{
     matches!(v, Ok(Value::I64(30)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// nested struct round-trip through json string
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// A nested struct round-trip through a json string.
 run!(json_nested_struct_cast, r#"{
     type Inner = {label: string, value: i64};
     type Outer = {items: Array<Inner>, count: i64};
@@ -182,7 +141,7 @@ run!(json_nested_struct_cast, r#"{
     matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// json::read without a concrete return type should be a compile-time error
+// json::read without a concrete return type is a compile error.
 run!(json_no_concrete_type, r#"json::read("42")"#, |v: Result<&Value>| {
     v.is_err()
 }; graphix_package_core::testing::FuseExpect::None);

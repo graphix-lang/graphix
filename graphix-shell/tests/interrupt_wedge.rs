@@ -1,21 +1,8 @@
-//! Ctrl-C must always get the user their process back.
-//!
-//! Recursion evaluates ATOMICALLY within a cycle (the recursion ruling:
-//! it fires like the hand-inlined chain), so a program can legally spin
-//! forever inside one cycle and the engine does not bound it — the
-//! no-wedge property the old one-eval-per-cycle model gave away for JIT
-//! performance and predictable semantics. What replaces it is
-//! CONTAINMENT, which lives outside the language: the cooperative
-//! interrupt (`GXHandle::interrupt`, polled by the interp's tail driver
-//! and at every emitted loop head). No program can observe it, because
-//! nothing arms it except a human or an embedder.
-//!
-//! Until 2026-08-15 the shell never armed it, so a wedged program made
-//! the PROCESS unkillable by Ctrl-C: the tokio runtime's shutdown waits
-//! for the `block_in_place` section `do_cycle` runs in, and SIGKILL was
-//! the only way out. These tests spawn the real binary on programs that
-//! wedge, in both engines, and assert SIGINT still gets the shell to
-//! exit.
+//! Ctrl-C must always get the user their process back: a program may
+//! spin forever inside one cycle, and the cooperative interrupt
+//! (`GXHandle::interrupt`) is what stops it. These tests spawn the real
+//! binary on wedging programs, in both engines, and assert SIGINT
+//! still exits the shell.
 #![cfg(unix)]
 
 use std::{
@@ -25,19 +12,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A pure infinite tail recursion: constant stack, bounded memory, never
-/// errors (`+` wraps at i64::MAX). Fuses to a native rebind-and-jump
-/// loop under the JIT and node-walks under `--no-fusion`, so the two
-/// modes exercise the kernel's `emit_interrupt_check` and the interp
-/// driver's own poll. This one wedges on the FIRST cycle — inside the
-/// shell's env load, before the input loop exists — which is why the
-/// shell arms its signal handler before that point.
+/// A pure infinite tail recursion that wedges on the FIRST cycle,
+/// inside the shell's env load, before the input loop exists.
 const FIRST_CYCLE_WEDGE: &str = "{ let rec f = |v: i64| -> i64 f(v + i64:1); f(i64:0) }";
 
 /// Wedges only after producing a few values, so the wedge lands while
-/// the input loop is live (the other half of the shell's cancel path).
-/// The aug14f `connect_in_call_arg` witness, reduced: `s` advances once
-/// per the seed-applies-once rule, so `f(6)` tail-calls itself forever.
+/// the input loop is live.
 const LATER_CYCLE_WEDGE: &str = "{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); \
      let m = x / i64:3; \
      let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, \
@@ -82,16 +62,14 @@ fn interrupt_frees_process(program: &str, no_fusion: bool, label: &str) {
     let path = dir.join("wedge.gx");
     fs::write(&path, program).expect("write program");
     let mut child = spawn(&path, no_fusion);
-    // Let it compile the stdlib and reach the wedge. If it has already
-    // exited, the program isn't wedging and the test proves nothing.
+    // If it has already exited it is not wedging and the test proves nothing.
     thread::sleep(Duration::from_secs(6));
     let alive = child.try_wait().expect("try_wait").is_none();
     assert!(
         alive,
         "{label}: program exited on its own — it is not a wedge, so this test is vacuous"
     );
-    // Two signals, mirroring a user: the first cancels the in-flight
-    // computation, the second (if the loop re-entered) exits.
+    // Two signals, as a user would: cancel, then exit.
     sigint(&child);
     thread::sleep(Duration::from_millis(750));
     if child.try_wait().expect("try_wait").is_none() {

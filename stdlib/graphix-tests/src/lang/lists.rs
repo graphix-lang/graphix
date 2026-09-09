@@ -1,11 +1,8 @@
-// Native List literals and list-slice patterns
-// (`design/list_native.md`, phase B).
+// Native List literals and list-slice patterns (design/list_native.md).
 
 use anyhow::Result;
 use graphix_package_core::run;
 use netidx::publisher::Value;
-
-// ── Literals ────────────────────────────────────────────────────────
 
 const LIST_LIT_BASIC: &str = r#"
   list::to_array([<1, 2, 3>])
@@ -22,8 +19,8 @@ const LIST_LIT_EMPTY: &str = r#"
   list::len([<>])
 "#;
 
-// The empty literal is a CONSTANT; the whole call folds and the
-// identity kernel is suppressed (#139) — no kernel runs.
+// The empty literal is a constant; the whole call folds and no kernel
+// runs.
 run!(list_lit_empty, LIST_LIT_EMPTY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(0))
@@ -41,13 +38,8 @@ run!(list_lit_nested, LIST_LIT_NESTED, |v: Result<&Value>| matches!(
     Ok(Value::I64(6))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// ── Patterns ────────────────────────────────────────────────────────
-
-// The canonical ladder: `[<>]` + `[<h, t..>]` is exhaustive (length
-// coverage 0..∞), and the tail bind is the k-th tail — O(1), shared.
-// FUSES end to end since phase B3: the list-pattern condition is one
-// spine-walk helper, the tail bind rides the Value machinery, and the
-// self-call is the Value tail rebind.
+// The canonical ladder: `[<>]` + `[<h, t..>]` is exhaustive and the
+// tail bind is the k-th tail, O(1); fuses end to end.
 const LIST_PAT_SUM: &str = r#"
 {
   let rec sum = |l: List<i64>, acc: i64| -> i64
@@ -61,9 +53,8 @@ run!(list_pat_sum, LIST_PAT_SUM, |v: Result<&Value>| matches!(
     Ok(Value::I64(6))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// Exact-length arms miss on other lengths; anonymous rest `..`.
-// (These count `Jit`: the select de-fuses in phase B, but the literal
-// binds fuse as their own kernels.)
+// Exact-length arms miss on other lengths; anonymous rest `..`. The
+// select de-fuses; the literal binds fuse as their own kernels.
 const LIST_PAT_SHAPES: &str = r#"
 {
   let l = [<1, 2, 3>];
@@ -95,7 +86,7 @@ run!(list_pat_guard_at, LIST_PAT_GUARD_AT, |v: Result<&Value>| matches!(
     Ok(Value::I64(12))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// The tail bind SHARES the spine (semantics: it IS the k-th tail).
+// The tail bind shares the spine: it is the k-th tail.
 const LIST_PAT_TAIL: &str = r#"
 {
   let l = [<1, 2, 3>];
@@ -107,8 +98,6 @@ run!(list_pat_tail, LIST_PAT_TAIL, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(2))
 ); graphix_package_core::testing::FuseExpect::Jit);
-
-// ── Coverage diagnostics ────────────────────────────────────────────
 
 const LIST_PAT_NONEXHAUSTIVE: &str = r#"
 {
@@ -130,8 +119,7 @@ const LIST_PAT_DEAD_WILDCARD: &str = r#"
 run!(list_pat_dead_wildcard, LIST_PAT_DEAD_WILDCARD, |v: Result<&Value>| v.is_err();
     graphix_package_core::testing::FuseExpect::None);
 
-// The suffix form is refused for lists: the tail is O(1), the front
-// is an O(n) walk (`design/list_native.md`).
+// The suffix form is refused for lists: the front is an O(n) walk.
 const LIST_PAT_SUFFIX_REFUSED: &str = r#"
 {
   let l = [<1, 2>];

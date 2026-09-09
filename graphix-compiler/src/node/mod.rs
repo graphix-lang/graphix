@@ -48,16 +48,13 @@ pub(crate) enum VarRead<'a> {
     /// entry's own tag applies.
     Delivered(&'a TagValue),
     /// A standing store entry from an earlier cycle: the value
-    /// channel. Readers view it Stale — or Fired under an init view
-    /// (R2), which is the whole of init backfilling.
+    /// channel. Readers view it Stale, or Fired under an init view.
     Standing(&'a TagValue),
 }
 
-/// THE variable read seam (design/dense_delivery.md R2/R3): innermost
-/// overlay, then the enclosing frame stack (an inner dispatch's
-/// captures live in its caller's frame), then the persistent store
-/// with the cycle-stamp rule. `None` is the phantom — the bind has
-/// never delivered.
+/// Read a variable: innermost overlay, then the enclosing frame stack
+/// (an inner dispatch's captures live in its caller's frame), then the
+/// persistent store. `None` means the bind has never delivered.
 pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     ctx: &'a ExecCtx<R, E>,
     event: &'a Event<E>,
@@ -91,10 +88,8 @@ macro_rules! wrap {
 }
 
 /// Compile-time `bail!` that attaches an `ErrorContext` carrying the
-/// expression's `Origin` and `SourcePosition`. The LSP recovers both by
-/// downcasting `ErrorContext` out of the anyhow chain — no message-string
-/// scraping. Use this instead of `bail!("at {} …", spec.pos)` in compile
-/// paths where the spec `Expr` is in scope.
+/// expression's `Origin` and `SourcePosition`, which the LSP downcasts
+/// out of the anyhow chain. Use it wherever the spec `Expr` is in scope.
 #[macro_export]
 macro_rules! bailat {
     ($spec:expr, $($arg:tt)*) => {
@@ -112,8 +107,7 @@ macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
         $typ.with_deref(|typ| {
             let mut typ = typ.cloned();
-            // alias chains are follow-your-nose; a bound this deep is a
-            // cyclic typedef, not a real program
+            // an alias chain deeper than 64 is a cyclic typedef
             let mut depth = 0usize;
             loop {
                 #[allow(unreachable_patterns)]
@@ -132,12 +126,8 @@ macro_rules! deref_typ {
                         }
                         typ = Some(rt.lookup_ref(&$ctx.env)?);
                     }
-                    // A Set whose members have since become mergeable (a
-                    // union built while a member type still held unbound
-                    // TVars — e.g. a select's arm union over a `$` result —
-                    // never re-collapses on its own). normalize's merge
-                    // sees through bound TVars; if it collapses the set,
-                    // keep dereferencing the merged type.
+                    // a Set built while a member still held unbound TVars
+                    // never re-collapses on its own; normalize may collapse it
                     Some(t @ $crate::typ::Type::Set(_)) => {
                         let nt = t.normalize();
                         if matches!(nt, $crate::typ::Type::Set(_)) {
@@ -223,12 +213,8 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
         scope: &Scope,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        // `spec` is the OUTER parens expression — it carries the position
-        // and any `#[..]` decorations, so the node (and a kernel that
-        // replaces it) must own it; the INNER expression compiles the
-        // value. Storing the inner as the spec orphaned decorations on
-        // parenthesized expressions (no node carried them — `#[native]
-        // (…)` was silently unchecked until the census made it loud).
+        // `spec` is the outer parens expression: it carries the position
+        // and any `#[..]` decorations, so the node must own it
         let n = compile(ctx, flags, inner, scope, top_id)?;
         Ok(Node::new(ExplicitParens { spec, n }))
     }
@@ -236,11 +222,7 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // A parenthesized expression is a fusion boundary the user drew
-        // deliberately — give the interior its own region pass (this is
-        // what lets `clock ~ (a + b)` fuse the `a + b` without the old
-        // hoist-into-a-let workaround, wherever the parens are reachable)
-        // and routes attribute dispatch to a decorated interior.
+        // parens are a fusion boundary: the interior gets its own region pass
         crate::fusion::fuse(&mut self.n, ctx)?;
         Ok(None)
     }
@@ -292,31 +274,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
     }
 }
 
-/// DESIGNATED ride memory: a child `Node` plus its last VALUE, kept
-/// under a poisoned tag, for the three readers whose semantics
-/// require reading history a production cannot carry (the P5b′
-/// designation pass, design/dense_delivery.md):
-///
-/// - the select SCRUTINEE (the scrutinee ride, aug06ghz0: a bottomed
-///   scrutinee with history rides — binds and re-matches read the
-///   held value),
-/// - a pattern GUARD's truth (`is_match` takes `&self` and cannot
-///   consume the guard's production — the held truth is the only
-///   channel),
-/// - `~`'s held arg ("sample the latest" IS the contract).
-///
-/// Everything else reads its children's dense productions directly —
-/// the operand-cache role this type had under sparse delivery is
-/// gone (each cache slot mirrored the child's resident).
+/// A child `Node` plus its last value, kept under a poisoned tag, for
+/// the readers that must read history a production cannot carry: the
+/// select scrutinee, a pattern guard's truth, and `~`'s held arg.
+/// Everything else reads its children's productions directly.
 #[derive(Debug)]
 pub struct Held<R: Rt, E: UserEvent> {
     /// The last value-bearing production (`Some` = there was once a
     /// real value; a bottom's placeholder never lands here).
     pub value: Option<Value>,
-    /// The tag of the child's LAST production. Only the TAINT bit is
-    /// meaningful at rest (a standing bottom keeps poisoning until a
-    /// value overwrites it — the kernel's slot-disc twin); firedness
-    /// is a property of a PRODUCTION, not of held memory.
+    /// The tag of the child's last production. Only the TAINT bit is
+    /// meaningful at rest; firedness belongs to a production, not to
+    /// held memory.
     pub tag: Tag,
     pub node: Node<R, E>,
     /// Lazily computed: the subtree references no bindings at all, so
@@ -330,10 +299,8 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
         Self { value: None, tag: Tag::FIRED, node, invariant: std::sync::OnceLock::new() }
     }
 
-    /// Update the node, returning the production's tag. A
-    /// value-bearing production lands in `value`/`tag`; a BOTTOM
-    /// production poisons the tag but never overwrites the value —
-    /// the ride memory.
+    /// Update the node, returning the production's tag. A bottom
+    /// production poisons the tag but never overwrites the value.
     pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Tag {
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
@@ -344,11 +311,9 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
         tag
     }
 
-    /// [`Self::update`], reduced to "should this production trigger
-    /// my evaluation" — true for fired AND fresh-bottom productions
-    /// (a bottom event must ride toward a force point), false for the
-    /// stale states. The consumed bottomness is read back off
-    /// [`Self::tag`].
+    /// [`Self::update`], reduced to whether the production triggers
+    /// evaluation: true for fired and fresh-bottom productions, false
+    /// for the stale states. Bottomness is read back off [`Self::tag`].
     pub fn update_triggers(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -357,24 +322,15 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
         self.update(ctx, event).triggers()
     }
 
-    /// Sleep is PAUSE, not reset: the held value (and its at-rest
-    /// taint) survives, so a re-woken subtree resumes from its history
-    /// exactly like the kernel's replay/ride words (Eric's ruling
-    /// 2026-07-31, select_reselect_interior_bottom). Contrast
-    /// [`Self::reset_replay`], where frame state never survives.
+    /// Sleep is pause, not reset: the held value and its at-rest taint
+    /// survive. Contrast [`Self::reset_replay`].
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.sleep(ctx)
     }
 
-    /// The held value is replay memory — EXCEPT when the subtree is a
-    /// closed expression (references no bindings): such a value is
-    /// identical in every frame and the subtree cannot re-produce it
-    /// without an init view, so the hold IS the value channel — the
-    /// interpreter's twin of the kernel's constant immediates.
-    /// Crucially it stays a hold, not a firing: a body that consumes
-    /// only constants stays quiet after its first-ever evaluation,
-    /// which is what keeps const-callback folds quiet in both
-    /// backends (the hof-lift-firing pin).
+    /// Clears the held value, except when the subtree references no
+    /// bindings: such a value is identical in every frame and the
+    /// subtree cannot re-produce it without an init view.
     pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         let invariant = *self.invariant.get_or_init(|| {
             let mut refs = Refs::default();
@@ -389,13 +345,9 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 }
 
-/// Gather a composite's element productions (dense delivery): update
-/// every child, join the tags, and clone the values. Returns
-/// `(trig, fired, bottom)`; `vals` receives every element value in
-/// order and is meaningful only when `bottom` is false (the gather
-/// stops pushing once a bottom is seen — the values are abandoned).
-/// The per-element clone is the same clone the deleted operand-cache
-/// fill paid per delivery.
+/// Update every child of a composite, join the tags, and clone the
+/// values. Returns `(trig, fired, bottom)`; `vals` receives the element
+/// values in order and is meaningful only when `bottom` is false.
 pub(crate) fn gather<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
@@ -457,11 +409,8 @@ macro_rules! read_prod {
 pub(crate) use read_prod;
 
 /// Compile one `use` item into the scope's namespace table
-/// ([`crate::env::Env::names`]): resolve its module prefix
-/// (keyword-anchored or package/chain-rooted), then install a glob
-/// source or an explicit [`ImportEntry`]. A `use` is a compile-time
-/// declaration — the statement compiles to [`Nop`]; nothing lives in
-/// the graph. See design/module_system.md.
+/// ([`crate::env::Env::names`]): resolve its module prefix, then
+/// install a glob source or an explicit [`ImportEntry`].
 pub(crate) fn compile_use_item(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
@@ -474,10 +423,8 @@ pub(crate) fn compile_use_item(
     use netidx_core::path::Path;
     let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
     let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
-    // The module context the terminal name lives in: a bare keyword
-    // anchor resolves along its lexical chain (a `super` anchor may
-    // be a block level — a script file's top level), everything else
-    // is a canonical module.
+    // a bare keyword anchor resolves along its lexical chain (a `super`
+    // anchor may be a block level); everything else is a canonical module
     enum Anchor<'a> {
         Chain(&'a str),
         Module(ModPath),
@@ -554,10 +501,7 @@ pub(crate) fn compile_use_item(
             }
         }
     };
-    // the package prelude already provides every package name as a
-    // path root, so importing a package under its own name is a
-    // no-op (a DIFFERENT target under a package's name shadows the
-    // prelude by precedence, like every other explicit entry)
+    // the prelude already provides every package name as a path root
     if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
         return Ok(());
     }
@@ -690,13 +634,10 @@ pub struct Constant {
 }
 
 impl Constant {
-    /// Construct a `Constant` node from its final components. AOT-
-    /// generated code uses this after it has already chosen the
-    /// value, type, and spec at code-generation time.
+    /// Construct a `Constant` node from its final components.
     pub fn new<R: Rt, E: UserEvent>(value: Value, typ: Type, spec: Expr) -> Node<R, E> {
-        // a constant IS its value from birth: the resident starts on
-        // the value channel (Stale), so a fresh instance bound without
-        // an init view still computes — firing stays init-gated
+        // the resident starts Stale so an instance bound without an init
+        // view still computes; firing stays init-gated
         let resident = TagValue::stale(value.clone());
         Node::new(Self { spec: Arc::new(spec), value, typ, resident })
     }
@@ -715,33 +656,11 @@ impl Constant {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // FRAME DEPTH FIRST: frames force `event.init`, so checking
-        // init before the frame gate made constants produce FIRED on
-        // every framed evaluation — the frame-stale arm was
-        // unreachable exactly where it was written for. Latent while
-        // the select/lambda result derivations were trigger-coarse;
-        // surfaced by the organic-tag algebra (replay-frames v3 —
-        // gtailr epoch 2: a quiet-selection cycle fired because the
-        // inner select's CONST scrutinee read as fired-under-forced-
-        // init). A genuine init is always frame depth 0.
+        // frames force `event.init`, so the frame gate must come first;
+        // a genuine init is always frame depth 0
         if ctx.frame_depth > 0 {
-            // In-frame VALUE channel: the kernel recomputes every
-            // constant per invocation with a `const_stale_gate`d disc
-            // — FIRED iff the dispatch itself was a genuine init
-            // (`ctx.frame_init`, the invocation-uniform kernel
-            // `init_flag`), else the STALE value channel, so a body
-            // that reads only constants computes (quietly) instead of
-            // bottoming when the frame discipline has cleared its
-            // consumers' operand caches.
-            // ORDINARY framed passes are per-invocation re-derivation:
-            // constants stay on the value channel (the gtailr epoch-2
-            // gate). A select arm's wake does NOT change that — firing
-            // a guard's constant under the wake manufactures freshness
-            // and re-emits provably-unchanged outputs
-            // (`findings/tail-jump-honest-tags-jul2026/00`). What a
-            // fresh subtree needs is a VALUE, not a fire, and that is
-            // the producers' own first-production rule (Bind, and the
-            // builtin arg seam).
+            // in a frame a constant fires only on a genuine init dispatch,
+            // never on an arm's wake
             if ctx.frame_init {
                 self.resident.set(TagValue::fired(self.value.clone()))
             } else {
@@ -787,41 +706,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     }
 }
 
-// used for both mod and do
 #[derive(Debug)]
 pub struct Block<R: Rt, E: UserEvent> {
     pub(crate) module: bool,
     pub(crate) spec: Expr,
     pub(crate) children: Box<[Node<R, E>]>,
     /// Indices of `catch(e) expr` children, in syntactic order.
-    /// Children stay physically in syntactic order (typ() and the
-    /// tail-leaf walk read children.last()), but update/typecheck run
-    /// the two-phase order: non-catch children first (the covered
-    /// region), then catches in REVERSE syntactic order — the
-    /// nested-try equivalence runs inner handlers first, and an inner
-    /// handler's rethrow delivers to its predecessor by same-cycle
-    /// Vacant-insert, which the predecessor only sees if it updates
-    /// after (forward order would silently LOSE the rethrown error).
+    /// update/typecheck run the covered children first, then catches in
+    /// reverse syntactic order: an inner handler's rethrow delivers to
+    /// its predecessor, which only sees it if it updates after.
     pub(crate) catches: Box<[usize]>,
-    /// Production slot for the catch-bearing path only: the last
-    /// covered child's borrow can't be held across the catches pass
-    /// (it re-borrows `children`), so its production is cloned here.
-    /// The catch-free path forwards the child's borrow directly.
+    /// Production slot for the catch-bearing path: the last covered
+    /// child's borrow can't be held across the catches pass.
     resident: TagValue,
-    /// Module scope at the block's declaration point. For
-    /// `Block { module: true }` this is the *containing* scope —
-    /// the inner module's scope is `scope.append(name)`. For
-    /// `Block { module: false }` (Do block at expression position)
-    /// this is the lexical scope the Do is in.
+    /// Scope at the block's declaration point: the containing scope for
+    /// a module, the lexical scope for a `do` block.
     #[allow(dead_code)]
     pub(crate) scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
-    /// Build a `Block` / `do` node from an already-compiled list of
-    /// child expressions. `module` selects "module" semantics (no
-    /// returned value) vs "do" semantics (the last child's value is
-    /// the block's value).
+    /// Build a `Block` from compiled children. A module produces no
+    /// value; a `do` block's value is its last child's.
     pub fn new(
         module: bool,
         children: Box<[Node<R, E>]>,
@@ -860,13 +766,10 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     }
 }
 
-/// Compile a statement list with catch-statement support: each
-/// `catch(e) expr` child compiles through [`error::Catch::compile`],
-/// which registers its handler and ADVANCES the dynamic scope for all
-/// subsequent siblings (the implicit nested scope — coverage by path
-/// depth, exactly the old nested-try discipline). Returns the children
-/// in syntactic order plus the catch indices. Shared by
-/// [`Block::compile`] and the sig-bearing module body compile.
+/// Compile a statement list: each `catch(e) expr` child compiles
+/// through [`error::Catch::compile`], which advances the dynamic scope
+/// for all subsequent siblings. Returns the children in syntactic order
+/// plus the catch indices.
 pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -876,11 +779,9 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     exprs: impl Iterator<Item = &'a Expr>,
 ) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
     let exprs: smallvec::SmallVec<[&'a Expr; 32]> = exprs.collect();
-    // Headers pass: pre-register the block's `mod` NAMES so name
-    // resolution (imports, sibling references, the mid-compile
-    // resolution horizon) is independent of declaration order. The
-    // `Module` compile arm removes its entry from `predeclared_mods`
-    // instead of tripping the duplicate-module guard on it.
+    // pre-register the block's `mod` names so resolution is independent
+    // of declaration order; the `Module` arm removes its entry from
+    // `predeclared_mods` instead of tripping the duplicate guard
     for e in exprs.iter() {
         if let ExprKind::Module { name, .. } = &e.kind {
             let p = ModPath(scope.lexical.append(name));
@@ -897,11 +798,8 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
     let n = exprs.len();
     for (i, e) in exprs.iter().copied().enumerate() {
-        // A `do` block's LAST item is its value; a module body has no
-        // value. `mod`/`use` are declarations, so they are legal in
-        // every position EXCEPT a `do` block's value slot — the general
-        // `compile` rejects them (they are not expressions), and this is
-        // the one place they are compiled directly.
+        // `mod`/`use` are declarations: legal everywhere but a `do`
+        // block's value slot, and compiled directly only here
         let value_position = !module && i + 1 == n;
         match &e.kind {
             ExprKind::Catch(c) => {
@@ -943,10 +841,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
                 .fold(TagValue::phantom_ref(), |_, n| n.update(ctx, event));
             return if self.module { TagValue::phantom_ref() } else { res };
         }
-        // Two-phase order (see `catches`): covered children first —
-        // the block's value is the last SYNTACTIC child's production
-        // (absent if that child is a catch: an installation never
-        // produces) — then catches, innermost first.
+        // covered children first, then catches innermost first; the
+        // value is the last syntactic child's (absent if it is a catch)
         let last = self.children.len() - 1;
         let mut res: Option<TagValue> = None;
         let mut catch = self.catches.iter().copied().peekable();
@@ -999,11 +895,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // Catches typecheck AFTER the covered children in each pass
-        // (innermost first): a handler's check must see the complete
-        // error-type accumulation — Qop tc0 unions and callsite
-        // throws-unions from every covered sibling, including inner
-        // handlers' rethrow contributions.
+        // catches typecheck after the covered children so a handler sees
+        // the complete error-type accumulation
         let mut catch = self.catches.iter().copied().peekable();
         for (i, n) in self.children.iter_mut().enumerate() {
             if catch.peek() == Some(&i) {
@@ -1039,12 +932,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             } else {
                 wrap!(n, n.typecheck1(ctx))?
             }
-            // Per-STATEMENT settle drain (see `drain_pending_settles`):
-            // a later statement's resolution reads settled facts, so
-            // each statement's deferred settles land before the next
-            // statement resolves — the CURRENT frame only: entries an
-            // enclosing resolution owns live in ITS frame and are not
-            // reachable here.
+            // a later statement's resolution reads settled facts
             wrap!(n, crate::drain_pending_settles(ctx))?;
         }
         for i in self.catches.iter().rev() {
@@ -1069,28 +957,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         if self.module {
-            // A signature-less `mod` statement compiles to
-            // `Block { module: true }` but is still a MODULE: its binds
-            // publish into the persistent env for readers outside any
-            // region. Swallowed into a parent region they become SSA
-            // locals popped at the statement's end, and the exported
-            // stream dies or loses its seed
-            // (modstmt-fused-no-publish-aug2026). Refuse; the parent
-            // de-fuses and `fuse` recurses per child — the same
-            // structure `Module::fuse` gives sig-bearing modules.
+            // a module's binds must publish to the persistent env; fused
+            // into a parent region they would become SSA locals
             bail!("emit_clif: module statement is structure, not computation")
         }
         emit_block_node(cx, &self.children)
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // Statement spine: each child fuses its own maximal subtree
-        // (or recurses further). The Block itself only fuses when a
-        // PARENT's try_fuse succeeds on a region containing it (via
-        // emit_clif above) — module-level blocks never do (their Bind
-        // children must stay live to publish), and that is structural:
-        // emit_block_node has no publish, so a region containing a
-        // bind only ever covers block-scoped lets.
         for child in self.children.iter_mut() {
             fuse(child, ctx)?;
         }
@@ -1100,7 +974,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 
 #[derive(Debug)]
 pub struct StringInterpolate<R: Rt, E: UserEvent> {
-    /// wake catch-up: set by `sleep()`, taken by the next update
+    /// set by `sleep()`, taken by the next update
     slept: bool,
     pub(crate) spec: Expr,
     pub typ: Type,
@@ -1138,9 +1012,8 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
-        // rendered under the value-hook loan: a part holding an
-        // abstract with a core `Display` implementation prints through
-        // it at the seam (`coretraits::with_value_hooks`)
+        // rendered under the value-hook loan so a core `Display` impl on
+        // an abstract part applies (`coretraits::with_value_hooks`)
         let woke = std::mem::take(&mut self.slept);
         let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
         coretraits::with_value_hooks(ctx, event, |ctx, event| {
@@ -1217,8 +1090,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck1(ctx))?;
-            // a part whose cell was still open at tc0 (a rec def's
-            // return) is bound by now
+            // a cell still open at tc0 is bound by now
             self.typs[i] = part_type(a.typ());
         }
         Ok(())
@@ -1273,11 +1145,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             None => bailat!(spec, "{name} is undefined"),
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
-        // Record `id` as a `<-` target so downstream fusion call-site
-        // lowering (`emit_known_fused_call`, `resolve_binding_fn_input`,
-        // etc.) can refuse to register it as a static call target. Keyed
-        // by BindId so an inner shadow of a Connect-target name stays
-        // stable (only the specific BindId being written is unstable).
+        // a `<-` target is never a static call target
         ctx.unstable_bindings.insert(id);
         ctx.connect_targets.insert(id);
         if ctx.env.lsp_mode {
@@ -1297,8 +1165,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // A variable write requires a FIRED RHS (a stale or tainted
-        // RHS must not become a cross-cycle event).
+        // only a fired RHS writes
         let tv = self.node.update(ctx, event);
         if tv.is_fired() {
             ctx.rt.set_var(self.id, tv.value_cloned())
@@ -1435,11 +1302,8 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Fired-RHS write gate, as in `Connect`. A retarget (the ref
-        // value switching binds) forces a write of the RHS's current
-        // value — the dense production carries it on the value channel
-        // whether or not the RHS fired this cycle; a bottom RHS never
-        // writes.
+        // a fired RHS writes; a retarget writes the RHS's current value;
+        // a bottom RHS never writes
         let (rhs_fired, rhs_val) = {
             let tv = self.rhs.update(ctx, event);
             let t = tv.tag();
@@ -1454,12 +1318,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
                 }
             }
         } else if self.target.is_none() {
-            // A lazily-created instance (a runtime callable's first
-            // dispatch) inits on a cycle AFTER the reference value was
-            // delivered — the standing store is the only place it
-            // still lives. Resolving from it is the write-side twin of
-            // Deref's standing read; acquiring a target counts as the
-            // retarget that forces a write.
+            // an instance created after the reference value was delivered
+            // finds it only in the standing store
             if let Some(read) = super::node::read_var(ctx, event, &self.src_id) {
                 let tv = match read {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
@@ -1728,14 +1588,8 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Dense restatement: the first triggering VALUE-BEARING
-        // production wins — a stale delivery is every child's value
-        // channel and never beats it, and a triggering BOTTOM never
-        // beats a value-bearing alternative (`any(risky?, default)` is
-        // the fallback idiom: the handled error's fresh bottom must
-        // not eat the default). A cycle whose only events are bottoms
-        // produces a fresh bottom; a quiet cycle rides Any's OWN last
-        // winner.
+        // the first triggering value-bearing production wins; a
+        // triggering bottom never beats one (`any(risky?, default)`)
         let mut winner: Option<TagValue> = None;
         let mut bottomed = false;
         for s in self.n.iter_mut() {
@@ -1855,11 +1709,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Debt on FIRED only (ruled delta 8, the jul23e protection
-        // relocated from the dispatch-exit seam): a stale refresh must
-        // not sample, and neither may a bottoming trigger — a `~` fed
-        // by a bottoming recursive callee holds its debt until the
-        // trigger recovers, exactly the kernel.
+        // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx, event);
         let fired = t.tag().is_fired();
         self.arg.update(ctx, event);
@@ -1913,9 +1763,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // `arg.value` (the held RHS) is SEMANTIC — "sample the latest
-        // value when the trigger fires" IS this node's contract, so the
-        // held value survives a frame reset. Children still reset.
+        // the held RHS is this node's contract and survives a frame reset
         self.arg.node.reset_replay(ctx);
         self.trigger.reset_replay(ctx);
     }
@@ -1937,13 +1785,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.trigger, self.trigger.typecheck0(ctx))?;
         wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
-        // Re-read the RHS type: the compile-time snapshot is ORPHANED
-        // when the child REPLACES its typ field during typecheck0 (a
-        // select sets `self.typ = rtype` — the finding-37 orphan class).
-        // The stale snapshot was the select's pre-typecheck EMPTY
-        // primitive set, which every type contains, so `st <- in0 ~
-        // select {...}` passed the connect containment vacuously and a
-        // mistyped struct flowed at runtime (soak-jul14b 000005).
+        // the child may replace its typ during typecheck0
         self.typ = self.arg.node.typ().clone();
         Ok(())
     }

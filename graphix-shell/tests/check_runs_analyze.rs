@@ -1,10 +1,5 @@
-//! `--check` must run `analysis::analyze` — the def assertions
-//! (`#[tail_recursive]`/`#[sync]`/`#[async]`) are verified there, so a
-//! check channel that stops before it passes a program that fails at
-//! load (design/recursive_activations.md, "Found during P2b" item 1;
-//! MUST FIX, Eric 2026-08-25). `compile_stmt` — the per-statement
-//! entry `check_inner` drives — carries the analyze call today; this
-//! pins the contract against any future split of the two channels.
+//! `--check` must run `analysis::analyze`: the def assertions
+//! (`#[tail_recursive]`/`#[sync]`/`#[async]`) are verified there.
 
 use anyhow::Result;
 use graphix_compiler::expr::Source;

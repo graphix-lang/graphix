@@ -3,7 +3,6 @@ use anyhow::Result;
 use iced_core::{Point, Size};
 use netidx::publisher::Value;
 
-/// Standard widget imports for interaction tests.
 const IMPORTS: &str = "\
 use gui::*;\n\
 use gui::text::{self, *};\n\
@@ -27,11 +26,9 @@ async fn harness(widget_expr: &str) -> Result<InteractionHarness> {
     InteractionHarness::new(&code).await
 }
 
-/// Click near the origin — widgets use Shrink sizing and are laid out
-/// at (0,0), so clicking at the viewport center misses them.
+/// Widgets use Shrink sizing and sit at (0,0); the viewport center
+/// misses them.
 const WIDGET_HIT: Point = Point::new(10.0, 10.0);
-
-// ── Button ──────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn button_click_produces_call() -> Result<()> {
@@ -40,17 +37,6 @@ async fn button_click_produces_call() -> Result<()> {
     expect_call(&msgs);
     Ok(())
 }
-
-// Note: the graphix `button` function always provides a default
-// `on_press: |_| null`, so there is no way to create a button without
-// an on_press via the graphix function.
-
-// ── Checkbox ────────────────────────────────────────────────────────
-
-// Note: checkbox/toggler/slider/radio interactions produce Call messages
-// via on_toggle/on_change/on_select callbacks. Without a callback, the
-// widget is display-only. These tests verify both the no-callback case
-// (no panic) and the callback case (produces Call).
 
 #[tokio::test(flavor = "current_thread")]
 async fn checkbox_click_no_panic() -> Result<()> {
@@ -79,8 +65,6 @@ async fn checkbox_toggle_produces_call() -> Result<()> {
     Ok(())
 }
 
-// ── Toggler ─────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn toggler_click_no_panic() -> Result<()> {
     let code = format!(
@@ -107,8 +91,6 @@ async fn toggler_toggle_produces_call() -> Result<()> {
     });
     Ok(())
 }
-
-// ── Slider ──────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn slider_click_no_panic() -> Result<()> {
@@ -169,8 +151,6 @@ async fn slider_on_release_produces_call() -> Result<()> {
     Ok(())
 }
 
-// ── VerticalSlider ──────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn vertical_slider_click_no_panic() -> Result<()> {
     let code = format!(
@@ -217,8 +197,6 @@ async fn vertical_slider_on_release_produces_call() -> Result<()> {
     assert_eq!(h.get_watched("test::released"), Some(&Value::Bool(true)));
     Ok(())
 }
-
-// ── TextInput ───────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn text_input_click_and_type_no_panic() -> Result<()> {
@@ -269,8 +247,6 @@ async fn text_input_on_input_produces_call() -> Result<()> {
     Ok(())
 }
 
-// ── Radio ───────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn radio_click_no_panic() -> Result<()> {
     let code = format!(
@@ -302,8 +278,6 @@ async fn radio_on_select_produces_call() -> Result<()> {
     Ok(())
 }
 
-// ── PickList ────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn pick_list_basic() -> Result<()> {
     let mut h = harness(
@@ -328,18 +302,13 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
              #placeholder: &\"Choose...\", \
              &[\"Red\", \"Green\", \"Blue\"])"
     );
-    // Pick list uses an overlay for the dropdown menu. Headless
-    // UserInterface may not route overlay clicks correctly, so we
-    // verify the widget compiles and accepts clicks without panic.
-    // A full on_select test requires overlay interaction support.
+    // The dropdown is an overlay, which the headless UserInterface does
+    // not route clicks to; this pins only that clicking does not panic.
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
-    // TODO: investigate overlay interaction to verify Call message
     Ok(())
 }
-
-// ── MouseArea ───────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_press_produces_call() -> Result<()> {
@@ -377,8 +346,6 @@ async fn mouse_area_release_produces_call() -> Result<()> {
     Ok(())
 }
 
-// ── TextEditor ──────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn text_editor_click_and_type_no_panic() -> Result<()> {
     let code = format!(
@@ -409,8 +376,6 @@ async fn text_editor_on_edit_produces_callback() -> Result<()> {
     Ok(())
 }
 
-// ── ComboBox ────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn combo_box_on_select_produces_call() -> Result<()> {
     let code = format!(
@@ -421,20 +386,15 @@ async fn combo_box_on_select_produces_call() -> Result<()> {
              #placeholder: &\"Pick one\", \
              &[\"Alpha\", \"Beta\", \"Gamma\"])"
     );
-    // ComboBox uses an overlay for suggestions, similar to PickList.
-    // Verify it compiles and accepts focus without panic.
+    // Suggestions are an overlay, as for pick_list.
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
-    // TODO: investigate overlay interaction to verify Call message
     Ok(())
 }
 
-// ── Scrollable ──────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn scrollable_on_scroll_produces_call() -> Result<()> {
-    // Build a scrollable with enough content to overflow and trigger scrolling
     let code = format!(
         "{IMPORTS};\n\
          let result = scrollable(\
@@ -448,20 +408,14 @@ async fn scrollable_on_scroll_produces_call() -> Result<()> {
              ]))"
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
-    // Move cursor into bounds, then scroll
     h.move_cursor(Point::new(10.0, 10.0));
     let msgs = h.scroll(0.0, 3.0);
     expect_call(&msgs);
     Ok(())
 }
 
-// ── MouseArea (additional callbacks) ────────────────────────────────
-
-// mouse_area has many callback slots, so a bare `expect_call` can't
-// tell which one fired (e.g. on_move would match the assertion even
-// when testing on_enter). Every callback test flips a graphix-side
-// variable only that specific handler could reach, then verifies the
-// variable's post-dispatch value — the same pattern slider uses.
+// Each mouse_area callback test flips a graphix variable only that
+// handler can reach, since `expect_call` cannot tell the slots apart.
 
 #[tokio::test(flavor = "current_thread")]
 async fn mouse_area_on_enter_produces_call() -> Result<()> {
@@ -493,7 +447,6 @@ async fn mouse_area_on_exit_produces_call() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     let initial = h.watch("test::exited").await?;
     assert_eq!(initial, Value::Bool(false));
-    // Enter first, then exit
     h.move_cursor(WIDGET_HIT);
     let msgs = h.move_cursor(Point::new(999.0, 999.0));
     h.dispatch_calls(&msgs).await?;
@@ -513,16 +466,13 @@ async fn mouse_area_on_move_produces_call() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     let initial = h.watch("test::moved").await?;
     assert_eq!(initial, Value::Bool(false));
-    // Enter first so iced's on_enter arm is consumed — only subsequent
-    // cursor motion inside the bounds reaches the on_move arm.
+    // Only cursor motion after the on_enter arm reaches on_move.
     h.move_cursor(Point::new(5.0, 5.0));
     let msgs = h.move_cursor(WIDGET_HIT);
     h.dispatch_calls(&msgs).await?;
     assert_eq!(h.get_watched("test::moved"), Some(&Value::Bool(true)));
     Ok(())
 }
-
-// ── KeyboardArea ────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
@@ -536,7 +486,6 @@ async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     let initial = h.watch("test::pressed").await?;
     assert_eq!(initial, Value::Bool(false));
-    // Click to focus the keyboard_area
     h.click(WIDGET_HIT);
     let msgs = h.press_key(iced_core::keyboard::key::Named::Space);
     h.dispatch_calls(&msgs).await?;
@@ -556,7 +505,6 @@ async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     let initial = h.watch("test::released").await?;
     assert_eq!(initial, Value::Bool(false));
-    // Click to focus the keyboard_area
     h.click(WIDGET_HIT);
     let msgs = h.release_key(iced_core::keyboard::key::Named::Space);
     h.dispatch_calls(&msgs).await?;

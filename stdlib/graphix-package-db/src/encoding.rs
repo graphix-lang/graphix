@@ -5,13 +5,9 @@ use netidx_value::{ValArray, Value};
 use poolshark::global::{GPooled, Pool};
 use std::sync::LazyLock;
 
-// ── Shared encoding pool ─────────────────────────────────────────
-
 static ENCODE_POOL: LazyLock<Pool<Vec<u8>>> = LazyLock::new(|| Pool::new(64, 4096));
 pub(crate) static ENCODE_MANY_POOL: LazyLock<Pool<Vec<GPooled<Vec<u8>>>>> =
     LazyLock::new(|| Pool::new(64, 4096));
-
-// ── Value encoding helpers ───────────────────────────────────────
 
 pub(crate) fn encode_value(v: &Value) -> Option<GPooled<Vec<u8>>> {
     let len = v.encoded_len();
@@ -25,14 +21,9 @@ pub(crate) fn decode_value(data: &[u8]) -> Option<Value> {
     Value::decode(&mut &*data).ok()
 }
 
-// ── Key encoding ─────────────────────────────────────────────────
-//
-// Order-preserving raw encoding for primitive key types:
-//   String  → raw UTF-8 bytes
-//   Bytes   → raw bytes
-//   Unsigned integers → fixed-width big-endian
-//   Signed integers   → fixed-width big-endian with sign-bit XOR
-//   Everything else   → Pack encoding (works as keys, no ordering)
+// Order-preserving key encoding: String/Bytes raw, unsigned ints
+// fixed-width big-endian, signed ints big-endian with the sign bit
+// flipped; everything else Pack-encoded (usable as a key, unordered).
 
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Option<GPooled<Vec<u8>>> {
     match key_typ {

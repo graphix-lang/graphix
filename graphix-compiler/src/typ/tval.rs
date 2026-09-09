@@ -7,34 +7,22 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt;
 
-/// A value with it's type, used for formatting
+/// A value with its type, used for formatting.
 pub struct TVal<'a> {
     pub env: &'a Env,
     pub typ: &'a Type,
     pub v: &'a Value,
 }
 
-/// The type-blind fallback formatter: walk composite VALUES, printing
-/// every leaf naked. `NakedValue` alone is not recursive — a
-/// composite falls through to netidx's TYPED `Value` display, so its
-/// nested elements printed `i64:0`-style whenever the static type
-/// didn't guide the walk (an `Any`/⊥/unbound-tvar slot, a union member
-/// the value matched imprecisely). Interpolated output never
-/// type-prefixes default int/float, nested included (Eric's ruling,
-/// soak-jul06c B4) — and the JIT's formatting agrees.
-///
-/// Iterative on an explicit stack: value nesting depth is
-/// USER-CONTROLLED (a cons list nests one level per element — printing
-/// a ~2k-element `list::init` overflowed the stack, jul17a
-/// crash_000003), so the walk must not recurse.
+/// The type-blind formatter: walks composite values printing every
+/// leaf naked (no `i64:` prefixes at any depth). Iterative on an
+/// explicit stack because value nesting depth is user-controlled.
 pub(crate) fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     fmt_naked_capped(f, v, usize::MAX)
 }
 
-/// `cap` bounds the number of VALUES written before the walk stops
-/// with a `…` (unbalanced by design — it is a truncated dump, used by
-/// the type-mismatch diagnostic so a huge mismatched value can't spam
-/// unbounded stderr). The full printer passes `usize::MAX`.
+/// `cap` bounds the number of values written before the walk stops
+/// with a `…` (unbalanced by design: a truncated diagnostic dump).
 fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::Result {
     enum W<'a> {
         V(&'a Value),
@@ -75,11 +63,7 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                             }
                         }
                     }
-                    // a Graphix abstract renders through its Debug —
-                    // THE VALUE SEAM (`crate::abstract_value`): a core
-                    // `Display` implementation is consulted there when
-                    // the printing frame armed the hooks, and the
-                    // structural form is `Name(payload)` either way
+                    // Debug consults a user Display impl when the hooks are armed.
                     v @ Value::Abstract(_) if crate::abstract_value::get(v).is_some() => {
                         let g = crate::abstract_value::get(v).unwrap();
                         write!(f, "{g:?}")?
@@ -124,9 +108,6 @@ impl<'a> TVal<'a> {
         }
         match (&self.typ, &self.v) {
             (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
-                // through Debug — THE VALUE SEAM: the one rendering
-                // every printer shares, hooked by a core `Display`
-                // implementation when the frame armed the hooks
                 let g = crate::abstract_value::get(v).unwrap();
                 write!(f, "{g:?}")
             }
@@ -165,9 +146,8 @@ impl<'a> TVal<'a> {
                 write!(f, "]")
             }
             (Type::Array(_), v) => fmt_naked(f, v),
-            // The literal form (`design/list_native.md`): walk the
-            // spine, print `[<a, b, c>]`; a non-list-shaped value
-            // falls back to the naked print.
+            // Prints `[<a, b, c>]`; a non-list-shaped value falls
+            // back to the naked print.
             (Type::List(et), v) => {
                 use crate::node::collection::list;
                 if !list::is_list(v) {
@@ -250,28 +230,8 @@ impl<'a> TVal<'a> {
             }
             (Type::Variant(_, _), Value::String(s)) => write!(f, "`{s}"),
             (Type::Variant(_, _), v) => fmt_naked(f, v),
-            // Member selection prefers the first STRICT match — a walk
-            // where the type-blind leaves (unbound tvar, `Any`, `⊥`)
-            // match NOTHING. A `never()` arm's cell terminal-settles
-            // to ⊥ and rides the select union, and blind leaves answer
-            // plain `is_a` true for any value, so a first-match walk
-            // picked the blind member over its concrete sibling and
-            // printed the subtree naked (tuples rendered as arrays).
-            // Worse, HOW such a cell settles is MODE-dependent
-            // (fusion's binding checks bind cells the plain typecheck
-            // leaves open/⊥), so the same value rendered `(...)` under
-            // jit and `[...]` under interp (jul19f divergence_000000,
-            // pinned tval-union-blind-print-jul2026). The original fix
-            // tested informativeness only at the member's TOP level,
-            // which missed a cell nested inside an otherwise-concrete
-            // member — `Array<Array<[i64, ⊥]>>` claimed a tuple-typed
-            // value through its interior ⊥ (aug04f divergence_000000,
-            // pinned in the same family) — so the test is now the
-            // recursive `IsAFlags::Strict` walk. The plain-`is_a`
-            // fallback keeps the old behavior when no member matches
-            // strictly.
-            // the rule is `coretraits::union_member`, one pick for the
-            // printer and the value seam's consumers alike
+            // Member selection is `coretraits::union_member`: the first
+            // strict match (blind leaves match nothing), else plain is_a.
             (Type::Set(ts), v) => {
                 match crate::node::coretraits::union_member(&self.env, ts, v) {
                     None => fmt_naked(f, v),
@@ -300,9 +260,7 @@ mod test {
         }
     }
 
-    // A cons-style chain nests one VALUE level per element; the old
-    // recursive walker overflowed the stack at ~2k levels (jul17a
-    // crash_000003). The iterative walker must not care about depth.
+    // Printing must not recurse on value depth.
     #[test]
     fn deep_value_prints_iteratively() {
         let mut v = Value::I64(0);

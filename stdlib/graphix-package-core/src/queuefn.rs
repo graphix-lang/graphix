@@ -20,10 +20,8 @@ use crate::{seam_tick, seam_value};
 #[derive(Debug)]
 struct QueueEntry {
     /// The (BindId, Value) pairs for the args that fired in the originating
-    /// cycle. On dispatch, only these bids are written via `ctx.rt.set_var`;
-    /// args that did not fire then are not re-fired now. This matches normal
-    /// call site semantics where pred sees only the args that actually
-    /// updated this cycle.
+    /// cycle; on dispatch only these are written, so pred sees only the
+    /// args that actually updated.
     updates: LPooled<Vec<(BindId, Value)>>,
 }
 
@@ -146,9 +144,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The invocation queue in `state` is semantic (queued calls
-        // must survive anything short of sleep); only the compiled
-        // pred's internal caches are replay memory.
+        // Queued calls survive anything short of sleep.
         self.pred.reset_replay(ctx);
     }
 }
@@ -171,8 +167,7 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
     top_id: ExprId,
     scope: Scope,
     out: TagValue,
-    /// `fn() ->` makes the PhantomData unconditionally Send + Sync, which we
-    /// need because the trait bound on Apply doesn't propagate to R/E.
+    /// `fn() ->` makes the PhantomData unconditionally Send + Sync.
     _phantom: PhantomData<fn() -> (R, E)>,
 }
 
@@ -255,9 +250,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         let env = ctx.env.clone();
         let def = LambdaDef {
             id,
-            // Synthetic wrapper — no source lambda exists. The src is
-            // only an id-free display/comparison identity (the
-            // differential oracle's fn-value normalization).
+            // Synthetic wrapper: no source lambda exists.
             src: literal!("queuefn"),
             env,
             scope: self.scope.clone(),
@@ -265,13 +258,8 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             typ: ftyp,
             init,
             check: Mutex::new(None),
-            // queuefn wraps a function in queue-based dispatch — each
-            // call queues the predicate and dispatches across cycles.
-            // The wrapper lambda is intrinsically async.
             intrinsic_effect: Mutex::new(EffectKind::Async),
             stateless: std::sync::atomic::AtomicBool::new(false),
-            // A queuefn wrapper is never self-recursive (it dispatches a
-            // foreign predicate), so the analysis pass never marks it.
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: self.top_id,
         };
@@ -327,15 +315,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         if let Some(tv) = seam_value(from[2].update(ctx, event)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
-            // `resolved` is a typecheck-time artifact; a lazily-built
-            // instance (an analysis-pred per-slot clone whose swallowed
-            // typecheck died upstream) never had one. The runtime `f`
-            // VALUE carries its own LambdaDef — the signature queuefn
-            // is wrapping — so derive the wrapper type from it
-            // (fresh-cell snapshot; the def's cells stay untouched).
-            // Without this the first `qf(..)` call received a
-            // `QueueFnErr` VALUE where the static type promises a
-            // function — soak jul09c fuzz 000003 killed the runtime.
+            // A lazily-built instance never saw typecheck1; the runtime
+            // `f` value carries the LambdaDef to derive the type from.
             if self.ftyp.is_none() {
                 if let Some(def) = v.downcast_ref::<LambdaDef<R, E>>() {
                     self.ftyp = Some(Arc::new(def.typ.reset_tvars()));
@@ -411,10 +392,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         s.last_written_depth = 0;
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The queue is semantic buffering (async delivery) — sleep's
-        // clearing is the arm-rewake restart, not a frame reset.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 fn build_wrapper_apply<R: Rt, E: UserEvent>(

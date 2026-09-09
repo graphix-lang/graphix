@@ -1,20 +1,9 @@
-//! Source A — fixture/seed mutation.
-//!
-//! Parse a seed expression, apply 1..=N structural mutations to its AST,
-//! pretty-print back to text, and hand it to the differential oracle.
-//! Three mutations, all type-blind (the oracle's compile step is the
-//! validity filter — see the mutate-deep loop):
-//!   - **transplant**: replace a random subtree with a subtree from a
-//!     donor seed. High structural novelty — the "mash up two fixtures to
-//!     create a novel interaction" idea. Type-blind, so most results
-//!     don't typecheck, but the survivors are exactly the interaction-
-//!     rich programs where bugs live.
-//!   - **swap_binop**: change a binary operator within its class
-//!     (arith/checked/cmp/bool). Type-preserving.
-//!   - **perturb_literal**: change a numeric/bool literal toward an edge
-//!     value (0, ±1, MIN/MAX, inf, NaN). Exercises overflow / float edges.
-//!
-//! Determinism: a seeded xorshift RNG, so any run replays from its seed.
+//! Seed mutation: parse a seed, apply 1..=N type-blind structural
+//! mutations to its AST (transplant a donor subtree, swap a binary
+//! operator within its class, push a literal toward an edge value,
+//! create a shadowing rename, strip a type annotation), print it back
+//! and hand it to the oracle, whose compile step is the validity filter.
+//! The RNG is a seeded xorshift, so any run replays from its seed.
 
 use graphix_compiler::expr::{
     BindExpr, Expr, ExprKind, Origin, StructurePattern,
@@ -175,12 +164,8 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     Some(ExprKind::Constant(nv))
 }
 
-/// If `e` is a block with ≥2 simple (`let name = …`) binds, rename a
-/// later one to an earlier one's name — a targeted shadow-creating
-/// mutation. The 2026-07 audit's bug classes were all name-vs-identity
-/// confusions (shadowed lambda names, colliding locals); this steers
-/// seed programs into exactly those shapes. Type-blind (a rebind at a
-/// different type is legal); the oracle's compile step filters.
+/// If `e` is a block with ≥2 simple binds, rename a later one to an
+/// earlier one's name, creating a shadow. Type-blind.
 fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     let exprs = match &e.kind {
         ExprKind::Do { exprs } => exprs,
@@ -227,12 +212,9 @@ fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     Some(ExprKind::Do { exprs: aslice(new_exprs) })
 }
 
-/// If `e` is a lambda (or a bind of one), strip a type annotation: a
-/// random param constraint, the return type, or the bind's own
-/// annotation. An unannotated lambda is per-call-site polymorphic, so
-/// stripping a typed seed creates monomorphization pressure (the
-/// audit's bug-2 class: two instantiations of one lambda in one
-/// region). Type-blind; the oracle filters.
+/// If `e` is a lambda (or a bind of one), strip one type annotation:
+/// a param constraint, the return type, or the bind's annotation.
+/// Type-blind.
 fn try_strip_annotation(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     match &e.kind {
         ExprKind::Bind(b) if b.typ.is_some() && rng.below(2) == 0 => {
@@ -278,8 +260,6 @@ pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
         v
     };
     let total = nodes.len();
-    // Try a few targets to find one a local mutation applies to; fall
-    // back to transplant (which applies anywhere).
     for _ in 0..4 {
         let target = rng.below(total);
         let node = &nodes[target];
@@ -296,7 +276,6 @@ pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
             return replace_at(prog, target, &mut ctr, &repl);
         }
     }
-    // Transplant: replace a random subtree with a donor subtree.
     let target = rng.below(total);
     let donor = if donor_nodes.is_empty() {
         nodes[rng.below(total)].clone()
@@ -307,10 +286,9 @@ pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
     replace_at(prog, target, &mut ctr, &donor)
 }
 
-/// Parse `seed`, apply 1..=`max_muts` mutations, return the mutated
-/// program as text. Each intermediate must still PARSE (syntactic
-/// validity); type validity is the oracle's job. `None` if the seed
-/// itself doesn't parse.
+/// Parse `seed`, apply 1..=`max_muts` mutations and return the mutated
+/// text. Every intermediate must still parse; type validity is the
+/// oracle's job. `None` if the seed itself doesn't parse.
 pub fn mutate_program(
     seed: &str,
     donor_nodes: &[Expr],
@@ -339,15 +317,10 @@ pub fn mutate_program(
     Some(expr.to_string())
 }
 
-/// Wrapper-aware mutation (Phase 3): split any schedule header off
-/// FIRST — the AST round-trip drops comments, so parsing the raw
-/// wrapper would silently strip the schedule and every mutant of a
-/// reactive seed would degenerate to single-burst. The body mutates
-/// through [`mutate_program`] as before; when the seed carries a
-/// schedule, an M3 SCHEDULE op fires with its own probability —
-/// sometimes alongside a body mutation, sometimes alone (values
-/// pushed toward edges, epochs dropped/duplicated/swapped/extended).
-/// Headerless seeds behave exactly as before.
+/// Wrapper-aware mutation: the schedule header, callable header and file
+/// sections are split off before the AST round-trip (which drops
+/// comments) and reattached verbatim; only the main body mutates. A
+/// scheduled seed may also get a schedule op, alone or alongside.
 pub fn mutate_wrapper(
     seed: &str,
     donor_nodes: &[Expr],
@@ -355,13 +328,7 @@ pub fn mutate_wrapper(
     max_muts: usize,
 ) -> Option<String> {
     let (mut sched, body) = crate::schedule::Schedule::parse(seed).ok()?;
-    // The callable header is wrapper DATA like the schedule's — split
-    // it off before the AST round-trip and reattach verbatim.
     let (cspec, body_owned) = crate::callable::CallSpec::parse(body).ok()?;
-    // File sections split off before the AST round-trip (which drops
-    // comment lines — the markers are wrapper DATA, like the schedule
-    // header) and ride through unchanged: only the MAIN body mutates.
-    // Mutating module internals is a possible future M-op.
     let (body, files) = crate::files::split(&body_owned).ok()?;
     let sched_op = !sched.epochs.is_empty() && rng.below(100) < 40;
     let body_only_keep = sched_op && rng.below(100) < 50;
@@ -380,16 +347,12 @@ pub fn mutate_wrapper(
     })
 }
 
-/// One M3 schedule op. Epoch structure stays valid by construction
-/// (never an empty epoch; dropping the last epoch yields the empty
-/// schedule, which renders headerless). Caps are left alone — they're
-/// the trace budgets, and shrinking them is the minimizer's business,
-/// not a bug-finding move.
+/// One schedule op. Epoch structure stays valid by construction; caps
+/// are left alone (shrinking them is the minimizer's business).
 fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
     use netidx::publisher::Value;
     let n = s.epochs.len();
     match rng.below(5) {
-        // Perturb one injection toward an edge value.
         0 => {
             let i = rng.below(n);
             let m = s.epochs[i].len();
@@ -411,26 +374,21 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
                 other => other.clone(),
             };
         }
-        // Drop an epoch.
         1 => {
             s.epochs.remove(rng.below(n));
         }
-        // Duplicate an epoch in place (same values twice — the
-        // classic same-length-source / unchanged-selection firing
-        // provocation).
+        // duplicate an epoch in place
         2 => {
             let i = rng.below(n);
             let ep = s.epochs[i].clone();
             s.epochs.insert(i, ep);
         }
-        // Swap adjacent epochs.
         3 => {
             if n >= 2 {
                 let i = rng.below(n - 1);
                 s.epochs.swap(i, i + 1);
             }
         }
-        // Append a perturbed copy of the last epoch.
         _ => {
             if let Some(last) = s.epochs.last().cloned() {
                 s.epochs.push(last);
@@ -448,13 +406,10 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
     }
 }
 
-/// Build the transplant donor pool: every subtree of every seed.
 /// AST shape signature for ring admission: an order-independent hash
-/// over (node-kind discriminant, child arity) pairs, plus the node
-/// count and whether the tree contains a construct worth breeding from
-/// (a lambda, select, or application). Splits any schedule header /
-/// file sections off first, exactly like [`mutate_wrapper`]. `None` =
-/// unparseable (never admitted).
+/// over (node kind, child arity) pairs, the node count, and whether the
+/// tree contains a lambda, select or application. Headers and file
+/// sections are split off first. `None` = unparseable.
 pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
     let (_, body) = crate::schedule::Schedule::parse(prog).ok()?;
     let (body, _) = crate::files::split(body).ok()?;
@@ -476,8 +431,7 @@ pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
         let mut h = ahash::AHasher::default();
         std::mem::discriminant(&e.kind).hash(&mut h);
         arity.hash(&mut h);
-        // Multiset sum: order-independent, so a pure statement shuffle
-        // isn't "novel" — only new construct/arity combinations are.
+        // order-independent, so a statement shuffle is not novel
         *sig = sig.wrapping_add(h.finish());
         e.for_each_child(&mut |c| walk(c, sig, nodes, interesting));
     }
@@ -494,8 +448,6 @@ pub fn donor_pool(seeds: &[&str]) -> Vec<Expr> {
     }
     pool
 }
-
-// ── minimization support (used by the typed-AST reducer in `lib`) ──
 
 /// Parse an expression, or `None` if it doesn't parse.
 pub fn parse(s: &str) -> Option<Expr> {
@@ -580,16 +532,9 @@ pub fn reductions_all(prog: &Expr) -> Vec<Vec<Expr>> {
 /// in the block, the statement's OWN preorder index)`. Blocks with one
 /// statement are skipped — dropping it empties the block.
 ///
-/// The statement drop is the operator that does the work on generated
-/// programs. They are long runs of interdependent `let`s, and the only
-/// thing [`reductions_all`] can do to such a run is hoist one child of
-/// the block, collapsing the whole run to a single statement — a
-/// candidate that essentially never survives. Dropping one statement at
-/// a time walks the run down instead. Keying each drop by the
-/// STATEMENT's index (not the block's) is what lets a whole round of
-/// them apply at once: statements are disjoint, so N drops found in one
-/// scan compose, where N edits keyed at the shared block would all
-/// claim the same subtree.
+///
+/// Drops are keyed by the STATEMENT's preorder index, not the block's,
+/// so a whole round of them composes: statements are disjoint.
 pub fn statements(e: &Expr) -> Vec<(usize, usize, usize)> {
     let mut out = Vec::new();
     let mut ctr = 0;
@@ -603,8 +548,6 @@ fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>
     if let ExprKind::Do { exprs } = &e.kind
         && exprs.len() >= 2
     {
-        // `Expr::for_each_child` visits a block's statements in order, so
-        // their preorder indices run consecutively from `here + 1`.
         let mut idx = here + 1;
         for (pos, c) in exprs.iter().enumerate() {
             out.push((here, pos, idx));
@@ -646,10 +589,8 @@ mod test {
         v
     }
 
-    /// The reducer's whole disjointness argument rests on `sizes[i]`
-    /// being the extent of node `i` in the SAME preorder `replace` and
-    /// `statements` index by — a drift here silently composes
-    /// overlapping reductions.
+    /// `sizes[i]` must be the extent of node `i` in the same preorder
+    /// `replace` and `statements` index by.
     #[test]
     fn sizes_are_preorder_extents() {
         let e = parse(PROG).unwrap();
@@ -678,8 +619,6 @@ mod test {
             assert_eq!(exprs[pos].to_string(), nodes[stmt].to_string());
             let mut want: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
             want.remove(pos);
-            // Dropping a statement can't move its own block: the
-            // block's children come after it in preorder.
             let after = preorder(&drop_statement(&e, block, pos));
             let ExprKind::Do { exprs } = &after[block].kind else { panic!() };
             let got: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
@@ -693,8 +632,7 @@ mod test {
         let e = parse_items(src).unwrap();
         assert!(matches!(&e.kind, ExprKind::Do { exprs } if exprs.len() == 3));
         assert!(parse_items(&render_items(&e)).is_some());
-        // A section is rendered BARE — block braces would not be a
-        // module file, and the section text is spliced back verbatim.
+        // a section renders bare: no block braces
         assert!(!render_items(&e).starts_with('{'));
         let dropped = render_items(&drop_statement(&e, 0, 1));
         assert!(!dropped.contains("|x: i64|"));

@@ -22,8 +22,7 @@ use triomphe::Arc;
 
 /// One trait item: `val name: fn(self, ..) -> T` with an optional
 /// `= default` body. The signature must be a function type with a
-/// positional `self` parameter — that parameter's type is what selects
-/// the implementation at a call.
+/// positional `self` parameter.
 fn trait_method<I>() -> impl Parser<I, Output = TraitMethod>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -111,9 +110,8 @@ where
         )),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),
-        // the body is optional, and a following `{` may belong to an
-        // enclosing form (`select impl T for X { arms }`): commit only
-        // once it reads as a method block
+        // A following `{` may belong to an enclosing form: commit only
+        // once it reads as a method block.
         spaces().with(optional(attempt(between(
             token('{'),
             sptoken('}'),

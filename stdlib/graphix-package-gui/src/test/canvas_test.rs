@@ -12,8 +12,6 @@ async fn canvas_harness(shapes_expr: &str) -> Result<GuiTestHarness> {
     GuiTestHarness::new(&code).await
 }
 
-// ── Line ────────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn line_renders() -> Result<()> {
     let h = canvas_harness(concat!(
@@ -24,8 +22,6 @@ async fn line_renders() -> Result<()> {
     let _ = h.view();
     Ok(())
 }
-
-// ── Circle ──────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
 async fn circle_with_fill_only() -> Result<()> {
@@ -71,8 +67,6 @@ async fn circle_with_neither() -> Result<()> {
     Ok(())
 }
 
-// ── Rect ────────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn rect_with_fill() -> Result<()> {
     let h = canvas_harness(concat!(
@@ -97,8 +91,6 @@ async fn rect_with_stroke() -> Result<()> {
     Ok(())
 }
 
-// ── Text ────────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "current_thread")]
 async fn text_renders() -> Result<()> {
     let h = canvas_harness(concat!(
@@ -110,8 +102,6 @@ async fn text_renders() -> Result<()> {
     Ok(())
 }
 
-// ── Error cases (from_value unit tests) ─────────────────────────────
-
 #[test]
 fn invalid_tag_errors() {
     let v: Value = (ArcStr::from("Hexagon"), Value::Null).into();
@@ -120,7 +110,6 @@ fn invalid_tag_errors() {
 
 #[test]
 fn malformed_line_errors() {
-    // Wrong number of fields
     let payload: Value = [(ArcStr::from("color"), Value::Null)].into();
     let v: Value = (ArcStr::from("Line"), payload).into();
     assert!(CanvasShape::from_value(v).is_err());

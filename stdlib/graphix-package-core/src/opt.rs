@@ -11,8 +11,6 @@ use netidx_value::{ValArray, Value};
 
 use crate::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
 
-// ── Predicates ─────────────────────────────────────────────────────
-
 fn fc_is_some(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Null => Some(Value::Bool(false)),
@@ -73,8 +71,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
 
 pub(crate) type Contains = CachedArgs<ContainsEv>;
 
-// ── Unwrapping / defaults ──────────────────────────────────────────
-
 fn fc_or_never(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Null => None,
@@ -113,8 +109,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrDefaultEv {
 }
 
 pub(crate) type OrDefault = CachedArgs<OrDefaultEv>;
-
-// ── Binary combinators ─────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct OrEv;
@@ -179,8 +173,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
 
 pub(crate) type Xor = CachedArgs<XorEv>;
 
-// ── Structural ─────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct ZipEv;
 
@@ -227,8 +219,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
 
 pub(crate) type Unzip = CachedArgs<UnzipEv>;
 
-// ── Conversion to Result ───────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct OkOrEv;
 
@@ -247,21 +237,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
 
 pub(crate) type OkOr = CachedArgs<OkOrEv>;
 
-// ── Higher-order combinators ───────────────────────────────────────
-//
-// These follow the same shape as `core::filter` (see `lib.rs` Filter)
-// but without its `VecDeque` queue. Each input update is fed into the
-// callback's argument binding `x` and `self.inner` (the callsite node
-// for `f(x)`) is driven to produce an output. When a new input arrives
-// while an earlier callback is still in flight, the new value simply
-// overwrites `x`, superseding the pending computation (latest-wins).
-// This avoids unbounded memory growth when a user callback never
-// returns — the explicit `core::queue` / `core::hold` operators are
-// available for users who want ordered async behavior.
-
 /// Shared state for HOFs that feed the option's inner value into a
-/// unary callback (`map`, `flat_map`, `filter`, `is_some_and`,
-/// `is_none_or`).
+/// unary callback. Latest-wins: a new input while the callback is in
+/// flight overwrites `x`; wrap with `queue` for ordered delivery.
 #[derive(Debug)]
 struct HofState<R: Rt, E: UserEvent> {
     inner: Node<R, E>,
@@ -313,13 +291,10 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         event.variables.insert(self.x, TagValue::tagged(v, tag));
     }
 
-    /// Standard fire-and-forget tick used by map/flat_map/is_some_and/
-    /// is_none_or: a null input emits `on_null` directly without
-    /// invoking the callback; a non-null input is fed into `x` and the
-    /// callback's output (whenever it arrives) becomes the result.
-    /// `direct.or(inner)` is `direct` first because in the same cycle
-    /// both can produce, and the direct branch is always for the input
-    /// we just consumed.
+    /// A null input emits `on_null` without invoking the callback; a
+    /// non-null input is fed into `x` and the callback's output becomes
+    /// the result. `direct` wins over `inner` when both produce in one
+    /// cycle: it is always for the input just consumed.
     fn tick_unary(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -331,10 +306,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         let direct = match seam_value(from[0].update(ctx, event)) {
             Some(tv) => {
                 let tag = tv.tag();
-                // the null branch DRIVES an emission, so under the
-                // open gate it must be an event — a stale null is
-                // quiet (the republish branch is value-plane and rides
-                // the honest tag instead)
+                // Only a fired null emits; a stale null is quiet.
                 let drives = tv.is_fired();
                 match tv.value_cloned() {
                     Value::Null if drives => Some(on_null),
@@ -357,8 +329,6 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The published callback/element values are per-invocation
-        // replay memory (same ids `delete` removes).
         self.inner.reset_replay(ctx);
     }
 
@@ -377,8 +347,6 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.typecheck0(ctx)
     }
 }
-
-// ── map ────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct OptMap<R: Rt, E: UserEvent> {
@@ -447,8 +415,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
     }
 }
 
-// ── flat_map ───────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
@@ -516,13 +482,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
     }
 }
 
-// ── filter ─────────────────────────────────────────────────────────
-//
-// We need to remember the value fed into `x` so that when `pred`
-// eventually produces its bool, we can emit the original `x` on
-// `true`. Latest-wins: a newer non-null input overwrites the cached
-// value the same way it overwrites `x` itself.
-
 #[derive(Debug)]
 pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
@@ -565,10 +524,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         let direct = match seam_value(from[0].update(ctx, event)) {
             Some(tv) => {
                 let tag = tv.tag();
-                // as in tick_unary: the null branch drives an
-                // emission, so under the open gate it requires an
-                // event — a stale null neither emits nor clears the
-                // pending latch
+                // A stale null neither emits nor clears the pending latch.
                 let drives = tv.is_fired();
                 match tv.value_cloned() {
                     Value::Null if drives => {
@@ -622,8 +578,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         self.s.reset_replay(ctx);
     }
 }
-
-// ── is_some_and ────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
@@ -692,8 +646,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
     }
 }
 
-// ── is_none_or ─────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
     s: HofState<R, E>,
@@ -761,15 +713,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
     }
 }
 
-// ── or_else / ok_or_else ───────────────────────────────────────────
-//
-// These take a nullary callback `f`. We always drive `f` so its latest
-// result is cached and available whenever a null input arrives. For
-// pure `f`s this means one initial evaluation; for reactive `f`s the
-// cache tracks the latest value from `f`. We also cache `a`'s latest
-// value so a new emission from `f` can be resolved against the current
-// `a`.
-
 #[derive(Debug)]
 struct OrElseShared<R: Rt, E: UserEvent> {
     inner: Node<R, E>,
@@ -796,9 +739,9 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         Ok(Self { inner, fid, last_a: None, last_f: None })
     }
 
-    /// Run the update plumbing shared by or_else / ok_or_else. Returns
-    /// `(a_updated, f_updated)`: whether `a` or `f()` produced a new
-    /// value on this cycle.
+    /// Returns `(a_updated, f_updated)`: whether `a` or `f()` fired
+    /// this cycle. `f` is always driven so its latest result is cached
+    /// for the next null `a`.
     fn tick(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -811,9 +754,8 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
             event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        // the latches are value-plane (a stale delivery refreshes
-        // them); the returned flags DRIVE emission, so under the open
-        // gate they require an event
+        // A stale delivery refreshes the latches but does not drive
+        // an emission.
         let a_updated = if let Some(a) = seam_value(from[0].update(ctx, event)) {
             self.last_a = Some(a.value_cloned());
             a.is_fired()
@@ -892,11 +834,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         event: &mut Event<E>,
     ) -> &TagValue {
         let (a_up, f_up) = self.s.tick(ctx, from, event);
-        // a non-null always emits a
-        // a null with cached f emits that f
-        // f update while a is null emits the new f
-        // a null without cached f stays silent — we have nothing to emit
-        // until f produces, at which point the f_up arm below fires
         let res = if a_up {
             match &self.s.last_a {
                 Some(Value::Null) => self.s.last_f.clone(),
@@ -979,7 +916,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         let wrap_err = |e: Value| Value::Error(e.into());
         let res = if a_up {
             match &self.s.last_a {
-                // a null without cached f stays silent until f produces.
                 Some(Value::Null) => self.s.last_f.clone().map(wrap_err),
                 Some(v) => Some(v.clone()),
                 None => None,

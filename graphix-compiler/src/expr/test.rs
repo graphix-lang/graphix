@@ -39,19 +39,16 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
     any::<String>().prop_map(ArcStr::from)
 }
 
-/// `#[name]` / `#[name(arg, ..)]`. The args are leaves rather than full
-/// expressions: an arg prints through `Display for Expr`, so a decorated
-/// one would put a comment line inside the brackets, and the recursion
-/// would have to be threaded through every caller of `decorations`.
+/// `#[name]` / `#[name(arg, ..)]`. The args are leaves: a decorated arg
+/// would print a comment line inside the brackets.
 fn attr() -> impl Strategy<Value = Attr> {
     (random_fname(), collection::vec(prop_oneof![constant(), reference()], 0..3))
         .prop_map(|(name, args)| Attr { name, args: Arc::from_iter(args) })
 }
 
 /// The `//` comment lines and `#[..]` attributes an expression can carry.
-/// Comment text is any run short of a newline that does not open with `/`
-/// (that would read back as a `///` doc comment). `None` when there are
-/// none of either, as the parser leaves an undecorated expression.
+/// Comment text must not open with `/` (that reads back as `///`). `None`
+/// when there are none of either.
 fn decorations() -> impl Strategy<Value = Option<Box<Decorations>>> {
     let comment = "[ a-zA-Z0-9_,.!?*-]{0,24}".prop_map(ArcStr::from);
     (collection::vec(comment, 0..3), collection::vec(attr(), 0..2)).prop_map(
@@ -68,12 +65,9 @@ fn decorations() -> impl Strategy<Value = Option<Box<Decorations>>> {
     )
 }
 
-/// `inner` with decorations above it. Legal ONLY where the parser
-/// captures decorations — an expression position (a block item, a call
-/// argument, the top level) or one of the heads that hand them to the
-/// expression below (a select arm, an impl method, a struct field).
-/// Decorating an operand (`1 + <decorated>`) would be an interior comment,
-/// a parse error by design.
+/// `inner` with decorations above it. Legal only where the parser captures
+/// decorations: an expression position or a select arm, impl method or
+/// struct field head. Decorating an operand is a parse error.
 fn decorated(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> {
     (inner, decorations()).prop_map(|(mut e, dec)| {
         e.dec = dec;
@@ -182,9 +176,8 @@ fn valid_fname() -> impl Strategy<Value = ArcStr> {
         Just(ArcStr::from("sigs")),
         Just(ArcStr::from("as_thing")),
         Just(ArcStr::from("if_thing")),
-        // type keywords are legal BINDING names (2026-08-18) — mix
-        // them into every name pool so the round trip hunts for
-        // positions we missed
+        // Type keywords are legal binding names; mix them into every name
+        // pool.
         Just(ArcStr::from("duration")),
         Just(ArcStr::from("string")),
         Just(ArcStr::from("i64")),
@@ -199,9 +192,8 @@ fn random_fname() -> impl Strategy<Value = ArcStr> {
     prop_oneof![random_modpart().prop_map(ArcStr::from), valid_fname()]
 }
 
-/// Struct FIELD names may be reserved words (2026-08-18) — mix keywords
-/// in so the round trip exercises the relaxed grammar. Binding and type
-/// names stay `random_fname`.
+/// Struct field names may be reserved words; binding and type names stay
+/// `random_fname`.
 fn field_name() -> impl Strategy<Value = ArcStr> {
     prop_oneof![
         random_fname(),
@@ -214,7 +206,7 @@ fn field_name() -> impl Strategy<Value = ArcStr> {
         Just(ArcStr::from("datetime")),
         Just(ArcStr::from("select")),
         Just(ArcStr::from("cast")),
-        // field-only: `bytes` can't bind (base64-payload ambiguity)
+        // `bytes` is field-only: it cannot bind.
         Just(ArcStr::from("bytes")),
     ]
 }
@@ -223,8 +215,8 @@ fn tvar() -> impl Strategy<Value = TVar> {
     random_fname().prop_map(|n| TVar::empty_named(n))
 }
 
-/// Optional keyword ROOT (`self`/`package`/a `super` chain) — legal
-/// leading-only, in expression, connect, sandbox, and type paths alike.
+/// Optional keyword root (`self`/`package`/a `super` chain), legal
+/// leading-only.
 fn path_lead() -> impl Strategy<Value = Vec<String>> {
     prop_oneof![
         6 => Just(Vec::new()),
@@ -235,9 +227,8 @@ fn path_lead() -> impl Strategy<Value = Vec<String>> {
 }
 
 fn random_modpath() -> impl Strategy<Value = ModPath> {
-    // `self` is special inside use groups (the enclosing prefix), so a
-    // literal `self` segment would print/reparse asymmetrically —
-    // keyword roots come only from `path_lead`.
+    // `self` inside a use group means the enclosing prefix, so keyword
+    // roots come only from `path_lead`.
     let segs = collection::vec(
         random_modpart().prop_filter("self is special in use", |s| s != "self"),
         (1, 5),
@@ -396,8 +387,8 @@ fn typexp() -> impl Strategy<Value = Type> {
                         rtype,
                         throws,
                         explicit_throws,
-                        // one quantifier per NAME, like the parser
-                        // (`fn<'a: A, 'a: B>` is one variable, two conjuncts)
+                        // One quantifier per name: `fn<'a: A, 'a: B>` is one
+                        // variable, two conjuncts.
                         quantifiers: {
                             let mut names: Vec<ArcStr> = Vec::new();
                             for (a, _) in constraints.iter() {
@@ -409,13 +400,10 @@ fn typexp() -> impl Strategy<Value = Type> {
                         },
                         ..Default::default()
                     };
-                    // Mirror the parser: quantifier constraints seed
-                    // CELLS after aliasing same-named signature
-                    // leaves onto the quantifier tvars (phase C — the
-                    // cells are the only store). Orphan quantifiers
-                    // (names not reachable from the signature) are
-                    // invisible to `constraint_view` on BOTH sides of
-                    // the round trip, so equality still holds.
+                    // Like the parser: alias same-named signature leaves onto
+                    // the quantifier tvars, then seed the cells. Orphan
+                    // quantifiers are invisible to `constraint_view` on both
+                    // sides.
                     {
                         let mut known: ahash::AHashMap<ArcStr, TVar> =
                             ahash::AHashMap::default();
@@ -428,14 +416,8 @@ fn typexp() -> impl Strategy<Value = Type> {
                         }
                         ft.alias_tvars(&mut known);
                         for (tv, tc) in pairs {
-                            // The parser aliases the constraint TYPE's
-                            // interior too (typexp.rs fntype builder):
-                            // a same-named tvar inside the conjunct IS
-                            // the quantifier (one name, one cell per
-                            // scope). Without this the generator minted
-                            // a distinct interior cell the printed text
-                            // can't express, and reparse aliased it —
-                            // view mismatch (trip3 at 24k cases).
+                            // A same-named tvar inside the conjunct is the
+                            // quantifier, as in the parser.
                             tc.alias_tvars(&mut known);
                             tv.add_cell_constraint(tc);
                         }
@@ -527,9 +509,7 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                     head,
                     suffix: Arc::from_iter(s)
                 }),
-            // Or is FLAT: an alternative is never itself an Or (the
-            // printer emits no parens, so a nested Or would reparse
-            // flat and break the round trip).
+            // Or is flat: an alternative is never itself an Or.
             collection::vec(
                 inner.clone().prop_filter("no nested or in or", |p| {
                     !matches!(p, StructurePattern::Or(_))
@@ -542,8 +522,7 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
 }
 
 /// The strategy for irrefutable top-level positions (`let`, lambda
-/// params): everything but a top-level `Or`, which those positions
-/// refuse at parse (select-arm-only).
+/// params): everything but a top-level `Or`.
 fn structure_pattern_no_or() -> impl Strategy<Value = StructurePattern> {
     structure_pattern()
         .prop_filter("or is select-arm-only", |p| !matches!(p, StructurePattern::Or(_)))
@@ -568,9 +547,8 @@ fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
         .to_expr_nopos()
 }
 
-/// One use item across the whole grammar space: optional keyword lead
-/// (`self`/`package`/`super` chain), plain segments, an optional final
-/// glob, an optional rename (never on a glob — the parser refuses it).
+/// One use item: optional keyword lead, plain segments, an optional final
+/// glob, an optional rename (never on a glob).
 fn use_item() -> impl Strategy<Value = UseItem> {
     let lead = prop_oneof![
         4 => Just(Vec::new()),
@@ -579,8 +557,8 @@ fn use_item() -> impl Strategy<Value = UseItem> {
         1 => (1..3usize).prop_map(|n| vec![ArcStr::from("super"); n]),
     ];
     let glob = prop_oneof![4 => Just(false), 1 => Just(true)];
-    // the TERMINAL segment (and a rename target) may be a type name —
-    // uppercase; interior segments are modules (lowercase)
+    // The terminal segment and a rename target may be uppercase; interior
+    // segments are modules.
     let upper = prop_oneof![
         Just(ArcStr::from("Client")),
         Just(ArcStr::from("T0")),
@@ -626,8 +604,7 @@ fn typedef() -> impl Strategy<Value = Expr> {
     )
 }
 
-/// A trait method signature: `fn(self, x: T, ..) -> R` — the receiver
-/// first, typed by the `self` variable.
+/// A trait method signature: `fn(self, x: T, ..) -> R`.
 fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
     (collection::vec((random_fname(), typexp()), 0..3), typexp()).prop_map(
         |(args, rtype)| {
@@ -646,8 +623,8 @@ fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
                 explicit_throws: false,
                 ..Default::default()
             };
-            // mirror the parser: same-named leaves of one signature share
-            // one cell (see typexp()'s fn-type arm)
+            // Same-named leaves of one signature share one cell, as in the
+            // parser.
             ft.alias_tvars(&mut ahash::AHashMap::default());
             Arc::new(ft)
         },
@@ -848,8 +825,7 @@ macro_rules! until_stmt {
 }
 
 // A seq statement: `until`, `do { until | expr }`, `try { .. }
-// with(e[: T]) { .. }`, or an expression. Only legal in seq bodies
-// (and try/with bodies), which is where the generator places them.
+// with(e[: T]) { .. }`, or an expression.
 macro_rules! seq_item {
     ($inner:expr) => {
         prop_oneof![
@@ -1266,8 +1242,8 @@ fn module() -> impl Strategy<Value = Expr> {
     })
 }
 
-/// Returns the precedence of an expression if it's a binary operator.
-/// Higher values bind tighter. Returns None for non-binary-op expressions.
+/// The precedence of a binary-operator expression (higher binds tighter);
+/// `None` otherwise.
 fn binop_precedence(e: &ExprKind) -> Option<u8> {
     use parser::arithexp::precedence;
     let op = match e {
@@ -1296,20 +1272,16 @@ fn binop_precedence(e: &ExprKind) -> Option<u8> {
     Some(precedence(op).0)
 }
 
-/// Prefix-unary operators (`!`, `*`, `&`, `-`) bind tighter than every binary
-/// operator; this is the `parent_prec` they pass to `maybe_paren_lhs`.
+/// Prefix-unary operators bind tighter than every binary operator.
 const UNARY_PREC: u8 = 255;
 
 fn paren(child: Expr) -> Expr {
     ExprKind::ExplicitParens(Arc::new(child)).to_expr_nopos()
 }
 
-/// Some children need parens regardless of left/right position. `Connect`
-/// (`name <- value`) binds looser than every operator, so it always needs them
-/// as an operand. Postfix `Qop` (`e?`) re-binds onto a prefix-unary parent's
-/// result (`*x?` is `(*x)?`, not `*(x?)`), so it needs them under a prefix
-/// unary only — under a binary operator it re-parses correctly without them.
-/// Returns `None` to defer to ordinary binary-operator precedence.
+/// Children that need parens regardless of position: `Connect` under any
+/// operator, `Qop` under a prefix unary (`*x?` is `(*x)?`). `None` defers
+/// to binary-operator precedence.
 fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
     match child {
         ExprKind::Connect { .. } => Some(true),
@@ -1318,7 +1290,7 @@ fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
     }
 }
 
-/// Wraps a left child in ExplicitParens if it has lower precedence than the parent.
+/// Parenthesize a left child of lower precedence than the parent.
 fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
     let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
         binop_precedence(&child.kind).is_some_and(|p| p < parent_prec)
@@ -1326,9 +1298,8 @@ fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
     if needs { paren(child) } else { child }
 }
 
-/// Wraps a right child in ExplicitParens if it has lower or equal precedence than the parent.
-/// Equal precedence needs parens on the right because all operators are left-associative:
-/// `a - b - c` parses as `(a - b) - c`, so `Sub(a, Sub(b, c))` must print as `a - (b - c)`.
+/// Parenthesize a right child of lower or equal precedence than the parent;
+/// all operators are left-associative.
 fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
     let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
         binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec)
@@ -1336,9 +1307,8 @@ fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
     if needs { paren(child) } else { child }
 }
 
-/// Recursively adds ExplicitParens where needed to make the expression tree
-/// consistent with precedence rules. This ensures the round-trip test works
-/// for randomly generated expressions.
+/// Add the ExplicitParens a generated tree needs to reparse with the same
+/// shape.
 fn add_parens(mut e: Expr) -> Expr {
     use parser::arithexp::precedence;
     macro_rules! fix_binop {
@@ -1384,15 +1354,14 @@ fn add_parens(mut e: Expr) -> Expr {
         ExprKind::Neg(e) => {
             let inner = Arc::unwrap_or_clone(e);
             match &inner.kind {
-                // `-5` re-parses as the literal Constant(-5), not Neg(5), so
-                // a constant operand must be parenthesized to stay a Neg.
+                // `-5` re-parses as a constant, so a constant operand must be
+                // parenthesized to stay a Neg.
                 ExprKind::Constant(_) => ExprKind::Neg(Arc::new(
                     ExprKind::ExplicitParens(Arc::new(inner)).to_expr_nopos(),
                 )),
                 _ => ExprKind::Neg(Arc::new(maybe_paren_lhs(inner, 255))),
             }
         }
-        // For non-binop expressions, just return as-is
         other => other,
     };
     Expr { kind, id: e.id, ori: e.ori.clone(), pos: e.pos, dec: e.dec.take() }
@@ -2349,9 +2318,7 @@ mod tree_sitter_compat {
         None
     }
 
-    /// The editor query files are part of the grammar's contract: a
-    /// stale node name doesn't degrade one rule, it makes the whole
-    /// query fail to compile and the editor shows NO colors at all.
+    /// A stale node name makes a whole editor query fail to compile.
     #[test]
     fn queries_compile() {
         const QUERIES: [(&str, &str); 3] = [
@@ -2374,9 +2341,7 @@ mod tree_sitter_compat {
                 panic!("{name} does not compile against the grammar: {e}")
             }
         }
-        // The emacs mode embeds its queries in elisp instead of loading
-        // the files above (its captures are font-lock faces), so it rots
-        // separately and needs the same gate.
+        // The emacs mode embeds its queries in elisp, so it rots separately.
         let el = include_str!("../../../ide/editors/emacs/graphix-mode.el");
         let queries = emacs_queries(el);
         assert!(queries.len() > 10, "found only {} emacs queries", queries.len());
@@ -2387,9 +2352,8 @@ mod tree_sitter_compat {
         }
     }
 
-    /// The tree-sitter queries embedded in the emacs mode: each is the
-    /// form following a `:feature 'name` keyword — a quoted list, or a
-    /// string where the elisp reader would choke on a query operator.
+    /// The tree-sitter queries embedded in the emacs mode: the form after
+    /// each `:feature 'name` keyword, a quoted list or a string.
     fn emacs_queries(src: &str) -> Vec<(String, String)> {
         let mut res = vec![];
         let mut rest = src;
@@ -2398,7 +2362,6 @@ mod tree_sitter_compat {
             let end = rest.find(|c: char| !c.is_alphanumeric() && c != '-').unwrap();
             let feature = rest[..end].to_string();
             rest = &rest[end..];
-            // skip whitespace and comment lines to the query form
             loop {
                 rest = rest.trim_start();
                 if rest.starts_with(";;") {
@@ -2467,11 +2430,8 @@ mod tree_sitter_compat {
         }
     }
 
-    /// Attributes at every position the graphix parser captures a
-    /// decoration, and the shapes it admits: bare, args, args that are
-    /// themselves expressions. The proptest lane below generates
-    /// attributes too, but only over the expressions it builds — this
-    /// pins the syntax itself against the grammar.
+    /// Attributes at every position the parser captures a decoration, in
+    /// every shape it admits.
     #[test]
     fn ts_attributes_parse() {
         const SRCS: [&str; 6] = [
@@ -2487,9 +2447,7 @@ mod tree_sitter_compat {
         }
     }
 
-    /// An attribute is a node of its own, so an editor can color it —
-    /// if it were swallowed by the expression's extent there would be
-    /// nothing to match on.
+    /// An attribute is a node of its own, so an editor can color it.
     #[test]
     fn ts_attribute_is_a_node() {
         let mut parser = tree_sitter::Parser::new();
@@ -2551,12 +2509,8 @@ mod tree_sitter_compat {
     }
 }
 
-/// The `>]` list closer is one external terminal, distinct from the
-/// comparison `>` (admin-TUI campaign find, 2026-08-31): with the
-/// closer spelled `'>' + immediate ']'`, the shift/reduce choice at
-/// `2 • >` in `[<1 != 2>]` was resolved by static precedence toward
-/// the comparison, so any LAST element whose top operator binds
-/// looser than comparison (equality, &&, ||, ~) failed to parse.
+/// The `>]` list closer is one external terminal, so a last element whose
+/// top operator binds looser than comparison (`[<1 != 2>]`) parses.
 #[test]
 fn ts_list_closer_parses() {
     use tree_sitter_compat::find_probe_error;

@@ -22,12 +22,7 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
 }; graphix_package_core::testing::FuseExpect::Jit;
    shape: NodeShape::contains_fused(KernelMatcher::new()));
 
-// A composite literal with a value-shape (Duration) field. The
-// `compile_and_push_field` helper-selection already routed all six
-// value-shapes to the 2-register `push_value`, but the compile-dispatch
-// only handled Variant|Nullable — so a Duration/DateTime/Bytes/Map field
-// fell to the scalar arm, `.single()` Err'd, and the whole tuple silently
-// de-fused. Now both dispatches key on `is_value_shape()`, so this JITs.
+// A composite literal with a value-shape (Duration) field fuses.
 const TUPLE_DURATION_FIELD: &str = r#"
 {
   let t = (duration:1.s, 2);
@@ -42,16 +37,8 @@ run!(tuple_duration_field, TUPLE_DURATION_FIELD, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// A COMPUTED bool as a composite field. A total-order float comparison
-// lowers to `setcc`, which leaves the upper register bits dirty; the
-// result was pushed straight into the struct via
-// `graphix_value_buf_push_bool`, whose `i8` AbiParam carried no
-// ArgumentExtension. The `extern "C" fn(v: u8)` helper is compiled under
-// the C ABI's zeroext contract (it may read the full register), so
-// `v != 0` saw the garbage and returned `true` for a `false` comparison —
-// {x: false} node-walk vs {x: true} jit. A CONST bool folds to a clean
-// `iconst`, so only computed comparisons in composites diverged. Fixed by
-// uext/sext on the narrow-int helper params (helper_signature, soak jul06).
+// A computed bool as a composite field: a total-order float comparison
+// pushed into a struct reads false, not garbage.
 const STRUCT_COMPUTED_BOOL_FIELD: &str = r#"
 { x: f64:0.1 < f64:0.1 }
 "#;
@@ -74,7 +61,7 @@ const TUPLES1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args
+// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
@@ -90,7 +77,7 @@ const TUPLES2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args
+// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(tuples2, TUPLES2, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
@@ -149,7 +136,7 @@ const BINDSTRUCT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — blocked on: composite/value cross-kernel call args
+// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
@@ -188,10 +175,7 @@ const STRUCTWITH1: &str = r#"
 }
 "#;
 
-// `emit_struct_with_node` fuses the whole update, including copying the
-// unchanged `string` field `foo` via `compile_element_read` +
-// `push_field` (`graphix_struct_get_arcstr`) — the old composite-with-
-// string cliff is gone.
+// A struct-with copying an unchanged `string` field fuses.
 run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
     Ok(Value::F64(85.0)) => true,
     _ => false,
@@ -205,8 +189,7 @@ const STRUCTWITH2: &str = r#"
 }
 "#;
 
-// `{ selected with y }` (field shorthand) — `emit_struct_with` expands
-// to a StructNew copying unchanged fields via StructGet.
+// `{ selected with y }` (field shorthand).
 run!(structwith2, STRUCTWITH2, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
@@ -222,9 +205,8 @@ const STRUCTWITH3: &str = r#"
 }
 "#;
 
-// `{ selected with y: selected.y + 1 }` — the replacement reads the
-// source struct (StructGet), the unchanged `x` is also copied via
-// StructGet.
+// `{ selected with y: selected.y + 1 }`: the replacement reads the
+// source struct.
 run!(structwith3, STRUCTWITH3, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[(ArcStr, i64); 2]>() {
         Ok([(s0, 0), (s1, 1)]) if &*s0 == "x" && &*s1 == "y" => true,
@@ -259,9 +241,7 @@ const STRUCTWITH4: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 4]>() {
         Ok(
@@ -294,9 +274,7 @@ const STRUCTWITH5: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 1]>() {
         Ok([[(f00, 0), (f01, -1)]]) if f00 == "x" && f01 == "y" => true,
@@ -305,9 +283,8 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A struct-with that copies an UNCHANGED composite field (`pt`, a tuple)
-// while replacing a scalar (`n`). Reads a field back so interp==jit
-// agreement proves the composite copy (and its drop) is correct.
+// A struct-with copying an unchanged composite field while replacing a
+// scalar; reading a field back proves the copy.
 const STRUCTWITH_COMPOSITE: &str = r#"
 {
   let s = { pt: (i64:1, i64:2), n: i64:0 };
@@ -321,9 +298,8 @@ run!(structwith_composite, STRUCTWITH_COMPOSITE, |v: Result<&Value>| matches!(
     Ok(Value::I64(7))
 ));
 
-// A `#[native]` struct-with in the differential `run!` harness: the interp
-// mode (fusion off) exercises the `#[native]` `--no-fusion` no-op, the jit mode
-// verifies the struct-with fuses to native — both must yield 9.
+// A `#[native]` struct-with in the differential harness: a no-op with
+// fusion off, native with it on.
 const STRUCTWITH_NATIVE: &str = r#"
 #[native]
 {
@@ -337,10 +313,7 @@ run!(structwith_native, STRUCTWITH_NATIVE, |v: Result<&Value>| matches!(
     Ok(Value::I64(9))
 ));
 
-// A may-bottom REPLACEMENT field (`i64:10 / d`, a division) that is
-// runtime-clean (`d = 2`). Exercises `emit_push_field_node`'s bottom-abort
-// branch + the outer/inner buf registration on the struct-with build path,
-// while still yielding a real value both modes agree on.
+// A may-bottom replacement field (`i64:10 / d`) that is runtime-clean.
 const STRUCTWITH_MAYBOTTOM: &str = r#"
 {
   let s = { x: i64:0, y: i64:0 };
@@ -354,20 +327,8 @@ run!(structwith_maybottom, STRUCTWITH_MAYBOTTOM, |v: Result<&Value>| matches!(
     Ok(Value::I64(5))
 ));
 
-// ─── Composite / value-shape cross-kernel calls (#131) ───────────
-//
-// A top-level `let f = <lambda>` bails the enclosing Do (a lambda
-// binding can't be a kernel value), so a top-level `f(args)` never
-// becomes a cross-kernel call — `f` just runs as its own kernel with
-// composite *params*. To exercise a real cross-kernel call
-// with a non-scalar arg/return, the call must sit inside ANOTHER
-// lambda's body: `g`'s kernel then contains the call to `h`.
-//
-// `g`'s body calls `h` with a composite (tuple) arg. #203 Phase C
-// (transitive cross-kernel discovery) builds `h`'s kernel and lowers
-// `g`'s `h((a,b),c)` call to a CLIF cross-kernel call, so the whole
-// thing JITs — the realized #131-JIT follow-up the prior annotation
-// aspired to.
+// Composite / value-shape cross-kernel calls: the call must sit inside
+// another lambda's body, so `g`'s kernel contains the call to `h`.
 
 const CALL_TUPLE_ARG: &str = r#"
 {
@@ -390,20 +351,13 @@ const CALL_STRUCT_ARG: &str = r#"
 }
 "#;
 
-// `g` calls `h` with a struct arg; #203 Phase C builds `h`'s kernel and
-// lowers the cross-kernel call, so the whole body JITs.
 run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(7)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// A value-shape (nullable) RETURN from a lambda, end-to-end: `f`
-// returns `[i64, null]` via a `select` with a `null` arm, and is
-// called inside the result block. The block's tail type is the
-// collapsed `i64 | null` primitive form; `abi_kind` now
-// recognises it (kernel_abi.rs), so `infer_body_rtype`'s fast path keeps
-// the region from de-fusing. Exercises #131's value-shape Call
-// return through the full fusion pipeline.
+// A value-shape (nullable) return from a lambda called inside the
+// result block.
 const CALL_NULLABLE_RETURN: &str = r#"
 {
   let f = |x: i64| select x {
@@ -414,18 +368,13 @@ const CALL_NULLABLE_RETURN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
+// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ── Value-shape `==` / `!=` (the ValueEq op) ──────────────────────
-
-// String equality — exercises the String operand of `ValueEq`
-// (wrapped into `Value::String` for the comparison).
+// String equality.
 const VALUE_EQ_STRING: &str = r#"
 {
   let s = "hello";
@@ -448,9 +397,7 @@ run!(value_eq_string_ne, VALUE_EQ_STRING_NE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-// Composite (tuple) equality — exercises the composite operand of
-// `ValueEq` (wrapped into `Value::Array`); lhs is a Borrowed local
-// read (clone), rhs an owned `TupleNew`.
+// Tuple equality: a borrowed local against an owned literal.
 const VALUE_EQ_TUPLE: &str = r#"
 {
   let t = (1, 2);
@@ -462,9 +409,7 @@ run!(value_eq_tuple, VALUE_EQ_TUPLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
-// Out-of-range tuple index must be a TYPE ERROR, not a compiler panic
-// (TupleRef::typecheck0 indexed the field list unchecked — the panic
-// killed the runtime worker, and the LSP with it).
+// An out-of-range tuple index is a type error, not a compiler panic.
 const TUPLE_INDEX_OOB: &str = r#"
 {
   let t = (1, 2);
@@ -476,9 +421,7 @@ run!(tuple_index_oob, TUPLE_INDEX_OOB, |v: Result<&Value>| matches!(v, Err(_));
     graphix_package_core::testing::FuseExpect::None);
 
 // `{src with f}` where the source type sits behind TVars and the
-// replacement recursively typechecks a select over the SAME struct —
-// StructWith::typecheck0 used to run the recursion inside with_deref's
-// read guards, deadlocking the compiler on a single thread.
+// replacement typechecks a select over the same struct.
 const STRUCT_WITH_SELECT_OVER_SOURCE: &str = r#"
 {
   let g = |v: {x: i64, y: i64}| v;

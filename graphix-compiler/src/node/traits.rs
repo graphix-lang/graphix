@@ -1,17 +1,11 @@
-//! `trait` declarations and `impl` blocks (`design/traits.md`).
+//! `trait` declarations and `impl` blocks.
 //!
-//! A trait declaration registers the trait and binds one DISPATCHER
-//! per method under the trait's own module-like scope (`Read::read`);
-//! a call through a dispatcher resolves to an implementation by its
-//! `self` argument's type at typecheck1 (`CallSite::resolve_trait_call`).
-//! Default method bodies compile as ordinary typed bindings in a
-//! block below the declaring module, with the trait's dispatchers
-//! glob-visible so a default can call its siblings bare.
-//!
-//! An `impl` compiles its methods as a block of bindings (the trait's
-//! dispatchers glob-visible there too), each annotated with the
-//! trait's signature instantiated at the target, and registers the
-//! implementation globally.
+//! A trait declaration registers the trait and binds one dispatcher
+//! per method under the trait's scope (`Read::read`); a call through a
+//! dispatcher resolves by its `self` argument's type at typecheck1
+//! (`CallSite::resolve_trait_call`). Default bodies and impl methods
+//! compile as typed bindings in a block below the declaring module
+//! with the trait's dispatchers glob-visible.
 
 use super::Block;
 use crate::env::Map;
@@ -33,9 +27,8 @@ use smallvec::SmallVec;
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
-/// module, with the receiver `self` constrained by the trait and
-/// declared as a quantifier (so it is rigid while a default body is
-/// checked — a default must be well-typed for every implementor).
+/// module, with `self` a trait-bounded quantifier (rigid while a
+/// default body is checked).
 pub(crate) fn method_sig(parsed: &FnType, tref: &Type, scope: &ModPath) -> FnType {
     let ft = parsed.scope_refs(scope);
     let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
@@ -58,12 +51,9 @@ pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
     sig.replace_tvars(&known)
 }
 
-/// Push a declared signature into a method body: a lambda whose
-/// parameters or return carry no annotation takes the signature's
-/// (positional by position, labeled by name), so its body is checked
-/// against the receiver's real type — `|c| c.0` in `impl Show for
-/// Counter` sees `c: Counter`. Written annotations are kept (and
-/// checked against the signature by the binding's own annotation).
+/// Fill a method lambda's missing parameter and return annotations
+/// from the declared signature (positional by position, labeled by
+/// name). Written annotations are kept.
 fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
     use crate::{expr::LambdaExpr, typ::FnArgKind};
     let ExprKind::Lambda(l) = &value.kind else { return value.clone() };
@@ -162,9 +152,6 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 spec.ori.clone(),
             )
             .with_context(|| format!("in trait declaration at {}", spec.pos))?;
-        // default bodies: typed bindings in a block under the
-        // DECLARING module (so they see its items), with the trait's
-        // dispatchers glob-visible
         let dscope = scope.append_block("trait", spec.id.inner());
         ctx.env.import_glob(&dscope.lexical, def.path.clone());
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
@@ -254,30 +241,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
 pub struct Impl<R: Rt, E: UserEvent> {
     spec: Expr,
     pub(crate) def: Arc<ImplDef>,
-    /// The interface declaration (`impl T for X;`) this
-    /// implementation fulfils, when there is one: the declaration is
-    /// the registered impl and `def`'s methods proxy to its bindings
-    /// (`Env::register_impl`).
+    /// The interface declaration (`impl T for X;`) this implementation
+    /// fulfils, when there is one; the declaration is the registered
+    /// impl and `def`'s methods proxy to its bindings.
     pub(crate) fulfils: Option<Arc<ImplDef>>,
     trait_def: Arc<TraitDef>,
     pub(crate) body: Node<R, E>,
-    /// For a core trait (`Eq`/`Ord`/`Display`), one never-run call
-    /// site per method so the analysis REACHES the method's body —
-    /// the hooked walks call it from sites built after analysis, and
-    /// the implicit `#[sync]` the methods carry is verified only on a
-    /// covered definition.
+    /// For a core trait, one never-run call site per method so the
+    /// analysis reaches the method's body and verifies its implicit
+    /// `#[sync]`.
     pub(crate) prototypes: Vec<Node<R, E>>,
 }
 
-/// Where may `impl Trait for target` be written? An abstract type's
-/// impl belongs to the type's package or the trait's (the orphan
-/// rule); any other target only to the trait's package — a
-/// structural impl applies to every type of that shape program-wide,
-/// and only the trait's author answers for that (`design/traits.md`
-/// §4). `declared` is an interface's `impl T for X;`: what kind of
-/// abstract a hidden `type X;` is becomes known only when the
-/// implementation defines it, and the implementation's own `impl`
-/// block (which the declaration requires) answers for that.
+/// The orphan rule: an abstract type's impl belongs to the type's
+/// package or the trait's; any other target only to the trait's
+/// package. `declared` is an interface's `impl T for X;`, whose
+/// abstract kind is checked by the implementation's own `impl` block.
 pub(crate) fn check_target(
     env: &Env,
     scope: &ModPath,
@@ -287,10 +266,8 @@ pub(crate) fn check_target(
 ) -> Result<()> {
     let here = env.package_root(scope);
     let trait_pkg = env.package_root(&trait_def.scope);
-    // A constructor trait's reference head IS the named constructor —
-    // never expanded (a list's body is a union, a newtype's an
-    // abstract): it belongs to the package that defines the name, like
-    // an abstract type does.
+    // a constructor trait's reference head is the named constructor,
+    // never expanded: it belongs to the package defining the name
     if trait_def.hole
         && let Type::Ref(tr) = target
         && env.trait_of_ref(tr).is_none()
@@ -317,13 +294,9 @@ pub(crate) fn check_target(
         }
         t => t.clone(),
     };
-    // A CORE trait rides the VALUE (`design/traits.md` §12): the
-    // implementation is consulted through the box a Graphix
-    // constructor mints, which is the only kind of abstract value that
-    // carries a payload for the implementation to read. A Rust-backed
-    // value carries none, so an implementation for one would compile
-    // and never be called — refuse it rather than let it look like it
-    // works.
+    // a core-trait impl is consulted through a Graphix-minted box; a
+    // Rust-backed abstract carries no payload, so its impl would
+    // never be called
     if !declared
         && crate::node::coretraits::CoreTrait::of_id(trait_def.id).is_some()
         && let Type::Abstract { id, .. } = &canonical
@@ -459,10 +432,6 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         })?;
         let (target, params) = impl_head(&ctx.env, &scope.lexical, &trait_def, im, false)
             .with_context(|| format!("at {}", spec.pos))?;
-        // the methods: a block below the declaring module, the trait's
-        // dispatchers glob-visible, each binding annotated with the
-        // declared signature at the target (a user annotation is
-        // checked against it in typecheck0)
         let bscope = scope.append_block("impl", spec.id.inner());
         ctx.env.import_glob(&bscope.lexical, trait_def.path.clone());
         let core = super::coretraits::CoreTrait::of_id(trait_id).is_some();
@@ -493,8 +462,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                 typ: b.typ.clone().or_else(|| Some(Type::Fn(Arc::new(sig.clone())))),
                 value: annotate_lambda(&b.value, &sig),
             };
-            // a core trait's method runs INSIDE a comparison or a
-            // print, so it is implicitly `#[sync]`
+            // a core trait's method runs inside a comparison or print
             let dec = match (core, &m.dec) {
                 (false, dec) => dec.clone(),
                 (true, dec) => {

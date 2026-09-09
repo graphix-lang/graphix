@@ -35,9 +35,8 @@ where
         })
 }
 
-/// A native list literal `[<e1, e2, ...>]` (`design/list_native.md`).
-/// The two-char open is attempt-wrapped so a plain array literal's `[`
-/// backtracks cleanly.
+/// A native list literal `[<e1, e2, ...>]`. The two-char open is
+/// attempt-wrapped so a plain array literal's `[` backtracks cleanly.
 pub(super) fn list_lit<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -78,10 +77,8 @@ where
     )
 }
 
-/// The `[ idx ]` / `[ start..end ]` suffix, used as a postfix operator by
-/// `arith_term`'s postfix loop. `Right(e)` is a single-index `ArrayRef`;
-/// `Left((start, end))` is an `ArraySlice`. The caller pairs the result with
-/// the already-parsed source expression.
+/// The `[ idx ]` / `[ start..end ]` postfix suffix. `Right(e)` is a
+/// single-index `ArrayRef`; `Left((start, end))` is an `ArraySlice`.
 pub(super) fn array_index_suffix<I>()
 -> impl Parser<I, Output = Either<(Option<Expr>, Option<Expr>), Expr>>
 where

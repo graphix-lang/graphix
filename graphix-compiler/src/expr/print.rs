@@ -49,10 +49,8 @@ fn pretty_print_exprs(
     pretty_print_exprs_int(buf, exprs, open, close, sep, |a| a)
 }
 
-/// A body laid out inline after its head (`|x| {`, `=> {`, `catch(e) {`):
-/// a block prints as the block, anything else as itself. The body's own
-/// decorations are the caller's to place — above the head for a select
-/// arm, here for the rest.
+/// A body laid out inline after its head (`|x| {`, `=> {`, `catch(e) {`).
+/// The body's own decorations are the caller's to place.
 fn pretty_body(
     buf: &mut PrettyBuf,
     body: &ExprKind,
@@ -66,10 +64,8 @@ fn pretty_body(
     }
 }
 
-/// The lines above a decorated expression — its comments, then its
-/// attributes — ahead of whatever the decorations were captured before:
-/// the expression itself, or the select-arm pattern or struct field
-/// name it follows.
+/// The lines above a decorated expression: its comments, then its
+/// attributes.
 pub(crate) fn write_leading(
     f: &mut impl fmt::Write,
     dec: &Option<Box<Decorations>>,
@@ -143,22 +139,18 @@ impl fmt::Write for PrettyBuf {
 }
 
 pub trait PrettyDisplay: fmt::Display {
-    /// Do the actual pretty print. This should not be called directly, it will
-    /// be called by fmt_pretty when we know it can't fit on a single line.
+    /// The multi-line layout; `fmt_pretty` calls it when the single-line
+    /// form does not fit.
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result;
 
-    /// This is the user facing fmt method, it will first try to format the
-    /// expression on a single line, and if that is impossible it will call the
-    /// pretty printer.
+    /// Format on a single line when it fits, else via `pretty_fmt`.
     fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
         use fmt::Write;
         let start = buf.len();
         let col = start - buf.buf.rfind('\n').map_or(0, |i| i + 1);
         writeln!(buf, "{}", self)?;
-        // The fit check is best-effort: col accounts for the line's existing
-        // prefix, embedded newlines overcount, and a long token can exceed
-        // any limit. Printer policy: perfection isn't possible — fix layouts
-        // case-by-case when they obviously look bad.
+        // Best-effort: embedded newlines overcount and a long token can
+        // exceed any limit.
         if col + buf.len() - start - 1 <= buf.limit {
             return Ok(());
         } else {
@@ -656,13 +648,9 @@ impl PrettyDisplay for StructExpr {
     }
 }
 
-/// Whether `e` can be printed as the bare source/function of a postfix
-/// operator (`.field`, `.N`, `[i]`, `{k}`, `(args)`) without enclosing parens.
-/// True exactly for the identifier and postfix-chain nodes: the parser folds
-/// postfix left, so `a.b.c` round-trips to `StructRef(StructRef(a,b),c)`. Any
-/// other source (binary op, constant, literal, qop, …) must be parenthesized —
-/// e.g. `(a+b).c` would otherwise mis-associate and `(42).0` would lex as a
-/// float.
+/// Whether `e` can be the bare source of a postfix operator without parens:
+/// true exactly for identifiers and postfix-chain nodes. Anything else
+/// must be parenthesized (`(a+b).c`; `(42).0` would lex as a float).
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     matches!(
         &e.kind,
@@ -1129,12 +1117,8 @@ impl PrettyDisplay for ExprKind {
     }
 }
 
-/// Print a use statement's names in GROUPED form: a single path plain
-/// (`use a::b`), several grouped under their longest common prefix
-/// (`use a::{b, c::d}`, a name equal to the prefix rendering as
-/// `self`), and prefixless groups bare (`use {a, b}` — the degenerate
-/// hand-built case; the parser accepts it). The parser accepts both
-/// grouped and ungrouped input; printing always regroups.
+/// Print a use statement's names grouped under their longest common
+/// prefix (`use a::b`, `use a::{self, b, c::d}`, `use {a, b}`).
 fn write_use_names<W: fmt::Write>(
     f: &mut W,
     reexport: bool,
@@ -1155,8 +1139,7 @@ fn write_use_names<W: fmt::Write>(
         let Some(first) = segs.first().and_then(|s| s.get(lcp)) else {
             break;
         };
-        // never absorb a glob's `*` into the prefix: an empty suffix
-        // prints as `self`, which is not a glob
+        // An empty suffix prints as `self`, which is not a glob.
         if *first == "*" {
             break;
         }
@@ -1223,15 +1206,9 @@ impl ExprKind {
             }
             write!(f, "{close}")
         }
-        // Multiline strings print in the form a human would write them:
-        // a constant with newlines as a raw string (`r#"…"#`, verbatim
-        // — hash count one past the longest `#` run following any `"`
-        // in the content), an interpolation with newlines as a
-        // triple-quoted template. Content with control characters
-        // other than \n/\t (raw) or \n/\t/\r/\0 (triple) keeps the
-        // escaped single-line form — escapes are the only readable
-        // spelling for those anyway. Both forms reparse to the
-        // identical AST (adjacent literal parts merge in the parser).
+        // A constant with newlines prints as a raw string, an interpolation
+        // with newlines as a triple-quoted template; other control
+        // characters keep the escaped single-line form.
         fn raw_printable(s: &str) -> bool {
             s.contains('\n')
                 && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
@@ -1286,14 +1263,9 @@ impl ExprKind {
             }
             any_nl
         }
-        // One literal part of a triple template. Brackets are PLAIN
-        // CONTENT in templates (splices are the marked thing, `\[e]`),
-        // so they print bare. A `"` prints bare
-        // unless it would touch another quote (within the part, the
-        // next part's first char, or the closing delimiter) — those
-        // print `\"` so no unescaped `"""` can form. The very first
-        // content char must not be a real newline (the parser strips
-        // one there), so it prints as the `\n` escape.
+        // A `"` that would touch another quote prints `\"` so no unescaped
+        // `"""` can form; a leading newline prints escaped because the
+        // parser strips a real one.
         fn write_triple_lit(
             f: &mut fmt::Formatter<'_>,
             s: &str,

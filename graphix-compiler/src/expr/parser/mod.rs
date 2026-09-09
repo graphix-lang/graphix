@@ -81,19 +81,10 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// The primitive TYPE-NAME keywords legal as binding names (2026-08-18)
-/// — reserved-ness protects the places where they mean a type (type
-/// expressions, typed literals like `duration:1.s`, `Type as`
-/// patterns), and every such place is disambiguated by position or by
-/// the `:`/`as` that must follow. Control keywords, literals, and the
-/// expression forms stay reserved everywhere. `bytes` is the one
-/// primitive that CANNOT bind: its literal payload is base64, whose
-/// alphabet overlaps identifiers and admits short/empty payloads, so an
-/// annotated bind (`let bytes: T = v`) is genuinely ambiguous with a
-/// refutable literal-pattern let — the 32k round-trip hunt's find. It
-/// remains a legal FIELD name (fields never meet the literal grammar).
-/// NB `bytes` must stay in RESERVED even though it can't bind — it is
-/// still a type name.
+/// The primitive type-name keywords legal as binding names; every place
+/// they mean a type is disambiguated by position or a following `:`/`as`.
+/// `bytes` is excluded: `let bytes: T = v` is ambiguous with a base64
+/// literal pattern. It stays in [`RESERVED`] as a type name.
 pub static TYPE_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
         "i8", "u8", "i16", "u16", "i32", "u32", "v32", "z32", "i64", "u64", "v64", "z64",
@@ -114,16 +105,12 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     )
 });
 
-/// The path-root keywords (design/module_system.md): legal only as the
-/// LEADING segment(s) of a path — `self::x`, `super::super::x`,
-/// `package::a::b` — and refused everywhere else an identifier could
-/// appear (they are in [`RESERVED`]). `super` may repeat as a prefix;
-/// `self` and `package` may not.
+/// The path-root keywords: legal only as the leading segment(s) of a path.
+/// `super` may repeat as a prefix; `self` and `package` may not.
 pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
     LazyLock::new(|| AHashSet::from_iter(["self", "super", "package"]));
 
-/// The reserved words that BEGIN a construct — what a statement or
-/// expression parser probes for first, so their refusal as a name is
+/// The reserved words that begin a construct; their refusal as a name is
 /// routine and reports nothing.
 pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
@@ -167,12 +154,8 @@ where
         })
 }
 
-// Whitespace ONLY — `//` comments are never skipped. They are captured by
-// `leading_decorations()`, at the `expr()` entry and ahead of the three
-// non-expression heads that hand them to the expression below (a select
-// arm's pattern, an impl method, a struct field's name — `decorate`), so
-// a comment anywhere else (interior, trailing, dangling) is a parse
-// error, which makes "every comment is preserved in the AST" structural.
+// Whitespace only: `//` comments are never skipped, so a comment anywhere
+// `leading_decorations()` does not run is a parse error.
 fn spaces<I>() -> impl Parser<I, Output = ()>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -182,10 +165,8 @@ where
     combine::parser::char::spaces()
 }
 
-// Parse one own-line `//` comment line: its text (everything after `//` up to
-// the newline) is kept verbatim so it round-trips. `///` is left untouched
-// (handled by `doc_comment` in interface files; a syntax error in `.gx`).
-// Trailing whitespace and blank lines after the line are skipped.
+// One own-line `//` comment line, text kept verbatim. `///` is left for
+// `doc_comment`.
 fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -214,10 +195,6 @@ where
     .map(|s: String| ArcStr::from(s.as_str()))
 }
 
-// Capture the run of own-line `//` comment lines directly above an expression.
-// The `.gxi` `sig_item` path uses this to tolerate `//` notes above a
-// declaration; `.gx` expressions capture comments AND attributes via
-// `leading_decorations`.
 fn leading_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -227,12 +204,8 @@ where
     combine::parser::char::spaces().with(many(comment_line()))
 }
 
-// Parse a single `#[name]` or `#[name(arg, ...)]` attribute. The args are
-// full expressions (so `#[foo(1 + 2, "x")]` is legal). An attribute is only
-// ever consumed by `leading_decorations`, so it is legal exactly where a
-// comment is. The leading `attempt(string("#["))` makes the branch
-// backtrack cleanly when there is no attribute, so it never collides with a
-// labeled call arg `#name` (which is `#` immediately followed by an ident).
+// `#[name]` or `#[name(arg, ...)]`; the args are full expressions. The
+// `attempt` on `#[` keeps a labeled call arg `#name` from colliding.
 fn attribute<I>() -> impl Parser<I, Output = Attr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -254,13 +227,8 @@ where
         })
 }
 
-// Capture the run of own-line `//` comments and `#[..]` attributes directly
-// above an expression (or one of the heads `decorate` names), returning them
-// as two flat lists (comments, attrs). They may interleave in the source; the
-// relative order between a comment and an attribute is not retained (each
-// printer emits comments then attrs in a fixed order), which is fine because
-// `Decorations` is invisible to `Expr` equality. `leading_comments` itself is
-// kept for the `.gxi` `sig_item` path.
+// The own-line `//` comments and `#[..]` attributes directly above an
+// expression, as two flat lists; their relative interleaving is not kept.
 fn leading_decorations<I>() -> impl Parser<I, Output = Leading>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -293,13 +261,9 @@ where
 /// source order within each list.
 type Leading = (LPooled<Vec<ArcStr>>, LPooled<Vec<Attr>>);
 
-/// Give `e` the decorations captured directly above it. The capture
-/// point need not be the expression itself: what sits above a select
-/// arm's pattern, an impl method, or a struct field's name belongs to
-/// the expression that follows it — the arm's body, the method's
-/// binding, the field's value — ahead of anything that expression
-/// captured for itself, and the printers put it back above the pattern
-/// or the name.
+/// Give `e` the decorations captured directly above it, ahead of any it
+/// captured for itself. What sits above a select arm's pattern, an impl
+/// method or a struct field name belongs to the expression that follows.
 fn decorate(mut e: Expr, (mut comments, mut attrs): Leading) -> Expr {
     if comments.is_empty() && attrs.is_empty() {
         return e;
@@ -376,11 +340,8 @@ where
 {
     (position(), ident(false)).then(|(pos, s): (SourcePosition, ArcStr)| {
         if RESERVED_BINDING.contains(&s.as_str()) {
-            // A construct keyword (`select`, `let`, `mod`, …) is refused
-            // here whenever an alternative probes a statement's first
-            // token as a name, which is ordinary parsing, not a mistake
-            // worth a note; the words that never begin a construct are
-            // the ones a program meant as names.
+            // Probing a statement's first token as a name is ordinary
+            // parsing; only words that never begin a construct earn a note.
             if !CONSTRUCT_KEYWORDS.contains(&s.as_str()) {
                 grow::note_reason(
                     pos,
@@ -406,12 +367,9 @@ where
     spaces().with(fname())
 }
 
-/// A struct FIELD name: any lowercase-initial identifier, reserved words
-/// included. Reserved-ness protects bindings and type names; a field is
-/// neither, and mirrors of external data want `duration`/`string`/`bool`
-/// as fields. A keyword field must use the explicit `name: …` form —
-/// shorthand refers to a binding, which a keyword cannot name — enforced
-/// by the callers that accept shorthand.
+/// A struct field name: any lowercase-initial identifier, reserved words
+/// included. A keyword field must use the explicit `name: …` form, which
+/// the callers that accept shorthand enforce.
 fn fldname<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -445,13 +403,9 @@ where
     })
 }
 
-/// A path's optional keyword ROOT (design/module_system.md): `self::`,
-/// `package::`, or a chain of `super::`s. Yields the keyword segments
-/// consumed (empty when the path starts with an ordinary name). Each
-/// alternative is attempted WITH its following `::`, so an identifier
-/// that merely starts with a keyword (`packaged`) backtracks cleanly
-/// to `fname` — which itself refuses the bare keywords, keeping them
-/// leading-only.
+/// A path's optional keyword root: `self::`, `package::`, or a chain of
+/// `super::`s. Yields the keyword segments consumed. Each alternative is
+/// attempted with its `::` so an identifier like `packaged` backtracks.
 fn path_root<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -656,15 +610,9 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    // `parse_value` is netidx's own recursive-descent value parser —
-    // `[[[…]]]` is a valid nested Value literal, and its recursion is
-    // outside this crate, so it neither counts against `max_nesting`
-    // nor claims segments of its own. `grow` gives it headroom at the
-    // boundary; bounding it properly needs the same treatment in
-    // netidx-value.
-    // A quoted string is `interpolated()`'s alone: parsed here it
-    // would consume the whole literal before the refusal, and the
-    // failure would be reported past it.
+    // `parse_value` recurses outside this crate; `grow` gives it headroom
+    // at the boundary. A quoted string is `interpolated()`'s alone, so its
+    // failure is reported inside it rather than past it.
     attempt(
         grow((
             position(),
@@ -676,10 +624,9 @@ where
     .or(grow(duration_unit_note()))
 }
 
-/// A diagnostic arm behind the literal parser: a `duration:` literal
-/// whose unit is not one of netidx's names its unit, since the value
-/// parser accepts the longest unit prefix (`min` parses as `m` plus
-/// `in`) and the failure lands on the letters after it.
+/// A diagnostic arm behind the literal parser: a `duration:` literal with
+/// an unknown unit names the unit, since the value parser accepts the
+/// longest known prefix and fails after it.
 fn duration_unit_note<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -774,12 +721,9 @@ where
         })
 }
 
-/// Rust-style raw strings: `r"…"`, `r#"…"#`, `r##"…"##`, … — NO
-/// escapes at all (that is the point: every string is representable by
-/// choosing enough hashes; the old `r'…'` form's `\'` escape made the
-/// two-character sequence `\'` itself unrepresentable). The content
-/// ends at the FIRST `"` followed by the opener's hash count. No
-/// interpolation, no newline stripping — verbatim.
+/// Rust-style raw strings: `r"…"`, `r#"…"#`, `r##"…"##`, … No escapes,
+/// no interpolation, no newline stripping; the content ends at the first
+/// `"` followed by the opener's hash count.
 fn raw_string<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -814,9 +758,7 @@ where
     I::Range: Range,
 {
     // `attempt` covers the leading spaces so a non-until body item
-    // (after `{` or `;`) backtracks into `expr()`. `until` is not in
-    // `expr()`, so a comment above it is a parse error — same as a
-    // comment above `let` if decorations had not already run.
+    // backtracks into `expr()`.
     attempt(
         spaces().with(
             (position(), string("until").skip(not_prefix()).with(spaces1()).with(expr()))
@@ -853,9 +795,8 @@ where
                         unexpected_any("a do block must contain at least one statement")
                             .left()
                     } else if n > max_nesting() {
-                        // Statement lists are parsed iteratively, then
-                        // folded into nested selects. GrowStack never
-                        // sees the width.
+                        // The iterative statement list folds into nested
+                        // selects GrowStack never counted.
                         note_refused();
                         unexpected_any("expression nesting too deep").left()
                     } else {
@@ -986,10 +927,8 @@ where
 }
 
 /// The `name: value, name, ..` field list of a struct literal or a
-/// functional update: names unique (a reserved word needs the explicit
-/// form — it cannot be a reference), sorted by name; decorations above
-/// a field attach to its value; a shorthand's reference is minted at
-/// the field's own position.
+/// functional update: names unique, sorted by name; decorations above a
+/// field attach to its value.
 fn struct_fields<I>() -> impl Parser<I, Output = LPooled<Vec<(ArcStr, Expr)>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1092,8 +1031,7 @@ where
 }
 
 /// `T(v)` — a constructor call of the abstract type at the capitalized
-/// path `T`. A capitalized last segment is what tells it from a call
-/// (bindings can't be capitalized).
+/// path `T`; the capitalized last segment is what tells it from a call.
 fn construct<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1166,10 +1104,9 @@ where
         })
 }
 
-/// `try { stmts } with(e[: T]) { stmts }` — a seq statement
-/// (design/seq_blocks.md §7.9). Parsed wherever an expression is so
-/// `let x = try .. with ..` reads naturally; the compiler refuses it
-/// outside seq statement position.
+/// `try { stmts } with(e[: T]) { stmts }` — a seq statement. Parsed
+/// wherever an expression is; the compiler refuses it outside seq
+/// statement position.
 fn try_with<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1278,10 +1215,7 @@ parser! {
     }
 }
 
-/// Parse one or more expressions
-///
-/// followed by (optional) whitespace and then eof. At least one
-/// expression is required otherwise this function will fail.
+/// Parse one or more expressions followed by optional whitespace and eof.
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
@@ -1303,10 +1237,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     Ok(Arc::from_iter(r.drain(..)))
 }
 
-/// Parse one or more signature expressions
-///
-/// followed by (optional) whitespace and then eof. At least one
-/// expression is required otherwise this function will fail.
+/// Parse one or more signature items followed by optional whitespace and eof.
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());

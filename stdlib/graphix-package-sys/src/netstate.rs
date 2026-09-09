@@ -1,15 +1,8 @@
-//! Package-owned netidx state. Since the netidx extraction
-//! (design/netidx_extraction.md) the graphix core has no networking:
-//! the `sys::net` builtins own their subscriber/publisher here,
-//! delivered into the reactive graph through the generic machinery
-//! every package uses (`Rt::watch_var` for subscription updates,
-//! `Rt::watch` + [`graphix_compiler::CustomBuiltinType`] for
-//! write-backs and rpc-server calls, `Rt::spawn_var` for one-shot
-//! calls). Lives in `ctx.libstate`; materialized on first use from
-//! the embedder-seeded [`NetConfig`] (absent → a process-internal
-//! `InternalOnly`, created on a dedicated side thread so
-//! materialization is legal from sync builtin code on any tokio
-//! flavor).
+//! Package-owned netidx state for the `sys::net` builtins: the subscriber and
+//! publisher, delivered into the graph through `Rt::watch_var`, `Rt::watch` +
+//! [`graphix_compiler::CustomBuiltinType`] and `Rt::spawn_var`. Lives in
+//! `ctx.libstate`; materialized on first use from the embedder-seeded
+//! [`NetConfig`] (absent: a process-internal netidx on a dedicated side thread).
 use anyhow::{Error, Result, anyhow};
 use arcstr::literal;
 use futures::{StreamExt, channel::mpsc};
@@ -44,7 +37,7 @@ pub(crate) fn rpc_dbg() -> bool {
 }
 
 /// A subscription update routed to a builtin's BindId. Unsubscribed
-/// becomes the same error value the pre-extraction runtime delivered.
+/// is delivered as an error value.
 fn translate(ev: NEvent) -> Value {
     match ev {
         NEvent::Update(v) => v,
@@ -200,9 +193,7 @@ impl NetHandles {
 #[derive(Default)]
 struct Routes {
     /// netidx SHARES Dvals by path: several builtins subscribing the
-    /// same path get the same SubId, so routing is a fan-out list
-    /// (the pre-extraction runtime's event.netidx map was shared by
-    /// every reader of the SubId).
+    /// same path get the same SubId, so routing is a fan-out list.
     subs: IntMap<SubId, smallvec::SmallVec<[BindId; 2]>>,
     writes: IntMap<Id, BindId>,
 }
@@ -219,8 +210,7 @@ struct Inner {
     // commits when pinged
     batch: Mutex<Option<UpdateBatch>>,
     flush_tx: mpsc::UnboundedSender<()>,
-    // deferred unsubscribe (grace period, matches the pre-extraction
-    // runtime's 60s Dval hold)
+    // deferred unsubscribe (60s grace period)
     graveyard_tx: mpsc::UnboundedSender<Dval>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
@@ -279,10 +269,9 @@ impl NetState {
             change_trackers: Mutex::new(IntMap::default()),
             publish_timeout: timeouts.publish,
         }));
-        // PUMP: netidx events -> graph events. Subscription updates
-        // route SubId -> the subscribing builtin's BindId; writes route
-        // the published Id -> the publish builtin's write BindId; rpc
-        // calls are already keyed by the builtin's BindId.
+        // PUMP: netidx events -> graph events. Subscription updates route
+        // SubId -> the subscribing builtin's BindId; writes route the
+        // published Id -> the publish builtin's write BindId.
         {
             let routes = routes.clone();
             task::spawn(async move {
@@ -293,13 +282,9 @@ impl NetState {
                             Some(mut batch) => {
                                 let mut out = VBATCH.take();
                                 {
-                                    // coalesce per SubId (last wins) —
-                                    // the same channel can be
-                                    // registered on a shared Dval more
-                                    // than once, and the old
-                                    // event.netidx map coalesced —
-                                    // then fan out to every registered
-                                    // reader.
+                                    // coalesce per SubId (last wins) — the same channel can be
+                                    // registered on a shared Dval more than once — then fan out
+                                    // to every registered reader.
                                     let mut last: LPooled<IntMap<SubId, NEvent>> =
                                         LPooled::take();
                                     for (sub_id, ev) in batch.drain(..) {
@@ -369,8 +354,7 @@ impl NetState {
             });
         }
         // FLUSHER: commit the publish batch when pinged, coalescing
-        // pings that arrive while a commit is in flight — the package
-        // twin of the pre-extraction end-of-cycle commit.
+        // pings that arrive while a commit is in flight.
         {
             let st2 = st.clone();
             task::spawn(async move {
@@ -398,11 +382,9 @@ impl NetState {
         st
     }
 
-    /// The netidx handles, materializing on first touch per
-    /// [`NetConfig`]. Self-hosted/config builds happen on a dedicated
-    /// side thread running its own runtime, so this is legal from sync
-    /// builtin code on any tokio flavor; the calling thread blocks for
-    /// the spinup once per runtime.
+    /// The netidx handles, materializing on first touch per [`NetConfig`].
+    /// Self-hosted/config builds run on a dedicated side thread, so this is
+    /// legal from sync builtin code; the caller blocks for the spinup once.
     fn handles<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) -> Result<&Handles> {
         let cfg = ctx.libstate.get::<NetConfig>().cloned().unwrap_or(NetConfig::Internal);
         self.0.handles.get_or_materialize(cfg)
@@ -567,8 +549,7 @@ impl NetState {
 
     /// One-shot resolver list/table. The `flushed` barrier is
     /// read-your-writes: this process's own publishes must be
-    /// registered with the resolver before the list runs (the jul22
-    /// lazy-netidx branch flaked 4/10 without it).
+    /// registered with the resolver before the list runs.
     pub(crate) fn list<R: Rt, E: UserEvent>(
         &self,
         ctx: &mut ExecCtx<R, E>,

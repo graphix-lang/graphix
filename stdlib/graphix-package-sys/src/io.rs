@@ -18,8 +18,6 @@ use tokio::sync::Mutex;
 
 use crate::{StreamKind, get_stream, stream_of, wrap_stdio};
 
-// ── IoRead ─────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct IoReadEv;
 
@@ -51,26 +49,17 @@ impl EvalCachedAsync for IoReadEv {
 
 pub(crate) type IoRead = CachedArgsAsync<IoReadEv>;
 
-// ── IoLines / IoLinesBatched ───────────────────────────────────
-
 static LBATCH: LazyLock<Pool<Vec<(BindId, Value)>>> =
     LazyLock::new(|| Pool::new(32, 16384));
 
 /// Read `stream` to its end, framing it into lines and delivering them
 /// into the graph.
 ///
-/// Framing is at the BYTE level, which is the whole reason this is not
-/// a `read` loop written in Graphix: a multi-byte character split across
-/// a read boundary is destroyed by decoding each chunk on its own, and
-/// nothing the caller does controls where those boundaries fall. Only
-/// complete lines are decoded, and lossily — one line of invalid UTF-8
-/// must not take down the stream.
+/// Framing is at the BYTE level so a multi-byte character split across a
+/// read boundary survives; only complete lines are decoded, and lossily.
 ///
-/// `batched` picks the delivery shape. Batched sends ONE array per read,
-/// which is the cheap form. Unbatched sends one entry per line and lets
-/// the runtime spread repeats of a BindId across cycles (the
-/// `push_var_event!` requeue), which is `array::iter`'s cadence for
-/// free — no queue of our own.
+/// `batched` sends ONE array per read; unbatched sends one event per
+/// line, which the runtime spreads across cycles.
 async fn line_reader(
     stream: Arc<Mutex<Option<StreamKind>>>,
     id: BindId,
@@ -128,9 +117,7 @@ async fn line_reader(
 }
 
 /// `Lines::lines` (BATCHED = false) and `Lines::lines_batched`
-/// (BATCHED = true): one event per line, or one array of every line the
-/// read made available. Shared by every stream kind — the trait
-/// implementations in the `.gx` files decide who gets them.
+/// (BATCHED = true). Shared by every stream kind.
 #[derive(Debug)]
 pub(crate) struct IoLines<const BATCHED: bool> {
     id: BindId,
@@ -166,8 +153,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
     ) -> &TagValue {
         // One reader per instance, started by the first stream that
         // arrives. A stream is consumed as it is read, so re-arming on a
-        // later delivery of the same handle would race the reader for
-        // its bytes.
+        // later delivery of the same handle would race the reader.
         if let Some(tv) = seam_value(from[0].update(ctx, event))
             && tv.is_fired()
             && !self.started
@@ -193,13 +179,8 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Delivery rides watch_var (async); the only state is the wake
-        // registration and the reader, neither of which is replay memory.
-    }
+    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
-
-// ── IoReadExact ────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct IoReadExactEv;
@@ -237,8 +218,6 @@ impl EvalCachedAsync for IoReadExactEv {
 
 pub(crate) type IoReadExact = CachedArgsAsync<IoReadExactEv>;
 
-// ── IoWrite ────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct IoWriteEv;
 
@@ -267,8 +246,6 @@ impl EvalCachedAsync for IoWriteEv {
 }
 
 pub(crate) type IoWrite = CachedArgsAsync<IoWriteEv>;
-
-// ── IoWriteExact ───────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct IoWriteExactEv;
@@ -299,8 +276,6 @@ impl EvalCachedAsync for IoWriteExactEv {
 
 pub(crate) type IoWriteExact = CachedArgsAsync<IoWriteExactEv>;
 
-// ── IoFlush ────────────────────────────────────────────────────
-
 #[derive(Debug, Default)]
 pub(crate) struct IoFlushEv;
 
@@ -329,8 +304,6 @@ impl EvalCachedAsync for IoFlushEv {
 }
 
 pub(crate) type IoFlush = CachedArgsAsync<IoFlushEv>;
-
-// ── IoClose ────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
 pub(crate) struct IoCloseEv;

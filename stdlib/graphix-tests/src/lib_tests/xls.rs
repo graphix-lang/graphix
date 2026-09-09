@@ -43,7 +43,6 @@ run_with_tempdir! {
             _ => panic!("expected Array, got: {v:?}"),
         };
         assert_eq!(arr.len(), 2);
-        // row 0
         let row0 = match &arr[0] {
             ::netidx::subscriber::Value::Array(r) => r,
             v => panic!("expected row Array, got: {v:?}"),
@@ -59,7 +58,6 @@ run_with_tempdir! {
             ::netidx::subscriber::Value::F64(f) if (*f - 3.14).abs() < 1e-10 => (),
             v => panic!("expected 3.14, got: {v:?}"),
         }
-        // row 1
         let row1 = match &arr[1] {
             ::netidx::subscriber::Value::Array(r) => r,
             v => panic!("expected row Array, got: {v:?}"),
@@ -172,7 +170,6 @@ run_with_tempdir! {
         let mut wb = rust_xlsxwriter::Workbook::new();
         let ws = wb.add_worksheet();
         ws.write(0, 0, "a").unwrap();
-        // skip (0,1) — leave it empty
         ws.write(0, 2, "c").unwrap();
         wb.save(&path).unwrap();
         path

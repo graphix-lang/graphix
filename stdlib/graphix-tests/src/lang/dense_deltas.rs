@@ -1,27 +1,6 @@
-// The dense-delivery RULED-DELTA fixtures (design/dense_delivery.md).
-//
-// Each test encodes a POST-FLIP expectation for an observable-behavior
-// delta Eric ruled intended IN ADVANCE (2026-08-11). They are #[ignore]d
-// until the flip (plan phase 5b) and each was verified RED (or
-// pass-state-documented) against the pre-flip build — the red→green
-// discipline that makes them the flip's adjudication key rather than
-// post-hoc blessings. Do NOT un-ignore or adjust expectations without a
-// ruling.
-//
-// Delta-list disposition (numbers from design/dense_delivery.md):
-//   1, 2  -> print_const_once, print_hof_callback_once (below)
-//   3     -> already AGREEs on main; guarded by the regress corpus
-//            finding dyncall-fire-gate-aug2026 (must stay green)
-//   4     -> retired 2026-08-24: the depth trip it observed is gone
-//            (depth is bounded by memory, design/recursive_activations.md)
-//   5     -> re-pin verification at the flip (array::group)
-//   6, 14 -> stderr log cadence: not sink-capturable; adjudicated via
-//            the stdout-baseline diff + manual review at 5b
-//   7, 8, 12 -> frame-internal; adjudicated by the 5b desync
-//            enumeration over the trace corpus
-//   9, 10 -> fusion-coverage churn (FuseExpect/fusecheck), not values
-//   11    -> an oracle statement, not a fixture
-//   13    -> builtin_bottom_propagates (below)
+// Dense delivery (design/dense_delivery.md): bottom is a production and
+// a builtin arg never rides its previous value. Do not adjust these
+// expectations without a ruling.
 
 use anyhow::{Result, bail};
 use graphix_compiler::CFlag;
@@ -101,12 +80,7 @@ pub(super) fn as_i64s(values: &[Value]) -> Vec<i64> {
         .collect()
 }
 
-// ── Delta 1: a constant print message fires once, in BOTH engines ──
-//
-// The dyncall-tagblind-print-aug2026 witness 00. Pre-flip: interp
-// prints one "A"; jit prints one per kernel invocation (six). Post-flip
-// the print gates on Fired and the fused DynCall delivers the constant
-// stale, so both print exactly once.
+// A constant print message fires once in both engines.
 const PRINT_CONST_ONCE: &str = r#"{
   let n = 0;
   select n { x if x < 5 => n <- (x ~ n) + 1, _ => never() };
@@ -131,12 +105,7 @@ async fn print_const_once_jit() -> Result<()> {
     print_const_once(false).await
 }
 
-// ── Deltas 1+2: a callback's print fires once per element, not per
-// kernel invocation ──
-//
-// Witness 04: the same class inside a collection loop, where it
-// multiplies (per element per invocation), plus the HOF laundering
-// angle — the callback subgraph must see honest tags.
+// A callback's print fires once per element, not per kernel invocation.
 const PRINT_HOF_ONCE: &str = r#"{
   let n = 0;
   select n { x if x < 3 => n <- (x ~ n) + 1, _ => never() };
@@ -163,16 +132,8 @@ async fn print_hof_once_jit() -> Result<()> {
     print_hof_once(false).await
 }
 
-// ── Delta 13: a bottomed builtin arg bottoms the invocation — the arg
-// slot no longer rides its previous value ──
-//
-// The sleep-preserves-caches-jul2026/02 shape, re-expressed with an
-// in-language epoch driver. Epochs: ep0 in1=false in0=0 → else arm,
-// max(0, 1/1) = 1; ep1 in1=true → arm flip, 9; ep2 in1=false in0=1 →
-// re-select else arm, 1/(1-1) bottoms. Pre-flip both engines emit 10
-// (the ruled slot ride: max(10, ridden 1)). Post-flip (Q1: bottom
-// propagates, no seam registers) the invocation bottoms and epoch 2
-// emits nothing: [1, 9].
+// A bottomed builtin arg bottoms the invocation: epochs give
+// [1, 9] and the bottoming third epoch emits nothing.
 const BOTTOM_PROPAGATES: &str = r#"{
   let ep = 0;
   ep <- select ep { n if n < 2 => n + 1, _ => never() };

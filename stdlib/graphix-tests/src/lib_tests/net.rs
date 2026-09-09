@@ -10,9 +10,6 @@ const NET_PUB_SUB: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(42)) => true,
@@ -31,9 +28,6 @@ const NET_WRITE0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -55,12 +49,9 @@ const NET_WRITE1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
-    // with type-aware casting, the i64 write gets cast to string
-    // and then cast<i64> in the callback converts it back successfully
+    // the i64 write is cast to string and `cast<i64>` in the callback
+    // converts it back
     match v {
         Ok(Value::Array(a)) => match &a[..] {
             [Value::I64(42), Value::I64(43)] => true,
@@ -78,9 +69,6 @@ const NET_LIST: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(net_list, NET_LIST, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -138,9 +126,6 @@ const NET_RPC0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(42)) => true,
@@ -148,18 +133,9 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// WAKE CATCH-UP at the sys::net seam (design/wake_catchup.md):
-// `Subscribe::sleep` tears the subscription down (and re-mints its
-// BindId), so a re-woken arm's subscribe must RE-ESTABLISH from the
-// present path — and since the present-but-stale ruling the wake
-// delivers the (constant) path arg with no fire, so without the
-// builtin's own slept bit the arm came back permanently
-// unsubscribed: `got` never produced again and this test hung (the
-// path must be a BINDING — a constant path re-fires under the arm's
-// forced init view, the ruled constants-fire-at-wake behavior, and
-// resubscribes without the slept bit). The
-// matcher wants proof of the full cycle: a delivery, a sleep marker
-// (-1), then a delivery of a NEWER value after the rewake.
+// A re-woken arm's subscribe re-establishes from the present path (the
+// path is a binding). The matcher wants a delivery, a sleep marker (-1),
+// then a delivery of a newer value after the rewake.
 const NET_SUB_REWAKE: &str = r#"
 {
   let x = i64:0;
@@ -203,12 +179,9 @@ run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The publish twin: `Publish::sleep` unpublishes, so a re-woken arm
-// must REPUBLISH from the present path/value (same slept-bit
-// mechanism as subscribe, red-green proven there). The observer
-// subscription lives OUTSIDE the select and rides netidx's durable
-// resubscribe across the unpublish window; proof of the cycle is a
-// delivery, then a NEWER delivery after the arm slept and rewoke.
+// The publish twin: a re-woken arm republishes from the present
+// path/value; the observer subscription rides netidx's durable
+// resubscribe across the unpublish window.
 const NET_PUB_REWAKE: &str = r#"
 {
   let x = i64:0;

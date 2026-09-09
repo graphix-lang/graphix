@@ -6,12 +6,8 @@ use iced_widget::{
 };
 use triomphe::Arc;
 
-/// Wrapper around `iced_core::Theme` that supports per-widget style overrides.
-///
-/// When `overrides` is `None`, all Catalog impls delegate directly to the
-/// inner theme — behavior is identical to using `iced_core::Theme` directly.
-/// When `overrides` is `Some`, each widget checks for a user-specified style
-/// before falling back to the inner theme's built-in Catalog.
+/// Wrapper around `iced_core::Theme` with per-widget style overrides;
+/// `None` delegates every Catalog to the inner theme.
 #[derive(Clone, Debug)]
 pub struct GraphixTheme {
     pub inner: iced_core::Theme,
@@ -40,8 +36,6 @@ pub struct StyleOverrides {
     pub text_input: Option<TextInputSpec>,
     pub toggler: Option<TogglerSpec>,
 }
-
-// --- Spec structs ---
 
 #[derive(Clone, Copy, Debug)]
 pub struct ButtonSpec {
@@ -170,8 +164,6 @@ pub struct MenuSpec {
     pub text_color: Option<Color>,
 }
 
-// --- Color adjustment helpers ---
-
 fn hover_adjust(color: Color, is_dark: bool) -> Color {
     if is_dark {
         Color::from_rgba(
@@ -194,10 +186,8 @@ fn dim(color: Color) -> Color {
     Color::from_rgba(color.r, color.g, color.b, color.a * 0.5)
 }
 
-// --- Resolve methods (overlay pattern) ---
-//
-// Each resolve starts from iced's complete default style for the given
-// theme + status, then selectively overrides only user-specified fields.
+// Each resolve starts from iced's default style for the theme + status
+// and overrides only user-specified fields.
 
 impl ButtonSpec {
     fn resolve(&self, theme: &iced_core::Theme, status: button::Status) -> button::Style {
@@ -255,7 +245,6 @@ impl CheckboxSpec {
                 };
                 s.background = c.into();
             } else {
-                // only accent specified
                 if is_checked {
                     let c = if is_disabled {
                         dim(accent)
@@ -542,7 +531,6 @@ impl ScrollableSpec {
     ) -> scrollable::Style {
         let is_dark = theme.extended_palette().is_dark;
         let mut s = scrollable::default(theme, status);
-        // Apply to both rails symmetrically
         for rail in [&mut s.vertical_rail, &mut s.horizontal_rail] {
             if let Some(bg) = self.background {
                 rail.background = Some(bg.into());
@@ -625,10 +613,6 @@ impl MenuSpec {
         s
     }
 }
-
-// --- Catalog trait implementations ---
-
-// Macros to reduce boilerplate for the common Catalog patterns.
 
 macro_rules! impl_catalog_with_status {
     ($module:ident, $field:ident, $fallback:expr) => {
@@ -766,7 +750,6 @@ impl menu::Catalog for GraphixTheme {
 // ComboBox: supertrait of text_input + menu; empty impl uses defaults
 impl combo_box::Catalog for GraphixTheme {}
 
-// Delegate-only: text
 impl iced_core::widget::text::Catalog for GraphixTheme {
     type Class<'a> = iced_core::widget::text::StyleFn<'a, Self>;
 
@@ -779,7 +762,6 @@ impl iced_core::widget::text::Catalog for GraphixTheme {
     }
 }
 
-// Delegate-only: svg
 impl svg::Catalog for GraphixTheme {
     type Class<'a> = svg::StyleFn<'a, Self>;
 
@@ -792,7 +774,6 @@ impl svg::Catalog for GraphixTheme {
     }
 }
 
-// table: delegate to inner theme
 impl table::Catalog for GraphixTheme {
     type Class<'a> = table::StyleFn<'a, Self>;
 
@@ -805,7 +786,6 @@ impl table::Catalog for GraphixTheme {
     }
 }
 
-// qr_code: delegate to inner theme
 impl qr_code::Catalog for GraphixTheme {
     type Class<'a> = qr_code::StyleFn<'a, Self>;
 

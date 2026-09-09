@@ -1,11 +1,6 @@
-//! Main GUI event loop.
-//!
-//! Runs on the main OS thread (via MainThreadHandle) using winit's
-//! standard `run_app` model. Graphix updates are delivered as native
-//! winit user events via `EventLoopProxy<ToGui>`.
-//!
-//! Supports multiple windows, each tracked by its graphix BindId.
-//! Windows are created/destroyed as the root `Array<&Window>` changes.
+//! Main GUI event loop: runs on the main OS thread via winit's
+//! `run_app`; graphix updates arrive as `EventLoopProxy<ToGui>` user
+//! events. One window per BindId in the root `Array<&Window>`.
 
 use crate::{
     ToGui, convert,
@@ -132,39 +127,21 @@ struct GuiHandler<X: GXExt> {
     surfaces: AHashMap<WindowId, WindowSurface>,
     ui_caches: AHashMap<WindowId, user_interface::Cache>,
     clipboard: Clipboard,
-    /// Proxy cloned into the resize-burst render timer tasks so they
-    /// can post `ToGui::ResizeTimer` back into the main loop when
-    /// their timer elapses.
+    /// Proxy for the resize-burst render timer tasks.
     resize_proxy: EventLoopProxy<ToGui>,
-    /// Channel into `resize_end_debounce`: receives the logical size
-    /// of every `Resized` event. The debounce task resets its timer
-    /// on each message and emits `ToGui::ResizeEnd` once the window
-    /// has been quiet for `RESIZE_END_DEBOUNCE`.
+    /// Channel into `resize_end_debounce`; carries every `Resized` size.
     resize_end_tx: mpsc::UnboundedSender<(WindowId, SizeV)>,
-    /// Scratch buffer for `iced`-emitted messages. Drained each pass
-    /// of `about_to_wait` into a local `VecDeque`. Pooled so the
-    /// backing `Vec` is recycled across frames.
+    /// Scratch buffer for `iced`-emitted messages, drained each `about_to_wait`.
     messages: LPooled<Vec<Message>>,
     modifiers: ModifiersState,
 }
 
-/// Render cadence during a resize drag (≈60 Hz). The timer is armed
-/// on the first `Resized` event of a burst and NOT reset by
-/// subsequent events — every ~16 ms we render the latest pending
-/// size so the UI appears to follow the drag without rendering on
-/// every cursor move. Measured at 83 Hz sustained on a slow
-/// development machine with the old unbounded scheme, so 60 Hz
-/// should stay comfortably inside the frame budget.
+/// Render cadence during a resize drag. The timer is armed on the
+/// first `Resized` of a burst and not reset by later ones.
 const RESIZE_RENDER_PERIOD: Duration = Duration::from_millis(16);
 
-/// Time with no `Resized` events that counts as drag-end. Longer
-/// than `RESIZE_RENDER_PERIOD` so the debounce reliably outlasts
-/// the render cadence. When this elapses we write the final size
-/// to the runtime's size ref exactly once — doing so on every
-/// render-timer fire instead would cause request_inner_size
-/// feedback against stale `last_set_size` state, visible as the
-/// window continuing to resize seconds after the user releases
-/// the drag handle.
+/// Quiet time that counts as drag-end; must exceed
+/// `RESIZE_RENDER_PERIOD`. The size ref is written once per drag.
 const RESIZE_END_DEBOUNCE: Duration = Duration::from_millis(200);
 
 impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
@@ -201,13 +178,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         SizeV(Size::new(logical.width, logical.height)),
                     ));
                 } else if let WindowEvent::RedrawRequested = &event {
-                    // The OS pairs every `Resized` with a
-                    // `RedrawRequested`. Setting `needs_redraw`
-                    // here during a drag would fire one render per
-                    // resize frame, ignoring the 100 ms timer. While
-                    // a resize timer is armed, the timer is the
-                    // sole render driver; outside a burst, treat
-                    // `RedrawRequested` normally.
+                    // While a resize timer is armed it is the sole render driver.
                     if !tw.resize_timer_armed {
                         tw.needs_redraw = true;
                     }
@@ -260,11 +231,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 event_loop.exit();
             }
             ToGui::ResizeTimer(window_id) => {
-                // Render cadence tick during a drag. Purely
-                // schedules a redraw — does NOT write to `tw.size`.
-                // The size ref is updated by `ResizeEnd` exactly
-                // once per drag so the runtime's echo can't race
-                // against a stream of intermediate sizes.
+                // Schedules a redraw only; `ResizeEnd` owns the `tw.size` write.
                 if let Some(&bid) = self.win_to_bid.get(&window_id) {
                     if let Some(tw) = self.windows.get_mut(&bid) {
                         tw.resize_timer_armed = false;
@@ -275,18 +242,8 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
             }
             ToGui::ResizeEnd(window_id, sz) => {
-                // Drag-end debounce fired: no `Resized` for
-                // `RESIZE_END_DEBOUNCE`. This is the only site that
-                // writes OS-driven size updates back into the
-                // graphix-level `tw.size` TRef — `ResizeTimer` and
-                // the in-render `ws.resize` deal with the iced
-                // viewport, which is independent of the graphix
-                // size ref that user code reactively reads. Firing
-                // once per burst (rather than once per render) also
-                // keeps `last_set_size`'s echo dedupe sound; more
-                // than one in-flight echo at a time and stale
-                // `size.set`s leak out as `request_inner_size`
-                // calls against the OS.
+                // The only site writing OS-driven sizes into `tw.size`; once
+                // per drag keeps `last_set_size`'s echo dedupe sound.
                 if let Some(&bid) = self.win_to_bid.get(&window_id) {
                     if let Some(tw) = self.windows.get_mut(&bid) {
                         if tw.size.t.as_ref() != Some(&sz) {
@@ -300,10 +257,6 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
             }
             ToGui::Redraw => {
-                // A background task (typically a data_table cell
-                // subscription) mutated state outside the iced event
-                // cycle. Flag every window for redraw so `about_to_wait`
-                // runs the render pass and picks up the change.
                 for tw in self.windows.values_mut() {
                     tw.needs_redraw = true;
                 }
@@ -343,12 +296,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 continue;
             }
             let win_id = tw.window_id();
-            // Cap render rate while `pending_resize` is Some. In
-            // normal drags the `ResizeTimer` cadence already limits
-            // us to one render per `RESIZE_RENDER_PERIOD`; this is a
-            // backstop for the edge case where an event slips
-            // through the arm guard (e.g. a widget animation
-            // firing `shell.request_redraw()` mid-drag).
+            // Backstop for redraws that bypass the resize-timer cadence.
             if tw.pending_resize.is_some() {
                 let elapsed = tw.last_render.elapsed();
                 if elapsed < RESIZE_RENDER_PERIOD {
@@ -365,9 +313,6 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     ));
                 }
                 let cache = self.ui_caches.remove(&win_id).unwrap_or_default();
-                // Let widgets flush deferred state (e.g. data_table
-                // re-sorting after sort-column subscriptions arrive)
-                // before we build the iced element tree.
                 tw.content.before_view();
                 let element = tw.content.view();
                 let viewport_size = ws.logical_size();
@@ -446,16 +391,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
             }
         }
-        // Drain messages by dispatching each one through each
-        // window's widget tree via `on_message`. Widgets that need
-        // to emit follow-ups (e.g. a `Call` from a column-resize
-        // drag tick) publish through the shell, which we feed back
-        // into the queue. `Call` is the one message the event loop
-        // handles directly — there's no widget to forward it to;
-        // it's just a side-effect on the graphix runtime.
-        // `VecDeque` + `pop_front` preserves FIFO order (matches the
-        // original `Vec::drain(..)` semantics). LIFO would reorder
-        // dependent messages (e.g. CellEdit → CellEditSubmit).
+        // FIFO: dependent messages (CellEdit -> CellEditSubmit) must stay ordered.
         let mut pending: std::collections::VecDeque<Message> =
             self.messages.drain(..).collect();
         while let Some(msg) = pending.pop_front() {
@@ -532,12 +468,8 @@ pub(crate) fn run<X: GXExt>(
     }
 }
 
-/// Debounces `Resized` events per window. On each message, records
-/// the latest size and (re)sets a timer to `RESIZE_END_DEBOUNCE`.
-/// When the timer elapses with no new messages, fires exactly one
-/// `ToGui::ResizeEnd` carrying the last seen size. This is what
-/// makes the runtime's size ref update fire once at drag-end rather
-/// than N times during the drag.
+/// Debounces `Resized` events per window: fires one `ToGui::ResizeEnd`
+/// with the last size after `RESIZE_END_DEBOUNCE` of quiet.
 async fn resize_end_debounce(
     mut rx: mpsc::UnboundedReceiver<(WindowId, SizeV)>,
     proxy: EventLoopProxy<ToGui>,
@@ -566,10 +498,8 @@ async fn resize_end_debounce(
     }
 }
 
-/// Reconcile the tracked windows with a new root array value.
-///
-/// The root value is `Array<&Window>` — an array of `Value::U64(bindid)`.
-/// We diff old vs new BindIds: add new windows, remove stale ones.
+/// Reconcile the tracked windows with a new root `Array<&Window>`
+/// (an array of `Value::U64(bindid)`).
 fn reconcile_windows<X: GXExt>(
     gx: &GXHandle<X>,
     rt: &tokio::runtime::Handle,
@@ -586,7 +516,6 @@ fn reconcile_windows<X: GXExt>(
     let new_bids =
         arr.iter().map(|&id| BindId::from(id)).collect::<LPooled<Vec<BindId>>>();
 
-    // Remove windows no longer in the array
     let to_remove = windows
         .keys()
         .filter(|bid| !new_bids.contains(bid))
@@ -601,7 +530,6 @@ fn reconcile_windows<X: GXExt>(
         }
     }
 
-    // Add new windows
     for &bid in new_bids.iter() {
         if windows.contains_key(&bid) {
             continue;

@@ -27,11 +27,8 @@ parser! {
     pub(super) fn sig_item[I]()(I) -> SigItem
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        // Tolerate (skip) plain `//` comment lines above an interface
-        // declaration — `///` doc comments are captured by `doc_comment`,
-        // and `.gxi` files use `//` for internal notes (e.g. XCRs). Their
-        // retention isn't a goal; this restores the pre-change behavior
-        // for the interface parser without affecting the `.gx` rule.
+        // Plain `//` lines above an interface declaration are skipped, not
+        // retained; only `///` doc comments are captured.
         grow((position(), leading_comments().with(doc_comment()).skip(spaces())).then(|(pos, doc)| {
             let ori = Some(crate::expr::get_origin());
             choice((
@@ -176,11 +173,9 @@ where
         .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
 }
 
-/// A use-tree path segment: an ordinary name, or one of the path
-/// keywords (`self`/`super`/`package` — leading-position rules are
-/// enforced by [`check_use_items`] on the assembled path, where the
-/// refusal can say what is wrong; `fname` refuses the bare keywords
-/// everywhere else).
+/// A use-tree path segment: an ordinary name or a path keyword
+/// (`self`/`super`/`package`); [`check_use_items`] enforces the keywords'
+/// positional rules on the assembled path.
 fn use_segment<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -192,10 +187,8 @@ where
         attempt(string("super").skip(not_prefix())).map(|_| arcstr::literal!("super")),
         attempt(string("package").skip(not_prefix()))
             .map(|_| arcstr::literal!("package")),
-        // values/modules are lowercase, types uppercase — a use
-        // imports every kind sharing the name, so both are legal
-        // segments (an uppercase INTERIOR refuses at resolution:
-        // no module is uppercase)
+        // A use imports every kind sharing the name, so both lowercase
+        // and uppercase segments are legal here.
         fname(),
         typname(),
     ))
@@ -207,7 +200,6 @@ fn check_use_item(segs: &[ArcStr], rename: &Option<ArcStr>) -> Option<&'static s
     if segs.is_empty() {
         return Some("`self` outside a use group");
     }
-    // the leading keyword run: one self/package, or N supers
     let lead = match &*segs[0] {
         "self" | "package" => 1,
         "super" => segs.iter().take_while(|s| &***s == "super").count(),
@@ -234,13 +226,9 @@ fn check_use_item(segs: &[ArcStr], rename: &Option<ArcStr>) -> Option<&'static s
 }
 
 parser! {
-    /// One element of a use tree, yielding the path SUFFIXES it
-    /// denotes as (segment list, rename) pairs: a plain path (`a::b`),
-    /// a path ending in a group (`a::{b, c::d}` — nesting allowed), a
-    /// bare group (`{a, b}` — what the printer emits when several
-    /// names share no prefix), a glob leaf (`*`), a renamed leaf
-    /// (`b as c`), or `self` (the enclosing prefix itself — an empty
-    /// suffix, rejected at top level where there is no prefix).
+    /// One element of a use tree, yielding the path suffixes it denotes as
+    /// (segment list, rename) pairs: a path, a path ending in a group, a
+    /// bare group, a glob leaf, a renamed leaf, or `self` (an empty suffix).
     fn use_tree[I]()(I) -> Vec<(Vec<ArcStr>, Option<ArcStr>)>
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {

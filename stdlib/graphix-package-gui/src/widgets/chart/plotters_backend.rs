@@ -1,7 +1,4 @@
-//! Plotters DrawingBackend implementation targeting an iced Canvas Frame.
-//!
-//! Translates plotters drawing operations to iced Frame methods for
-//! GPU-accelerated chart rendering.
+//! Plotters DrawingBackend targeting an iced Canvas Frame.
 
 use crate::widgets::Renderer;
 use iced_core::{Color, Point, Size, Vector, alignment, text::Alignment as TextAlign};

@@ -143,8 +143,6 @@ fn utf8_path(p: ArcPath) -> Value {
     Value::String(arcstr::format!("{}", p.display()))
 }
 
-// ── Abstract types ───────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 struct WatcherValue {
     watcher: Watcher,
@@ -235,8 +233,6 @@ graphix_package_core::abstract_wrapper!(
     WatchValue,
     static WATCH_VALUE_WRAPPER = "sys::fs::watch::Watch"
 );
-
-// ── CreateWatcher ────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct CreateWatcher {
@@ -334,8 +330,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
-
-// ── WatchApply ───────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct WatchApply {
@@ -435,8 +429,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
     }
 }
 
-// ── Shared helpers for accessor functions ────────────────────────
-
 fn extract_bind_ids(v: &Value, out: &mut IntSet<BindId>) {
     match v {
         Value::Abstract(a) => {
@@ -496,8 +488,6 @@ fn convert_events(w: &mut WEvent) -> Value {
     let paths = ValArray::from_iter_exact(w.0.paths.drain().map(utf8_path));
     ((literal!("event"), event), (literal!("paths"), Value::Array(paths))).into()
 }
-
-// ── WatchPath accessor ──────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct WatchPath {
@@ -572,8 +562,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         }
     }
 }
-
-// ── WatchEvents accessor ────────────────────────────────────────
 
 #[derive(Debug)]
 pub(crate) struct WatchEvents {

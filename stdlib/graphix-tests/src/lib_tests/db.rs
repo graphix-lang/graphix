@@ -158,9 +158,7 @@ run_with_tempdir!(
     expect: |v: Value| -> Result<()> {
         let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
         let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
-        // 5 entries returned, read_many(6) should not over-read
         assert_eq!(arr.len(), 5, "expected 5 entries from read_many(6), got {}", arr.len());
-        // Expected order: -50, -1, 0, 50, 100
         let expected: &[(i64, &str)] = &[
             (-50, "neg fifty"), (-1, "neg one"), (0, "zero"), (50, "fifty"), (100, "hundred"),
         ];
@@ -206,7 +204,6 @@ run_with_tempdir!(
     expect: |v: Value| -> Result<()> {
         let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
         let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
-        // Should get "aaa" and "aab" entries, then null
         match &arr[0] {
             Value::Array(pair) => match &pair[0] {
                 Value::String(s) if &**s == "aaa" => (),
@@ -530,13 +527,10 @@ run_with_tempdir!(
         let outer = match &v { Value::Array(a) => a, _ => panic!("not array: {v:?}") };
         let arr = match &outer[0] { Value::Array(a) => a, _ => panic!("results not array: {:?}", outer[0]) };
         assert_eq!(arr.len(), 3);
-        // batch1: 2 entries
         let b1 = match &arr[0] { Value::Array(a) => a, _ => panic!("batch1 not array") };
         assert_eq!(b1.len(), 2, "batch1 should have 2 entries");
-        // batch2: 1 entry (only "c" left)
         let b2 = match &arr[1] { Value::Array(a) => a, _ => panic!("batch2 not array") };
         assert_eq!(b2.len(), 1, "batch2 should have 1 entry");
-        // batch3: 0 entries (exhausted)
         let b3 = match &arr[2] { Value::Array(a) => a, _ => panic!("batch3 not array") };
         assert_eq!(b3.len(), 0, "batch3 should be empty");
         assert_tree_type(&outer[1], "string", "i64");
@@ -544,15 +538,9 @@ run_with_tempdir!(
     }
 );
 
-// Verify get_type with explicit annotations and missing tree.
-//
-// NB: `t2` is created *after* `t1` (its name arg `t1 ~ "other"` doesn't
-// fire until `t1` is done), so the whole read chain below — which is
-// gated on `t2` via `missing` — runs only once BOTH trees exist.
-// Creating both trees concurrently (`db::tree(db, "other")`) races the
-// `ty1` read of "typed" against `t1`'s creation; under load `ty1` could
-// observe "typed" before `t1` finished and get `null`. Sequence the
-// execution by sampling the argument (CLAUDE.md gotcha), not the call.
+// get_type with explicit annotations and a missing tree. `t2` is
+// created after `t1` (`t1 ~ "other"`) so the read chain gated on `t2`
+// runs once both trees exist.
 run_with_tempdir!(
     name: db_get_type,
     code: r#"{{
@@ -573,11 +561,8 @@ run_with_tempdir!(
             _ => panic!("expected Array, got: {v:?}"),
         };
         assert_eq!(arr.len(), 3);
-        // missing tree returns null
         assert!(matches!(&arr[0], Value::Null), "expected Null for missing, got: {:?}", arr[0]);
-        // typed tree: (i64, string)
         assert_tree_type(&arr[1], "i64", "string");
-        // other tree: (string, bool)
         assert_tree_type(&arr[2], "string", "bool");
         Ok(())
     }
@@ -666,8 +651,6 @@ run_with_tempdir!(
         Ok(())
     }
 );
-
-// ── Range query tests ─────────────────────────────────────────────
 
 // Range with integer keys: insert 5 values, range [5, 15) → 2 entries
 run_with_tempdir!(
@@ -807,8 +790,6 @@ run_with_tempdir!(
     }
 );
 
-// ── Transaction tests ─────────────────────────────────────────────
-
 // Commit: begin, insert, commit, verify with db::get
 run_with_tempdir!(
     name: db_txn_commit,
@@ -927,7 +908,6 @@ run_with_tempdir!(
         td.path().join("test_sub_insert.db")
     },
     expect: |v: Value| -> Result<()> {
-        // on_insert returns Array<{key: 'k, value: 'v}>
         let outer = match &v { Value::Array(a) => a, _ => panic!("expected array, got: {v:?}") };
         assert_eq!(outer.len(), 1, "expected 1 insert event, got: {}", outer.len());
         let s = match &outer[0] { Value::Array(a) => a, _ => panic!("expected struct, got: {:?}", outer[0]) };
@@ -963,7 +943,6 @@ run_with_tempdir!(
         td.path().join("test_sub_remove.db")
     },
     expect: |v: Value| -> Result<()> {
-        // on_remove returns Array<{key: 'k}>
         let outer = match &v { Value::Array(a) => a, _ => panic!("expected array, got: {v:?}") };
         assert_eq!(outer.len(), 1, "expected 1 remove event, got: {}", outer.len());
         let s = match &outer[0] { Value::Array(a) => a, _ => panic!("expected struct, got: {:?}", outer[0]) };
@@ -978,9 +957,8 @@ run_with_tempdir!(
     }
 );
 
-// Both on_insert and on_remove active on the same subscription.
-// Tests that the event is not consumed by the first handler (the fix
-// for scan_db_events using get instead of remove).
+// on_insert and on_remove active on one subscription: the first handler
+// does not consume the event.
 run_with_tempdir!(
     name: db_subscribe_both_handlers,
     code: r#"{{

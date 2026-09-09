@@ -35,13 +35,8 @@ where
     Ok(())
 }
 
-/// Pick a position encoding the client supports. Our cursor logic
-/// counts Unicode scalars (Rust `char`s), which matches UTF-32
-/// exactly. UTF-16 (the LSP default) only diverges from char count on
-/// non-BMP characters (emoji, some math symbols), so when the client
-/// can speak UTF-32 we prefer it; otherwise we fall through and accept
-/// the default UTF-16, knowing positions on lines containing non-BMP
-/// chars may be off by a column.
+/// Prefer UTF-32 when the client supports it: our cursor logic counts
+/// `char`s, and UTF-16 (the LSP default) diverges on non-BMP characters.
 fn select_position_encoding(init: &InitializeParams) -> Option<PositionEncodingKind> {
     let offered = init.capabilities.general.as_ref()?.position_encodings.as_ref()?;
     offered.iter().find(|e| **e == PositionEncodingKind::UTF32).cloned()
@@ -82,8 +77,8 @@ fn run_server<F>(connection: Connection, make_backend: F) -> Result<()>
 where
     F: FnOnce(&InitializeParams) -> Result<Arc<dyn LspBackend>>,
 {
-    // Two-phase init so we can read the client's `positionEncodings`
-    // list before committing to one in our own capabilities response.
+    // Two-phase init: read the client's `positionEncodings` before
+    // committing to one in our capabilities.
     let (req_id, init_value) = connection.initialize_start()?;
     let init_params: InitializeParams = serde_json::from_value(init_value)?;
     let encoding = select_position_encoding(&init_params);
@@ -114,8 +109,8 @@ where
     let mut state = ServerState::new(backend, snippet_support, position_encoding);
     let initial = state.set_workspace_roots(workspace_roots);
     for (uri, diags) in initial {
-        // No editor-tracked version yet at startup — these are project
-        // diagnostics for files the user may not have open.
+        // Project diagnostics for files the user may not have open have no
+        // editor-tracked version.
         publish_diagnostics(&connection, uri, diags, None)?;
     }
     for msg in &connection.receiver {
@@ -234,15 +229,10 @@ fn handle_notification(
         }
         "textDocument/didSave" => {
             let _params: DidSaveTextDocumentParams = serde_json::from_value(not.params)?;
-            // A save means disk now reflects the user's intent —
-            // recompile every project so cross-file errors and
-            // references update.
+            // Disk now reflects the user's intent: recompile every project.
             let updates = state.recheck_workspace();
-            // Publish per-file diagnostics. For files the editor has
-            // open we use the tracked document version so the client
-            // can match the diagnostics to the correct revision; for
-            // closed files we send None (the spec lets clients accept
-            // unversioned diagnostics for files they aren't tracking).
+            // Open files get the tracked document version; closed files are
+            // sent unversioned.
             for (uri, diags) in updates {
                 let version = state.documents.get(&uri).map(|d| d.version);
                 publish_diagnostics(connection, uri, diags, version)?;
@@ -255,9 +245,8 @@ fn handle_notification(
     Ok(())
 }
 
-/// Pull filesystem roots out of the editor's `initialize` params.
-/// Prefers `workspaceFolders` (multi-root capable), falls back to the
-/// deprecated `rootUri`/`rootPath`.
+/// Filesystem roots from the editor's `initialize` params:
+/// `workspaceFolders`, else the deprecated `rootUri`/`rootPath`.
 fn workspace_roots_from(init: &InitializeParams) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(folders) = &init.workspace_folders {

@@ -106,15 +106,10 @@ pub enum Message {
     /// All values in logical pixels.
     Scroll(f32, f32, f32, f32),
     /// A cell was clicked in a data table (row index, column name).
-    /// Column name is the data_table widget's cached `ColumnSpec.name`
-    /// or one of the synthesized sentinels (`ROW_NAME_KEY`/value-mode);
-    /// either way it's a refcount-bump clone, never a fresh allocation.
     CellClick(usize, ArcStr),
     /// A cell was clicked to begin editing (row index, column name).
     CellEdit(usize, ArcStr),
-    /// Cell edit text changed (new text). `CompactString` keeps small
-    /// edits inline (≤ 24 bytes) without heap traffic on each
-    /// keystroke.
+    /// Cell edit text changed (new text).
     CellEditInput(CompactString),
     /// Cell edit submitted (Enter pressed).
     CellEditSubmit,
@@ -123,9 +118,7 @@ pub enum Message {
     /// Column resize drag started (col_meta index).
     ColumnResizeStart(usize),
     /// Cursor moved while a column resize drag might be active
-    /// (cursor x in widget-local coordinates). The event loop filters
-    /// this against the widget's `is_column_resizing` state — only
-    /// widgets currently dragging consume it.
+    /// (cursor x in widget-local coordinates); only a dragging widget consumes it.
     ColumnResizeMove(f32),
     /// Column resize drag ended.
     ColumnResizeEnd,
@@ -148,10 +141,8 @@ pub enum TableKeyAction {
     Escape,
 }
 
-/// Context passed to `GuiWidget::on_message` so handlers can read
-/// per-window state (e.g. the cursor position a column-resize needs)
-/// and publish follow-up messages (e.g. a `Call` fired from a drag
-/// update) without the event loop having to know widget specifics.
+/// Context passed to `GuiWidget::on_message`: per-window state
+/// (cursor position) and a queue for follow-up messages.
 pub struct MessageShell {
     pub cursor_position: iced_core::Point,
     pub out: LPooled<Vec<Message>>,
@@ -167,9 +158,8 @@ impl MessageShell {
     }
 }
 
-/// Trait for GUI widgets. Unlike TUI widgets, GUI widgets are not
-/// async — handle_update is synchronous, and the view method builds
-/// an iced Element tree.
+/// Trait for GUI widgets. `handle_update` is synchronous; `view`
+/// builds an iced Element tree.
 pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Process a value update from graphix. Widgets that own child
     /// refs use `rt` to `block_on` recompilation of their subtree.
@@ -184,12 +174,8 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
 
-    /// Child widgets that `on_message` and `before_view` should
-    /// forward to. Leaf widgets return `&mut []` (the default).
-    /// Containers (row, column, container, scrollable, stack, …)
-    /// override this so that messages flow down to nested widgets
-    /// like `data_table` — without it the event loop delivers
-    /// messages to the window's top-level widget only.
+    /// Child widgets that `on_message` and `before_view` forward to.
+    /// Leaf widgets return `&mut []` (the default); containers override.
     fn children_mut(&mut self) -> &mut [GuiW<X>] {
         &mut []
     }
@@ -198,11 +184,9 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         &[]
     }
 
-    /// Dispatch a message to the widget. Returns `true` if the
-    /// widget changed and a redraw is needed. Widgets that emit
-    /// follow-up messages (e.g. a `Call` fired from a column-resize
-    /// drag) publish through `shell`. The default implementation
-    /// forwards to children — containers don't need to override.
+    /// Dispatch a message to the widget. Returns `true` if a redraw
+    /// is needed. Follow-up messages go through `shell`. The default
+    /// forwards to children.
     fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
         let mut changed = false;
         for child in self.children_mut() {
@@ -211,23 +195,20 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         changed
     }
 
-    /// True if this widget (or any descendant) is currently tracking
-    /// a column-resize drag. The event loop polls this to decide
-    /// whether a cursor-moved event should be routed as a drag update.
+    /// True if this widget or any descendant is tracking a
+    /// column-resize drag.
     fn is_column_resizing(&self) -> bool {
         self.children().iter().any(|c| c.is_column_resizing())
     }
 
     /// Return a DataTableSnapshot if this widget is a data table.
-    /// Default returns None. Overridden by DataTableW.
     #[cfg(test)]
     fn data_table_snapshot(&self) -> Option<DataTableSnapshot> {
         None
     }
 
-    /// Downcast escape hatch for tests that need access to a concrete
-    /// widget type. Default panics — only widgets that need test-only
-    /// state inspection (currently just `DataTableW`) override this.
+    /// Downcast escape hatch for tests. The default panics; only
+    /// widgets with test-inspected state override it.
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any {
         unimplemented!("as_any not implemented for this widget")
@@ -238,12 +219,9 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         unimplemented!("as_any_mut not implemented for this widget")
     }
 
-    /// Called immediately before `view()` so widgets can flush deferred
-    /// state that arrived asynchronously from background tasks (e.g.
-    /// `data_table` re-sorting after sort-column subscription data
-    /// arrives outside of the graphix update cycle). Returns `true` if
-    /// state changed and the window should redraw. The default forwards
-    /// to children so containers don't have to.
+    /// Called immediately before `view()` to flush state that arrived
+    /// from background tasks. Returns `true` if the window should
+    /// redraw. The default forwards to children.
     fn before_view(&mut self) -> bool {
         let mut changed = false;
         for child in self.children_mut() {
@@ -287,8 +265,7 @@ impl<X: GXExt> GuiWidget<X> for EmptyW {
     }
 }
 
-/// Generate a flex layout widget (Row or Column). All parameters use
-/// call-site tokens to satisfy macro hygiene for local variable names.
+/// Generate a flex layout widget (Row or Column).
 macro_rules! flex_widget {
     ($name:ident, $label:literal,
      $spacing:ident, $padding:ident, $width:ident, $height:ident,

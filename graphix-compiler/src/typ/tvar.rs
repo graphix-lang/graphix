@@ -25,11 +25,8 @@ pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     would_cycle_seen(addr, t, &mut seen)
 }
 
-// `seen` holds cell addrs already on the walk: conjunct graphs can be
-// CYCLIC (phase C parser seeding aliases quantifier names across
-// nested fn types), and an unguarded walk looped cell → conjunct →
-// same cell forever whenever the target addr wasn't in the cycle. A
-// revisited cell adds no reachability, so it answers false.
+// Conjunct graphs can be cyclic; a revisited cell adds no
+// reachability, so it answers false.
 fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> bool {
     crate::stack::ensure_sufficient(|| would_cycle_seen_inner(addr, t, seen))
 }
@@ -39,14 +36,8 @@ fn would_cycle_seen_inner(
     t: &Type,
     seen: &mut nohash::IntSet<usize>,
 ) -> bool {
-    // The query is a pure existence check over an immutable snapshot, so
-    // `seen` is a true visited set (never removed): a fully-explored
-    // subtree that didn't contain `addr` never needs re-exploring. It
-    // holds BOTH cell addresses and composite node addresses — the same
-    // shared composite reached along many paths was re-scanned per path
-    // (tree-cost over the DAG; part of the 2026-07-13 widget-type
-    // compile blowup). Variant-blind address dedup is sound here: the
-    // answer depends only on the leaves reachable from the allocation.
+    // `seen` is a true visited set holding both cell and composite
+    // node addresses; the answer depends only on reachable leaves.
     let node = match t {
         Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a) => {
             Some((**a).as_ptr().addr())
@@ -57,9 +48,7 @@ fn would_cycle_seen_inner(
         Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(a) => {
             Some((&**a as *const Type).addr())
         }
-        // Map carries TWO Arcs; a single-address key could alias a
-        // different (key, value) pairing and skip the value — its
-        // children dedup individually instead.
+        // Map carries two Arcs, so its children dedup individually.
         Type::Map { .. }
         | Type::App(..)
         | Type::Hole
@@ -75,19 +64,8 @@ fn would_cycle_seen_inner(
         return false;
     }
     match t {
-        // A Ref's PARAMS are containing positions: expansion
-        // (`contains` instantiates the name's body with them)
-        // reaches every cell they hold, so a cell bound to a type
-        // that reaches itself through a Ref param is an infinite
-        // type that expansion unfolds forever. The BODY stays
-        // unexpanded — a typedef body's free tvars are its declared
-        // params, so all cell reachability from an expansion flows
-        // through the params walked here. Fn signatures go through
-        // the default walker — constraint TYPES live in the
-        // signature cells' conjunctions (phase C), and the `TVar`
-        // arm walks each reachable cell's conjuncts, so the
-        // component walk covers everything the retired list walk
-        // reached.
+        // Expansion reaches every cell a Ref's params hold; a typedef
+        // body's free tvars are its params, so the params cover it.
         Type::Ref(r) => r.params.iter().any(|p| would_cycle_seen(addr, p, seen)),
         Type::TVar(t) => {
             Arc::as_ptr(&t.read().typ).addr() == addr || {
@@ -116,48 +94,22 @@ fn would_cycle_seen_inner(
     }
 }
 
-/// The SHARED binding cell: aliased `TVar`s hold one `Arc` of this, so
-/// the constraint travels with the binding — every alias sees, and
-/// alias-time merging writes into, the same cell.
-///
-/// `constraints` is a CONJUNCTION: everything this cell is ever bound
-/// to must be contained by EVERY member (empty = unconstrained).
-/// Conjunction rather than a single intersected type keeps alias-time
-/// merging infallible (list concatenation, no `Env` needed to resolve
-/// Refs); each bind site checks the conjuncts where an `Env` exists,
-/// so a genuinely unsatisfiable merge errors at the first bind with
-/// the violated constraint named.
+/// The shared binding cell: aliased `TVar`s hold one `Arc` of this.
+/// `constraints` is a conjunction — everything the cell is ever bound
+/// to must be contained by every member (empty = unconstrained); each
+/// bind site checks it where an `Env` exists.
 #[derive(Debug, Default)]
 pub struct TCell {
     pub(crate) typ: Option<Type>,
     pub(crate) constraints: smallvec::SmallVec<[Type; 1]>,
-    /// An occurs check refused to bind or link this cell: the type it
-    /// was being equated with reaches the cell itself, so the only
-    /// solution is an INFINITE type (`let rec f = |n, acc| f` — f's
-    /// return type is f's own type). The refusal is silent at the
-    /// bind site (later writers may still refine the cell), but a
-    /// flagged cell that reaches the terminal settle still open and
-    /// unconstrained must ERROR rather than default to ⊥ — the ⊥ is
-    /// vacuous in unions, so the value's type collapses to the OTHER
-    /// members and the kernel compares a Fn element's payload bits as
-    /// a scalar (jul18c fleet divergence, both findings).
+    /// An occurs check refused to bind or link this cell (the only
+    /// solution was an infinite type). A flagged cell still open at
+    /// the terminal settle must error rather than default to ⊥.
     pub(crate) cycle_refused: bool,
-    /// RIGID: a DECLARED (user-annotated, named) lambda tvar during its
-    /// def's body check. A rigid unbound cell never binds — the body
-    /// must be well-typed for ARBITRARY 'a (within the constraints), so
-    /// `contains('a, T)` is false for any concrete T and
-    /// `contains(T, 'a)` holds only when T contains a constraint
-    /// conjunct. Without this, the def check bound 'a to the body's
-    /// concrete type, `unbind_tvars` discarded it, and every callsite
-    /// re-instantiated 'a from its args alone — the signature became a
-    /// lie the JIT trusted (soak jul09c, rigid_tvar_body_escape).
-    /// Instantiation (`reset_tvars`) mints fresh cells, so callsite
-    /// unification is unaffected. Anonymous `'_N` inference cells are
-    /// never rigid — unannotated arg/rtype inference still binds.
-    /// A COUNTER, not a bool: nested def gates can share a cell (an
-    /// inner lambda annotated with the enclosing lambda's 'a), and the
-    /// inner gate's exit must not un-rigidify the outer's still-open
-    /// gate.
+    /// Nonzero while a declared (named) lambda tvar is inside its def's
+    /// body check: a rigid unbound cell never binds, so the body must
+    /// be well-typed for arbitrary 'a. A counter because nested def
+    /// gates can share a cell.
     pub(crate) rigid: u32,
 }
 
@@ -172,14 +124,8 @@ impl TCell {
     }
 
     /// Add `c` to the conjunction unless an equal member is present.
-    ///
-    /// LOCK DISCIPLINE: the dedup eq-walk can reach this very cell (a
-    /// conjunct may contain the cell's own tvar — the reachability
-    /// Debug/Display cycle-guard against), so this must NOT run under
-    /// a held tvar/cell write guard: the walk's `TVar::read` on the
-    /// guarded lock self-deadlocks at 0 CPU (the jul23c lost-wake
-    /// wedge). Callers holding guards pre-compute the dedup lock-free
-    /// and push directly.
+    /// The eq walk can reach this very cell, so this must not run
+    /// under a held tvar/cell guard.
     pub(crate) fn add_constraint(&mut self, c: Type) {
         if !self.constraints.iter().any(|e| e == &c) {
             self.constraints.push(c)
@@ -203,9 +149,8 @@ pub struct TVarInner {
 #[derive(Clone)]
 pub struct TVar(std::mem::ManuallyDrop<Arc<TVarInner>>);
 
-/// A cell's constraints hold types that hold cells, so destroying a
-/// deeply nested type re-enters this. See [`Node`](crate::Node)'s twin
-/// for why the teardown has to be explicit and inside the guard.
+/// A cell's constraints hold types that hold cells, so teardown
+/// recurses and must run inside the stack guard.
 impl Drop for TVar {
     fn drop(&mut self) {
         crate::stack::ensure_sufficient(|| unsafe {
@@ -214,12 +159,7 @@ impl Drop for TVar {
     }
 }
 
-// Manual, cycle-guarded: since cells became the constraint store
-// (phase C) a cell's conjuncts can reach the cell itself (parser
-// seeding aliases quantifier names across nested fn types), and the
-// derived impl recursed cell → constraints → conjunct → same cell
-// until the stack blew — first seen as proptest overflowing while
-// REPORTING a failing case. Same shape as Display's PRINTING guard.
+// Cycle-guarded: a cell's conjuncts can reach the cell itself.
 impl fmt::Debug for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         thread_local! {
@@ -243,13 +183,11 @@ impl fmt::Display for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
             if &*self.name == "self" {
-                // a trait method's receiver type is spelled `self`
                 return write!(f, "self");
             }
             if self.name.starts_with('#') {
-                // a trait written in argument position (`fn(s: Read)`)
-                // is a compiler-minted quantifier whose one conjunct is
-                // the trait; print it as written
+                // A trait in argument position (`fn(s: Read)`) is a
+                // quantifier whose one conjunct is the trait.
                 let cons = self.cell_constraints();
                 if let [c] = &cons[..] {
                     return write!(f, "{c}");
@@ -257,15 +195,9 @@ impl fmt::Display for TVar {
             }
             write!(f, "'{}", self.name)
         } else {
-            // Cycle guard: a cell can be reachable from its own
-            // CONSTRAINTS (name-aliased fn-signature cells merge when
-            // a polymorphic builtin is used as a first-class value —
-            // soak jul06h), and the deref print recurses through both
-            // the binding and the constraint list — printing a type
-            // ERROR then overflowed the stack before any message got
-            // out. Track the cells on the current print stack; a
-            // revisit elides. Cell contents are cloned OUT before the
-            // recursive writes (never recurse under the cell guard).
+            // A cell can be reachable from its own constraints; a
+            // revisit on the print stack elides. Contents are cloned
+            // out before recursing (never recurse under the cell guard).
             thread_local! {
                 static PRINTING: std::cell::RefCell<nohash::IntSet<usize>> =
                     std::cell::RefCell::new(nohash::IntSet::default());
@@ -360,7 +292,6 @@ impl Ord for TVar {
 
 impl std::hash::Hash for TVar {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Mirror PartialEq: hash the inner Type. Same lock-pattern.
         let t = self.read();
         let inner = t.typ.read();
         inner.typ.hash(state);
@@ -397,9 +328,7 @@ impl TVar {
         })))
     }
 
-    /// Add a conjunct to this var's CELL constraints (deduped). The
-    /// dedup runs lock-free (see `TCell::add_constraint`'s lock
-    /// discipline).
+    /// Add a conjunct to this var's cell constraints (deduped).
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.read().typ.clone();
         let existing = cell.read().constraints.clone();
@@ -421,22 +350,12 @@ impl TVar {
         self.typ.write()
     }
 
-    /// make self an alias for other. Self's constraints MERGE into the
-    /// now-shared cell (a conjunction — both vars' obligations apply to
-    /// whatever the cell is ever bound to).
+    /// Make self an alias for other; self's constraints merge into the
+    /// shared cell.
     pub fn alias(&self, other: &Self) {
-        // Occurs check on the MERGE: if other's cell (through its
-        // binding or constraints) reaches self's cell — or self's
-        // constraints (about to move into other's cell) reach other's —
-        // the merged cell becomes reachable from its own contents: an
-        // infinite type that every later walk (contains deref,
-        // normalize, resolve_tvars, Display) recurses on forever.
-        // Cell merges had no such check while every BIND site did —
-        // the cycle vector behind soak jul06h's compile wedge
-        // (name-aliased fn-signature cells entangled by a polymorphic
-        // builtin used as a first-class value). Skip the merge instead:
-        // unlinked cells only keep inference looser, which at worst
-        // rejects — never hangs.
+        // Occurs check: a merged cell reachable from its own contents
+        // is an infinite type every later walk loops on. Skipping the
+        // merge only keeps inference looser.
         {
             let self_addr = Arc::as_ptr(&self.read().typ).addr();
             let other_addr = Arc::as_ptr(&other.read().typ).addr();
@@ -471,9 +390,7 @@ impl TVar {
                 }
             }
         }
-        // Constraint dedup PRE-COMPUTED lock-free: the eq walk can
-        // re-enter these very cells/tvars through a self-referential
-        // conjunct (see `TCell::add_constraint`).
+        // Dedup computed lock-free: the eq walk can re-enter these cells.
         let mut to_add = {
             let s_cell = self.read().typ.clone();
             let o_cell = other.read().typ.clone();
@@ -504,19 +421,9 @@ impl TVar {
                         oc.constraints.push(c);
                     }
                 }
-                // FORWARD-LINK the abandoned cell before moving off it:
-                // other TVar structs may share the old allocation, and
-                // without the link they orphan — later facts fork
-                // between the allocations and the orphan terminal-
-                // settles ⊥ (jul17c katana divergence 000001: a rec
-                // def's return-cell copy severed from the acc chain, so
-                // the elem union flattened `[i64, ⊥]` → i64 and the
-                // kernel compared a Fn element's payload bits as i64).
-                // The occurs check above guarantees `other` doesn't
-                // reach this cell, so the link can't close a cycle. A
-                // cell that already holds a binding keeps it — the
-                // link only rescues cells that would otherwise stay
-                // open forever.
+                // Forward-link the abandoned cell: other TVars may share
+                // it and must follow the merge. The occurs check above
+                // guarantees the link closes no cycle.
                 {
                     let mut sc = s.typ.write();
                     if sc.typ.is_none() {
@@ -532,15 +439,9 @@ impl TVar {
         self.write().frozen = true;
     }
 
-    /// Merge self's CELL into other's, bypassing the `frozen` gate
-    /// that [`Self::alias`] honors — but keeping its occurs checks.
-    /// `frozen` means "name-aliasing already happened for this var"
-    /// (each var joins a name group once); a UNIFICATION-driven merge
-    /// is a different act: two already-settled groups whose types are
-    /// being equated must share one cell or later facts fork between
-    /// them (the instantiation copy-skew family,
-    /// site_recheck_strictness.md — the vacuous frozen×frozen
-    /// unification was how `elem := null` and `cmp := i64` never met).
+    /// Merge self's cell into other's for a unification-driven merge:
+    /// bypasses the `frozen` gate [`Self::alias`] honors (frozen means
+    /// name-aliasing already happened) but keeps its occurs checks.
     pub(super) fn alias_cells(&self, other: &Self) {
         {
             let self_addr = Arc::as_ptr(&self.read().typ).addr();
@@ -560,7 +461,6 @@ impl TVar {
                 return;
             }
         }
-        // Lock-free dedup, same discipline as [`Self::alias`].
         let mut to_add = {
             let s_cell = self.read().typ.clone();
             let o_cell = other.read().typ.clone();
@@ -597,8 +497,7 @@ impl TVar {
                     oc.constraints.push(c);
                 }
             }
-            // Same forward-link as [`Self::alias`] — sharers of the
-            // abandoned cell must follow the merge.
+            // Forward-link as in [`Self::alias`].
             {
                 let mut sc = s.typ.write();
                 if sc.typ.is_none() {
@@ -609,13 +508,9 @@ impl TVar {
         }
     }
 
-    /// copy self's binding from other, MERGING constraint lists (self
-    /// keeps its own obligations — the bind-site check has already
-    /// verified the incoming binding against them).
+    /// Copy self's binding from other, merging constraint lists.
     pub fn copy(&self, other: &Self) {
-        // Same occurs check as [`Self::alias`]: a binding that reaches
-        // self's cell would make the cell cyclic. Skip rather than
-        // hang every later walk.
+        // Occurs check as in [`Self::alias`].
         {
             let self_addr = Arc::as_ptr(&self.read().typ).addr();
             if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
@@ -651,8 +546,6 @@ impl TVar {
                 );
             }
         }
-        // Lock-free dedup against self's existing conjuncts (see
-        // `TCell::add_constraint`'s lock discipline).
         let existing = s.typ.read().constraints.clone();
         let mut to_add: LPooled<Vec<Type>> = LPooled::take();
         for c in ocons {
@@ -672,14 +565,8 @@ impl TVar {
     }
 
     pub(super) fn normalize_int(&self, cx: &mut super::normalize::NormCx) -> Self {
-        // First visit only (`cx.cells` is keyed by cell address — the
-        // walk reaches one cell along many paths through aliases and
-        // shared subterms, and re-walking is exponential; see
-        // `Type::normalize`). Clone the binding out, normalize
-        // UNLOCKED, write back — never recurse under the cell's write
-        // guard: parking_lot locks are non-reentrant, so recursing
-        // under the guard deadlocked the whole compile (soak jul06h,
-        // the other half of the same wedge).
+        // First visit only. Clone the binding out, normalize unlocked,
+        // write back: the lock is non-reentrant.
         if cx.cells.insert(self.cell_addr()) {
             let bound = self.read().typ.read().typ.clone();
             if let Some(t) = bound
@@ -691,21 +578,17 @@ impl TVar {
         self.clone()
     }
 
-    /// Clear the binding. The CONSTRAINTS stay — an unbound cell
-    /// returns to constrained-unbound, not to unconstrained.
+    /// Clear the binding; the constraints stay.
     pub fn unbind(&self) {
         self.read().typ.write().typ = None
     }
 
-    /// Mark this var's shared cell RIGID — see [`TCell::rigid`]. Set on
-    /// DECLARED (named) signature tvars at the lambda def gate; every
-    /// same-named signature occurrence shares the cell via
-    /// `alias_tvars`, so marking the representative marks them all.
+    /// Mark this var's shared cell rigid; see [`TCell::rigid`].
     pub fn set_rigid(&self) {
         self.read().typ.write().rigid += 1
     }
 
-    /// Clear one gate's rigidity claim when it exits — see `set_rigid`.
+    /// Clear one gate's rigidity claim.
     pub fn clear_rigid(&self) {
         let tv = self.read();
         let mut cell = tv.typ.write();
@@ -716,8 +599,7 @@ impl TVar {
         self.read().typ.read().rigid > 0
     }
 
-    /// Record an occurs-check refusal on this cell — see
-    /// [`TCell::cycle_refused`].
+    /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
     pub(super) fn mark_cycle_refused(&self) {
         if crate::dbgenv::graphix_dbg_bind() {
             eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
@@ -757,26 +639,19 @@ impl TVar {
     }
 }
 
-// The structural walks below are each written as their INTERESTING
-// arms (TVar, plus any arm whose traversal policy differs from plain
-// recursion — chiefly whether `Ref` params are walked), with all other
-// structure routed through the shared child walkers
-// (`Type::try_for_each_child` / `Type::cow_children`), so the
-// exhaustive Type match lives in one place per walk kind. Every
-// divergence from the default is an explicit override; the skips are
-// preserved verbatim from the pre-walker code (the policy survey is
-// review A4/C8, design/code_review_2026_07_19.md).
+// Each walk below spells out only the arms whose policy differs from
+// plain recursion (chiefly whether `Ref` params are walked); the rest
+// routes through `Type::try_for_each_child` / `Type::cow_children`.
 impl Type {
     pub fn unfreeze_tvars(&self) {
         match self {
             Type::TVar(tv) => tv.write().frozen = false,
-            // FnType adds the guarded sig-cell constraint walk.
             Type::Fn(ft) => ft.unfreeze_tvars(),
             t => t.for_each_child(&mut |c| c.unfreeze_tvars()),
         }
     }
 
-    /// alias type variables with the same name to each other
+    /// Alias type variables with the same name to each other.
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
         match self {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
@@ -789,7 +664,6 @@ impl Type {
                     e.insert(tv.clone());
                 }
             },
-            // FnType adds the guarded sig-cell constraint walk.
             Type::Fn(ft) => ft.alias_tvars(known),
             t => t.for_each_child(&mut |c| c.alias_tvars(known)),
         }
@@ -800,7 +674,6 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
-            // FnType adds the guarded sig-cell constraint walk.
             Type::Fn(ft) => ft.collect_tvars(known),
             t => t.for_each_child(&mut |c| c.collect_tvars(known)),
         }
@@ -815,8 +688,7 @@ impl Type {
                     Ok(())
                 }
             }
-            // Nested fn types quantify their own tvars — not checked
-            // against the enclosing declaration set.
+            // Nested fn types quantify their own tvars.
             Type::Fn(_) => Ok(()),
             t => match t.try_for_each_child(&mut |c| match c
                 .check_tvars_declared(declared)
@@ -833,11 +705,7 @@ impl Type {
     pub fn has_unbound(&self) -> bool {
         match self {
             Type::TVar(tv) => tv.read().typ.read().typ.is_none(),
-            // Ref PARAMS are walked (Eric's C8 ruling, 2026-07-20 —
-            // the pre-walker code skipped them): an inferred
-            // `Alias<'b-unbound>` binding is an OPEN fact, so the
-            // closedness tests (`constrain_known`,
-            // `unbind_open_tvars`) must not record/keep it.
+            // Ref params are walked: `Alias<'b>` with 'b unbound is open.
             t => t
                 .try_for_each_child(&mut |c| {
                     if c.has_unbound() {
@@ -850,56 +718,41 @@ impl Type {
         }
     }
 
-    /// bind all unbound type variables to the specified type
+    /// Bind all unbound type variables to the specified type.
     pub fn bind_as(&self, t: &Self) {
         match self {
             Type::TVar(tv) => {
                 let tv = tv.read();
                 let mut tv = tv.typ.write();
-                // A RIGID cell is an ENCLOSING def's declared universal
-                // reached through an inner binding (a nested lambda's
-                // gate runs inside the outer's, and its constrain_known
-                // closes leftover cells with `bind_as(Any)`). It is not
-                // an unconstrained leftover — binding it here stomped
-                // the outer contract to Any and the outer's rigid
-                // rtype check then refused its own body.
+                // A rigid cell is an enclosing def's declared
+                // universal, not a leftover.
                 if tv.typ.is_none() && tv.rigid == 0 {
                     tv.typ = Some(t.clone());
                 }
             }
-            // Ref PARAMS are skipped (preserved; review A4/C8).
             Type::Ref(_) => (),
             s => s.for_each_child(&mut |c| c.bind_as(t)),
         }
     }
 
-    /// Return a copy of self with fresh, unaliased type variable
-    /// cells: unbound (quantified) cells freshen unbound, while a
-    /// bound cell freshens to a fresh cell bound to the reset of its
-    /// binding — solved def-body facts survive instantiation. self
-    /// will not be modified.
+    /// A copy of self with fresh type variable cells: unbound cells
+    /// freshen unbound, a bound cell freshens to a fresh cell bound to
+    /// the reset of its binding. self is not modified.
     pub fn reset_tvars(&self) -> Type {
         use poolshark::local::LPooled;
         self.reset_tvars_int(&mut LPooled::take()).unwrap_or_else(|| self.clone())
     }
 
-    /// The freshening map is keyed by CELL identity, not name, so an
-    /// instance preserves the source's alias topology — `|a| a + a`
-    /// shares one cell between `'a` and the rtype, and every instance
-    /// must too (or a narrowing through one leaf silently stops
-    /// reaching the others).
-    ///
-    /// `None` = no TVar anywhere beneath — the caller keeps the
-    /// original (shared); TVar-free structure has nothing to freshen.
+    /// The freshening map is keyed by cell identity, not name, so an
+    /// instance preserves the source's alias topology. `None` when no
+    /// TVar is beneath.
     pub(super) fn reset_tvars_int(
         &self,
         known: &mut AHashMap<usize, TVar>,
     ) -> Option<Type> {
         match self {
             Type::TVar(tv) => Some({
-                // The fresh cell CARRIES the source's constraint
-                // conjunction — instantiation freshens the binding
-                // slot, never the obligations.
+                // The fresh cell carries the source's constraints.
                 let addr = tv.cell_addr();
                 if let Some(fresh) = known.get(&addr) {
                     return Some(Type::TVar(fresh.clone()));
@@ -910,29 +763,13 @@ impl Type {
                     let c = c.reset_tvars_int(known).unwrap_or_else(|| c.clone());
                     fresh.add_cell_constraint(c);
                 }
-                // `cycle_refused` rides the copy: the instance preserves
-                // the source's alias topology, so a var whose only
-                // solution was infinite in the def is infinite in every
-                // instance too. Without the carry the def-gate refusal
-                // was recorded on the def cell while the INSTANCE cell
-                // reached the terminal settle unflagged and ⊥-settled —
-                // the exact lie this flag exists to reject (jul18c).
+                // A var whose only solution was infinite in the def is
+                // infinite in every instance.
                 if tv.read().typ.read().cycle_refused {
                     fresh.read().typ.write().cycle_refused = true;
                 }
-                // A BOUND source cell is a solved fact (def-body
-                // inference — instances never write def cells, see the
-                // #18 note in lambda.rs InitFn), not a quantified
-                // variable: the fresh cell must carry the binding or
-                // every instance forgets it. `|n: i64| error(f64:0.)`
-                // binds `'a := f64` inside the def's rtype constraint;
-                // resetting that to unbound left the site's rtype to
-                // terminal-settle as ⊥ and fusion froze the return of
-                // `[i64, Error<f64>]` as bare i64 — the error arm's
-                // payload pointer marshalled as a scalar
-                // (soak-jul06c B5). Clone the binding out before
-                // recursing (lock discipline), through the same `known`
-                // map so alias topology is preserved.
+                // A bound source cell is a solved fact the fresh cell
+                // must carry. Clone the binding out before recursing.
                 let bound = tv.read().typ.read().typ.clone();
                 if let Some(t) = bound {
                     let t = t.reset_tvars_int(known).unwrap_or(t);
@@ -940,30 +777,25 @@ impl Type {
                 }
                 Type::TVar(fresh)
             }),
-            // `cow_children`'s Ref arm rebuilds through `with_params`
-            // (SHARES the resolution cell) — load-bearing: expand_ref's
-            // commit copies come through here and must keep their
-            // seeded resolutions.
+            // `cow_children` rebuilds a Ref through `with_params`, which
+            // shares the resolution cell; commit copies rely on that.
             // A nested fn type is always fresh: its `lambda_ids` cell
-            // must be the instance's own (`FnType::reset_tvars_int`).
+            // must be the instance's own.
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.reset_tvars_int(known)))),
             t => t.cow_children(&mut |c| c.reset_tvars_int(known)),
         }
     }
 
-    /// return a copy of self with every TVar named in known replaced
-    /// with the corresponding type. TVars not in known are replaced with
-    /// fresh TVars using unique names to avoid entanglement with the caller's
-    /// TVars that happen to share the same name. TVar-free structure is
-    /// returned SHARED, not copied.
+    /// A copy of self with every TVar named in `known` replaced by the
+    /// corresponding type; other TVars become fresh uniquely named
+    /// TVars. TVar-free structure is returned shared.
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Self>) -> Type {
         use poolshark::local::LPooled;
         self.replace_tvars_int(known, &mut LPooled::take())
             .unwrap_or_else(|| self.clone())
     }
 
-    /// `None` = no TVar anywhere beneath — the caller keeps the
-    /// original (shared).
+    /// `None` when no TVar is beneath.
     pub(super) fn replace_tvars_int(
         &self,
         known: &AHashMap<ArcStr, Self>,
@@ -986,77 +818,32 @@ impl Type {
     pub(crate) fn unbind_tvars(&self) {
         match self {
             Type::TVar(tv) => tv.unbind(),
-            // Ref PARAMS are skipped (preserved; review A4/C8) —
-            // structural sig-level Ref params are concrete or
-            // DECLARED (rigid-gated, so never bound during the def
-            // check), leaving nothing to unbind in practice.
+            // Sig-level Ref params are concrete or rigid: nothing to unbind.
             Type::Ref(_) => (),
             t => t.for_each_child(&mut |c| c.unbind_tvars()),
         }
     }
 
     /// [`Self::unbind_tvars`], except a cell whose binding is fully
-    /// CLOSED (no unbound interior anywhere beneath, through bound
-    /// cells — `constrain_known`'s closedness test, taken deep) stays
-    /// BOUND. A closed def-body inference is a SOLVED fact: re-opening
-    /// it downgraded the fact to an upper-bound cell constraint that
-    /// the first consumer to unify could narrow below the def's actual
-    /// delivery — first-writer-wins, with the winner decided by
-    /// typecheck order and therefore by env contents (the select-union
-    /// callback + push_front class: the shell rejected what the fuzz
-    /// driver accepted, same build). Partial (open-interior) bindings
-    /// still unbind — they snapshot mid-solve state an enclosing gate
-    /// may revise.
+    /// closed stays bound: a closed def-body inference is a solved
+    /// fact. Partial bindings snapshot mid-solve state and still unbind.
     pub(crate) fn unbind_open_tvars(&self) {
         match self {
             Type::TVar(tv) => {
-                // Bottom is a VACUOUS fact (`constrain_known` skips
-                // it too): an inferred `throws := ⊥` means only "this
-                // body observed nothing" — the declared signature's
-                // 'e must stay a variable. Any is NOT vacuous: a cell
-                // bound to Any records genuine dataflow (e.g. an
-                // Any-typed select arm unioned into the result —
-                // normalize collapses [Any, T] to Any), and unbinding
-                // it let the per-site re-inference NARROW the return
-                // to whatever the site context wanted (i64 from an
-                // array-literal sibling) while the body delivers
-                // arrays — the kernel then scalar-marshalled a real
-                // Array into 0 (aug05c ryouko divergence_000000,
-                // pinned any-return-narrowing-aug2026).
+                // Bottom is a vacuous fact (`throws := ⊥` means the
+                // body observed nothing); Any is not.
                 let bound = tv.read().typ.read().typ.clone();
                 if let Some(t) = bound
                     && (t == Type::Bottom || t.resolve_tvars().has_unbound())
                 {
-                    // Re-opening frees the binding SLOT; it must not
-                    // erase what the body proved. A partial inference
-                    // is still a fact about SHAPE (`|n| [n]` delivers
-                    // an array, whatever the element), and the
-                    // constraint conjunction is exactly the weaker form
-                    // that fact should take: it survives per-site
-                    // re-solving instead of being consumed by the first
-                    // writer, and `reset_tvars` carries it into every
-                    // instance through the same freshening map, so the
-                    // obligation keeps its alias topology.
-                    //
-                    // Dropping it outright let a consumer bind the
-                    // re-opened cell to something the body cannot
-                    // deliver, with nothing left to contradict it: a
-                    // def-gate rtype check reached the body through an
-                    // unbound call cell, bound it to the DECLARED type
-                    // and passed vacuously, so `|#x: i64| -> i64 {let s
-                    // = |n| [n]; s(x)}` compiled — ill-typed, and the
-                    // engines then disagreed over the garbage (aug16a
-                    // hz1 divergence_000000; the partial twin of the
-                    // Any case below, any-return-narrowing-aug2026).
-                    // Bottom stays vacuous — it bounds nothing.
+                    // A partial inference is still a fact about shape;
+                    // it survives as a constraint. Bottom bounds nothing.
                     if t != Type::Bottom {
                         tv.add_cell_constraint(t);
                     }
                     tv.unbind()
                 }
             }
-            // Ref PARAMS are skipped (preserved; review A4/C8) — same
-            // rationale as `unbind_tvars`.
             Type::Ref(_) => (),
             t => t.for_each_child(&mut |c| c.unbind_open_tvars()),
         }

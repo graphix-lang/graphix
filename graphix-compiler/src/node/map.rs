@@ -63,12 +63,8 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.keys.is_empty() {
-            // Empty producer = a constant: FIRED at init, the STALE
-            // value channel inside frames (the Constant frame rule —
-            // a per-site instance's `let res = []` seed died after
-            // frame resets and its For bottomed on the missing init,
-            // firing-jul2026/03).
-            // Frame depth first — frames force init (see Constant).
+            // An empty literal is a constant: FIRED at init, STALE inside
+            // frames, which force init (see Constant).
             if ctx.frame_depth > 0 {
                 return self.resident.set(if ctx.frame_init {
                     TagValue::fired(Value::Map(CMap::new()))
@@ -87,8 +83,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        // construction compares keys — armed so a core `Ord`
-        // implementation on the key type orders the map (the value seam)
+        // key comparison must honor a core `Ord` impl on the key type
         let m = super::coretraits::with_value_hooks(ctx, event, |_, _| {
             let mut m = CMap::new();
             for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
@@ -174,9 +169,8 @@ pub struct MapRef<R: Rt, E: UserEvent> {
 }
 
 /// Look up `key` in a `Value::Map`, returning the value or the
-/// `map key not found` error. Shared by the node-walk `MapRef`, the
-/// fusion interpreter, and the JIT (`graphix_map_ref`) so all three
-/// agree bit-for-bit. `src` must be a `Value::Map`.
+/// `map key not found` error. Shared by the node-walk and the JIT so
+/// both agree bit-for-bit. `src` must be a `Value::Map`.
 pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
     match src {
         Value::Map(map) => match map.get(key) {
@@ -225,8 +219,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        // the lookup compares keys — armed so a core `Ord`
-        // implementation on the key type is honored (the value seam)
+        // key comparison must honor a core `Ord` impl on the key type
         let v = super::coretraits::with_value_hooks(ctx, event, |_, _| {
             map_get(&sval.unwrap(), &kval.unwrap())
         });

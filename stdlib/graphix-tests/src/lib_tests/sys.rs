@@ -11,8 +11,7 @@ run!(args_empty, ARGS_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.is_empty(),
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
-// ^ None: sys::args is once-latched → Async → de-fused (the sys::dirs
-// class, soak jul07b).
+// None: sys::args is once-latched, so Async.
 
 #[tokio::test(flavor = "current_thread")]
 async fn args_injected() -> Result<()> {
@@ -38,7 +37,6 @@ async fn args_injected() -> Result<()> {
     Ok(())
 }
 
-// stdout: write and flush succeed
 const STDOUT_WRITE: &str = r#"
 {
     use sys::io::Write;
@@ -49,14 +47,10 @@ const STDOUT_WRITE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdout_write, STDOUT_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// stderr: write and flush succeed
 const STDERR_WRITE: &str = r#"
 {
     use sys::io::Write;
@@ -67,14 +61,11 @@ const STDERR_WRITE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stderr_write, STDERR_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// stdin: can be created (we can't feed data in a test, but verify it's a valid stream)
+// stdin is a valid stream (no data can be fed in a test).
 const STDIN_CREATE: &str = r#"
 {
     let inp = sys::io::stdin(null);
@@ -82,14 +73,11 @@ const STDIN_CREATE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit (currently None) — doesn't fuse its body into a
-// kernel yet; the prior "fused" status was the hollow
-// `result`-wrapper identity kernel (#139 identity suppression).
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// writing to stdin returns an error
+// Writing to stdin is an error.
 const STDIN_WRITE_ERR: &str = r#"
 {
     use sys::io::Write;
