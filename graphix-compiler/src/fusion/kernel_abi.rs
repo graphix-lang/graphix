@@ -376,23 +376,35 @@ const MAX_FREEZE_EXPANSIONS: usize = 256;
 /// payload structure refuse the leaf per node. Non-regular recursion
 /// is cut by [`MAX_FREEZE_EXPANSIONS`]; structural depth is unbounded.
 pub fn freeze_for_abi(t: &Type) -> Option<Type> {
+    try_freeze_for_abi(t).ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreezeError {
+    Unsupported,
+    NonCanonical,
+    Unresolved,
+}
+
+fn try_freeze_for_abi(t: &Type) -> Result<Type, FreezeError> {
     let _profile = profile::phase(Phase::Freeze);
     freeze_for_abi_d(t, None)
 }
 
-fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
+fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
     crate::stack::ensure_sufficient(|| freeze_for_abi_d_inner(t, seen))
 }
 
-fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
+fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeError> {
+    use FreezeError::{NonCanonical, Unresolved, Unsupported};
     // The TVar lock is not reentrant: clone out of the guard before recursing.
     let resolved = t.deref_cloned();
     {
-        let resolved = resolved.as_ref()?;
+        let resolved = resolved.as_ref().ok_or(Unsupported)?;
         match resolved {
-            Type::Bottom => Some(Type::Bottom),
-            Type::Map { .. } => Some(resolved.clone()),
-            Type::Error(_) => Some(resolved.clone()),
+            Type::Bottom => Ok(Type::Bottom),
+            Type::Map { .. } => Ok(resolved.clone()),
+            Type::Error(_) => Ok(resolved.clone()),
             Type::Primitive(p) => {
                 if is_single_prim(resolved, Typ::String)
                     || is_single_prim(resolved, Typ::Null)
@@ -400,44 +412,46 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                     || is_single_prim(resolved, Typ::Duration)
                     || is_single_prim(resolved, Typ::Bytes)
                 {
-                    return Some(Type::Primitive(*p));
+                    return Ok(Type::Primitive(*p));
                 }
                 if p.contains(Typ::Null) && p.iter().count() == 2 {
-                    let other = p.iter().find(|f| *f != Typ::Null)?;
+                    let other = p.iter().find(|f| *f != Typ::Null).ok_or(Unsupported)?;
                     if other == Typ::String || PrimType::from_typ(other).is_some() {
-                        return Some(Type::Primitive(*p));
+                        return Ok(Type::Primitive(*p));
                     }
-                    return None;
+                    return Err(Unsupported);
                 }
-                PrimType::from_type(resolved).map(|_| Type::Primitive(*p))
+                PrimType::from_type(resolved)
+                    .map(|_| Type::Primitive(*p))
+                    .ok_or(Unsupported)
             }
             Type::Array(inner) => {
                 let inner = freeze_for_abi_d(inner, seen)?;
-                Some(Type::Array(Arc::new(inner)))
+                Ok(Type::Array(Arc::new(inner)))
             }
             Type::List(inner) => {
                 let inner = freeze_for_abi_d(inner, seen)?;
-                Some(Type::List(Arc::new(inner)))
+                Ok(Type::List(Arc::new(inner)))
             }
             Type::Tuple(elems) => {
-                let frozen: Option<LPooled<Vec<Type>>> =
+                let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                     elems.iter().map(|e| freeze_for_abi_d(e, seen)).collect();
                 let mut frozen = frozen?;
-                Some(Type::Tuple(Arc::from_iter(frozen.drain(..))))
+                Ok(Type::Tuple(Arc::from_iter(frozen.drain(..))))
             }
             Type::Struct(fields) => {
-                let frozen: Option<LPooled<Vec<(ArcStr, Type)>>> = fields
+                let frozen: Result<LPooled<Vec<(ArcStr, Type)>>, FreezeError> = fields
                     .iter()
                     .map(|(n, ft)| freeze_for_abi_d(ft, seen).map(|t| (n.clone(), t)))
                     .collect();
                 let mut frozen = frozen?;
-                Some(Type::Struct(Arc::from_iter(frozen.drain(..))))
+                Ok(Type::Struct(Arc::from_iter(frozen.drain(..))))
             }
             Type::Variant(tag, payloads) => {
-                let frozen: Option<LPooled<Vec<Type>>> =
+                let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                     payloads.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                 let mut frozen = frozen?;
-                Some(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
+                Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
             }
             Type::Set(members) => {
                 if let Some(succ) = option_result_success(members) {
@@ -449,36 +463,37 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                         members[0].clone()
                     };
                     let m1 = if succ_idx == 1 { frozen_succ } else { members[1].clone() };
-                    return Some(Type::Set(Arc::from_iter([m0, m1])));
+                    return Ok(Type::Set(Arc::from_iter([m0, m1])));
                 }
-                let frozen: Option<LPooled<Vec<Type>>> = members
+                let frozen: Result<LPooled<Vec<Type>>, FreezeError> = members
                     .iter()
                     .map(|m| {
                         let m = m.deref_cloned();
                         match m {
                             Some(Type::Variant(tag, payloads)) => {
-                                let fp: Option<LPooled<Vec<Type>>> = payloads
-                                    .iter()
-                                    .map(|p| freeze_for_abi_d(p, seen))
-                                    .collect();
+                                let fp: Result<LPooled<Vec<Type>>, FreezeError> =
+                                    payloads
+                                        .iter()
+                                        .map(|p| freeze_for_abi_d(p, seen))
+                                        .collect();
                                 let mut fp = fp?;
-                                Some(Type::Variant(
+                                Ok(Type::Variant(
                                     tag.clone(),
                                     Arc::from_iter(fp.drain(..)),
                                 ))
                             }
-                            _ => None,
+                            _ => Err(NonCanonical),
                         }
                     })
                     .collect();
                 let mut frozen = frozen?;
-                Some(Type::Set(Arc::from_iter(frozen.drain(..))))
+                Ok(Type::Set(Arc::from_iter(frozen.drain(..))))
             }
             Type::Abstract { id, params } => {
-                let frozen: Option<LPooled<Vec<Type>>> =
+                let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                     params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                 let mut frozen = frozen?;
-                Some(Type::Abstract { id: *id, params: Arc::from_iter(frozen.drain(..)) })
+                Ok(Type::Abstract { id: *id, params: Arc::from_iter(frozen.drain(..)) })
             }
             // A constructor application whose ctor is a bound TVar is
             // unreduced by typecheck; freeze its filled form.
@@ -487,10 +502,10 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                 let ad = a.deref_cloned();
                 match (cd, ad) {
                     (Some(cd), Some(ad)) => {
-                        let r = cd.fill_hole(&ad)?;
+                        let r = cd.fill_hole(&ad).ok_or(NonCanonical)?;
                         freeze_for_abi_d(&r, seen)
                     }
-                    _ => None,
+                    _ => Err(NonCanonical),
                 }
             }
             // A recurring ref becomes the opaque leaf, built on the outer
@@ -500,21 +515,21 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                 let key = ExpandKey::Ref(tr.clone());
                 if let Some(matched) = Seen::outermost_occurrence(seen, &key) {
                     let ExpandKey::Ref(outer) = matched;
-                    let frozen: Option<LPooled<Vec<Type>>> =
+                    let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                         tr.params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                     let mut frozen = frozen?;
-                    return Some(Type::Ref(
+                    return Ok(Type::Ref(
                         outer.with_params(Arc::from_iter(frozen.drain(..))),
                     ));
                 }
                 if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
-                    return None;
+                    return Err(NonCanonical);
                 }
-                let expanded = tr.expand_cell()?;
+                let expanded = tr.expand_cell().ok_or(Unresolved)?;
                 let node = Seen::push(seen, key);
                 freeze_for_abi_d(&expanded, Some(&node))
             }
-            _ => None,
+            _ => Err(Unsupported),
         }
     }
 }
@@ -566,12 +581,19 @@ pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
 /// never `t`: `normalize` writes bindings back into shared TVar cells,
 /// and attempting fusion must not change the program's static types.
 pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
-    freeze_for_abi(t).or_else(|| {
-        let p = profile::phase(Phase::Normalize);
-        let normalized = t.resolve_tvars().normalize();
-        drop(p);
-        freeze_for_abi(&normalized)
-    })
+    try_freeze_for_abi_normalized(t).ok()
+}
+
+pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeError> {
+    match try_freeze_for_abi(t) {
+        Err(FreezeError::NonCanonical) => {
+            let p = profile::phase(Phase::Normalize);
+            let normalized = t.resolve_tvars().normalize();
+            drop(p);
+            try_freeze_for_abi(&normalized)
+        }
+        result => result,
+    }
 }
 
 /// The frozen success type `T` of a [`AbiKind::Nullable`] shape
@@ -963,6 +985,9 @@ pub struct KnownFusedFn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::typ::{FnType, TVar};
+    use arcstr::literal;
+    use proptest::prelude::*;
     use triomphe::Arc;
 
     fn i64_t() -> Type {
@@ -981,5 +1006,73 @@ mod tests {
             freeze_for_abi(&t).is_some(),
             "a 40-deep nested array is finite and should freeze"
         );
+    }
+
+    #[test]
+    fn normalized_freeze_preserves_shared_cells() {
+        let raw = Type::Set(Arc::from_iter([i64_t(), i64_t()]));
+        let cell = TVar::named(literal!("payload"), raw.clone());
+        let typ =
+            Type::Variant(literal!("V"), Arc::from_iter([Type::TVar(cell.clone())]));
+        assert_eq!(
+            freeze_for_abi_normalized(&typ),
+            Some(Type::Variant(literal!("V"), Arc::from_iter([i64_t()])))
+        );
+        assert_eq!(Type::TVar(cell).deref_cloned(), Some(raw));
+    }
+
+    #[test]
+    fn constructor_union_normalizes() {
+        let typ = Type::App(
+            Arc::new(Type::Set(Arc::from_iter([Type::Hole, Type::Hole]))),
+            Arc::new(i64_t()),
+        );
+        assert!(freeze_for_abi(&typ).is_none());
+        assert_eq!(freeze_for_abi_normalized(&typ), Some(i64_t()));
+    }
+
+    fn abi_types() -> impl Strategy<Value = Type> {
+        prop_oneof![
+            Just(i64_t()),
+            Just(Type::Primitive((Typ::I64 | Typ::Null).into())),
+            Just(Type::Primitive(Typ::Null.into())),
+            Just(Type::Primitive(Typ::String.into())),
+            Just(Type::Any),
+            Just(Type::Bottom),
+            Just(Type::Hole),
+            Just(Type::empty_tvar()),
+            Just(Type::Fn(Arc::new(FnType::default()))),
+        ]
+        .prop_recursive(4, 64, 4, |inner| {
+            prop_oneof![
+                inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
+                inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
+                inner.clone().prop_map(|t| Type::Error(Arc::new(t))),
+                inner.clone().prop_map(|t| Type::TVar(TVar::named(literal!("a"), t))),
+                inner
+                    .clone()
+                    .prop_map(|t| { Type::Variant(literal!("V"), Arc::from_iter([t])) }),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| {
+                    Type::Map { key: Arc::new(a), value: Arc::new(b) }
+                }),
+                (inner.clone(), inner.clone())
+                    .prop_map(|(a, b)| Type::Tuple(Arc::from_iter([a, b]))),
+                (inner.clone(), inner.clone())
+                    .prop_map(|(a, b)| Type::App(Arc::new(a), Arc::new(b))),
+                proptest::collection::vec(inner, 0..4)
+                    .prop_map(|ts| Type::Set(Arc::from_iter(ts))),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+        #[test]
+        fn selective_retry_matches_unconditional_retry(typ in abi_types()) {
+            let expected = freeze_for_abi(&typ).or_else(|| {
+                freeze_for_abi(&typ.resolve_tvars().normalize())
+            });
+            prop_assert_eq!(freeze_for_abi_normalized(&typ), expected);
+        }
     }
 }

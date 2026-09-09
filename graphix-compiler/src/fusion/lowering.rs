@@ -134,6 +134,9 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
             NodeView::Any(_) if std::ptr::eq(n, node) => {
                 "any depends on partial argument delivery"
             }
+            NodeView::Never(_) if std::ptr::eq(n, node) => {
+                "never consumes inputs without producing a value"
+            }
             NodeView::ByRef(_) | NodeView::Deref(_) if std::ptr::eq(n, node) => {
                 "references require the node-walk"
             }

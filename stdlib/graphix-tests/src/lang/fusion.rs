@@ -1393,3 +1393,16 @@ async fn native_block_discards_unused_reference() -> Result<()> {
     ctx.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn root_rejection_preserves_binding_values_and_dead_statements() -> Result<()> {
+    assert_eq!(
+        load_and_await(
+            "let x = #[native] 1 + 2; \
+             #[native] { let unused = never<i64>(x); x * 2 }"
+        )
+        .await?,
+        Value::I64(6)
+    );
+    Ok(())
+}

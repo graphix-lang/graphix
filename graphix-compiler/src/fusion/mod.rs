@@ -24,7 +24,10 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind, Origin},
     fusion::{
-        kernel_abi::{KernelSig, freeze_for_abi_normalized},
+        kernel_abi::{
+            FreezeError, KernelSig, freeze_for_abi_normalized,
+            try_freeze_for_abi_normalized,
+        },
         lowering::{RegionInputKind, expand_refs},
     },
     node,
@@ -96,7 +99,7 @@ pub(crate) fn blocker(spec: &Expr, reason: compact_str::CompactString) -> anyhow
 /// if not why".
 #[derive(Debug, Clone, Default)]
 pub struct FusionStats {
-    /// `try_fuse` attempts that passed the identity and return-type gates.
+    /// `try_fuse` attempts that passed the root-shape and return-type gates.
     pub attempted: usize,
     /// Regions that compiled and were spliced in.
     pub fused: usize,
@@ -782,9 +785,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
-    // A bare binding read forwards one input unchanged; fusing it wraps
-    // zero compute in dispatch overhead.
-    if region_is_identity(node) {
+    if !region_is_candidate(node) {
         return Ok(None);
     }
     let phase =
@@ -1014,9 +1015,10 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
             typ.resolve_tvars().normalize()
         );
     }
-    let return_type = match freeze_for_abi_normalized(typ) {
-        Some(t) => t,
-        None => {
+    let return_type = match try_freeze_for_abi_normalized(typ) {
+        Ok(t) => t,
+        Err(FreezeError::Unsupported) => return None,
+        Err(FreezeError::NonCanonical | FreezeError::Unresolved) => {
             let resolved = expand_refs(typ, env);
             freeze_for_abi_normalized(&resolved)?
         }
@@ -1036,16 +1038,23 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     }
 }
 
-/// True iff the subtree is a bare binding read (through any number of
-/// grouping parens) — an identity passthrough that forwards one input
-/// unchanged, so there's no compute to fuse.
-fn region_is_identity<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+/// A region root must emit a value. Declarations stay in the graph;
+/// a bare binding read forwards an input without computation.
+fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {
         match n.view() {
-            NodeView::Ref(_) => return true,
+            NodeView::Ref(_)
+            | NodeView::Bind(_)
+            | NodeView::Lambda(_)
+            | NodeView::Module(_)
+            | NodeView::Impl(_)
+            | NodeView::TypeDef(_)
+            | NodeView::Nop(_)
+            | NodeView::FusedKernel(_) => return false,
+            NodeView::Block(b) => return !b.module,
             NodeView::ExplicitParens(p) => n = &*p.n,
-            _ => return false,
+            _ => return true,
         }
     }
 }

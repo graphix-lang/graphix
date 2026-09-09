@@ -306,10 +306,21 @@ fn infer_effects<R: Rt, E: UserEvent>(
     // The (callee, self_bind) pairs double as a back-edge table: a
     // dynamically-bound recursive callee can be analyzed before its
     // self-call is in `ctx.bind_to_lambda`.
-    let mut bodies: LPooled<IntMap<LambdaId, &Node<R, E>>> = LPooled::take();
+    let mut bodies: LPooled<IntMap<LambdaId, (&Node<R, E>, LPooled<IntSet<BindId>>)>> =
+        LPooled::take();
     let mut self_ids: LPooled<IntMap<BindId, LambdaId>> = LPooled::take();
     for (g, sb) in sites {
-        bodies.entry(g.id()).or_insert_with(|| g.body());
+        bodies.entry(g.id()).or_insert_with(|| {
+            let _profile = profile::phase(Phase::EffectRefs);
+            let body = g.body();
+            let mut refs = crate::Refs::default();
+            body.refs(&mut refs);
+            let mut local: LPooled<IntSet<BindId>> = LPooled::take();
+            refs.with_bound(|id| {
+                local.insert(id);
+            });
+            (body, local)
+        });
         self_ids.entry(*sb).or_insert_with(|| g.id());
     }
     let mut eff: LPooled<IntMap<LambdaId, LambdaFacts>> =
@@ -317,8 +328,8 @@ fn infer_effects<R: Rt, E: UserEvent>(
     loop {
         let _profile = profile::phase(Phase::EffectRound);
         let mut changed = false;
-        for (lid, body) in &*bodies {
-            let e = body_facts(body, &eff, &self_ids, ctx);
+        for (lid, (body, local)) in &*bodies {
+            let e = body_facts(body, local, &eff, &self_ids, ctx);
             if eff.get(lid).copied() != Some(e) {
                 eff.insert(*lid, e);
                 changed = true;
@@ -363,21 +374,14 @@ impl LambdaFacts {
 /// bindings.
 fn body_facts<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
+    local: &IntSet<BindId>,
     eff: &IntMap<LambdaId, LambdaFacts>,
     self_ids: &IntMap<BindId, LambdaId>,
     ctx: &ExecCtx<R, E>,
 ) -> LambdaFacts {
-    let p = profile::phase(Phase::EffectRefs);
-    let mut refs = crate::Refs::default();
-    body.refs(&mut refs);
-    let mut local: LPooled<IntSet<BindId>> = LPooled::take();
-    refs.with_bound(|id| {
-        local.insert(id);
-    });
-    drop(p);
     let mut acc = LambdaFacts::PURE;
     fusion::for_each_node(body, &mut |n| {
-        let e = node_facts(n, eff, self_ids, &local, ctx);
+        let e = node_facts(n, eff, self_ids, local, ctx);
         if crate::dbgenv::gxdbg_effect() {
             if e.effect.is_async() {
                 eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
