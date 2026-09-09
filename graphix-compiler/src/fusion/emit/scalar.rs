@@ -107,10 +107,18 @@ pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
 /// Map an element [`Type`] to its element-read helper by ABI kind.
 /// `struct_access` picks the `struct_get_*` (kv-pair read) family over
 /// the flat `valarray_get_*` family.
+/// Which family of unchecked element-read helpers an accessor uses.
+#[derive(Clone, Copy)]
+pub(super) enum ElementRead {
+    ArrayIndex,
+    StructField,
+}
+
 pub(super) fn element_read_helper(
     elem: &Type,
-    struct_access: bool,
+    read: ElementRead,
 ) -> Result<&'static str> {
+    let struct_access = matches!(read, ElementRead::StructField);
     Ok(match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
             if struct_access {
@@ -155,10 +163,10 @@ pub(super) fn compile_element_read(
     arr_ptr: ClifValue,
     idx_val: ClifValue,
     elem: &Type,
-    struct_access: bool,
+    read: ElementRead,
     ctx: &LowerCtx,
 ) -> Result<CompiledExpr> {
-    let helper_name = element_read_helper(elem, struct_access)?;
+    let helper_name = element_read_helper(elem, read)?;
     let helper = ctx
         .helper_refs
         .get(helper_name)
@@ -172,13 +180,17 @@ pub(super) fn compile_element_read(
         Ok(CompiledExpr::new(r0, r1))
     } else {
         let r0 = b.inst_results(call)[0];
-        // An element read is never tainted; the disc only carries the kind.
-        let disc = match kernel_abi::abi_kind(elem) {
-            Some(AbiKind::Scalar(p)) => scalar_disc(b, p),
-            Some(AbiKind::String) => b.ins().iconst(types::I64, value_disc::STRING),
-            _ => b.ins().iconst(types::I64, value_disc::ARRAY),
-        };
-        Ok(CompiledExpr::new(disc, r0))
+        Ok(CompiledExpr::new(kind_disc(b, elem), r0))
+    }
+}
+
+/// The clean disc of a value of `t`'s kind: an element read is never
+/// tainted, so its disc only carries the kind.
+pub(super) fn kind_disc(b: &mut FunctionBuilder, t: &Type) -> ClifValue {
+    match kernel_abi::abi_kind(t) {
+        Some(AbiKind::Scalar(p)) => scalar_disc(b, p),
+        Some(AbiKind::String) => b.ins().iconst(types::I64, value_disc::STRING),
+        _ => b.ins().iconst(types::I64, value_disc::ARRAY),
     }
 }
 
@@ -434,6 +446,32 @@ pub(super) fn compile_cmp(
     }
 }
 
+/// x64 encodes fcvt only to i32/i64, so a narrow target converts at
+/// i32, clamps to the target's range, then reduces.
+fn fcvt_sat_narrow(
+    b: &mut FunctionBuilder,
+    v: ClifValue,
+    dst: PrimType,
+    dst_ty: ClifType,
+    dst_size: u32,
+) -> ClifValue {
+    if dst.is_signed() {
+        let wide = b.ins().fcvt_to_sint_sat(types::I32, v);
+        let (lo, hi) = if dst_size == 1 { (-128, 127) } else { (-32768, 32767) };
+        let lo = b.ins().iconst(types::I32, lo);
+        let hi = b.ins().iconst(types::I32, hi);
+        let clamped = b.ins().smax(wide, lo);
+        let clamped = b.ins().smin(clamped, hi);
+        b.ins().ireduce(dst_ty, clamped)
+    } else {
+        let wide = b.ins().fcvt_to_uint_sat(types::I32, v);
+        let hi = if dst_size == 1 { 255 } else { 65535 };
+        let hi = b.ins().iconst(types::I32, hi);
+        let clamped = b.ins().umin(wide, hi);
+        b.ins().ireduce(dst_ty, clamped)
+    }
+}
+
 pub(super) fn compile_cast(
     b: &mut FunctionBuilder,
     v: ClifValue,
@@ -475,25 +513,9 @@ pub(super) fn compile_cast(
             b.ins().fcvt_from_uint(dst_ty, v)
         }
     } else if src.is_float() && dst.is_integer() {
-        // Saturate like Rust `as`. x64 encodes fcvt only to i32/i64, so
-        // narrow targets convert at i32, clamp to the target's range,
-        // then reduce.
+        // Saturate like Rust `as`.
         if dst_size < 4 {
-            if dst.is_signed() {
-                let wide = b.ins().fcvt_to_sint_sat(types::I32, v);
-                let (lo, hi) = if dst_size == 1 { (-128, 127) } else { (-32768, 32767) };
-                let lo = b.ins().iconst(types::I32, lo);
-                let hi = b.ins().iconst(types::I32, hi);
-                let clamped = b.ins().smax(wide, lo);
-                let clamped = b.ins().smin(clamped, hi);
-                b.ins().ireduce(dst_ty, clamped)
-            } else {
-                let wide = b.ins().fcvt_to_uint_sat(types::I32, v);
-                let hi = if dst_size == 1 { 255 } else { 65535 };
-                let hi = b.ins().iconst(types::I32, hi);
-                let clamped = b.ins().umin(wide, hi);
-                b.ins().ireduce(dst_ty, clamped)
-            }
+            fcvt_sat_narrow(b, v, dst, dst_ty, dst_size)
         } else if dst.is_signed() {
             b.ins().fcvt_to_sint_sat(dst_ty, v)
         } else {

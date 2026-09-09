@@ -157,8 +157,7 @@ fn prim_typ(t: &Type) -> Option<Typ> {
     }
 }
 
-// The resolved return type is Ref("/Result", [Ref("/Tree"|"/TxnTree", [k, v]), ...]).
-fn find_tree_params(t: &Type) -> Option<&[Type]> {
+fn tree_params_of_result_type(t: &Type) -> Option<&[Type]> {
     match t {
         Type::Ref(TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") =>
@@ -179,7 +178,7 @@ fn find_tree_params(t: &Type) -> Option<&[Type]> {
 
 pub(crate) fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Option<Typ> {
     let ft = resolved_typ?;
-    find_tree_params(&ft.rtype).and_then(|params| prim_typ(&params[0]))
+    tree_params_of_result_type(&ft.rtype).and_then(|params| prim_typ(&params[0]))
 }
 
 pub(crate) fn extract_type_strings_from_rtype(
@@ -188,7 +187,7 @@ pub(crate) fn extract_type_strings_from_rtype(
     let Some(ft) = resolved_typ else {
         return (arcstr::literal!("?"), arcstr::literal!("?"));
     };
-    match find_tree_params(&ft.rtype) {
+    match tree_params_of_result_type(&ft.rtype) {
         Some(params) if params.len() >= 2 => (
             ArcStr::from(format!("{}", params[0]).as_str()),
             ArcStr::from(format!("{}", params[1]).as_str()),

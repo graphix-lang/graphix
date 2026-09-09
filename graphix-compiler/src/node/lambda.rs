@@ -1,4 +1,4 @@
-use super::{Nop, compiler::compile};
+use super::{Nop, WakeBit, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
@@ -122,7 +122,7 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
 #[derive(Debug)]
 pub struct GXLambda<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by the next update
-    slept: bool,
+    slept: WakeBit,
     id: LambdaId,
     instance_id: LambdaInstanceId,
     args: Box<[StructPatternNode]>,
@@ -136,10 +136,7 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     self_bind: Mutex<Option<BindId>>,
     /// The dispatch's return slot, lent to the owning `CallSite`.
     resident: TagValue,
-    /// The previous dispatch's tail loop jumped at least once, leaving
-    /// the body's node state mid-recursion; the next triggered dispatch
-    /// runs its first pass framed rather than extending that state.
-    prev_looped: bool,
+    resumes_mid_recursion: bool,
     /// `true` until the first dispatch, which seeds the fresh formal
     /// ids' value channel from the args' quiet productions.
     first_dispatch: bool,
@@ -149,10 +146,7 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     env: Env,
 }
 
-/// True iff any id the body reads — formals, captures, or a `<-`
-/// target declared inside the body — delivered a triggering
-/// production this cycle. Standing values never trigger.
-fn inputs_triggered<R: Rt, E: UserEvent>(
+fn body_reads_triggered<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
     event: &Event<E>,
@@ -173,6 +167,156 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// The definition's id, shared by every instance of it.
     pub fn id(&self) -> LambdaId {
         self.id
+    }
+
+    fn run_tail_loop(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        event: &mut Event<E>,
+        entry_fired: bool,
+    ) -> TagValue {
+        let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
+        let mut reentered = false;
+        let framed = self.resumes_mid_recursion
+            && !event.init
+            && (entry_fired || body_reads_triggered(&self.body, ctx, event));
+        if framed {
+            self.body.reset_replay(ctx);
+            // a delivered formal keeps its cycle tag, a standing one
+            // reads quiet
+            for pat in self.args.iter() {
+                pat.ids(&mut |id| {
+                    if let Some(vr) = super::read_var(ctx, event, &id) {
+                        let tv = match vr {
+                            super::VarRead::Delivered(tv) => tv.clone(),
+                            super::VarRead::Standing(tv) => {
+                                let mut c = tv.clone();
+                                let t = c.tag().quiet();
+                                c.retag(t);
+                                c
+                            }
+                        };
+                        frame.insert(id, tv);
+                    }
+                });
+            }
+        }
+        let prev_tsf = mem::replace(&mut ctx.tail_scrut_fired, false);
+        let res = loop {
+            if ctx.interrupted() {
+                break self.resident.ride().clone();
+            }
+            let res = if !reentered && !framed {
+                self.body.update(ctx, event).clone()
+            } else {
+                event.enter_frame(mem::take(&mut *frame));
+                let prev = mem::replace(&mut event.init, true);
+                // `dispatch_init` carries the dispatch's real init beside
+                // the forced one; a nested dispatch inherits the outer's
+                let real = if ctx.frame_depth > 0 { ctx.dispatch_init } else { prev };
+                let prev_fi = mem::replace(&mut ctx.dispatch_init, real);
+                ctx.frame_depth += 1;
+                let res = self.body.update(ctx, event).clone();
+                ctx.frame_depth -= 1;
+                ctx.dispatch_init = prev_fi;
+                event.init = prev;
+                *frame = event.exit_frame();
+                // deliver handler errors parked in `frame_outbox` once
+                // `event.variables` is the real event again
+                if ctx.frame_depth == 0 && !ctx.frame_outbox.is_empty() {
+                    for (id, v) in mem::take(&mut ctx.frame_outbox) {
+                        match event.variables.entry(id) {
+                            MapEntry::Vacant(slot) => {
+                                slot.insert(TagValue::fired(v));
+                            }
+                            MapEntry::Occupied(_) => ctx.rt.set_var(id, v),
+                        }
+                    }
+                }
+                res
+            };
+            if crate::dbgenv::gxdbg_tail() {
+                eprintln!(
+                    "TAILDBG id={:?} pass reentered={reentered} framed={framed} init={} fi={} res={:?} pending={:?}",
+                    self.id,
+                    event.init,
+                    ctx.dispatch_init,
+                    res,
+                    ctx.pending_tail_call.as_ref().map(|p| (&p.lambda, &p.args))
+                );
+            }
+            let mine = matches!(
+                &ctx.pending_tail_call,
+                Some(p) if p.lambda == self.id
+            );
+            if !mine {
+                break res;
+            }
+            reentered = true;
+            let p = ctx.pending_tail_call.take().unwrap();
+            self.body.reset_replay(ctx);
+            // A `None` arg rides the formal's previous entry, value and
+            // tag: the last rebind in this evaluation, else the ordinary
+            // read. Rebinds are frame-private.
+            let prev: LPooled<IntMap<BindId, TagValue>> =
+                mem::replace(&mut frame, LPooled::take());
+            for (v, pat) in p.args.iter().zip(self.args.iter()) {
+                match v {
+                    Some(tv) => {
+                        let (v, tag) = tv.clone().into_parts();
+                        pat.bind(&v, &mut |id, v| {
+                            frame.insert(id, TagValue::tagged(v, tag));
+                        })
+                    }
+                    None => pat.ids(&mut |id| {
+                        let tv =
+                            prev.get(&id).cloned().or_else(|| {
+                                match super::read_var(ctx, event, &id) {
+                                    Some(super::VarRead::Delivered(tv)) => {
+                                        Some(tv.clone())
+                                    }
+                                    Some(super::VarRead::Standing(tv)) => {
+                                        let mut c = tv.clone();
+                                        let t = c.tag().quiet();
+                                        c.retag(t);
+                                        Some(c)
+                                    }
+                                    None => None,
+                                }
+                            });
+                        if let Some(tv) = tv {
+                            frame.insert(id, tv);
+                        }
+                    }),
+                }
+            }
+        };
+        // a quiet poll cleans no frame state, so it must not clear the flag
+        if reentered
+            || framed
+            || event.init
+            || entry_fired
+            || body_reads_triggered(&self.body, ctx, event)
+        {
+            self.resumes_mid_recursion = reentered;
+        }
+        // A framed run's tag: stale unless something at the entry
+        // triggered; fired if any tail-select scrutinee on the executed
+        // path fired; otherwise the body's own tag.
+        let res = if (reentered || framed) && !res.is_bottom() {
+            let entry = entry_fired || body_reads_triggered(&self.body, ctx, event);
+            if !entry {
+                TagValue::stale(res.value())
+            } else if ctx.tail_scrut_fired {
+                TagValue::fired(res.value())
+            } else {
+                res
+            }
+        } else {
+            res
+        };
+        ctx.tail_scrut_fired = prev_tsf;
+        res
     }
 
     pub fn instance_id(&self) -> LambdaInstanceId {
@@ -249,7 +393,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
+        let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut entry_fired = event.init;
         let first = mem::replace(&mut self.first_dispatch, false);
         for (arg, pat) in from.iter_mut().zip(&self.args) {
@@ -313,9 +457,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // an unframed pass would re-read the entry formals and derive the
         // pre-loop value. Sound because a tail loop is sync.
         if self.tail_loop.load(Ordering::Relaxed)
-            && self.prev_looped
+            && self.resumes_mid_recursion
             && !entry_fired
-            && !inputs_triggered(&self.body, ctx, event)
+            && !body_reads_triggered(&self.body, ctx, event)
         {
             return self.resident.ride();
         }
@@ -323,153 +467,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         let res = if !self.tail_loop.load(Ordering::Relaxed) {
             crate::stack::ensure_sufficient(|| self.body.update(ctx, event).clone())
         } else {
-            // Tail loop: a tail self-call stashes its rebind args in
-            // `ctx.pending_tail_call` (`CallSite::update`); each re-entered
-            // pass runs in a private frame under a forced init view. The
-            // first pass is an ordinary poll on the real event unless the
-            // previous dispatch looped, whose leftover state must not resume.
-            let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
-            let mut reentered = false;
-            let framed = self.prev_looped
-                && !event.init
-                && (entry_fired || inputs_triggered(&self.body, ctx, event));
-            if framed {
-                self.body.reset_replay(ctx);
-                // a delivered formal keeps its cycle tag, a standing one
-                // reads quiet
-                for pat in self.args.iter() {
-                    pat.ids(&mut |id| {
-                        if let Some(vr) = super::read_var(ctx, event, &id) {
-                            let tv = match vr {
-                                super::VarRead::Delivered(tv) => tv.clone(),
-                                super::VarRead::Standing(tv) => {
-                                    let mut c = tv.clone();
-                                    let t = c.tag().quiet();
-                                    c.retag(t);
-                                    c
-                                }
-                            };
-                            frame.insert(id, tv);
-                        }
-                    });
-                }
-            }
-            let prev_tsf = mem::replace(&mut ctx.tail_scrut_fired, false);
-            let res = loop {
-                if ctx.interrupted() {
-                    break self.resident.ride().clone();
-                }
-                let res = if !reentered && !framed {
-                    self.body.update(ctx, event).clone()
-                } else {
-                    event.enter_frame(mem::take(&mut *frame));
-                    let prev = mem::replace(&mut event.init, true);
-                    // `frame_init` carries the dispatch's real init beside
-                    // the forced one; a nested dispatch inherits the outer's
-                    let real = if ctx.frame_depth > 0 { ctx.frame_init } else { prev };
-                    let prev_fi = mem::replace(&mut ctx.frame_init, real);
-                    ctx.frame_depth += 1;
-                    let res = self.body.update(ctx, event).clone();
-                    ctx.frame_depth -= 1;
-                    ctx.frame_init = prev_fi;
-                    event.init = prev;
-                    *frame = event.exit_frame();
-                    // deliver handler errors parked in `frame_outbox` once
-                    // `event.variables` is the real event again
-                    if ctx.frame_depth == 0 && !ctx.frame_outbox.is_empty() {
-                        for (id, v) in mem::take(&mut ctx.frame_outbox) {
-                            match event.variables.entry(id) {
-                                MapEntry::Vacant(slot) => {
-                                    slot.insert(TagValue::fired(v));
-                                }
-                                MapEntry::Occupied(_) => ctx.rt.set_var(id, v),
-                            }
-                        }
-                    }
-                    res
-                };
-                if crate::dbgenv::gxdbg_tail() {
-                    eprintln!(
-                        "TAILDBG id={:?} pass reentered={reentered} framed={framed} init={} fi={} res={:?} pending={:?}",
-                        self.id,
-                        event.init,
-                        ctx.frame_init,
-                        res,
-                        ctx.pending_tail_call.as_ref().map(|p| (&p.lambda, &p.args))
-                    );
-                }
-                let mine = matches!(
-                    &ctx.pending_tail_call,
-                    Some(p) if p.lambda == self.id
-                );
-                if !mine {
-                    break res;
-                }
-                reentered = true;
-                let p = ctx.pending_tail_call.take().unwrap();
-                self.body.reset_replay(ctx);
-                // A `None` arg rides the formal's previous entry, value and
-                // tag: the last rebind in this evaluation, else the ordinary
-                // read. Rebinds are frame-private.
-                let prev: LPooled<IntMap<BindId, TagValue>> =
-                    mem::replace(&mut frame, LPooled::take());
-                for (v, pat) in p.args.iter().zip(self.args.iter()) {
-                    match v {
-                        Some(tv) => {
-                            let (v, tag) = tv.clone().into_parts();
-                            pat.bind(&v, &mut |id, v| {
-                                frame.insert(id, TagValue::tagged(v, tag));
-                            })
-                        }
-                        None => pat.ids(&mut |id| {
-                            let tv =
-                                prev.get(&id).cloned().or_else(|| match super::read_var(
-                                    ctx, event, &id,
-                                ) {
-                                    Some(super::VarRead::Delivered(tv)) => {
-                                        Some(tv.clone())
-                                    }
-                                    Some(super::VarRead::Standing(tv)) => {
-                                        let mut c = tv.clone();
-                                        let t = c.tag().quiet();
-                                        c.retag(t);
-                                        Some(c)
-                                    }
-                                    None => None,
-                                });
-                            if let Some(tv) = tv {
-                                frame.insert(id, tv);
-                            }
-                        }),
-                    }
-                }
-            };
-            // a quiet poll cleans no frame state, so it must not clear the flag
-            if reentered
-                || framed
-                || event.init
-                || entry_fired
-                || inputs_triggered(&self.body, ctx, event)
-            {
-                self.prev_looped = reentered;
-            }
-            // A framed run's tag: stale unless something at the entry
-            // triggered; fired if any tail-select scrutinee on the executed
-            // path fired; otherwise the body's own tag.
-            let res = if (reentered || framed) && !res.is_tainted() {
-                let entry = entry_fired || inputs_triggered(&self.body, ctx, event);
-                if !entry {
-                    TagValue::stale(res.value())
-                } else if ctx.tail_scrut_fired {
-                    TagValue::fired(res.value())
-                } else {
-                    res
-                }
-            } else {
-                res
-            };
-            ctx.tail_scrut_fired = prev_tsf;
-            res
+            self.run_tail_loop(ctx, event, entry_fired)
         };
         match ctx.active_lambdas.entry(self.id) {
             MapEntry::Occupied(mut e) => {
@@ -584,13 +582,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         // a callee body is outside the shrink scope: a recursion shrinking
         // one level does not shrink the external calls it made
-        let saved = ctx.shrink_unwind;
-        ctx.shrink_unwind = false;
+        let saved = ctx.deselecting_arm;
+        ctx.deselecting_arm = false;
         self.body.sleep(ctx);
-        ctx.shrink_unwind = saved;
+        ctx.deselecting_arm = saved;
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -685,7 +683,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         }
         let body = build_body(ctx, &argpats)?;
         Ok(Self {
-            slept: false,
+            slept: WakeBit::default(),
             id,
             instance_id: LambdaInstanceId::new(),
             args: Box::from_iter(argpats.drain(..)),
@@ -695,7 +693,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_recursive: AtomicBool::new(false),
             self_bind: Mutex::new(None),
             resident: TagValue::phantom(),
-            prev_looped: false,
+            resumes_mid_recursion: false,
             first_dispatch: true,
             env: ctx.env.clone(),
         })
@@ -1110,7 +1108,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // same production rule as `Constant`: FIRED at init, STALE inside
         // frames, which force init
         if ctx.frame_depth > 0 {
-            if ctx.frame_init {
+            if ctx.dispatch_init {
                 self.resident.set(TagValue::fired(self.def.clone()))
             } else {
                 self.resident.set(TagValue::stale(self.def.clone()))
@@ -1234,7 +1232,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             res?;
             let inferred_throws = ctx.env.by_id[&faux_id]
                 .typ
-                .with_deref(|t| t.cloned())
+                .deref_cloned()
                 .unwrap_or(Type::Bottom)
                 .scope_refs(&def.scope.lexical)
                 .normalize();

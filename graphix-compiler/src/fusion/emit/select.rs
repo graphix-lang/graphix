@@ -152,10 +152,10 @@ enum SelectArmBind {
     /// The rest bind: the k-th TAIL itself — O(1), shares the spine.
     ListTail { id: BindId, k: usize },
     /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
-    /// composite scrutinee, read through `ptr` (the scrutinee, or a
-    /// borrowed interior pointer for a nested pattern). Emitted inside
+    /// composite scrutinee (the scrutinee, or a borrowed interior pointer
+    /// for a nested pattern). Emitted inside
     /// the matched region: the length tests gate the unchecked read.
-    Elem { id: BindId, idx: ElemIdx, prim: PrimType, ptr: ClifValue },
+    Elem { id: BindId, idx: ElemIdx, prim: PrimType, parent_ptr: ClifValue },
 }
 
 /// Collect the per-slot state sites in a scaffold-loop body: the
@@ -608,7 +608,12 @@ fn emit_composite_pattern_cond(
                         leaf.typ
                     )
                 })?;
-                binds.push(SelectArmBind::Elem { id: *id, idx: leaf.idx, prim, ptr });
+                binds.push(SelectArmBind::Elem {
+                    id: *id,
+                    idx: leaf.idx,
+                    prim,
+                    parent_ptr: ptr,
+                });
             }
             StructPatternNode::Literal(v) => {
                 let prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
@@ -713,8 +718,19 @@ fn emit_composite_pattern_cond(
 pub(super) struct SelFires {
     pub(super) sound_stale: Option<ClifValue>,
     pub(super) bfired: Option<ClifValue>,
-    /// Always `None`; the arm-result fold uses the plain scrutinee disc.
-    pub(super) fold_scrut_disc: Option<ClifValue>,
+}
+
+/// One prologue-evaluated guard's planes.
+#[derive(Clone, Copy)]
+struct GuardPlanes {
+    /// The sound-true verdict.
+    eff: ClifValue,
+    /// The channel is bottom.
+    gbot: ClifValue,
+    /// Sound-plane STALE.
+    gs_sound: ClifValue,
+    /// Fired-plane STALE.
+    gfire: ClifValue,
 }
 
 /// The shared arm chain: pattern conditions, per-arm binds and the
@@ -742,17 +758,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
     // The guard prologue: the node-walk ticks every arm's guard every
-    // cycle before matching, so every guard that is not schedule-free
-    // is evaluated here once per invocation and the chain reads it.
-    // Per guard: (eff = sound-true verdict, gbot = channel is bottom,
-    // gs_sound = sound-plane STALE, gfire = fired-plane STALE); the
-    // consulted folds happen along the chain into acc_sound/acc_fires.
-    let mut guard_vals: smallvec::SmallVec<
-        [Option<(ClifValue, ClifValue, ClifValue, ClifValue)>; 8],
-    > = smallvec::smallvec![None; n];
+    // cycle before matching, so every guard that is not pure in its
+    // binds is evaluated here once per invocation and the chain reads
+    // it; the consulted folds happen along the chain into
+    // acc_sound/acc_fires.
+    let mut guard_vals: smallvec::SmallVec<[Option<GuardPlanes>; 8]> =
+        smallvec::smallvec![None; n];
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
-        if guard_schedule_free(pat, &g.node) {
+        if guard_is_pure_of_binds(pat, &g.node) {
             continue;
         }
         let gmark = cx.env.mark();
@@ -822,7 +836,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         // drop them before the truncate.
         super::flow::emit_scope_drops(cx, gmark)?;
         cx.env.truncate(gmark);
-        guard_vals[i] = Some((eff, gbot, gs_sound, gs));
+        guard_vals[i] = Some(GuardPlanes { eff, gbot, gs_sound, gfire: gs });
     }
     // At any read these hold the fold over exactly the consultation
     // points control flow executed.
@@ -909,7 +923,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 // The consultation point: fold the guard's planes into
                 // the accumulators; a bottom channel makes the selection
                 // undecidable and the chain stops here.
-                Some((eff, gbot, gs_sound, gfire)) => {
+                Some(GuardPlanes { eff, gbot, gs_sound, gfire }) => {
                     let cur = cx.b.use_var(acc_sound);
                     let n = cx.b.ins().band(cur, gs_sound);
                     cx.b.def_var(acc_sound, n);
@@ -963,12 +977,8 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         cx.b.seal_block(body_ok);
         // Read here, the sound accumulator holds exactly the consulted
         // guards up to and including this arm.
-        let fold_scrut_disc = None;
-        let fires = SelFires {
-            sound_stale: Some(cx.b.use_var(acc_sound)),
-            bfired: scrut_bfired,
-            fold_scrut_disc,
-        };
+        let fires =
+            SelFires { sound_stale: Some(cx.b.use_var(acc_sound)), bfired: scrut_bfired };
         emit_arm(cx, body, mark, fires)?;
         match fail {
             Some(f) => {
@@ -1014,7 +1024,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
 /// binds and constants (comparisons, logicals, not, wrapping +/-/*/neg;
 /// no div, indexing, calls or state). Such a guard is evaluated lazily
 /// in the chain instead of in the prologue.
-fn guard_schedule_free<R: Rt, E: UserEvent>(
+fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
     pat: &PatternNode<R, E>,
     guard: &Node<R, E>,
 ) -> bool {
@@ -1458,7 +1468,7 @@ fn install_arm_binds(
                 let pdisc = mask_unmatched(cx, pdisc, mask);
                 bind_local(cx, name, pdisc, vpayload, LocalKind::Value, Some(*id));
             }
-            SelectArmBind::Elem { id, idx, prim, ptr } => {
+            SelectArmBind::Elem { id, idx, prim, parent_ptr } => {
                 let SelectScrut::Composite { disc, .. } = scrut else {
                     return Err(anyhow!(
                         "emit_clif: element bind without a composite \
@@ -1466,7 +1476,7 @@ fn install_arm_binds(
                     ));
                 };
                 // The arm's length tests proved the element exists.
-                let v = read_scrut_elem(cx, *ptr, *idx, *prim)?;
+                let v = read_scrut_elem(cx, *parent_ptr, *idx, *prim)?;
                 let name: ArcStr =
                     compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
                 let base = scalar_disc(cx.b, *prim);
@@ -1578,11 +1588,10 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     // TAINT = OR(arm, scrutinee). Firing = OR(arm production, scrutinee
     // delivery, consulted guard productions), as the STALE AND-fold
     // (the interp's `own_fired`).
-    let fold_disc = fires.fold_scrut_disc.unwrap_or(scrut_disc);
     let base = clean_disc(cx.b, disc);
-    let d = propagate_taint(cx.b, base, &[disc, fold_disc]);
+    let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
     let d = propagate_stale(cx.b, d, &[disc]);
-    let scrut_stale = cx.b.ins().band_imm(fold_disc, STALE);
+    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
     let d = fold_stale(cx.b, d, scrut_stale);
     let d = match fires.sound_stale {
         Some(gs) => fold_stale(cx.b, d, gs),
@@ -1979,8 +1988,8 @@ fn emit_or_chain(
                      different kind"
                 ));
             }
-            let dv = cx.b.use_var(l.vv.disc);
-            let pv = cx.b.use_var(l.vv.payload);
+            let dv = cx.b.use_var(l.words.disc);
+            let pv = cx.b.use_var(l.words.payload);
             args.push(dv.into());
             args.push(pv.into());
         }

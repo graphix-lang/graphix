@@ -123,7 +123,7 @@ is insufficient; the forced recompute republishes `p2` at the present
   on presence): sparse delivery died on the JIT and `seq` lost its exit
   actions; the engine did not get simpler. Sleep is pause. The keeper:
   a pure non-recursive arm skips `sleep` (nothing to pause) and is not
-  updated while untaken (`Select::sleep_on_deselect`); a `<-`, a catch,
+  updated while untaken (`LazyArmFacts::sleep_on_deselect`); a `<-`, a catch,
   a sample, an `any`, or a stateful/async callee makes an arm impure,
   and impure arms still sleep.
 

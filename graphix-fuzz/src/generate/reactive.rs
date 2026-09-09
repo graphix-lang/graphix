@@ -65,12 +65,12 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
         ctx.push(name.clone(), ty.clone());
         inputs.push((name, ty));
     }
-    // `live` collects the i64 results that fire on every injection of
+    // `fires_per_injection` collects the i64 results that fire on every injection of
     // their input; the tail is biased through one so injections stay
     // observable. Runaways are forced into the tail: an unobserved one
     // spins in cycles that never emit, so the active-cycle budget never
     // trips.
-    let mut live: Vec<String> = Vec::new();
+    let mut fires_per_injection: Vec<String> = Vec::new();
     let mut ndyn = 0usize;
     let n_templates = 1 + rng.below(3);
     for _ in 0..n_templates {
@@ -97,28 +97,47 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
         }
         match rng.below(14) {
             0 | 1 => counter(&mut ctx, rng, &mut stmts, &mut stats),
-            2..=4 => {
-                accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
-            }
+            2..=4 => accumulator(
+                &mut ctx,
+                rng,
+                &inputs,
+                &mut stmts,
+                &mut stats,
+                &mut fires_per_injection,
+            ),
             5..=7 => cross_cycle(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
-            8 => sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut live),
-            9 | 10 => slept_arm(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
-            11 | 12 => {
-                nested_connect(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live)
+            8 => {
+                sample_chain(&mut ctx, rng, &inputs, &mut stmts, &mut fires_per_injection)
             }
+            9 | 10 => slept_arm(&mut ctx, rng, &inputs, &mut stmts, &mut stats),
+            11 | 12 => nested_connect(
+                &mut ctx,
+                rng,
+                &inputs,
+                &mut stmts,
+                &mut stats,
+                &mut fires_per_injection,
+            ),
             _ => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
         }
     }
     // if nothing input-driven landed, add one scalar accumulator
-    if live.is_empty() {
-        accumulator(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut live);
+    if fires_per_injection.is_empty() {
+        accumulator(
+            &mut ctx,
+            rng,
+            &inputs,
+            &mut stmts,
+            &mut stats,
+            &mut fires_per_injection,
+        );
     }
     // tail: start from an input-driven result, mix in other visible
     // scalars, force every runaway in
     let tail = {
         let i64s: Vec<String> =
             ctx.vars_of(&I64).into_iter().map(|s| s.to_string()).collect();
-        let mut t = live[rng.below(live.len())].clone();
+        let mut t = fires_per_injection[rng.below(fires_per_injection.len())].clone();
         if !i64s.is_empty() {
             for _ in 0..rng.below(3) {
                 let n = &i64s[rng.below(i64s.len())];
@@ -198,19 +217,19 @@ fn counter(
 }
 
 /// A block-valued binding whose body connects to an outer target. The
-/// target rides `live`: it accumulates on every injection of its input.
+/// target rides `fires_per_injection`: it accumulates on every injection of its input.
 fn nested_connect(
     ctx: &mut GenCtx,
     rng: &mut Rng,
     inputs: &[(String, GenType)],
     stmts: &mut Vec<String>,
     st: &mut ReactiveStats,
-    live: &mut Vec<String>,
+    fires_per_injection: &mut Vec<String>,
 ) {
     let i64s: Vec<&(String, GenType)> =
         inputs.iter().filter(|(_, t)| *t == I64).collect();
     if i64s.is_empty() {
-        return accumulator(ctx, rng, inputs, stmts, st, live);
+        return accumulator(ctx, rng, inputs, stmts, st, fires_per_injection);
     }
     let (input, _) = i64s[rng.below(i64s.len())];
     st.nested_connects += 1;
@@ -226,7 +245,7 @@ fn nested_connect(
     ));
     ctx.truncate(mark);
     ctx.push(b, I64);
-    live.push(t);
+    fires_per_injection.push(t);
 }
 
 fn accumulator(
@@ -235,7 +254,7 @@ fn accumulator(
     inputs: &[(String, GenType)],
     stmts: &mut Vec<String>,
     st: &mut ReactiveStats,
-    live: &mut Vec<String>,
+    fires_per_injection: &mut Vec<String>,
 ) {
     let (input, ity) = &inputs[rng.below(inputs.len())];
     st.accumulators += 1;
@@ -245,7 +264,7 @@ fn accumulator(
                 let a = ctx.fresh();
                 stmts.push(format!("let {a} = i64:0"));
                 stmts.push(format!("{a} <- {input} ~ ({a} + {input})"));
-                live.push(a.clone());
+                fires_per_injection.push(a.clone());
                 ctx.push(a, I64);
             }
             1 => {
@@ -254,7 +273,7 @@ fn accumulator(
                 stmts.push(format!("let {d}: Array<i64> = []"));
                 stmts.push(format!("{d} <- {input} ~ array::push({d}, {input})"));
                 stmts.push(format!("let {l} = array::len({d})"));
-                live.push(l.clone());
+                fires_per_injection.push(l.clone());
                 ctx.push(d, GenType::Array(Box::new(I64)));
                 ctx.push(l, I64);
             }
@@ -264,7 +283,7 @@ fn accumulator(
                 stmts.push(format!("let {s} = \"\""));
                 stmts.push(format!("{s} <- {input} ~ \"[{s}]x[{input}]\""));
                 stmts.push(format!("let {l} = str::len({s})"));
-                live.push(l.clone());
+                fires_per_injection.push(l.clone());
                 ctx.push(s, GenType::Str);
                 ctx.push(l, I64);
             }
@@ -276,7 +295,7 @@ fn accumulator(
                     "{t} <- {input} ~ {{ {t} with n: {t}.n + i64:1, last: {input} }}"
                 ));
                 stmts.push(format!("let {m} = {t}.n * i64:100 + {t}.last"));
-                live.push(m.clone());
+                fires_per_injection.push(m.clone());
                 ctx.push(m, I64);
             }
         },
@@ -288,7 +307,7 @@ fn accumulator(
             stmts.push(format!("let {a} = f64:0.0"));
             stmts.push(format!("{a} <- {input} ~ ({a} + {input})"));
             stmts.push(format!("let {m} = count({input})"));
-            live.push(m.clone());
+            fires_per_injection.push(m.clone());
             ctx.push(a, F64);
             ctx.push(m, I64);
         }
@@ -299,7 +318,7 @@ fn accumulator(
             stmts.push(format!(
                 "{a} <- {input} ~ (select {input} {{ true => {a} + i64:1, false => {a} }})"
             ));
-            live.push(a.clone());
+            fires_per_injection.push(a.clone());
             ctx.push(a, I64);
         }
         other => unreachable!("no accumulator for input type {other:?}"),
@@ -351,13 +370,13 @@ fn sample_chain(
     rng: &mut Rng,
     inputs: &[(String, GenType)],
     stmts: &mut Vec<String>,
-    live: &mut Vec<String>,
+    fires_per_injection: &mut Vec<String>,
 ) {
     let (input, _) = &inputs[rng.below(inputs.len())];
     let t = ctx.fresh();
     let val = exprs::gen_typed(ctx, rng, &I64, 2);
     stmts.push(format!("let {t} = {input} ~ ({val})"));
-    live.push(t.clone());
+    fires_per_injection.push(t.clone());
     ctx.push(t, I64);
 }
 
@@ -401,14 +420,14 @@ fn slept_arm(
     stmts.push(format!(
         "let {s} = select ({input} % i64:2) {{ i64:0 => {live_arm}, _ => once({input}) }}"
     ));
-    // not pushed into `live`: the select fires only on its live-arm epochs
+    // not pushed into `fires_per_injection`: the select fires only on its fires_per_injection-arm epochs
     ctx.push(s, I64);
 }
 
 /// A hot-reloading dynamic module: the source is selected from an array
 /// of raw-string variants by an injected index, so each epoch can swap
 /// the implementation. `srcs[in % n]$` is total for any injected i64.
-/// Not pushed into `live`: two injections can select the same source,
+/// Not pushed into `fires_per_injection`: two injections can select the same source,
 /// and an unchanged source need not re-fire downstream.
 fn dyn_reload(
     ctx: &mut GenCtx,

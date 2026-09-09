@@ -52,7 +52,7 @@ pub(super) enum SubRole {
     /// A sort-column subscription: a marker telling the dispatch task
     /// to set `sort_col_dirty` on every update. The sort key itself is
     /// read through the `cells` index.
-    Sort,
+    SortMarker,
 }
 
 /// All roles for a single `SubId`.
@@ -174,7 +174,7 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
                                 for role in roles.iter() {
                                     match role {
                                         SubRole::Grid { .. } => grid_dirty = true,
-                                        SubRole::Sort => sort_dirty = true,
+                                        SubRole::SortMarker => sort_dirty = true,
                                     }
                                 }
                             }
@@ -232,7 +232,7 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
                                     callback_fires.push((cell_path, v.clone()));
                                 }
                             }
-                            SubRole::Sort => {
+                            SubRole::SortMarker => {
                                 sort_dirty = true;
                             }
                         }
@@ -454,7 +454,7 @@ impl<X: GXExt> DataTableW<X> {
                     None => continue,
                 };
                 if let Some(roles) = inner.routing.get_mut(&id) {
-                    roles.retain(|r| !matches!(r, SubRole::Sort));
+                    roles.retain(|r| !matches!(r, SubRole::SortMarker));
                     if roles.is_empty() {
                         subs_to_drop.push(id);
                         cells_to_drop.push(key);
@@ -485,7 +485,11 @@ impl<X: GXExt> DataTableW<X> {
             let id = dval.id();
             // Routing must exist before `updates`: `BEGIN_WITH_LAST` can
             // deliver synchronously, and unrouted updates are dropped.
-            inner.routing.entry(id).or_insert_with(SubRoles::new).push(SubRole::Sort);
+            inner
+                .routing
+                .entry(id)
+                .or_insert_with(SubRoles::new)
+                .push(SubRole::SortMarker);
             inner.cells.insert((row_path.clone(), sort_col.clone()), id);
             // Overwriting an owned Dval would cancel the subscription.
             inner.dvals.entry(id).or_insert_with(|| {

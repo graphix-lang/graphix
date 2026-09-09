@@ -1,4 +1,4 @@
-use super::{compiler::compile, dense_gate, gather, read_prod};
+use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
@@ -22,7 +22,7 @@ defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 #[derive(Debug)]
 pub struct ArrayRef<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub source: Node<R, E>,
     pub i: Node<R, E>,
     pub(crate) spec: Expr,
@@ -56,7 +56,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
             typ,
             etyp,
             resident: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -215,7 +215,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.source.sleep(ctx);
         self.i.sleep(ctx);
     }
@@ -237,7 +237,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
 #[derive(Debug)]
 pub struct ArraySlice<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub source: Node<R, E>,
     pub start: Option<Node<R, E>>,
     pub end: Option<Node<R, E>>,
@@ -268,7 +268,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
             .transpose()?;
         let typ = Type::Set(Arc::from_iter([source.typ().clone(), ERR.clone()]));
         Ok(Node::new(Self {
-            slept: false,
+            slept: WakeBit::default(),
             spec,
             typ,
             source,
@@ -381,7 +381,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.source.sleep(ctx);
         if let Some(start) = &mut self.start {
             start.sleep(ctx);
@@ -421,7 +421,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
 #[derive(Debug)]
 pub struct Array<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
@@ -442,14 +442,20 @@ impl<R: Rt, E: UserEvent> Array<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typ = Type::Array(Arc::new(Type::empty_tvar()));
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom(), slept: false }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        }))
     }
 }
 
 #[derive(Debug)]
 pub struct ListLit<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
@@ -470,7 +476,13 @@ impl<R: Rt, E: UserEvent> ListLit<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typ = Type::List(Arc::new(Type::empty_tvar()));
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom(), slept: false }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        }))
     }
 }
 
@@ -480,7 +492,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
         if self.n.is_empty() {
             // an empty producer is a constant (see Array)
             if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.frame_init {
+                return self.resident.set(if ctx.dispatch_init {
                     TagValue::fired(list::nil())
                 } else {
                     TagValue::stale(list::nil())
@@ -511,7 +523,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -561,7 +573,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
             // an empty producer is a constant: fired at init, stale
             // inside frames (see Constant)
             if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.frame_init {
+                return self.resident.set(if ctx.dispatch_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
                 } else {
                     TagValue::stale(Value::Array(ValArray::from([])))
@@ -594,7 +606,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 

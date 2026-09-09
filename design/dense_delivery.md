@@ -101,7 +101,7 @@ bottom-resident ∨ frame_depth > 0 ∨ woke`. `read_prod!`/`node::gather`
 are the per-child join accumulators every computing node uses.
 
 **R2 — read-side init.** There are no FIRED backfills. One rule at the
-store read: a reader under an init view (`event.init`, or `frame_init`
+store read: a reader under an init view (`event.init`, or `dispatch_init`
 inside a frame) interprets a standing entry as Fired; otherwise as
 Stale. A wake (`event.wake_init`) is NOT genuine init — standing entries
 read Stale under it.

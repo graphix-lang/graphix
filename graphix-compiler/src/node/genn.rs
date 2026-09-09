@@ -1,5 +1,5 @@
 use super::{
-    Constant, NOP, Nop,
+    Constant, NOP, Nop, WakeBit,
     bind::Ref,
     callsite::{Arg, ArgKey, CallSite, Callee},
 };
@@ -140,7 +140,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         })
         .collect();
     Node::new(CallSite {
-        slept: false,
+        slept: WakeBit::default(),
         spec: Arc::new(spec),
         rtype,
         ftype,
@@ -151,7 +151,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         flags: BitFlags::empty(),
         fnode,
         callee: Callee::DynamicUnbound,
-        gate_tainted_args: false,
+        callee_is_builtin: false,
         static_target: None,
         recursive_edge: AtomicBool::new(false),
         top_id,

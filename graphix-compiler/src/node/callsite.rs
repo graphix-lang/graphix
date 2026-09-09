@@ -1,4 +1,4 @@
-use super::{NOP, Nop, bind::Ref, compiler::compile};
+use super::{NOP, Nop, WakeBit, bind::Ref, compiler::compile};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, LambdaId,
     LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, Tag,
@@ -211,8 +211,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
 #[derive(Debug)]
 pub struct CallSite<R: Rt, E: UserEvent> {
-    /// Set by `sleep()`, taken by the next update.
-    pub(super) slept: bool,
+    pub(super) slept: WakeBit,
     pub(super) spec: TArc<Expr>,
     pub(super) ftype: Option<FnType>,
     pub(super) rtype: Type,
@@ -220,9 +219,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(crate) args: ArgMap<R, E>,
     pub(super) arg_refs: Vec<Node<R, E>>,
     pub(crate) callee: Callee<R, E>,
-    /// The callee is a builtin: a tainted arg production is withheld
-    /// from delivery (absence), where a lambda formal would be poisoned.
-    pub(super) gate_tainted_args: bool,
+    pub(super) callee_is_builtin: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
     /// A trait call over a union self type lowered to a select, one
     /// static call per member; once set every `Update` method delegates.
@@ -341,7 +338,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let spec = TArc::new(spec);
         let args = compile_apply_args(ctx, flags, scope, top_id, args)?;
         let site = Self {
-            slept: false,
+            slept: WakeBit::default(),
             spec,
             ftype: None,
             rtype: Type::empty_tvar(),
@@ -349,7 +346,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             args,
             arg_refs: Vec::new(),
             callee: Callee::DynamicUnbound,
-            gate_tainted_args: false,
+            callee_is_builtin: false,
             static_target: None,
             lowered: None,
             recursive_edge: AtomicBool::new(false),
@@ -712,13 +709,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx.lambda_defs.insert(f.id, fv.clone());
             true
         };
-        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
+        self.callee_is_builtin = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::DynamicBound { def: fv, apply };
         // The publish loop ran before the callee was known; retract the
         // poisoned deliveries the gate would have silenced.
-        if self.gate_tainted_args {
+        if self.callee_is_builtin {
             for arg in self.args.values() {
-                if event.variables.get(&arg.id).is_some_and(|tv| tv.is_tainted()) {
+                if event.variables.get(&arg.id).is_some_and(|tv| tv.is_bottom()) {
                     event.variables.remove(&arg.id);
                 }
             }
@@ -830,7 +827,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ftype: instance_ftype.clone(),
             });
         }
-        self.gate_tainted_args = matches!(apply.view(), ApplyView::BuiltIn);
+        self.callee_is_builtin = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::Static {
             apply,
             resolved_ftype: instance_ftype.clone(),
@@ -894,12 +891,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         "RESOLVE {} id={:?} unstable={} b2l={} cached={}",
                         self.spec,
                         r.id,
-                        ctx.unstable_bindings.contains(&r.id),
+                        ctx.batch_connect_targets.contains(&r.id),
                         ctx.bind_to_lambda.contains_key(&r.id),
                         ctx.rt.store_value(&r.id).is_some(),
                     );
                 }
-                if ctx.unstable_bindings.contains(&r.id) {
+                if ctx.batch_connect_targets.contains(&r.id) {
                     None
                 } else {
                     ctx.bind_to_lambda
@@ -939,7 +936,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 let node = arg.node.as_ref()?;
                 match node.view() {
                     NodeView::Lambda(l) => Some(l.source_id()),
-                    NodeView::Ref(r) if !ctx.unstable_bindings.contains(&r.id) => ctx
+                    NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
                         .bind_to_lambda
                         .get(&r.id)
                         .and_then(|fv| fv.downcast_ref::<LambdaDef<R, E>>())
@@ -985,7 +982,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     param_binds.push(id);
                 }
                 NodeView::Ref(r) => {
-                    if ctx.unstable_bindings.contains(&r.id) {
+                    if ctx.batch_connect_targets.contains(&r.id) {
                         continue;
                     }
                     if let Some(fv) = ctx.bind_to_lambda.get(&r.id).cloned() {
@@ -1391,25 +1388,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
+        let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         let mut arg_fired = false;
-        // Only triggering productions are published; a stale one is
-        // already served by the formal's store read. A self-tail-call
-        // site keeps every production for the stash below.
-        let stash_prods = self.is_self_tail_call.load(Ordering::Relaxed);
-        // A bind mints fresh arg ids, so quiet productions must be
-        // captured to seed them.
-        let may_bind = match &self.callee {
-            Callee::Static { first_update, .. } => *first_update,
-            _ => true,
-        };
+        let capture_prods = self.is_self_tail_call.load(Ordering::Relaxed)
+            || match &self.callee {
+                Callee::Static { first_update, .. } => *first_update,
+                _ => true,
+            };
         let mut prods: SmallVec<[(BindId, TagValue); 4]> = SmallVec::new();
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
                 let tv = node.update(ctx, event);
                 let tag = tv.tag();
-                if stash_prods || may_bind {
+                if capture_prods {
                     prods.push((arg.id, tv.clone()));
                 }
                 if tag.triggers() {
@@ -1507,7 +1499,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
-        let fv_new = {
+        let fnode_value = {
             let tv = self.fnode.update(ctx, event);
             if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
         };
@@ -1516,7 +1508,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             *first_update = false;
             first
         } else {
-            match fv_new {
+            match fnode_value {
                 None => false,
                 Some(v) => {
                     let same = matches!(
@@ -1547,32 +1539,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         };
-        // A bind minted fresh arg ids: seed the quiet productions onto
-        // them (overlay at any depth; store only at depth 0).
         if bound {
             for (id, tv) in prods.iter() {
                 let tag = tv.tag();
                 if !tag.triggers() && !tag.is_bottom() {
                     let is_default =
                         self.args.values().any(|a| a.id == *id && a.is_default);
-                    if is_default {
-                        // A default is born with the binding: its first
-                        // dispatch is its one arrival, so it is fired.
-                        event.variables.insert(*id, TagValue::fired(tv.value_cloned()));
-                        set.push(*id);
-                    } else if ctx.frame_depth == 0 {
-                        // An overlay entry would shadow the init view's
-                        // standing-read upgrade to Fired.
-                        ctx.rt.store_insert_standing(
-                            *id,
-                            TagValue::stale(tv.value_cloned()),
-                        );
-                    } else {
-                        // The overlay has no read-time init upgrade, so a
-                        // frame seeds fired directly.
-                        event.variables.insert(*id, TagValue::fired(tv.value_cloned()));
-                        set.push(*id);
-                    }
+                    seed_quiet_arg(ctx, event, *id, tv, is_default, &mut set);
                 }
             }
         }
@@ -1647,13 +1620,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         if let Some(n) = &mut self.lowered {
             return n.sleep(ctx);
         }
         // A recursive edge deselected by a shrink is deleted, so
         // re-reaching this depth binds a fresh activation.
-        if ctx.shrink_unwind && self.is_recursive_edge() {
+        if ctx.deselecting_arm && self.is_recursive_edge() {
             if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
             }
@@ -1865,7 +1838,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        if let Some(t) = ftype.throws.with_deref(|t| t.cloned()) {
+        if let Some(t) = ftype.throws.deref_cloned() {
             match self.scope.dynamic.catch() {
                 Some((id, _)) => {
                     if let Some(bind) = ctx.env.by_id.get(&id)
@@ -2101,5 +2074,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             })
             .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
         emit_builtin_call_node(cx, &info, &arg_nodes)
+    }
+}
+
+fn seed_quiet_arg<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    id: BindId,
+    tv: &TagValue,
+    is_default: bool,
+    set: &mut LPooled<Vec<BindId>>,
+) {
+    if !is_default && ctx.frame_depth == 0 {
+        ctx.rt.store_insert_standing(id, TagValue::stale(tv.value_cloned()));
+    } else {
+        event.variables.insert(id, TagValue::fired(tv.value_cloned()));
+        set.push(id);
     }
 }

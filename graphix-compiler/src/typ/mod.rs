@@ -69,9 +69,8 @@ struct RefHist<H: IsoPoolable> {
     /// Content-less types (Any, primitives, tvars) keep `None`, which
     /// preserves their cycle break.
     content_ids: LPooled<AHashMap<NormKey, usize>>,
-    /// The scrutinee ids of the coverage-distribution probes in
-    /// progress: a probe that depends on its own verdict claims nothing.
-    distributing: SmallVec<[usize; 4]>,
+    /// A probe that depends on its own verdict claims nothing.
+    distribution_probes_in_progress: SmallVec<[usize; 4]>,
     epoch: u64,
     next_id: usize,
 }
@@ -99,7 +98,7 @@ impl<H: IsoPoolable> RefHist<H> {
             probe_pairs: LPooled::take(),
             probe_pins: LPooled::take(),
             content_ids: LPooled::take(),
-            distributing: SmallVec::new(),
+            distribution_probes_in_progress: SmallVec::new(),
             epoch: 0,
             next_id: 0,
         }
@@ -778,7 +777,7 @@ impl Type {
     /// [`Self::decompose`]d: a reference by name, a bare alias through
     /// its expansion.
     pub(crate) fn app_split(t: &Type, env: &Env) -> Result<Option<(Type, Type)>> {
-        let Some(t) = t.with_deref(|t| t.cloned()) else { return Ok(None) };
+        let Some(t) = t.deref_cloned() else { return Ok(None) };
         if let Some(parts) = t.decompose() {
             return Ok(Some(parts));
         }
@@ -801,7 +800,7 @@ impl Type {
         if let Some(parts) = Self::app_split(t, env)? {
             return Ok(Some(parts));
         }
-        let Some(t) = t.with_deref(|t| t.cloned()) else { return Ok(None) };
+        let Some(t) = t.deref_cloned() else { return Ok(None) };
         let Type::TVar(cv) = ctor else { return Ok(None) };
         let cons = cv.read().typ.read().constraints.clone();
         for c in cons.iter() {
@@ -860,8 +859,8 @@ impl Type {
     /// parameters take the declared types. A function-typed argument
     /// unifies its parameter positions only; anything else whole.
     pub(crate) fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
-        let d = declared.with_deref(|t| t.cloned());
-        let a = actual.with_deref(|t| t.cloned());
+        let d = declared.deref_cloned();
+        let a = actual.deref_cloned();
         match (d, a) {
             (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, &a),
             _ => declared.contains(env, actual).map(|_| ()),
@@ -1324,6 +1323,11 @@ impl Type {
                 _ => false,
             })
         })
+    }
+
+    /// The dereferenced type, cloned; `None` for an unbound cell.
+    pub fn deref_cloned(&self) -> Option<Self> {
+        self.with_deref(|t| t.cloned())
     }
 
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {

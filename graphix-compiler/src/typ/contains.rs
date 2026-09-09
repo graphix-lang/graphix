@@ -33,6 +33,10 @@ pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: uni
      named recursive type and annotate the binding";
 
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
+fn is_unbound_tvar(t: &Type) -> bool {
+    matches!(t, Type::TVar(tv) if tv.read().typ.read().typ.is_none())
+}
+
 fn open_cell_reaches(a: &Type, b: &Type) -> bool {
     match a {
         Type::TVar(tv) => {
@@ -827,13 +831,13 @@ impl Type {
                         // against the bare var in the arms below.
                         (Some(b), None)
                             if flags.contains(ContainsFlags::RigidCheck)
-                                && t1i.rigid > 0 =>
+                                && t1i.rigid_gates > 0 =>
                         {
                             ActOrRecurse::Recurse(b.clone(), tt1.clone())
                         }
                         (None, Some(b))
                             if flags.contains(ContainsFlags::RigidCheck)
-                                && t0i.rigid > 0 =>
+                                && t0i.rigid_gates > 0 =>
                         {
                             ActOrRecurse::Recurse(tt0.clone(), b.clone())
                         }
@@ -1018,7 +1022,6 @@ impl Type {
                 ) =>
             {
                 let probe = BitFlags::empty();
-                let bare = |t0: &&Self| matches!(t0, Self::TVar(tv) if tv.read().typ.read().typ.is_none());
                 let mut residue: LPooled<Vec<Type>> = LPooled::take();
                 for m in s1.iter() {
                     // An rhs member equal to the whole lhs set is
@@ -1053,12 +1056,12 @@ impl Type {
                     // A free rhs member is residue too: the coverage
                     // loop would bind it greedily; in the residue it
                     // aliases with the bare lhs member.
-                    if bare(&m) {
+                    if is_unbound_tvar(&m) {
                         residue.push(m.clone());
                         continue;
                     }
                     let mut covered = false;
-                    for c in s0.iter().filter(|c| !bare(c)) {
+                    for c in s0.iter().filter(|c| !is_unbound_tvar(c)) {
                         if c.contains_int(probe, env, hist, m)? {
                             if !c.contains_int(flags, env, hist, m)? {
                                 return Ok(false);
@@ -1080,7 +1083,7 @@ impl Type {
                     Type::Set(Arc::from_iter(residue.drain(..)))
                 };
                 let target = target.normalize();
-                match s0.iter().find(|m| bare(m)) {
+                match s0.iter().find(|m| is_unbound_tvar(m)) {
                     Some(tv_m) => tv_m.contains_int(flags, env, hist, &target),
                     None => Ok(false),
                 }
@@ -1128,9 +1131,11 @@ impl Type {
                 // Structural members first: a bare unbound TVar admits
                 // anything, so it is the fallback (`['b, Array<'b>]`
                 // must bind an array through `Array<'b>`).
-                let bare = |t0: &&Self| matches!(t0, Self::TVar(tv) if tv.read().typ.read().typ.is_none());
-                let members =
-                    || s.iter().filter(|t0| !bare(t0)).chain(s.iter().filter(bare));
+                let members = || {
+                    s.iter()
+                        .filter(|t0| !is_unbound_tvar(t0))
+                        .chain(s.iter().filter(|t0| is_unbound_tvar(t0)))
+                };
                 if crate::dbgenv::graphix_dbg_bind() {
                     eprintln!(
                         "SET-T {} >= {t} whole={whole_ok} prims={prims_ok}",
@@ -1231,14 +1236,14 @@ impl Type {
     ) -> Result<bool> {
         let t_id = hist.ref_id(t, env);
         if let Some(id) = t_id {
-            if hist.distributing.contains(&id) {
+            if hist.distribution_probes_in_progress.contains(&id) {
                 return Ok(false);
             }
-            hist.distributing.push(id);
+            hist.distribution_probes_in_progress.push(id);
         }
         let r = Self::set_covers_by_distribution_inner(env, hist, s, t);
         if t_id.is_some() {
-            hist.distributing.pop();
+            hist.distribution_probes_in_progress.pop();
         }
         r
     }
@@ -1253,7 +1258,7 @@ impl Type {
             let mut cur = t.clone();
             for _ in 0..64 {
                 cur = match &cur {
-                    Type::TVar(_) => match cur.with_deref(|t| t.cloned()) {
+                    Type::TVar(_) => match cur.deref_cloned() {
                         Some(next) => next,
                         None => break,
                     },

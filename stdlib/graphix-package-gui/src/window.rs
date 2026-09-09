@@ -100,7 +100,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             needs_redraw: true,
             last_set_size: None,
             pending_resize: None,
-            resize_timer_armed: false,
+            resize_render_timer_armed: false,
             last_render: Instant::now(),
         }
     }
@@ -125,7 +125,7 @@ pub struct TrackedWindow<X: GXExt> {
     pub last_set_size: Option<SizeV>,
     pub pending_resize: Option<(u32, u32, f64)>,
     /// True while a resize render timer is armed; at most one per drag.
-    pub resize_timer_armed: bool,
+    pub resize_render_timer_armed: bool,
     pub last_render: Instant,
 }
 
@@ -216,7 +216,7 @@ impl<X: GXExt> TrackedWindow<X> {
     pub fn push_event(&mut self, event: iced_core::Event) {
         self.pending_events.push(event);
         // During a resize drag the render timer drives redraws.
-        if !self.resize_timer_armed {
+        if !self.resize_render_timer_armed {
             self.needs_redraw = true;
         }
     }

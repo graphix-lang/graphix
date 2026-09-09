@@ -3,7 +3,8 @@
 
 use super::{
     DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_BUFFER, ROW_HEIGHT_CONTROLS,
-    ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY, ROW_NAME_KEY_ARC, ROW_NAME_LABEL, VALUE_COL_KEY,
+    ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL, ROW_NAME_SENTINEL_KEY,
+    ROW_NAME_SENTINEL_KEY_ARC, VALUE_COL_KEY,
     types::{ColumnType, col_header_width, col_text_width, row_basename, value_to_f64},
 };
 use arcstr::ArcStr;
@@ -52,7 +53,11 @@ impl<X: GXExt> DataTableW<X> {
         if !self.show_row_name.t.unwrap_or(true) {
             return 0.0;
         }
-        self.cached_col_widths.lock().get(ROW_NAME_KEY).copied().unwrap_or(MIN_COL_WIDTH)
+        self.cached_col_widths
+            .lock()
+            .get(ROW_NAME_SENTINEL_KEY)
+            .copied()
+            .unwrap_or(MIN_COL_WIDTH)
     }
 
     /// Data-column index whose left boundary is nearest the virtual
@@ -132,18 +137,18 @@ impl<X: GXExt> DataTableW<X> {
 
     /// The column width if set by user drag or ref; `None` means
     /// auto-size from content.
-    pub(super) fn effective_col_width(&self, col_name: &str) -> Option<f32> {
+    pub(super) fn explicit_col_width(&self, col_name: &str) -> Option<f32> {
         if let Some(w) = self.user_widths.lock().get(col_name) {
             return Some(*w);
         }
         self.columns.get(col_name).and_then(|c| c.ref_width)
     }
 
-    /// Canonical width for `col_name`: `effective_col_width`, else the
+    /// Canonical width for `col_name`: `explicit_col_width`, else the
     /// last rendered width, else `MIN_COL_WIDTH`. All scroll math must
     /// agree on this number.
     pub(super) fn column_canonical_width(&self, col_name: &str) -> f32 {
-        if let Some(w) = self.effective_col_width(col_name) {
+        if let Some(w) = self.explicit_col_width(col_name) {
             return w;
         }
         self.cached_col_widths.lock().get(col_name).copied().unwrap_or(MIN_COL_WIDTH)
@@ -210,7 +215,7 @@ impl<X: GXExt> DataTableW<X> {
             self.first_row = row.saturating_sub(metrics.rows_in_view.saturating_sub(1));
             changed = true;
         }
-        if col_name != ROW_NAME_KEY {
+        if col_name != ROW_NAME_SENTINEL_KEY {
             if let Some(ci) = self.displayed_index_of(col_name) {
                 if ci < self.first_col {
                     self.first_col = ci;
@@ -232,7 +237,7 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         if changed {
-            self.keyboard_scroll_override = true;
+            self.ignore_overlay_reassert = true;
             self.update_subscriptions();
         }
     }
@@ -251,7 +256,7 @@ impl<X: GXExt> DataTableW<X> {
             for (ri, row_path) in self.row_paths.iter().enumerate() {
                 let row_str: &str = row_path;
                 if show_name && sel_path.as_str() == row_str {
-                    target = Some((ri, ROW_NAME_KEY_ARC.clone()));
+                    target = Some((ri, ROW_NAME_SENTINEL_KEY_ARC.clone()));
                     break 'outer;
                 }
                 if let Some(rest) = sel_path.as_str().strip_prefix(row_str) {
@@ -278,12 +283,12 @@ impl<X: GXExt> DataTableW<X> {
         let mut inner = self.cells.inner.lock();
         let mut widths = self.user_widths.lock();
         if show_name {
-            let mut w = col_header_width(ROW_NAME_LABEL).max(MIN_COL_WIDTH);
+            let mut w = col_header_width(ROW_NAME_HEADER_LABEL).max(MIN_COL_WIDTH);
             for p in &self.row_paths {
                 let name = Path::basename(p).unwrap_or("");
                 w = w.max(col_text_width(name).max(MIN_COL_WIDTH));
             }
-            widths.insert(ROW_NAME_KEY.into(), w);
+            widths.insert(ROW_NAME_SENTINEL_KEY.into(), w);
         }
         match self.mode {
             DisplayMode::Table => {

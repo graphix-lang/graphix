@@ -247,6 +247,10 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
             out.push(fv);
         }
     });
+    // `Refs` iterates in set order, which varies with absolute BindId
+    // values across processes; BindIds allocate in compile order, so
+    // sorting makes the signature source-order-stable.
+    out.sort_by_key(|fv| fv.bind_id);
     out
 }
 
@@ -791,21 +795,16 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return Ok(None);
     };
     ctx.fusion.stats.attempted += 1;
-    let mut inputs = collect_region_inputs(&**node, ctx);
-    // `Refs` iterates in set order, which varies with absolute BindId
-    // values across processes; BindIds allocate in compile order, so
-    // sorting makes the signature source-order-stable.
-    inputs.sort_by_key(|fv| fv.bind_id);
+    let inputs = collect_region_inputs(&**node, ctx);
     if let Some(name) = non_scalar_basename_collision(&inputs) {
-        // Recorded so `attempted` and `failed` agree.
-        ctx.fusion.stats.record_failure(
+        return refuse(
+            ctx,
             node.spec(),
             compact_str::format_compact!(
                 "non-scalar region inputs share basename `{name}` — \
                  refuse to fuse"
             ),
         );
-        return Ok(None);
     }
     // `apply_sites` lets `CallSite::emit_clif` lower a registered site
     // to a direct call.
@@ -826,11 +825,11 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         Ok(v) => v,
         Err(e) => {
             // A freeze invariant violation; de-fuse rather than panic.
-            ctx.fusion.stats.record_failure(
+            return refuse(
+                ctx,
                 node.spec(),
                 compact_str::format_compact!("sig_from_inputs: {e:#}"),
             );
-            return Ok(None);
         }
     };
     let kernel = std::sync::Arc::new(sig);
@@ -889,8 +888,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
                 .find_map(|cause| cause.downcast_ref::<FusionBlocker>())
                 .map(|blocker| &blocker.spec)
                 .unwrap_or_else(|| node.spec());
-            ctx.fusion.stats.record_failure(spec, compact_str::format_compact!("{e:#}"));
-            return Ok(None);
+            return refuse(ctx, spec, compact_str::format_compact!("{e:#}"));
         }
     };
     // Feeders register under the real top id: `Rt::ref_var` is keyed
@@ -939,15 +937,23 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             }
             Ok(Some(n))
         }
-        Err(e) => {
-            // Recorded so `attempted` and `failed` agree.
-            ctx.fusion.stats.record_failure(
-                node.spec(),
-                compact_str::format_compact!("FusedKernel::new: {e:#}"),
-            );
-            Ok(None)
-        }
+        Err(e) => refuse(
+            ctx,
+            node.spec(),
+            compact_str::format_compact!("FusedKernel::new: {e:#}"),
+        ),
     }
+}
+
+/// De-fuse the region, recording the reason so `attempted` and
+/// `failed` agree.
+fn refuse<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    spec: &Expr,
+    reason: compact_str::CompactString,
+) -> anyhow::Result<Option<Node<R, E>>> {
+    ctx.fusion.stats.record_failure(spec, reason);
+    Ok(None)
 }
 
 /// Scalar env slots resolve by BindId, but the other per-kind tables
@@ -1090,7 +1096,7 @@ pub(crate) fn sig_from_inputs<'k>(
         skipped_args: Vec::new(),
         tail_invariant: Vec::new(),
         defined: std::sync::atomic::AtomicBool::new(false),
-        site_desc: std::sync::atomic::AtomicU64::new(0),
+        site_block_words: std::sync::atomic::AtomicU64::new(0),
     };
     Ok((sig, arg_types))
 }

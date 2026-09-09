@@ -132,7 +132,7 @@ for excess slots, adopted because a recursion activation IS a
 collection slot: retaining an unreached depth asleep and RESUMING it on
 re-descent would make a per-depth `count(e)` depend on the loop's depth
 history — unpredictable, and inconsistent with MapQ, whose regrown
-slots are fresh. Built as a scoped `ctx.shrink_unwind` flag, set only
+slots are fresh. Built as a scoped `ctx.deselecting_arm` flag, set only
 while `Select::update` sleeps an arm it actively DESELECTS (a genuine
 shrink, not a whole-recursion pause), under which a recursive-edge
 `CallSite::sleep` deletes its callee (cascading) instead of retaining

@@ -570,7 +570,7 @@ impl StructPatternNode {
                         binds.iter().map(|_| Type::empty_tvar()),
                     )),
                 )?;
-                match &type_predicate.with_deref(|t| t.cloned()) {
+                match &type_predicate.deref_cloned() {
                     Some(Type::Tuple(elts)) => {
                         if binds.len() != elts.len() {
                             bail!("expected a tuple of length {}", elts.len())
@@ -618,7 +618,7 @@ impl StructPatternNode {
                         Arc::from_iter(binds.iter().map(|_| Type::empty_tvar())),
                     ),
                 )?;
-                match &type_predicate.with_deref(|t| t.cloned()) {
+                match &type_predicate.deref_cloned() {
                     Some(Type::Variant(ttag, elts)) => {
                         if ttag != tag {
                             bail!(
@@ -723,7 +723,7 @@ impl StructPatternNode {
                     )?,
                     _ => bail!("non exhaustive struct matches require type annotations"),
                 }
-                match &type_predicate.with_deref(|t| t.cloned()) {
+                match &type_predicate.deref_cloned() {
                     Some(Type::Struct(elts)) => {
                         let binds = binds
                             .iter()

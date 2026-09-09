@@ -713,6 +713,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
     }
 }
 
+struct OrElseTick {
+    a_fired: bool,
+    f_fired: bool,
+}
+
 #[derive(Debug)]
 struct OrElseShared<R: Rt, E: UserEvent> {
     inner: Node<R, E>,
@@ -739,15 +744,14 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         Ok(Self { inner, fid, last_a: None, last_f: None })
     }
 
-    /// Returns `(a_updated, f_updated)`: whether `a` or `f()` fired
-    /// this cycle. `f` is always driven so its latest result is cached
-    /// for the next null `a`.
+    /// `f` is always driven so its latest result is cached for the
+    /// next null `a`.
     fn tick(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
-    ) -> (bool, bool) {
+    ) -> OrElseTick {
         if let Some(tv) = seam_value(from[1].update(ctx, event)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
@@ -756,19 +760,19 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         }
         // A stale delivery refreshes the latches but does not drive
         // an emission.
-        let a_updated = if let Some(a) = seam_value(from[0].update(ctx, event)) {
+        let a_fired = if let Some(a) = seam_value(from[0].update(ctx, event)) {
             self.last_a = Some(a.value_cloned());
             a.is_fired()
         } else {
             false
         };
-        let f_updated = if let Some(v) = seam_value(self.inner.update(ctx, event)) {
+        let f_fired = if let Some(v) = seam_value(self.inner.update(ctx, event)) {
             self.last_f = Some(v.value_cloned());
             v.is_fired()
         } else {
             false
         };
-        (a_updated, f_updated)
+        OrElseTick { a_fired, f_fired }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -833,7 +837,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let (a_up, f_up) = self.s.tick(ctx, from, event);
+        let OrElseTick { a_fired: a_up, f_fired: f_up } = self.s.tick(ctx, from, event);
         let res = if a_up {
             match &self.s.last_a {
                 Some(Value::Null) => self.s.last_f.clone(),
@@ -912,7 +916,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let (a_up, f_up) = self.s.tick(ctx, from, event);
+        let OrElseTick { a_fired: a_up, f_fired: f_up } = self.s.tick(ctx, from, event);
         let wrap_err = |e: Value| Value::Error(e.into());
         let res = if a_up {
             match &self.s.last_a {

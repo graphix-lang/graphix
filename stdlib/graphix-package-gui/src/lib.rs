@@ -33,10 +33,10 @@ pub(crate) enum ToGui {
     Update(ExprId, Value),
     /// Render tick during a resize drag; the size comes from the
     /// window's `pending_resize` slot. Never touches the size ref.
-    ResizeTimer(WindowId),
+    ResizeRenderTick(WindowId),
     /// Fires once per resize burst with the final logical size; the
     /// only event that writes the runtime's size ref.
-    ResizeEnd(WindowId, crate::types::SizeV),
+    ResizeSettled(WindowId, crate::types::SizeV),
     /// Wake the event loop to render widget state mutated outside
     /// the iced event cycle.
     Redraw,

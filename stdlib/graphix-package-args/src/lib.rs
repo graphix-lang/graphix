@@ -7,7 +7,7 @@ use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, errf, expr::ExprId, typ::FnType,
 };
-use graphix_package_core::ProgramArgs;
+use graphix_package_core::{FireOnce, ProgramArgs};
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
@@ -200,13 +200,12 @@ fn extract_matches(
 
 #[derive(Debug)]
 struct Parse {
-    fired: bool,
+    once: FireOnce,
     out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
-    // Fires once per instance (the `fired` latch), so it is not
-    // replayable and must not be `Sync`.
+    // Not replayable, so it must not be `Sync`.
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "args_parse";
 
@@ -218,7 +217,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { fired: false, out: TagValue::phantom() }))
+        Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
     }
 }
 
@@ -233,10 +232,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
             return self.out.ride();
         };
         let spec = tv.value_cloned();
-        if self.fired {
+        if !self.once.take() {
             return self.out.ride();
         }
-        self.fired = true;
 
         let cmd = match build_clap_command(&spec) {
             Ok(c) => c,
@@ -272,7 +270,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.fired = false;
+        self.once.reset();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}

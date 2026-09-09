@@ -3,8 +3,8 @@
 
 use super::{
     DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, IcedElement, MIN_COL_WIDTH, Message,
-    RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY, ROW_NAME_KEY_ARC,
-    ROW_NAME_LABEL, Renderer, VALUE_COL_KEY,
+    RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL,
+    ROW_NAME_SENTINEL_KEY, ROW_NAME_SENTINEL_KEY_ARC, Renderer, VALUE_COL_KEY,
     types::{
         ColumnType, SortDirection, cell_path_matches, col_header_width, col_min_width,
         row_basename, truncate_to_width,
@@ -160,7 +160,8 @@ impl<X: GXExt> DataTableW<X> {
                     viewport_height: size.height,
                     rows_in_view,
                     cols_in_view,
-                    dirty: m.dirty || m.rows_in_view != rows_in_view,
+                    needs_subscription_reconcile: m.needs_subscription_reconcile
+                        || m.rows_in_view != rows_in_view,
                 };
             }
         }
@@ -208,11 +209,11 @@ impl<X: GXExt> DataTableW<X> {
             self.build_sort_indicators();
         let mut col_meta: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
         if show_row_name {
-            let w = match self.effective_col_width(ROW_NAME_KEY) {
+            let w = match self.explicit_col_width(ROW_NAME_SENTINEL_KEY) {
                 Some(w) => w,
                 None => {
                     let max_w = DEFAULT_MAX_COL_WIDTH;
-                    let mut w = col_min_width(ROW_NAME_LABEL, max_w);
+                    let mut w = col_min_width(ROW_NAME_HEADER_LABEL, max_w);
                     for row_idx in vis_row_start..vis_row_end {
                         if let Some(p) = self.row_paths.get(row_idx) {
                             let name = Path::basename(p).unwrap_or("");
@@ -222,7 +223,7 @@ impl<X: GXExt> DataTableW<X> {
                     w
                 }
             };
-            col_meta.push((ROW_NAME_KEY_ARC.clone(), w));
+            col_meta.push((ROW_NAME_SENTINEL_KEY_ARC.clone(), w));
         }
         match self.mode {
             DisplayMode::Table => {
@@ -231,7 +232,7 @@ impl<X: GXExt> DataTableW<X> {
                         Some(p) => p,
                         None => break,
                     };
-                    let w = match self.effective_col_width(name) {
+                    let w = match self.explicit_col_width(name) {
                         Some(w) => w,
                         None => {
                             let max_w = DEFAULT_MAX_COL_WIDTH;
@@ -258,7 +259,7 @@ impl<X: GXExt> DataTableW<X> {
                 }
             }
             DisplayMode::Value => {
-                let w = match self.effective_col_width("value") {
+                let w = match self.explicit_col_width("value") {
                     Some(w) => w,
                     None => {
                         let max_w = DEFAULT_MAX_COL_WIDTH;

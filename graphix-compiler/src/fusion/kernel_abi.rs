@@ -175,7 +175,7 @@ pub fn abi_kind(t: &Type) -> Option<AbiKind> {
 
 fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
     // The TVar lock is not reentrant: clone out of the guard before recursing.
-    let resolved = t.with_deref(|r| r.cloned());
+    let resolved = t.deref_cloned();
     {
         let resolved = resolved.as_ref()?;
         match resolved {
@@ -191,8 +191,8 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             // A constructor application whose ctor is a bound TVar is
             // unreduced by typecheck; classify its filled form.
             Type::App(c, a) => {
-                let cd = c.with_deref(|t| t.cloned());
-                let ad = a.with_deref(|t| t.cloned());
+                let cd = c.deref_cloned();
+                let ad = a.deref_cloned();
                 return match (cd, ad) {
                     (Some(cd), Some(ad)) => {
                         cd.fill_hole(&ad).and_then(|r| abi_kind_d(&r, seen))
@@ -234,7 +234,7 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
         }
         if let Type::Set(members) = resolved {
             if let Some(succ) = option_result_success(members) {
-                return succ.and_then(|s| abi_kind_d(s, seen)).map(|_| AbiKind::Nullable);
+                return abi_kind_d(succ, seen).map(|_| AbiKind::Nullable);
             }
             let all_variants = members
                 .iter()
@@ -251,20 +251,20 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
 /// The success member of an option (`[T, null]`) or result (`[T, Error]`)
 /// set; `None` for any other member list. A null marker takes precedence:
 /// `[null, Error<T>]` is the option of `Error<T>`.
-fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
+fn option_result_success(members: &[Type]) -> Option<&Type> {
     if members.len() != 2 {
         return None;
     }
     let is_null = |m: &Type| is_single_prim(m, Typ::Null);
     let is_err = |m: &Type| m.with_deref(|r| matches!(r, Some(Type::Error(_))));
     match (is_null(&members[0]), is_null(&members[1])) {
-        (true, false) => return Some(Some(&members[1])),
-        (false, true) => return Some(Some(&members[0])),
+        (true, false) => return Some(&members[1]),
+        (false, true) => return Some(&members[0]),
         _ => {}
     }
     match (is_err(&members[0]), is_err(&members[1])) {
-        (true, false) => Some(Some(&members[1])),
-        (false, true) => Some(Some(&members[0])),
+        (true, false) => Some(&members[1]),
+        (false, true) => Some(&members[0]),
         _ => None,
     }
 }
@@ -275,7 +275,7 @@ fn option_result_success(members: &[Type]) -> Option<Option<&Type>> {
 /// null, so a success test must be positive against T's own disc).
 /// `None` for a non-Nullable shape.
 pub fn nullable_error_marked(t: &Type) -> Option<bool> {
-    let resolved = t.with_deref(|r| r.cloned())?;
+    let resolved = t.deref_cloned()?;
     match &resolved {
         Type::Primitive(p) if p.contains(Typ::Null) && p.iter().count() == 2 => {
             Some(false)
@@ -339,10 +339,9 @@ impl<'a> Seen<'a> {
         false
     }
 
-    /// Like [`Self::contains`], but yields the matched key: the outer
-    /// occurrence of a recursive ref, whose resolution cell is filled
-    /// where the inner occurrence's may not be (keys compare cell-blind).
-    pub(crate) fn find<'b>(
+    /// The outer occurrence's resolution cell is filled where the inner
+    /// occurrence's may not be (keys compare cell-blind).
+    pub(crate) fn outermost_occurrence<'b>(
         mut cur: Option<&'b Self>,
         key: &ExpandKey,
     ) -> Option<&'b ExpandKey> {
@@ -385,7 +384,7 @@ fn freeze_for_abi_d(t: &Type, seen: Option<&Seen>) -> Option<Type> {
 
 fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
     // The TVar lock is not reentrant: clone out of the guard before recursing.
-    let resolved = t.with_deref(|r| r.cloned());
+    let resolved = t.deref_cloned();
     {
         let resolved = resolved.as_ref()?;
         match resolved {
@@ -439,8 +438,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                 Some(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
             }
             Type::Set(members) => {
-                if let Some(succ_opt) = option_result_success(members) {
-                    let succ = succ_opt?;
+                if let Some(succ) = option_result_success(members) {
                     let succ_idx = if std::ptr::eq(&members[0], succ) { 0 } else { 1 };
                     let frozen_succ = freeze_for_abi_d(succ, seen)?;
                     let m0 = if succ_idx == 0 {
@@ -454,7 +452,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
                 let frozen: Option<LPooled<Vec<Type>>> = members
                     .iter()
                     .map(|m| {
-                        let m = m.with_deref(|r| r.cloned());
+                        let m = m.deref_cloned();
                         match m {
                             Some(Type::Variant(tag, payloads)) => {
                                 let fp: Option<LPooled<Vec<Type>>> = payloads
@@ -483,8 +481,8 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
             // A constructor application whose ctor is a bound TVar is
             // unreduced by typecheck; freeze its filled form.
             Type::App(c, a) => {
-                let cd = c.with_deref(|t| t.cloned());
-                let ad = a.with_deref(|t| t.cloned());
+                let cd = c.deref_cloned();
+                let ad = a.deref_cloned();
                 match (cd, ad) {
                     (Some(cd), Some(ad)) => {
                         let r = cd.fill_hole(&ad)?;
@@ -498,7 +496,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Option<Type> {
             // leaf stays TVar-free.
             Type::Ref(tr) => {
                 let key = ExpandKey::Ref(tr.clone());
-                if let Some(matched) = Seen::find(seen, &key) {
+                if let Some(matched) = Seen::outermost_occurrence(seen, &key) {
                     let ExpandKey::Ref(outer) = matched;
                     let frozen: Option<LPooled<Vec<Type>>> =
                         tr.params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
@@ -573,7 +571,7 @@ pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
 /// (`[T, null]`, `[T, Error]`, or the collapsed `T | null` primitive);
 /// `None` for any other shape.
 pub fn nullable_inner(t: &Type) -> Option<Type> {
-    let resolved = t.with_deref(|r| r.cloned());
+    let resolved = t.deref_cloned();
     {
         let resolved = resolved.as_ref()?;
         match resolved {
@@ -585,7 +583,7 @@ pub fn nullable_inner(t: &Type) -> Option<Type> {
                 PrimType::from_typ(other).map(|pt| Type::Primitive(pt.to_typ().into()))
             }
             Type::Set(members) => {
-                let succ = option_result_success(members)??;
+                let succ = option_result_success(members)?;
                 freeze_for_abi(succ)
             }
             _ => None,
@@ -838,7 +836,7 @@ pub struct KernelSig {
     /// This body's call-site block size in words, filled once the layout
     /// is final. A self-call reads it at run time because the size is
     /// unknown while the body is still being emitted.
-    pub site_desc: std::sync::atomic::AtomicU64,
+    pub site_block_words: std::sync::atomic::AtomicU64,
 }
 
 impl Clone for KernelSig {
@@ -852,7 +850,9 @@ impl Clone for KernelSig {
             skipped_args: self.skipped_args.clone(),
             tail_invariant: self.tail_invariant.clone(),
             defined: AtomicBool::new(self.defined.load(Relaxed)),
-            site_desc: std::sync::atomic::AtomicU64::new(self.site_desc.load(Relaxed)),
+            site_block_words: std::sync::atomic::AtomicU64::new(
+                self.site_block_words.load(Relaxed),
+            ),
         }
     }
 }
@@ -922,14 +922,10 @@ impl KernelSig {
         })
     }
 
-    /// Total `u64` wire slots: [`CTX_WIRE_SLOTS`] plus two per param.
-    pub fn abi_param_wire_slots(&self) -> usize {
-        CTX_WIRE_SLOTS + 2 * self.params.len()
-    }
-
-    /// Total wire slots the dispatch packs and the wrapper unpacks.
+    /// Total `u64` wire slots the dispatch packs and the wrapper unpacks:
+    /// [`CTX_WIRE_SLOTS`] plus two per param.
     pub fn abi_wire_slots_total(&self) -> usize {
-        self.abi_param_wire_slots()
+        CTX_WIRE_SLOTS + 2 * self.params.len()
     }
 
     /// The wire shape of the return value; `None` for a bare `null`

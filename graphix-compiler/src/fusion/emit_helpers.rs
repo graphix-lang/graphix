@@ -1356,25 +1356,24 @@ safe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
 /// Resize a scaffold loop's per-slot state table (a boxed `Vec<u64>`
 /// owned by `*word`, one word per slot, 0 = no prior observation) to
 /// `len` with prefix retention; truncation frees the dropped slots'
-/// subtrees (`own_levels`, `leaf` as in [`free_slot_chain`]). With
-/// `valid == 0` (tainted source) the table only grows, zero-filled,
-/// so in-loop accesses up to `len` stay in bounds.
+/// subtrees (`own_levels`, `leaf` as in [`free_slot_chain`]). With a
+/// tainted source (`source_present == 0`) the table only grows,
+/// zero-filled, so in-loop accesses up to `len` stay in bounds.
 unsafe fn graphix_slot_state_table(
     word: *mut u64,
     len: u64,
-    valid: u64,
+    source_present: u64,
     own_levels: u64,
-    leaf: u64,
+    leaf: *const SiteLeaf,
 ) -> *mut u64 {
-    let leaf =
-        if leaf == 0 { None } else { Some(unsafe { &*(leaf as *const SiteLeaf) }) };
+    let leaf = unsafe { leaf.as_ref() };
     let word = unsafe { &mut *word };
     if *word == 0 {
         *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     let len = len as usize;
-    if valid != 0 && len < v.len() {
+    if source_present != 0 && len < v.len() {
         if own_levels > 0 {
             for e in v[len..].iter() {
                 free_slot_chain(*e, own_levels - 1, leaf);
@@ -1390,14 +1389,17 @@ unsafe fn graphix_slot_state_table(
 /// The per-activation block for a self-call, allocated on first use
 /// and stamped with the reach generation. `word` is the root word in
 /// the caller's block (null = no memory); `desc` is the callee's
-/// `KernelSig::site_desc`, read at run time because a self-call's
+/// `KernelSig::site_block_words`, read at run time because a self-call's
 /// block size is unknown while its body is still emitting.
-unsafe fn graphix_site_child_block(word: *mut u64, desc: *const u64) -> *mut u64 {
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+unsafe fn graphix_site_child_block(
+    word: *mut u64,
+    desc: *const std::sync::atomic::AtomicU64,
+) -> *mut u64 {
+    use std::sync::atomic::Ordering::Relaxed;
     if word.is_null() {
         return std::ptr::null_mut();
     }
-    let words = unsafe { (*(desc as *const AtomicU64)).load(Relaxed) } as usize;
+    let words = unsafe { (*desc).load(Relaxed) } as usize;
     if words == 0 {
         return std::ptr::null_mut();
     }
@@ -1419,17 +1421,17 @@ unsafe fn graphix_site_child_block(word: *mut u64, desc: *const u64) -> *mut u64
 unsafe fn graphix_slot_state_blocks(
     word: *mut u64,
     slots: u64,
-    valid: u64,
-    leaf: u64,
+    source_present: u64,
+    leaf: *const SiteLeaf,
 ) -> *mut u64 {
-    let leaf_ref = unsafe { &*(leaf as *const SiteLeaf) };
+    let leaf_ref = unsafe { &*leaf };
     let word = unsafe { &mut *word };
     if *word == 0 {
         *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     let len = (slots as usize) * (leaf_ref.stride as usize);
-    if valid != 0 && len < v.len() {
+    if source_present != 0 && len < v.len() {
         free_blocks(&v[len..], leaf_ref);
         v.truncate(len)
     } else if len > v.len() {

@@ -32,9 +32,10 @@ use super::{
     lower::{freeze_node_typ, resolve_node_typ},
     scaffold,
     scalar::{
-        abstract_read_helper, compile_bin, compile_cast, compile_cmp, compile_const,
-        compile_element_read, prim_to_clif, scalar_to_payload_i64,
-        string_buf_push_helper, value_buf_push_helper, widen_to_i64, zero_const,
+        ElementRead, abstract_read_helper, compile_bin, compile_cast, compile_cmp,
+        compile_const, compile_element_read, kind_disc, prim_to_clif,
+        scalar_to_payload_i64, string_buf_push_helper, value_buf_push_helper,
+        widen_to_i64, zero_const,
     },
 };
 
@@ -149,7 +150,7 @@ pub(crate) fn emit_ref_node(
                 name.unwrap_or("<synthetic>")
             )
         })?;
-        (l.vv, l.kind)
+        (l.words, l.kind)
     };
     // A wake reads a standing binding with its STALE disc intact; only
     // genuine init upgrades, and that happens at the boundary.
@@ -742,7 +743,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
             }
             _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
         })?;
-    let (arr_ptr, src, src_disc) =
+    let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     // A tainted source does not abort: the reads below are guarded and
     // its taint folds into the result. An owned source is registered so
@@ -786,8 +787,14 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
                 // Guarded: a tainted source's placeholder has no fields.
                 let ftyp = resolve_node_typ(cx.ctx, field_typ);
                 let idx = cx.b.ins().iconst(types::I64, i as i64);
-                let cv =
-                    emit_guarded_element_read(cx, arr_ptr, src_disc, idx, &ftyp, true)?;
+                let cv = emit_guarded_element_read(
+                    cx,
+                    arr_ptr,
+                    src_disc,
+                    idx,
+                    &ftyp,
+                    ElementRead::StructField,
+                )?;
                 scaffold::push_field(cx, inner, cv, &ftyp, CompositeSource::Owned)?;
             }
         }
@@ -862,37 +869,43 @@ fn emit_accessor_source_drop(
     Ok(())
 }
 
-/// Compile an accessor's composite source: (ValArray bits, ownership,
-/// disc). The caller drops an Owned pointer after the read. The disc
-/// may carry TAINT; callers guard the read and fold it.
+/// An accessor's compiled composite source. The caller drops an Owned
+/// pointer after the read. The disc may carry TAINT; callers guard the
+/// read and fold it.
+struct AccessorSrc {
+    /// ValArray bits.
+    ptr: ClifValue,
+    ownership: CompositeSource,
+    disc: ClifValue,
+}
+
 fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     want: AbiKind,
-) -> Result<(ClifValue, CompositeSource, ClifValue)> {
+) -> Result<AccessorSrc> {
     if kernel_abi::abi_kind(source.typ()) != Some(want) {
         return Err(anyhow!(
             "emit_clif: accessor source of type {:?} isn't {want:?}",
             source.typ()
         ));
     }
-    let src = node_composite_source(source);
+    let ownership = node_composite_source(source);
     let cv = source.emit_clif(cx)?;
-    Ok((cv.payload, src, cv.disc))
+    Ok(AccessorSrc { ptr: cv.payload, ownership, disc: cv.disc })
 }
 
 /// A shape-safe, owned, tainted bottom of `elem`'s ABI kind for a
 /// position with no value this cycle.
 ///
-/// `fires` are the discs governing this production: a bottom is a
-/// production, so its STALE bit folds from its triggers here (a fresh
-/// bottom returned unfolded re-fires every cycle). Pass `&[]` only where
-/// the whole run is being torn down. The absent-delivery twin,
+/// A bottom is a production, so its STALE bit folds from the governing
+/// discs here (a fresh bottom returned unfolded re-fires every cycle).
+/// Pass `&[]` only where the whole run is being torn down. The absent-delivery twin,
 /// `select::placeholder_for_kind`, is unconditionally standing.
 pub(super) fn emit_bottom_placeholder(
     cx: &mut BodyCx,
     elem: &Type,
-    fires: &[ClifValue],
+    governing_discs: &[ClifValue],
 ) -> Result<CompiledExpr> {
     let cv = match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
@@ -923,7 +936,7 @@ pub(super) fn emit_bottom_placeholder(
             return Err(anyhow!("emit_clif: no placeholder for shape {other:?}"));
         }
     };
-    let disc = propagate_flags(cx.b, cv.disc, fires);
+    let disc = propagate_flags(cx.b, cv.disc, governing_discs);
     Ok(CompiledExpr::new(disc, cv.payload))
 }
 
@@ -937,7 +950,7 @@ fn emit_guarded_element_read(
     src_disc: ClifValue,
     idx_val: ClifValue,
     elem: &Type,
-    struct_access: bool,
+    read: ElementRead,
 ) -> Result<CompiledExpr> {
     let tainted = is_tainted(cx.b, src_disc);
     let read_bl = cx.b.create_block();
@@ -952,7 +965,7 @@ fn emit_guarded_element_read(
     cx.b.ins().brif(tainted, skip_bl, &[], read_bl, &[]);
     cx.b.switch_to_block(read_bl);
     cx.b.seal_block(read_bl);
-    let rv = compile_element_read(cx.b, arr_ptr, idx_val, elem, struct_access, cx.ctx)?;
+    let rv = compile_element_read(cx.b, arr_ptr, idx_val, elem, read, cx.ctx)?;
     cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
     cx.b.switch_to_block(skip_bl);
     cx.b.seal_block(skip_bl);
@@ -1015,12 +1028,7 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
         CompiledExpr::new(r[0], r[1])
     } else {
         let r0 = cx.b.inst_results(call)[0];
-        let disc = match kernel_abi::abi_kind(&rep) {
-            Some(AbiKind::Scalar(p)) => scalar_disc(cx.b, p),
-            Some(AbiKind::String) => cx.b.ins().iconst(types::I64, value_disc::STRING),
-            _ => cx.b.ins().iconst(types::I64, value_disc::ARRAY),
-        };
-        CompiledExpr::new(disc, r0)
+        CompiledExpr::new(kind_disc(cx.b, &rep), r0)
     };
     cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
     cx.b.switch_to_block(skip_bl);
@@ -1050,10 +1058,17 @@ pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Elem types may be Refs to abstract type names; resolve before classifying.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src, src_disc) = emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
+    let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
+        emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
-    let result =
-        emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, false)?;
+    let result = emit_guarded_element_read(
+        cx,
+        arr_ptr,
+        src_disc,
+        idx_const,
+        &elem_typ,
+        ElementRead::ArrayIndex,
+    )?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
     // The element read's disc is fresh; the source's STALE gates it.
     let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
@@ -1070,11 +1085,17 @@ pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Same abstract-Ref resolution as the tuple read.
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let (arr_ptr, src, src_disc) =
+    let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
         emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
-    let result =
-        emit_guarded_element_read(cx, arr_ptr, src_disc, idx_const, &elem_typ, true)?;
+    let result = emit_guarded_element_read(
+        cx,
+        arr_ptr,
+        src_disc,
+        idx_const,
+        &elem_typ,
+        ElementRead::StructField,
+    )?;
     emit_accessor_source_drop(cx, arr_ptr, src)?;
     // The element read's disc is fresh; the source's STALE gates it.
     let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
@@ -1095,7 +1116,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     if matches!(kernel_abi::abi_kind(source.typ()), Some(AbiKind::Array)) {
         // Unforced: the helper is bounds-checked (safe on a placeholder)
         // and the source's taint folds into the result below.
-        let (arr_ptr, src, src_disc) =
+        let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;

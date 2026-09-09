@@ -3,7 +3,7 @@
 
 use super::{
     DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_HEIGHT_ESTIMATE,
-    ROW_NAME_KEY, ROW_NAME_KEY_ARC, ROW_NAME_LABEL,
+    ROW_NAME_HEADER_LABEL, ROW_NAME_SENTINEL_KEY, ROW_NAME_SENTINEL_KEY_ARC,
     types::{ResizeDrag, ViewportMetrics, cell_path_matches, parse_or_quote},
 };
 use arcstr::{ArcStr, literal};
@@ -17,7 +17,7 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn fire_on_select(&self, row_idx: usize, col_name: &str) {
         if let Some(callable) = &self.on_select {
             if let Some(row_path) = self.row_paths.get(row_idx) {
-                let cell_path: ArcStr = if col_name == ROW_NAME_KEY {
+                let cell_path: ArcStr = if col_name == ROW_NAME_SENTINEL_KEY {
                     row_path.clone().into()
                 } else {
                     compact_str::format_compact!(
@@ -47,7 +47,7 @@ impl<X: GXExt> DataTableW<X> {
         let name_offset = if show_name { 1 } else { 0 };
         let mut display_cols: LPooled<Vec<ArcStr>> = LPooled::take();
         if show_name {
-            display_cols.push(ROW_NAME_KEY_ARC.clone());
+            display_cols.push(ROW_NAME_SENTINEL_KEY_ARC.clone());
         }
         match self.mode {
             DisplayMode::Table => {
@@ -69,7 +69,7 @@ impl<X: GXExt> DataTableW<X> {
             .find_map(|sel_path| {
                 for (ri, rp) in self.row_paths.iter().enumerate() {
                     for (ci, col_name) in display_cols.iter().enumerate() {
-                        let matches = if col_name == &ROW_NAME_KEY_ARC {
+                        let matches = if col_name == &ROW_NAME_SENTINEL_KEY_ARC {
                             sel_path.as_str() == rp.as_ref()
                         } else {
                             cell_path_matches(sel_path, rp.as_ref(), col_name)
@@ -204,7 +204,8 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(crate) fn handle_cell_click(&mut self, row: usize, col: ArcStr) -> bool {
         // The display label is accepted as a synonym for the row-name key.
-        if col.as_str() == ROW_NAME_KEY || col.as_str() == ROW_NAME_LABEL {
+        if col.as_str() == ROW_NAME_SENTINEL_KEY || col.as_str() == ROW_NAME_HEADER_LABEL
+        {
             if let Some(callable) = &self.on_activate {
                 if let Some(row_path) = self.row_paths.get(row) {
                     let pv = Value::String(row_path.clone().into());
@@ -244,10 +245,10 @@ impl<X: GXExt> DataTableW<X> {
                 viewport_height: vp_h,
                 rows_in_view,
                 cols_in_view,
-                dirty: false,
+                needs_subscription_reconcile: false,
             };
         }
-        if self.keyboard_scroll_override {
+        if self.ignore_overlay_reassert {
             // A real user scroll moves the position away from the
             // keyboard-driven one; anything closer is the overlay
             // re-asserting it.
@@ -268,7 +269,7 @@ impl<X: GXExt> DataTableW<X> {
                 }
                 return metrics_changed;
             }
-            self.keyboard_scroll_override = false;
+            self.ignore_overlay_reassert = false;
         }
         let n_rows = self.row_paths.len();
         let n_cols = self.total_data_cols();
@@ -318,7 +319,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         let show_name = self.show_row_name.t.unwrap_or(true);
         let name: ArcStr = if show_name && col_meta_idx == 0 {
-            ROW_NAME_KEY_ARC.clone()
+            ROW_NAME_SENTINEL_KEY_ARC.clone()
         } else {
             let data_idx = if show_name { col_meta_idx - 1 } else { col_meta_idx };
             let (vis_start, _vis_end) = self.display_col_range();
@@ -329,7 +330,7 @@ impl<X: GXExt> DataTableW<X> {
             }
         };
         let current_w = self
-            .effective_col_width(&name)
+            .explicit_col_width(&name)
             .or_else(|| self.cached_col_widths.lock().get(&name).copied())
             .unwrap_or(DEFAULT_MAX_COL_WIDTH);
         self.resize_drag =

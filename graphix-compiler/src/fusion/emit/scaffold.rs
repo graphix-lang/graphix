@@ -37,15 +37,15 @@ use super::{
     },
 };
 
-/// The input array for a HOF loop. `owned: true` means the scaffold
-/// drops it after the loop; an input bound as an env local must pass
-/// `owned: false` or it double-drops on the normal path.
+/// The input array for a HOF loop. The scaffold drops an `Owned` one
+/// after the loop; an input bound as an env local is `Borrowed` or it
+/// double-drops on the normal path.
 pub struct ArraySrc {
     pub ptr: ClifValue,
     /// The source's full disc: its STALE bit is inherited by the bound
     /// elements and its TAINT bit rides into the result.
     pub disc: ClifValue,
-    pub owned: bool,
+    pub ownership: CompositeSource,
 }
 
 /// Loop element binding: bound under `name` (and `id`, when the
@@ -337,7 +337,7 @@ fn drop_owned_elem(cx: &mut BodyCx, elem: &BoundElem) -> Result<()> {
 /// bottom-abort inside the loop frees it. Pair with [`drop_owned_src`]
 /// after the loop: exactly one drop on either path.
 fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
-    if arr.owned {
+    if arr.ownership == CompositeSource::Owned {
         let var = cx.b.declare_var(types::I64);
         cx.b.def_var(var, arr.ptr);
         cx.ctx.owned_input_stack.borrow_mut().push(var);
@@ -347,7 +347,7 @@ fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
 /// Drop an owned input array at the post-loop merge point and pop its
 /// registration.
 fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
-    if arr.owned {
+    if arr.ownership == CompositeSource::Owned {
         let drop_helper = cx.helper("graphix_valarray_drop")?;
         cx.b.ins().call(drop_helper, &[arr.ptr]);
         cx.ctx.owned_input_stack.borrow_mut().pop();

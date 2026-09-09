@@ -252,10 +252,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             return;
         }
         for (pos_idx, call_idx) in remaining {
-            let arg_typ =
-                cs.arg_positional(pos_idx).map(|n| n.typ().clone()).or_else(|| {
-                    fn_type.vargs.as_ref().and_then(|t| t.with_deref(|t| t.cloned()))
-                });
+            let arg_typ = cs
+                .arg_positional(pos_idx)
+                .map(|n| n.typ().clone())
+                .or_else(|| fn_type.vargs.as_ref().and_then(|t| t.deref_cloned()));
             let arg_typ = match arg_typ {
                 Some(t) => t,
                 None => return,
@@ -640,7 +640,7 @@ fn resolve_abstract_node<'a>(
         // held across `lookup_ref`'s lock acquisitions (a deadlock under
         // concurrent compiles). A deref is not an expansion: `seen`
         // passes through.
-        Type::TVar(_) => match typ.with_deref(|t| t.cloned()) {
+        Type::TVar(_) => match typ.deref_cloned() {
             Some(t) => Some(resolve_abstract_d(&t, env, seen, cx).unwrap_or(t)),
             None => None,
         },
@@ -911,8 +911,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let typ = g.typ();
     let mut inputs: LPooled<Vec<(ArcStr, RegionInputKind, Option<BindId>)>> =
         LPooled::take();
-    // Keyed by source position because skipped fn formals leave holes.
-    let mut formal_kts: LPooled<Vec<(usize, Type)>> = LPooled::take();
+    let mut formal_slot_types_by_position: LPooled<Vec<(usize, Type)>> = LPooled::take();
     let inv = invariant_formals(g, self_bind);
     let mut skipped_args: Vec<u32> = Vec::new();
     for (i, fa) in typ.args.iter().enumerate() {
@@ -947,7 +946,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
             }
         }
         inputs.push((name, kind, id));
-        formal_kts.push((i, kt));
+        formal_slot_types_by_position.push((i, kt));
     }
     let tail_invariant: Vec<u32> = inv
         .iter()
@@ -1015,7 +1014,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // the wrong ABI.
     if is_rec
         && let Some(sb) = self_bind
-        && !self_calls_abi_consistent(g.body(), sb, &formal_kts, ec)
+        && !self_calls_abi_consistent(g.body(), sb, &formal_slot_types_by_position, ec)
     {
         return None;
     }
@@ -1133,7 +1132,7 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
 fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: BindId,
-    formal_kts: &[(usize, Type)],
+    formal_slot_types_by_position: &[(usize, Type)],
     ec: &ExecCtx<R, E>,
 ) -> bool {
     let mut ok = true;
@@ -1145,7 +1144,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
         if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == self_bind) {
             return;
         }
-        for (i, formal_kt) in formal_kts.iter() {
+        for (i, formal_kt) in formal_slot_types_by_position.iter() {
             let Some(arg) = cs.arg_positional(*i) else {
                 ok = false;
                 return;

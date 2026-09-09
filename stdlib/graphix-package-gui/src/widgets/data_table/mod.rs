@@ -63,10 +63,10 @@ const RESIZE_HANDLE_WIDTH: f32 = 5.0;
 /// Internal key for the synthesized row-name column. The leading null
 /// byte keeps it from colliding with any real column name; `"name"` is
 /// only the displayed label.
-const ROW_NAME_KEY: &str = "\0__rowname__";
-static ROW_NAME_KEY_ARC: ArcStr = literal!("\0__rowname__");
+const ROW_NAME_SENTINEL_KEY: &str = "\0__rowname__";
+static ROW_NAME_SENTINEL_KEY_ARC: ArcStr = literal!("\0__rowname__");
 /// Header label displayed for the synthesized row-name column.
-const ROW_NAME_LABEL: &str = "name";
+const ROW_NAME_HEADER_LABEL: &str = "name";
 
 /// Column key for `DisplayMode::Value` cells, which have no real column
 /// name. The leading `\0` cannot appear in a user column name.
@@ -120,7 +120,7 @@ pub(crate) struct DataTableW<X: GXExt> {
     cached_col_widths: Mutex<AHashMap<ArcStr, f32>>,
     /// Set by keyboard navigation so the next `handle_scroll` does not
     /// overwrite its position.
-    keyboard_scroll_override: bool,
+    ignore_overlay_reassert: bool,
     /// The cell being edited, keyed by path so it survives scroll and
     /// sort changes.
     editing: Option<(Path, ArcStr)>,
@@ -255,7 +255,7 @@ impl<X: GXExt> DataTableW<X> {
             first_col: 0,
             viewport_metrics: Mutex::new(types::ViewportMetrics::default()),
             cached_col_widths: Mutex::new(AHashMap::default()),
-            keyboard_scroll_override: false,
+            ignore_overlay_reassert: false,
             editing: None,
             edit_buffer: CompactString::new(""),
             update_tx,
@@ -286,8 +286,8 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         // Layout has only `&self`, so viewport changes are picked up here.
         let viewport_dirty = {
             let mut m = self.viewport_metrics.lock();
-            let d = m.dirty;
-            m.dirty = false;
+            let d = m.needs_subscription_reconcile;
+            m.needs_subscription_reconcile = false;
             d
         };
         if viewport_dirty {

@@ -1,5 +1,6 @@
 use super::{
-    MAX_ARRAY_INIT_LEN, NOP, callsite::CallSite, genn, pattern::StructPatternNode,
+    MAX_ARRAY_INIT_LEN, NOP, WakeBit, callsite::CallSite, genn,
+    pattern::StructPatternNode,
 };
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
@@ -441,10 +442,9 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
     type Collection: MapCollection;
 
-    /// `true` iff `finish` reads the source elements into the result
-    /// (filter, find): a same-length source refresh with quiet callback
-    /// slots must then still fire the production.
-    const PASS_THROUGH: bool = false;
+    /// A same-length source refresh with quiet callback slots must then
+    /// still fire the production.
+    const RESULT_READS_ELEMENTS: bool = false;
 
     fn finish(
         &mut self,
@@ -576,7 +576,10 @@ fn emit_flattened_source<R: Rt, E: UserEvent>(
     let flatten = cx.helper(helper)?;
     let call = cx.b.ins().call(flatten, &[value.disc, value.payload]);
     let ptr = cx.b.inst_results(call)[0];
-    Ok((value, scaffold::ArraySrc { ptr, disc: value.disc, owned: true }))
+    Ok((
+        value,
+        scaffold::ArraySrc { ptr, disc: value.disc, ownership: CompositeSource::Owned },
+    ))
 }
 
 /// The exit boundary for collection-returning loops: consume the
@@ -622,8 +625,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
 
 #[derive(Debug)]
 struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
-    /// Set by `sleep()`, taken by the next update.
-    slept: bool,
+    slept: WakeBit,
     base: MapQBase<R, E>,
     scope: Scope,
     callback: BindId,
@@ -670,7 +672,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
             None,
         );
         Ok(Node::new(Self {
-            slept: false,
+            slept: WakeBit::default(),
             base: MapQBase {
                 source,
                 prototype: prototype.call,
@@ -727,7 +729,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
+        let woke = self.slept.take() && ctx.frame_depth == 0;
         let old_len = self.slots.len();
         let mut production = None;
         let mut resized = false;
@@ -742,7 +744,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             src_trig = tag.triggers();
             // A tainted or unselectable source is bottom; the slot walk
             // still runs so slot-internal state sees this cycle's events.
-            if tag.is_tainted() {
+            if tag.is_bottom() {
                 forced_taint = true;
             } else if let Some(source) =
                 sval.and_then(|value| T::Collection::select(value))
@@ -764,7 +766,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     event.variables.insert(slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
-                if resized || T::PASS_THROUGH {
+                if resized || T::RESULT_READS_ELEMENTS {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
@@ -806,7 +808,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             if tag.triggers() {
                 if tag.is_bottom() {
                     production = merge_tag(production, tag);
-                    self.slots[i].tag = Tag::TAINT;
+                    self.slots[i].tag = Tag::STALE_BOTTOM;
                 } else {
                     production = merge_tag(production, tag);
                     self.slots[i].value = Some(tv.value());
@@ -831,7 +833,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         // bottomness is a question about the slots now; the production
         // tag decides only the fired bit. The resident never substitutes
         // for a poisoned production.
-        let poisoned = self.slots.iter().any(|slot| slot.tag.is_tainted());
+        let poisoned = self.slots.iter().any(|slot| slot.tag.is_bottom());
         if crate::dbgenv::gxdbg_slot() {
             eprintln!(
                 "SLOT map prod={:?} resized={resized} forced={forced_taint} poisoned={poisoned} slots={:?}",
@@ -859,7 +861,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             }
             None => return self.resident.ride(),
         };
-        if tag.is_tainted() || poisoned {
+        if tag.is_bottom() || poisoned {
             let t = if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
             return self.resident.set(TagValue::tagged(Value::Null, t));
         }
@@ -911,7 +913,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         // Slot values survive sleep: sleep is pause.
         self.base.source.sleep(ctx);
         for slot in self.slots.iter_mut() {
@@ -990,8 +992,8 @@ struct FoldSlot<R: Rt, E: UserEvent> {
     acc_id: BindId,
     element_id: BindId,
     call: Node<R, E>,
-    cycle: Option<Value>,
-    held: Option<Value>,
+    this_cycle: Option<Value>,
+    last_good: Option<Value>,
     tag: Tag,
 }
 
@@ -1034,7 +1036,14 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
                 top_id,
             )
         };
-        Self { acc_id, element_id, call, cycle: None, held: None, tag: Tag::STALE }
+        Self {
+            acc_id,
+            element_id,
+            call,
+            this_cycle: None,
+            last_good: None,
+            tag: Tag::STALE,
+        }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1199,7 +1208,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             // A tainted or unselectable source is bottom; the slot walk
             // still runs so slot-internal state sees this cycle's events.
             // A tainted init is a poisoned delivery instead, see below.
-            if tag.is_tainted() {
+            if tag.is_bottom() {
                 forced_taint = true;
             } else if let Some(source) =
                 sval.and_then(|value| T::Collection::select(value))
@@ -1236,7 +1245,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
             };
             init_tag = Some(tag);
-            if tag.is_tainted() {
+            if tag.is_bottom() {
                 // A tainted init is a poisoned delivery to slot 0's acc,
                 // not a whole-fold abort: a callback that never consumes
                 // the acc recovers. The delivery mirrors the init's tag.
@@ -1295,7 +1304,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         // consumes it. A triggering taint still counts, for the bottom arm.
         let mut any_trig = forced_taint && src_trig;
         // A resize must propagate the chain's current poison to a fresh
-        // slot's seed, not resurrect `held`.
+        // slot's seed, not resurrect `last_good`.
         let mut prev_slot_bottom = false;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
@@ -1322,7 +1331,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     let seed = if i == 0 {
                         self.init.clone()
                     } else {
-                        self.slots[i - 1].held.clone()
+                        self.slots[i - 1].last_good.clone()
                     };
                     if let Some(value) = seed {
                         ctx.rt.store_insert(acc_id, TagValue::fired(value.clone()));
@@ -1338,10 +1347,10 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             if tag.triggers() {
                 any_trig = true;
                 if tag.is_bottom() {
-                    // The bottom travels the acc chain; `held` is
+                    // The bottom travels the acc chain; `last_good` is
                     // sleep/frame memory and never substitutes for it.
                     self.slots[i].tag = tag;
-                    self.slots[i].cycle = None;
+                    self.slots[i].this_cycle = None;
                     if i + 1 < self.slots.len() {
                         let next = self.slots[i + 1].acc_id;
                         event.variables.insert(
@@ -1352,8 +1361,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 } else {
                     self.slots[i].tag = tag;
                     let value = tv.value();
-                    self.slots[i].cycle = Some(value.clone());
-                    self.slots[i].held = Some(value.clone());
+                    self.slots[i].this_cycle = Some(value.clone());
+                    self.slots[i].last_good = Some(value.clone());
                     if i + 1 < self.slots.len() {
                         let next = self.slots[i + 1].acc_id;
                         ctx.rt.store_insert(next, TagValue::fired(value.clone()));
@@ -1364,8 +1373,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // A stale production advances the acc chain silently.
                 self.slots[i].tag = Tag::STALE;
                 let value = tv.value();
-                self.slots[i].cycle = Some(value.clone());
-                self.slots[i].held = Some(value.clone());
+                self.slots[i].this_cycle = Some(value.clone());
+                self.slots[i].last_good = Some(value.clone());
                 if i + 1 < self.slots.len() {
                     let next = self.slots[i + 1].acc_id;
                     ctx.rt.store_insert(next, TagValue::fired(value.clone()));
@@ -1375,14 +1384,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                 // A standing bottom still poisons the chain; record it
                 // so the last-slot check sees a chain born bottom.
                 self.slots[i].tag = tag;
-                self.slots[i].cycle = None;
+                self.slots[i].this_cycle = None;
             }
         }
         event.init = saved_init;
 
         // An interior slot's poison bottoms the fold only if a downstream
         // callback consumes it; only the last slot's state is the result.
-        if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_tainted()) {
+        if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_bottom()) {
             // A resize is an event even when the chain is poisoned.
             return if any_trig || resized {
                 self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
@@ -1391,13 +1400,13 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             };
         }
         if let Some(last) = self.slots.last() {
-            if let Some(value) = last.cycle.clone() {
+            if let Some(value) = last.this_cycle.clone() {
                 // A fold fires iff it resized, a slot fired, or the
                 // source fired empty.
                 let tag = if resized || any_trig { Tag::FIRED } else { Tag::STALE };
                 return self.resident.set(TagValue::tagged(value, tag));
             }
-            if resized && let Some(value) = last.held.clone() {
+            if resized && let Some(value) = last.last_good.clone() {
                 let tag = source_tag.unwrap_or(Tag::FIRED);
                 return self.resident.set(TagValue::tagged(value, tag));
             }
@@ -1447,7 +1456,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The seed, `held` and slot tags survive sleep: sleep is pause.
+        // The seed, `last_good` and slot tags survive sleep: sleep is pause.
         self.base.source.sleep(ctx);
         self.base.init.sleep(ctx);
         for slot in self.slots.iter_mut() {
@@ -1461,8 +1470,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         self.init = None;
         self.source_present = false;
         for slot in self.slots.iter_mut() {
-            slot.cycle = None;
-            slot.held = None;
+            slot.this_cycle = None;
+            slot.last_good = None;
             slot.tag = Tag::STALE;
             slot.call.reset_replay(ctx);
         }
@@ -1578,10 +1587,13 @@ impl Flavor {
     ) -> Result<(CompiledExpr, scaffold::ArraySrc)> {
         match self {
             Self::Array => {
-                let owned = emit::node_composite_source(source) == CompositeSource::Owned;
+                let ownership = emit::node_composite_source(source);
                 let array = source.emit_clif(cx)?;
-                let src =
-                    scaffold::ArraySrc { ptr: array.payload, disc: array.disc, owned };
+                let src = scaffold::ArraySrc {
+                    ptr: array.payload,
+                    disc: array.disc,
+                    ownership,
+                };
                 Ok((array, src))
             }
             Self::List => emit_flattened_source(cx, source, "graphix_list_to_valarray"),
@@ -2072,7 +2084,7 @@ struct ArrayFilter;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilter {
     type Collection = ValArray;
 
-    const PASS_THROUGH: bool = true;
+    const RESULT_READS_ELEMENTS: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ValArray) -> Option<Value> {
         Some(Value::Array(ValArray::from_iter(
@@ -2153,7 +2165,7 @@ struct ArrayFind;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFind {
     type Collection = ValArray;
 
-    const PASS_THROUGH: bool = true;
+    const RESULT_READS_ELEMENTS: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ValArray) -> Option<Value> {
         Some(
@@ -2283,7 +2295,7 @@ struct ListFilter;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilter {
     type Collection = ListCollection;
 
-    const PASS_THROUGH: bool = true;
+    const RESULT_READS_ELEMENTS: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ListCollection) -> Option<Value> {
         Some(list::from_iter(slots.iter().zip(source.values()).filter_map(
@@ -2366,7 +2378,7 @@ struct ListFind;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFind {
     type Collection = ListCollection;
 
-    const PASS_THROUGH: bool = true;
+    const RESULT_READS_ELEMENTS: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ListCollection) -> Option<Value> {
         Some(
@@ -2481,7 +2493,7 @@ struct MapFilter;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilter {
     type Collection = ValueMap;
 
-    const PASS_THROUGH: bool = true;
+    const RESULT_READS_ELEMENTS: bool = true;
 
     fn finish(&mut self, slots: &[Slot<R, E>], source: &ValueMap) -> Option<Value> {
         Some(Value::Map(CMap::from_iter(

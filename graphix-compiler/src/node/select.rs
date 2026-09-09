@@ -1,5 +1,5 @@
 use super::{
-    Held,
+    Held, WakeBit,
     compiler::compile,
     pattern::{SliceKind, StructPatternNode},
 };
@@ -53,28 +53,102 @@ pub struct Select<R: Rt, E: UserEvent> {
     pub arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
     pub typ: Type,
     pub(crate) spec: Expr,
-    /// Set by `analysis::mark_tail_sites` when this select is a
-    /// tail-recursive lambda's dispatch select. In a frame, a tail
-    /// re-selection rides the arm's tag instead of firing.
-    pub(crate) tail_position: std::sync::atomic::AtomicBool,
+    /// In a frame, a tail re-selection rides the arm's tag instead of
+    /// firing.
+    pub(crate) tail_dispatch_select: std::sync::atomic::AtomicBool,
     /// Bit i = arm i's guard was consulted by the last re-match (arms
     /// >= 64 are always consulted). Quiet cycles read it so a standing
     /// bottom on a consulted guard keeps the select bottom.
-    consulted: u64,
+    consulted_guard_mask: u64,
     resident: TagValue,
-    /// Set on the first update, once each arm's shallow discriminator is
-    /// sealed against the scrutinee type ([`PatternNode::seal_shallow`]).
-    shallow_sealed: bool,
     /// Set by `sleep()`; the next update re-matches against the present
     /// scrutinee, which may have moved while no reader was awake.
-    slept: bool,
-    /// Wake-catch-up fire tracking (design/wake_catchup.md). `None`
-    /// until the first update.
-    tracked: Option<TrackedFires>,
+    slept: WakeBit,
+    arm_facts: Option<LazyArmFacts>,
+}
+
+/// Facts about the arms that need the sealed scrutinee type or the
+/// analysis facts, so they are built on the first update.
+#[derive(Debug)]
+struct LazyArmFacts {
+    tracked: TrackedFires,
     /// Per arm: sleep on deselect? False only for a pure non-recursive
-    /// body, which is neither slept nor updated while untaken. `None`
-    /// until the first update.
-    sleep_on_deselect: Option<Vec<bool>>,
+    /// body, which is neither slept nor updated while untaken.
+    sleep_on_deselect: Vec<bool>,
+}
+
+impl LazyArmFacts {
+    fn build<R: Rt, E: UserEvent>(
+        ctx: &ExecCtx<R, E>,
+        scrut: &Type,
+        arms: &mut [(PatternNode<R, E>, Node<R, E>)],
+    ) -> Self {
+        for (pat, _) in arms.iter_mut() {
+            pat.seal_shallow(&ctx.env, scrut);
+        }
+        LazyArmFacts {
+            tracked: TrackedFires::init(&ctx.env, arms),
+            sleep_on_deselect: arms
+                .iter()
+                .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
+                .collect(),
+        }
+    }
+}
+
+/// What a consulted-guard mask says about this cycle's emission.
+struct EmissionPlanes {
+    /// A non-bottom fire was consumed.
+    sound: bool,
+    /// Any consumed input fired, bottom or not.
+    anyfire: bool,
+    /// A consulted guard's current channel is bottom.
+    consulted_bottom: bool,
+}
+
+fn emission_planes(
+    guard_tags: &[Option<Tag>],
+    arg_prod: Tag,
+    bottomed: bool,
+    mask: u64,
+) -> EmissionPlanes {
+    let mut sound = !bottomed && arg_prod.triggers();
+    let mut anyfire = arg_prod.triggers();
+    let mut consulted_bottom = false;
+    for (i, t) in guard_tags.iter().enumerate() {
+        if i < 64 && mask & (1 << i) == 0 {
+            continue;
+        }
+        if let Some(t) = t {
+            if t.triggers() {
+                anyfire = true;
+                if !t.is_bottom() {
+                    sound = true;
+                }
+            }
+            if t.is_bottom() {
+                consulted_bottom = true;
+            }
+        }
+    }
+    EmissionPlanes { sound, anyfire, consulted_bottom }
+}
+
+/// Evaluate the taken arm, consuming its tracked fire bits with the
+/// catch-up deliveries scoped to it.
+fn evaluate_arm<R: Rt, E: UserEvent>(
+    tracked: &mut TrackedFires,
+    arm: &mut Node<R, E>,
+    i: usize,
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+) -> (Tag, Option<Value>) {
+    let injected = tracked.deliver(ctx, event, i);
+    let tv = arm.update(ctx, event);
+    let t = tv.tag();
+    let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
+    TrackedFires::restore(event, injected);
+    (t, v)
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
@@ -93,13 +167,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arg: Held::new(arg),
             arms,
             selected: SelCell::new(),
-            tail_position: std::sync::atomic::AtomicBool::new(false),
-            consulted: 0,
+            tail_dispatch_select: std::sync::atomic::AtomicBool::new(false),
+            consulted_guard_mask: 0,
             resident: TagValue::phantom(),
-            shallow_sealed: false,
-            slept: false,
-            tracked: None,
-            sleep_on_deselect: None,
+            slept: WakeBit::default(),
+            arm_facts: None,
         })
     }
 
@@ -140,13 +212,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arg,
             arms,
             selected: SelCell::new(),
-            tail_position: std::sync::atomic::AtomicBool::new(false),
-            consulted: 0,
+            tail_dispatch_select: std::sync::atomic::AtomicBool::new(false),
+            consulted_guard_mask: 0,
             resident: TagValue::phantom(),
-            shallow_sealed: false,
-            slept: false,
-            tracked: None,
-            sleep_on_deselect: None,
+            slept: WakeBit::default(),
+            arm_facts: None,
         }))
     }
 }
@@ -175,7 +245,7 @@ fn array_members(
             array_members(env, &t, out, depth + 1)?
         }
         Type::TVar(_) => {
-            if let Some(t) = t.with_deref(|t| t.cloned()) {
+            if let Some(t) = t.deref_cloned() {
                 array_members(env, &t, out, depth + 1)?
             }
         }
@@ -207,14 +277,14 @@ fn range_covered(k: usize, exact: bool, exacts: &[usize], rest: Option<usize>) -
     }
 }
 
-/// Sleep an arm the select is deselecting. Under `shrink_unwind` a
+/// Sleep an arm the select is deselecting. Under `deselecting_arm` a
 /// recursive-edge callee inside the arm is deleted, not retained
 /// (`CallSite::sleep`), so unreached activations are shed.
 fn deselect_sleep<R: Rt, E: UserEvent>(arm: &mut Node<R, E>, ctx: &mut ExecCtx<R, E>) {
-    let saved = ctx.shrink_unwind;
-    ctx.shrink_unwind = true;
+    let saved = ctx.deselecting_arm;
+    ctx.deselecting_arm = true;
     arm.sleep(ctx);
-    ctx.shrink_unwind = saved;
+    ctx.deselecting_arm = saved;
 }
 
 /// Wake-catch-up fire tracking (design/wake_catchup.md): one fire bit
@@ -536,23 +606,9 @@ impl LiteralPool {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if !self.shallow_sealed {
-            self.shallow_sealed = true;
+        if self.arm_facts.is_none() {
             let scrut = self.arg.node.typ().clone();
-            for (pat, _) in self.arms.iter_mut() {
-                pat.seal_shallow(&ctx.env, &scrut);
-            }
-        }
-        if self.tracked.is_none() {
-            self.tracked = Some(TrackedFires::init(&ctx.env, &self.arms));
-        }
-        if self.sleep_on_deselect.is_none() {
-            self.sleep_on_deselect = Some(
-                self.arms
-                    .iter()
-                    .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
-                    .collect(),
-            );
+            self.arm_facts = Some(LazyArmFacts::build(ctx, &scrut, &mut self.arms));
         }
         let Self {
             selected,
@@ -560,25 +616,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_position,
-            consulted,
+            tail_dispatch_select,
+            consulted_guard_mask,
             resident,
-            shallow_sealed: _,
             slept,
-            tracked,
-            sleep_on_deselect,
+            arm_facts,
         } = self;
-        let tracked = tracked.as_mut().expect("tracked initialized above");
-        let sleep_on_deselect: &[bool] =
-            sleep_on_deselect.as_deref().expect("sleep_on_deselect computed above");
-        let woke = std::mem::take(slept) && ctx.frame_depth == 0;
+        let LazyArmFacts { tracked, sleep_on_deselect } =
+            arm_facts.as_mut().expect("arm facts built above");
+        let sleep_on_deselect: &[bool] = sleep_on_deselect;
+        let woke = slept.take() && ctx.frame_depth == 0;
         // Per-arm guard production tags; `None` = unguarded. Only guards
         // the chain consults contribute fires or bottomness.
         let mut guard_tags: smallvec::SmallVec<[Option<Tag>; 8]> =
             smallvec::SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx, event);
         tracked.observe(ctx, event);
-        let bottomed = arg.tag.is_tainted();
+        let bottomed = arg.tag.is_bottom();
         let arg_up = !bottomed;
         // Arm binds carry the scrutinee's production tag; firing comes
         // from the selection/emission rules, never from the binds.
@@ -610,30 +664,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.
         let pat_up = guard_tags.iter().any(|t| t.is_some_and(|t| t.triggers()));
-        // Over a consulted mask: (sound fire, any fire, a consulted
-        // guard's current channel is bottom).
-        let scoped = |mask: u64| -> (bool, bool, bool) {
-            let mut sound = !bottomed && arg_prod.triggers();
-            let mut anyfire = arg_prod.triggers();
-            let mut cbot = false;
-            for (i, t) in guard_tags.iter().enumerate() {
-                if i < 64 && mask & (1 << i) == 0 {
-                    continue;
-                }
-                if let Some(t) = t {
-                    if t.triggers() {
-                        anyfire = true;
-                        if !t.is_bottom() {
-                            sound = true;
-                        }
-                    }
-                    if t.is_bottom() {
-                        cbot = true;
-                    }
-                }
-            }
-            (sound, anyfire, cbot)
-        };
         // A bottom scrutinee bottoms the select; it consults no guards.
         if bottomed {
             return if arg_prod.triggers() {
@@ -653,19 +683,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 event.variables.len()
             );
         }
-        let tail = tail_position.load(Ordering::Relaxed) && ctx.frame_depth > 0;
-        // The taken arm's (tag, value); the evaluation consumes the
-        // arm's tracked fire bits, with catch-up deliveries scoped to it.
-        macro_rules! arm_prod {
-            ($i:expr) => {{
-                let injected = tracked.deliver(ctx, event, $i);
-                let tv = arms[$i].1.update(ctx, event);
-                let t = tv.tag();
-                let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
-                TrackedFires::restore(event, injected);
-                (t, v)
-            }};
-        }
+        let tail = tail_dispatch_select.load(Ordering::Relaxed) && ctx.frame_depth > 0;
         // Inside frames selection is value-driven: a jump-rebound loop
         // variable arrives STALE, so a triggers-only driver would spin.
         let arg_trig = arg_prod.triggers() || (ctx.frame_depth > 0 && arg_up);
@@ -674,13 +692,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             Taken(Option<usize>),
             Undet,
         }
-        // A present scrutinee with no retained selection must still
-        // route: a standing scrutinee reads stale under a wake view.
-        let first_consult = ctx.frame_depth == 0
+        let route_unselected_present = ctx.frame_depth == 0
             && selected.get().is_none()
             && arg.value.is_some()
-            && !arg.tag.is_tainted();
-        let chain = if !arg_trig && !pat_up && !first_consult && !woke {
+            && !arg.tag.is_bottom();
+        let chain = if !arg_trig && !pat_up && !route_unselected_present && !woke {
             ChainOut::Quiet
         } else {
             match arg.value.as_ref() {
@@ -715,14 +731,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                             }
                         }
                     }
-                    *consulted = mask;
+                    *consulted_guard_mask = mask;
                     out
                 }
             }
         };
-        let (own_sound, own_anyfire, consulted_bottom) = scoped(*consulted);
+        let EmissionPlanes { sound: own_sound, anyfire: own_anyfire, consulted_bottom } =
+            emission_planes(&guard_tags, arg_prod, bottomed, *consulted_guard_mask);
         // Sound only: a bottom must never upgrade a stale result to FIRED.
-        if own_sound && tail_position.load(Ordering::Relaxed) {
+        if own_sound && tail_dispatch_select.load(Ordering::Relaxed) {
             ctx.tail_scrut_fired = true;
         }
         // A consulted-guard bottom makes the emission bottom whatever
@@ -752,7 +769,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
         let out = match chain {
             ChainOut::Quiet => selected.get().and_then(|i| {
-                let (t, v) = arm_prod!(i);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
                 emit!(t, v)
             }),
             ChainOut::Undet => {
@@ -771,7 +788,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     if arg_up {
                         bind!(i);
                     }
-                    let (t, v) = arm_prod!(i);
+                    let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
                     emit!(t, v)
                 }
                 (Some(i), Some(_) | None) => {
@@ -798,7 +815,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         bind_tag
                     } else if arg_prod.triggers() {
                         arg_prod
-                    } else if first_consult && !pat_up {
+                    } else if route_unselected_present && !pat_up {
                         Tag::STALE
                     } else {
                         Tag::FIRED
@@ -812,7 +829,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     if sleep_on_deselect[i] {
                         event.wake_init = true;
                     }
-                    let (t, v) = arm_prod!(i);
+                    let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
                     event.init = init;
                     event.wake_init = wake;
                     emit!(t, v)
@@ -841,13 +858,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_position: _,
-            consulted: _,
+            tail_dispatch_select: _,
+            consulted_guard_mask: _,
             resident: _,
-            shallow_sealed: _,
             slept: _,
-            tracked: _,
-            sleep_on_deselect: _,
+            arm_facts: _,
         } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
@@ -863,15 +878,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_position: _,
-            consulted: _,
+            tail_dispatch_select: _,
+            consulted_guard_mask: _,
             resident: _,
-            shallow_sealed: _,
             slept,
-            tracked: _,
-            sleep_on_deselect: _,
+            arm_facts: _,
         } = self;
-        *slept = true;
+        slept.set();
         arg.sleep(ctx);
         for (pat, arg) in arms {
             arg.sleep(ctx);
@@ -890,13 +903,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_position: _,
-            consulted: _,
+            tail_dispatch_select: _,
+            consulted_guard_mask: _,
             resident: _,
-            shallow_sealed: _,
             slept: _,
-            tracked: _,
-            sleep_on_deselect: _,
+            arm_facts: _,
         } = self;
         arg.reset_replay(ctx);
         for (pat, arg) in arms {
@@ -914,13 +925,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_position: _,
-            consulted: _,
+            tail_dispatch_select: _,
+            consulted_guard_mask: _,
             resident: _,
-            shallow_sealed: _,
             slept: _,
-            tracked: _,
-            sleep_on_deselect: _,
+            arm_facts: _,
         } = self;
         arg.node.refs(refs);
         for (pat, arm) in arms {
@@ -1055,7 +1064,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // Narrow an under-constrained scrutinee against the informative
             // arm predicates, except a union scrutinee: its open members
             // are what the arms discriminate and must stay free.
-            let union_scrut = match self.arg.node.typ().with_deref(|t| t.cloned()) {
+            let union_scrut = match self.arg.node.typ().deref_cloned() {
                 Some(Type::Set(_)) => true,
                 Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(&ctx.env)?, Type::Set(_)),
                 _ => false,

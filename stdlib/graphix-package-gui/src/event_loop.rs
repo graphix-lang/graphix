@@ -164,12 +164,12 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 if let WindowEvent::Resized(size) = &event {
                     let scale = tw.window.scale_factor();
                     tw.pending_resize = Some((size.width, size.height, scale));
-                    if !tw.resize_timer_armed {
-                        tw.resize_timer_armed = true;
+                    if !tw.resize_render_timer_armed {
+                        tw.resize_render_timer_armed = true;
                         let proxy = self.resize_proxy.clone();
                         self.rt.spawn(async move {
                             tokio::time::sleep(RESIZE_RENDER_PERIOD).await;
-                            let _ = proxy.send_event(ToGui::ResizeTimer(window_id));
+                            let _ = proxy.send_event(ToGui::ResizeRenderTick(window_id));
                         });
                     }
                     let logical = size.to_logical::<f32>(scale);
@@ -179,7 +179,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     ));
                 } else if let WindowEvent::RedrawRequested = &event {
                     // While a resize timer is armed it is the sole render driver.
-                    if !tw.resize_timer_armed {
+                    if !tw.resize_render_timer_armed {
                         tw.needs_redraw = true;
                     }
                 } else {
@@ -230,18 +230,18 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
                 event_loop.exit();
             }
-            ToGui::ResizeTimer(window_id) => {
-                // Schedules a redraw only; `ResizeEnd` owns the `tw.size` write.
+            ToGui::ResizeRenderTick(window_id) => {
+                // Schedules a redraw only; `ResizeSettled` owns the `tw.size` write.
                 if let Some(&bid) = self.win_to_bid.get(&window_id) {
                     if let Some(tw) = self.windows.get_mut(&bid) {
-                        tw.resize_timer_armed = false;
+                        tw.resize_render_timer_armed = false;
                         if tw.pending_resize.is_some() {
                             tw.needs_redraw = true;
                         }
                     }
                 }
             }
-            ToGui::ResizeEnd(window_id, sz) => {
+            ToGui::ResizeSettled(window_id, sz) => {
                 // The only site writing OS-driven sizes into `tw.size`; once
                 // per drag keeps `last_set_size`'s echo dedupe sound.
                 if let Some(&bid) = self.win_to_bid.get(&window_id) {
@@ -468,7 +468,7 @@ pub(crate) fn run<X: GXExt>(
     }
 }
 
-/// Debounces `Resized` events per window: fires one `ToGui::ResizeEnd`
+/// Debounces `Resized` events per window: fires one `ToGui::ResizeSettled`
 /// with the last size after `RESIZE_END_DEBOUNCE` of quiet.
 async fn resize_end_debounce(
     mut rx: mpsc::UnboundedReceiver<(WindowId, SizeV)>,
@@ -490,7 +490,7 @@ async fn resize_end_debounce(
             },
             _ = &mut timer => {
                 for (wid, sz) in pending.drain() {
-                    let _ = proxy.send_event(ToGui::ResizeEnd(wid, sz));
+                    let _ = proxy.send_event(ToGui::ResizeSettled(wid, sz));
                 }
                 timer.as_mut().reset(far());
             }

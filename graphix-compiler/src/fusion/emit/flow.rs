@@ -28,6 +28,7 @@ use super::{
         ensure_owned_value_src, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
+    lower::SelFire,
     nodes::emit_bottom_placeholder,
     scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_select_arms},
@@ -269,9 +270,9 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
     // return. band keeps a fired bit cleared across iterations.
     let scrut_stale_bit = cx.b.ins().band_imm(scrut.disc(), STALE);
     {
-        let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
+        let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
         let n = cx.b.ins().band(cur, scrut_stale_bit);
-        cx.b.def_var(cx.ctx.tail.scrut_stale, n);
+        cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
     }
     // A tainted scrutinee returns a value-level bottom early; the arms
     // then run on a valid scrutinee, so the final-arm miss is
@@ -303,16 +304,19 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
             // A prologue guard's sound fire is an own fire too; bottom fires
             // accumulate separately for `emit_kernel_return`.
             if let Some(gs) = fires.sound_stale {
-                let cur = cx.b.use_var(cx.ctx.tail.scrut_stale);
+                let cur = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
                 let n = cx.b.ins().band(cur, gs);
-                cx.b.def_var(cx.ctx.tail.scrut_stale, n);
+                cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
             }
             // This select's own-fire scope for the returns inside its arm.
             let sound_lvl = match fires.sound_stale {
                 Some(gs) => cx.b.ins().band(scrut_stale_bit, gs),
                 None => scrut_stale_bit,
             };
-            cx.ctx.sel_fires.borrow_mut().push((sound_lvl, fires.bfired));
+            cx.ctx
+                .sel_fires
+                .borrow_mut()
+                .push(SelFire { sound_stale: sound_lvl, bfired: fires.bfired });
             let arm_res = emit_body_tail(cx, body, ret);
             cx.ctx.sel_fires.borrow_mut().pop();
             arm_res?;
@@ -488,7 +492,7 @@ fn emit_discard_result<R: Rt, E: UserEvent>(
 pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     // Snapshot so the `cx.env` borrow ends before driving `cx.b`.
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
-        cx.env.locals[mark..].iter().map(|l| (l.kind, l.vv)).collect();
+        cx.env.locals_above(mark).collect();
     for (kind, vv) in drops {
         emit_drop_local(cx.b, cx.ctx, kind, vv)?;
     }
@@ -621,7 +625,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             let base_disc =
                 if is_string { value_disc::STRING } else { value_disc::ARRAY };
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
-            let pre_pending = cx.b.create_block();
+            let bad_bl = cx.b.create_block();
             let continue_block = cx.b.create_block();
             let qmerge = cx.b.create_block();
             cx.b.append_block_param(qmerge, types::I64); // disc
@@ -631,9 +635,9 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             // Array/ArcStr.
             let tainted = is_tainted(cx.b, disc);
             let bad = cx.b.ins().bor(is_err, tainted);
-            cx.b.ins().brif(bad, pre_pending, &[], continue_block, &[]);
-            cx.b.switch_to_block(pre_pending);
-            cx.b.seal_block(pre_pending);
+            cx.b.ins().brif(bad, bad_bl, &[], continue_block, &[]);
+            cx.b.switch_to_block(bad_bl);
+            cx.b.seal_block(bad_bl);
             emit_qop_error_disposal(
                 cx,
                 handler,
@@ -694,14 +698,14 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let src = node_composite_source(inner);
             let inner_owned = src == CompositeSource::Owned;
-            let pre_pending = cx.b.create_block();
+            let bad_bl = cx.b.create_block();
             let continue_block = cx.b.create_block();
             let qmerge = cx.b.create_block();
             cx.b.append_block_param(qmerge, types::I64); // disc
             cx.b.append_block_param(qmerge, types::I64); // payload
-            cx.b.ins().brif(is_err, pre_pending, &[], continue_block, &[]);
-            cx.b.switch_to_block(pre_pending);
-            cx.b.seal_block(pre_pending);
+            cx.b.ins().brif(is_err, bad_bl, &[], continue_block, &[]);
+            cx.b.switch_to_block(bad_bl);
+            cx.b.seal_block(bad_bl);
             emit_qop_error_disposal(
                 cx,
                 handler,

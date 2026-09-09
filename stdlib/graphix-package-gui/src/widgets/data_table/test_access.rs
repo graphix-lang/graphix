@@ -1,8 +1,8 @@
 //! Test-only accessors on `DataTableW` for `GuiTestHarness::dt()`.
 
 use super::{
-    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, ROW_HEIGHT_ESTIMATE, ROW_NAME_KEY,
-    VALUE_COL_KEY,
+    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, ROW_HEIGHT_ESTIMATE,
+    ROW_NAME_SENTINEL_KEY, VALUE_COL_KEY,
     types::{decimate_sparkline, row_basename},
 };
 use arcstr::ArcStr;
@@ -75,7 +75,7 @@ impl<X: GXExt> DataTableW<X> {
     /// `handle_column_resize_start` expects; `None` when not visible.
     pub fn dt_meta_col_idx(&self, col: &str) -> Option<usize> {
         let show_name = self.show_row_name.t.unwrap_or(true);
-        if col == "name" || col == ROW_NAME_KEY {
+        if col == "name" || col == ROW_NAME_SENTINEL_KEY {
             return if show_name { Some(0) } else { None };
         }
         let (vis_start, vis_end) = self.display_col_range();
@@ -101,12 +101,12 @@ impl<X: GXExt> DataTableW<X> {
         let show_name = self.show_row_name.t.unwrap_or(true);
         let mut x = 0.0_f32;
         let w;
-        let is_row_name_col = col == "name" || col == ROW_NAME_KEY;
+        let is_row_name_col = col == "name" || col == ROW_NAME_SENTINEL_KEY;
         if is_row_name_col && show_name {
-            w = cache.get(ROW_NAME_KEY).copied()?;
+            w = cache.get(ROW_NAME_SENTINEL_KEY).copied()?;
         } else {
             if show_name {
-                x += cache.get(ROW_NAME_KEY).copied()?;
+                x += cache.get(ROW_NAME_SENTINEL_KEY).copied()?;
             }
             let (vis_start, vis_end) = self.display_col_range();
             let pos = self.displayed_index_of(col)?;

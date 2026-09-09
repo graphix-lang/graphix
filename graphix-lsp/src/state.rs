@@ -1413,8 +1413,8 @@ fn position_in_ref(pos: lsp_types::Position, r: &ReferenceSite) -> bool {
 
 /// The same for a module reference; `pos` is at the `mod`/`use` keyword.
 fn position_in_module_ref(pos: lsp_types::Position, m: &ModuleRefSite) -> bool {
-    // pessimistic on `use   foo;`
-    span_covers(pos, m.pos, 4 + modpath_display_chars(&m.name))
+    const KEYWORD_AND_SPACE: u32 = 4;
+    span_covers(pos, m.pos, KEYWORD_AND_SPACE + modpath_display_chars(&m.name))
 }
 
 /// Type references record the position of the type name itself.
@@ -1430,11 +1430,15 @@ fn origin_matches_uri(ori: &Origin, uri: &Uri) -> bool {
             Some(u) => &u == uri,
             None => false,
         },
-        // The active document and every VFS stdlib module are both
-        // `Source::Internal`; only the document has `parent = None`.
-        Source::Internal(_) | Source::Unspecified => ori.parent.is_none(),
+        Source::Internal(_) | Source::Unspecified => is_active_document(ori),
         Source::Netidx(_) => false,
     }
+}
+
+/// The active document and every VFS stdlib module are both
+/// `Source::Internal`; only the document has no parent.
+fn is_active_document(ori: &Origin) -> bool {
+    ori.parent.is_none()
 }
 
 /// True if `a` (1-indexed compiler pos) is ≤ `b` (0-indexed LSP pos).

@@ -123,10 +123,10 @@ pub struct ImportEntry {
     pub scope: ModPath,
     /// The item's own name there.
     pub name: CompactString,
-    /// The import's anchor is `self`/`super`: the redirect walks
-    /// `scope` up to its module root, since a `super` anchor may be a
-    /// block level whose items live across the block chain.
-    pub chain: bool,
+    /// The redirect walks `scope` up to its module root, since a
+    /// `super` anchor may be a block level whose items live across the
+    /// block chain.
+    pub keyword_anchored: bool,
     /// Position/origin of the `use`, for diagnostics and IDE tooling.
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
@@ -555,7 +555,7 @@ impl Env {
             bail!("import chain too deep resolving `{n}` (import cycle?)")
         }
         if let Some(e) = sn.imports.get(n) {
-            let hit = if e.chain {
+            let hit = if e.keyword_anchored {
                 self.chain_lookup(origin, &e.scope, &e.name, depth + 1, f)?
             } else {
                 self.lookup_at(origin, &e.scope, &e.name, depth + 1, f)?
@@ -1039,7 +1039,7 @@ impl Env {
                                         .and_then(|v| v.get(&e.name))
                                         .copied()
                                 };
-                                let id = if e.chain {
+                                let id = if e.keyword_anchored {
                                     chain_levels(&e.scope).find_map(find)
                                 } else {
                                     find(&e.scope)
@@ -1188,7 +1188,11 @@ impl Env {
                     .modules
                     .contains(&ModPath(Path::from(ArcStr::from(lvl)).append(&e.name)))
         };
-        if e.chain { chain_levels(&e.scope).any(check) } else { check(&e.scope) }
+        if e.keyword_anchored {
+            chain_levels(&e.scope).any(check)
+        } else {
+            check(&e.scope)
+        }
     }
 
     /// Drop every import table at `scope` or any descendant.

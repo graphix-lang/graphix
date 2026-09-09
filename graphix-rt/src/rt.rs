@@ -44,15 +44,17 @@ pub struct GXRt<X: GXExt> {
     pub(super) watches:
         SelectAll<mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>>,
     pub(super) var_watches: SelectAll<mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>>,
-    // keeps the SelectAll from ever returning None
-    dummy_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
-    // keeps the SelectAll from ever returning None
-    var_dummy_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
+    keepalive_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
+    keepalive_var_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
     pub(super) updated: IntMap<ExprId, bool>,
     pub ext: X,
 }
 
 impl<X: GXExt> GXRt<X> {
+    fn previous_cycle(&self) -> u64 {
+        self.cycle.wrapping_sub(1)
+    }
+
     /// A runtime with no network; packages deliver external events
     /// through `watch`/`watch_var`/`spawn_var`.
     pub fn new() -> Self {
@@ -60,10 +62,10 @@ impl<X: GXExt> GXRt<X> {
         tasks.spawn(async { future::pending().await });
         let mut custom_tasks = JoinSet::new();
         custom_tasks.spawn(async { future::pending().await });
-        let (dummy_watch_tx, dummy_rx) = mpsc::channel(1);
+        let (keepalive_watch_tx, dummy_rx) = mpsc::channel(1);
         let mut watches = SelectAll::new();
         watches.push(dummy_rx);
-        let (var_dummy_watch_tx, dummy_rx) = mpsc::channel(1);
+        let (keepalive_var_watch_tx, dummy_rx) = mpsc::channel(1);
         let mut var_watches = SelectAll::new();
         var_watches.push(dummy_rx);
         Self {
@@ -79,8 +81,8 @@ impl<X: GXExt> GXRt<X> {
             custom_tasks,
             watches,
             var_watches,
-            dummy_watch_tx,
-            var_dummy_watch_tx,
+            keepalive_watch_tx,
+            keepalive_var_watch_tx,
         }
     }
 }
@@ -107,8 +109,7 @@ impl<X: GXExt> Rt for GXRt<X> {
     }
 
     fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
-        // stamped one cycle back, so it reads Standing to every same-cycle reader
-        self.store.insert(id, (tv, self.cycle.wrapping_sub(1)));
+        self.store.insert(id, (tv, self.previous_cycle()));
     }
 
     fn cycle(&self) -> u64 {
@@ -127,8 +128,8 @@ impl<X: GXExt> Rt for GXRt<X> {
             custom_tasks,
             watches,
             var_watches,
-            dummy_watch_tx,
-            var_dummy_watch_tx,
+            keepalive_watch_tx,
+            keepalive_var_watch_tx,
             updated,
             ext,
         } = self;
@@ -146,11 +147,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         custom_tasks.spawn(async { future::pending().await });
         *watches = SelectAll::new();
         let (tx, rx) = mpsc::channel(1);
-        *dummy_watch_tx = tx;
+        *keepalive_watch_tx = tx;
         watches.push(rx);
         *var_watches = SelectAll::new();
         let (tx, rx) = mpsc::channel(1);
-        *var_dummy_watch_tx = tx;
+        *keepalive_var_watch_tx = tx;
         var_watches.push(rx);
     }
 

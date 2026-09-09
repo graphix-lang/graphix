@@ -6,6 +6,7 @@
 
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
+use crate::node::WakeBit;
 use crate::{
     Apply, Event, ExecCtx, Node, Refs, Rt, Tag, UserEvent,
     fusion::{
@@ -22,7 +23,7 @@ use std::sync::Arc;
 /// into the compiled wrapper.
 pub struct Kernel {
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 2.
-    slept: bool,
+    slept: WakeBit,
     /// The ABI contract; the `Arc` pointer is also the kernel's identity
     /// in the JIT's `by_kernel` cache.
     kernel: Arc<KernelSig>,
@@ -106,7 +107,7 @@ impl Kernel {
             vec![0u64; wrapped.own_site.as_ref().map(|l| l.words as usize).unwrap_or(0)]
                 .into_boxed_slice();
         Ok(Self {
-            slept: false,
+            slept: WakeBit::default(),
             kernel,
             jit: wrapped,
             state,
@@ -125,7 +126,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
+        let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut any_updated = false;
         let mut any_bottom = false;
         let mut polled: smallvec::SmallVec<[(Tag, Option<Value>); 16]> =
@@ -297,8 +298,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         let mut slots: smallvec::SmallVec<[u64; 16]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
         // Slot 0: bit 0 init view, bit 1 quiet frame, bit 2 wake.
-        let init = if ctx.frame_depth > 0 { ctx.frame_init } else { event.init };
-        let quiet = ctx.frame_depth > 0 && !ctx.frame_init;
+        let init = if ctx.frame_depth > 0 { ctx.dispatch_init } else { event.init };
+        let quiet = ctx.frame_depth > 0 && !ctx.dispatch_init;
         let wake = (ctx.frame_depth == 0 && event.wake_init) || woke;
         slots.push(init as u64 | (quiet as u64) << 1 | (wake as u64) << 2);
         slots.push(if self.state.is_empty() {
@@ -423,7 +424,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             eprintln!("KERNEL-APPLY-SLEEP {}", self.kernel.fn_name);
         }
         // Sleep is pause: interior memory survives it.
-        self.slept = true;
+        self.slept.set();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {

@@ -1289,14 +1289,14 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// `BindId → LambdaDef Value` for every lambda binding, filled in
     /// `typecheck0` so `typecheck1`'s static resolution sees it
     /// complete. Persistent across batches (`Bind::delete` removes
-    /// its ids); the `unstable_bindings` guard excludes `<-` targets
+    /// its ids); the `batch_connect_targets` guard excludes `<-` targets
     /// at read time.
     pub bind_to_lambda: IntMap<BindId, Value>,
     /// The `<-` targets of the current compile batch, recorded by
     /// [`node::Connect::compile`]; a `<-` target rebinds at runtime and
     /// must not be statically resolved.
-    pub unstable_bindings: IntSet<BindId>,
-    /// Every `<-` target for the program's lifetime (`unstable_bindings`
+    pub batch_connect_targets: IntSet<BindId>,
+    /// Every `<-` target for the program's lifetime (`batch_connect_targets`
     /// is per batch): `Bind::update` must not reseed a woken target that
     /// holds a value. `Bind::delete` removes its ids.
     pub connect_targets: IntSet<BindId>,
@@ -1364,12 +1364,12 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// The real `event.init` of the dispatch whose frames are running
     /// (frames force `event.init` for re-derivation). Only meaningful
     /// when `frame_depth > 0`.
-    pub(crate) frame_init: bool,
+    pub(crate) dispatch_init: bool,
     /// Set only while a `Select::update` sleeps an arm it is
     /// deselecting: a recursive-edge `CallSite::sleep` under it deletes
     /// its callee (shrink = delete). Cleared crossing into any callee
     /// body, so a whole-recursion pause retains.
-    pub(crate) shrink_unwind: bool,
+    pub(crate) deselecting_arm: bool,
     /// Whether any tail-spine select's scrutinee fired during the
     /// current tail-loop dispatch: the dispatch's result fires if its
     /// value chain did or any such scrutinee did.
@@ -1400,6 +1400,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
 
     /// Build a new execution context. A low-level interface for custom
     /// runtimes; most embedders want `graphix-rt`.
+    pub(crate) fn mark_connect_target(&mut self, id: BindId) {
+        self.batch_connect_targets.insert(id);
+        self.connect_targets.insert(id);
+    }
+
     pub fn new(user: R) -> Result<Self> {
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
@@ -1414,7 +1419,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambda_defs: IntMap::default(),
             core_hook_sites: node::coretraits::CoreHookSites::default(),
             bind_to_lambda: IntMap::default(),
-            unstable_bindings: nohash::IntSet::default(),
+            batch_connect_targets: nohash::IntSet::default(),
             connect_targets: nohash::IntSet::default(),
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
@@ -1433,8 +1438,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
             frame_depth: 0,
-            frame_init: false,
-            shrink_unwind: false,
+            dispatch_init: false,
+            deselecting_arm: false,
             tail_scrut_fired: false,
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),

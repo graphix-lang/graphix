@@ -142,17 +142,18 @@ impl Outcome {
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout, Timeout) => true,
-            // One side wedged, the other produced no events: no value
-            // divergence, only the accepted liveness difference in the
-            // backends' runaway handling. A trace with any event still
-            // disagrees with a Timeout.
-            (Timeout, Trace(t)) | (Trace(t), Timeout)
-                if t.epochs.iter().all(|e| e.events.is_empty()) =>
-            {
-                true
+            (Timeout, Trace(_)) | (Trace(_), Timeout) => {
+                !self.has_events() && !other.has_events()
             }
             _ => false,
         }
+    }
+
+    /// A trace with at least one event; a Timeout beside such a trace is
+    /// a value divergence, beside an eventless one only the accepted
+    /// liveness difference in the backends' runaway handling.
+    pub fn has_events(&self) -> bool {
+        matches!(self, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
     }
 
     /// [`Self::agrees_with`] at a chosen [`OracleTier`]: Exact compares
@@ -452,7 +453,7 @@ async fn drive(
     // one-shot flag that may bottom an in-flight cycle's output, so a
     // step that completes after it cannot be trusted; reclassifying is
     // a race. `check()` retries one-sided timeouts at a bigger budget.
-    macro_rules! bounded {
+    macro_rules! step_or_timeout {
         ($fut:expr, $on_ok:pat => $ok:expr, $on_err:pat => $err:expr) => {{
             let f = $fut;
             tokio::pin!(f);
@@ -475,7 +476,7 @@ async fn drive(
     // in-flight IO and skip the settle.
     macro_rules! wait_settled {
         () => {{
-            let mut seg = bounded!(
+            let mut seg = step_or_timeout!(
                 ctx.rt.trace_wait_idle(),
                 Ok(s) => s,
                 Err(e) => return Outcome::RuntimeErr(format!("trace_wait_idle: {e}"))
@@ -483,7 +484,7 @@ async fn drive(
             if tier == OracleTier::FinalValues {
                 for _ in 0..8 {
                     tokio::time::sleep(Duration::from_millis(150)).await;
-                    let more = bounded!(
+                    let more = step_or_timeout!(
                         ctx.rt.trace_wait_idle(),
                         Ok(s) => s,
                         Err(e) => {
@@ -507,7 +508,7 @@ async fn drive(
         return Outcome::RuntimeErr(format!("trace_start: {e}"));
     }
     let text = subj.compile_text();
-    let compiled = bounded!(
+    let compiled = step_or_timeout!(
         ctx.rt.compile(ArcStr::from(text)),
         Ok(c) => c,
         Err(e) => return Outcome::CompileErr(format!("{e:?}"))
@@ -522,7 +523,7 @@ async fn drive(
     for (name, _, _) in sched.inputs() {
         let scope = graphix_compiler::Scope::root();
         let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
-        let r = bounded!(
+        let r = step_or_timeout!(
             ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
             Ok(r) => r,
             Err(e) => return Outcome::RuntimeErr(format!("input {name}: {e}"))
@@ -554,7 +555,7 @@ async fn drive(
                 for (name, _, _) in c.args() {
                     let scope = graphix_compiler::Scope::root();
                     let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
-                    let r = bounded!(
+                    let r = step_or_timeout!(
                         ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
                         Ok(r) => r,
                         Err(e) => {
@@ -579,7 +580,7 @@ async fn drive(
             Route::Dispatch => {
                 let scope = graphix_compiler::Scope::root();
                 let path = graphix_compiler::expr::ModPath::from(c.handler.split("::"));
-                let r = bounded!(
+                let r = step_or_timeout!(
                     ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
                     Ok(r) => r,
                     Err(e) => {
@@ -598,7 +599,7 @@ async fn drive(
                         ));
                     }
                 };
-                let cb = bounded!(
+                let cb = step_or_timeout!(
                     ctx.rt.compile_callable(lambda),
                     Ok(cb) => cb,
                     Err(e) => {
@@ -609,7 +610,7 @@ async fn drive(
                 // callable and the first dispatch; back-to-back dispatch
                 // would let a reference delivered at init reach the instance.
                 for _ in 0..3 {
-                    bounded!(
+                    step_or_timeout!(
                         ctx.rt.compile(ArcStr::from("i64:0")),
                         Ok(_) => (),
                         Err(e) => {
@@ -620,7 +621,7 @@ async fn drive(
                 for ep in &c.epochs {
                     let args =
                         ValArray::from_iter_exact(ep.iter().map(|(_, v)| v.clone()));
-                    bounded!(
+                    step_or_timeout!(
                         cb.call(args),
                         Ok(()) => (),
                         Err(e) => {
@@ -881,49 +882,33 @@ pub async fn check_classified(
         return (None, ran);
     }
     // Reference-side Timeout with a value-bearing jit trace is as likely
-    // an honestly slow node-walk as a wrongly terminating JIT. Retry
-    // interp at 8x; still-Timeout keeps the finding. (An empty jit trace
-    // against a Timeout already agreed above.)
-    if matches!(&interp, Outcome::Timeout)
-        && matches!(&jit, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
-    {
-        // absolute floor: the scale gap is unbounded and load stretches
-        // CPU seconds into wall minutes
-        let slow_budget = (timeout * 8).max(Duration::from_secs(60));
-        let cpu_before = self_cpu();
-        let slow = run_program(code, Mode::Interp, slow_budget).await;
-        if slow.agrees_with_at(&jit, tier) {
-            return (None, matches!(&slow, Outcome::Trace(_)));
+    // an honestly slow node-walk as a wrongly terminating JIT; a
+    // still-Timeout keeps the finding unless the interp provably made
+    // progress. (An empty jit trace against a Timeout already agreed above.)
+    if matches!(&interp, Outcome::Timeout) && jit.has_events() {
+        let retry = retry_one_sided_timeout(code, Mode::Interp, timeout).await;
+        if retry.outcome.agrees_with_at(&jit, tier) {
+            return (None, matches!(&retry.outcome, Outcome::Trace(_)));
         }
-        // Still over budget. A wedge sits at ~0% CPU; honest slowness
-        // burns whatever the scheduler gives it, so seconds of burn is
-        // proof of progress: log and drop. The delta is process-wide, so
-        // a concurrent pool can only over-count, which errs toward dropping.
-        if matches!(&slow, Outcome::Timeout) {
-            let burned = self_cpu().saturating_sub(cpu_before);
-            if burned >= Duration::from_secs(5) {
-                eprintln!(
-                    "SLOW — interp burned {:.1}s CPU over a {:.0}s budget without \
-                     finishing; jit's value stands unrefuted; honest slowness, \
-                     not recorded",
-                    burned.as_secs_f64(),
-                    slow_budget.as_secs_f64()
-                );
-                eprintln!("    program: {}", code.replace('\n', "\\n"));
-                return (None, false);
-            }
+        if matches!(&retry.outcome, Outcome::Timeout) && interp_made_progress(&retry) {
+            eprintln!(
+                "SLOW — interp burned {:.1}s CPU over a {:.0}s budget without \
+                 finishing; jit's value stands unrefuted; honest slowness, \
+                 not recorded",
+                retry.cpu_burned.as_secs_f64(),
+                retry.budget.as_secs_f64()
+            );
+            eprintln!("    program: {}", code.replace('\n', "\\n"));
+            return (None, false);
         }
     }
     // The symmetric direction is as likely a starved jit child (both
     // modes run concurrently under load) as a native hang. A wedged
     // kernel still times out at the bigger budget and keeps the finding.
-    if matches!(&jit, Outcome::Timeout)
-        && matches!(&interp, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
-    {
-        let slow_budget = (timeout * 8).max(Duration::from_secs(60));
-        let slow = run_program(code, Mode::Jit, slow_budget).await;
-        if interp.agrees_with_at(&slow, tier) {
-            return (None, matches!(&slow, Outcome::Trace(_)));
+    if matches!(&jit, Outcome::Timeout) && interp.has_events() {
+        let retry = retry_one_sided_timeout(code, Mode::Jit, timeout).await;
+        if interp.agrees_with_at(&retry.outcome, tier) {
+            return (None, matches!(&retry.outcome, Outcome::Trace(_)));
         }
     }
     // Rule out nondeterminism: re-run interp at the same tier; if it
@@ -942,6 +927,30 @@ pub async fn check_classified(
         }),
         false,
     )
+}
+
+struct SlowRetry {
+    outcome: Outcome,
+    budget: Duration,
+    cpu_burned: Duration,
+}
+
+/// Re-run the timed-out side at 8x the budget, with an absolute floor:
+/// the scale gap is unbounded and load stretches CPU seconds into wall
+/// minutes. The CPU delta is process-wide, so a concurrent pool can only
+/// over-count, which errs toward dropping.
+async fn retry_one_sided_timeout(code: &str, mode: Mode, timeout: Duration) -> SlowRetry {
+    let budget = (timeout * 8).max(Duration::from_secs(60));
+    let cpu_before = self_cpu();
+    let outcome = run_program(code, mode, budget).await;
+    let cpu_burned = self_cpu().saturating_sub(cpu_before);
+    SlowRetry { outcome, budget, cpu_burned }
+}
+
+/// A wedge sits at ~0% CPU; honest slowness burns whatever the scheduler
+/// gives it, so seconds of burn over the retry is proof of progress.
+fn interp_made_progress(retry: &SlowRetry) -> bool {
+    retry.cpu_burned >= Duration::from_secs(5)
 }
 
 /// The callable-v1 check matrix: four runs (two engines x two routes),
@@ -1176,8 +1185,8 @@ pub async fn run_batch(
     timeout: Duration,
     mut report: impl FnMut(usize, BatchVerdict),
 ) {
-    let (tx_i, mut rx_i) = mpsc::channel(64);
-    let (tx_j, mut rx_j) = mpsc::channel(64);
+    let (tx_i, rx_i) = mpsc::channel(64);
+    let (tx_j, rx_j) = mpsc::channel(64);
     let empty = || VfsResolver::new(AHashMap::new());
     let swap_i = SwapResolver::arc(empty());
     let swap_j = SwapResolver::arc(empty());
@@ -1205,6 +1214,8 @@ pub async fn run_batch(
         Ok(c) => c,
         Err(_) => return,
     };
+    let mut lane_i = EngineLane { ctx: ctx_i, rx: rx_i, swap: swap_i };
+    let mut lane_j = EngineLane { ctx: ctx_j, rx: rx_j, swap: swap_j };
     let mut consecutive_poison = 0u32;
     for (i, code) in progs.iter().enumerate() {
         // A subject-unique module name gives a fresh module and fresh
@@ -1219,19 +1230,19 @@ pub async fn run_batch(
             }
         };
         let tier = subj.tier;
-        swap_i.set(VfsResolver::new(subj.table.clone()));
-        swap_j.set(VfsResolver::new(subj.table.clone()));
+        lane_i.swap.set(VfsResolver::new(subj.table.clone()));
+        lane_j.swap.set(VfsResolver::new(subj.table.clone()));
         // the subject's own tier drives both runs
         let (interp, jit) = tokio::join!(
-            drive(&ctx_i, &mut rx_i, &subj, Route::InLanguage, timeout),
-            drive(&ctx_j, &mut rx_j, &subj, Route::InLanguage, timeout),
+            lane_i.drive(&subj, Route::InLanguage, timeout),
+            lane_j.drive(&subj, Route::InLanguage, timeout),
         );
         // A callable subject owes the route matrix. The two routes share
         // a runtime per engine, so they run in sequence.
         let routed = if subj.spec.is_some() {
             let (ib, jb) = tokio::join!(
-                drive(&ctx_i, &mut rx_i, &subj, Route::Dispatch, timeout),
-                drive(&ctx_j, &mut rx_j, &subj, Route::Dispatch, timeout),
+                lane_i.drive(&subj, Route::Dispatch, timeout),
+                lane_j.drive(&subj, Route::Dispatch, timeout),
             );
             Some((ib, jb))
         } else {
@@ -1282,9 +1293,6 @@ pub async fn run_batch(
             BatchVerdict::Other
         };
         report(i, verdict);
-        // A Timeout/RuntimeErr leaves the shared runtime suspect but
-        // usually recovered, so probe the pair with a trivial subject on a
-        // short budget: responsive keeps going, wedged stops.
         if poisoned {
             // three in a row: the runtime answers probes but cannot
             // finish real subjects
@@ -1292,21 +1300,7 @@ pub async fn run_batch(
             if consecutive_poison >= 3 {
                 break;
             }
-            // an interrupt breaks the loop cooperatively, so a deep
-            // unwind can churn for seconds after the drive returns
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let probe =
-                Subject::parse("i64:0", &format!("p{i}")).expect("trivial probe parses");
-            swap_i.set(VfsResolver::new(probe.table.clone()));
-            swap_j.set(VfsResolver::new(probe.table.clone()));
-            let budget = Duration::from_secs(10);
-            let (pi, pj) = tokio::join!(
-                drive(&ctx_i, &mut rx_i, &probe, Route::InLanguage, budget),
-                drive(&ctx_j, &mut rx_j, &probe, Route::InLanguage, budget),
-            );
-            let healthy =
-                matches!(pi, Outcome::Trace(_)) && matches!(pj, Outcome::Trace(_));
-            if !healthy {
+            if !probe_runtime_health(i, &mut lane_i, &mut lane_j).await {
                 break;
             }
         } else {
@@ -1314,8 +1308,49 @@ pub async fn run_batch(
         }
     }
     let grace = Duration::from_secs(2);
-    let _ = tokio::time::timeout(grace, ctx_i.shutdown()).await;
-    let _ = tokio::time::timeout(grace, ctx_j.shutdown()).await;
+    let _ = tokio::time::timeout(grace, lane_i.ctx.shutdown()).await;
+    let _ = tokio::time::timeout(grace, lane_j.ctx.shutdown()).await;
+}
+
+/// One engine's share of a batch: its runtime, its event channel and
+/// the resolver swapped to each subject's table in turn.
+struct EngineLane {
+    ctx: TestCtx,
+    rx: mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
+    swap: std::sync::Arc<SwapResolver>,
+}
+
+impl EngineLane {
+    async fn drive(
+        &mut self,
+        subj: &Subject,
+        route: Route,
+        timeout: Duration,
+    ) -> Outcome {
+        drive(&self.ctx, &mut self.rx, subj, route, timeout).await
+    }
+}
+
+/// A Timeout/RuntimeErr leaves the shared runtimes suspect but usually
+/// recovered: probe both with a trivial subject on a short budget.
+/// True when both answered.
+async fn probe_runtime_health(
+    i: usize,
+    lane_i: &mut EngineLane,
+    lane_j: &mut EngineLane,
+) -> bool {
+    // an interrupt breaks the loop cooperatively, so a deep unwind can
+    // churn for seconds after the drive returns
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let probe = Subject::parse("i64:0", &format!("p{i}")).expect("trivial probe parses");
+    lane_i.swap.set(VfsResolver::new(probe.table.clone()));
+    lane_j.swap.set(VfsResolver::new(probe.table.clone()));
+    let budget = Duration::from_secs(10);
+    let (pi, pj) = tokio::join!(
+        lane_i.drive(&probe, Route::InLanguage, budget),
+        lane_j.drive(&probe, Route::InLanguage, budget),
+    );
+    matches!(pi, Outcome::Trace(_)) && matches!(pj, Outcome::Trace(_))
 }
 
 /// Batch size for the campaign pool's batch children. 1 disables
@@ -2963,6 +2998,16 @@ pub fn apply_mem_limit() {
     }
 }
 
+/// The stack budget aborts a runaway recursion (a Timeout, like the
+/// deadline) before a box of workers runs out of memory; the address
+/// space limit is applied by the child itself ([`apply_mem_limit`]).
+fn child_resource_env(cmd: &mut tokio::process::Command) {
+    cmd.env("GRAPHIX_FUZZ_SANDBOXED", "1");
+    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+        cmd.env("GRAPHIX_STACK_BUDGET", (1u64 << 30).to_string());
+    }
+}
+
 /// Give a worker child a parent-owned sandbox cwd (generated programs
 /// write files at arbitrary relative paths, and the worker arms exit via
 /// `process::exit`, so a child-owned tempdir would leak). The guard
@@ -2972,17 +3017,8 @@ pub fn apply_mem_limit() {
 fn sandbox_cwd(cmd: &mut tokio::process::Command) -> tempfile::TempDir {
     match tempfile::tempdir() {
         Ok(d) => {
-            cmd.current_dir(d.path()).env("GRAPHIX_FUZZ_SANDBOXED", "1");
-            // The budget aborts a runaway recursion (a Timeout, like the
-            // deadline) before a box of workers runs out of memory.
-            if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
-                cmd.env("GRAPHIX_STACK_BUDGET", (1u64 << 30).to_string());
-            }
-            // The address-space rlimit converts a runaway into a child
-            // allocation failure before the box's OOM killer shoots
-            // lanes. 48GB because RLIMIT_AS counts virtual reservations
-            // (malloc arenas, thread stacks); the subject timeout is the
-            // real memory guard.
+            cmd.current_dir(d.path());
+            child_resource_env(cmd);
             d
         }
         Err(e) => {

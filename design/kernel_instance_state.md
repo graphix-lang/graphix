@@ -161,7 +161,7 @@ different depths are distinct instances with distinct histories, and a
 depth-indexed chain would alias them across cycles. Each self-call site
 owns a root word in the CALLER's block; `graphix_site_child_block(word,
 desc)` allocates the callee's block on first use (sized from the
-callee's `KernelSig::site_desc`, because a self-call's size is its own
+callee's `KernelSig::site_block_words`, because a self-call's size is its own
 body's, unknown while that body is still emitting) and retains it —
 one `SelfBlock` per activation, self-similar since only self-calls take
 this path (mutual recursion de-fuses at the static call edge). Callee

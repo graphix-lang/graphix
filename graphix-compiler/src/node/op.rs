@@ -1,4 +1,4 @@
-use super::{CFlag, compiler::compile, coretraits, dense_gate};
+use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
     Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     defetyp,
@@ -53,7 +53,7 @@ macro_rules! compare_op {
             pub rhs: Node<R, E>,
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
-            slept: bool,
+            slept: WakeBit,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -62,7 +62,7 @@ macro_rules! compare_op {
             #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
                 let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() })
             }
 
             pub(crate) fn compile(
@@ -77,7 +77,7 @@ macro_rules! compare_op {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() }))
             }
         }
 
@@ -87,7 +87,7 @@ macro_rules! compare_op {
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
             ) -> &TagValue {
-                let woke = std::mem::take(&mut self.slept);
+                let woke = self.slept.take();
                 let (lhs, rhs, resident) =
                     (&mut self.lhs, &mut self.rhs, &mut self.resident);
                 coretraits::with_value_hooks(ctx, event, |ctx, event| {
@@ -122,7 +122,7 @@ macro_rules! compare_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.slept = true;
+                self.slept.set();
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx)
             }
@@ -211,14 +211,14 @@ macro_rules! bool_op {
             pub rhs: Node<R, E>,
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
-            slept: bool,
+            slept: WakeBit,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
             #[allow(dead_code)]
             pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
                 let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false })
+                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() })
             }
 
             pub(crate) fn compile(
@@ -233,7 +233,7 @@ macro_rules! bool_op {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
                 let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: false }))
+                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() }))
             }
         }
 
@@ -244,7 +244,7 @@ macro_rules! bool_op {
                 event: &mut Event<E>,
             ) -> &TagValue {
                 // Strict, not short-circuit: `false && ⊥ = ⊥`.
-                let woke = std::mem::take(&mut self.slept);
+                let woke = self.slept.take();
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
@@ -285,7 +285,7 @@ macro_rules! bool_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.slept = true;
+                self.slept.set();
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx)
             }
@@ -663,7 +663,7 @@ macro_rules! arith_op {
             pub rhs: Node<R, E>,
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
-            slept: bool,
+            slept: WakeBit,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -685,7 +685,7 @@ macro_rules! arith_op {
                     lhs,
                     rhs,
                     resident: TagValue::phantom(),
-                    slept: false,
+                    slept: WakeBit::default(),
                 })
             }
 
@@ -707,7 +707,7 @@ macro_rules! arith_op {
                     lhs,
                     rhs,
                     resident: TagValue::phantom(),
-                    slept: false,
+                    slept: WakeBit::default(),
                 }))
             }
 
@@ -780,7 +780,7 @@ macro_rules! arith_op {
                 ctx: &mut ExecCtx<R, E>,
                 event: &mut Event<E>,
             ) -> &TagValue {
-                let woke = std::mem::take(&mut self.slept);
+                let woke = self.slept.take();
                 let l = self.lhs.update(ctx, event);
                 let r = self.rhs.update(ctx, event);
                 let (lt, rt) = (l.tag(), r.tag());
@@ -824,7 +824,7 @@ macro_rules! arith_op {
                             let btag = if trig {
                                 $crate::Tag::FRESH_BOTTOM
                             } else {
-                                $crate::Tag::TAINT
+                                $crate::Tag::STALE_BOTTOM
                             };
                             self.resident.set(TagValue::tagged(Value::Null, btag))
                         }
@@ -852,7 +852,7 @@ macro_rules! arith_op {
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.slept = true;
+                self.slept.set();
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx);
             }

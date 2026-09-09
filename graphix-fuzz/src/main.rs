@@ -68,20 +68,24 @@ static TIMEOUT_SCALE: LazyLock<u32> = LazyLock::new(|| {
         .unwrap_or(1)
 });
 
+fn scaled(secs: u64) -> Duration {
+    Duration::from_secs(secs) * *TIMEOUT_SCALE
+}
+
 fn timeout() -> Duration {
-    Duration::from_secs(10) * *TIMEOUT_SCALE
+    scaled(10)
 }
 
 // A regression surfaces fast; a legitimately-bottom program only has to
 // confirm "still all-Timeout".
 fn regress_timeout() -> Duration {
-    Duration::from_secs(3) * *TIMEOUT_SCALE
+    scaled(3)
 }
 
 // Generated programs terminate in milliseconds or produce bottom; a
 // real divergence surfaces well within 3s.
 fn campaign_timeout() -> Duration {
-    Duration::from_secs(3) * *TIMEOUT_SCALE
+    scaled(3)
 }
 
 async fn print_regression() -> usize {
@@ -437,7 +441,7 @@ async fn main() -> Result<()> {
             // the compare reads the embedded copy). An unmeasurable
             // count is a failure, never a 0.
             let bless = args.iter().any(|a| a == "--bless");
-            let timeout = Duration::from_secs(60) * *TIMEOUT_SCALE;
+            let timeout = scaled(60);
             let counts = graphix_fuzz::run_fusecheck(timeout).await;
             let mut unreadable = 0usize;
             for (n, c) in &counts {

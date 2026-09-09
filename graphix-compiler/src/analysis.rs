@@ -612,8 +612,8 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
             _ => false,
         },
         // A select with a marked arm is on the tail spine; see
-        // `Select::tail_position`.
-        &mut |s| s.tail_position.store(true, Ordering::Relaxed),
+        // `Select::tail_dispatch_select`.
+        &mut |s| s.tail_dispatch_select.store(true, Ordering::Relaxed),
     )
 }
 

@@ -153,6 +153,21 @@ pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
     )
 });
 
+/// Set by a node's `sleep()`, taken by its next update: the first update
+/// after a sleep recomputes from the present world.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct WakeBit(bool);
+
+impl WakeBit {
+    pub(crate) fn set(&mut self) {
+        self.0 = true
+    }
+
+    pub(crate) fn take(&mut self) -> bool {
+        std::mem::take(&mut self.0)
+    }
+}
+
 #[derive(Debug)]
 pub struct Nop {
     pub typ: Type,
@@ -373,7 +388,7 @@ pub(crate) fn gather<R: Rt, E: UserEvent>(
 /// its cached result. Quiet recomputation cannot manufacture an event.
 macro_rules! dense_gate {
     ($self:ident, $ctx:ident, $trig:expr, $bottom:expr) => {{
-        let woke = std::mem::take(&mut $self.slept);
+        let woke = $self.slept.take();
         $crate::node::dense_gate!($self.resident, $ctx, $trig, $bottom, woke);
     }};
     ($resident:expr, $ctx:ident, $trig:expr, $bottom:expr, $woke:expr) => {{
@@ -472,14 +487,14 @@ pub(crate) fn compile_use_item(
         Some(Anchor::Chain(a)) => ImportEntry {
             scope: ModPath(Path::from(ArcStr::from(a))),
             name: base.into(),
-            chain: true,
+            keyword_anchored: true,
             pos,
             ori: ori.clone(),
         },
         Some(Anchor::Module(m)) => ImportEntry {
             scope: m,
             name: base.into(),
-            chain: false,
+            keyword_anchored: false,
             pos,
             ori: ori.clone(),
         },
@@ -493,7 +508,7 @@ pub(crate) fn compile_use_item(
                         Path::dirname(&*m).unwrap_or("/"),
                     ))),
                     name: base.into(),
-                    chain: false,
+                    keyword_anchored: false,
                     pos,
                     ori: ori.clone(),
                 },
@@ -661,7 +676,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         if ctx.frame_depth > 0 {
             // in a frame a constant fires only on a genuine init dispatch,
             // never on an arm's wake
-            if ctx.frame_init {
+            if ctx.dispatch_init {
                 self.resident.set(TagValue::fired(self.value.clone()))
             } else {
                 self.resident.set(TagValue::stale(self.value.clone()))
@@ -975,7 +990,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 #[derive(Debug)]
 pub struct StringInterpolate<R: Rt, E: UserEvent> {
     /// set by `sleep()`, taken by the next update
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
@@ -1004,7 +1019,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             typs,
             args,
             resident: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -1014,7 +1029,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_value_hooks`)
-        let woke = std::mem::take(&mut self.slept);
+        let woke = self.slept.take();
         let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
         coretraits::with_value_hooks(ctx, event, |ctx, event| {
             let mut trig = false;
@@ -1067,7 +1082,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         for n in &mut self.args {
             n.sleep(ctx);
         }
@@ -1146,8 +1161,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             Some((_, b)) => (b.id, b.pos, b.ori.clone()),
         };
         // a `<-` target is never a static call target
-        ctx.unstable_bindings.insert(id);
-        ctx.connect_targets.insert(id);
+        ctx.mark_connect_target(id);
         if ctx.env.lsp_mode {
             ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,
@@ -1421,7 +1435,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
-        if tag.is_tainted() {
+        if tag.is_bottom() {
             self.resident.set(TagValue::tagged(Value::Null, tag))
         } else {
             let v = tv.value_cloned();
@@ -1714,7 +1728,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         let fired = t.tag().is_fired();
         self.arg.update(ctx, event);
         if self.strict {
-            return match (fired, self.arg.value.as_ref(), self.arg.tag.is_tainted()) {
+            return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
                 (true, Some(v), false) => self.resident.set(TagValue::fired(v.clone())),
                 (true, _, _) => {
                     self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
@@ -1727,7 +1741,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
         let var = event.variables.get(&self.id).cloned();
         let held = || match &self.arg.value {
-            Some(_) if self.arg.tag.is_tainted() => {
+            Some(_) if self.arg.tag.is_bottom() => {
                 TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
             }
             Some(v) => TagValue::fired(v.clone()),
@@ -1739,7 +1753,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         } else {
             var
         };
-        if self.arg.value.is_some() && !self.arg.tag.is_tainted() {
+        if self.arg.value.is_some() && !self.arg.tag.is_bottom() {
             while self.triggered > 0 {
                 self.triggered -= 1;
                 ctx.rt.set_var(self.id, self.arg.value.clone().unwrap());

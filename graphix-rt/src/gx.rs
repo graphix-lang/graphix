@@ -214,6 +214,15 @@ pub(super) struct GX<X: GXExt> {
 }
 
 impl<X: GXExt> GX<X> {
+    /// Drop the outgoing batch's `<-` targets from the static-resolution
+    /// index; stable cross-batch entries survive so resolution does not
+    /// fall to the `store_value` fallback.
+    fn prune_static_resolution(&mut self) {
+        for id in self.ctx.batch_connect_targets.iter() {
+            self.ctx.bind_to_lambda.remove(id);
+        }
+    }
+
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
         let resolvers_default = |r: &mut Vec<ResolverRef>| match dirs::data_dir() {
             None => (),
@@ -555,14 +564,8 @@ impl<X: GXExt> GX<X> {
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
-        // Prune the static-resolution index by the outgoing batch's `<-`
-        // targets rather than clearing it: stable cross-batch entries must
-        // survive or resolution falls to the `store_value` fallback, whose
-        // contents depend on whether the previous init cycle has run.
-        for id in self.ctx.unstable_bindings.iter() {
-            self.ctx.bind_to_lambda.remove(id);
-        }
-        self.ctx.unstable_bindings.clear();
+        self.prune_static_resolution();
+        self.ctx.batch_connect_targets.clear();
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         for e in exprs.iter() {
             let (n, advanced) = graphix_compiler::compile_stmt(
@@ -591,14 +594,8 @@ impl<X: GXExt> GX<X> {
         let exprs =
             try_join_all(exprs.iter().map(|e| e.resolve_modules(&self.resolvers)))
                 .await?;
-        // Prune the static-resolution index by the outgoing batch's `<-`
-        // targets rather than clearing it: stable cross-batch entries must
-        // survive or resolution falls to the `store_value` fallback, whose
-        // contents depend on whether the previous init cycle has run.
-        for id in self.ctx.unstable_bindings.iter() {
-            self.ctx.bind_to_lambda.remove(id);
-        }
-        self.ctx.unstable_bindings.clear();
+        self.prune_static_resolution();
+        self.ctx.batch_connect_targets.clear();
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         for e in exprs.iter() {
             let (n, advanced) = graphix_compiler::compile_stmt(
@@ -736,11 +733,7 @@ impl<X: GXExt> GX<X> {
             }))
             .await?;
             info!("resolve time: {:?}", st.elapsed());
-            // Prune by the outgoing `<-` targets so check diagnostics resolve
-            // the same way run-to-run; `Bind::delete` bounds the growth.
-            for id in self.ctx.unstable_bindings.iter() {
-                self.ctx.bind_to_lambda.remove(id);
-            }
+            self.prune_static_resolution();
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             let mut scope = scope;
             for e in exprs.iter() {
@@ -796,14 +789,8 @@ impl<X: GXExt> GX<X> {
         let wrapped =
             wrap_file_in_do(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
         let top_id = wrapped.id;
-        // Prune the static-resolution index by the outgoing batch's `<-`
-        // targets rather than clearing it: stable cross-batch entries must
-        // survive or resolution falls to the `store_value` fallback, whose
-        // contents depend on whether the previous init cycle has run.
-        for id in self.ctx.unstable_bindings.iter() {
-            self.ctx.bind_to_lambda.remove(id);
-        }
-        self.ctx.unstable_bindings.clear();
+        self.prune_static_resolution();
+        self.ctx.batch_connect_targets.clear();
         let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
             .with_context(|| ori.clone())?;
         let typ = n.typ().clone();

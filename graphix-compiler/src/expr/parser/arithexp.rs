@@ -122,9 +122,11 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
     }
 }
 
-// `Some(())` marks a single parenthesized expr: `ExplicitParens` if no
-// postfix follows, else the bare postfix source. `None` marks a tuple.
-fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<()>)>
+/// A single parenthesized expr: `ExplicitParens` if no postfix follows,
+/// else the bare postfix source.
+struct Parenthesized;
+
+fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -136,7 +138,7 @@ where
     )
         .map(|(pos, mut exprs): (_, LPooled<Vec<Expr>>)| {
             if exprs.len() == 1 {
-                (exprs.drain(..).next().unwrap(), Some(()))
+                (exprs.drain(..).next().unwrap(), Some(Parenthesized))
             } else {
                 (
                     ExprKind::Tuple { args: Arc::from_iter(exprs.drain(..)) }
@@ -149,7 +151,7 @@ where
 
 // The prefix-operator forms recurse into `arith_term`, so they bind looser
 // than the postfix operators.
-fn primary<I>() -> impl Parser<I, Output = (Expr, Option<()>)>
+fn primary<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -207,7 +209,7 @@ parser! {
                         }
                         let folded = if ops.is_empty() {
                             match paren {
-                                Some(()) => {
+                                Some(Parenthesized) => {
                                     ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos)
                                 }
                                 None => base,

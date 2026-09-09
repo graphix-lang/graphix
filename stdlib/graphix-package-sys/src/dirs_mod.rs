@@ -2,19 +2,19 @@ use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, typ::FnType,
 };
+use graphix_package_core::FireOnce;
 use netidx::subscriber::Value;
 
 macro_rules! dirs_builtin {
     ($name:ident, $builtin:literal, $fn:path) => {
         #[derive(Debug)]
         pub(crate) struct $name {
-            fired: bool,
+            once: FireOnce,
             out: TagValue,
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            // Fires once per instance (the `fired` latch), so it is not
-            // replayable and must not be `Sync`.
+            // Not replayable, so it must not be `Sync`.
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
 
@@ -26,7 +26,7 @@ macro_rules! dirs_builtin {
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,
             ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self { fired: false, out: TagValue::phantom() }))
+                Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
             }
         }
 
@@ -37,8 +37,7 @@ macro_rules! dirs_builtin {
                 _from: &mut [Node<R, E>],
                 event: &mut Event<E>,
             ) -> &TagValue {
-                if event.init && !self.fired {
-                    self.fired = true;
+                if event.init && self.once.take() {
                     let v = match $fn() {
                         Some(p) => Value::String(crate::convert_path(&p)),
                         None => Value::Null,
@@ -52,7 +51,7 @@ macro_rules! dirs_builtin {
             fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                self.fired = false;
+                self.once.reset();
             }
 
             fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}

@@ -1,4 +1,4 @@
-use super::{compiler::compile, dense_gate, gather};
+use super::{WakeBit, compiler::compile, dense_gate, gather};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent, abstract_value, deref_typ,
@@ -23,7 +23,7 @@ use triomphe::Arc;
 #[derive(Debug)]
 pub struct Struct<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub names: Box<[ArcStr]>,
@@ -53,7 +53,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
             names,
             n,
             resident: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -63,7 +63,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         if self.n.is_empty() {
             // An empty literal is a constant and follows the Constant frame rule.
             if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.frame_init {
+                return self.resident.set(if ctx.dispatch_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
                 } else {
                     TagValue::stale(Value::Array(ValArray::from([])))
@@ -100,7 +100,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -160,7 +160,7 @@ pub struct Replace<R: Rt, E: UserEvent> {
 #[derive(Debug)]
 pub struct StructWith<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub source: Node<R, E>,
@@ -196,7 +196,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
             source,
             replace,
             resident: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -286,7 +286,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
@@ -311,7 +311,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         };
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
-        let styp = self.source.typ().with_deref(|typ| typ.cloned());
+        let styp = self.source.typ().deref_cloned();
         let check = || -> Result<()> {
             match styp {
                 Some(Type::Struct(flds)) => {
@@ -360,7 +360,7 @@ pub struct StructRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub source: Node<R, E>,
-    pub field: Option<usize>,
+    pub sorted_field_idx: Option<usize>,
     pub field_name: ArcStr,
     resident: TagValue,
 }
@@ -376,7 +376,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
         field_name: &ArcStr,
     ) -> Result<Node<R, E>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
-        let (typ, field) = match &source.typ() {
+        let (typ, sorted_field_idx) = match &source.typ() {
             Type::Struct(flds) => {
                 flds.iter()
                     .enumerate()
@@ -392,7 +392,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
             spec,
             typ,
             source,
-            field,
+            sorted_field_idx,
             field_name,
             resident: TagValue::phantom(),
         }))
@@ -408,7 +408,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         }
         let v = tv.value_cloned();
         let res = match v {
-            Value::Array(a) => match self.field {
+            Value::Array(a) => match self.sorted_field_idx {
                 Some(i) => a.get(i).and_then(|v| match v {
                     Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
                     _ => None,
@@ -425,7 +425,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
                     });
                     match res {
                         Some((i, v)) => {
-                            self.field = Some(i);
+                            self.sorted_field_idx = Some(i);
                             Some(v)
                         }
                         None => None,
@@ -481,7 +481,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
                 }
         });
         let (idx, typ) = wrap!(self, etyp)?;
-        self.field = Some(idx);
+        self.sorted_field_idx = Some(idx);
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))
     }
 
@@ -497,7 +497,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         // `field` is the position in the struct type's sorted layout.
         let sorted_idx = self
-            .field
+            .sorted_field_idx
             .ok_or_else(|| anyhow::anyhow!("emit_clif: struct field index unresolved"))?;
         emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
     }
@@ -506,7 +506,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 #[derive(Debug)]
 pub struct Tuple<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
@@ -527,7 +527,13 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
         let typ = Type::Tuple(Arc::from_iter(n.iter().map(|n| n.typ().clone())));
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom(), slept: false }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        }))
     }
 }
 
@@ -536,7 +542,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         if self.n.is_empty() {
             // An empty literal is a constant and follows the Constant frame rule.
             if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.frame_init {
+                return self.resident.set(if ctx.dispatch_init {
                     TagValue::fired(Value::Array(ValArray::from([])))
                 } else {
                     TagValue::stale(Value::Array(ValArray::from([])))
@@ -569,7 +575,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -618,7 +624,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 #[derive(Debug)]
 pub struct Variant<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub tag: ArcStr,
@@ -649,7 +655,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             tag,
             n,
             resident: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -686,7 +692,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 

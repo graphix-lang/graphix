@@ -13,8 +13,8 @@ use graphix_compiler::{
     typ::{FnType, abstract_uuid},
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, ProgramArgs,
-    seam_tick,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, FireOnce,
+    ProgramArgs, seam_tick,
 };
 use graphix_rt::GXRt;
 use netidx_core::pack::{Pack, PackError};
@@ -488,13 +488,12 @@ pub(crate) type JoinPath = CachedArgs<JoinPathEv>;
 
 #[derive(Debug)]
 pub(crate) struct Args {
-    fired: bool,
+    once: FireOnce,
     out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
-    // Fires once per instance (the `fired` latch), so it is not
-    // replayable and must not be `Sync`.
+    // Not replayable, so it must not be `Sync`.
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_args";
 
@@ -506,7 +505,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self { fired: false, out: TagValue::phantom() }))
+        Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
     }
 }
 
@@ -517,8 +516,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
         _from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        if event.init && !self.fired {
-            self.fired = true;
+        if event.init && self.once.take() {
             let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
             let arr: ValArray =
                 pargs.0.iter().map(|s| Value::String(s.clone())).collect();
@@ -531,7 +529,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.fired = false;
+        self.once.reset();
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}

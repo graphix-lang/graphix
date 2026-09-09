@@ -45,7 +45,7 @@ pub struct JitCtx {
     builder_ctx: FunctionBuilderContext,
     func_ctx: Context,
     /// Symbol suffix; one graphix name can occur in several fused lambdas.
-    counter: u32,
+    symbol_counter: u32,
     /// FuncIds for the `emit_helpers::*` runtime helpers, declared once.
     helper_ids: HelperFuncIds,
 }
@@ -89,14 +89,14 @@ impl JitCtx {
             module,
             builder_ctx: FunctionBuilderContext::new(),
             func_ctx: Context::new(),
-            counter: 0,
+            symbol_counter: 0,
             helper_ids,
         })
     }
 
     fn next_symbol(&mut self, fn_name: &str) -> String {
-        self.counter += 1;
-        format!("{fn_name}__kir_{}", self.counter)
+        self.symbol_counter += 1;
+        format!("{fn_name}__kir_{}", self.symbol_counter)
     }
 }
 
@@ -209,7 +209,7 @@ pub struct Jit {
     /// a later allocation.
     by_kernel: BTreeMap<(usize, u32, u32), CachedKernel>,
     /// Region layout → id, from 1; 0 is the layout-independent id.
-    layouts: BTreeMap<Vec<(usize, u32)>, u32>,
+    layout_ids: BTreeMap<Vec<(usize, u32)>, u32>,
 }
 
 impl Jit {
@@ -218,13 +218,13 @@ impl Jit {
         Ok(Self {
             ctx: Box::new(JitCtx::new()?),
             by_kernel: BTreeMap::new(),
-            layouts: BTreeMap::new(),
+            layout_ids: BTreeMap::new(),
         })
     }
 
     fn intern_layout(&mut self, layout: Vec<(usize, u32)>) -> u32 {
-        let next = self.layouts.len() as u32 + 1;
-        *self.layouts.entry(layout).or_insert(next)
+        let next = self.layout_ids.len() as u32 + 1;
+        *self.layout_ids.entry(layout).or_insert(next)
     }
 }
 
@@ -713,7 +713,7 @@ fn define_kernel_body(
         // Callee FuncRefs are declared before the FunctionBuilder borrows
         // `func_ctx.func`. The set is the body's lambda sites plus its
         // self-call, keyed by kernel identity.
-        let needed: poolshark::local::LPooled<nohash::IntSet<usize>> = {
+        let callee_keys: poolshark::local::LPooled<nohash::IntSet<usize>> = {
             let mut s: poolshark::local::LPooled<nohash::IntSet<usize>> = body_emitter
                 .spec
                 .lambda_call_sites
@@ -732,7 +732,7 @@ fn define_kernel_body(
         // Import in `funcids` order so the funcref numbering is deterministic.
         let mut callee_refs: BTreeMap<usize, FuncRef> = BTreeMap::new();
         for (ptr, (fid, _)) in funcids {
-            if !needed.contains(ptr) {
+            if !callee_keys.contains(ptr) {
                 continue;
             }
             let fref = jit.module.declare_func_in_func(*fid, &mut jit.func_ctx.func);
@@ -740,7 +740,7 @@ fn define_kernel_body(
         }
         let self_thunk = self_thunk_id
             .map(|tid| jit.module.declare_func_in_func(tid, &mut jit.func_ctx.func));
-        if callee_refs.len() != needed.len() {
+        if callee_refs.len() != callee_keys.len() {
             return Err(anyhow!(
                 "define_kernel_body: kernel `{}` calls a kernel with \
                      no entry in funcids",
@@ -753,8 +753,9 @@ fn define_kernel_body(
             std::cell::RefCell::new(Vec::new());
         let lazy_values: std::cell::RefCell<Vec<Box<Value>>> =
             std::cell::RefCell::new(Vec::new());
-        let lazy_keep: std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>> =
-            std::cell::RefCell::new(Vec::new());
+        let lazy_value_owners: std::cell::RefCell<
+            Vec<Box<dyn std::any::Any + Send + Sync>>,
+        > = std::cell::RefCell::new(Vec::new());
         let lazy_site_leaves: std::cell::RefCell<
             Vec<std::sync::Arc<kernel_abi::SiteLeaf>>,
         > = std::cell::RefCell::new(Vec::new());
@@ -771,7 +772,7 @@ fn define_kernel_body(
                 &helper_refs,
                 &lazy_strings,
                 &lazy_values,
-                &lazy_keep,
+                &lazy_value_owners,
                 body_emitter,
                 callee_layouts,
                 &lazy_site_leaves,
@@ -781,7 +782,7 @@ fn define_kernel_body(
         (
             KernelStrings::empty().with_lazy(lazy_strings.into_inner()),
             KernelValues::empty()
-                .with_lazy(lazy_values.into_inner(), lazy_keep.into_inner()),
+                .with_lazy(lazy_values.into_inner(), lazy_value_owners.into_inner()),
             state_words,
             slot_table_words,
             state_self_blocks,

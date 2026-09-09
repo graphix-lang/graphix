@@ -33,7 +33,8 @@ use super::{
     },
     flow::emit_body_tail,
     lower::{
-        LowerCtx, SelWord, SiteLayout, SlotTableFrame, TruncAnchor, TruncLeaf, TruncRec,
+        ClosedFrame, LowerCtx, SelFire, SelWord, SiteLayout, SlotTable, SlotTableFrame,
+        TailSlots, TruncAnchor, TruncLeaf, TruncRec,
     },
     nodes::emit_owned_value_operand_node,
     scalar::scalar_to_payload_i64,
@@ -58,7 +59,7 @@ fn lookup_slot(env: &JitEnv, slot: &kernel_abi::KernelParam) -> Option<ValueVar>
         Some(id) => env.lookup(id, &slot.name),
         None => env.lookup_name(&slot.name),
     }?;
-    Some(l.vv)
+    Some(l.words)
 }
 
 /// The rebind-and-jump core of a self tail-call. Rebinds the leading
@@ -77,12 +78,11 @@ pub(super) fn emit_tail_rebind_jump(
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
     // A tainted new value keeps the slot's previous value, as the
-    // node-walk backfills a bottomed arg from its cache. Hand-built
-    // test kernels leave `call_slots` empty: rebind positionally.
-    if ctx.tail.call_slots.is_none() {
+    // node-walk backfills a bottomed arg from its cache.
+    let TailSlots::Named(slots) = ctx.tail.call_slots else {
         debug_assert!(rebinds.len() <= ctx.tail.param_mark);
         for r in rebinds.iter() {
-            let vv = env.locals[r.slot].vv;
+            let vv = env.locals[r.slot].words;
             let old_p = b.use_var(vv.payload);
             let old_d = b.use_var(vv.disc);
             let p = b.ins().select(r.taint, old_p, r.val.payload);
@@ -93,8 +93,7 @@ pub(super) fn emit_tail_rebind_jump(
         env.truncate(ctx.tail.param_mark);
         b.ins().jump(head, &[]);
         return Ok(());
-    }
-    let slots = ctx.tail.call_slots.unwrap();
+    };
     // Slots cover every kernel value param; a tail call rebinds only
     // the loop-carried formals.
     debug_assert!(rebinds.len() <= slots.len());
@@ -233,7 +232,7 @@ pub(super) fn emit_tail_rebind_jump(
         [ctx.tail.param_mark..]
         .iter()
         .filter(|l| !slots.iter().any(|s| s.name == l.name))
-        .map(|l| (l.kind, l.vv))
+        .map(|l| (l.kind, l.words))
         .collect();
     for (kind, vv) in drops {
         emit_drop_local(b, ctx, kind, vv)?;
@@ -560,7 +559,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 },
             };
             match entry {
-                Some((table, guarded)) => tables.push((*id, table, guarded)),
+                Some((table, guarded)) => {
+                    tables.push(SlotTable { site: *id, base: table, guarded })
+                }
                 None => break,
             }
         }
@@ -616,8 +617,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         // overwrite happens only on error paths, where the kernel is
         // discarded.
         if let Some(f) = popped {
-            *self.ctx.closed_frame.borrow_mut() =
-                Some((f.depth, f.len, f.src_disc, f.pending));
+            *self.ctx.closed_frame.borrow_mut() = Some(ClosedFrame {
+                depth: f.depth,
+                len: f.len,
+                src_disc: f.src_disc,
+                pending: f.pending,
+            });
         }
     }
 
@@ -628,7 +633,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// with this frame's len, truncating on a shrink; the records then
     /// propagate to the enclosing frame.
     pub(crate) fn emit_slot_truncates(&mut self) -> Result<()> {
-        let Some((depth, len, src_disc, recs)) =
+        let Some(ClosedFrame { depth, len, src_disc, pending: recs }) =
             self.ctx.closed_frame.borrow_mut().take()
         else {
             debug_assert!(false, "emit_slot_truncates without a closed frame");
@@ -734,8 +739,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             if f.depth != self.ctx.loop_depth.get() {
                 return None;
             }
-            let (_, table, guarded) = *f.tables.iter().find(|(eid, _, _)| *eid == id)?;
-            (f.idx_var, table, guarded)
+            let SlotTable { base, guarded, .. } =
+                *f.tables.iter().find(|t| t.site == id)?;
+            (f.idx_var, base, guarded)
         };
         let i = self.b.use_var(idx_var);
         let off = self.b.ins().ishl_imm(i, 3);
@@ -890,7 +896,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub fn interned_type(&mut self, t: &Type) -> ClifValue {
         let b = Box::new(t.clone());
         let ptr = b.as_ref() as *const Type;
-        self.ctx.lazy_keep.borrow_mut().push(b);
+        self.ctx.lazy_value_owners.borrow_mut().push(b);
         self.b.ins().iconst(types::I64, ptr as i64)
     }
 
@@ -900,7 +906,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub fn interned_qop_site(&mut self, site: crate::node::error::QopSite) -> ClifValue {
         let b = Box::new(site);
         let ptr = b.as_ref() as *const crate::node::error::QopSite;
-        self.ctx.lazy_keep.borrow_mut().push(b);
+        self.ctx.lazy_value_owners.borrow_mut().push(b);
         self.b.ins().iconst(types::I64, ptr as i64)
     }
 }
@@ -916,10 +922,6 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
         match n.view() {
             NodeView::Ref(_) => return CompositeSource::Borrowed,
             NodeView::ExplicitParens(p) => n = &*p.n,
-            // A Block's result is owned by construction:
-            // `emit_block_node` clones a borrowed tail before the
-            // scope drops.
-            NodeView::Block(_) => return CompositeSource::Owned,
             _ => return CompositeSource::Owned,
         }
     }
@@ -936,7 +938,7 @@ pub fn node_is_bottom<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 
 /// True iff `node` is a plain `Ref` whose binding is loop-invariant
 /// at this emission point: a kernel input or a local bound outside
-/// every open scaffold loop (`Local::depth` 0). Everything else is
+/// every open scaffold loop (`Local::loop_depth` 0). Everything else is
 /// conservatively variant. Transparent through parens and blocks.
 pub fn node_loop_invariant_ref<R: Rt, E: UserEvent>(
     cx: &BodyCx,
@@ -950,7 +952,7 @@ pub fn node_loop_invariant_ref<R: Rt, E: UserEvent>(
                     Some(name) => cx.env.lookup(r.id, name),
                     None => cx.env.lookup_id(r.id),
                 };
-                return l.is_some_and(|l| l.depth == 0);
+                return l.is_some_and(|l| l.loop_depth == 0);
             }
             NodeView::ExplicitParens(p) => n = &*p.n,
             NodeView::Block(blk) => match blk.children.last() {
@@ -1073,13 +1075,13 @@ pub(super) fn emit_kernel_return(
     src: CompositeSource,
 ) -> Result<()> {
     // The result fires if its value chain fired or any tail-select
-    // scrutinee on the executed path did (`LowerCtx::tail_scrut_stale`).
+    // scrutinee on the executed path did (`TailCtx::tail_scrut_stale_acc`).
     #[cfg(debug_assertions)]
     if std::env::var_os("GXDBG_CALLRET").is_some() {
         let f = cx.helper("graphix_dbg_disc")?;
         let t = cx.b.ins().iconst(types::I64, 2);
         cx.b.ins().call(f, &[t, cv.disc]);
-        let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
+        let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
         let t3 = cx.b.ins().iconst(types::I64, 3);
         cx.b.ins().call(f, &[t3, acc]);
     }
@@ -1087,9 +1089,9 @@ pub(super) fn emit_kernel_return(
         // The bottom-out rule (design/activation_state.md): fold the
         // enclosing tail-select scopes innermost-first; a still-stale
         // result meeting a level's fresh-bottom fire becomes TAINT fresh.
-        let levels: smallvec::SmallVec<[(ClifValue, Option<ClifValue>); 4]> =
+        let levels: smallvec::SmallVec<[SelFire; 4]> =
             cx.ctx.sel_fires.borrow().iter().rev().copied().collect();
-        for (sound, bf) in levels {
+        for SelFire { sound_stale: sound, bfired: bf } in levels {
             cv.disc = fold_stale(cx.b, cv.disc, sound);
             if let Some(bf) = bf {
                 let sbit = cx.b.ins().band_imm(cv.disc, STALE);
@@ -1103,7 +1105,7 @@ pub(super) fn emit_kernel_return(
         // The loop-carried accumulator (cross-ITERATION sound fires —
         // a fired loop-head scrutinee in any pass upgrades a stale
         // final result) folds last, outermost.
-        let acc = cx.b.use_var(cx.ctx.tail.scrut_stale);
+        let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
         cv.disc = fold_stale(cx.b, cv.disc, acc);
     }
     // The disc is rebased on the static return shape's Value

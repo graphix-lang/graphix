@@ -1,4 +1,6 @@
-use super::{collection::CollectionIntrinsic, pattern::StructPatternNode, place};
+use super::{
+    WakeBit, collection::CollectionIntrinsic, pattern::StructPatternNode, place,
+};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent, bailat,
@@ -22,15 +24,12 @@ use triomphe::Arc;
 
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
-    /// Set by `sleep()`, taken by the next update.
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
     pub(crate) node: Node<R, E>,
-    /// Whether this binding has ever published; until it has, even a
-    /// quiet production must be published so readers find a store entry.
-    published: bool,
+    ever_published: bool,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -74,8 +73,8 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             typ,
             pattern,
             node,
-            published: false,
-            slept: false,
+            ever_published: false,
+            slept: WakeBit::default(),
         }));
     }
     let mut body = compile(ctx, flags, body, scope, top_id)?;
@@ -227,7 +226,14 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 }
             }
         }
-        Ok(Node::new(Self { spec, typ, pattern, node, published: false, slept: false }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            pattern,
+            node,
+            ever_published: false,
+            slept: WakeBit::default(),
+        }))
     }
 
     /// The LambdaDef `Value` this binding holds when its value node is
@@ -255,14 +261,13 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && ctx.frame_depth == 0;
+        let woke = self.slept.take() && ctx.frame_depth == 0;
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
-        // persists in the store. A woken `<-` target keeps its value:
-        // re-running its initializer would discard what connects wrote.
-        let wake_hold = event.wake_init && self.published && {
+        // persists in the store.
+        let keep_connect_target_value = event.wake_init && self.ever_published && {
             let mut target = false;
             self.pattern.ids(&mut |id| {
                 target = target || ctx.connect_targets.contains(&id);
@@ -271,19 +276,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         };
         if crate::dbgenv::gxdbg_letbind() {
             eprintln!(
-                "LETBIND {} tag={tag:?} val={:?} published={} fd={} wake_hold={wake_hold} publishing={}",
+                "LETBIND {} tag={tag:?} val={:?} ever_published={} fd={} keep_connect_target_value={keep_connect_target_value} publishing={}",
                 self.spec.pos,
                 tv.value_cloned(),
-                self.published,
+                self.ever_published,
                 ctx.frame_depth,
-                !wake_hold && (tag.triggers() || (!self.published && !tag.is_bottom()))
+                !keep_connect_target_value
+                    && (tag.triggers() || (!self.ever_published && !tag.is_bottom()))
             );
         }
         // After a sleep the store entry may lag a stale recompute;
         // re-publish quietly (design/wake_catchup.md).
-        let wake_refresh = woke && !tag.triggers() && !tag.is_bottom() && !wake_hold;
-        if !wake_hold
-            && (tag.triggers() || (!self.published && !tag.is_bottom()) || wake_refresh)
+        let wake_refresh =
+            woke && !tag.triggers() && !tag.is_bottom() && !keep_connect_target_value;
+        if !keep_connect_target_value
+            && (tag.triggers()
+                || (!self.ever_published && !tag.is_bottom())
+                || wake_refresh)
         {
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
@@ -306,7 +315,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                         ctx.rt.notify_set(id);
                     }
                 });
-                self.published = true;
+                self.ever_published = true;
             }
         }
         TagValue::phantom_ref()
@@ -331,7 +340,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.node.sleep(ctx);
     }
 
@@ -514,9 +523,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 // Fresh under a genuine init view only: a wake-forced
                 // view reads a standing entry stale, since its value is
                 // a past event the graph already consumed. Frames force
-                // `event.init`, so a framed read consults `frame_init`.
+                // `event.init`, so a framed read consults `dispatch_init`.
                 let init = if ctx.frame_depth > 0 {
-                    ctx.frame_init
+                    ctx.dispatch_init
                 } else {
                     event.init && !event.wake_init
                 };
@@ -532,7 +541,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                         event.init,
                         event.wake_init,
                         ctx.frame_depth,
-                        ctx.frame_init,
+                        ctx.dispatch_init,
                         tag,
                         tv.value_cloned()
                     );
@@ -863,7 +872,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             } else {
                 ctx.rt.set_var(self.id, v);
             }
-        } else if event.init && !tv.tag().is_bottom() && !tv.tag().is_tainted() {
+        } else if event.init && !tv.tag().is_bottom() && !tv.tag().is_bottom() {
             // A wake-forced init view reads stale, but the cell must
             // still materialize: embedders read it directly and a
             // chainless ref's cell is its only storage.
@@ -1043,7 +1052,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             Some(super::VarRead::Standing(tv)) => {
                 // Fresh under a genuine init view only (see Ref::update).
                 let init = if ctx.frame_depth > 0 {
-                    ctx.frame_init
+                    ctx.dispatch_init
                 } else {
                     event.init && !event.wake_init
                 };

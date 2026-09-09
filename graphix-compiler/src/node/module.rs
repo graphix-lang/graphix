@@ -213,14 +213,13 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
 }
 
 /// A signature binding (`outer`) and the binding behind it (`inner`):
-/// the implementation's own, or a trait default. `owned` means the
-/// inner binding is the module's private one: its production moves
-/// out and a write to the outer id flows in.
+/// the implementation's own, or a trait default. A private inner
+/// binding's production moves out and a write to the outer id flows in.
 #[derive(Debug, Clone, Copy)]
 struct Proxy {
     inner: BindId,
     outer: BindId,
-    owned: bool,
+    private_inner: bool,
 }
 
 fn check_sig<R: Rt, E: UserEvent>(
@@ -250,7 +249,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                     bind.typ()
                 )
             })?;
-            proxy.push(Proxy { inner: id, outer: *proxy_id, owned: true });
+            proxy.push(Proxy { inner: id, outer: *proxy_id, private_inner: true });
             ctx.rt.ref_var(id, top_id);
             ctx.rt.ref_var(*proxy_id, top_id);
             if ctx.env.lsp_mode {
@@ -368,7 +367,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                             .cloned()
                             .expect("bound by bind_sig");
                         for (name, outer) in declared.methods.into_iter() {
-                            let (inner, owned) = match i.def.methods.get(name) {
+                            let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
                                 None => {
                                     let default = trait_def
@@ -385,7 +384,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                                     }
                                 }
                             };
-                            proxy.push(Proxy { inner, outer: *outer, owned });
+                            proxy.push(Proxy { inner, outer: *outer, private_inner });
                             ctx.rt.ref_var(inner, top_id);
                             ctx.rt.ref_var(*outer, top_id);
                         }
@@ -451,7 +450,7 @@ pub struct Module<R: Rt, E: UserEvent> {
     source: Node<R, E>,
     // kept for the run-time sig check: a dynamic module not exported
     // from its parent would otherwise lose its bound signature
-    dynamic_sig_env: Option<Env>,
+    runtime_sig_check_env: Option<Env>,
     env: Env,
     sig: Sig,
     pub(crate) scope: Scope,
@@ -493,7 +492,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             env,
             sig,
             source,
-            dynamic_sig_env: Some(ctx.env.clone()),
+            runtime_sig_check_env: Some(ctx.env.clone()),
             scope: scope.clone(),
             proxy: Vec::new(),
             nodes: Box::new([]),
@@ -524,7 +523,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             env,
             sig,
             source,
-            dynamic_sig_env: None,
+            runtime_sig_check_env: None,
             scope: scope.clone(),
             proxy: Vec::new(),
             nodes: Box::new([]),
@@ -553,7 +552,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
-        ctx.builtins_allowed = self.dynamic_sig_env.is_none();
+        ctx.builtins_allowed = self.runtime_sig_check_env.is_none();
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
             let (mut nodes, catches) = crate::node::compile_block_children(
                 ctx,
@@ -582,7 +581,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let (nodes, catches) = nodes?;
         self.catches = catches;
         self.nodes = nodes.into_boxed_slice();
-        match &mut self.dynamic_sig_env {
+        match &mut self.runtime_sig_check_env {
             None => check_sig(
                 ctx,
                 self.top_id,
@@ -664,7 +663,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut compiled = false;
         let mut src_tag = Tag::FIRED;
-        let src = if self.dynamic_sig_env.is_some() {
+        let src = if self.runtime_sig_check_env.is_some() {
             let tv = self.source.update(ctx, event);
             let tag = tv.tag();
             if !tag.triggers() {
@@ -719,11 +718,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         if compiled {
             event.init = true;
         }
-        for Proxy { inner, outer, owned } in &self.proxy {
-            if *owned && let Some(tv) = event.variables.get(outer) {
+        for Proxy { inner, outer, private_inner } in &self.proxy {
+            if *private_inner && let Some(tv) = event.variables.get(outer) {
                 let tv = tv.clone();
                 // the store never holds a taint placeholder
-                if !tv.is_tainted() {
+                if !tv.is_bottom() {
                     ctx.rt.store_insert(*inner, TagValue::fired(tv.value_cloned()));
                 }
                 event.variables.insert(*inner, tv);
@@ -744,8 +743,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
         }
         event.init = init;
-        for Proxy { inner, outer, owned } in &self.proxy {
-            let tv = if *owned {
+        for Proxy { inner, outer, private_inner } in &self.proxy {
+            let tv = if *private_inner {
                 event.variables.remove(inner)
             } else {
                 event.variables.get(inner).cloned()
@@ -760,7 +759,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 },
                 None => continue,
             };
-            if !tv.is_tainted() {
+            if !tv.is_bottom() {
                 ctx.rt.store_insert(*outer, TagValue::fired(tv.value_cloned()));
             }
             event.variables.insert(*outer, tv);
@@ -773,7 +772,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.dynamic_sig_env.is_none() {
+        if self.runtime_sig_check_env.is_none() {
             ctx.with_restored_mut(&mut self.env, |ctx| {
                 for n in &mut self.nodes {
                     n.delete(ctx);
@@ -793,7 +792,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.dynamic_sig_env.is_none() {
+        if self.runtime_sig_check_env.is_none() {
             ctx.with_restored_mut(&mut self.env, |ctx| {
                 for n in &mut self.nodes {
                     n.sleep(ctx);
@@ -806,7 +805,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.dynamic_sig_env.is_some() {
+        if self.runtime_sig_check_env.is_some() {
             self.source.reset_replay(ctx);
         }
         ctx.with_restored_mut(&mut self.env, |ctx| {
@@ -821,7 +820,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        if self.dynamic_sig_env.is_none() {
+        if self.runtime_sig_check_env.is_none() {
             self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
         } else {
             &TYP

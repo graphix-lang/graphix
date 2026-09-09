@@ -201,17 +201,12 @@ struct Routes {
 struct Inner {
     handles: NetHandles,
     routes: Arc<Mutex<Routes>>,
-    // channel ends handed to netidx; the pump translates into the
-    // graph's watch channels
-    updates_tx: mpsc::Sender<GPooled<Vec<(SubId, NEvent)>>>,
+    netidx_updates_tx: mpsc::Sender<GPooled<Vec<(SubId, NEvent)>>>,
     writes_tx: mpsc::Sender<GPooled<Vec<WriteRequest>>>,
     rpcs_tx: mpsc::Sender<(BindId, netidx_protocols::rpc::server::RpcCall)>,
-    // publish batching: builtins queue updates here; the flusher task
-    // commits when pinged
-    batch: Mutex<Option<UpdateBatch>>,
+    pending_publish_batch: Mutex<Option<UpdateBatch>>,
     flush_tx: mpsc::UnboundedSender<()>,
-    // deferred unsubscribe (60s grace period)
-    graveyard_tx: mpsc::UnboundedSender<Dval>,
+    unsubscribe_graveyard_tx: mpsc::UnboundedSender<Dval>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
     // per-list-builtin resolver change trackers
@@ -259,12 +254,12 @@ impl NetState {
         let st = NetState(Arc::new(Inner {
             handles,
             routes: routes.clone(),
-            updates_tx,
+            netidx_updates_tx: updates_tx,
             writes_tx,
             rpcs_tx,
-            batch: Mutex::new(None),
+            pending_publish_batch: Mutex::new(None),
             flush_tx,
-            graveyard_tx,
+            unsubscribe_graveyard_tx: graveyard_tx,
             rpc_clients: Mutex::new(Vec::new()),
             change_trackers: Mutex::new(IntMap::default()),
             publish_timeout: timeouts.publish,
@@ -359,7 +354,7 @@ impl NetState {
             let st2 = st.clone();
             task::spawn(async move {
                 while let Some(()) = flush_rx.next().await {
-                    let batch = st2.0.batch.lock().take();
+                    let batch = st2.0.pending_publish_batch.lock().take();
                     if let Some(batch) = batch {
                         if batch.len() > 0 {
                             batch.commit(st2.0.publish_timeout).await;
@@ -397,7 +392,7 @@ impl NetState {
         path: Path,
         id: BindId,
     ) -> Result<Dval> {
-        let updates_tx = self.0.updates_tx.clone();
+        let updates_tx = self.0.netidx_updates_tx.clone();
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         self.0.routes.lock().subs.entry(dv.id()).or_default().push(id);
@@ -416,7 +411,7 @@ impl NetState {
                 }
             }
         }
-        let _ = self.0.graveyard_tx.unbounded_send(dv);
+        let _ = self.0.unsubscribe_graveyard_tx.unbounded_send(dv);
     }
 
     pub(crate) fn publish<R: Rt, E: UserEvent>(
@@ -439,7 +434,7 @@ impl NetState {
 
     pub(crate) fn update_val(&self, val: &Val, value: Value) {
         {
-            let mut batch = self.0.batch.lock();
+            let mut batch = self.0.pending_publish_batch.lock();
             let batch = match &mut *batch {
                 Some(b) => b,
                 None => {

@@ -21,11 +21,6 @@ fn parse_typexpr(s: &str) -> anyhow::Result<Type> {
 }
 
 #[allow(unused)]
-fn parse_dynamic_module(s: &str) -> anyhow::Result<ModuleKind> {
-    todo!("dynamic_module parser needs to be located")
-}
-
-#[allow(unused)]
 fn parse_doc(s: &str) -> anyhow::Result<Doc> {
     doc_comment()
         .skip(spaces())
@@ -1025,12 +1020,6 @@ select foo(b) {
 fn pattern0() {
     let s = r#"i64 as a if a < 10"#;
     dbg!(super::pattern().easy_parse(position::Stream::new(s)).unwrap());
-}
-
-#[test]
-fn pattern1() {
-    let s = r#"[a.., b]"#;
-    let _ = s; // silence unused warning
 }
 
 #[test]

@@ -210,13 +210,13 @@ pub(super) enum LocalKind {
 /// The payload Variable's CLIF type follows `kind`.
 pub(super) struct Local {
     pub(super) name: ArcStr,
-    pub(super) vv: ValueVar,
+    pub(super) words: ValueVar,
     pub(super) kind: LocalKind,
     /// `Some` for params and lets; a `Ref` resolves BindId-first, which
     /// is exact under shadowing. `None` for synthetic locals.
     pub(super) bind_id: Option<BindId>,
     /// Scaffold-loop depth at bind time; 0 means loop-invariant.
-    pub(super) depth: u32,
+    pub(super) loop_depth: u32,
 }
 
 pub(crate) struct JitEnv {
@@ -239,8 +239,16 @@ impl JitEnv {
         kind: LocalKind,
         bind_id: Option<BindId>,
     ) {
-        let depth = self.loop_depth;
-        self.locals.push(Local { name, vv, kind, bind_id, depth });
+        let loop_depth = self.loop_depth;
+        self.locals.push(Local { name, words: vv, kind, bind_id, loop_depth });
+    }
+
+    /// The kind and words of every local bound above `mark`, for dropping.
+    pub(super) fn locals_above(
+        &self,
+        mark: usize,
+    ) -> impl Iterator<Item = (LocalKind, ValueVar)> + '_ {
+        self.locals[mark..].iter().map(|l| (l.kind, l.words))
     }
 
     /// BindId first, then by name but only to id-less synthetic locals:
@@ -315,7 +323,7 @@ pub(crate) fn bind_scalar_var_with_disc(
 
 /// Emit an operand and abort the kernel if it is tainted, returning the
 /// payload word. For HOF operands that have no per-value taint channel.
-pub fn emit_forced<R: Rt, E: UserEvent>(
+pub fn emit_or_abort_on_taint<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
 ) -> Result<ClifValue> {
@@ -342,9 +350,9 @@ pub fn scalar_result(
     CompiledExpr::new(scalar_disc(cx.b, prim), payload)
 }
 
-/// [`emit_forced`] returning the whole [`CompiledExpr`]; on the continue
+/// [`emit_or_abort_on_taint`] returning the whole [`CompiledExpr`]; on the continue
 /// path the disc carries only the operand's [`STALE`] bit.
-pub fn emit_forced_keep<R: Rt, E: UserEvent>(
+pub fn emit_or_abort_on_taint_keep<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
 ) -> Result<CompiledExpr> {

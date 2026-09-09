@@ -108,9 +108,8 @@ pub struct TCell {
     pub(crate) cycle_refused: bool,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
-    /// be well-typed for arbitrary 'a. A counter because nested def
-    /// gates can share a cell.
-    pub(crate) rigid: u32,
+    /// be well-typed for arbitrary 'a.
+    pub(crate) rigid_gates: u32,
 }
 
 impl TCell {
@@ -118,7 +117,7 @@ impl TCell {
         TCell {
             typ: Some(typ),
             constraints: smallvec::SmallVec::new(),
-            rigid: 0,
+            rigid_gates: 0,
             cycle_refused: false,
         }
     }
@@ -583,20 +582,20 @@ impl TVar {
         self.read().typ.write().typ = None
     }
 
-    /// Mark this var's shared cell rigid; see [`TCell::rigid`].
+    /// Mark this var's shared cell rigid; see [`TCell::rigid_gates`].
     pub fn set_rigid(&self) {
-        self.read().typ.write().rigid += 1
+        self.read().typ.write().rigid_gates += 1
     }
 
     /// Clear one gate's rigidity claim.
     pub fn clear_rigid(&self) {
         let tv = self.read();
         let mut cell = tv.typ.write();
-        cell.rigid = cell.rigid.saturating_sub(1);
+        cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
     }
 
     pub(crate) fn is_rigid(&self) -> bool {
-        self.read().typ.read().rigid > 0
+        self.read().typ.read().rigid_gates > 0
     }
 
     /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
@@ -726,7 +725,7 @@ impl Type {
                 let mut tv = tv.typ.write();
                 // A rigid cell is an enclosing def's declared
                 // universal, not a leftover.
-                if tv.typ.is_none() && tv.rigid == 0 {
+                if tv.typ.is_none() && tv.rigid_gates == 0 {
                     tv.typ = Some(t.clone());
                 }
             }

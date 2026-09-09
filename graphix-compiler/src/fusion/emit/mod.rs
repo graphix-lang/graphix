@@ -31,7 +31,8 @@ mod scalar;
 mod select;
 
 pub use self::abi::{
-    CompiledExpr, array_result, emit_forced, emit_forced_keep, scalar_result,
+    CompiledExpr, array_result, emit_or_abort_on_taint, emit_or_abort_on_taint_keep,
+    scalar_result,
 };
 pub(crate) use self::abi::{STALE, TAINT, prim_to_value_disc};
 pub use self::body::{

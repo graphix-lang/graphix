@@ -33,8 +33,6 @@ impl Tag {
     /// A standing bottom, and the phantom initial state of a slot that
     /// has never produced.
     pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
-    /// Legacy name for [`Self::STALE_BOTTOM`].
-    pub const TAINT: Tag = Self::STALE_BOTTOM;
 
     /// Wrap a raw tag byte.
     pub fn from_raw(bits: u8) -> Self {
@@ -55,11 +53,6 @@ impl Tag {
         self.0 & Self::TAINT_BIT != 0
     }
 
-    /// Legacy name for [`Self::is_bottom`].
-    pub fn is_tainted(self) -> bool {
-        self.is_bottom()
-    }
-
     /// Should this production trigger the consumer's evaluation?
     /// `Fired` and `FreshBottom` are events, the stale states are not.
     pub fn triggers(self) -> bool {
@@ -76,7 +69,7 @@ impl Tag {
 
     /// OR `other`'s bottom into self, leaving self's firing alone.
     pub fn with_taint_of(self, other: Tag) -> Tag {
-        if other.is_tainted() { Self::TAINT } else { self }
+        if other.is_bottom() { Self::STALE_BOTTOM } else { self }
     }
 
     /// Set the STALE bit, keeping bottomness: the tag a resident
@@ -251,7 +244,7 @@ impl TagValue {
     /// A possible-bottom placeholder (tainted, hence also stale).
     #[inline]
     pub fn tainted(v: Value) -> Self {
-        Self::tagged(v, Tag::TAINT)
+        Self::tagged(v, Tag::STALE_BOTTOM)
     }
 
     /// The tag byte, invariant-restored.
@@ -272,8 +265,8 @@ impl TagValue {
     }
 
     #[inline]
-    pub fn is_tainted(&self) -> bool {
-        self.tag().is_tainted()
+    pub fn is_bottom(&self) -> bool {
+        self.tag().is_bottom()
     }
 
     /// The exhaustive production view — see [`TagView`].
@@ -391,9 +384,9 @@ mod tests {
         use Tag as T;
         assert_eq!(T::FIRED.join(T::STALE), T::FIRED);
         assert_eq!(T::STALE.join(T::STALE), T::STALE);
-        assert_eq!(T::FIRED.join(T::TAINT), T::FRESH_BOTTOM);
-        assert_eq!(T::STALE.join(T::TAINT), T::STALE_BOTTOM);
-        assert!(T::TAINT.is_tainted() && !T::TAINT.is_fired());
+        assert_eq!(T::FIRED.join(T::STALE_BOTTOM), T::FRESH_BOTTOM);
+        assert_eq!(T::STALE.join(T::STALE_BOTTOM), T::STALE_BOTTOM);
+        assert!(T::STALE_BOTTOM.is_bottom() && !T::STALE_BOTTOM.is_fired());
         assert_eq!(T::from_raw(T::TAINT_BIT), T::FRESH_BOTTOM);
     }
 
@@ -401,7 +394,7 @@ mod tests {
     fn tags_ride_clone_and_mask_on_value() {
         let tv = TagValue::tainted(Value::from("boo"));
         let dup = tv.clone();
-        assert!(dup.is_tainted());
+        assert!(dup.is_bottom());
         assert_eq!(dup.value(), Value::from("boo"));
         assert_eq!(tv.value_cloned(), Value::from("boo"));
     }

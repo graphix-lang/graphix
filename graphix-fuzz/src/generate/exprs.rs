@@ -214,6 +214,49 @@ fn callback_binder(
     n
 }
 
+/// The three pieces of a generated HOF call: the source collection, the
+/// callback's parameter and the callback's body.
+struct HofParts {
+    src: String,
+    binder: String,
+    body: String,
+}
+
+/// A map-shaped source's element type: ours (50%) or a random scalar.
+fn map_source_elem(rng: &mut Rng, e: &GenType) -> GenType {
+    if rng.below(2) == 0 { e.clone() } else { types::scalar_type(rng) }
+}
+
+/// A source of `Array<d_ty>` and a callback from `d_ty` to `e`.
+fn map_parts(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    e: &GenType,
+    d_ty: GenType,
+    d: usize,
+) -> HofParts {
+    let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
+    let mut inner = ctx.clone();
+    let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
+    let body = gen_typed(&inner, rng, e, d.min(2));
+    HofParts { src, binder, body }
+}
+
+/// A source of `ty` (an `Array<e>`) and a bool predicate over `e`.
+fn filter_parts(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    ty: &GenType,
+    e: &GenType,
+    d: usize,
+) -> HofParts {
+    let src = gen_typed(ctx, rng, ty, d);
+    let mut inner = ctx.clone();
+    let binder = callback_binder(&mut inner, rng, e, &[]);
+    let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+    HofParts { src, binder, body }
+}
+
 /// An array HOF producing `ty`: `map`/`filter`/`flat_map`/`init` for
 /// array targets, `fold` for scalar targets. Callbacks are generated in
 /// a cloned scope, so captures and nested HOFs arise naturally.
@@ -225,16 +268,8 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
     match ty {
         GenType::Array(e) => match rng.below(6) {
             0 => {
-                // map: element type = ours (50%) or a random scalar
-                let d_ty = if rng.below(2) == 0 {
-                    (**e).clone()
-                } else {
-                    types::scalar_type(rng)
-                };
-                let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
-                let body = gen_typed(&inner, rng, e, d.min(2));
+                let d_ty = map_source_elem(rng, e);
+                let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
                 // a third of draws take the trait road: `Collection::map`
                 // dispatches through the constructor trait
                 Some(if rng.below(3) == 0 {
@@ -244,10 +279,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 })
             }
             1 => {
-                let src = gen_typed(ctx, rng, ty, d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, e, &[]);
-                let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+                let HofParts { src, binder, body } = filter_parts(ctx, rng, ty, e, d);
                 Some(if rng.below(3) == 0 {
                     format!("Collection::filter({src}, |{binder}| {body})")
                 } else {
@@ -256,24 +288,14 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             }
             // list HOFs, roundtrip-wrapped so the target type stays Array
             4 => {
-                let d_ty = if rng.below(2) == 0 {
-                    (**e).clone()
-                } else {
-                    types::scalar_type(rng)
-                };
-                let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
-                let body = gen_typed(&inner, rng, e, d.min(2));
+                let d_ty = map_source_elem(rng, e);
+                let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
                 Some(format!(
                     "list::to_array(list::map(list::from_array({src}), |{binder}| {body}))"
                 ))
             }
             5 => {
-                let src = gen_typed(ctx, rng, ty, d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, e, &[]);
-                let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
+                let HofParts { src, binder, body } = filter_parts(ctx, rng, ty, e, d);
                 Some(format!(
                     "list::to_array(list::filter(list::from_array({src}), |{binder}| {body}))"
                 ))
@@ -283,10 +305,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // element body is unambiguous
             2 if e.is_scalar() => {
                 let d_ty = types::scalar_type(rng);
-                let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
-                let mut inner = ctx.clone();
-                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
-                let body = gen_typed(&inner, rng, e, d.min(2));
+                let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
             }
             _ => {

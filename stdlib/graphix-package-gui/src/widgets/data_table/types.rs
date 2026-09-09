@@ -105,15 +105,14 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     }
 }
 
-/// Layout metrics written on each layout pass. `dirty` requests a
-/// subscription reconcile in `before_view`.
+/// Layout metrics written on each layout pass.
 #[derive(Clone, Copy)]
 pub(super) struct ViewportMetrics {
     pub(super) viewport_width: f32,
     pub(super) viewport_height: f32,
     pub(super) rows_in_view: usize,
     pub(super) cols_in_view: usize,
-    pub(super) dirty: bool,
+    pub(super) needs_subscription_reconcile: bool,
 }
 
 impl Default for ViewportMetrics {
@@ -123,7 +122,7 @@ impl Default for ViewportMetrics {
             viewport_height: 0.0,
             rows_in_view: super::DEFAULT_VISIBLE_ROWS,
             cols_in_view: super::DEFAULT_VISIBLE_COLS,
-            dirty: false,
+            needs_subscription_reconcile: false,
         }
     }
 }
@@ -308,7 +307,7 @@ pub(super) fn value_to_display(v: &Value) -> ArcStr {
 }
 
 /// Strip null bytes so a user column name cannot collide with the
-/// `ROW_NAME_KEY` / `VALUE_COL_KEY` sentinels.
+/// `ROW_NAME_SENTINEL_KEY` / `VALUE_COL_KEY` sentinels.
 fn sanitize_col_name(raw: ArcStr) -> ArcStr {
     if raw.contains('\0') {
         let cleaned: CompactString = raw.chars().filter(|ch| *ch != '\0').collect();

@@ -40,7 +40,7 @@ pub(super) fn compile_into_function(
     helper_refs: &HelperRefs,
     lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
     lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
-    lazy_keep: &std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
+    lazy_value_owners: &std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
     body: &BodySource,
     callee_layouts: &BTreeMap<usize, SiteLayout>,
     lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
@@ -144,7 +144,7 @@ pub(super) fn compile_into_function(
     // AND of every tail-position select scrutinee's STALE bit;
     // `emit_kernel_return` folds it into the returned disc. Defined in
     // the entry block so it dominates loop-carried uses.
-    let tail_scrut_stale = {
+    let tail_scrut_stale_acc = {
         let v = b.declare_var(types::I64);
         let init = b.ins().iconst(types::I64, STALE);
         b.def_var(v, init);
@@ -161,15 +161,13 @@ pub(super) fn compile_into_function(
         None
     };
 
-    let call_slots =
-        if kernel.params.is_empty() { None } else { Some(kernel.params.as_slice()) };
+    let call_slots = if kernel.params.is_empty() {
+        TailSlots::Positional
+    } else {
+        TailSlots::Named(kernel.params.as_slice())
+    };
     let lower = LowerCtx {
-        tail: TailCtx {
-            loop_head,
-            param_mark,
-            call_slots,
-            scrut_stale: tail_scrut_stale,
-        },
+        tail: TailCtx { loop_head, param_mark, call_slots, tail_scrut_stale_acc },
         init_flag,
         quiet_flag,
         wake_flag,
@@ -184,7 +182,7 @@ pub(super) fn compile_into_function(
         pending_exit: std::cell::RefCell::new(None),
         lazy_strings,
         lazy_values,
-        lazy_keep,
+        lazy_value_owners,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
         self_call: spec.self_call,
@@ -240,7 +238,7 @@ pub(super) fn compile_into_function(
         v.sort_unstable();
         v.into()
     };
-    kernel.site_desc.store(words as u64, std::sync::atomic::Ordering::Relaxed);
+    kernel.site_block_words.store(words as u64, std::sync::atomic::Ordering::Relaxed);
     let mut self_blocks: Vec<kernel_abi::SelfBlock> = self_roots
         .iter()
         .map(|rel| kernel_abi::SelfBlock { rel: *rel, words, slots: self_roots.clone() })
@@ -355,6 +353,16 @@ pub(crate) enum TruncLeaf {
     Blocks,
 }
 
+/// A guarded-select site's per-slot state table in an open scaffold
+/// loop.
+#[derive(Clone, Copy)]
+pub(crate) struct SlotTable {
+    pub(super) site: ExprId,
+    pub(super) base: ClifValue,
+    /// The table pointer may be null and must be guarded.
+    pub(super) guarded: bool,
+}
+
 /// One open scaffold loop's per-slot state tables. A select consults
 /// the frame only when emitted at exactly `depth`; `len`/`src_disc`
 /// dominate the loop body so a nested loop can chain its own tables.
@@ -367,9 +375,7 @@ pub(crate) struct SlotTableFrame {
     /// The loop source's disc — its TAINT bit gates this level's
     /// logical resize in a nested chain.
     pub(super) src_disc: ClifValue,
-    /// Guarded-select site → per-slot table base pointer and whether
-    /// the table is null-guarded.
-    pub(super) tables: Vec<(ExprId, ClifValue, bool)>,
+    pub(super) tables: Vec<SlotTable>,
     /// In-loop chain claims made in this frame's body ([`TruncRec`]).
     pub(super) pending: Vec<TruncRec>,
 }
@@ -403,12 +409,36 @@ pub(super) struct TailCtx<'a> {
     /// Env mark right after the params are bound; a rebind truncates
     /// to it.
     pub(super) param_mark: usize,
-    /// Per-source-position tail-call slot map (`KernelSig::tail_call_slots`).
-    pub(super) call_slots: Option<&'a [kernel_abi::KernelParam]>,
+    pub(super) call_slots: TailSlots<'a>,
     /// AND over every tail-position select scrutinee's STALE bit on
     /// the executed path; `emit_kernel_return` folds it into the
     /// returned disc.
-    pub(super) scrut_stale: Variable,
+    pub(super) tail_scrut_stale_acc: Variable,
+}
+
+/// How a tail-call rebind maps its args onto the kernel's params.
+#[derive(Clone, Copy)]
+pub(super) enum TailSlots<'a> {
+    /// Hand-built test kernels: rebind by position.
+    Positional,
+    /// Per-source-position tail-call slot map (`KernelSig::tail_call_slots`).
+    Named(&'a [kernel_abi::KernelParam]),
+}
+
+/// A closed scaffold-loop frame awaiting its exit's slot truncates.
+pub(crate) struct ClosedFrame {
+    pub(super) depth: u32,
+    pub(super) len: ClifValue,
+    pub(super) src_disc: ClifValue,
+    pub(super) pending: Vec<TruncRec>,
+}
+
+/// A tail-position select's own-fire summary; a still-stale result
+/// meeting `bfired` becomes TAINT fresh.
+#[derive(Clone, Copy)]
+pub(super) struct SelFire {
+    pub(super) sound_stale: ClifValue,
+    pub(super) bfired: Option<ClifValue>,
 }
 
 pub(crate) struct LowerCtx<'a> {
@@ -436,9 +466,8 @@ pub(crate) struct LowerCtx<'a> {
     /// Open scaffold-loop frames, innermost last.
     pub(super) slot_tables: std::cell::RefCell<Vec<SlotTableFrame>>,
     /// The frame `close_slot_tables` just popped, for the loop exit's
-    /// `emit_slot_truncates`: (depth, len, src_disc, records).
-    pub(super) closed_frame:
-        std::cell::RefCell<Option<(u32, ClifValue, ClifValue, Vec<TruncRec>)>>,
+    /// `emit_slot_truncates`.
+    pub(super) closed_frame: std::cell::RefCell<Option<ClosedFrame>>,
     /// Enclosing scaffold-loop depth. State claims are refused inside
     /// loops: one static word cannot hold per-slot memory.
     pub(super) loop_depth: std::cell::Cell<u32>,
@@ -451,10 +480,8 @@ pub(crate) struct LowerCtx<'a> {
     /// `FuncRef`s for the runtime helpers, by helper name.
     pub(super) helper_refs: &'a HelperRefs,
     /// Enclosing tail-position selects' own-fire summaries, innermost
-    /// last: `(sound_stale, bfired)`. `emit_kernel_return` folds them
-    /// innermost-first; a still-stale result with `bfired` becomes
-    /// TAINT fresh.
-    pub(super) sel_fires: std::cell::RefCell<Vec<(ClifValue, Option<ClifValue>)>>,
+    /// last. `emit_kernel_return` folds them innermost-first.
+    pub(super) sel_fires: std::cell::RefCell<Vec<SelFire>>,
     /// In-flight value bufs between `buf_new` and finalize; a
     /// whole-kernel abort drops them ([`emit_pending_cleanup`]).
     pub(super) value_buf_stack: std::cell::RefCell<Vec<Variable>>,
@@ -472,7 +499,7 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
     pub(super) lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
     /// Cast target `Type`s and `QopSite`s kept alive like `lazy_values`.
-    pub(super) lazy_keep:
+    pub(super) lazy_value_owners:
         &'a std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
     /// The single abort block; its body is emitted at the end of
     /// `compile_into_function`. A bottomed call does not come here.

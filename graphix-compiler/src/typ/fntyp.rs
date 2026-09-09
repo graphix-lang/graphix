@@ -609,7 +609,7 @@ impl FnType {
         for (_, tv) in known.drain(..) {
             // Cloned out through the alias chain: add_cell_constraint
             // write-locks the same cell.
-            let bound = Type::TVar(tv.clone()).with_deref(|t| t.cloned());
+            let bound = Type::TVar(tv.clone()).deref_cloned();
             if closed_only {
                 match &bound {
                     Some(t)

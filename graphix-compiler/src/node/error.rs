@@ -185,9 +185,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             {
                 abort.pending = false;
                 let init = std::mem::replace(&mut event.init, true);
-                let frame_init = std::mem::replace(&mut ctx.frame_init, true);
+                let dispatch_init = std::mem::replace(&mut ctx.dispatch_init, true);
                 let _ = abort.node.update(ctx, event);
-                ctx.frame_init = frame_init;
+                ctx.dispatch_init = dispatch_init;
                 event.init = init;
             }
         }
@@ -618,12 +618,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 #[derive(Debug)]
 enum GuardState {
     Sleeping,
-    /// Entered under this handler generation; `settled` once a fired
-    /// production has passed since entry (before that a standing value
-    /// is the previous run's answer).
+    /// Entered under this handler generation; before a fired production
+    /// has passed, a standing value is the previous run's answer.
     Running {
         generation: u64,
-        settled: bool,
+        fired_since_entry: bool,
     },
     Failed,
 }
@@ -661,13 +660,15 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (generation, settled) = match self.state {
+        let (generation, fired_since_entry) = match self.state {
             GuardState::Sleeping => {
                 let generation = self.handler.generation();
-                self.state = GuardState::Running { generation, settled: false };
+                self.state = GuardState::Running { generation, fired_since_entry: false };
                 (generation, false)
             }
-            GuardState::Running { generation, settled } => (generation, settled),
+            GuardState::Running { generation, fired_since_entry } => {
+                (generation, fired_since_entry)
+            }
             GuardState::Failed => {
                 if self.handler.has_nested_errors() {
                     let _ = self.n.update(ctx, event);
@@ -680,11 +681,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
             if generation == self.handler.generation()
                 && !self.handler.has_nested_errors()
             {
-                if settled || value.tag().is_bottom() {
+                if fired_since_entry || value.tag().is_bottom() {
                     return value;
                 }
                 if value.is_fired() {
-                    self.state = GuardState::Running { generation, settled: true };
+                    self.state =
+                        GuardState::Running { generation, fired_since_entry: true };
                     return value;
                 }
                 return TagValue::bottom_null(false);

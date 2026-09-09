@@ -305,7 +305,7 @@ impl CachedVals {
     /// True if any arg slot holds a taint no clean production has
     /// overwritten since.
     pub fn any_tainted(&self) -> bool {
-        self.1.iter().any(|t| t.is_tainted())
+        self.1.iter().any(|t| t.is_bottom())
     }
 
     /// True if any arg slot is bottom — tainted or never delivered. The
@@ -340,8 +340,8 @@ impl CachedVals {
         for (i, src) in from.iter_mut().enumerate() {
             let tv = src.update(ctx, event);
             let tag = tv.tag();
-            if tag.is_tainted() {
-                self.1[i] = Tag::TAINT;
+            if tag.is_bottom() {
+                self.1[i] = Tag::STALE_BOTTOM;
             } else {
                 self.0[i] = Some(tv.value_cloned());
                 self.1[i] = tag;
@@ -363,6 +363,21 @@ impl CachedVals {
 
     pub fn get<T: FromValue>(&self, i: usize) -> Option<T> {
         self.0.get(i).and_then(|v| v.as_ref()).and_then(|v| v.clone().cast_to::<T>().ok())
+    }
+}
+
+/// A once-per-instance latch: `take` is true the first time it is called
+/// after construction or `reset`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FireOnce(bool);
+
+impl FireOnce {
+    pub fn take(&mut self) -> bool {
+        !std::mem::replace(&mut self.0, true)
+    }
+
+    pub fn reset(&mut self) {
+        self.0 = false
     }
 }
 
@@ -464,11 +479,11 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 #[derive(Debug)]
 pub struct CachedArgs<T> {
     /// Set by `sleep()`, taken by the next update.
-    slept: bool,
+    woke_pending: bool,
     cached: CachedVals,
     /// The last value `eval` produced; a stale arg refresh re-surfaces
     /// it retagged STALE instead of re-running `eval`.
-    resident: TagValue,
+    last_result: TagValue,
     t: T,
 }
 
@@ -485,9 +500,9 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let t = CachedArgs::<T> {
-            slept: false,
+            woke_pending: false,
             cached: CachedVals::new(from),
-            resident: TagValue::phantom(),
+            last_result: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
         Ok(Box::new(t))
@@ -501,10 +516,11 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
-        let (ev, cached, resident) = (&mut self.t, &mut self.cached, &mut self.resident);
+        let woke = std::mem::take(&mut self.woke_pending) && !ctx.in_frame();
+        let (ev, cached, last_result) =
+            (&mut self.t, &mut self.cached, &mut self.last_result);
         coretraits::with_value_hooks(ctx, event, move |ctx, event| {
-            Self::update_inner(ev, cached, resident, woke, ctx, from, event)
+            Self::update_inner(ev, cached, last_result, woke, ctx, from, event)
         })
     }
 
@@ -526,8 +542,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Sleep is pause: the arg slots survive it.
-        self.slept = true;
+        self.woke_pending = true;
     }
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -585,7 +600,7 @@ impl<T> CachedArgs<T> {
     fn update_inner<'a, R: Rt, E: UserEvent>(
         ev: &mut T,
         cached: &mut CachedVals,
-        resident: &'a mut TagValue,
+        last_result: &'a mut TagValue,
         woke: bool,
         ctx: &mut ExecCtx<R, E>,
         from: &mut [Node<R, E>],
@@ -595,41 +610,34 @@ impl<T> CachedArgs<T> {
         T: EvalCached<R, E>,
     {
         match cached.update_full(ctx, from, event) {
-            None => resident.ride(),
+            None => last_result.ride(),
             Some(t) if cached.any_bottom() => {
-                // A bottom arg bottoms the invocation without calling
-                // eval; the resident keeps the last genuine result.
+                // A bottom arg bottoms the invocation without calling eval.
                 TagValue::bottom_null(t.triggers())
             }
-            Some(_) if cached.any_tainted() => {
-                // Unreachable while the CallSite gates tainted arg
-                // productions; if one leaks, emit the tainted
-                // placeholder rather than replay stale state.
-                TagValue::tainted_null()
-            }
             Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
-                Some(v) => resident.set(TagValue::fired(v)),
-                None => resident.ride(),
+                Some(v) => last_result.set(TagValue::fired(v)),
+                None => last_result.ride(),
             },
-            Some(_) if !resident.tag().is_bottom() => {
+            Some(_) if !last_result.tag().is_bottom() => {
                 // Wake catch-up: args may have drifted while asleep. A
                 // stateless eval re-runs from the present slots; a
-                // stateful one must not (its resident is its state).
+                // stateful one must not (its last result is its state).
                 if T::EFFECT.is_stateless() && woke {
                     match ev.eval(ctx, cached) {
-                        Some(v) => resident.set(TagValue::stale(v)),
-                        None => resident.retag(Tag::STALE),
+                        Some(v) => last_result.set(TagValue::stale(v)),
+                        None => last_result.retag(Tag::STALE),
                     }
                 } else {
-                    resident.retag(Tag::STALE)
+                    last_result.retag(Tag::STALE)
                 }
             }
             Some(_) => {
-                // A never-filled resident has nothing to re-surface:
-                // run eval once to establish the value channel, STALE.
+                // Nothing to re-surface yet: run eval once to establish
+                // the value channel, STALE.
                 match ev.eval(ctx, cached) {
-                    Some(v) => resident.set(TagValue::stale(v)),
-                    None => resident.ride(),
+                    Some(v) => last_result.set(TagValue::stale(v)),
+                    None => last_result.ride(),
                 }
             }
         }
@@ -1651,6 +1659,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     }
 }
 
+/// Each element of a range is one queued set_var, so the range is
+/// capped at `MAX_ARRAY_INIT_LEN` elements.
+fn range_len_exceeds_cap(i: i64, j: i64) -> bool {
+    j as i128 - i as i128 > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
+}
+
 impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     fn update(
         &mut self,
@@ -1661,13 +1675,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         if self.args.update(ctx, from, event) {
             let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
-                    // Each element is one queued set_var, so the range
-                    // is capped. i128: j - i overflows i64 for exactly
-                    // the ranges being rejected.
                     let e = literal!("RangeError");
-                    if *j as i128 - *i as i128
-                        > graphix_compiler::node::MAX_ARRAY_INIT_LEN as i128
-                    {
+                    if range_len_exceeds_cap(*i, *j) {
                         Some(errf!(
                             e,
                             "seq range {i}..{j} exceeds the {} element limit",

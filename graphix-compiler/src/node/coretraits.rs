@@ -369,6 +369,15 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     }
 }
 
+/// A map key comparison must honor a core `Ord` impl on the key type.
+pub fn with_key_ord_hooks<R: Rt, E: UserEvent, T>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    f: impl FnOnce() -> T,
+) -> T {
+    with_value_hooks(ctx, event, |_, _| f())
+}
+
 /// Loan `ctx`/`event` to the value seam for the duration of `f`. Call
 /// it around any operation that compares or prints `Value`s and should
 /// honor core-trait implementations. Loans nest. `f` receives the same

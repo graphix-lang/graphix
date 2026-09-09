@@ -189,6 +189,10 @@ pub(crate) struct GenCtx {
     next: usize,
 }
 
+fn is_type_keyword(name: &str) -> bool {
+    matches!(name, "v32" | "v64")
+}
+
 impl GenCtx {
     fn new() -> Self {
         GenCtx { vars: Vec::new(), collision_pool: Vec::new(), next: 0 }
@@ -198,8 +202,7 @@ impl GenCtx {
         loop {
             let n = format!("v{}", self.next);
             self.next += 1;
-            // `v32`/`v64` are type keywords
-            if n != "v32" && n != "v64" {
+            if !is_type_keyword(&n) {
                 return n;
             }
         }

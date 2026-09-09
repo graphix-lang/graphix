@@ -354,6 +354,28 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// - Root call site → a contiguous run of words in this body's own space.
 /// - In-loop call site → one block per slot coordinate, the leaf of an
 ///   owning chain over all open frames, `words` stride per slot.
+/// The callee's context word: our init view, forced on this site's
+/// first call ever (the node-walk primes an instance's first dispatch
+/// the same way), plus the inherited quiet bit.
+fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
+    let quiet = cx.quiet_flag();
+    let callee_init = match cx.claim_state_word_loop_invariant() {
+        Some(off) => {
+            let sp = cx.state_ptr();
+            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
+            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+            let one = cx.b.ins().iconst(types::I64, 1);
+            cx.b.ins().store(MemFlags::trusted(), one, sp, off);
+            let init = cx.init_flag();
+            let first_i = cx.b.ins().uextend(types::I64, first);
+            cx.b.ins().bor(init, first_i)
+        }
+        None => cx.init_flag(),
+    };
+    let quiet_bit = cx.b.ins().ishl_imm(quiet, 1);
+    cx.b.ins().bor(callee_init, quiet_bit)
+}
+
 fn emit_site_block(
     cx: &mut BodyCx,
     info: &LambdaCallInfo,
@@ -385,12 +407,13 @@ fn emit_site_block(
             let live = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
             let zero = cx.b.ins().iconst(types::I64, 0);
             let word = cx.b.ins().select(live, word, zero);
-            // The size is read at run time from `site_desc`: our own
+            // The size is read at run time from `site_block_words`: our own
             // layout is not final while we are still emitting into it.
             // The cell's address is stable (the kernel cache holds the Arc).
             let desc = cx.b.ins().iconst(
                 types::I64,
-                (&info.kernel.site_desc as *const std::sync::atomic::AtomicU64) as i64,
+                (&info.kernel.site_block_words as *const std::sync::atomic::AtomicU64)
+                    as i64,
             );
             let f = cx.helper("graphix_site_child_block")?;
             let call = cx.b.ins().call(f, &[word, desc]);
@@ -707,7 +730,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
                                 c.name
                             )
                         })?;
-                    l.vv
+                    l.words
                 };
                 Ok(CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload)))
             }
@@ -784,26 +807,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         }
         slot_cvs.push(cv);
     }
-    // The callee's context word: our init view, forced on this site's
-    // first call ever (the node-walk primes an instance's first
-    // dispatch the same way), plus the inherited quiet bit.
-    let quiet = cx.quiet_flag();
-    let callee_init = match cx.claim_state_word_loop_invariant() {
-        Some(off) => {
-            let sp = cx.state_ptr();
-            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
-            let one = cx.b.ins().iconst(types::I64, 1);
-            cx.b.ins().store(MemFlags::trusted(), one, sp, off);
-            let init = cx.init_flag();
-            let first_i = cx.b.ins().uextend(types::I64, first);
-            cx.b.ins().bor(init, first_i)
-        }
-        None => cx.init_flag(),
-    };
-    let quiet_bit = cx.b.ins().ishl_imm(quiet, 1);
-    let callee_init = cx.b.ins().bor(callee_init, quiet_bit);
-    clif_args.push(callee_init);
+    clif_args.push(emit_callee_context_word(cx));
     clif_args.push(cx.state_ptr());
     let site_block = emit_site_block(cx, info, is_self)?;
     clif_args.push(site_block);
@@ -989,7 +993,7 @@ pub(super) fn drop_owned_composites(
     ctx: &LowerCtx,
 ) -> Result<()> {
     let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
-        env.locals.iter().map(|l| (l.kind, l.vv)).collect();
+        env.locals_above(0).collect();
     for (kind, vv) in drops {
         emit_drop_local(b, ctx, kind, vv)?;
     }

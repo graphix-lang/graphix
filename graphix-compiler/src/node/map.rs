@@ -1,3 +1,4 @@
+use super::WakeBit;
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
@@ -20,7 +21,7 @@ defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 #[derive(Debug)]
 pub struct Map<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub keys: Box<[Node<R, E>]>,
@@ -55,7 +56,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             keys,
             vals,
             resident: TagValue::phantom(),
-            slept: false,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -66,7 +67,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             // An empty literal is a constant: FIRED at init, STALE inside
             // frames, which force init (see Constant).
             if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.frame_init {
+                return self.resident.set(if ctx.dispatch_init {
                     TagValue::fired(Value::Map(CMap::new()))
                 } else {
                     TagValue::stale(Value::Map(CMap::new()))
@@ -83,8 +84,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        // key comparison must honor a core `Ord` impl on the key type
-        let m = super::coretraits::with_value_hooks(ctx, event, |_, _| {
+        let m = super::coretraits::with_key_ord_hooks(ctx, event, || {
             let mut m = CMap::new();
             for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
                 m.insert_cow(k, v);
@@ -108,7 +108,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.keys.iter_mut().for_each(|n| n.sleep(ctx));
         self.vals.iter_mut().for_each(|n| n.sleep(ctx))
     }
@@ -159,7 +159,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 #[derive(Debug)]
 pub struct MapRef<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: bool,
+    slept: WakeBit,
     pub source: Node<R, E>,
     pub key: Node<R, E>,
     pub(crate) spec: Expr,
@@ -199,7 +199,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         };
         let typ = Type::Set(Arc::from_iter([vtyp.clone(), ERR.clone()]));
         Ok(Node::new(Self {
-            slept: false,
+            slept: WakeBit::default(),
             source,
             key,
             spec,
@@ -219,8 +219,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        // key comparison must honor a core `Ord` impl on the key type
-        let v = super::coretraits::with_value_hooks(ctx, event, |_, _| {
+        let v = super::coretraits::with_key_ord_hooks(ctx, event, || {
             map_get(&sval.unwrap(), &kval.unwrap())
         });
         self.resident.set(TagValue::tagged(v, tag))
@@ -262,7 +261,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept = true;
+        self.slept.set();
         self.source.sleep(ctx);
         self.key.sleep(ctx);
     }
