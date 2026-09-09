@@ -174,203 +174,23 @@ file, Graphix inside a Rust test fixture, or a stdlib signature, load the
 rules that bite. The book (`book/src/`) and examples (`book/src/examples/`)
 are the long form.
 
-## Poolshark Usage Guide
+## Library guides (skills)
 
-Poolshark provides thread-local (`LPooled`) and global (`GPooled`) pooled
-collections. When a pooled collection is dropped, it is cleared and returned
-to the pool for reuse, avoiding heap allocation on the next `take()` or
-`collect()`.
+The detailed usage guides are skills; load one before writing code that
+touches its subject:
 
-**`LPooled<Vec<T>>`** — thread-local pool. The collection is `Send`, but it
-returns to the pool of the thread that drops it, so it works best when
-created and dropped on the same thread.
+- `/poolshark` — `LPooled`/`GPooled` pooled collections. Rule: any scratch
+  or intermediate collection is pooled; `LPooled` unless it crosses a
+  thread boundary (`GPooled`); drain a pooled Vec into `Arc`/`ValArray`.
+- `/compact-str` — `CompactString`/`format_compact!` for short mutable
+  strings; `format_compact!` is the `format!` drop-in everywhere.
+- `/arcstr` — `ArcStr`/`Substr` for immutable shared strings; `literal!`
+  for anything compile-time known; `format_compact!(..).as_str().into()`
+  for a formatted `ArcStr`.
 
-```rust
-use poolshark::local::LPooled;
-
-// Take an empty vec from the pool
-let mut v: LPooled<Vec<i64>> = LPooled::take();
-v.push(1);
-
-// Collect an iterator directly into a pooled vec
-let v: LPooled<Vec<i64>> = (0..10).collect();
-
-// Collect with turbofish when type inference needs help
-let v = items.iter().map(|x| x.val).collect::<LPooled<Vec<_>>>();
-
-// Fallible collect
-let v = items.iter().map(fallible_fn).collect::<Result<LPooled<Vec<_>>>>()?;
-
-// Drain into a final container, pooled vec returns to pool on drop
-let mut v: LPooled<Vec<Value>> = src.iter().map(convert).collect();
-let result = ValArray::from_iter_exact(v.drain(..));
-
-// Works with AHashMap, AHashSet, and IntMap, IntSet too
-let mut seen: LPooled<IntSet<BindId>> = LPooled::take();
-
-// you can collect into hashmaps and hashsets
-let mut foo: LPooled<AHashMap<ArcStr, T>> = src.iter().map(convert).collect();
-```
-
-**`GPooled<Vec<T>>`** — global pool, `Send`. Use when the collection must
-cross thread/task boundaries (channels, spawn). Requires explicit pool sizing
-via `Pool::new(max_pool, max_elements)` or `GPooled::take()` with prior
-`set_size`.
-
-**When to use which:**
-- Temporary scratch collections (sort, dedup, intermediate results) → `LPooled`
-- Building a final `Arc<[T]>` or `ValArray` → `LPooled`, drain into `Arc::from_iter` / `ValArray::from_iter_exact`
-- Passing batches through channels → `GPooled`
-- Inside async functions across `.await` → `LPooled` works (it's Send), but
-  the vec returns to the pool of whichever thread drops it
-
-**When NOT to pool:**
-- The collection is consumed by a foreign API that needs an owned `Vec<T>`
-  (e.g. `serde_json::Value::Array(Vec<...>)`) — drain the LPooled into a
-  regular collect instead: `lpooled.drain(..).collect()`
-
-## CompactString Usage Guide
-
-`compact_str::CompactString` is the preferred *mutable* string type when the
-contents are expected to fit inline most of the time. It is the same size
-as `String` (3 words), but stores up to 24 bytes inline via small-string
-optimization — no heap allocation until the string exceeds 24 bytes. Above
-24 bytes it transparently spills to the heap with the same API as `String`.
-
-Use it in place of `String` for:
-- Short identifiers, keys, names, tags, paths fragments
-- Format outputs that are usually short (error messages, labels, rendered
-  numbers, concatenations of a few known-short pieces)
-- Fields in structs where the value is typically short but not bounded
-- Any spot where you'd reach for `String` but 24 bytes would cover the
-  common case
-
-Don't use it for:
-- Strings you know will always be long (just use `String` or `LPooled<String>`)
-- Immutable strings you clone and share a lot (use `ArcStr`)
-- Scratch buffers that grow unbounded (use `LPooled<String>`)
-
-**Constructing**
-
-```rust
-use compact_str::{CompactString, ToCompactString, format_compact};
-
-// Empty / from literal — inline, no alloc
-let s = CompactString::new("");
-let s = CompactString::const_new("hello");   // const-fn, inline only
-let s: CompactString = "hello".into();
-
-// From anything Display / ToString
-let s = 42i64.to_compact_string();
-let s = some_path.to_compact_string();
-
-// Formatted — the format! drop-in. Inline when result ≤ 24 bytes.
-let s = format_compact!("{key}={value}");
-let s = format_compact!("{}:{}", host, port);
-```
-
-**Idiomatic uses in this codebase**
-
-```rust
-// Build an ArcStr from formatted output without a throwaway String:
-let s: ArcStr = format_compact!("{key}={value}").as_str().into();
-
-// Build an error Value:
-Value::error(format_compact!("bad input: {e}").as_str());
-
-// Field in a struct that's usually short:
-struct Binding { name: CompactString, ... }
-```
-
-**API notes**
-
-- `CompactString` derefs to `str` and implements all the usual `String`-ish
-  traits (`Display`, `Debug`, `PartialEq<&str>`, `AsRef<str>`, `From<&str>`,
-  `From<String>`, `FromIterator<char>`, etc.).
-- Mutating API mirrors `String`: `push_str`, `push`, `clear`, `truncate`,
-  `insert_str`, `replace_range`, etc.
-- `CompactString::from_utf8(bytes)` / `from_utf8_lossy` for byte input.
-- `.into_string()` to hand off to a foreign API that needs owned `String`
-  (allocates only if currently inline).
-- `ToCompactString` trait gives `.to_compact_string()` on any `Display`.
-
-**`format_compact!` vs `format!`**
-
-Prefer `format_compact!` essentially everywhere — it is the drop-in
-replacement that keeps short outputs off the heap. The only reason to use
-`format!` is when you immediately need an owned `String` for a foreign API
-and the value is likely longer than 24 bytes anyway.
-
-## ArcStr Usage Guide
-
-`ArcStr` is the preferred immutable string type in this codebase. It is
-cheap to clone (refcount bump, or free for statics), derefs to `str`, and
-covers almost every "string I want to store, share, or pass around" case.
-Reach for `String` only as a mutable buffer or at the edge of an API that
-demands ownership.
-
-**Constructing**
-
-```rust
-use arcstr::{literal, ArcStr};
-
-// Zero-alloc static — use this for ANY compile-time-known string.
-// Works with any &'static str expression, not just literal tokens.
-let s: ArcStr = literal!("hello");
-let src: ArcStr = literal!(include_str!("program.gx"));
-
-// From an owned String — reuses the allocation (no copy).
-let owned: String = make_string();
-let s: ArcStr = ArcStr::from(owned);
-
-// From &str — allocates and copies. Avoid in hot paths; prefer
-// literal! if the value is known, or plumb an ArcStr through instead.
-let s: ArcStr = ArcStr::from("hello");
-
-// Empty ArcStr is a static — free.
-let s = ArcStr::new();
-```
-
-**Building from formatted output**
-
-Don't `format!` into a `String` just to convert — that allocates a `String`
-you immediately throw away. The codebase uses `compact_str`:
-
-```rust
-use compact_str::format_compact;
-
-let s: ArcStr = format_compact!("{key}={value}").as_str().into();
-let v = Value::error(format_compact!("{}", e).as_str());
-```
-
-`format_compact!` produces a `CompactString` (inline for short strings, heap
-only when needed); `.as_str().into()` then produces the `ArcStr`. This is
-the idiomatic "formatted ArcStr" pattern in this repo.
-
-**When to use which**
-
-- String constants / tags / field names → `literal!(...)`
-- Owned `String` you're done mutating → `ArcStr::from(s)` (reuses buffer)
-- Formatted output → `format_compact!(...).as_str().into()`
-- Passing strings through the Value/Pack layers → `ArcStr` throughout
-- Short-lived mutable buffer → `LPooled<String>` (see above)
-- Plain `String` → only at foreign-API boundaries that demand it
-
-**Substr**
-
-`arcstr::Substr` is a cheap view into a slice of an existing `ArcStr`,
-sharing the backing allocation. Constructed via `ArcStr::substr(range)` or
-`substr_from`/`substr_using`. Implements `Deref<Target = str>`, clones in
-O(1) (refcount bump of the parent `ArcStr`).
-
-Use when you need to hand out many `ArcStr`-like views into one large
-string (e.g. tokens from a lexer over a source buffer, or repeated
-substrings from a parsed document) and want to avoid allocating a new
-`ArcStr` per view.
-
-Not currently used in netidx, but not discouraged — just hasn't had an
-obvious fit. If a good case comes up (tokenizing, parsing, slicing a large
-document into many retained pieces), reach for it.
+String type hierarchy, first fit wins: short mutable → `CompactString`;
+unbounded mutable → `LPooled<String>`; immutable or shared → `ArcStr`;
+plain `String` only at a foreign API boundary.
 
 # CLAUDE.md
 
