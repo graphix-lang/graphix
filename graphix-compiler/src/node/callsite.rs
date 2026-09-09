@@ -872,6 +872,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             },
         );
         self.refresh_static_ftype().expect("static callee must have an apply");
+        if res.is_ok() {
+            if let Callee::Static { apply, .. } = &self.callee {
+                if let ApplyView::Lambda(g) = apply.view() {
+                    profile::instance_signature(
+                        g.instance_id(),
+                        g.typ(),
+                        Some(&identity),
+                    );
+                }
+            }
+        }
         Self::unregister_fn_params(ctx, param_binds, trait_param_binds);
         if let Some(instance) = instance {
             ctx.pop_resolving(def.id, instance);

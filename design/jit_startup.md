@@ -475,3 +475,112 @@ every profiled root. The escaper change is netidx commit `ba154aee`.
   tests can populate its bookmark file. The landing test also passed in
   isolation with both binaries. The initial failure is retained in
   `admin-tests.log`; the successful rerun is `admin-idle-tests.log`.
+
+## Repeated instance census
+
+`GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1` records per-instance
+construction and checking costs. Read the admin timing test's output with
+`python3 bench/instances.py --admin LOG`; `--json` preserves the full
+breakdown. The census is diagnostic only and does not reuse bodies.
+
+The report retains the first completed construction in each group and
+sums the other instances' exclusive `InstanceGraph` and `InstanceCheck`
+time. Nested profiled phases, including nested instances of the same
+phase, are excluded. The reader verifies both call counts and nanoseconds
+against the phase totals. Binding setup, argument-pattern construction,
+the remainder of typecheck1, later analysis and fusion are outside these
+costs. They must not be added speculatively to the measured opportunity.
+
+Three increasingly specific groupings are available:
+
+- The same `LambdaId`, regardless of specialization.
+- The same definition and closed signature, compared with `FnType`'s
+  equality and hashing after resolving cells into a detached snapshot.
+  Open signatures remain separate. Named types are not expanded and
+  equivalent alternative spellings are not normalized.
+- The preceding group plus the call site's `FnArgIdentity` vector: source
+  expression IDs for resolved function arguments. Missing vectors remain
+  separate, but a present vector can contain unknown entries. Definition
+  gate checks have no call-site vector.
+
+These are workload groupings, not sufficient cache keys. Function type
+equality omits lambda provenance; callback source identity does not
+identify captured values or the captured environment. Matching rows can
+still differ in binding identity, wake roots, exception coverage, state
+ownership and activation context. Registration roots are grouped
+separately. Distinct definitions created from the same source are also
+kept separate.
+
+The `clone_rebind` history is a concrete warning against interpreting
+these groups as permission to copy graphs. Commit `77f4bc0d` fixed capture
+lookup resolving to an unrelated name in a clone's destination scope;
+`c586f3bf` fixed async work waking an analysis top that was never driven.
+`6317216d` removed the cloning/template machinery. See also
+`design/collection_intrinsics.md` for the state and ownership issues.
+
+Signature snapshots, interning and labels run in `InstanceCensus`, outside
+the measured build/check phases. Per-instance rows are printed after the
+root timer stops. Instrumented wall times still include diagnostic work
+and output, and are not startup improvements. Compare timings with both
+profiling variables absent; use separate profile-only runs to assess
+measurement disturbance.
+
+### Census results
+
+Five warmed release runs of the unchanged admin workload, with fusion
+enabled, give these medians. Time is the sum of exclusive graph construction
+and checking on instances after the first in each group:
+
+| App grouping | Repeated instances | Build ms | Check ms | Combined ms |
+|---|---:|---:|---:|---:|
+| Definition only | 2,131 | 23.8 | 43.7 | 67.5 |
+| Definition + closed signature | 1,028 | 10.8 | 16.3 | 27.1 |
+| Also match callback source vectors | 1,024 | 4.7 | 9.0 | 13.7 |
+
+The app constructs 2,513 instances of 382 definitions. Only 1,061
+signatures are closed at the measurement point; the other 1,452 are
+unmerged in the refined rows. Of the closed instances, 1,055 have a
+call-site callback vector. Thus the last row is not a bound on all possible
+reuse, and it still does not prove safe reuse within its groups. The
+definition-only row deliberately conflates different specializations.
+All app instance construction/checking totals about 121 ms in census runs.
+
+Registration constructs 339 instances of 335 definitions. Its four
+repetitions are `tui::style`, costing only 0.042 ms. Most registration
+construction/checking is therefore first-time work under this grouping.
+The roughly 90 ms registration cost is not substantially explained by
+repeating the same definition inside a compilation root.
+
+The largest repetitions surviving the callback grouping are `tui::line`
+(363 repetitions, 2.56 ms), `line_edit::view` (8, 2.47 ms), and
+`block::block` (58, 1.61 ms). These are their own measured build/check
+costs; nested helper costs are accounted separately. In the broad group,
+`netidx_admin::questions` accounts for about 12.0 ms over 49 repetitions,
+but its signatures are open at this point. `panels::panels` accounts for
+another 12.0 ms: its two instances have equal closed signatures but
+different callback vectors for `on_close`. It drops out of the last row.
+Source locations are netidx's `src/graphix/mod.gx:12` and
+`src/graphix/tui/panels.gx:265` under `graphix-package-netidx-admin`.
+
+The census itself adds 6.1 ms of explicit app metadata work. Compared
+with five alternating profile-only runs, graph time is similar
+(46.3 versus 46.0 ms), while checking is somewhat higher (74.9 versus
+69.9 ms). The numbers above retain this measurement disturbance instead
+of presenting an adjusted figure as a measured saving. Output also makes
+the external census timing unsuitable as a startup baseline.
+
+Nine alternating runs with profiling disabled give app request medians
+of 389.9 ms before instrumentation and 390.3 ms after; registration plus
+app is 478.9 versus 480.1 ms. Every run retains 1,802 attempts and 541
+fused regions. These measurements reinforce that eliminating the work in
+the broad repeated-instance group alone is far short of the roughly
+71 ms fast-machine budget implied by the 500 ms / 7 target. Other work
+that might disappear with a different compiler design has not been
+measured as part of this estimate.
+
+Validation: the whole workspace gate passed 3,172 tests, with 11 ignored.
+The existing recursive higher-order callback test also passed with both
+profiling flags enabled. The reader reconciled all instance counts and
+exclusive times in that test and in all five admin census runs. Artifacts,
+including executables, raw logs, `measure.py`, `timing.json`, `results.json`
+and `summary.json`, are in `/tmp/graphix-instance-census`.
