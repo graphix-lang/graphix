@@ -21,19 +21,20 @@ pub use registration::{NOT_QUIESCENT, REGISTRATION_FORMAT, Registration};
 
 use crate::{
     BindId, CFlag, DynScope, ErrorHandler, LambdaId, Scope, SourcePosition,
-    expr::{ExprId, Origin, Source},
+    expr::{ExprId, ModPath, Origin, Source},
     ids::IdRelocation,
     shared_map,
     typ::{
-        TVar,
+        ResolvedRef, TVar,
         tvar::{TCell, TVarId},
     },
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
+use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::{
     cell::Cell, collections::HashMap, marker::PhantomData, path::PathBuf, ptr::NonNull,
 };
@@ -91,6 +92,14 @@ pub struct ImageEncoder {
     ids: IdMaps,
     handlers: AHashMap<usize, u64>,
     pinned_handlers: Vec<ErrorHandler>,
+    paths: AHashMap<ArcStr, u64>,
+    refcells: AHashMap<usize, u64>,
+    pinned_refcells: Vec<RefCell>,
+    /// What the length pass has measured as a definition: the first
+    /// sight measures the contents, later sights a reference, as the
+    /// encode will write them. Objects can reach themselves, so the
+    /// length walk needs this to terminate.
+    measured: AHashSet<usize>,
     origins: AHashMap<usize, u64>,
     pinned_origins: Vec<Arc<Origin>>,
     tvars: AHashMap<usize, u64>,
@@ -112,6 +121,10 @@ impl ImageEncoder {
             ids: IdMaps::default(),
             handlers: AHashMap::new(),
             pinned_handlers: Vec::new(),
+            paths: AHashMap::new(),
+            refcells: AHashMap::new(),
+            pinned_refcells: Vec::new(),
+            measured: AHashSet::new(),
             origins: AHashMap::new(),
             pinned_origins: Vec::new(),
             tvars: AHashMap::new(),
@@ -155,6 +168,8 @@ impl ImageEncoder {
 pub struct ImageDecoder {
     pub(crate) maps: shared_map::DecodeTable,
     handlers: Vec<ErrorHandler>,
+    paths: Vec<ModPath>,
+    refcells: Vec<RefCell>,
     origins: Vec<Arc<Origin>>,
     tvars: Vec<TVar>,
     cells: Vec<Arc<RwLock<TCell>>>,
@@ -167,6 +182,8 @@ impl ImageDecoder {
         ImageDecoder {
             maps: shared_map::DecodeTable::default(),
             handlers: Vec::new(),
+            paths: Vec::new(),
+            refcells: Vec::new(),
             origins: Vec::new(),
             tvars: Vec::new(),
             cells: Vec::new(),
@@ -323,6 +340,138 @@ pub(crate) fn is_encoding() -> bool {
 
 pub(crate) fn is_decoding() -> bool {
     DECODER.get().is_some()
+}
+
+/// A type reference's write-once resolution cell, shared by every
+/// rebuild of the reference (`TypeRef::with_params`).
+pub(crate) type RefCell = Arc<Mutex<Option<Arc<ResolvedRef>>>>;
+
+fn path_key(path: &ModPath) -> &str {
+    path.0.as_ref()
+}
+
+/// A module path is written once per distinct path and referenced
+/// afterwards, so a scope repeated by every binding under it costs a
+/// varint and decodes to one shared string.
+pub(crate) fn path_len(path: &ModPath) -> usize {
+    match encoding(|e| e.paths.get(path_key(path)).copied()).flatten() {
+        Some(id) => 1 + varint_len(id),
+        None => 1 + path.0.encoded_len(),
+    }
+}
+
+pub(crate) fn path_encode(
+    path: &ModPath,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    if let Some(id) = encoding(|e| e.paths.get(path_key(path)).copied()).flatten() {
+        buf.put_u8(REF);
+        encode_varint(id, buf);
+        return Ok(());
+    }
+    buf.put_u8(DEF);
+    path.0.encode(buf)?;
+    encoding(|e| {
+        let id = e.paths.len() as u64;
+        e.paths.insert(ArcStr::from(path_key(path)), id);
+    });
+    Ok(())
+}
+
+pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    match buf.get_u8() {
+        REF => {
+            let id = decode_varint(buf)? as usize;
+            decoding(|d| d.paths.get(id).cloned())
+                .flatten()
+                .ok_or(PackError::InvalidFormat)
+        }
+        DEF => {
+            let path = ModPath(Pack::decode(buf)?);
+            decoding(|d| d.paths.push(path.clone()));
+            Ok(path)
+        }
+        _ => Err(PackError::UnknownTag),
+    }
+}
+
+/// A resolution cell is an object: written once with its contents
+/// through `resolved`, referenced afterwards, so references that share
+/// a cell share it again after decode.
+pub(crate) fn refcell_len(
+    cell: &RefCell,
+    resolved_len: impl FnOnce(&ResolvedRef) -> usize,
+) -> usize {
+    let key = Arc::as_ptr(cell) as usize;
+    if measured_before(key, |e| e.refcells.get(&key).copied()) {
+        return 1 + varint_len(key as u64);
+    }
+    // The resolved type can reach this cell again; the lock is not
+    // reentrant, so clone out before walking.
+    let resolved = cell.lock().clone();
+    1 + 1 + resolved.map_or(0, |r| resolved_len(&r))
+}
+
+pub(crate) fn refcell_encode<B: BufMut>(
+    cell: &RefCell,
+    buf: &mut B,
+    resolved_encode: impl FnOnce(&ResolvedRef, &mut B) -> Result<(), PackError>,
+) -> Result<(), PackError> {
+    let key = Arc::as_ptr(cell) as usize;
+    if let Some(id) = encoding(|e| e.refcells.get(&key).copied()).flatten() {
+        buf.put_u8(REF);
+        encode_varint(id, buf);
+        return Ok(());
+    }
+    buf.put_u8(DEF);
+    encoding(|e| {
+        let id = e.pinned_refcells.len() as u64;
+        e.refcells.insert(key, id);
+        e.pinned_refcells.push(cell.clone());
+    });
+    let resolved = cell.lock().clone();
+    match resolved {
+        None => buf.put_u8(0),
+        Some(r) => {
+            buf.put_u8(1);
+            resolved_encode(&r, buf)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn refcell_decode<B: Buf>(
+    buf: &mut B,
+    resolved_decode: impl FnOnce(&mut B) -> Result<ResolvedRef, PackError>,
+) -> Result<RefCell, PackError> {
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    match buf.get_u8() {
+        REF => {
+            let id = decode_varint(buf)? as usize;
+            decoding(|d| d.refcells.get(id).cloned())
+                .flatten()
+                .ok_or(PackError::InvalidFormat)
+        }
+        DEF => {
+            let cell: RefCell = Arc::new(Mutex::new(None));
+            decoding(|d| d.refcells.push(cell.clone()));
+            if !buf.has_remaining() {
+                return Err(PackError::BufferShort);
+            }
+            match buf.get_u8() {
+                0 => {}
+                1 => *cell.lock() = Some(Arc::new(resolved_decode(buf)?)),
+                _ => return Err(PackError::UnknownTag),
+            }
+            Ok(cell)
+        }
+        _ => Err(PackError::UnknownTag),
+    }
 }
 
 pub(crate) fn flags_len(_flags: BitFlags<CFlag>) -> usize {
@@ -580,23 +729,33 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
 /// cell that reaches its own wrapper through a constraint decodes.
 pub(crate) fn tvar_len(tv: &TVar) -> usize {
     let key = tv.wrapper_addr();
-    if let Some(id) = encoding(|e| e.tvars.get(&key).copied()).flatten() {
-        return 1 + varint_len(id);
+    if measured_before(key, |e| e.tvars.get(&key).copied()) {
+        return 1 + varint_len(key as u64);
     }
     let (id, frozen, cell) = tv.parts();
     let mut n = 1 + tv.name.encoded_len() + id.encoded_len() + frozen.encoded_len();
     let ckey = Arc::as_ptr(&cell) as usize;
-    n += match encoding(|e| e.cells.get(&ckey).copied()).flatten() {
-        Some(id) => 1 + varint_len(id),
-        None => {
-            let (typ, constraints, refused) = {
-                let c = cell.read();
-                (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
-            };
-            1 + typ.encoded_len() + constraints.encoded_len() + refused.encoded_len()
-        }
+    n += if measured_before(ckey, |e| e.cells.get(&ckey).copied()) {
+        1 + varint_len(ckey as u64)
+    } else {
+        let (typ, constraints, refused) = {
+            let c = cell.read();
+            (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
+        };
+        1 + typ.encoded_len() + constraints.encoded_len() + refused.encoded_len()
     };
     n
+}
+
+/// Whether the length walk has already measured (or an encode has
+/// written) the object at `key`; the first call marks it measured. A
+/// reference's varint is bounded by the address's, which a length pass
+/// may over-count.
+fn measured_before(
+    key: usize,
+    registered: impl FnOnce(&ImageEncoder) -> Option<u64>,
+) -> bool {
+    encoding(|e| registered(e).is_some() || !e.measured.insert(key)).unwrap_or(false)
 }
 
 pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackError> {

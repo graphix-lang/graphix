@@ -31,7 +31,7 @@ phases! {
     JitBuild, Clif, BackendBody, BackendWrapper, BackendStub, BackendSpill,
     Finalize, Freeze, Normalize, ExpandRefs, StaticBind, InstanceGraph,
     InstanceCheck, ModuleCheck, ModuleSignature, LambdaFinalize, EffectRefs, EffectRound,
-    InstanceCensus,
+    InstanceCensus, ImageEnv, ImageDefs, ImageNodes,
 }
 
 #[derive(Clone, Copy, Default)]

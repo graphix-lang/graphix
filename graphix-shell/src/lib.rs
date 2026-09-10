@@ -247,7 +247,7 @@ impl<X: GXExt> Shell<X> {
         let cache = if self.no_cache {
             None
         } else {
-            match cache::RegistrationCache::new(&vfs_modules, &root) {
+            match cache::RegistrationCache::new(&root) {
                 Ok(c) => Some(c),
                 Err(e) => {
                     log::warn!("registration image cache unavailable: {e}");

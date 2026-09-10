@@ -14,6 +14,7 @@ use crate::{
     BindId, BuiltinBindInfo, ExecCtx, LambdaId, Node, Rt, Scope, UserEvent,
     expr::{ExprId, ModPath},
     node::lambda::LambdaDef,
+    profile::{self, Phase},
 };
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -229,8 +230,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let mut dec = ImageDecoder::new(counts);
         let restored = {
             let _s = DecodeImage::new(&mut dec);
+            let p = profile::phase(Phase::ImageEnv);
             self.env = Pack::decode(&mut bytes)?;
+            drop(p);
+            let p = profile::phase(Phase::ImageDefs);
             restore_tables(self, &mut bytes)?;
+            drop(p);
+            let _p = profile::phase(Phase::ImageNodes);
             let n = decode_varint(&mut bytes)? as usize;
             let mut nodes = Vec::with_capacity(n);
             for _ in 0..n {
@@ -244,7 +250,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         if bytes.has_remaining() {
             return Err(PackError::InvalidFormat);
         }
-        self.env.seed_typedef_refs();
         self.image_decoder = Some(dec);
         Ok(restored)
     }

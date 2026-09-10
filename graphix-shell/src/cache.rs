@@ -1,16 +1,16 @@
 //! The registration image cache. The executable that reads an image is
 //! the executable that wrote it, on its first run: entries live under
-//! the cache directory by the executable's build id, keyed by the
-//! packages' module sources and the root that declares them, so a
-//! rebuilt executable or a changed package misses and recompiles.
+//! the cache directory by the executable's build id, which also covers
+//! the packages compiled into it, keyed by the root that declares them
+//! and the image format, so a rebuilt executable misses and recompiles.
 //! Entries are written to a temporary file and renamed into place, and
 //! other build ids' directories are removed when one is written.
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use graphix_compiler::{expr::VfsEntry, image};
+use graphix_compiler::image;
 use log::{info, warn};
-use netidx_core::{path::Path, utils::make_sha3_token};
+use netidx_core::utils::make_sha3_token;
 use std::{
     fmt::Write,
     fs,
@@ -85,27 +85,14 @@ fn elf_build_id(exe: &FsPath) -> Option<String> {
 }
 
 impl RegistrationCache {
-    /// The cache entry for these package modules and root, or an error
-    /// when there is no cache directory.
-    pub(crate) fn new(
-        modules: &ahash::AHashMap<Path, VfsEntry>,
-        root: &str,
-    ) -> Result<Self> {
+    /// The cache entry for this root, or an error when there is no
+    /// cache directory.
+    pub(crate) fn new(root: &str) -> Result<Self> {
         let root_dir = dirs::cache_dir()
             .ok_or_else(|| anyhow!("no cache directory"))?
             .join("graphix")
             .join("registration");
-        let mut paths: Vec<&Path> = modules.keys().collect();
-        paths.sort();
-        let mut parts: Vec<&[u8]> = vec![&[image::REGISTRATION_FORMAT], root.as_bytes()];
-        for p in paths {
-            let entry = &modules[p];
-            parts.push(p.as_bytes());
-            parts.push(match &entry.packed {
-                Some(bytes) => bytes.as_ref(),
-                None => entry.source.as_bytes(),
-            });
-        }
+        let parts: [&[u8]; 2] = [&[image::REGISTRATION_FORMAT], root.as_bytes()];
         let key = hex(&make_sha3_token(parts)[..16]);
         Ok(RegistrationCache { root: root_dir, build: build_id(), key })
     }

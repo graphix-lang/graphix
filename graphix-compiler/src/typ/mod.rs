@@ -7,8 +7,10 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack as PackTrait, PackError};
 use netidx_core::utils::Either;
 use netidx_derive::Pack;
 use netidx_value::Typ;
@@ -335,18 +337,104 @@ impl ResolvedRef {
 /// or the packed form. The cell depends on (scope, name, env) but not
 /// `params`: [`TypeRef::with_params`] shares it, [`TypeRef::with_scope`]
 /// mints fresh. Never overwrite a filled cell — clones share it.
-#[derive(Debug, Clone, Pack)]
-#[pack(unwrapped)]
+#[derive(Debug, Clone)]
 pub struct TypeRef {
     pub scope: ModPath,
     pub name: ModPath,
     pub params: Arc<[Type]>,
-    #[pack(skip)]
     pub pos: Option<crate::SourcePosition>,
-    #[pack(skip)]
     pub ori: Option<Arc<crate::expr::Origin>>,
-    #[pack(skip)]
     pub(in crate::typ) resolved: Arc<Mutex<Option<Arc<ResolvedRef>>>>,
+}
+
+fn resolved_len(r: &ResolvedRef) -> usize {
+    let ResolvedRef { canonical_scope, pos, ori, params, typ } = r;
+    canonical_scope.encoded_len()
+        + crate::image::pos_len(pos)
+        + crate::image::origin_len(ori)
+        + params.encoded_len()
+        + typ.encoded_len()
+}
+
+fn resolved_encode(r: &ResolvedRef, buf: &mut impl BufMut) -> Result<(), PackError> {
+    let ResolvedRef { canonical_scope, pos, ori, params, typ } = r;
+    canonical_scope.encode(buf)?;
+    crate::image::pos_encode(pos, buf)?;
+    crate::image::origin_encode(ori, buf)?;
+    params.encode(buf)?;
+    typ.encode(buf)
+}
+
+fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackError> {
+    Ok(ResolvedRef {
+        canonical_scope: PackTrait::decode(buf)?,
+        pos: crate::image::pos_decode(buf)?,
+        ori: crate::image::origin_decode(buf)?,
+        params: PackTrait::decode(buf)?,
+        typ: PackTrait::decode(buf)?,
+    })
+}
+
+/// The syntax codec writes the name and parameters and mints a fresh
+/// cell; under an image the position, origin and the shared resolution
+/// cell travel too, so a restored session never re-resolves.
+impl PackTrait for TypeRef {
+    fn encoded_len(&self) -> usize {
+        let TypeRef { scope, name, params, pos, ori, resolved } = self;
+        let base = scope.encoded_len() + name.encoded_len() + params.encoded_len();
+        if !crate::image::is_encoding() {
+            return base;
+        }
+        let pos = 1 + pos.as_ref().map_or(0, crate::image::pos_len);
+        let ori = 1 + ori.as_ref().map_or(0, crate::image::origin_len);
+        base + pos + ori + crate::image::refcell_len(resolved, resolved_len)
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        let TypeRef { scope, name, params, pos, ori, resolved } = self;
+        scope.encode(buf)?;
+        name.encode(buf)?;
+        params.encode(buf)?;
+        if !crate::image::is_encoding() {
+            return Ok(());
+        }
+        match pos {
+            None => buf.put_u8(0),
+            Some(p) => {
+                buf.put_u8(1);
+                crate::image::pos_encode(p, buf)?;
+            }
+        }
+        match ori {
+            None => buf.put_u8(0),
+            Some(o) => {
+                buf.put_u8(1);
+                crate::image::origin_encode(o, buf)?;
+            }
+        }
+        crate::image::refcell_encode(resolved, buf, resolved_encode)
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let scope = PackTrait::decode(buf)?;
+        let name = PackTrait::decode(buf)?;
+        let params = PackTrait::decode(buf)?;
+        if !crate::image::is_decoding() {
+            return Ok(TypeRef::new(scope, name, params, None, None));
+        }
+        let pos = match u8::decode(buf)? {
+            0 => None,
+            1 => Some(crate::image::pos_decode(buf)?),
+            _ => return Err(PackError::UnknownTag),
+        };
+        let ori = match u8::decode(buf)? {
+            0 => None,
+            1 => Some(crate::image::origin_decode(buf)?),
+            _ => return Err(PackError::UnknownTag),
+        };
+        let resolved = crate::image::refcell_decode(buf, resolved_decode)?;
+        Ok(TypeRef { scope, name, params, pos, ori, resolved })
+    }
 }
 
 impl TypeRef {
