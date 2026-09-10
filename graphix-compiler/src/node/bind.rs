@@ -1,6 +1,7 @@
 use super::{
     WakeBit, collection::CollectionIntrinsic, pattern::StructPatternNode, place,
 };
+use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent, bailat,
@@ -17,7 +18,9 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -259,7 +262,43 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Bind<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let pattern = StructPatternNode::decode(buf)?;
+        let node = decode_node(ctx, buf)?;
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            pattern,
+            node,
+            ever_published: false,
+            slept: WakeBit::default(),
+        }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.pattern.encoded_len()
+            + self.node.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Bind, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.pattern.encode(buf)?;
+        self.node.image_encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let tv = self.node.update(ctx, event);
@@ -502,7 +541,45 @@ impl Ref {
     }
 }
 
+impl Ref {
+    /// Replays the reference registration `compile` made with the runtime.
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Arc::new(Expr::decode(buf)?);
+        let typ = Type::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            id,
+            top_id,
+            resident: TagValue::phantom(),
+            instantiated: false,
+        }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Ref, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = crate::dbgenv::gxdbg_ref();

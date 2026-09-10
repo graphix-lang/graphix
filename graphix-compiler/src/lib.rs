@@ -60,7 +60,7 @@ pub use enumflags2::BitFlags;
 use enumflags2::bitflags;
 use expr::{Attr, Expr};
 use futures::channel::mpsc;
-use log::info;
+use log::{info, warn};
 use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use node::compiler;
 use nohash::{IntMap, IntSet};
@@ -418,7 +418,8 @@ pub use combine::stream::position::SourcePosition;
 /// ([`ExecCtx::builtin_bindings`]): the canonical builtin `name`, the
 /// source-level `argspec` (with labeled defaults), and the binding's
 /// declared `typ`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, netidx_derive::Pack)]
+#[pack(unwrapped)]
 pub struct BuiltinBindInfo {
     pub name: ArcStr,
     pub argspec: triomphe::Arc<[expr::Arg]>,
@@ -798,6 +799,24 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 
     /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R, E>;
+
+    /// The bytes [`Update::image_encode`] writes: the node's tag and
+    /// compile-time data, children included.
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    /// Write this node into an image: its `NodeTag` and the data its
+    /// `image_decode` rebuilds it from. State is never written; an
+    /// image is taken before any cycle. The default is the refusal a
+    /// kind without a codec reports.
+    fn image_encode(
+        &self,
+        _buf: &mut bytes::BytesMut,
+    ) -> std::result::Result<(), netidx_core::pack::PackError> {
+        warn!("no image codec for the node at {}", self.spec());
+        Err(netidx_core::pack::PackError::Application(image::NOT_IMAGED))
+    }
 
     /// Emit this node into the open JIT kernel as CLIF and return its
     /// SSA result; an impl emits its children via `child.emit_clif(cx)`.
@@ -1396,6 +1415,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dispatched or absorbed by the fusion walk, or the statement errors.
     pub(crate) attr_census: Mutex<Vec<Expr>>,
     pub(crate) attr_dispatched: Mutex<IntSet<ExprId>>,
+    /// The tables of the image this session was restored from, for
+    /// anything decoded later.
+    pub image_decoder: Option<image::ImageDecoder>,
     pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
     /// Variable deliveries raised inside an evaluation frame that must
     /// escape it (an error delivery to a `catch` handler); drained into
@@ -1460,6 +1482,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),
+            image_decoder: None,
             attr_absorbed: Mutex::new(IntSet::default()),
             frame_outbox: Vec::new(),
         };
@@ -1656,6 +1679,16 @@ impl ErrorHandler {
         self.0.raised.load(Ordering::Relaxed)
     }
 
+    /// The handler's allocation address: equal for every scope under
+    /// one catch.
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as *const () as usize
+    }
+
+    pub(crate) fn parent(&self) -> DynScope {
+        self.0.parent.clone()
+    }
+
     pub(crate) fn has_nested_errors(&self) -> bool {
         self.0.nested.load(Ordering::Relaxed) != 0
     }
@@ -1670,6 +1703,10 @@ impl Debug for ErrorHandler {
 impl DynScope {
     pub fn root() -> Self {
         Self(None)
+    }
+
+    pub(crate) fn from_handler(h: ErrorHandler) -> Self {
+        Self(Some(h))
     }
 
     pub fn with_catch(&self, catch: (BindId, ExprId)) -> Self {

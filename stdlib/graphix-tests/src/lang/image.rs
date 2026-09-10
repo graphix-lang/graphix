@@ -2,7 +2,7 @@
 // registration plus a program, packed under an image session and
 // restored into fresh cells, ids and maps.
 
-use crate::init;
+use crate::{TEST_REGISTER, init};
 use anyhow::Result;
 use arcstr::literal;
 use bytes::BytesMut;
@@ -13,8 +13,12 @@ use graphix_compiler::{
     image::{DecodeImage, EncodeImage, ImageDecoder, ImageEncoder},
     typ::Type,
 };
+use graphix_package_core::testing::{TestCtx, init_with_registration};
+use graphix_rt::{GXEvent, RegistrationImage};
+use netidx::publisher::Value;
 use netidx_core::pack::Pack;
-use tokio::sync::mpsc;
+use poolshark::global::GPooled;
+use tokio::sync::{mpsc, oneshot};
 
 fn show(t: &Type) -> String {
     format_with_flags(PrintFlag::DerefTVars, || t.to_string())
@@ -106,5 +110,94 @@ async fn environment_round_trips() -> Result<()> {
         }
     }
     ctx.shutdown().await;
+    Ok(())
+}
+
+async fn eval_on(
+    ctx: &TestCtx,
+    rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+    code: &str,
+) -> Result<Value> {
+    let compiled = ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
+    let eid = compiled.exprs[0].id;
+    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => anyhow::bail!("timeout waiting for {code}"),
+            batch = rx.recv() => match batch {
+                None => anyhow::bail!("runtime died"),
+                Some(mut batch) => {
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e
+                            && id == eid
+                        {
+                            return Ok(v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A runtime restored from the registration image of another runs
+/// the same programs to the same values.
+#[tokio::test]
+async fn registration_restores() -> Result<()> {
+    let (tx, mut cold_rx) = mpsc::channel(10);
+    let (image_tx, image_rx) = oneshot::channel();
+    let cold =
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+            .await?;
+    let image = image_rx.await??;
+    assert!(image.len() > 10_000, "{}", image.len());
+    let (tx, mut warm_rx) = mpsc::channel(10);
+    let warm =
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image)).await?;
+    for code in [
+        "{ let xs = [1, 2, 3]; array::fold(array::map(xs, |x| x * 2), 0, |a, b| a + b) }",
+        "{ let s = \"hello world\"; str::len(s) + str::len(str::join(#sep: \", \", str::split(#pat: \" \", s))) }",
+        "{ type P = {x: i64, y: i64}; let f = |p: P| -> i64 p.x * p.y; f({x: 6, y: 7}) }",
+        "{ let m = {\"a\" => 1, \"b\" => 2}; select m{\"b\"} { i64 as n => n, _ => -1 } }",
+        "{ let rec fact = |n: i64| -> i64 select n { 0 => 1, n => n * fact(n - 1) }; fact(10) }",
+        "{ let x = 1.5; cast<string>(x + core::math::pi)$ }",
+    ] {
+        let a = eval_on(&cold, &mut cold_rx, code).await?;
+        let b = eval_on(&warm, &mut warm_rx, code).await?;
+        assert_eq!(a, b, "{code}");
+    }
+    cold.shutdown().await;
+    warm.shutdown().await;
+    Ok(())
+}
+
+/// Registration cold against warm, wall clock; run by hand:
+/// `cargo test -p graphix-tests registration_timing -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "timing, run by hand"]
+async fn registration_timing() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let (image_tx, image_rx) = oneshot::channel();
+    let t0 = std::time::Instant::now();
+    let cold =
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx)).await?;
+    let cold_time = t0.elapsed();
+    let image = image_rx.await??;
+    cold.shutdown().await;
+    let mut warm_times = Vec::new();
+    for _ in 0..5 {
+        let (tx, _rx) = mpsc::channel(10);
+        let t0 = std::time::Instant::now();
+        let warm =
+            init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image.clone()))
+                .await?;
+        warm_times.push(t0.elapsed());
+        warm.shutdown().await;
+    }
+    eprintln!(
+        "registration: cold {cold_time:?}, warm {warm_times:?}, image {} bytes",
+        image.len()
+    );
     Ok(())
 }

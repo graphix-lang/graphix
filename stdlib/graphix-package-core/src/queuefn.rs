@@ -262,6 +262,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             stateless: std::sync::atomic::AtomicBool::new(false),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: self.top_id,
+            origin: graphix_compiler::node::lambda::DefOrigin::Runtime,
         };
         Ok(ctx.wrap_lambda(def))
     }

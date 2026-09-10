@@ -1,3 +1,6 @@
+use crate::image::nodes::{
+    NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+};
 use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
@@ -15,8 +18,10 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
+use bytes::BytesMut;
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use std::sync::LazyLock;
@@ -179,7 +184,25 @@ impl Nop {
     }
 }
 
+impl Nop {
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        Ok(Self::new(Type::decode(buf)?))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
+    fn image_len(&self) -> usize {
+        tag_len() + self.typ.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Nop, buf);
+        self.typ.encode(buf)
+    }
+
     fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
         TagValue::phantom_ref()
     }
@@ -604,7 +627,33 @@ impl TypeDef {
     }
 }
 
+impl TypeDef {
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let scope = ModPath::decode(buf)?;
+        let name = ArcStr::decode(buf)?;
+        Ok(Node::new(Self { spec, scope, name }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.scope.encoded_len()
+            + self.name.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::TypeDef, buf);
+        self.spec.encode(buf)?;
+        self.scope.encode(buf)?;
+        self.name.encode(buf)
+    }
+
     fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
         TagValue::phantom_ref()
     }
@@ -669,7 +718,33 @@ impl Constant {
     }
 }
 
+impl Constant {
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let value = Value::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        Ok(Self::new(value, typ, spec))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.value.encoded_len()
+            + self.typ.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Constant, buf);
+        self.spec.encode(buf)?;
+        self.value.encode(buf)?;
+        self.typ.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // frames force `event.init`, so the frame gate must come first;
         // a genuine init is always frame depth 0
@@ -847,7 +922,46 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
 }
 
+impl<R: Rt, E: UserEvent> Block<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let module = bool::decode(buf)?;
+        let spec = Expr::decode(buf)?;
+        let children = decode_nodes(ctx, buf)?.into_boxed_slice();
+        let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
+        let scope = crate::image::scope_decode(buf)?;
+        Ok(Node::new(Self {
+            module,
+            spec,
+            children,
+            catches,
+            scope,
+            resident: TagValue::phantom(),
+        }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.module.encoded_len()
+            + self.spec.encoded_len()
+            + nodes_len(&self.children)
+            + self.catches.to_vec().encoded_len()
+            + crate::image::scope_len(&self.scope)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Block, buf);
+        self.module.encode(buf)?;
+        self.spec.encode(buf)?;
+        encode_nodes(&self.children, buf)?;
+        self.catches.to_vec().encode(buf)?;
+        crate::image::scope_encode(&self.scope, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.catches.is_empty() {
             let res = self
@@ -1519,7 +1633,30 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Never<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Never, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.n, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         for n in self.n.iter_mut() {
             n.update(ctx, event);

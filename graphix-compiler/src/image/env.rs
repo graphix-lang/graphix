@@ -245,6 +245,32 @@ where
     })
 }
 
+/// A definition's or a module's snapshot: only the lexical fields are
+/// ever read from it (`Env::restore_lexical_env`), so only they travel.
+pub(crate) fn lexical_len(env: &Env) -> usize {
+    nested_len(&env.binds)
+        + SharedSet(env.modules.clone()).encoded_len()
+        + nested_len(&env.typedefs)
+        + nested_len(&env.traits)
+}
+
+pub(crate) fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError> {
+    nested_encode(&env.binds, buf)?;
+    SharedSet(env.modules.clone()).encode(buf)?;
+    nested_encode(&env.typedefs, buf)?;
+    nested_encode(&env.traits, buf)
+}
+
+pub(crate) fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
+    Ok(Env {
+        binds: nested_decode(buf)?,
+        modules: SharedSet::decode(buf)?.0,
+        typedefs: nested_decode(buf)?,
+        traits: nested_decode(buf)?,
+        ..Env::default()
+    })
+}
+
 /// The IDE side-channel is process state and is not in the image; a
 /// restored environment starts with none.
 impl Pack for Env {

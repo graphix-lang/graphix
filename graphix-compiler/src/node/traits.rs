@@ -9,6 +9,9 @@
 
 use super::Block;
 use crate::env::Map;
+use crate::image::nodes::{
+    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     env::{Env, ImplDef, TraitDef},
@@ -20,8 +23,10 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -189,7 +194,33 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Trait<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let def = Arc::<TraitDef>::decode(buf)?;
+        let defaults = decode_node(ctx, buf)?;
+        Ok(Node::new(Self { spec, def, defaults }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.def.encoded_len()
+            + self.defaults.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Trait, buf);
+        self.spec.encode(buf)?;
+        self.def.encode(buf)?;
+        self.defaults.image_encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         self.defaults.update(ctx, event);
         TagValue::phantom_ref()
@@ -563,7 +594,42 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Impl<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let def = Arc::<ImplDef>::decode(buf)?;
+        let fulfils = Option::<Arc<ImplDef>>::decode(buf)?;
+        let trait_def = Arc::<TraitDef>::decode(buf)?;
+        let body = decode_node(ctx, buf)?;
+        let prototypes = decode_nodes(ctx, buf)?;
+        Ok(Node::new(Self { spec, def, fulfils, trait_def, body, prototypes }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.def.encoded_len()
+            + self.fulfils.encoded_len()
+            + self.trait_def.encoded_len()
+            + self.body.image_len()
+            + nodes_len(&self.prototypes)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Impl, buf);
+        self.spec.encode(buf)?;
+        self.def.encode(buf)?;
+        self.fulfils.encode(buf)?;
+        self.trait_def.encode(buf)?;
+        self.body.image_encode(buf)?;
+        encode_nodes(&self.prototypes, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         self.body.update(ctx, event);
         TagValue::phantom_ref()

@@ -1,4 +1,7 @@
 use crate::env::Map;
+use crate::image::nodes::{
+    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+};
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent,
@@ -19,8 +22,10 @@ use crate::{
 use ahash::AHashSet;
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
+use bytes::BytesMut;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use std::{any::Any, mem, sync::LazyLock};
@@ -216,7 +221,8 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
 /// A signature binding (`outer`) and the binding behind it (`inner`):
 /// the implementation's own, or a trait default. A private inner
 /// binding's production moves out and a write to the outer id flows in.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, netidx_derive::Pack)]
+#[pack(unwrapped)]
 struct Proxy {
     inner: BindId,
     outer: BindId,
@@ -470,6 +476,41 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         &self.source
     }
 
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let flags = crate::image::flags_decode(buf)?;
+        let source = decode_node(ctx, buf)?;
+        let runtime_sig_check_env = match u8::decode(buf)? {
+            0 => None,
+            1 => Some(Env::decode(buf)?),
+            _ => return Err(PackError::UnknownTag),
+        };
+        let env = crate::image::lexical_decode(buf)?;
+        let sig = Sig::decode(buf)?;
+        let scope = crate::image::scope_decode(buf)?;
+        let proxy = Vec::<Proxy>::decode(buf)?;
+        let nodes = decode_nodes(ctx, buf)?.into_boxed_slice();
+        let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
+        let top_id = ExprId::decode(buf)?;
+        Ok(Node::new(Self {
+            spec,
+            flags,
+            source,
+            runtime_sig_check_env,
+            env,
+            sig,
+            scope,
+            proxy,
+            nodes,
+            catches,
+            top_id,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(super) fn compile_dynamic(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -663,6 +704,44 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
+    fn image_len(&self) -> usize {
+        let sig_env =
+            1 + self.runtime_sig_check_env.as_ref().map_or(0, |e| e.encoded_len());
+        tag_len()
+            + self.spec.encoded_len()
+            + crate::image::flags_len(self.flags)
+            + self.source.image_len()
+            + sig_env
+            + crate::image::lexical_len(&self.env)
+            + self.sig.encoded_len()
+            + crate::image::scope_len(&self.scope)
+            + self.proxy.encoded_len()
+            + nodes_len(&self.nodes)
+            + self.catches.to_vec().encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Module, buf);
+        self.spec.encode(buf)?;
+        crate::image::flags_encode(self.flags, buf)?;
+        self.source.image_encode(buf)?;
+        match &self.runtime_sig_check_env {
+            None => 0u8.encode(buf)?,
+            Some(env) => {
+                1u8.encode(buf)?;
+                env.encode(buf)?;
+            }
+        }
+        crate::image::lexical_encode(&self.env, buf)?;
+        self.sig.encode(buf)?;
+        crate::image::scope_encode(&self.scope, buf)?;
+        self.proxy.encode(buf)?;
+        encode_nodes(&self.nodes, buf)?;
+        self.catches.to_vec().encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut compiled = false;
         let mut src_tag = Tag::FIRED;

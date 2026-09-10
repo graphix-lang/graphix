@@ -1,0 +1,132 @@
+//! Node graphs under an image. Every node kind that can be imaged
+//! writes a [`NodeTag`] and its compile-time data through
+//! `Update::image_encode`, owned by the node's own file; the tag
+//! dispatches to that kind's `image_decode`, which rebuilds the node
+//! with pristine state and replays the runtime registrations its
+//! compile performed. A kind without a codec fails the write with
+//! [`NOT_IMAGED`]; nothing is skipped.
+
+use crate::{ExecCtx, Node, Rt, UserEvent, node};
+use bytes::{Buf, BufMut, BytesMut};
+use netidx_core::pack::{PackError, decode_varint, encode_varint, varint_len};
+
+/// `PackError::Application` payload: a node kind with no image codec.
+pub const NOT_IMAGED: u64 = 1;
+
+macro_rules! node_tags {
+    ($($tag:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u8)]
+        pub(crate) enum NodeTag { $($tag),+ }
+
+        impl NodeTag {
+            fn from_u8(b: u8) -> Option<Self> {
+                const ALL: &[NodeTag] = &[$(NodeTag::$tag),+];
+                ALL.get(b as usize).copied()
+            }
+        }
+    };
+}
+
+node_tags! {
+    Bind, Lambda, Block, Module, Constant, TypeDef, Impl, Trait, Nop, Never,
+    Struct, Ref, Add, Sub, Mul, Div, Mod, CheckedAdd, CheckedSub, CheckedMul,
+    CheckedDiv, CheckedMod, Eq, Ne, Lt, Gt, Lte, Gte, And, Or, Not, Neg, Array,
+    ListLit, Tuple, Variant,
+}
+
+pub(crate) fn tag_len() -> usize {
+    1
+}
+
+pub(crate) fn put_tag(tag: NodeTag, buf: &mut BytesMut) {
+    buf.put_u8(tag as u8)
+}
+
+pub(crate) fn nodes_len<R: Rt, E: UserEvent>(nodes: &[Node<R, E>]) -> usize {
+    varint_len(nodes.len() as u64) + nodes.iter().map(|n| n.image_len()).sum::<usize>()
+}
+
+pub(crate) fn encode_nodes<R: Rt, E: UserEvent>(
+    nodes: &[Node<R, E>],
+    buf: &mut BytesMut,
+) -> Result<(), PackError> {
+    encode_varint(nodes.len() as u64, buf);
+    for n in nodes {
+        n.image_encode(buf)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn decode_nodes<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    buf: &mut &[u8],
+) -> Result<Vec<Node<R, E>>, PackError> {
+    let n = decode_varint(buf)? as usize;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(decode_node(ctx, buf)?);
+    }
+    Ok(out)
+}
+
+pub(crate) fn decode_node<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    buf: &mut &[u8],
+) -> Result<Node<R, E>, PackError> {
+    use node::{
+        array::{Array, ListLit},
+        bind::{Bind, Ref},
+        data::{Struct, Tuple, Variant},
+        lambda::Lambda,
+        module::Module,
+        op::{
+            Add, And, CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub, Div,
+            Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub,
+        },
+        traits::{Impl, Trait},
+        {Block, Constant, Never, Nop, TypeDef},
+    };
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    let tag = NodeTag::from_u8(buf.get_u8()).ok_or(PackError::UnknownTag)?;
+    match tag {
+        NodeTag::Bind => Bind::image_decode(ctx, buf),
+        NodeTag::Lambda => Lambda::image_decode(ctx, buf),
+        NodeTag::Block => Block::image_decode(ctx, buf),
+        NodeTag::Module => Module::image_decode(ctx, buf),
+        NodeTag::Constant => Constant::image_decode(ctx, buf),
+        NodeTag::TypeDef => TypeDef::image_decode(ctx, buf),
+        NodeTag::Impl => Impl::image_decode(ctx, buf),
+        NodeTag::Trait => Trait::image_decode(ctx, buf),
+        NodeTag::Nop => Nop::image_decode(ctx, buf),
+        NodeTag::Never => Never::image_decode(ctx, buf),
+        NodeTag::Struct => Struct::image_decode(ctx, buf),
+        NodeTag::Ref => Ref::image_decode(ctx, buf),
+        NodeTag::Add => Add::image_decode(ctx, buf),
+        NodeTag::Sub => Sub::image_decode(ctx, buf),
+        NodeTag::Mul => Mul::image_decode(ctx, buf),
+        NodeTag::Div => Div::image_decode(ctx, buf),
+        NodeTag::Mod => Mod::image_decode(ctx, buf),
+        NodeTag::CheckedAdd => CheckedAdd::image_decode(ctx, buf),
+        NodeTag::CheckedSub => CheckedSub::image_decode(ctx, buf),
+        NodeTag::CheckedMul => CheckedMul::image_decode(ctx, buf),
+        NodeTag::CheckedDiv => CheckedDiv::image_decode(ctx, buf),
+        NodeTag::CheckedMod => CheckedMod::image_decode(ctx, buf),
+        NodeTag::Eq => Eq::image_decode(ctx, buf),
+        NodeTag::Ne => Ne::image_decode(ctx, buf),
+        NodeTag::Lt => Lt::image_decode(ctx, buf),
+        NodeTag::Gt => Gt::image_decode(ctx, buf),
+        NodeTag::Lte => Lte::image_decode(ctx, buf),
+        NodeTag::Gte => Gte::image_decode(ctx, buf),
+        NodeTag::And => And::image_decode(ctx, buf),
+        NodeTag::Or => Or::image_decode(ctx, buf),
+        NodeTag::Not => Not::image_decode(ctx, buf),
+        NodeTag::Neg => Neg::image_decode(ctx, buf),
+        NodeTag::Array => Array::image_decode(ctx, buf),
+        NodeTag::ListLit => ListLit::image_decode(ctx, buf),
+        NodeTag::Tuple => Tuple::image_decode(ctx, buf),
+        NodeTag::Variant => Variant::image_decode(ctx, buf),
+    }
+}

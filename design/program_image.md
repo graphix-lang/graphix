@@ -1,7 +1,9 @@
 # Program image: cached compilation, in three steps
 
-Status: proposal; nothing built. The experiments below name the pins
-that will hold it.
+Status: the registration image is built (2026-09-10); the kernel
+cache and the program image are proposals. Pins:
+`stdlib/graphix-tests/src/lang/image.rs`, `graphix-compiler/src/image/mod.rs`
+and `shared_map.rs` unit tests, `graphix-shell/src/cache.rs`.
 Supersedes: the compiled-packages plan (build-time package-definition
 images).
 
@@ -142,6 +144,33 @@ for byte; a warm run against a cold run under the fuzzer's `detcheck`.
 
 Expected: about 120 ms off the app request. Steps 1 and 2 together
 take the fast-machine startup from about 480 ms to about 300 ms.
+
+## Built: the registration image
+
+The first slice of step 3, keyed and stored as the cache rule above
+says. The image is the session after the package root modules compiled
+and before any cycle: the environment (`image/env.rs`), every lambda
+definition as data (`image/defs.rs`: body, lexical snapshot, scope,
+scheme, analysis facts; `init` is rebuilt by `make_init`, a builtin's
+check `Apply` on first use), the context's tables, the root nodes and
+the root scope (`image/registration.rs`). Ids relocate through
+`image_id!`; expressions keep their ids and origins; type variables
+keep their two-level sharing; handlers of the dynamic scope are shared
+objects. A definition's or a module's snapshot carries only the four
+lexical fields, the only ones `restore_lexical_env` reads, which took
+the stdlib test image from 7.5 MB to 1.2 MB. The package root compiles
+with fusion off: its ten fused constants bought nothing at runtime and
+would have put kernels in the image.
+
+Measured in the debug profile over the graphix-tests package set:
+registration 50 ms cold, 13.5 ms warm. The shell's whole `--check` of
+a one-line file on the full stdlib set (2.5 MB image): 211 ms cold
+including the write, about 100 ms warm.
+
+Node kinds imaged so far are the ones package modules produce at top
+level; the rest, `FusedKernel` included, come with the program image.
+Not yet imaged: core hook sites (empty before any cycle), dynamic
+modules' runtime environment, `DefOrigin::Runtime` definitions.
 
 ## Step 3: cache the compiled program
 

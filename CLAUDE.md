@@ -120,6 +120,21 @@ that packages use to feed external events in. Event processing is
 batched: all simultaneous events form one `Event` delivered in one
 cycle; several writes to one variable in a cycle queue for the next.
 
+**Registration image** (`design/program_image.md`): the shell caches
+the session state after the package root compiled and before any cycle
+(`graphix-compiler/src/image/`), under
+`$XDG_CACHE_HOME/graphix/registration/<build-id>/<key>.img`, keyed by
+the image format, the packages' module sources and the root; a warm
+start restores it instead of compiling. `--no-cache` disables the
+cache, `--warm` writes it and exits. The package root compiles with
+fusion off. Every imaged node kind owns an `Update::image_encode` /
+`image_decode` pair in its own file; a kind without one fails the write
+(`image::NOT_IMAGED`, logged) and the shell runs cold, never a partial
+image. Compiler ids are `image_id!` (the compiler's `atomic_id!` plus
+relocation); netidx's ids and wire format are untouched. A definition
+built by Rust at runtime is `DefOrigin::Runtime` and is never imaged.
+Pins: `stdlib/graphix-tests/src/lang/image.rs`.
+
 **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
 `VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in
 `graphix-package-sys`. `sys::net` owns its netidx through `NetState` in

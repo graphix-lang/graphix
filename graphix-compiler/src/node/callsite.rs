@@ -117,6 +117,15 @@ fn finalize_lambda<R: Rt, E: UserEvent>(
         let ldef = val
             .downcast_ref::<LambdaDef<R, E>>()
             .expect("failed to unwrap lambda for typecheck1");
+        // a restored builtin definition rebuilds its check on first use
+        let restored_builtin = ldef.check.lock().is_none()
+            && matches!(&ldef.origin, crate::node::lambda::DefOrigin::Source {
+                body: netidx_core::utils::Either::Right(b), ..
+            } if crate::node::collection::CollectionIntrinsic::from_name(b).is_none());
+        if restored_builtin {
+            let f = crate::node::lambda::builtin_check(ldef, ctx)?;
+            *ldef.check.lock() = Some(f);
+        }
         if let Some(apply) = &mut *ldef.check.lock() {
             apply
                 .typecheck1(ctx, &mut [], resolved)

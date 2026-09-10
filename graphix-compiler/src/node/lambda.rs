@@ -1,4 +1,5 @@
 use super::{Nop, WakeBit, compiler::compile};
+use crate::image::nodes::{NodeTag, put_tag, tag_len};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
@@ -16,10 +17,12 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::Pack;
+use netidx_core::pack::PackError;
 use netidx_core::utils::Either;
 use netidx_value::Value;
 use nohash::IntMap;
@@ -63,6 +66,15 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// The lambda expression this def was compiled from; stable across
     /// instance re-compiles, which is what [`crate::FnArgIdentity`] keys on.
     pub source: ExprId,
+    pub origin: DefOrigin,
+}
+
+/// Where a definition came from: a lambda expression, whose `init` is
+/// a function of these and which an image carries as data, or Rust
+/// code building an `Apply` at runtime, which no image can carry.
+pub enum DefOrigin {
+    Source { body: Either<Expr, ArcStr>, flags: BitFlags<CFlag>, spec: Expr },
+    Runtime,
 }
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
@@ -835,6 +847,103 @@ impl Lambda {
     }
 }
 
+/// The `init` of a definition: how a call site builds an instance from
+/// the source body (or a builtin) in the definition's environment and
+/// scope. A function of its data, so an image can rebuild it.
+pub(crate) fn make_init<R: Rt, E: UserEvent>(
+    id: LambdaId,
+    flags: BitFlags<CFlag>,
+    def_env: Env,
+    def_scope: Scope,
+    def_typ: Arc<FnType>,
+    def_argspec: Arc<[Arg]>,
+    def_spec: Expr,
+    body: Either<Expr, ArcStr>,
+) -> InitFn<R, E> {
+    SArc::new(move |scope, ctx, args, mode, tid| {
+        ctx.with_restored(def_env.clone(), |ctx| match body.clone() {
+            Either::Left(body) => {
+                let scope = Scope {
+                    dynamic: scope.dynamic.clone(),
+                    lexical: def_scope.lexical.clone(),
+                };
+                // a dynamic bind retries with the definition signature:
+                // the runtime callee can differ from the site's prior view
+                let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
+                    GXLambda::new(
+                        ctx,
+                        flags,
+                        id,
+                        typ,
+                        def_argspec.clone(),
+                        args,
+                        &scope,
+                        tid,
+                        body.clone(),
+                    )
+                };
+                match mode {
+                    BindMode::Static { instance, .. } => {
+                        build(ctx, Arc::new(instance.clone()))
+                    }
+                    BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
+                        .or_else(|_| build(ctx, def_typ.clone())),
+                    BindMode::Definition => build(ctx, def_typ.clone()),
+                }
+                .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
+            }
+            Either::Right(builtin) => {
+                if let Some(intrinsic) = CollectionIntrinsic::from_name(&builtin) {
+                    let scope = Scope {
+                        dynamic: scope.dynamic.clone(),
+                        lexical: def_scope.lexical.clone(),
+                    };
+                    let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
+                        GXLambda::new_collection(
+                            ctx,
+                            id,
+                            typ,
+                            def_argspec.clone(),
+                            args,
+                            &scope,
+                            tid,
+                            def_spec.clone(),
+                            intrinsic,
+                        )
+                    };
+                    let result = match mode {
+                        BindMode::Static { instance, .. } => {
+                            build(ctx, Arc::new(instance.clone()))
+                        }
+                        BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
+                            .or_else(|_| build(ctx, def_typ.clone())),
+                        BindMode::Definition => build(ctx, def_typ.clone()),
+                    };
+                    result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
+                } else {
+                    match ctx.builtins.get(&*builtin) {
+                        None => bail!("unknown builtin function {builtin}"),
+                        Some(init) => {
+                            let typ = match mode.resolved() {
+                                Some(r) => Arc::new(r.clone()),
+                                None => def_typ.clone(),
+                            };
+                            let resolved = mode.resolved();
+                            init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
+                                |apply| {
+                                    let f: Box<dyn Apply<R, E>> =
+                                        Box::new(BuiltInLambda { typ, apply });
+                                    f
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        })
+    })
+}
+
 impl Lambda {
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
@@ -989,88 +1098,16 @@ impl Lambda {
         let def_argspec = argspec.clone();
         let def_spec = spec.clone();
         let body = l.body.clone();
-        let init: InitFn<R, E> = SArc::new(move |scope, ctx, args, mode, tid| {
-            ctx.with_restored(def_env.clone(), |ctx| match body.clone() {
-                Either::Left(body) => {
-                    let scope = Scope {
-                        dynamic: scope.dynamic.clone(),
-                        lexical: def_scope.lexical.clone(),
-                    };
-                    // a dynamic bind retries with the definition signature:
-                    // the runtime callee can differ from the site's prior view
-                    let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
-                        GXLambda::new(
-                            ctx,
-                            flags,
-                            id,
-                            typ,
-                            def_argspec.clone(),
-                            args,
-                            &scope,
-                            tid,
-                            body.clone(),
-                        )
-                    };
-                    match mode {
-                        BindMode::Static { instance, .. } => {
-                            build(ctx, Arc::new(instance.clone()))
-                        }
-                        BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
-                            .or_else(|_| build(ctx, def_typ.clone())),
-                        BindMode::Definition => build(ctx, def_typ.clone()),
-                    }
-                    .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
-                }
-                Either::Right(builtin) => {
-                    if let Some(intrinsic) = CollectionIntrinsic::from_name(&builtin) {
-                        let scope = Scope {
-                            dynamic: scope.dynamic.clone(),
-                            lexical: def_scope.lexical.clone(),
-                        };
-                        let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
-                            GXLambda::new_collection(
-                                ctx,
-                                id,
-                                typ,
-                                def_argspec.clone(),
-                                args,
-                                &scope,
-                                tid,
-                                def_spec.clone(),
-                                intrinsic,
-                            )
-                        };
-                        let result = match mode {
-                            BindMode::Static { instance, .. } => {
-                                build(ctx, Arc::new(instance.clone()))
-                            }
-                            BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
-                                .or_else(|_| build(ctx, def_typ.clone())),
-                            BindMode::Definition => build(ctx, def_typ.clone()),
-                        };
-                        result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
-                    } else {
-                        match ctx.builtins.get(&*builtin) {
-                            None => bail!("unknown builtin function {builtin}"),
-                            Some(init) => {
-                                let typ = match mode.resolved() {
-                                    Some(r) => Arc::new(r.clone()),
-                                    None => def_typ.clone(),
-                                };
-                                let resolved = mode.resolved();
-                                init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
-                                    |apply| {
-                                        let f: Box<dyn Apply<R, E>> =
-                                            Box::new(BuiltInLambda { typ, apply });
-                                        f
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            })
-        });
+        let init = make_init(
+            id,
+            flags,
+            def_env,
+            def_scope,
+            def_typ.clone(),
+            def_argspec.clone(),
+            def_spec.clone(),
+            body.clone(),
+        );
         // No signature ref seeding here: the module tree is mid-registration
         // and a name's final target may not be registered yet. Cells fill
         // at typecheck.
@@ -1099,6 +1136,7 @@ impl Lambda {
             }),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
+            origin: DefOrigin::Source { body: l.body.clone(), flags, spec: spec.clone() },
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Node::new(Self {
@@ -1111,7 +1149,69 @@ impl Lambda {
     }
 }
 
+impl Lambda {
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let id = LambdaId::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let def = ctx.lambda_defs.get(&id).ok_or(PackError::InvalidFormat)?.clone();
+        Ok(Node::new(Self { spec, typ, resident: TagValue::stale(def.clone()), def }))
+    }
+}
+
+/// A builtin's check `Apply`, as the definition gate builds it: the
+/// builtin over a `Nop` per declared argument, checked once. A
+/// restored definition rebuilds it on first use.
+pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
+    def: &LambdaDef<R, E>,
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<Box<dyn Apply<R, E>>> {
+    let mut faux_args: LPooled<Vec<Node<R, E>>> =
+        def.typ.args.iter().map(|at| Node::new(Nop { typ: at.typ.clone() })).collect();
+    let faux_id = BindId::new();
+    ctx.env.by_id.insert_cow(
+        faux_id,
+        Bind {
+            doc: None,
+            export: false,
+            id: faux_id,
+            name: "faux".into(),
+            scope: def.scope.lexical.clone(),
+            typ: Type::empty_tvar(),
+            pos: SourcePosition::default(),
+            ori: Arc::new(Origin::default()),
+            pattern: false,
+            facet: None,
+        },
+    );
+    let gate_scope = def.scope.with_catch((faux_id, ExprId::new()));
+    let mut f = (def.init)(
+        &gate_scope,
+        ctx,
+        &mut faux_args,
+        BindMode::Definition,
+        ExprId::new(),
+    )?;
+    f.typecheck0(ctx, &mut faux_args)?;
+    Ok(f)
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
+    fn image_len(&self) -> usize {
+        let id = self.lambda_id::<R, E>().map_or(0, |id| id.encoded_len());
+        tag_len() + self.spec.encoded_len() + id + self.typ.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Lambda, buf);
+        self.spec.encode(buf)?;
+        self.lambda_id::<R, E>().ok_or(PackError::InvalidFormat)?.encode(buf)?;
+        self.typ.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // same production rule as `Constant`: FIRED at init, STALE inside
         // frames, which force init

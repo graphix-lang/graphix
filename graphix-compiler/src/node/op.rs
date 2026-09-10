@@ -1,4 +1,5 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
+use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     defetyp,
@@ -9,8 +10,10 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use std::{
     fmt,
@@ -81,7 +84,43 @@ macro_rules! compare_op {
             }
         }
 
+
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            pub(crate) fn image_decode(
+                ctx: &mut ExecCtx<R, E>,
+                buf: &mut &[u8],
+            ) -> Result<Node<R, E>, PackError> {
+                let spec = Expr::decode(buf)?;
+                let typ = Type::decode(buf)?;
+                let lhs = decode_node(ctx, buf)?;
+                let rhs = decode_node(ctx, buf)?;
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    lhs,
+                    rhs,
+                    resident: TagValue::phantom(),
+                    slept: WakeBit::default(),
+                }))
+            }
+        }
+
         impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
+            fn image_len(&self) -> usize {
+                tag_len()
+                    + self.spec.encoded_len()
+                    + self.typ.encoded_len()
+                    + self.lhs.image_len()
+                    + self.rhs.image_len()
+            }
+
+            fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+                put_tag(NodeTag::$name, buf);
+                self.spec.encode(buf)?;
+                self.typ.encode(buf)?;
+                self.lhs.image_encode(buf)?;
+                self.rhs.image_encode(buf)
+            }
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
@@ -237,7 +276,43 @@ macro_rules! bool_op {
             }
         }
 
+
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            pub(crate) fn image_decode(
+                ctx: &mut ExecCtx<R, E>,
+                buf: &mut &[u8],
+            ) -> Result<Node<R, E>, PackError> {
+                let spec = Expr::decode(buf)?;
+                let typ = Type::decode(buf)?;
+                let lhs = decode_node(ctx, buf)?;
+                let rhs = decode_node(ctx, buf)?;
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    lhs,
+                    rhs,
+                    resident: TagValue::phantom(),
+                    slept: WakeBit::default(),
+                }))
+            }
+        }
+
         impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
+            fn image_len(&self) -> usize {
+                tag_len()
+                    + self.spec.encoded_len()
+                    + self.typ.encoded_len()
+                    + self.lhs.image_len()
+                    + self.rhs.image_len()
+            }
+
+            fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+                put_tag(NodeTag::$name, buf);
+                self.spec.encode(buf)?;
+                self.typ.encode(buf)?;
+                self.lhs.image_encode(buf)?;
+                self.rhs.image_encode(buf)
+            }
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
@@ -361,7 +436,29 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Not<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Not, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.n.image_encode(buf)
+    }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
@@ -458,7 +555,29 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Neg<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Neg, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.n.image_encode(buf)
+    }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Integers wrap, matching the JIT's `ineg`.
         let tv = self.n.update(ctx, event);
@@ -772,7 +891,42 @@ macro_rules! arith_op {
             }
         }
 
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            pub(crate) fn image_decode(
+                ctx: &mut ExecCtx<R, E>,
+                buf: &mut &[u8],
+            ) -> Result<Node<R, E>, PackError> {
+                let spec = Expr::decode(buf)?;
+                let typ = Type::decode(buf)?;
+                let lhs = decode_node(ctx, buf)?;
+                let rhs = decode_node(ctx, buf)?;
+                Ok(Node::new(Self {
+                    spec,
+                    typ,
+                    lhs,
+                    rhs,
+                    resident: TagValue::phantom(),
+                    slept: WakeBit::default(),
+                }))
+            }
+        }
+
         impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
+            fn image_len(&self) -> usize {
+                tag_len()
+                    + self.spec.encoded_len()
+                    + self.typ.encoded_len()
+                    + self.lhs.image_len()
+                    + self.rhs.image_len()
+            }
+
+            fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+                put_tag(NodeTag::$name, buf);
+                self.spec.encode(buf)?;
+                self.typ.encode(buf)?;
+                self.lhs.image_encode(buf)?;
+                self.rhs.image_encode(buf)
+            }
             arith_emit_clif!($checked, $base);
 
             fn update(

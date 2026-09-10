@@ -1,5 +1,7 @@
+use crate::RegistrationImage;
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
@@ -257,11 +259,42 @@ impl<X: GXExt> GX<X> {
             scope: Scope::root(),
         };
         let st = Instant::now();
-        if let Some(root) = cfg.root {
-            t.compile_root(cfg.flags, root).await?;
+        match cfg.registration {
+            Some(RegistrationImage::Load(bytes)) => t.restore_registration(&bytes)?,
+            other => {
+                if let Some(root) = cfg.root {
+                    // The root declares packages; fusing their constants
+                    // buys nothing and would put kernels in the image.
+                    t.compile_root(cfg.flags | CFlag::FusionDisabled, root).await?;
+                }
+                if let Some(RegistrationImage::Save(tx)) = other {
+                    let _ = tx.send(t.registration_image());
+                }
+            }
         }
         info!("root init time: {:?}", st.elapsed());
         Ok(t)
+    }
+
+    fn registration_image(&self) -> Result<Bytes> {
+        let nodes: Vec<(ExprId, &Node<GXRt<X>, X::UserEvent>)> =
+            self.nodes.iter().map(|(id, n)| (*id, n)).collect();
+        self.ctx
+            .write_registration(&nodes, &self.scope)
+            .map_err(|e| anyhow!("writing the registration image: {e:?}"))
+    }
+
+    fn restore_registration(&mut self, bytes: &[u8]) -> Result<()> {
+        let reg = self
+            .ctx
+            .read_registration(bytes)
+            .map_err(|e| anyhow!("reading the registration image: {e:?}"))?;
+        for (id, n) in reg.nodes {
+            self.ctx.rt.updated.insert(id, true);
+            self.nodes.insert(id, n);
+        }
+        self.scope = reg.scope;
+        Ok(())
     }
 
     async fn do_cycle(

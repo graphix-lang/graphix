@@ -18,14 +18,18 @@ use graphix_package::{
     Cdc, CustomResult, IndexSet, MainThreadHandle, Package, root_module_source,
 };
 use graphix_package_core::ProgramArgs;
-use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt};
+use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt, RegistrationImage};
 use input::InputReader;
 use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
 use std::{marker::PhantomData, process::exit};
-use tokio::{select, sync::mpsc};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+};
 
+mod cache;
 mod completion;
 mod input;
 pub mod lsp_backend;
@@ -148,6 +152,13 @@ pub struct Shell<X: GXExt> {
     /// do not run the users init module
     #[builder(default = "false")]
     no_init: bool,
+    /// Neither read nor write the registration image cache.
+    #[builder(default = "false")]
+    no_cache: bool,
+    /// Write the registration image and exit, for an installer that
+    /// wants the first real run to be warm.
+    #[builder(default = "false")]
+    warm: bool,
     /// define module resolvers to append to the default list
     #[builder(default)]
     module_resolvers: Vec<ResolverRef>,
@@ -233,6 +244,25 @@ impl<X: GXExt> Shell<X> {
                 .context("register package modules")?;
         }
         let root = root_module_source(&root_mods);
+        let cache = if self.no_cache {
+            None
+        } else {
+            match cache::RegistrationCache::new(&vfs_modules, &root) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    log::warn!("registration image cache unavailable: {e}");
+                    None
+                }
+            }
+        };
+        let (registration, pending) = match cache.as_ref().and_then(|c| c.load()) {
+            Some(bytes) => (Some(RegistrationImage::Load(bytes)), None),
+            None if cache.is_some() => {
+                let (tx, rx) = oneshot::channel();
+                (Some(RegistrationImage::Save(tx)), Some(rx))
+            }
+            None => (None, None),
+        };
         if let Some(main) = self.packages.iter().find_map(|p| p.main_program()) {
             if matches!(self.mode, Mode::Repl) {
                 self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
@@ -249,6 +279,9 @@ impl<X: GXExt> Shell<X> {
             mods.push(res);
         }
         let mut gx = GXConfig::builder(ctx, sub);
+        if let Some(r) = registration {
+            gx = gx.registration(r);
+        }
         if !self.resolver_factories.is_empty() {
             gx = gx.resolver_factories(std::mem::take(&mut self.resolver_factories));
         }
@@ -261,6 +294,17 @@ impl<X: GXExt> Shell<X> {
             .start()
             .await
             .context("loading initial modules")?;
+        if let (Some(rx), Some(cache)) = (pending, cache.as_ref()) {
+            match rx.await {
+                Ok(Ok(image)) => {
+                    if let Err(e) = cache.store(&image) {
+                        log::warn!("registration image not written: {e:#}");
+                    }
+                }
+                Ok(Err(e)) => log::warn!("registration image not taken: {e:#}"),
+                Err(_) => log::warn!("registration image not taken: runtime exited"),
+            }
+        }
         Ok(handle)
     }
 
@@ -345,6 +389,9 @@ impl<X: GXExt> Shell<X> {
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
+        if self.warm {
+            return Ok(());
+        }
         // Armed before the first cycle: a program may wedge inside
         // `load_env`, before the input loop exists.
         let sigint = {

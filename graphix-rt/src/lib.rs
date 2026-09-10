@@ -11,6 +11,7 @@
 //! library are supported by this runtime.
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
@@ -907,9 +908,20 @@ impl<X: GXExt> GXHandle<X> {
     }
 }
 
+/// What a runtime does about its registration image: restore one
+/// instead of compiling the root, or send the image of the root it
+/// compiled, taken before any cycle, so a warm start can restore it.
+pub enum RegistrationImage {
+    Load(Bytes),
+    Save(oneshot::Sender<Result<Bytes>>),
+}
+
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub struct GXConfig<X: GXExt> {
+    /// See [`RegistrationImage`].
+    #[builder(setter(strip_option), default)]
+    registration: Option<RegistrationImage>,
     /// The execution context with any builtins already registered
     ctx: ExecCtx<GXRt<X>, X::UserEvent>,
     /// The text of the root module

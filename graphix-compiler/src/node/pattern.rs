@@ -11,6 +11,7 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
+use netidx_core::pack::Pack;
 use netidx_value::{Typ, Value};
 use smallvec::{SmallVec, smallvec};
 use std::fmt::Debug;
@@ -18,7 +19,8 @@ use triomphe::Arc;
 
 /// The three shapes the exact-length slice pattern compiles against:
 /// a tuple (fixed arity), an array, or the native List.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
+#[pack(unwrapped)]
 pub enum SliceKind {
     Tuple,
     Array,
@@ -1547,5 +1549,193 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             n.node.delete(ctx)
         }
         self.structure_predicate.delete(ctx)
+    }
+}
+
+fn boxed_len(items: &[StructPatternNode]) -> usize {
+    netidx_core::pack::varint_len(items.len() as u64)
+        + items.iter().map(|p| p.encoded_len()).sum::<usize>()
+}
+
+fn boxed_encode(
+    items: &[StructPatternNode],
+    buf: &mut impl bytes::BufMut,
+) -> Result<(), netidx_core::pack::PackError> {
+    netidx_core::pack::encode_varint(items.len() as u64, buf);
+    for p in items {
+        p.encode(buf)?;
+    }
+    Ok(())
+}
+
+fn boxed_decode(
+    buf: &mut impl bytes::Buf,
+) -> Result<Box<[StructPatternNode]>, netidx_core::pack::PackError> {
+    let n = netidx_core::pack::decode_varint(buf)? as usize;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(StructPatternNode::decode(buf)?);
+    }
+    Ok(out.into_boxed_slice())
+}
+
+/// The compiled pattern is data: bind ids, literals and shapes.
+impl netidx_core::pack::Pack for StructPatternNode {
+    fn encoded_len(&self) -> usize {
+        1 + match self {
+            Self::Ignore => 0,
+            Self::Literal(v) => v.encoded_len(),
+            Self::Bind(id) => id.encoded_len(),
+            Self::Slice { kind, all, binds } => {
+                kind.encoded_len() + all.encoded_len() + boxed_len(binds)
+            }
+            Self::SlicePrefix { list, all, prefix, tail } => {
+                list.encoded_len()
+                    + all.encoded_len()
+                    + boxed_len(prefix)
+                    + tail.encoded_len()
+            }
+            Self::SliceSuffix { all, head, suffix } => {
+                all.encoded_len() + head.encoded_len() + boxed_len(suffix)
+            }
+            Self::Struct { all, binds } => {
+                all.encoded_len()
+                    + netidx_core::pack::varint_len(binds.len() as u64)
+                    + binds
+                        .iter()
+                        .map(|(n, i, p)| {
+                            n.encoded_len() + i.encoded_len() + p.encoded_len()
+                        })
+                        .sum::<usize>()
+            }
+            Self::Variant { tag, all, binds } => {
+                tag.encoded_len() + all.encoded_len() + boxed_len(binds)
+            }
+            Self::Abstract { id, all, rep, bind } => {
+                id.encoded_len()
+                    + all.encoded_len()
+                    + rep.encoded_len()
+                    + bind.encoded_len()
+            }
+            Self::Or { alts } => boxed_len(alts),
+        }
+    }
+
+    fn encode(
+        &self,
+        buf: &mut impl bytes::BufMut,
+    ) -> Result<(), netidx_core::pack::PackError> {
+        match self {
+            Self::Ignore => buf.put_u8(0),
+            Self::Literal(v) => {
+                buf.put_u8(1);
+                v.encode(buf)?
+            }
+            Self::Bind(id) => {
+                buf.put_u8(2);
+                id.encode(buf)?
+            }
+            Self::Slice { kind, all, binds } => {
+                buf.put_u8(3);
+                kind.encode(buf)?;
+                all.encode(buf)?;
+                boxed_encode(binds, buf)?
+            }
+            Self::SlicePrefix { list, all, prefix, tail } => {
+                buf.put_u8(4);
+                list.encode(buf)?;
+                all.encode(buf)?;
+                boxed_encode(prefix, buf)?;
+                tail.encode(buf)?
+            }
+            Self::SliceSuffix { all, head, suffix } => {
+                buf.put_u8(5);
+                all.encode(buf)?;
+                head.encode(buf)?;
+                boxed_encode(suffix, buf)?
+            }
+            Self::Struct { all, binds } => {
+                buf.put_u8(6);
+                all.encode(buf)?;
+                netidx_core::pack::encode_varint(binds.len() as u64, buf);
+                for (n, i, p) in binds.iter() {
+                    n.encode(buf)?;
+                    i.encode(buf)?;
+                    p.encode(buf)?;
+                }
+            }
+            Self::Variant { tag, all, binds } => {
+                buf.put_u8(7);
+                tag.encode(buf)?;
+                all.encode(buf)?;
+                boxed_encode(binds, buf)?
+            }
+            Self::Abstract { id, all, rep, bind } => {
+                buf.put_u8(8);
+                id.encode(buf)?;
+                all.encode(buf)?;
+                rep.encode(buf)?;
+                bind.encode(buf)?
+            }
+            Self::Or { alts } => {
+                buf.put_u8(9);
+                boxed_encode(alts, buf)?
+            }
+        }
+        Ok(())
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
+        use netidx_core::pack::{Pack, PackError};
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        Ok(match buf.get_u8() {
+            0 => Self::Ignore,
+            1 => Self::Literal(Pack::decode(buf)?),
+            2 => Self::Bind(Pack::decode(buf)?),
+            3 => Self::Slice {
+                kind: Pack::decode(buf)?,
+                all: Pack::decode(buf)?,
+                binds: boxed_decode(buf)?,
+            },
+            4 => Self::SlicePrefix {
+                list: Pack::decode(buf)?,
+                all: Pack::decode(buf)?,
+                prefix: boxed_decode(buf)?,
+                tail: Pack::decode(buf)?,
+            },
+            5 => Self::SliceSuffix {
+                all: Pack::decode(buf)?,
+                head: Pack::decode(buf)?,
+                suffix: boxed_decode(buf)?,
+            },
+            6 => {
+                let all = Pack::decode(buf)?;
+                let n = netidx_core::pack::decode_varint(buf)? as usize;
+                let mut binds = Vec::with_capacity(n);
+                for _ in 0..n {
+                    binds.push((
+                        Pack::decode(buf)?,
+                        Pack::decode(buf)?,
+                        Pack::decode(buf)?,
+                    ));
+                }
+                Self::Struct { all, binds: binds.into_boxed_slice() }
+            }
+            7 => Self::Variant {
+                tag: Pack::decode(buf)?,
+                all: Pack::decode(buf)?,
+                binds: boxed_decode(buf)?,
+            },
+            8 => Self::Abstract {
+                id: Pack::decode(buf)?,
+                all: Pack::decode(buf)?,
+                rep: Pack::decode(buf)?,
+                bind: Box::new(Pack::decode(buf)?),
+            },
+            9 => Self::Or { alts: boxed_decode(buf)? },
+            _ => return Err(PackError::UnknownTag),
+        })
     }
 }

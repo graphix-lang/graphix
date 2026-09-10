@@ -1,4 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
+use crate::image::nodes::{
+    NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
@@ -12,7 +15,9 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -486,7 +491,35 @@ impl<R: Rt, E: UserEvent> ListLit<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> ListLit<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::ListLit, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.n, buf)
+    }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use crate::node::collection::list;
         if self.n.is_empty() {
@@ -567,7 +600,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Array<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        }))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Array, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.n, buf)
+    }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
             // an empty producer is a constant: fired at init, stale

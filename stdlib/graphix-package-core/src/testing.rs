@@ -4,7 +4,7 @@ use graphix_compiler::{
     CFlag,
     expr::{ResolverRef, VfsResolver},
 };
-use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt};
+use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt, RegistrationImage};
 use netidx::publisher::Value;
 use poolshark::global::GPooled;
 use tokio::sync::mpsc;
@@ -130,7 +130,26 @@ where
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
-    init_inner(sub, register, resolvers, flags, false, setup).await
+    init_inner(sub, register, resolvers, flags, false, None, setup).await
+}
+
+/// A runtime that restores its registration from an image, or sends
+/// the image of the registration it compiled; see [`RegistrationImage`].
+pub async fn init_with_registration(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[PackageRef],
+    registration: RegistrationImage,
+) -> Result<TestCtx> {
+    init_inner(
+        sub,
+        register,
+        vec![],
+        BitFlags::empty(),
+        false,
+        Some(registration),
+        |_| {},
+    )
+    .await
 }
 
 /// Like [`init_with_flags_and_setup`] but builds an **lsp_mode** runtime —
@@ -151,7 +170,7 @@ where
         >,
     ),
 {
-    init_inner(sub, register, resolvers, flags, true, setup).await
+    init_inner(sub, register, resolvers, flags, true, None, setup).await
 }
 
 async fn init_inner<F>(
@@ -160,6 +179,7 @@ async fn init_inner<F>(
     resolvers: Vec<ResolverRef>,
     flags: BitFlags<CFlag>,
     lsp_mode: bool,
+    registration: Option<RegistrationImage>,
     setup: F,
 ) -> Result<TestCtx>
 where
@@ -183,16 +203,15 @@ where
     let root = graphix_package::root_module_source(&root_mods);
     let mut all_resolvers = vec![VfsResolver::new(modules)];
     all_resolvers.extend(resolvers);
-    Ok(TestCtx {
-        rt: GXConfig::builder(ctx, sub)
-            .root(root)
-            .resolvers(all_resolvers)
-            .flags(flags)
-            .lsp_mode(lsp_mode)
-            .build()?
-            .start()
-            .await?,
-    })
+    let mut cfg = GXConfig::builder(ctx, sub)
+        .root(root)
+        .resolvers(all_resolvers)
+        .flags(flags)
+        .lsp_mode(lsp_mode);
+    if let Some(r) = registration {
+        cfg = cfg.registration(r);
+    }
+    Ok(TestCtx { rt: cfg.build()?.start().await? })
 }
 
 /// Evaluate a graphix expression and return its Value.

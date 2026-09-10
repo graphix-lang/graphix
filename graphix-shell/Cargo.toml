@@ -68,6 +68,8 @@ krb5_iov = [
 slow-tests = []
 
 [dependencies]
+bytes = { workspace = true }
+dirs = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 clap = { workspace = true }

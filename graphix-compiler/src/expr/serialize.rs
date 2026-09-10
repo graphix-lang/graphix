@@ -10,7 +10,7 @@
 //! build writes and reads a blob, so a decode error is an internal bug.
 
 use crate::{
-    SourcePosition,
+    LambdaId, SourcePosition,
     expr::{
         Decorations, Expr, ExprId, ExprKind, Origin, Sig, VfsEntry, get_origin,
         swap_origin,
@@ -182,7 +182,9 @@ impl Pack for FnType {
         // The full cell pairs, not the declared-quantifier view: anonymous
         // cells carry inference facts that must cross the wire.
         let constraints = self.cell_constraint_pairs();
-        self.args.encoded_len()
+        let own =
+            if image::is_encoding() { self.lambda_ids.own().encoded_len() } else { 0 };
+        own + self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
             + <Vec<(TVar, Type)> as Pack>::encoded_len(&constraints)
@@ -191,6 +193,9 @@ impl Pack for FnType {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            self.lambda_ids.own().encode(buf)?;
+        }
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
@@ -201,6 +206,11 @@ impl Pack for FnType {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let own = if image::is_decoding() {
+            <Option<LambdaId> as Pack>::decode(buf)?
+        } else {
+            None
+        };
         let args = <Arc<[FnArgType]> as Pack>::decode(buf)?;
         let vargs = <Option<Type> as Pack>::decode(buf)?;
         let rtype = <Type as Pack>::decode(buf)?;
@@ -218,6 +228,11 @@ impl Pack for FnType {
         for (tv, tc) in constraints {
             tv.add_cell_constraint(tc);
         }
+        // Provenance only; excluded from FnType identity.
+        let lambda_ids = LambdaIds::default();
+        if let Some(id) = own {
+            lambda_ids.set_id(id);
+        }
         Ok(FnType {
             args,
             vargs,
@@ -225,8 +240,7 @@ impl Pack for FnType {
             throws,
             explicit_throws,
             quantifiers,
-            // Provenance only; excluded from FnType identity.
-            lambda_ids: LambdaIds::default(),
+            lambda_ids,
         })
     }
 }

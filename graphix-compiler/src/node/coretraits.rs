@@ -131,6 +131,12 @@ pub struct CoreHookSites<R: Rt, E: UserEvent>(
     ahash::AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
 );
 
+impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl<R: Rt, E: UserEvent> Default for CoreHookSites<R, E> {
     fn default() -> Self {
         Self(ahash::AHashMap::new())

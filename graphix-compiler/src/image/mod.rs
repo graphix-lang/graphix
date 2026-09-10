@@ -10,10 +10,17 @@
 //! resolves into what was decoded earlier, so the runtime owns an
 //! [`ImageDecoder`] and opens a [`DecodeImage`] over it per read.
 
+mod defs;
 mod env;
+pub mod nodes;
+mod registration;
+
+pub(crate) use env::{lexical_decode, lexical_encode, lexical_len};
+pub use nodes::NOT_IMAGED;
+pub use registration::{NOT_QUIESCENT, REGISTRATION_FORMAT, Registration};
 
 use crate::{
-    BindId, LambdaId, SourcePosition,
+    BindId, CFlag, DynScope, ErrorHandler, LambdaId, Scope, SourcePosition,
     expr::{ExprId, Origin, Source},
     ids::IdRelocation,
     shared_map,
@@ -24,6 +31,7 @@ use crate::{
 };
 use ahash::AHashMap;
 use bytes::{Buf, BufMut};
+use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use parking_lot::RwLock;
 use std::{
@@ -81,6 +89,8 @@ struct IdMaps {
 pub struct ImageEncoder {
     pub(crate) maps: shared_map::EncodeTable,
     ids: IdMaps,
+    handlers: AHashMap<usize, u64>,
+    pinned_handlers: Vec<ErrorHandler>,
     origins: AHashMap<usize, u64>,
     pinned_origins: Vec<Arc<Origin>>,
     tvars: AHashMap<usize, u64>,
@@ -100,6 +110,8 @@ impl ImageEncoder {
         ImageEncoder {
             maps: shared_map::EncodeTable::default(),
             ids: IdMaps::default(),
+            handlers: AHashMap::new(),
+            pinned_handlers: Vec::new(),
             origins: AHashMap::new(),
             pinned_origins: Vec::new(),
             tvars: AHashMap::new(),
@@ -142,6 +154,7 @@ impl ImageEncoder {
 
 pub struct ImageDecoder {
     pub(crate) maps: shared_map::DecodeTable,
+    handlers: Vec<ErrorHandler>,
     origins: Vec<Arc<Origin>>,
     tvars: Vec<TVar>,
     cells: Vec<Arc<RwLock<TCell>>>,
@@ -153,6 +166,7 @@ impl ImageDecoder {
     pub fn new(counts: IdCounts) -> Self {
         ImageDecoder {
             maps: shared_map::DecodeTable::default(),
+            handlers: Vec::new(),
             origins: Vec::new(),
             tvars: Vec::new(),
             cells: Vec::new(),
@@ -309,6 +323,117 @@ pub(crate) fn is_encoding() -> bool {
 
 pub(crate) fn is_decoding() -> bool {
     DECODER.get().is_some()
+}
+
+pub(crate) fn flags_len(_flags: BitFlags<CFlag>) -> usize {
+    8
+}
+
+pub(crate) fn flags_encode(
+    flags: BitFlags<CFlag>,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    buf.put_u64(flags.bits());
+    Ok(())
+}
+
+pub(crate) fn flags_decode(buf: &mut impl Buf) -> Result<BitFlags<CFlag>, PackError> {
+    if buf.remaining() < 8 {
+        return Err(PackError::BufferShort);
+    }
+    BitFlags::from_bits(buf.get_u64()).map_err(|_| PackError::InvalidFormat)
+}
+
+/// A dynamic scope is the chain of handlers a `?` sees; each handler is
+/// shared by every node under its catch, so it is an object: written
+/// once, parent first, its counters pristine before any cycle.
+fn dynscope_len(scope: &DynScope) -> usize {
+    match scope.handler() {
+        None => 1,
+        Some(h) => {
+            let key = h.identity();
+            match encoding(|e| e.handlers.get(&key).copied()).flatten() {
+                Some(id) => 1 + varint_len(id),
+                None => {
+                    let (bind, expr) = h.id();
+                    1 + bind.encoded_len()
+                        + expr.encoded_len()
+                        + dynscope_len(&h.parent())
+                }
+            }
+        }
+    }
+}
+
+fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackError> {
+    let Some(h) = scope.handler() else {
+        buf.put_u8(2);
+        return Ok(());
+    };
+    let key = h.identity();
+    if let Some(id) = encoding(|e| e.handlers.get(&key).copied()).flatten() {
+        buf.put_u8(REF);
+        encode_varint(id, buf);
+        return Ok(());
+    }
+    if h.generation() != 0 || h.has_nested_errors() {
+        return Err(PackError::Application(registration::NOT_QUIESCENT));
+    }
+    buf.put_u8(DEF);
+    let (bind, expr) = h.id();
+    bind.encode(buf)?;
+    expr.encode(buf)?;
+    dynscope_encode(&h.parent(), buf)?;
+    encoding(|e| {
+        let id = e.pinned_handlers.len() as u64;
+        e.handlers.insert(key, id);
+        e.pinned_handlers.push(h.clone());
+    });
+    Ok(())
+}
+
+fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    match buf.get_u8() {
+        2 => Ok(DynScope::root()),
+        REF => {
+            let id = decode_varint(buf)? as usize;
+            let h = decoding(|d| d.handlers.get(id).cloned())
+                .flatten()
+                .ok_or(PackError::InvalidFormat)?;
+            Ok(DynScope::from_handler(h))
+        }
+        DEF => {
+            let bind = BindId::decode(buf)?;
+            let expr = ExprId::decode(buf)?;
+            let parent = dynscope_decode(buf)?;
+            let scope = parent.with_catch((bind, expr));
+            let h = scope.handler().expect("with_catch installs a handler");
+            decoding(|d| d.handlers.push(h));
+            Ok(scope)
+        }
+        _ => Err(PackError::UnknownTag),
+    }
+}
+
+pub(crate) fn scope_len(scope: &Scope) -> usize {
+    scope.lexical.encoded_len() + dynscope_len(&scope.dynamic)
+}
+
+pub(crate) fn scope_encode(
+    scope: &Scope,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    scope.lexical.encode(buf)?;
+    dynscope_encode(&scope.dynamic, buf)
+}
+
+pub(crate) fn scope_decode(buf: &mut impl Buf) -> Result<Scope, PackError> {
+    let lexical = Pack::decode(buf)?;
+    let dynamic = dynscope_decode(buf)?;
+    Ok(Scope { lexical, dynamic })
 }
 
 pub(crate) fn pos_len(p: &SourcePosition) -> usize {

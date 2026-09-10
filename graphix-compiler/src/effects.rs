@@ -5,7 +5,8 @@
 
 /// The sync/async lattice: `Sync ⊔ Sync = Sync`, everything else is
 /// `Async`. `Async` is the conservative default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, netidx_derive::Pack)]
+#[pack(unwrapped)]
 pub enum EffectKind {
     /// Same-cycle: input on cycle K → output (or nothing) on cycle K.
     Sync,
@@ -105,7 +106,8 @@ impl From<Effect> for BuiltinFacts {
 /// How a lambda recurses on its own `LambdaId`. Diagnostic only: the
 /// operational gate is `GXLambda::tail_loop` plus the per-call-site
 /// `is_self_tail_call` flag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, netidx_derive::Pack)]
+#[pack(unwrapped)]
 pub enum RecursionKind {
     /// No call in the body reaches this lambda; also the default for a
     /// lambda the analysis never reached.
