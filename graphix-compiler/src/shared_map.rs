@@ -117,15 +117,30 @@ pub struct EncodeSession<'a> {
 
 impl<'a> EncodeSession<'a> {
     pub fn new(table: &'a mut EncodeTable) -> Self {
-        let prev = ENCODE.replace(Some(NonNull::from(table)));
+        let prev = install_encode(Some(NonNull::from(table)));
         EncodeSession { prev, _table: PhantomData }
     }
 }
 
 impl Drop for EncodeSession<'_> {
     fn drop(&mut self) {
-        ENCODE.set(self.prev);
+        install_encode(self.prev);
     }
+}
+
+/// Install `table` for this thread and return the previous one; the
+/// caller's guard must hold the `&mut` it came from until it restores
+/// the previous pointer.
+pub(crate) fn install_encode(
+    table: Option<NonNull<EncodeTable>>,
+) -> Option<NonNull<EncodeTable>> {
+    ENCODE.replace(table)
+}
+
+pub(crate) fn install_decode(
+    table: Option<NonNull<DecodeTable>>,
+) -> Option<NonNull<DecodeTable>> {
+    DECODE.replace(table)
 }
 
 /// Installs `table` for every [`SharedMap`]/[`SharedSet`] decoded on
@@ -137,14 +152,14 @@ pub struct DecodeSession<'a> {
 
 impl<'a> DecodeSession<'a> {
     pub fn new(table: &'a mut DecodeTable) -> Self {
-        let prev = DECODE.replace(Some(NonNull::from(table)));
+        let prev = install_decode(Some(NonNull::from(table)));
         DecodeSession { prev, _table: PhantomData }
     }
 }
 
 impl Drop for DecodeSession<'_> {
     fn drop(&mut self) {
-        DECODE.set(self.prev);
+        install_decode(self.prev);
     }
 }
 
@@ -285,33 +300,61 @@ where
     }
 }
 
+/// The walkers behind the `Pack` impls, for a map whose values need
+/// their own codec: a map of maps shares at both levels only when the
+/// inner maps go through these too.
+pub(crate) fn map_len<K, V>(
+    map: &Map<K, V>,
+    pair_len: &mut impl FnMut(&K, &V) -> usize,
+) -> usize
+where
+    K: Ord + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    with_encode(|t| tree_len(t, map.root(), pair_len))
+}
+
+pub(crate) fn map_encode<K, V, B: BufMut>(
+    map: &Map<K, V>,
+    buf: &mut B,
+    pair_encode: &mut impl FnMut(&K, &V, &mut B) -> Result<(), PackError>,
+) -> Result<(), PackError>
+where
+    K: Ord + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    with_encode(|t| tree_encode(t, map.root(), buf, pair_encode))
+}
+
+pub(crate) fn map_decode<K, V, B: Buf>(
+    buf: &mut B,
+    pair_decode: &mut impl FnMut(&mut B) -> Result<(K, V), PackError>,
+) -> Result<Map<K, V>, PackError>
+where
+    K: Ord + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    Ok(Map::from_root(with_decode(|t| tree_decode(t, buf, pair_decode))?))
+}
+
 impl<K, V> Pack for SharedMap<K, V>
 where
     K: Ord + Clone + Pack + Send + Sync + 'static,
     V: Clone + Pack + Send + Sync + 'static,
 {
     fn encoded_len(&self) -> usize {
-        with_encode(|t| {
-            tree_len(t, self.0.root(), &mut |k: &K, v: &V| {
-                k.encoded_len() + v.encoded_len()
-            })
-        })
+        map_len(&self.0, &mut |k: &K, v: &V| k.encoded_len() + v.encoded_len())
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        with_encode(|t| {
-            tree_encode(t, self.0.root(), buf, &mut |k: &K, v: &V, buf| {
-                k.encode(buf)?;
-                v.encode(buf)
-            })
+        map_encode(&self.0, buf, &mut |k: &K, v: &V, buf| {
+            k.encode(buf)?;
+            v.encode(buf)
         })
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let tree = with_decode(|t| {
-            tree_decode(t, buf, &mut |buf| Ok((K::decode(buf)?, V::decode(buf)?)))
-        })?;
-        Ok(SharedMap(Map::from_root(tree)))
+        Ok(SharedMap(map_decode(buf, &mut |buf| Ok((K::decode(buf)?, V::decode(buf)?)))?))
     }
 }
 

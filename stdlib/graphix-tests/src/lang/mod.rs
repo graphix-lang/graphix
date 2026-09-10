@@ -11,6 +11,7 @@ mod dense_deltas;
 mod errors;
 mod functions;
 mod fusion;
+mod image;
 mod interfaces;
 mod lists;
 mod maps;

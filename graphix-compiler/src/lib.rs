@@ -9,6 +9,8 @@ extern crate netidx_core;
 extern crate combine;
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
+mod ids;
 
 pub mod abstract_value;
 pub mod analysis;
@@ -19,6 +21,8 @@ pub mod env;
 pub mod expr;
 pub mod fusion;
 pub mod ide;
+pub use ids::IdRelocation;
+pub mod image;
 pub mod node;
 pub mod node_shape;
 pub mod perfdbg;
@@ -267,7 +271,7 @@ macro_rules! defetyp {
 
 defetyp!(CAST_ERR, CAST_ERR_TAG, "InvalidCast", "Error<`{}(string)>");
 
-atomic_id!(LambdaId);
+image_id!(LambdaId);
 
 impl From<u64> for LambdaId {
     fn from(v: u64) -> Self {
@@ -275,9 +279,9 @@ impl From<u64> for LambdaId {
     }
 }
 
-atomic_id!(LambdaInstanceId);
+image_id!(LambdaInstanceId);
 
-atomic_id!(BindId);
+image_id!(BindId);
 
 impl From<u64> for BindId {
     fn from(v: u64) -> Self {

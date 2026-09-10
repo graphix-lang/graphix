@@ -15,8 +15,9 @@ use crate::{
         Decorations, Expr, ExprId, ExprKind, Origin, Sig, VfsEntry, get_origin,
         swap_origin,
     },
+    image,
     profile::{self, Phase},
-    typ::{AbstractId, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
+    typ::{AbstractId, FnArgType, FnType, TVar, TraitId, Type, fntyp::LambdaIds},
 };
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
@@ -64,15 +65,28 @@ impl Pack for AbstractId {
     }
 }
 
+/// Under an image session the id and origin travel with the
+/// expression; the syntax codec mints a fresh id and takes the unit's
+/// origin.
 impl Pack for Expr {
     fn encoded_len(&self) -> usize {
-        <i32 as Pack>::encoded_len(&self.pos.line)
+        let identity = if image::is_encoding() {
+            self.id.encoded_len() + image::origin_len(&self.ori)
+        } else {
+            0
+        };
+        identity
+            + <i32 as Pack>::encoded_len(&self.pos.line)
             + <i32 as Pack>::encoded_len(&self.pos.column)
             + self.kind.encoded_len()
             + self.dec.encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            self.id.encode(buf)?;
+            image::origin_encode(&self.ori, buf)?;
+        }
         <i32 as Pack>::encode(&self.pos.line, buf)?;
         <i32 as Pack>::encode(&self.pos.column, buf)?;
         self.kind.encode(buf)?;
@@ -80,22 +94,41 @@ impl Pack for Expr {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let (id, ori) = if image::is_decoding() {
+            (ExprId::decode(buf)?, image::origin_decode(buf)?)
+        } else {
+            (ExprId::new(), get_origin())
+        };
         let line = <i32 as Pack>::decode(buf)?;
         let column = <i32 as Pack>::decode(buf)?;
         let kind = <ExprKind as Pack>::decode(buf)?;
         let dec = <Option<Box<Decorations>> as Pack>::decode(buf)?;
-        Ok(Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos: SourcePosition { line, column },
-            kind,
-            dec,
-        })
+        Ok(Expr { id, ori, pos: SourcePosition { line, column }, kind, dec })
     }
 }
 
+impl Pack for TraitId {
+    fn encoded_len(&self) -> usize {
+        pack::varint_len(self.inner())
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        Ok(pack::encode_varint(self.inner(), buf))
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        Ok(TraitId::from_inner(pack::decode_varint(buf)?))
+    }
+}
+
+/// Under an image session the wrapper and its cell are shared objects
+/// ([`image::tvar_encode`]); the syntax codec writes the cell's
+/// contents and mints a fresh variable.
 impl Pack for TVar {
     fn encoded_len(&self) -> usize {
+        if image::is_encoding() {
+            return image::tvar_len(self);
+        }
         let (bound, constraints): (Option<Type>, Vec<Type>) = {
             let cell = self.read().typ.clone();
             let cell = cell.read();
@@ -105,6 +138,9 @@ impl Pack for TVar {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            return image::tvar_encode(self, buf);
+        }
         self.name.encode(buf)?;
         let (bound, constraints): (Option<Type>, Vec<Type>) = {
             let cell = self.read().typ.clone();
@@ -116,6 +152,9 @@ impl Pack for TVar {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if image::is_decoding() {
+            return image::tvar_decode(buf);
+        }
         let name = <ArcStr as Pack>::decode(buf)?;
         let bound = <Option<Type> as Pack>::decode(buf)?;
         let constraints = <Vec<Type> as Pack>::decode(buf)?;

@@ -17,7 +17,7 @@ use std::{
 };
 use triomphe::Arc;
 
-atomic_id!(TVarId);
+image_id!(TVarId);
 
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     use poolshark::local::LPooled;
@@ -325,6 +325,30 @@ impl TVar {
                 typ: Arc::new(RwLock::new(TCell::bound(typ))),
             }),
         })))
+    }
+
+    /// A wrapper over an existing cell, as an image restores it.
+    pub(crate) fn from_parts(
+        name: ArcStr,
+        id: TVarId,
+        frozen: bool,
+        cell: Arc<RwLock<TCell>>,
+    ) -> Self {
+        Self(std::mem::ManuallyDrop::new(Arc::new(TVarInner {
+            name,
+            typ: RwLock::new(TVarInnerInner { id, frozen, typ: cell }),
+        })))
+    }
+
+    /// The wrapper's id and frozen flag, and its cell.
+    pub(crate) fn parts(&self) -> (TVarId, bool, Arc<RwLock<TCell>>) {
+        let inner = self.read();
+        (inner.id, inner.frozen, inner.typ.clone())
+    }
+
+    /// Identity of the wrapper: equal for clones of one `TVar`.
+    pub(crate) fn wrapper_addr(&self) -> usize {
+        Arc::as_ptr(&*self.0) as *const () as usize
     }
 
     /// Add a conjunct to this var's cell constraints (deduped).

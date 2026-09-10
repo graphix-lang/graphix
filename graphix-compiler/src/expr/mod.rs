@@ -46,7 +46,7 @@ mod test;
 pub const VNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("^[a-z][a-z0-9_]*$").unwrap());
 
-atomic_id!(ExprId);
+image_id!(ExprId);
 
 const DEFAULT_ORIGIN: LazyLock<Arc<Origin>> =
     LazyLock::new(|| Arc::new(Origin::default()));

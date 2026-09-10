@@ -19,6 +19,7 @@ use compact_str::CompactString;
 pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, 16>;
 pub type Set<K> = immutable_chunkmap::set::Set<K, 16>;
 use netidx_core::path::Path;
+use netidx_derive::Pack;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{fmt, iter, mem, ops::Bound};
@@ -66,7 +67,8 @@ impl Clone for Bind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 /// The representation of a Graphix-minted abstract type (`type T =
 /// Abstract<rep>`), registered globally but consulted only where the
 /// definition is visible, which gates `T(v)`, `x.0` and `T(x)`.
@@ -135,7 +137,8 @@ pub struct ImportEntry {
 
 /// A scope's explicit namespace: what its `use` declarations
 /// imported. Lives in [`Env::names`], keyed by the scope path.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Pack)]
+#[pack(unwrapped)]
 pub struct ScopeNames {
     pub imports: Map<CompactString, ImportEntry>,
     /// Glob (`use m::*`) source modules, in declaration order.
@@ -164,7 +167,8 @@ pub struct TraitDef {
     pub ori: Arc<Origin>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub struct TraitMethodDef {
     pub name: ArcStr,
     /// The declared signature with the receiver `self` constrained by
@@ -185,7 +189,8 @@ pub struct TraitMethodDef {
 
 /// Which trait method a dispatcher binding stands for
 /// ([`Env::trait_methods`]).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Pack)]
+#[pack(unwrapped)]
 pub struct TraitMethodRef {
     pub trait_id: TraitId,
     pub index: usize,

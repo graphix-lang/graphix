@@ -36,7 +36,7 @@ pub(crate) use normalize::{NormKey, norm_key};
 mod print;
 mod setops;
 pub(crate) mod tval;
-mod tvar;
+pub(crate) mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType};
 pub use tval::TVal;
@@ -291,6 +291,10 @@ impl TraitId {
 
     pub fn inner(&self) -> u64 {
         self.0
+    }
+
+    pub fn from_inner(i: u64) -> Self {
+        TraitId(i)
     }
 }
 
