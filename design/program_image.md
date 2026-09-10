@@ -212,20 +212,28 @@ a definition's IDs. A later call still allocates fresh locals and state
 owners above the block, while captures keep the identities of the
 bindings actually captured.
 
-### Env: the lexical edit log
+### Env: maps packed with their sharing (built)
 
 Only four `Env` fields are lexical: `binds`, `modules`, `typedefs`,
 `traits` (`graphix-compiler/src/env.rs:330`). Everything else is
 global and is written once, as the final tables.
 
-The lexical maps are built by a sequence of inserts, and each
-definition's `def_env` is a point in that sequence. The image stores
-the insert log with a snapshot marker at every definition's point.
-Entries between two markers are sorted, so decode builds each stretch
-with `insert_many`; a snapshot is a persistent clone at the marker,
-O(1) and sharing structure exactly as the original build did. Within a
-module the snapshots are a prefix chain of one map, so the log is close
-to minimal. `immutable_chunkmap`'s internals stay private.
+A definition's `def_env` is a persistent snapshot sharing all but a
+root path with its neighbours, so the image packs the maps with their
+sharing instead of replaying their construction.
+`immutable-chunkmap` 2.2 exposes the tree's structure (`Map::root`,
+`NodeRef`, the unsafe `NodeHandle::create`, `Map::from_root`), and
+`graphix-compiler/src/shared_map.rs` packs a map through it: each node
+is written once and referenced afterwards, a definition before its
+subtrees and numbered after them, so the decoder is recursive and a
+reference names a node by the rank at which the decoder completed it.
+A snapshot whose maps are unchanged costs one reference per field.
+The node tables belong to the caller — an `EncodeTable` per image
+write, a `DecodeTable` per runtime so an instance decoded later
+resolves into nodes decoded earlier — installed for a call by a
+session guard. `encoded_len` is an upper bound: the image writer
+reserves it and patches the prefix after encoding, and no
+length-wrapped derive holds a shared map.
 
 ### TVars: two levels of sharing
 
