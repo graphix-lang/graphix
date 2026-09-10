@@ -50,8 +50,15 @@ its dual `find_producers` — type-correct by construction, since under
 structural HM inference a random parse-valid program typechecks
 essentially never; `--check` rejection is a drift canary, not the
 validity mechanism), and **reactive generation** (`generate/reactive.rs`:
-counter/accumulator/cross-cycle/sample-chain templates with an
-injection schedule). Statement slots may embed a whole generated
+counter/accumulator/cross-cycle/sample-chain/slept-arm/dynamic-reload
+templates with an injection schedule, plus `seq`/`seqq` ceremonies:
+the trigger is an injected input or a burst counter restarted per
+injection, so a second trigger lands while a run is busy and `seq`
+drops it where `seqq` queues it; the body draws `let`, issued calls,
+connects, `do`, `until`, `try … with`, an abort into a catch sink and
+`println` steps, and every run is observable through an accumulator,
+a run counter and the last block value, all present from init; a
+body that can stall or abort stays out of the always-firing tail set). Statement slots may embed a whole generated
 subprogram as a typed block (`subprogram_depth`, default 2; 50/50
 sharing the outer scope vs closed), and slot counts are a geometric
 draw so long dataflow chains appear organically — composition adds

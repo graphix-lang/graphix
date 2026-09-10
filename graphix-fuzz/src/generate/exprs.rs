@@ -476,6 +476,7 @@ pub(super) fn gen_typed(
                         "select ({a} {op} {b}) {{ {} as n => n, _ => {dflt} }}",
                         ty.render()
                     ),
+                    _ if ctx.no_catch => format!("({a} {op} {b})$"),
                     _ => format!("{{ catch(e) {dflt}; (({a} {op} {b}))? }}"),
                 };
             }

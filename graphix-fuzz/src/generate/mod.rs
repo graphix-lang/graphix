@@ -187,6 +187,8 @@ pub(crate) struct GenCtx {
     /// targeted collisions draw from.
     collision_pool: Vec<String>,
     next: usize,
+    /// Inside a seq body, where a `catch` is refused.
+    no_catch: bool,
 }
 
 fn is_type_keyword(name: &str) -> bool {
@@ -195,7 +197,7 @@ fn is_type_keyword(name: &str) -> bool {
 
 impl GenCtx {
     fn new() -> Self {
-        GenCtx { vars: Vec::new(), collision_pool: Vec::new(), next: 0 }
+        GenCtx { vars: Vec::new(), collision_pool: Vec::new(), next: 0, no_catch: false }
     }
 
     fn fresh(&mut self) -> String {

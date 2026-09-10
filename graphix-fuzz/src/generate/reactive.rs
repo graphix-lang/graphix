@@ -29,7 +29,49 @@ pub struct ReactiveStats {
     pub subprograms: usize,
     /// Block-valued bindings whose body connects to an outer target.
     pub nested_connects: usize,
+    /// `seq` ceremonies (busy-drop) emitted.
+    pub seqs: usize,
+    /// `seqq` ceremonies (queued) emitted.
+    pub seqqs: usize,
+    /// Ceremonies whose trigger is a burst, so a second trigger lands
+    /// while the first run is busy.
+    pub burst_ceremonies: usize,
+    /// Ceremony steps by kind, in [`STEP_KINDS`] order.
+    pub steps: [usize; STEP_KINDS.len()],
 }
+
+/// The statement kinds a ceremony body draws from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepKind {
+    /// `let x = e`: call-free, completes at entry.
+    Let,
+    /// `let x = h(e)`: an issued call to a generated lambda.
+    Call,
+    /// `acc <- e`: a generated connect to an outer accumulator.
+    Connect,
+    /// `do { let y = e; acc <- e }`: several statements as one arm.
+    Do,
+    /// `until cond`: a wait on a bool level.
+    Until,
+    /// `let t = try { bad(e)? } with(e) { e }`: the error branch taken
+    /// on even arguments.
+    Try,
+    /// `let w = bad(e)?`: an abort path into the enclosing catch.
+    Abort,
+    /// `println("..")`: a waitable effect whose output the oracle compares.
+    Print,
+}
+
+pub const STEP_KINDS: [StepKind; 8] = [
+    StepKind::Let,
+    StepKind::Call,
+    StepKind::Connect,
+    StepKind::Do,
+    StepKind::Until,
+    StepKind::Try,
+    StepKind::Abort,
+    StepKind::Print,
+];
 
 /// Generate one reactive wrapper (schedule header + body) with the
 /// default profile. A slice of the lane is metamorphic twin programs.
@@ -95,7 +137,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
             }
             continue;
         }
-        match rng.below(14) {
+        match rng.below(17) {
             0 | 1 => counter(&mut ctx, rng, &mut stmts, &mut stats),
             2..=4 => accumulator(
                 &mut ctx,
@@ -118,7 +160,15 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
                 &mut stats,
                 &mut fires_per_injection,
             ),
-            _ => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
+            13 => dyn_reload(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut ndyn),
+            _ => ceremony(
+                &mut ctx,
+                rng,
+                &inputs,
+                &mut stmts,
+                &mut stats,
+                &mut fires_per_injection,
+            ),
         }
     }
     // if nothing input-driven landed, add one scalar accumulator
@@ -482,6 +532,181 @@ fn dyn_reload(
     ctx.push(v, I64);
 }
 
+/// A `seq`/`seqq` ceremony. The trigger is an injected input (one run
+/// per epoch) or a burst counter restarted by an injection, whose two
+/// triggers land a cycle apart so `seq` drops the second and `seqq`
+/// queues it. The body is a run of [`StepKind`]s over the enriched
+/// vocabulary plus the trigger and earlier step lets; every run is
+/// observable through the accumulator its connects write, a run
+/// counter and the last block value, all present from init. A body
+/// that can stall (an `until` on a level nothing in the program is
+/// guaranteed to flip) or abort keeps its cells out of
+/// `fires_per_injection`.
+fn ceremony(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
+    fires_per_injection: &mut Vec<String>,
+) {
+    let (input, ity) = &inputs[rng.below(inputs.len())];
+    let burst = chance(rng, 0.5);
+    let (trigger, trigger_ty, burst_counter) = if burst {
+        st.burst_ceremonies += 1;
+        let b = ctx.fresh();
+        let req = ctx.fresh();
+        stmts.push(format!("let {b} = {input} ~ i64:0"));
+        stmts.push(format!(
+            "{b} <- select {b} {{ s if s < i64:3 => s + i64:1, _ => never() }}"
+        ));
+        stmts.push(format!(
+            "let {req} = select {b} {{ i64:1 | i64:2 => {b}, _ => never() }}"
+        ));
+        ctx.push(b.clone(), I64);
+        (req, I64, Some(b))
+    } else {
+        (input.clone(), ity.clone(), None)
+    };
+    let h = ctx.fresh();
+    let x = ctx.fresh();
+    let hbody = {
+        let mark = ctx.mark();
+        ctx.push(x.clone(), I64);
+        let e = exprs::gen_typed(ctx, rng, &I64, 1);
+        ctx.truncate(mark);
+        e
+    };
+    stmts.push(format!(
+        "let {h} = |{x}: i64| -> i64 {x} * i64:{} + ({hbody})",
+        1 + rng.below(4)
+    ));
+    ctx.push(h.clone(), GenType::Fn { params: vec![I64], ret: Box::new(I64) });
+    let bad = ctx.fresh();
+    stmts.push(format!(
+        "let {bad} = |{x}: i64| -> [i64, Error<`Oops>] \
+         select ({x} % i64:2) {{ i64:0 => error(`Oops), _ => {x} }}"
+    ));
+    let cerr = ctx.fresh();
+    let nerr = ctx.fresh();
+    stmts.push(format!("let {cerr}: Error<Any> = never()"));
+    stmts.push(format!("catch(e) {cerr} <- e"));
+    stmts.push(format!("let {nerr} = i64:0"));
+    stmts.push(format!("{nerr} <- {cerr} ~ ({nerr} + i64:1)"));
+    ctx.push(nerr, I64);
+    let acc = ctx.fresh();
+    stmts.push(format!("let {acc} = i64:0"));
+    ctx.push(acc.clone(), I64);
+    let bool_inputs: Vec<&str> = inputs
+        .iter()
+        .filter_map(|(n, t)| (*t == GenType::Bool).then_some(n.as_str()))
+        .collect();
+    let mut body: Vec<String> = Vec::new();
+    let mut reliable = true;
+    let mark = ctx.mark();
+    ctx.push(trigger.clone(), trigger_ty);
+    ctx.no_catch = true;
+    let n_steps = 1 + rng.below(4);
+    for i in 0..n_steps {
+        let kind = STEP_KINDS[rng.below(STEP_KINDS.len())];
+        st.steps[STEP_KINDS.iter().position(|k| *k == kind).unwrap()] += 1;
+        match kind {
+            StepKind::Let => {
+                let v = ctx.fresh();
+                let e = exprs::gen_typed(ctx, rng, &I64, 2);
+                body.push(format!("let {v} = {e}"));
+                ctx.push(v, I64);
+            }
+            StepKind::Call => {
+                let v = ctx.fresh();
+                let e = exprs::gen_typed(ctx, rng, &I64, 1);
+                body.push(format!("let {v} = {h}({e})"));
+                ctx.push(v, I64);
+            }
+            StepKind::Connect => {
+                let e = exprs::gen_typed(ctx, rng, &I64, 2);
+                body.push(format!("{acc} <- {e}"));
+            }
+            StepKind::Do => {
+                let y = ctx.fresh();
+                let m = ctx.mark();
+                let e0 = exprs::gen_typed(ctx, rng, &I64, 1);
+                ctx.push(y.clone(), I64);
+                let e1 = exprs::gen_typed(ctx, rng, &I64, 1);
+                ctx.truncate(m);
+                body.push(format!("do {{ let {y} = {e0}; {acc} <- {e1} }}"));
+            }
+            StepKind::Until => {
+                let cond = match (&burst_counter, bool_inputs.is_empty()) {
+                    (Some(b), _) if chance(rng, 0.6) => format!("({b} >= i64:3)"),
+                    (_, false) if chance(rng, 0.7) => {
+                        reliable = false;
+                        bool_inputs[rng.below(bool_inputs.len())].to_string()
+                    }
+                    _ => {
+                        reliable = false;
+                        exprs::gen_typed(ctx, rng, &GenType::Bool, 1)
+                    }
+                };
+                body.push(format!("until {cond}"));
+            }
+            StepKind::Try => {
+                let t = ctx.fresh();
+                let e = exprs::gen_typed(ctx, rng, &I64, 1);
+                let with = if chance(rng, 0.8) {
+                    exprs::gen_typed(ctx, rng, &I64, 1)
+                } else {
+                    reliable = false;
+                    "e?".to_string()
+                };
+                body.push(format!(
+                    "let {t} = try {{ {bad}({e})? }} with(e) {{ {with} }}"
+                ));
+                ctx.push(t, I64);
+            }
+            StepKind::Abort => {
+                reliable = false;
+                let w = ctx.fresh();
+                let e = exprs::gen_typed(ctx, rng, &I64, 1);
+                body.push(format!("let {w} = {bad}({e})?"));
+                ctx.push(w, I64);
+            }
+            StepKind::Print => {
+                let vars = ctx.vars_of(&I64);
+                let v = vars[rng.below(vars.len())];
+                body.push(format!("println(\"s{i} [{v}]\")"));
+            }
+        }
+    }
+    let tail = exprs::gen_typed(ctx, rng, &I64, 2);
+    body.push(tail);
+    ctx.no_catch = false;
+    ctx.truncate(mark);
+    let queued = chance(rng, 0.5);
+    if queued {
+        st.seqqs += 1;
+    } else {
+        st.seqs += 1;
+    }
+    let done = ctx.fresh();
+    stmts.push(format!(
+        "let {done} = {} {trigger} {{ {} }}",
+        if queued { "seqq" } else { "seq" },
+        body.join("; ")
+    ));
+    let runs = ctx.fresh();
+    let last = ctx.fresh();
+    stmts.push(format!("let {runs} = i64:0"));
+    stmts.push(format!("{runs} <- {done} ~ ({runs} + i64:1)"));
+    stmts.push(format!("let {last} = i64:0"));
+    stmts.push(format!("{last} <- {done}"));
+    if reliable {
+        fires_per_injection.push(runs.clone());
+    }
+    ctx.push(runs, I64);
+    ctx.push(last, I64);
+}
+
 /// The deliberate runaway: an input-free single burst (no schedule)
 /// that never quiesces; the trace's cycle budget cuts it deterministically.
 fn gen_runaway_burst(rng: &mut Rng) -> (String, ReactiveStats) {
@@ -559,6 +784,34 @@ mod test {
         assert!(ctr * 100 / N >= 10, "counters in only {ctr}/{N}");
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
-        assert!(slept * 100 / N >= 10, "slept-arm selects in only {slept}/{N}");
+        assert!(slept * 100 / N >= 8, "slept-arm selects in only {slept}/{N}");
+    }
+
+    /// Both ceremony forms, both trigger shapes and every step kind
+    /// appear at the default profile.
+    #[test]
+    fn ceremony_presence() {
+        let mut rng = Rng::new(0x5e9);
+        let mut sum = ReactiveStats::default();
+        const N: usize = 400;
+        for _ in 0..N {
+            let (_, st) = gen_reactive_stats(&GenCfg::default(), &mut rng);
+            sum.seqs += st.seqs;
+            sum.seqqs += st.seqqs;
+            sum.burst_ceremonies += st.burst_ceremonies;
+            for (a, b) in sum.steps.iter_mut().zip(st.steps) {
+                *a += b;
+            }
+        }
+        assert!(sum.seqs * 100 / N >= 8, "seq in only {}/{N}", sum.seqs);
+        assert!(sum.seqqs * 100 / N >= 8, "seqq in only {}/{N}", sum.seqqs);
+        assert!(
+            sum.burst_ceremonies * 100 / N >= 8,
+            "bursts: {}/{N}",
+            sum.burst_ceremonies
+        );
+        for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
+            assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");
+        }
     }
 }

@@ -3,6 +3,7 @@
 Status: built 2026-09-07 (straight-line, `do`, `until`, `try … with`,
 `seqq`; `if`/loops inside a seq are not built).
 Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow}.rs`,
+`graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
 `graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
 `seq_do_statement_list_is_capped`), `expr/seq.rs` unit tests
