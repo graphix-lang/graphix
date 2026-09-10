@@ -162,3 +162,6 @@ members = [
     "stdlib/graphix-tests",
     "ide/tree-sitter-graphix"
 ]
+
+[patch.crates-io]
+immutable-chunkmap = { path = "../immutable-chunkmap" }

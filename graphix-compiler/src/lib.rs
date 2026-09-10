@@ -23,6 +23,7 @@ pub mod node;
 pub mod node_shape;
 pub mod perfdbg;
 pub(crate) mod profile;
+pub mod shared_map;
 pub(crate) mod stack;
 pub use stack::set_stack_budget;
 pub mod tval;
