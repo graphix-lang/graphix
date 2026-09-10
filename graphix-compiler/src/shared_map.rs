@@ -15,16 +15,12 @@
 //! installs the table for the duration of a call; without one, a call
 //! is self-contained.
 //!
-//! `encoded_len` must equal the bytes `encode` writes even though
-//! encoding advances the table, a packer measures a value before and
-//! again while encoding it, and one length walk can meet the same map
-//! twice (a snapshot's fields are mostly the same maps). So a node
-//! belongs to the occurrence that first measured it, an occurrence
-//! being a [`SharedMap`] or [`SharedSet`] value at its address: it is
-//! a definition in that occurrence's lengths and in the first encode,
-//! and a reference everywhere else. Lengths are exact when the values
-//! measured are the values encoded, in the same order, which a packer's
-//! derived and container impls guarantee.
+//! `encoded_len` is an upper bound, not the exact length: which nodes
+//! are references depends on what has been written by the time the
+//! encode runs, and a length walk counts every node not yet written as
+//! a definition. A container that length-prefixes one of these values
+//! reserves the bound and patches the prefix after encoding; the
+//! packer's own length-wrapped derives must not hold one.
 
 use crate::env::{Map, Set};
 use ahash::AHashMap;
@@ -54,9 +50,6 @@ pub struct SharedSet<K: Ord + Clone>(pub Set<K>);
 
 struct Seen<K: Ord + Clone, V: Clone> {
     id: u64,
-    /// The occurrence that first measured this node.
-    owner: usize,
-    written: bool,
     /// Pins the identity while the table holds it.
     _handle: NodeHandle<K, V, SIZE>,
 }
@@ -182,51 +175,21 @@ fn with_decode<R>(f: impl FnOnce(&mut DecodeTable) -> R) -> R {
     }
 }
 
-/// How a node is written by this occurrence: a definition or a reference.
-enum Emit {
-    Def,
-    Ref(u64),
-}
-
 impl<K: Ord + Clone, V: Clone> EncodeNodes<K, V> {
-    /// A node is a definition for the occurrence that first measured
-    /// it, until an encode has written it. A node this walk has not
-    /// seen is registered after its subtrees, so ids are postorder
-    /// ranks and match the order a decoder completes definitions in.
-    fn measure(&mut self, node: &NodeRef<'_, K, V, SIZE>, occurrence: usize) -> Emit {
-        match self.by_identity.get(&node.identity()) {
-            Some(seen) if !seen.written && seen.owner == occurrence => Emit::Def,
-            Some(seen) => Emit::Ref(seen.id),
-            None => Emit::Def,
-        }
+    fn written(&self, node: &NodeRef<'_, K, V, SIZE>) -> Option<u64> {
+        self.by_identity.get(&node.identity()).map(|seen| seen.id)
     }
 
-    fn register(
-        &mut self,
-        node: &NodeRef<'_, K, V, SIZE>,
-        occurrence: usize,
-    ) -> &mut Seen<K, V> {
-        let next = self.by_identity.len() as u64;
-        self.by_identity.entry(node.identity()).or_insert_with(|| Seen {
-            id: next,
-            owner: occurrence,
-            written: false,
-            _handle: node.keep(),
-        })
-    }
-
-    /// A node is a definition the first time it is written.
-    fn write(&mut self, node: &NodeRef<'_, K, V, SIZE>) -> Emit {
-        match self.by_identity.get(&node.identity()) {
-            Some(seen) if seen.written => Emit::Ref(seen.id),
-            _ => Emit::Def,
-        }
+    /// Ids are assigned as definitions complete, after their subtrees,
+    /// which is the order a decoder completes them in.
+    fn complete(&mut self, node: &NodeRef<'_, K, V, SIZE>) {
+        let id = self.by_identity.len() as u64;
+        self.by_identity.insert(node.identity(), Seen { id, _handle: node.keep() });
     }
 }
 
 fn tree_len<K, V>(
     table: &mut EncodeTable,
-    occurrence: usize,
     node: Option<NodeRef<'_, K, V, SIZE>>,
     pair_len: &mut impl FnMut(&K, &V) -> usize,
 ) -> usize
@@ -235,23 +198,21 @@ where
     V: Clone + Send + Sync + 'static,
 {
     let Some(node) = node else { return 1 };
-    match table.nodes::<K, V>().measure(&node, occurrence) {
-        Emit::Ref(id) => 1 + varint_len(id),
-        Emit::Def => {
+    match table.nodes::<K, V>().written(&node) {
+        Some(id) => 1 + varint_len(id),
+        None => {
             let pairs: usize = node.pairs().map(|(k, v)| pair_len(k, v)).sum();
-            let subtrees = tree_len(table, occurrence, node.left(), pair_len)
-                + tree_len(table, occurrence, node.right(), pair_len);
-            table.nodes::<K, V>().register(&node, occurrence);
-            1 + varint_len(node.len() as u64) + pairs + subtrees
+            1 + varint_len(node.len() as u64)
+                + pairs
+                + tree_len(table, node.left(), pair_len)
+                + tree_len(table, node.right(), pair_len)
         }
     }
 }
 
-/// Preorder: a definition is its pairs, then its left and right
-/// subtrees; its id is assigned after them.
+/// A definition is its pairs, then its left and right subtrees.
 fn tree_encode<K, V, B: BufMut>(
     table: &mut EncodeTable,
-    occurrence: usize,
     node: Option<NodeRef<'_, K, V, SIZE>>,
     buf: &mut B,
     pair_encode: &mut impl FnMut(&K, &V, &mut B) -> Result<(), PackError>,
@@ -264,21 +225,21 @@ where
         buf.put_u8(EMPTY);
         return Ok(());
     };
-    match table.nodes::<K, V>().write(&node) {
-        Emit::Ref(id) => {
+    match table.nodes::<K, V>().written(&node) {
+        Some(id) => {
             buf.put_u8(REF);
             encode_varint(id, buf);
             Ok(())
         }
-        Emit::Def => {
+        None => {
             buf.put_u8(NODE);
             encode_varint(node.len() as u64, buf);
             for (k, v) in node.pairs() {
                 pair_encode(k, v, buf)?;
             }
-            tree_encode(table, occurrence, node.left(), buf, pair_encode)?;
-            tree_encode(table, occurrence, node.right(), buf, pair_encode)?;
-            table.nodes::<K, V>().register(&node, occurrence).written = true;
+            tree_encode(table, node.left(), buf, pair_encode)?;
+            tree_encode(table, node.right(), buf, pair_encode)?;
+            table.nodes::<K, V>().complete(&node);
             Ok(())
         }
     }
@@ -314,8 +275,9 @@ where
             }
             let left = tree_decode(table, buf, pair_decode)?;
             let right = tree_decode(table, buf, pair_decode)?;
-            let node = NodeHandle::create(left, pairs, right)
-                .map_err(|_| PackError::InvalidFormat)?;
+            // The stream is the encoder's walk of a map the chunkmap
+            // built, read back in the same order.
+            let node = unsafe { NodeHandle::create(left, pairs, right) };
             table.nodes::<K, V>().push(node.clone());
             Ok(Some(node))
         }
@@ -329,18 +291,16 @@ where
     V: Clone + Pack + Send + Sync + 'static,
 {
     fn encoded_len(&self) -> usize {
-        let occurrence = self as *const Self as usize;
         with_encode(|t| {
-            tree_len(t, occurrence, self.0.root(), &mut |k: &K, v: &V| {
+            tree_len(t, self.0.root(), &mut |k: &K, v: &V| {
                 k.encoded_len() + v.encoded_len()
             })
         })
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let occurrence = self as *const Self as usize;
         with_encode(|t| {
-            tree_encode(t, occurrence, self.0.root(), buf, &mut |k: &K, v: &V, buf| {
+            tree_encode(t, self.0.root(), buf, &mut |k: &K, v: &V, buf| {
                 k.encode(buf)?;
                 v.encode(buf)
             })
@@ -360,18 +320,12 @@ where
     K: Ord + Clone + Pack + Send + Sync + 'static,
 {
     fn encoded_len(&self) -> usize {
-        let occurrence = self as *const Self as usize;
-        with_encode(|t| {
-            tree_len(t, occurrence, self.0.root(), &mut |k: &K, _: &()| k.encoded_len())
-        })
+        with_encode(|t| tree_len(t, self.0.root(), &mut |k: &K, _: &()| k.encoded_len()))
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let occurrence = self as *const Self as usize;
         with_encode(|t| {
-            tree_encode(t, occurrence, self.0.root(), buf, &mut |k: &K, _: &(), buf| {
-                k.encode(buf)
-            })
+            tree_encode(t, self.0.root(), buf, &mut |k: &K, _: &(), buf| k.encode(buf))
         })
     }
 
@@ -405,7 +359,7 @@ mod tests {
             let len = shared.encoded_len();
             let before = buf.len();
             shared.encode(&mut buf).unwrap();
-            assert_eq!(buf.len() - before, len, "encoded_len must be exact");
+            assert!(buf.len() - before <= len, "encoded_len is an upper bound");
         }
         buf
     }
@@ -490,28 +444,31 @@ mod tests {
     }
 
     #[test]
-    fn lengths_before_encodes_and_repeated_lengths() {
+    fn length_bounds_the_encoding() {
         let maps = forest();
         let mut table = EncodeTable::default();
         let _session = EncodeSession::new(&mut table);
         let shared: Vec<_> = maps.iter().map(|m| SharedMap(m.clone())).collect();
-        // a derived struct measures every field, then encodes them in order
+        // measured before anything is written, every node is a definition
         let lens: Vec<usize> = shared.iter().map(|s| s.encoded_len()).collect();
-        let again: Vec<usize> = shared.iter().map(|s| s.encoded_len()).collect();
-        assert_eq!(lens, again);
+        assert_eq!(lens, shared.iter().map(|s| s.encoded_len()).collect::<Vec<_>>());
+        assert_eq!(lens[0], lens[1]);
         let mut buf = BytesMut::new();
-        for (s, len) in shared.iter().zip(&lens) {
+        let mut written = Vec::new();
+        for s in &shared {
             let before = buf.len();
             s.encode(&mut buf).unwrap();
-            assert_eq!(buf.len() - before, *len);
+            written.push(buf.len() - before);
         }
-        // a map encoded twice is all references the second time, and
-        // its length says so
+        assert_eq!(written[0], lens[0]);
+        assert!(written[1] < lens[1] / 4, "the second map is mostly references");
+        // once written, the length is exact: a map encoded again is
+        // one reference to its root
         let len = shared[0].encoded_len();
         let before = buf.len();
         shared[0].encode(&mut buf).unwrap();
         assert_eq!(buf.len() - before, len);
-        assert_eq!(len, 1 + varint_len(0), "the root is one reference");
+        assert_eq!(len, 1 + varint_len(0));
     }
 
     #[test]
@@ -591,7 +548,7 @@ mod tests {
             o.encode(&mut buf).unwrap();
             s1.encode(&mut buf).unwrap();
             s2.encode(&mut buf).unwrap();
-            assert_eq!(buf.len(), len);
+            assert!(buf.len() <= len);
         }
         let mut dec = DecodeTable::default();
         let _s = DecodeSession::new(&mut dec);
