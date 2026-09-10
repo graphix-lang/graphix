@@ -14,31 +14,21 @@ Run from the sibling netidx checkout:
 
 ```bash
 cargo test --locked --release -p graphix-package-netidx-admin milestone_timing -- --ignored --nocapture
-GRAPHIX_DBG_PERF=1 cargo test --locked --release -p graphix-package-netidx-admin milestone_timing -- --ignored --nocapture
+cargo test --locked --release -p graphix-package-netidx-admin milestone_timing -- --ignored --nocapture
 ```
 
 The profile is `opt-level=3`, LTO, one codegen unit, without debug info.
 Build artifacts remain in the centrally configured tmpfs. Keep copies of
 the before/after test executables, run them directly in alternating order,
 and wait for builds and other measurements to finish before comparing
-wall times. Run timing comparisons without `GRAPHIX_DBG_PERF`.
+wall times. Run timing comparisons without `GRAPHIX_PROFILE`.
 
-`GRAPHIX_DBG_PERF` reports a `FUSION` line after each fusion pass:
-
-| field | measured work |
-|---|---|
-| `total_ms` | the whole fusion pass, including child recursion |
-| `return_ms` | return-type freezing and its normalization/expansion fallbacks |
-| `inputs_ms` | collecting and classifying external references |
-| `builtins_ms` | builtin/cast discovery and early effect rejection |
-| `callees_ms` | callee discovery and kernel signature derivation |
-| `emit_ms` | CLIF emission, Cranelift compilation, and finalization |
-
-These are process-wide counters; isolate the workload when profiling.
-Callee time includes its own builtin discovery. Emission time also includes
-Graphix analysis such as block liveness; it is not a measurement of
-Cranelift alone. Signature assembly, diagnostics, feeder construction,
-and node replacement account for work outside the individual counters.
+Fusion phase times come from `GRAPHIX_PROFILE` (the `ReturnType`,
+`Inputs`, `Builtins`, `Callees` and `Emit` phases; see full compiler
+profiling below). `Callees` includes the callee's own builtin discovery.
+`Emit` includes Graphix analysis such as block liveness as well as CLIF
+emission, Cranelift compilation and finalization; it is not a
+measurement of Cranelift alone.
 
 Representative admin profiles on an Intel Core Ultra X7 358H, measured
 separately from the uninstrumented timing comparison below:
@@ -93,11 +83,14 @@ programs and zero divergences or crashes in a 500-program mixed soak.
 ## Admission
 
 Builtin discovery rejects a registered builtin without a fast-call entry
-before resolving and freezing its argument types. The same existing walk
-rejects connects, catch installation, and sequence guards. Region input
-collection and emission run only after discovery succeeds. Callee
-signature construction also performs discovery before constructing its
-parameters and captures.
+before resolving and freezing its argument types. The same walk rejects
+every node `fusion::effect_blocker` names: connects, catch installation,
+sequence guards, modules and impls. That one classification is also what
+block emission consults before discarding a dead statement, so a node
+discovery rejects anywhere is never one emission could have dropped.
+Region input collection and emission run only after discovery succeeds.
+Callee signature construction also performs discovery before
+constructing its parameters and captures.
 
 Sampling, partial delivery, and reference nodes reject immediately when
 they are the region root. They cannot reject an arbitrary ancestor:
@@ -111,9 +104,10 @@ that prevents fusion. `FusionStats.rejected_before_emit` counts attempts
 that end during discovery. Passing discovery is not a promise of fusion;
 the emitter remains responsible for supported shapes.
 
-Function and reference return types are rejected before normalization or
-environment expansion. Neither operation can give those outer type
-constructors a kernel ABI representation.
+A return type the ABI cannot represent at all (a function, a reference,
+a wide primitive union) is refused before normalization or environment
+expansion; only a non-canonical type is normalized and only an
+unresolved named type is expanded.
 
 ## Block liveness
 
@@ -278,9 +272,7 @@ below 0.2 ms. Neither is a priority for this packed-package workload.
 Each table uses independently computed medians, so rounded rows need
 not sum exactly. Nested inclusive columns must not be added together.
 The log reader verifies exact exclusive-time accounting per individual
-root. Final logs and summary data are in
-`/tmp/graphix-jit-startup/detail/`; the earlier `detail-under-load/` runs
-overlapped validation builds and were excluded from these measurements.
+root. Runs that overlapped validation builds were excluded.
 
 ### CPU samples
 
@@ -325,12 +317,6 @@ path separator search sampled another 4.9 ms. These exclude generic
 `Once`, allocation and cleanup costs that cannot be uniquely attributed
 from flat samples. A shared static is the first small fix to measure.
 No speedup from changing it has yet been measured.
-
-Raw profiles, logs, sample extraction code, and the aggregated symbol
-counts from this session are under `/tmp/graphix-jit-startup/`:
-`full-{0..6}.perf`, `full-sample-{0..6}.log`, `profile_samples.py`, and
-`full-samples.json`. They are local profiling artifacts, not required
-build inputs.
 
 
 ### Optimization order
@@ -451,10 +437,8 @@ The remaining large costs are ordinary instance construction/typechecking
 and successful backend compilation. Failed builds now account for about
 19 ms, so they are a smaller target than those two phases.
 
-Artifacts are in `/tmp/graphix-jit-opt`: `compare.py`, `comparison.json`,
-`summary.json`, all per-run logs, the three release executables, and the
-source checksum. `bench/profile.py` validates the exclusive accounting of
-every profiled root. The escaper change is netidx commit `ba154aee`.
+`bench/profile.py` validates the exclusive accounting of every profiled
+root. The escaper change is `netidx-core::path::PATH_ESC`.
 
 ### Validation
 
@@ -581,6 +565,4 @@ measured as part of this estimate.
 Validation: the whole workspace gate passed 3,172 tests, with 11 ignored.
 The existing recursive higher-order callback test also passed with both
 profiling flags enabled. The reader reconciled all instance counts and
-exclusive times in that test and in all five admin census runs. Artifacts,
-including executables, raw logs, `measure.py`, `timing.json`, `results.json`
-and `summary.json`, are in `/tmp/graphix-instance-census`.
+exclusive times in that test and in all five admin census runs.

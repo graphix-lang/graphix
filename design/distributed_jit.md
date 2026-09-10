@@ -55,9 +55,13 @@ whole region. Case-specific logic lives with the case: collection
 nodes emit their loops and keep the interpreted slot graph when
 emission fails; callee-kernel handling lives with `CallSite` and the
 lambda `Apply`. Builtin discovery rejects known effects before input
-collection and emission. It also checks for a builtin's fast-call entry
-before freezing its argument types. Emission remains the authority for
-all other supported shapes; admission does not duplicate those checks.
+collection and emission: `fusion::effect_blocker` is the one list of
+nodes that can never be inside a kernel, consulted by discovery and by
+block emission's dead-statement rule alike, so nothing rejected early
+could have been discarded. Discovery also checks for a builtin's
+fast-call entry before freezing its argument types. Emission remains
+the authority for all other supported shapes; admission does not
+duplicate those checks.
 The `ctx.fusion.enabled` check runs once in `compile()`, not per recursion.
 
 Block liveness uses a backward pass over the statements, accumulating

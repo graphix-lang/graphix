@@ -1,6 +1,6 @@
-//! Process-wide phase counters gated by GRAPHIX_DBG_PERF=1. Fusion
-//! reports deltas after each pass; a background thread reports lazy-bind
-//! counters every 250ms while they change.
+//! Phase counters for the interpreter's lazy-bind path, gated by
+//! GRAPHIX_DBG_PERF=1; a background thread dumps them to stderr every
+//! 250ms while they change.
 use std::{
     sync::{
         LazyLock,
@@ -8,36 +8,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-
-pub static FUSION_RETURN_NS: AtomicU64 = AtomicU64::new(0);
-pub static FUSION_INPUTS_NS: AtomicU64 = AtomicU64::new(0);
-pub static FUSION_BUILTINS_NS: AtomicU64 = AtomicU64::new(0);
-pub static FUSION_CALLEES_NS: AtomicU64 = AtomicU64::new(0);
-pub static FUSION_EMIT_NS: AtomicU64 = AtomicU64::new(0);
-
-pub fn fusion_snapshot() -> [u64; 5] {
-    [
-        FUSION_RETURN_NS.load(Relaxed),
-        FUSION_INPUTS_NS.load(Relaxed),
-        FUSION_BUILTINS_NS.load(Relaxed),
-        FUSION_CALLEES_NS.load(Relaxed),
-        FUSION_EMIT_NS.load(Relaxed),
-    ]
-}
-
-pub fn report_fusion(before: [u64; 5], total: Duration) {
-    let after = fusion_snapshot();
-    let ms: [f64; 5] = std::array::from_fn(|i| (after[i] - before[i]) as f64 / 1e6);
-    eprintln!(
-        "FUSION total_ms={:.3} return_ms={:.3} inputs_ms={:.3} builtins_ms={:.3} callees_ms={:.3} emit_ms={:.3}",
-        total.as_secs_f64() * 1000.,
-        ms[0],
-        ms[1],
-        ms[2],
-        ms[3],
-        ms[4]
-    );
-}
 
 pub static BIND_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static BIND_NS: AtomicU64 = AtomicU64::new(0);

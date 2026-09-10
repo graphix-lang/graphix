@@ -32,7 +32,6 @@ use crate::{
     },
     node,
     node::genn,
-    perfdbg,
     profile::{self, Phase},
     typ::{FnType, Type},
 };
@@ -788,8 +787,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     if !region_is_candidate(node) {
         return Ok(None);
     }
-    let phase =
-        (perfdbg::span(&perfdbg::FUSION_RETURN_NS), profile::phase(Phase::ReturnType));
+    let phase = profile::phase(Phase::ReturnType);
     let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
         if crate::dbgenv::gxdbg_freeze_ret() {
             crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
@@ -802,8 +800,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     };
     drop(phase);
     ctx.fusion.stats.attempted += 1;
-    let phase =
-        (perfdbg::span(&perfdbg::FUSION_BUILTINS_NS), profile::phase(Phase::Builtins));
+    let phase = profile::phase(Phase::Builtins);
     // `apply_sites` lets `CallSite::emit_clif` lower a registered site
     // to a direct call.
     let mut discovery = lowering::BuiltinCallDiscovery::default();
@@ -813,8 +810,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return refuse(ctx, &blocker.spec, blocker.reason);
     }
     drop(phase);
-    let phase =
-        (perfdbg::span(&perfdbg::FUSION_INPUTS_NS), profile::phase(Phase::Inputs));
+    let phase = profile::phase(Phase::Inputs);
     let inputs = collect_region_inputs(&**node, ctx);
     if let Some(name) = non_scalar_basename_collision(&inputs) {
         return refuse(
@@ -827,8 +823,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         );
     }
     drop(phase);
-    let phase =
-        (perfdbg::span(&perfdbg::FUSION_CALLEES_NS), profile::phase(Phase::Callees));
+    let phase = profile::phase(Phase::Callees);
     // Callee kernels build before the jit lock is taken:
     // `build_lambda_kernel` needs `&mut ExecCtx`.
     let (lambda_sites, lambda_callees, callee_bodies, region_decorated) =
@@ -866,7 +861,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             &ctx.env,
         )
     };
-    let phase = (perfdbg::span(&perfdbg::FUSION_EMIT_NS), profile::phase(Phase::Emit));
+    let phase = profile::phase(Phase::Emit);
     let mut result = build(ctx);
     // An exhausted arena retires the whole active `Jit` (its kernels
     // stay mapped) and the build retries once in a fresh module; the
@@ -1003,9 +998,6 @@ pub(crate) fn non_scalar_basename_collision(
 /// since an abstract-typed return carries Refs the env-free freeze rejects.
 pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     use kernel_abi::AbiKind;
-    if typ.with_deref(|t| matches!(t, Some(Type::Fn(_) | Type::ByRef(_)))) {
-        return None;
-    }
     if crate::dbgenv::graphix_dbg_freeze() {
         let d = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             compact_str::format_compact!("{typ}")
@@ -1038,9 +1030,28 @@ pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
     }
 }
 
+/// Why a node can never be inside a kernel: an effect or a declaration.
+/// Block emission keeps every statement containing one, and discovery
+/// rejects a region containing one before collecting inputs.
+pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+) -> Option<&'static str> {
+    match node.view() {
+        NodeView::Connect(_) | NodeView::ConnectDeref(_) => Some("connect is an effect"),
+        NodeView::Catch(_) => Some("catch installs an error handler"),
+        NodeView::SeqGuard(_) => Some("sequence guard keeps cross-cycle state"),
+        NodeView::Module(_) => Some("module statement is structure, not computation"),
+        NodeView::Block(b) if b.module => {
+            Some("module statement is structure, not computation")
+        }
+        NodeView::Impl(_) => Some("impl statement is structure, not computation"),
+        _ => None,
+    }
+}
+
 /// A region root must emit a value. Declarations stay in the graph;
 /// a bare binding read forwards an input without computation.
-fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut n: &dyn Update<R, E> = &**node;
     loop {
         match n.view() {

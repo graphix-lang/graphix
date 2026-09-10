@@ -985,7 +985,10 @@ pub struct KnownFusedFn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typ::{FnType, TVar};
+    use crate::{
+        expr::ModPath,
+        typ::{AbstractId, FnType, TVar, TypeRef},
+    };
     use arcstr::literal;
     use proptest::prelude::*;
     use triomphe::Arc;
@@ -1031,8 +1034,18 @@ mod tests {
         assert_eq!(freeze_for_abi_normalized(&typ), Some(i64_t()));
     }
 
+    fn unresolved_ref(params: Arc<[Type]>) -> Type {
+        Type::Ref(TypeRef::synthetic(ModPath::root(), ModPath::from(["T"]), params))
+    }
+
+    fn abstract_type(params: Arc<[Type]>) -> Type {
+        Type::Abstract { id: AbstractId::of(&ModPath::root(), "A"), params }
+    }
+
     fn abi_types() -> impl Strategy<Value = Type> {
         prop_oneof![
+            Just(unresolved_ref(Arc::from_iter([]))),
+            Just(abstract_type(Arc::from_iter([]))),
             Just(i64_t()),
             Just(Type::Primitive((Typ::I64 | Typ::Null).into())),
             Just(Type::Primitive(Typ::Null.into())),
@@ -1049,6 +1062,11 @@ mod tests {
                 inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
                 inner.clone().prop_map(|t| Type::Error(Arc::new(t))),
                 inner.clone().prop_map(|t| Type::TVar(TVar::named(literal!("a"), t))),
+                inner.clone().prop_map(|t| unresolved_ref(Arc::from_iter([t]))),
+                inner.clone().prop_map(|t| abstract_type(Arc::from_iter([t]))),
+                inner
+                    .clone()
+                    .prop_map(|t| Type::Struct(Arc::from_iter([(literal!("f"), t)]))),
                 inner
                     .clone()
                     .prop_map(|t| { Type::Variant(literal!("V"), Arc::from_iter([t])) }),

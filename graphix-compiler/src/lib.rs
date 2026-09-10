@@ -651,7 +651,9 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Emit this call site into the open JIT kernel as CLIF.
     /// `Ok(Some(cv))`: emitted. `Ok(None)`: shape not handled, and no
     /// instructions may have been emitted. `Err`: abort the kernel
-    /// build (partial emission is fine).
+    /// build (partial emission is fine). A builtin's site reaches this
+    /// only when its [`Effect::Stateless`] carries a [`FastCall`];
+    /// discovery de-fuses the region before emission otherwise.
     fn emit_clif(
         &self,
         _callsite: &CallSite<R, E>,
@@ -923,6 +925,13 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         }
         if let NodeView::FusedKernel(_) = node.view() {
             return Ok(());
+        }
+        if !fusion::region_is_candidate(node) {
+            crate::bailat!(
+                node.spec(),
+                "#[native] annotates a computation; a declaration or a bare \
+                 variable read has nothing to fuse — put it on the initializer"
+            );
         }
         // Report only the leaf-most failures whose subtree contains no
         // fused region: `try_fuse` records a failure for every region
@@ -1775,14 +1784,10 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     ctx.env.seed_typedef_refs();
     if ctx.fusion.enabled {
         let st = Instant::now();
-        let before = perfdbg::enabled().then(perfdbg::fusion_snapshot);
         let p = profile::phase(Phase::Fusion);
         fusion::fuse(node, ctx)?;
         drop(p);
         info!("fusion time {:?}", st.elapsed());
-        if let Some(before) = before {
-            perfdbg::report_fusion(before, st.elapsed());
-        }
     }
     Ok(())
 }

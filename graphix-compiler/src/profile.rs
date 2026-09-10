@@ -97,13 +97,19 @@ impl Profile {
     }
 }
 
+#[derive(Clone, Copy)]
+enum InstanceCost {
+    Graph,
+    Check,
+}
+
 pub struct Span {
     phase: Phase,
     parent: Option<Phase>,
     start: Instant,
     failed: bool,
     active_self_ns: u64,
-    instance: Option<LambdaInstanceId>,
+    instance: Option<(LambdaInstanceId, InstanceCost)>,
     // The saved parent belongs to this thread, and spans must drop in LIFO order.
     thread: PhantomData<Rc<()>>,
 }
@@ -145,11 +151,14 @@ pub(crate) fn instance(
     definition: LambdaId,
     body: &Expr,
 ) {
-    if !*CENSUS || span.is_none() {
-        return;
-    }
+    let Some(span) = span.as_mut().filter(|_| *CENSUS) else { return };
+    let cost = match span.phase {
+        Phase::InstanceGraph => InstanceCost::Graph,
+        Phase::InstanceCheck => InstanceCost::Check,
+        _ => return,
+    };
     let _p = phase(Phase::InstanceCensus);
-    span.as_mut().unwrap().instance = Some(id);
+    span.instance = Some((id, cost));
     PROFILE.with_borrow_mut(|p| {
         let row = p.census.as_mut().unwrap().instances.entry(id).or_default();
         if row.definition.is_none() {
@@ -210,18 +219,17 @@ impl Drop for Span {
                 metric.failed_calls += 1;
                 metric.failed_ns += elapsed;
             }
-            if let Some(id) = self.instance {
+            if let Some((id, cost)) = self.instance {
                 let row = p.census.as_mut().unwrap().instances.entry(id).or_default();
-                match self.phase {
-                    Phase::InstanceGraph => {
+                match cost {
+                    InstanceCost::Graph => {
                         row.graph_ns += self_ns;
                         row.graph_calls += 1;
                     }
-                    Phase::InstanceCheck => {
+                    InstanceCost::Check => {
                         row.check_ns += self_ns;
                         row.check_calls += 1;
                     }
-                    _ => unreachable!(),
                 }
             }
             if matches!(self.parent, Some(Phase::Compile)) {

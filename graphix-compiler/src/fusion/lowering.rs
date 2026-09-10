@@ -103,9 +103,10 @@ pub struct BuiltinCallDiscovery {
 /// Discover the fusable call sites in a subtree: every `CallSite` on a
 /// builtin with a fast fn and every non-inline `cast<T>(x)`. Descent
 /// is [`fusion::for_each_emitted_node`], so collection callbacks are
-/// included and ordinary lambda bodies are not. Effects reject the
-/// region immediately. Other unsupported sites are omitted and checked
-/// by emission.
+/// included and ordinary lambda bodies are not. An [`fusion::effect_blocker`]
+/// anywhere, a [`root_blocker`] at the root, or a builtin without a
+/// fast-call entry rejects the region. Other unsupported sites are
+/// omitted and checked by emission.
 pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -125,28 +126,29 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
                 try_register_cast(tc, out);
                 return;
             }
-            NodeView::Connect(_) | NodeView::ConnectDeref(_) => "connect is an effect",
-            NodeView::Catch(_) => "catch installs an error handler",
-            NodeView::SeqGuard(_) => "sequence guard keeps cross-cycle state",
-            NodeView::Sample(_) if std::ptr::eq(n, node) => {
-                "sample keeps cross-cycle state"
-            }
-            NodeView::Any(_) if std::ptr::eq(n, node) => {
-                "any depends on partial argument delivery"
-            }
-            NodeView::Never(_) if std::ptr::eq(n, node) => {
-                "never consumes inputs without producing a value"
-            }
-            NodeView::ByRef(_) | NodeView::Deref(_) if std::ptr::eq(n, node) => {
-                "references require the node-walk"
-            }
-            _ => return,
+            _ => fusion::effect_blocker(n)
+                .or_else(|| std::ptr::eq(n, node).then(|| root_blocker(n)).flatten()),
         };
+        let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
     match failure {
         Some(failure) => Err(failure),
         None => Ok(()),
+    }
+}
+
+/// A root that can never emit a value. Nested, the same node may sit
+/// in a statement block emission discards, so only the root rejects.
+fn root_blocker<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&'static str> {
+    match node.view() {
+        NodeView::Sample(_) => Some("sample keeps cross-cycle state"),
+        NodeView::Any(_) => Some("any depends on partial argument delivery"),
+        NodeView::Never(_) => Some("never consumes inputs without producing a value"),
+        NodeView::ByRef(_) | NodeView::Deref(_) => {
+            Some("references require the node-walk")
+        }
+        _ => None,
     }
 }
 

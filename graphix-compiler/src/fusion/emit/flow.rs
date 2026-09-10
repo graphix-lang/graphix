@@ -42,25 +42,14 @@ use super::{
 /// non-scalar error paths would abort the kernel.
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
-    fusion::for_each_node(node, &mut |n| match n.view() {
-        NodeView::Connect(_) | NodeView::ConnectDeref(_) | NodeView::CallSite(_) => {
-            ok = false
-        }
-        // A Module publishes binds into the persistent env.
-        NodeView::Module(_) => ok = false,
-        // A signature-less module is a `Block { module: true }`.
-        NodeView::Block(b) if b.module => ok = false,
-        NodeView::Impl(_) => ok = false,
-        // Eliminating a catch install would drop the handler while covered
-        // `?`s keep delivering.
-        NodeView::Catch(_) | NodeView::SeqGuard(_) => ok = false,
-        NodeView::Qop(q) => {
-            if q.handler.is_some() {
-                ok = false
-            }
-        }
-        NodeView::OrNever(_) => {}
-        _ => {}
+    fusion::for_each_node(node, &mut |n| {
+        // a covered `?` delivers to its handler; a call site may be an effect
+        let delivers = match n.view() {
+            NodeView::CallSite(_) => true,
+            NodeView::Qop(q) => q.handler.is_some(),
+            _ => false,
+        };
+        ok &= !delivers && fusion::effect_blocker(n).is_none();
     });
     ok
 }

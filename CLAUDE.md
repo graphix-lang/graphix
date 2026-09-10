@@ -377,6 +377,8 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DUMP_CLIF=1` | every kernel's CLIF (`u0:N` = helper registration order in `emit_helpers.rs`) |
 | `GRAPHIX_DBG_VARS=1` | runtime variable events (ref/unref, set, same-cycle notify) — graphix-rt |
 | `GRAPHIX_DBG_PERF=1` | interp lazy-bind phase counters every 250ms |
+| `GRAPHIX_PROFILE=1` | nested compiler phase accounting per root (`bench/profile.py` reads it; `design/jit_startup.md`) |
+| `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
 | `GXDBG_TAIL=1` | every tail-loop dispatch pass |
