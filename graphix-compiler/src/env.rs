@@ -22,7 +22,11 @@ use netidx_core::path::Path;
 use netidx_derive::Pack;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
-use std::{fmt, iter, mem, ops::Bound};
+use std::{
+    fmt, iter, mem,
+    ops::Bound,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use triomphe::Arc;
 
 pub struct Bind {
@@ -115,6 +119,10 @@ pub struct TypeDef {
     /// Where the typedef was declared (IDE tooling only).
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
+    /// Every `Type::Ref` reachable from `typ` and `rep` has its
+    /// resolution cell filled; cells are write-once, so this never
+    /// clears.
+    pub seeded: Arc<AtomicBool>,
 }
 
 /// One explicit import: the imported name (the map key in
@@ -1292,7 +1300,15 @@ impl Env {
         let defs = self.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(
             name.into(),
-            TypeDef { params, typ: typ.clone(), rep, doc, pos, ori },
+            TypeDef {
+                params,
+                typ: typ.clone(),
+                rep,
+                doc,
+                pos,
+                ori,
+                seeded: Arc::new(AtomicBool::new(false)),
+            },
         );
         // A chain of bare aliases must not close a cycle: `type A = B;
         // type B = A` names nothing, and contains' coinductive memo
@@ -1342,9 +1358,13 @@ impl Env {
         let _profile = profile::phase(Phase::SeedTypes);
         for (_, defs) in self.typedefs.into_iter() {
             for (_, td) in defs.into_iter() {
-                td.typ.seed_refs(self);
-                if let Some(rep) = &td.rep {
-                    rep.seed_refs(self);
+                if td.seeded.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let complete = td.typ.seed_refs(self)
+                    & td.rep.as_ref().is_none_or(|rep| rep.seed_refs(self));
+                if complete {
+                    td.seeded.store(true, Ordering::Relaxed);
                 }
             }
         }

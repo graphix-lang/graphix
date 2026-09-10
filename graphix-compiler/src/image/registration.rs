@@ -19,12 +19,13 @@ use crate::{
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use compact_str::CompactString;
+use log::info;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 1;
+pub const REGISTRATION_FORMAT: u8 = 2;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -184,12 +185,17 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let mut enc = ImageEncoder::new();
         let body_bound = {
             let _s = EncodeImage::new(&mut enc);
+            let env_len = self.env.encoded_len();
+            let tables_len = tables.len();
             let nodes_len = varint_len(nodes.len() as u64)
                 + nodes
                     .iter()
                     .map(|(id, n)| id.encoded_len() + n.image_len())
                     .sum::<usize>();
-            self.env.encoded_len() + tables.len() + nodes_len + scope_len(scope)
+            info!(
+                "registration image bounds: env {env_len} defs {tables_len} nodes {nodes_len} bytes"
+            );
+            env_len + tables_len + nodes_len + scope_len(scope)
         };
         enc.sort_ids();
         let counts = enc.counts();

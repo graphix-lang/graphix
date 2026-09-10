@@ -1065,14 +1065,14 @@ impl Type {
     /// Fill the resolution cell of every `Type::Ref` reachable from
     /// this type against `env`, for a type about to outlive the env
     /// that gives its names meaning. Names not visible are skipped
-    /// (they fill at their first in-context lookup). Recurses through
-    /// filled snapshot bodies.
-    pub fn seed_refs(&self, env: &Env) {
+    /// (they fill at their first in-context lookup) and make the
+    /// result false. Recurses through filled snapshot bodies.
+    pub fn seed_refs(&self, env: &Env) -> bool {
         struct Seen {
             cells: poolshark::local::LPooled<AHashSet<usize>>,
             nodes: poolshark::local::LPooled<AHashSet<usize>>,
         }
-        fn go(t: &Type, env: &Env, seen: &mut Seen) {
+        fn go(t: &Type, env: &Env, seen: &mut Seen) -> bool {
             let node = match t {
                 Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a) => {
                     Some((**a).as_ptr().addr())
@@ -1087,71 +1087,59 @@ impl Type {
             if let Some(node) = node
                 && !seen.nodes.insert(node)
             {
-                return;
+                return true;
             }
             match t {
                 Type::Bottom
                 | Type::Any
                 | Type::Primitive(_)
                 | Type::Abstract { .. }
-                | Type::Hole => (),
-                Type::App(c, a) => {
-                    go(c, env, seen);
-                    go(a, env, seen)
-                }
+                | Type::Hole => true,
+                Type::App(c, a) => go(c, env, seen) & go(a, env, seen),
                 Type::Ref(tr) => {
+                    let mut all = true;
                     for p in tr.params.iter() {
-                        go(p, env, seen);
+                        all &= go(p, env, seen);
                     }
                     // Keyed on the cell: with_params clones share it.
                     if !seen.cells.insert(Arc::as_ptr(&tr.resolved).addr()) {
-                        return;
+                        return all;
                     }
-                    if let Some((r, _)) = tr.resolve_in_raw(env) {
-                        for (_, constraint) in r.params.iter() {
-                            if let Some(c) = constraint {
-                                go(c, env, seen);
-                            }
+                    let Some((r, _)) = tr.resolve_in_raw(env) else { return false };
+                    for (_, constraint) in r.params.iter() {
+                        if let Some(c) = constraint {
+                            all &= go(c, env, seen);
                         }
-                        go(&r.typ, env, seen);
                     }
+                    all & go(&r.typ, env, seen)
                 }
                 Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => {
                     go(t, env, seen)
                 }
-                Type::Map { key, value } => {
-                    go(key, env, seen);
-                    go(value, env, seen);
-                }
+                Type::Map { key, value } => go(key, env, seen) & go(value, env, seen),
                 Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts) => {
-                    for t in ts.iter() {
-                        go(t, env, seen);
-                    }
+                    ts.iter().fold(true, |all, t| all & go(t, env, seen))
                 }
                 Type::Struct(ts) => {
-                    for (_, t) in ts.iter() {
-                        go(t, env, seen);
-                    }
+                    ts.iter().fold(true, |all, (_, t)| all & go(t, env, seen))
                 }
                 Type::TVar(tv) => {
                     let cell = tv.read().typ.clone();
                     if !seen.cells.insert(triomphe::Arc::as_ptr(&cell).addr()) {
-                        return;
+                        return true;
                     }
                     let bound = cell.read().typ.clone();
-                    if let Some(t) = bound {
-                        go(&t, env, seen);
-                    }
+                    bound.is_none_or(|t| go(&t, env, seen))
                 }
                 Type::Fn(f) => {
+                    let mut all = true;
                     for a in f.args.iter() {
-                        go(&a.typ, env, seen);
+                        all &= go(&a.typ, env, seen);
                     }
                     if let Some(t) = f.vargs.as_ref() {
-                        go(t, env, seen);
+                        all &= go(t, env, seen);
                     }
-                    go(&f.rtype, env, seen);
-                    go(&f.throws, env, seen);
+                    all & go(&f.rtype, env, seen) & go(&f.throws, env, seen)
                 }
             }
         }

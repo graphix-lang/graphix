@@ -124,10 +124,10 @@ cycle; several writes to one variable in a cycle queue for the next.
 the session state after the package root compiled and before any cycle
 (`graphix-compiler/src/image/`), under
 `$XDG_CACHE_HOME/graphix/registration/<build-id>/<key>.img`, keyed by
-the image format, the packages' module sources and the root; a warm
-start restores it instead of compiling. `--no-cache` disables the
-cache, `--warm` writes it and exits. The package root compiles with
-fusion off. Every imaged node kind owns an `Update::image_encode` /
+the image format and the root (the build id covers the packages
+compiled in); a warm start restores it instead of compiling.
+`--no-cache` disables the cache, `--warm` writes it and exits. The
+package root compiles with fusion off. Every imaged node kind owns an `Update::image_encode` /
 `image_decode` pair in its own file; a kind without one fails the write
 (`image::NOT_IMAGED`, logged) and the shell runs cold, never a partial
 image. Compiler ids are `image_id!` (the compiler's `atomic_id!` plus

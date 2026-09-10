@@ -68,42 +68,86 @@ impl Pack for AbstractId {
 /// Under an image session the id and origin travel with the
 /// expression; the syntax codec mints a fresh id and takes the unit's
 /// origin.
-impl Pack for Expr {
-    fn encoded_len(&self) -> usize {
-        let identity = if image::is_encoding() {
-            self.id.encoded_len() + image::origin_len(&self.ori)
-        } else {
-            0
-        };
-        identity
-            + <i32 as Pack>::encoded_len(&self.pos.line)
+impl Expr {
+    fn syntax_len(&self) -> usize {
+        <i32 as Pack>::encoded_len(&self.pos.line)
             + <i32 as Pack>::encoded_len(&self.pos.column)
             + self.kind.encoded_len()
             + self.dec.encoded_len()
     }
 
-    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        if image::is_encoding() {
-            self.id.encode(buf)?;
-            image::origin_encode(&self.ori, buf)?;
-        }
+    fn syntax_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         <i32 as Pack>::encode(&self.pos.line, buf)?;
         <i32 as Pack>::encode(&self.pos.column, buf)?;
         self.kind.encode(buf)?;
         self.dec.encode(buf)
     }
 
-    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let (id, ori) = if image::is_decoding() {
-            (ExprId::decode(buf)?, image::origin_decode(buf)?)
-        } else {
-            (ExprId::new(), get_origin())
-        };
+    fn syntax_decode(
+        buf: &mut impl Buf,
+        id: ExprId,
+        ori: Arc<Origin>,
+    ) -> Result<Self, PackError> {
         let line = <i32 as Pack>::decode(buf)?;
         let column = <i32 as Pack>::decode(buf)?;
         let kind = <ExprKind as Pack>::decode(buf)?;
         let dec = <Option<Box<Decorations>> as Pack>::decode(buf)?;
         Ok(Expr { id, ori, pos: SourcePosition { line, column }, kind, dec })
+    }
+}
+
+/// Under an image session an expression is an object carrying its id
+/// and origin, written once and referenced afterwards (a node's spec
+/// and a definition's body are clones of subtrees of one tree); the
+/// syntax codec mints a fresh id and takes the unit's origin.
+impl Pack for Expr {
+    fn encoded_len(&self) -> usize {
+        if image::is_encoding() {
+            image::object_len(
+                image::key(self),
+                |e| &e.exprs,
+                || {
+                    self.id.encoded_len()
+                        + image::origin_len(&self.ori)
+                        + self.syntax_len()
+                },
+            )
+        } else {
+            self.syntax_len()
+        }
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            image::object_encode(
+                image::key(self),
+                |e| &mut e.exprs,
+                buf,
+                |buf| {
+                    self.id.encode(buf)?;
+                    image::origin_encode(&self.ori, buf)?;
+                    self.syntax_encode(buf)
+                },
+            )
+        } else {
+            self.syntax_encode(buf)
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if image::is_decoding() {
+            image::object_decode(
+                buf,
+                |d| &mut d.exprs,
+                |buf| {
+                    let id = ExprId::decode(buf)?;
+                    let ori = image::origin_decode(buf)?;
+                    Self::syntax_decode(buf, id, ori)
+                },
+            )
+        } else {
+            Self::syntax_decode(buf, ExprId::new(), get_origin())
+        }
     }
 }
 
@@ -175,16 +219,14 @@ impl Pack for TVar {
     }
 }
 
-impl Pack for FnType {
+impl FnType {
     // The constraints wire slot is a derived view of the cells: decode
     // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
-    fn encoded_len(&self) -> usize {
+    fn shape_len(&self) -> usize {
         // The full cell pairs, not the declared-quantifier view: anonymous
         // cells carry inference facts that must cross the wire.
         let constraints = self.cell_constraint_pairs();
-        let own =
-            if image::is_encoding() { self.lambda_ids.own().encoded_len() } else { 0 };
-        own + self.args.encoded_len()
+        self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
             + <Vec<(TVar, Type)> as Pack>::encoded_len(&constraints)
@@ -192,10 +234,7 @@ impl Pack for FnType {
             + self.explicit_throws.encoded_len()
     }
 
-    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        if image::is_encoding() {
-            self.lambda_ids.own().encode(buf)?;
-        }
+    fn shape_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
@@ -205,12 +244,10 @@ impl Pack for FnType {
         self.explicit_throws.encode(buf)
     }
 
-    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let own = if image::is_decoding() {
-            <Option<LambdaId> as Pack>::decode(buf)?
-        } else {
-            None
-        };
+    fn shape_decode(
+        buf: &mut impl Buf,
+        own: Option<LambdaId>,
+    ) -> Result<Self, PackError> {
         let args = <Arc<[FnArgType]> as Pack>::decode(buf)?;
         let vargs = <Option<Type> as Pack>::decode(buf)?;
         let rtype = <Type as Pack>::decode(buf)?;
@@ -242,6 +279,54 @@ impl Pack for FnType {
             quantifiers,
             lambda_ids,
         })
+    }
+}
+
+/// Under an image session a function type is an object carrying its
+/// own lambda id, written once and referenced afterwards (a binding's
+/// type and its definition share one).
+impl Pack for FnType {
+    fn encoded_len(&self) -> usize {
+        if image::is_encoding() {
+            image::object_len(
+                image::key(self),
+                |e| &e.fntypes,
+                || self.lambda_ids.own().encoded_len() + self.shape_len(),
+            )
+        } else {
+            self.shape_len()
+        }
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            image::object_encode(
+                image::key(self),
+                |e| &mut e.fntypes,
+                buf,
+                |buf| {
+                    self.lambda_ids.own().encode(buf)?;
+                    self.shape_encode(buf)
+                },
+            )
+        } else {
+            self.shape_encode(buf)
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if image::is_decoding() {
+            image::object_decode(
+                buf,
+                |d| &mut d.fntypes,
+                |buf| {
+                    let own = <Option<LambdaId> as Pack>::decode(buf)?;
+                    Self::shape_decode(buf, own)
+                },
+            )
+        } else {
+            Self::shape_decode(buf, None)
+        }
     }
 }
 

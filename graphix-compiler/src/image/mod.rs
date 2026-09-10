@@ -21,11 +21,11 @@ pub use registration::{NOT_QUIESCENT, REGISTRATION_FORMAT, Registration};
 
 use crate::{
     BindId, CFlag, DynScope, ErrorHandler, LambdaId, Scope, SourcePosition,
-    expr::{ExprId, ModPath, Origin, Source},
+    expr::{Expr, ExprId, ModPath, Origin, Source},
     ids::IdRelocation,
     shared_map,
     typ::{
-        ResolvedRef, TVar,
+        FnType, ResolvedRef, TVar,
         tvar::{TCell, TVarId},
     },
 };
@@ -106,6 +106,13 @@ pub struct ImageEncoder {
     pinned_tvars: Vec<TVar>,
     cells: AHashMap<usize, u64>,
     pinned_cells: Vec<Arc<RwLock<TCell>>>,
+    /// Expressions and function types by address. The session cannot
+    /// pin them (their codecs see a borrow, not the `Arc`), so everything
+    /// a session encodes must be borrowed from the context and the root
+    /// nodes for the whole session; a temporary could hand its address
+    /// to a later object.
+    pub(crate) exprs: AHashMap<usize, u64>,
+    pub(crate) fntypes: AHashMap<usize, u64>,
 }
 
 impl Default for ImageEncoder {
@@ -131,6 +138,8 @@ impl ImageEncoder {
             pinned_tvars: Vec::new(),
             cells: AHashMap::new(),
             pinned_cells: Vec::new(),
+            exprs: AHashMap::new(),
+            fntypes: AHashMap::new(),
         }
     }
 
@@ -173,6 +182,8 @@ pub struct ImageDecoder {
     origins: Vec<Arc<Origin>>,
     tvars: Vec<TVar>,
     cells: Vec<Arc<RwLock<TCell>>>,
+    pub(crate) exprs: Vec<Expr>,
+    pub(crate) fntypes: Vec<FnType>,
     bases: IdCounts,
 }
 
@@ -187,6 +198,8 @@ impl ImageDecoder {
             origins: Vec::new(),
             tvars: Vec::new(),
             cells: Vec::new(),
+            exprs: Vec::new(),
+            fntypes: Vec::new(),
             bases: IdCounts {
                 bind: BindId::reserve(counts.bind).inner(),
                 lambda: LambdaId::reserve(counts.lambda).inner(),
@@ -651,18 +664,15 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
 /// a session every origin is written in full. (`Arc<Origin>` cannot
 /// carry the impl itself: the orphan rule.)
 pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
-    let seen =
-        encoding(|e| e.origins.get(&(Arc::as_ptr(ori) as usize)).copied()).flatten();
-    match seen {
-        Some(id) => 1 + varint_len(id),
-        None => {
-            let parent = match &ori.parent {
-                Some(p) => origin_len(p),
-                None => 0,
-            };
-            1 + 1 + parent + source_len(&ori.source) + ori.text.encoded_len()
-        }
+    let key = Arc::as_ptr(ori) as usize;
+    if measured_before(key, |e| e.origins.get(&key).copied()) {
+        return 1 + varint_len(key as u64);
     }
+    let parent = match &ori.parent {
+        Some(p) => origin_len(p),
+        None => 0,
+    };
+    1 + 1 + parent + source_len(&ori.source) + ori.text.encoded_len()
 }
 
 pub(crate) fn origin_encode(
@@ -756,6 +766,75 @@ fn measured_before(
     registered: impl FnOnce(&ImageEncoder) -> Option<u64>,
 ) -> bool {
     encoding(|e| registered(e).is_some() || !e.measured.insert(key)).unwrap_or(false)
+}
+
+/// The address of an object a session writes once and references
+/// afterwards.
+pub(crate) fn key<T>(object: &T) -> usize {
+    (object as *const T).addr()
+}
+
+/// The image length of an object in the table `table` selects: its
+/// `contents` at the first sight, a reference afterwards.
+pub(crate) fn object_len(
+    key: usize,
+    table: impl FnOnce(&ImageEncoder) -> &AHashMap<usize, u64>,
+    contents: impl FnOnce() -> usize,
+) -> usize {
+    if measured_before(key, |e| table(e).get(&key).copied()) {
+        1 + varint_len(key as u64)
+    } else {
+        1 + contents()
+    }
+}
+
+/// Write an object once, registering it in its table after its
+/// contents so ids are completion order, and a reference afterwards.
+pub(crate) fn object_encode<B: BufMut>(
+    key: usize,
+    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<usize, u64>,
+    buf: &mut B,
+    contents: impl FnOnce(&mut B) -> Result<(), PackError>,
+) -> Result<(), PackError> {
+    if let Some(id) = encoding(|e| table(e).get(&key).copied()).flatten() {
+        buf.put_u8(REF);
+        encode_varint(id, buf);
+        return Ok(());
+    }
+    buf.put_u8(DEF);
+    contents(buf)?;
+    encoding(|e| {
+        let t = table(e);
+        let id = t.len() as u64;
+        t.insert(key, id);
+    });
+    Ok(())
+}
+
+/// Read an object written by [`object_encode`]: a reference clones the
+/// table's entry, a definition decodes `contents` and enters it.
+pub(crate) fn object_decode<T: Clone, B: Buf>(
+    buf: &mut B,
+    table: impl Fn(&mut ImageDecoder) -> &mut Vec<T>,
+    contents: impl FnOnce(&mut B) -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    match buf.get_u8() {
+        REF => {
+            let id = decode_varint(buf)? as usize;
+            decoding(|d| table(d).get(id).cloned())
+                .flatten()
+                .ok_or(PackError::InvalidFormat)
+        }
+        DEF => {
+            let v = contents(buf)?;
+            decoding(|d| table(d).push(v.clone()));
+            Ok(v)
+        }
+        _ => Err(PackError::UnknownTag),
+    }
 }
 
 pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackError> {

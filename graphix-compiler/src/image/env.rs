@@ -12,6 +12,8 @@ use crate::{
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use netidx_core::pack::{Pack, PackError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use triomphe::Arc;
 
 impl Pack for Bind {
     fn encoded_len(&self) -> usize {
@@ -60,23 +62,25 @@ impl Pack for Bind {
 
 impl Pack for TypeDef {
     fn encoded_len(&self) -> usize {
-        let TypeDef { params, typ, rep, doc, pos, ori } = self;
+        let TypeDef { params, typ, rep, doc, pos, ori, seeded: _ } = self;
         params.encoded_len()
             + typ.encoded_len()
             + rep.encoded_len()
             + doc.encoded_len()
             + pos_len(pos)
             + origin_len(ori)
+            + 1
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let TypeDef { params, typ, rep, doc, pos, ori } = self;
+        let TypeDef { params, typ, rep, doc, pos, ori, seeded } = self;
         params.encode(buf)?;
         typ.encode(buf)?;
         rep.encode(buf)?;
         doc.encode(buf)?;
         pos_encode(pos, buf)?;
-        origin_encode(ori, buf)
+        origin_encode(ori, buf)?;
+        seeded.load(Ordering::Relaxed).encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -87,6 +91,7 @@ impl Pack for TypeDef {
             doc: Pack::decode(buf)?,
             pos: pos_decode(buf)?,
             ori: origin_decode(buf)?,
+            seeded: Arc::new(AtomicBool::new(bool::decode(buf)?)),
         })
     }
 }

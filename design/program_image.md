@@ -155,17 +155,44 @@ scheme, analysis facts; `init` is rebuilt by `make_init`, a builtin's
 check `Apply` on first use), the context's tables, the root nodes and
 the root scope (`image/registration.rs`). Ids relocate through
 `image_id!`; expressions keep their ids and origins; type variables
-keep their two-level sharing; handlers of the dynamic scope are shared
+keep their two-level sharing; handlers of the dynamic scope, module
+paths, origins and type-reference resolution cells are shared
 objects. A definition's or a module's snapshot carries only the four
 lexical fields, the only ones `restore_lexical_env` reads, which took
-the stdlib test image from 7.5 MB to 1.2 MB. The package root compiles
-with fusion off: its ten fused constants bought nothing at runtime and
-would have put kernels in the image.
+the stdlib test image from 7.5 MB to 1.2 MB.
 
-Measured in the debug profile over the graphix-tests package set:
-registration 50 ms cold, 13.5 ms warm. The shell's whole `--check` of
-a one-line file on the full stdlib set (2.5 MB image): 211 ms cold
-including the write, about 100 ms warm.
+Expressions and function types are objects too, keyed by address
+(`image::object_len/encode/decode`): a node's spec and a definition's
+body are value clones of subtrees of one tree, and a binding's type
+shares its definition's `FnType`, so each is written once and
+referenced afterwards. The session cannot pin them, so everything a
+session encodes must be borrowed from the context and the root nodes
+for the whole session. That took the full stdlib image from 2.3 MB to
+1.6 MB and the node phase of the restore from 9 ms to 5 ms.
+
+A typedef remembers when a seed walk filled every reachable
+resolution cell (`TypeDef::seeded`, carried in the image), so
+`seed_typedef_refs` at the end of every compile walks only the
+typedefs added since; it cost each compile 3.6 ms in release before.
+
+The package root compiles with fusion off: its ten fused constants
+bought nothing at runtime and would have put kernels in the image.
+
+Measured over the full stdlib in an optimized build (frame pointers,
+no LTO), pinned to a performance core with the governor on
+performance; this machine idles at 400 MHz on powersave and a 30 ms
+process is otherwise mostly clock ramp:
+
+| root init, `--check` of a one-line file | ms |
+|---|---|
+| cold (`--no-cache`, one core) | 32 |
+| warm, before these changes | 22 |
+| warm, typedef seed memo | 18 |
+| warm, expression and function-type objects | 14 |
+
+The warm split: environment 3.9, definitions 5.1, nodes 5.1, the
+program's own compile 0.5. In the debug profile over the graphix-tests
+package set: 36 ms cold, 7.8 ms warm, 0.77 MB.
 
 Node kinds imaged so far are the ones package modules produce at top
 level; the rest, `FusedKernel` included, come with the program image.
