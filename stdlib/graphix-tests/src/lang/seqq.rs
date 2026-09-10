@@ -190,6 +190,20 @@ async fn reference_inputs(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+async fn function_captures_stay_static(fusion_disabled: bool) -> Result<()> {
+    let code = format!(
+        r#"{{
+        {BURST}
+        let k = 5;
+        let h = |x: i64| -> i64 x * 2 + k;
+        seqq request {{ let a = #[native] h(request + k); a }}
+    }}"#
+    );
+    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    assert_eq!(as_i64s(&values), [17, 19, 21]);
+    Ok(())
+}
+
 async fn unhandled_warnings(fusion_disabled: bool) -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);
     let mut flags = CFlag::WarnUnhandled | CFlag::WarningsAreErrors;
@@ -244,3 +258,8 @@ modes!(do_captures, do_captures_interp, do_captures_jit);
 modes!(sleep_restarts, sleep_restarts_interp, sleep_restarts_jit);
 modes!(reference_inputs, reference_inputs_interp, reference_inputs_jit);
 modes!(unhandled_warnings, unhandled_warnings_interp, unhandled_warnings_jit);
+modes!(
+    function_captures_stay_static,
+    function_captures_stay_static_interp,
+    function_captures_stay_static_jit
+);

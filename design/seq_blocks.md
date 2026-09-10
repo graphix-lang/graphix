@@ -459,7 +459,9 @@ body's captured inputs taken at enqueue time rather than at step entry.
 The preamble (`desugar_queued`) identifies the body's free reads by a
 scoped rewrite over the current environment — nested binds, patterns
 and lambda parameters respected, qualified names included, trait
-method dispatchers left as static call targets — and projects them
+method dispatchers and function-typed bindings left as static call
+targets, since a call through a projection of the request tuple would
+resolve dynamically and never fuse — and projects them
 out: every trigger samples ONE tuple (the request plus its captures),
 never separate queues of independently updating captures. Each capture
 is `hold`-latched on activation so a standing input is present for the

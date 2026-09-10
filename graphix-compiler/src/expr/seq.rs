@@ -432,6 +432,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
             &e.kind
             && let Ok(Some((_, bind))) = env.lookup_bind(scope, name)
             && env.trait_methods.get(&bind.id).is_none()
+            && !bind.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
         {
             let n = caps.len();
             caps.entry(

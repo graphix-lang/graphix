@@ -1505,7 +1505,65 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         kernel_abi::freeze_for_abi_normalized(body.typ()).ok_or_else(|| {
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
-    let (disc, payload) = match merge_shape {
+    // A `never()` arm is a standing bottom: it fires only with the
+    // scrutinee, through the STALE fold below.
+    let bottom_arm =
+        matches!(body_frozen, Type::Bottom) || matches!(body.view(), NodeView::Never(_));
+    let (disc, payload) = if bottom_arm {
+        let kind = match merge_shape {
+            SelectMerge::Scalar(rp) => AbiKind::Scalar(rp),
+            SelectMerge::Value => AbiKind::Value,
+            SelectMerge::Composite => AbiKind::Tuple,
+            SelectMerge::String => AbiKind::String,
+        };
+        let cv = super::nodes::emit_bottom_of_kind(cx, kind)?;
+        (cx.b.ins().bor_imm(cv.disc, STALE), cv.payload)
+    } else {
+        emit_select_arm_value(cx, body, &body_frozen, merge_shape)?
+    };
+    // TAINT = OR(arm, scrutinee). Firing = OR(arm production, scrutinee
+    // delivery, consulted guard productions), as the STALE AND-fold
+    // (the interp's `own_fired`).
+    let base = clean_disc(cx.b, disc);
+    let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
+    let d = propagate_stale(cx.b, d, &[disc]);
+    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
+    let d = fold_stale(cx.b, d, scrut_stale);
+    let d = match fires.sound_stale {
+        Some(gs) => fold_stale(cx.b, d, gs),
+        None => d,
+    };
+    // When every fired consumed input was a bottom (stale after the
+    // sound folds, but a fresh-bottom fire happened) emit a fresh
+    // TAINT; the payload stays valid and owned.
+    let d = match fires.bfired {
+        Some(bf) => {
+            let sbit = cx.b.ins().band_imm(d, STALE);
+            let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
+            let ov = cx.b.ins().band(quiet, bf);
+            let d_bot = cx.b.ins().band_imm(d, !STALE);
+            let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
+            cx.b.ins().select(ov, d_bot, d)
+        }
+        None => d,
+    };
+    // Drop the arm's owned pattern binds; the widening above made the
+    // result independently owned.
+    super::flow::emit_scope_drops(cx, mark)?;
+    cx.env.truncate(mark);
+    cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
+    Ok(())
+}
+
+/// An ordinary arm's result widened to the select's merge shape.
+fn emit_select_arm_value<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    body: &Node<R, E>,
+    body_frozen: &Type,
+    merge_shape: SelectMerge,
+) -> Result<(ClifValue, ClifValue)> {
+    use NodeView;
+    Ok(match merge_shape {
         SelectMerge::Scalar(rp) => {
             if kernel_abi::scalar_prim(&body_frozen) != Some(rp) {
                 return Err(anyhow!(
@@ -1584,39 +1642,7 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
-    };
-    // TAINT = OR(arm, scrutinee). Firing = OR(arm production, scrutinee
-    // delivery, consulted guard productions), as the STALE AND-fold
-    // (the interp's `own_fired`).
-    let base = clean_disc(cx.b, disc);
-    let d = propagate_taint(cx.b, base, &[disc, scrut_disc]);
-    let d = propagate_stale(cx.b, d, &[disc]);
-    let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
-    let d = fold_stale(cx.b, d, scrut_stale);
-    let d = match fires.sound_stale {
-        Some(gs) => fold_stale(cx.b, d, gs),
-        None => d,
-    };
-    // When every fired consumed input was a bottom (stale after the
-    // sound folds, but a fresh-bottom fire happened) emit a fresh
-    // TAINT; the payload stays valid and owned.
-    let d = match fires.bfired {
-        Some(bf) => {
-            let sbit = cx.b.ins().band_imm(d, STALE);
-            let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
-            let ov = cx.b.ins().band(quiet, bf);
-            let d_bot = cx.b.ins().band_imm(d, !STALE);
-            let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
-            cx.b.ins().select(ov, d_bot, d)
-        }
-        None => d,
-    };
-    // Drop the arm's owned pattern binds; the widening above made the
-    // result independently owned.
-    super::flow::emit_scope_drops(cx, mark)?;
-    cx.env.truncate(mark);
-    cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
-    Ok(())
+    })
 }
 
 /// One structure pattern's condition against the scrutinee: the

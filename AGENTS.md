@@ -464,9 +464,10 @@ node graph IS the IR — there is no parallel typed IR
 Coverage today: scalar arithmetic/comparison/logic/casts, producers and
 accessors, `?`/`$`, the eight array HOFs as native loops (nesting
 included), structural select destructuring with scalar and variant
-payload binds, or-patterns, list patterns, tail loops over any kernel
-param kind, every fast-fn builtin and non-inline cast, cross-kernel
-lambda calls, trait default bodies. Fusion descends through
+payload binds, `never()` arms as bottom productions of the merge
+shape, or-patterns, list patterns, tail loops over any kernel param
+kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
+calls, trait default bodies. Fusion descends through
 Module/Block/Bind/CallSite/Catch/Lambda/Select/ExplicitParens; not
 through `~`, `<-` or operator operands. `FusionStats.failed` is a
 blocker profile, not a gap count.

@@ -4,6 +4,7 @@ use crate::init;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::expr::Source;
+use graphix_package_core::{run, testing::FuseExpect};
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use tokio::sync::mpsc;
@@ -1406,3 +1407,26 @@ async fn root_rejection_preserves_binding_values_and_dead_statements() -> Result
     );
     Ok(())
 }
+
+// A `never()` arm is a bottom production of the merge shape: the select
+// fuses, fires only with the scrutinee, and never writes a connect.
+const NEVER_ARM_FUSES: &str = r#"
+{
+  let x = 0;
+  x <- select x { n if n < 4 => n + 1, _ => never() };
+  let s = #[native] select x { 1 | 3 => x * 10, _ => never() };
+  let n = 0;
+  n <- s ~ (n + 1);
+  let last = 0;
+  last <- s;
+  let t = #[native] select x { 2 => "two", _ => never<string>(x) };
+  let k = 0;
+  k <- t ~ (k + 1);
+  select x { 4 => n * 1000 + k * 100 + last, _ => never() }
+}
+"#;
+
+run!(never_arm_fuses, NEVER_ARM_FUSES, |v: Result<&Value>| match v {
+    Ok(Value::I64(2130)) => true,
+    _ => false,
+}; FuseExpect::Jit);

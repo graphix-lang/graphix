@@ -907,37 +907,45 @@ pub(super) fn emit_bottom_placeholder(
     elem: &Type,
     governing_discs: &[ClifValue],
 ) -> Result<CompiledExpr> {
-    let cv = match kernel_abi::abi_kind(elem) {
-        Some(AbiKind::Scalar(p)) => {
+    let kind = kernel_abi::abi_kind(elem)
+        .ok_or_else(|| anyhow!("emit_clif: no placeholder for {elem}"))?;
+    let cv = emit_bottom_of_kind(cx, kind)?;
+    let disc = propagate_flags(cx.b, cv.disc, governing_discs);
+    Ok(CompiledExpr::new(disc, cv.payload))
+}
+
+/// A fresh tainted placeholder of the given ABI kind: an owned empty
+/// payload under a bottom disc, with no STALE bit.
+pub(super) fn emit_bottom_of_kind(
+    cx: &mut BodyCx,
+    kind: AbiKind,
+) -> Result<CompiledExpr> {
+    Ok(match kind {
+        AbiKind::Scalar(p) => {
             let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
             CompiledExpr::new(disc, zero_const(cx.b, p))
         }
-        Some(AbiKind::String) => {
+        AbiKind::String => {
             let helper = cx.helper("graphix_arcstr_empty")?;
             let call = cx.b.ins().call(helper, &[]);
             let s = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT);
             CompiledExpr::new(disc, s)
         }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+        AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
             let helper = cx.helper("graphix_valarray_empty")?;
             let call = cx.b.ins().call(helper, &[]);
             let a = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
             CompiledExpr::new(disc, a)
         }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-        | Some(AbiKind::Unit) => {
+        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Unit => {
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
             let zero = cx.b.ins().iconst(types::I64, 0);
             CompiledExpr::new(disc, zero)
         }
-        other => {
-            return Err(anyhow!("emit_clif: no placeholder for shape {other:?}"));
-        }
-    };
-    let disc = propagate_flags(cx.b, cv.disc, governing_discs);
-    Ok(CompiledExpr::new(disc, cv.payload))
+        other => return Err(anyhow!("emit_clif: no placeholder for shape {other:?}")),
+    })
 }
 
 /// Element read guarded on the source's taint: a tainted source holds
